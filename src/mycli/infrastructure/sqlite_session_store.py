@@ -201,6 +201,36 @@ class SQLiteSessionStore:
                 ],
             )
 
+    def replace_history_items(
+        self,
+        *,
+        session_id: str,
+        workspace_root: Path,
+        thread_id: str,
+        items: list[JsonObject],
+    ) -> None:
+        with self._connect() as connection:
+            self._touch_session(
+                connection,
+                session_id=session_id,
+                workspace_root=workspace_root,
+                thread_id=thread_id,
+            )
+            connection.execute(
+                "DELETE FROM history_items WHERE session_id = ?",
+                (session_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO history_items (session_id, item_id, payload_json)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (session_id, str(item["id"]), self._dump_payload(item))
+                    for item in items
+                ],
+            )
+
     def load_history_items(self, session_id: str) -> list[JsonObject]:
         with self._connect() as connection:
             rows = list(
@@ -302,7 +332,7 @@ class SQLiteSessionStore:
         if isinstance(payload, dict):
             return cast(JsonObject, payload)
         if isinstance(payload, list):
-            return cast(JsonArray, payload)
+            return payload
         raise ValueError("Session state payload must deserialize to an object or list.")
 
     def delete_state(self, session_id: str, state_key: str) -> None:

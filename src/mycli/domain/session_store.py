@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
 
-JsonObject: TypeAlias = dict[str, object]
-JsonArray: TypeAlias = list[object]
+JsonObject: TypeAlias = dict[str, Any]
+JsonArray: TypeAlias = list[Any]
 
 
 @dataclass(slots=True, frozen=True)
@@ -35,6 +36,15 @@ class SessionStore(Protocol):
     def load_conversation(self, session_id: str) -> list[JsonObject] | None: ...
 
     def append_history_items(
+        self,
+        *,
+        session_id: str,
+        workspace_root: Path,
+        thread_id: str,
+        items: list[JsonObject],
+    ) -> None: ...
+
+    def replace_history_items(
         self,
         *,
         session_id: str,
