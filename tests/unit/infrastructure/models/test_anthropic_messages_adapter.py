@@ -322,3 +322,86 @@ def test_anthropic_adapter_forwards_thinking_config() -> None:
     adapter.set_thinking_config(enabled=True, effort="high")
 
     assert client.thinking_config == (True, "high")
+
+
+def test_anthropic_adapter_round_trips_tool_call_and_result() -> None:
+    client = FakeAnthropicMessagesClient(
+        {
+            "id": "msg_tool_result",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "README content received."}],
+            "stop_reason": "end_turn",
+        }
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    first_result = adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="Read README.md"),),
+            )
+        ],
+        tools=[
+            ModelToolDefinition(
+                name="read_file",
+                description="Read a file",
+                parameters=(
+                    ModelToolParameter(name="path", type="string", required=True),
+                ),
+            )
+        ],
+    )
+
+    assert first_result.done is True
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="read_file",
+                        tool_arguments={"path": "README.md"},
+                        call_id="toolu_readme",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="README.md says hello",
+                        call_id="toolu_readme",
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages[-2:] == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_readme",
+                    "name": "read_file",
+                    "input": {"path": "README.md"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_readme",
+                    "content": "README.md says hello",
+                }
+            ],
+        },
+    ]
