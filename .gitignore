@@ -9,6 +9,7 @@ __pycache__/
 .omx/
 .DS_Store
 .vscode/
+.worktrees/
 log/
 evaluation/runs/
 evaluation/**/fixtures/log/
