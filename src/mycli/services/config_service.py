@@ -4,9 +4,15 @@ import tomllib
 from pathlib import Path
 from typing import Mapping
 
+from mycli.domain.providers import (
+    infer_provider_from_base_url,
+    parse_protocol,
+    parse_provider,
+    profile_for_provider,
+    validate_provider_protocol,
+)
 from mycli.domain.runtime import AgentConfig, ReasoningEffort
 
-_SUPPORTED_PROTOCOLS: tuple[str, str] = ("responses", "legacy_chat")
 _SUPPORTED_REASONING_EFFORTS: tuple[str, ...] = tuple(item.value for item in ReasoningEffort)
 
 
@@ -15,13 +21,6 @@ def _read_toml(path: Path) -> dict[str, object]:
         return {}
     with path.open("rb") as handle:
         return tomllib.load(handle)
-
-
-def _validate_protocol(protocol: str) -> str:
-    if protocol in _SUPPORTED_PROTOCOLS:
-        return protocol
-    allowed = ", ".join(_SUPPORTED_PROTOCOLS)
-    raise ValueError(f"Unsupported protocol '{protocol}'. Supported values: {allowed}.")
 
 
 def _validate_reasoning_effort(reasoning_effort: str) -> ReasoningEffort:
@@ -54,26 +53,38 @@ def resolve_config(
     user_config = _read_toml(home / ".config" / "mycli" / "config.toml")
     project_config = _read_toml(cwd / ".mycli" / "config.toml")
 
+    raw_api_base_url = (
+        env.get("MYCLI_BASE_URL")
+        or project_config.get("api_base_url")
+        or user_config.get("api_base_url")
+        or "https://api.openai.com/v1"
+    )
+    api_base_url = str(raw_api_base_url).rstrip("/")
+    raw_provider = (
+        env.get("MYCLI_PROVIDER")
+        or project_config.get("provider")
+        or user_config.get("provider")
+    )
+    provider = (
+        parse_provider(raw_provider)
+        if raw_provider is not None
+        else infer_provider_from_base_url(api_base_url)
+    )
+    profile = profile_for_provider(provider)
+    protocol = parse_protocol(
+        env.get("MYCLI_PROTOCOL")
+        or project_config.get("protocol")
+        or user_config.get("protocol")
+        or profile.default_protocol.value
+    )
+    validate_provider_protocol(provider=provider, protocol=protocol)
     model = str(
         cli_args.get("model")
         or env.get("MYCLI_MODEL")
         or project_config.get("model")
         or user_config.get("model")
+        or profile.default_model
         or "gpt-5"
-    )
-    protocol = _validate_protocol(
-        str(
-            env.get("MYCLI_PROTOCOL")
-            or project_config.get("protocol")
-            or user_config.get("protocol")
-            or "responses"
-        )
-    )
-    api_base_url = str(
-        env.get("MYCLI_BASE_URL")
-        or project_config.get("api_base_url")
-        or user_config.get("api_base_url")
-        or "https://api.openai.com/v1"
     )
     api_key_value = (
         env.get("MYCLI_API_KEY")
@@ -133,6 +144,7 @@ def resolve_config(
 
     return AgentConfig(
         workspace_root=cwd,
+        provider=provider,
         model=model,
         protocol=protocol,
         api_base_url=api_base_url,

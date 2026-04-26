@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.services.config_service import resolve_config
 
 
@@ -230,6 +231,113 @@ def test_resolve_config_rejects_unknown_protocol_value(tmp_path: Path) -> None:
         resolve_config(
             cli_args={"session": "demo"},
             env={"MYCLI_PROTOCOL": "experimental"},
+            cwd=workspace,
+            home=home_dir,
+        )
+
+
+def test_resolve_config_infers_deepseek_provider_and_defaults_to_chat_completions(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_BASE_URL": "https://api.deepseek.com",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.DEEPSEEK
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert config.api_base_url == "https://api.deepseek.com"
+
+
+def test_resolve_config_prefers_explicit_provider_over_base_url_inference(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "openai",
+            "MYCLI_BASE_URL": "https://api.deepseek.com",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.OPENAI
+    assert config.protocol is ProtocolId.RESPONSES
+
+
+def test_resolve_config_accepts_chat_completions_protocol(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROTOCOL": "chat_completions",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
+
+
+def test_resolve_config_rejects_legacy_chat_protocol(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="Use 'chat_completions' instead"):
+        resolve_config(
+            cli_args={"session": "demo"},
+            env={
+                "MYCLI_API_KEY": "test-key",
+                "MYCLI_PROTOCOL": "legacy_chat",
+            },
+            cwd=workspace,
+            home=home_dir,
+        )
+
+
+def test_resolve_config_rejects_deepseek_with_responses_protocol(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="Provider 'deepseek' does not support protocol 'responses'",
+    ):
+        resolve_config(
+            cli_args={"session": "demo"},
+            env={
+                "MYCLI_API_KEY": "test-key",
+                "MYCLI_PROVIDER": "deepseek",
+                "MYCLI_PROTOCOL": "responses",
+            },
             cwd=workspace,
             home=home_dir,
         )

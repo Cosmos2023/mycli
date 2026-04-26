@@ -11,6 +11,7 @@ from mycli.domain.capabilities import (
 )
 from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryRecord
+from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.domain.runtime.approvals import (
     ApprovalStatus as ApprovalStatus,
     PendingApproval as PendingApproval,
@@ -98,8 +99,9 @@ class DecisionAction(StrEnum):
 @dataclass(slots=True, frozen=True)
 class AgentConfig:
     workspace_root: Path
+    provider: ProviderId = ProviderId.OPENAI
     model: str = "gpt-5"
-    protocol: str = "responses"
+    protocol: ProtocolId = ProtocolId.RESPONSES
     api_base_url: str = "https://api.openai.com/v1"
     api_key: str | None = None
     session_id: str = "default"
