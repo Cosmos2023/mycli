@@ -4,14 +4,13 @@ import tomllib
 from pathlib import Path
 from typing import Mapping
 
-from mycli.domain.providers import (
+from mycli.domain.providers import parse_protocol, parse_provider
+from mycli.domain.runtime import AgentConfig, ReasoningEffort
+from mycli.infrastructure.providers import (
     infer_provider_from_base_url,
-    parse_protocol,
-    parse_provider,
     profile_for_provider,
     validate_provider_protocol,
 )
-from mycli.domain.runtime import AgentConfig, ReasoningEffort
 
 _SUPPORTED_REASONING_EFFORTS: tuple[str, ...] = tuple(item.value for item in ReasoningEffort)
 

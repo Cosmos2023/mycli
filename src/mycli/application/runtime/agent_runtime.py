@@ -974,6 +974,25 @@ class AgentRuntime:
             )
         )
 
+    def _record_assistant_tool_calls(
+        self,
+        conversation: Conversation,
+        *,
+        tool_calls: tuple[ToolCall, ...],
+        blocks: tuple[RuntimeBlock, ...],
+        response_id: str | None = None,
+    ) -> None:
+        normalized_calls = tuple(self._normalize_tool_call(call) for call in tool_calls)
+        conversation.append(
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=normalized_calls,
+                blocks=blocks,
+                response_id=response_id,
+            )
+        )
+
     def _execute_tool_call(
         self,
         *,
@@ -988,6 +1007,7 @@ class AgentRuntime:
         provider_id: str | None = None,
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
+        record_assistant_call: bool = True,
     ) -> PlanState:
         normalized_call = self._normalize_tool_call(call)
         start_event = self._tool_activity_event(normalized_call, phase="start")
@@ -1006,13 +1026,14 @@ class AgentRuntime:
                 },
             ),
         )
-        self._record_assistant_tool_call(
-            conversation,
-            tool_call=normalized_call,
-            provider_id=provider_id,
-            response_id=response_id,
-            metadata=metadata,
-        )
+        if record_assistant_call:
+            self._record_assistant_tool_call(
+                conversation,
+                tool_call=normalized_call,
+                provider_id=provider_id,
+                response_id=response_id,
+                metadata=metadata,
+            )
         try:
             result = tool_router.execute(normalized_call, exposure=tool_exposure)
             next_plan_state = self._apply_tool_effects(
@@ -1415,8 +1436,12 @@ class AgentRuntime:
                 continue
             pending_text_chunks: list[str] = []
             pending_text_block: RuntimeBlock | None = None
+            tool_call_blocks = tuple(
+                block for block in item.blocks if block.type == "tool_call"
+            )
+            tool_call_group_recorded = False
 
-            def flush_pending_text() -> None:
+            def flush_pending_text(*, record_conversation: bool = True) -> None:
                 nonlocal pending_text_chunks, pending_text_block
                 if not pending_text_chunks or pending_text_block is None:
                     pending_text_chunks = []
@@ -1429,11 +1454,12 @@ class AgentRuntime:
                     provider_id=pending_text_block.provider_id,
                     metadata=dict(pending_text_block.metadata),
                 )
-                self._record_assistant_text_block(
-                    conversation,
-                    block=combined_block,
-                    response_id=turn_result.response_id,
-                )
+                if record_conversation:
+                    self._record_assistant_text_block(
+                        conversation,
+                        block=combined_block,
+                        response_id=turn_result.response_id,
+                    )
                 turn_text_chunks.append(combined_text)
                 self._append_turn_item(
                     turn_id=turn_id,
@@ -1447,9 +1473,28 @@ class AgentRuntime:
                 pending_text_chunks = []
                 pending_text_block = None
 
+            def record_tool_call_group_once() -> None:
+                nonlocal tool_call_group_recorded
+                if tool_call_group_recorded or not tool_call_blocks:
+                    return
+                self._record_assistant_tool_calls(
+                    conversation,
+                    tool_calls=tuple(
+                        self._tool_call_from_block(tool_block)
+                        for tool_block in tool_call_blocks
+                    ),
+                    blocks=tuple(
+                        replay_block
+                        for replay_block in item.blocks
+                        if replay_block.type in {"text", "tool_call"}
+                    ),
+                    response_id=turn_result.response_id,
+                )
+                tool_call_group_recorded = True
+
             for block in item.blocks:
                 if block.type == "reasoning":
-                    flush_pending_text()
+                    flush_pending_text(record_conversation=not tool_call_blocks)
                     if block.text:
                         progress_updates.append(block.text)
                         reasoning_message = (
@@ -1483,7 +1528,7 @@ class AgentRuntime:
                 if block.type != "tool_call":
                     continue
 
-                flush_pending_text()
+                flush_pending_text(record_conversation=not tool_call_blocks)
                 turn_has_tool_call = True
                 tool_call = self._tool_call_from_block(block)
                 self._emit_visible_provider_reasoning(
@@ -1532,6 +1577,7 @@ class AgentRuntime:
                         None,
                     ),
                 ):
+                    record_tool_call_group_once()
                     current_plan_state = self._execute_tool_call(
                         conversation=conversation,
                         call=tool_call,
@@ -1544,10 +1590,12 @@ class AgentRuntime:
                         provider_id=block.provider_id,
                         response_id=turn_result.response_id,
                         metadata=dict(block.metadata),
+                        record_assistant_call=False,
                     )
                     continue
 
                 if tool_call.name in {entry.name for entry in tool_exposure.dynamic}:
+                    record_tool_call_group_once()
                     current_plan_state = self._execute_tool_call(
                         conversation=conversation,
                         call=tool_call,
@@ -1560,6 +1608,7 @@ class AgentRuntime:
                         provider_id=block.provider_id,
                         response_id=turn_result.response_id,
                         metadata=dict(block.metadata),
+                        record_assistant_call=False,
                     )
                     continue
 
@@ -1592,6 +1641,7 @@ class AgentRuntime:
                     )
 
                 if approval.pending_approval is not None:
+                    record_tool_call_group_once()
                     pending_decision = self._pending_decision_from_approval(
                         approval.pending_approval
                     )
@@ -1648,6 +1698,7 @@ class AgentRuntime:
                         ),
                     )
 
+                record_tool_call_group_once()
                 current_plan_state = self._execute_tool_call(
                     conversation=conversation,
                     call=tool_call,
@@ -1660,9 +1711,10 @@ class AgentRuntime:
                     provider_id=block.provider_id,
                     response_id=turn_result.response_id,
                     metadata=dict(block.metadata),
+                    record_assistant_call=False,
                 )
 
-            flush_pending_text()
+            flush_pending_text(record_conversation=not tool_call_blocks)
 
         return (
             current_plan_state,

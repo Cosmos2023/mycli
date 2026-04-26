@@ -173,6 +173,7 @@ protocol = "responses"
 支持的 provider：
 
 - `openai`
+- `qwen`
 - `deepseek`
 - `compatible`
 
@@ -182,6 +183,30 @@ protocol = "responses"
 - `chat_completions`
 
 `legacy_chat` 不是支持的协议名，请使用 `chat_completions`。
+
+### Qwen
+
+Qwen 使用 DashScope OpenAI-compatible endpoint，默认走 `responses` 协议：
+
+```bash
+export MYCLI_API_KEY="your-qwen-key"
+export MYCLI_PROVIDER="qwen"
+export MYCLI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+export MYCLI_MODEL="qwen3.6-plus"
+export MYCLI_PROTOCOL="responses"
+uv run mycli --session qwen-demo
+```
+
+也可以写入配置文件：
+
+```toml
+provider = "qwen"
+protocol = "responses"
+model = "qwen3.6-plus"
+api_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+```
+
+如果没有显式配置 `provider`，`mycli` 会从 `dashscope.aliyuncs.com` 自动推断为 `qwen`。
 
 ### DeepSeek
 

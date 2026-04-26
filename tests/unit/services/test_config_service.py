@@ -283,6 +283,54 @@ def test_resolve_config_uses_deepseek_defaults_for_explicit_provider(
     assert config.api_base_url == "https://api.deepseek.com"
 
 
+def test_resolve_config_infers_qwen_provider_and_defaults_to_responses(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "qwen-demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.QWEN
+    assert config.protocol is ProtocolId.RESPONSES
+    assert config.model == "qwen3.6-plus"
+    assert config.api_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+def test_resolve_config_uses_qwen_defaults_for_explicit_provider(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "qwen-demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "qwen",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.QWEN
+    assert config.protocol is ProtocolId.RESPONSES
+    assert config.model == "qwen3.6-plus"
+    assert config.api_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
 def test_resolve_config_prefers_explicit_provider_over_base_url_inference(
     tmp_path: Path,
 ) -> None:

@@ -309,6 +309,97 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_tool_call(
     }
 
 
+def test_openai_chat_client_emits_all_tool_calls_with_deepseek_reasoning_content(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "I need to inspect source and tests.",
+                        "tool_calls": [
+                            {
+                                "id": "call_list_src",
+                                "type": "function",
+                                "function": {
+                                    "name": "list_directory",
+                                    "arguments": '{"path":"src"}',
+                                },
+                            },
+                            {
+                                "id": "call_list_tests",
+                                "type": "function",
+                                "function": {
+                                    "name": "list_directory",
+                                    "arguments": '{"path":"tests"}',
+                                },
+                            },
+                            {
+                                "id": "call_read_readme",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": '{"path":"README.md"}',
+                                },
+                            },
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    events = client.create_events(
+        input_items=[{"role": "user", "content": "inspect the repo"}],
+        tools=[
+            {
+                "name": "list_directory",
+                "description": "List entries in a directory",
+                "parameters": [{"name": "path", "type": "string"}],
+            },
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": [{"name": "path", "type": "string"}],
+            },
+        ],
+    )
+
+    tool_events = [
+        event
+        for event in events
+        if event.type is ModelEventType.TOOL_CALL_REQUESTED
+    ]
+
+    assert [(event.call_id, event.tool_name, event.tool_arguments) for event in tool_events] == [
+        ("call_list_src", "list_directory", {"path": "src"}),
+        ("call_list_tests", "list_directory", {"path": "tests"}),
+        ("call_read_readme", "read_file", {"path": "README.md"}),
+    ]
+    assert [
+        event.metadata.get("deepseek")
+        for event in tool_events
+    ] == [
+        {"reasoning_content": "I need to inspect source and tests."},
+        {"reasoning_content": "I need to inspect source and tests."},
+        {"reasoning_content": "I need to inspect source and tests."},
+    ]
+
+
 def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(
         chat_payload={

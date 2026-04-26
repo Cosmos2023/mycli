@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from mycli.domain.providers import ProviderId
+from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
 from mycli.infrastructure.providers.chat import ChatProviderSettings
 
 DEEPSEEK_METADATA_KEY = "deepseek"
+DEEPSEEK_PROFILE = ProviderProfile(
+    provider=ProviderId.DEEPSEEK,
+    default_protocol=ProtocolId.CHAT_COMPLETIONS,
+    supports_responses=False,
+    supports_chat_completions=True,
+    default_base_url="https://api.deepseek.com",
+    default_model="deepseek-chat",
+    unsupported_responses_hint="Use protocol='chat_completions' for DeepSeek.",
+)
 
 
 class DeepSeekChatProviderAdapter:
@@ -66,5 +75,6 @@ class DeepSeekChatProviderAdapter:
 
 __all__ = [
     "DEEPSEEK_METADATA_KEY",
+    "DEEPSEEK_PROFILE",
     "DeepSeekChatProviderAdapter",
 ]

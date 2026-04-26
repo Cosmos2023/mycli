@@ -86,6 +86,46 @@ def _api_status_error_detail(exc: APIStatusError) -> str:
     return str(exc)
 
 
+def _decode_native_tool_call(
+    raw_tool_call: dict[str, object],
+    *,
+    provider_metadata: dict[str, object],
+) -> dict[str, object]:
+    function_payload = raw_tool_call.get("function", {})
+    if not isinstance(function_payload, dict):
+        raise ModelResponseError("Native tool call function payload was invalid.")
+    function_name = function_payload.get("name")
+    if not isinstance(function_name, str) or not function_name.strip():
+        raise ModelResponseError("Native tool call function name was invalid.")
+    arguments_payload = function_payload.get("arguments", {})
+    arguments: dict[str, object]
+    if isinstance(arguments_payload, str):
+        try:
+            loaded_arguments = json.loads(arguments_payload)
+        except json.JSONDecodeError as exc:
+            raise ModelResponseError(
+                "Native tool call arguments were not valid JSON."
+            ) from exc
+        arguments = loaded_arguments if isinstance(loaded_arguments, dict) else {}
+    elif isinstance(arguments_payload, dict):
+        arguments = arguments_payload
+    else:
+        arguments = {}
+    tool_call_payload: dict[str, object] = {
+        "id": (
+            None
+            if raw_tool_call.get("id") is None
+            else str(raw_tool_call["id"])
+        ),
+        "name": function_name,
+        "arguments": arguments,
+        "reason": "model requested tool",
+    }
+    if provider_metadata:
+        tool_call_payload["metadata"] = provider_metadata
+    return tool_call_payload
+
+
 class OpenAIChatClient:
     def __init__(
         self,
@@ -267,43 +307,15 @@ class OpenAIChatClient:
         provider_metadata = self._provider_adapter.extract_message_metadata(message)
         raw_tool_calls = message.get("tool_calls")
         if isinstance(raw_tool_calls, list) and raw_tool_calls:
-            first_tool_call = raw_tool_calls[0]
-            if isinstance(first_tool_call, dict):
-                function_payload = first_tool_call.get("function", {})
-                arguments_payload = (
-                    function_payload.get("arguments", {})
-                    if isinstance(function_payload, dict)
-                    else {}
+            tool_call_payloads = [
+                _decode_native_tool_call(
+                    cast("dict[str, object]", raw_tool_call),
+                    provider_metadata=provider_metadata,
                 )
-                arguments: dict[str, object]
-                if isinstance(arguments_payload, str):
-                    try:
-                        loaded_arguments = json.loads(arguments_payload)
-                    except json.JSONDecodeError as exc:
-                        raise ModelResponseError(
-                            "Native tool call arguments were not valid JSON."
-                        ) from exc
-                    arguments = (
-                        loaded_arguments
-                        if isinstance(loaded_arguments, dict)
-                        else {}
-                    )
-                elif isinstance(arguments_payload, dict):
-                    arguments = arguments_payload
-                else:
-                    arguments = {}
-                tool_call_payload: dict[str, object] = {
-                    "id": (
-                        None
-                        if first_tool_call.get("id") is None
-                        else str(first_tool_call["id"])
-                    ),
-                    "name": str(function_payload["name"]),
-                    "arguments": arguments,
-                    "reason": "model requested tool",
-                }
-                if provider_metadata:
-                    tool_call_payload["metadata"] = provider_metadata
+                for raw_tool_call in raw_tool_calls
+                if isinstance(raw_tool_call, dict)
+            ]
+            if tool_call_payloads:
                 return {
                     "assistant_message": (
                         None
@@ -311,7 +323,8 @@ class OpenAIChatClient:
                         else str(message["content"])
                     ),
                     "progress_message": None,
-                    "tool_call": tool_call_payload,
+                    "tool_call": tool_call_payloads[0],
+                    "tool_calls": tool_call_payloads,
                     "done": False,
                 }
         if tools:
@@ -377,7 +390,16 @@ class OpenAIChatClient:
         if isinstance(assistant_message, str) and assistant_message:
             events.append(ModelEvent.message_delta(text=assistant_message))
         raw_tool_call = payload.get("tool_call")
-        if isinstance(raw_tool_call, dict):
+        raw_tool_calls = payload.get("tool_calls")
+        if isinstance(raw_tool_calls, list):
+            tool_calls = [
+                raw_item for raw_item in raw_tool_calls if isinstance(raw_item, dict)
+            ]
+        elif isinstance(raw_tool_call, dict):
+            tool_calls = [raw_tool_call]
+        else:
+            tool_calls = []
+        for raw_tool_call in tool_calls:
             raw_arguments = raw_tool_call.get("arguments", {})
             events.append(
                 ModelEvent.tool_call_requested(
