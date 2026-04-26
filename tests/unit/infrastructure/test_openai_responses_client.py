@@ -10,6 +10,7 @@ from openai import APIConnectionError, BadRequestError, NotFoundError
 
 from mycli.domain.runtime import StopReason
 from mycli.domain.logging import ModelLogContext
+from mycli.domain.model_events import ModelEventType
 from mycli.infrastructure.openai_client import ModelResponseError
 from mycli.infrastructure.openai_responses_client import OpenAIResponsesClient
 from mycli.schemas.responses_protocol import (
@@ -170,6 +171,51 @@ def test_openai_responses_client_posts_request_and_preserves_id_and_output(monke
             "arguments": "{\"path\":\".\"}",
             "call_id": "call_001",
         }
+    ]
+
+
+def test_openai_responses_client_maps_output_payload_to_model_events(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        handler=lambda kwargs: {
+            "id": "resp_123",
+            "output": [
+                {
+                    "id": "fc_001",
+                    "type": "function_call",
+                    "name": "list_directory",
+                    "arguments": "{\"path\":\".\"}",
+                    "call_id": "call_001",
+                },
+                {
+                    "id": "msg_001",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "I can inspect the repository."}],
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    events = client.create_events(
+        input_items=[{"role": "user", "content": "inspect the repo"}],
+        tools=[],
+    )
+
+    assert [event.type for event in events] == [
+        ModelEventType.TOOL_CALL_REQUESTED,
+        ModelEventType.MESSAGE_DELTA,
+        ModelEventType.TURN_COMPLETED,
     ]
 
 

@@ -10,6 +10,7 @@ from mycli.domain.logging import LogLevel, ModelLogContext
 from mycli.domain.runtime import StopReason
 from mycli.domain.runtime.blocks import ModelTurnResult, RuntimeBlock, RuntimeItem
 from mycli.infrastructure.models.base import ModelToolDefinition
+from mycli.infrastructure.models.turn_event_aggregator import TurnEventAggregator
 from mycli.infrastructure.openai_client import ModelResponseError
 from mycli.schemas.responses_protocol import (
     ResponsesCompletedEvent,
@@ -62,6 +63,7 @@ class ResponsesModelAdapter:
         log_service: WorkspaceLogService | None = None,
     ) -> None:
         self._client = client
+        self._aggregator = TurnEventAggregator()
         self._log_service = log_service
         self._log_context_provider: Callable[[], ModelLogContext] | None = None
 
@@ -114,11 +116,19 @@ class ResponsesModelAdapter:
         items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
     ) -> ModelTurnResult:
-        payload = self._client.create_response(
-            input_items=self._serialize_items(items),
-            tools=self._serialize_tools(tools),
-        )
-        turn_result = self._to_model_turn_result(payload)
+        input_items = self._serialize_items(items)
+        serialized_tools = self._serialize_tools(tools)
+        create_events = getattr(self._client, "create_events", None)
+        if callable(create_events):
+            turn_result = self._aggregator.collect(
+                create_events(input_items=input_items, tools=serialized_tools)
+            )
+        else:
+            payload = self._client.create_response(
+                input_items=input_items,
+                tools=serialized_tools,
+            )
+            turn_result = self._to_model_turn_result(payload)
         self._record_client_completion(turn_result)
         return turn_result
 

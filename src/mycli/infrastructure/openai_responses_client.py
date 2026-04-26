@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, APITimeoutError
 
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
+from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
 from mycli.domain.runtime import StopReason
 from mycli.infrastructure.responses_request_builder import ResponsesRequestBuilder
 from mycli.infrastructure.openai_client import (
@@ -21,6 +22,7 @@ from mycli.schemas.responses_protocol import (
     ResponsesCapabilityProfile,
     ResponsesContinuationState,
 )
+from mycli.schemas.responses_wire_protocol import parse_responses_output_item
 from mycli.services.workspace_log_service import WorkspaceLogService
 
 
@@ -325,6 +327,103 @@ class OpenAIResponsesClient:
             response_path=response_path,
         )
         return payload
+
+    def create_events(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> list[ModelEvent]:
+        payload = self.create_response(input_items=input_items, tools=tools)
+        events: list[ModelEvent] = []
+        raw_output = payload.get("output", [])
+        if isinstance(raw_output, list):
+            for raw_item in raw_output:
+                if isinstance(raw_item, dict):
+                    events.extend(self._events_from_output_item(raw_item))
+        response_id = payload.get("id")
+        events.append(
+            ModelEvent(
+                type=ModelEventType.TURN_COMPLETED,
+                response_id=response_id if isinstance(response_id, str) else None,
+            )
+        )
+        return events
+
+    def _events_from_output_item(self, raw_item: dict[str, object]) -> list[ModelEvent]:
+        item = parse_responses_output_item(raw_item)
+        if item.item_type == "function_call":
+            return [self._function_call_event_from_output_item(item.payload, item.provider_id)]
+        if item.item_type == "message":
+            return self._message_events_from_output_item(item.payload, item.provider_id)
+        if item.item_type == "reasoning":
+            return self._reasoning_events_from_output_item(item.payload, item.provider_id)
+        return []
+
+    def _function_call_event_from_output_item(
+        self,
+        payload: dict[str, object],
+        provider_id: str | None,
+    ) -> ModelEvent:
+        raw_arguments = payload.get("arguments", "{}")
+        arguments: dict[str, object] = {}
+        if isinstance(raw_arguments, str) and raw_arguments:
+            try:
+                parsed_arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc:
+                raise ModelResponseError("Function call arguments were not valid JSON.") from exc
+            if isinstance(parsed_arguments, dict):
+                arguments = parsed_arguments
+        call_id = payload.get("call_id")
+        return ModelEvent.tool_call_requested(
+            tool_name=str(payload.get("name", "")),
+            tool_arguments=arguments,
+            call_id=str(call_id or provider_id or ""),
+            source=ToolExecutionSource.NATIVE,
+            provider_id=provider_id,
+        )
+
+    def _message_events_from_output_item(
+        self,
+        payload: dict[str, object],
+        provider_id: str | None,
+    ) -> list[ModelEvent]:
+        events: list[ModelEvent] = []
+        raw_content = payload.get("content", [])
+        if isinstance(raw_content, list):
+            for content_item in raw_content:
+                if not isinstance(content_item, dict):
+                    continue
+                if content_item.get("type") != "output_text":
+                    continue
+                text = content_item.get("text")
+                if isinstance(text, str) and text:
+                    events.append(ModelEvent.message_delta(text=text, provider_id=provider_id))
+        return events
+
+    def _reasoning_events_from_output_item(
+        self,
+        payload: dict[str, object],
+        provider_id: str | None,
+    ) -> list[ModelEvent]:
+        events: list[ModelEvent] = []
+        raw_summary = payload.get("summary", [])
+        if isinstance(raw_summary, list):
+            for summary_item in raw_summary:
+                if not isinstance(summary_item, dict):
+                    continue
+                if summary_item.get("type") != "summary_text":
+                    continue
+                text = summary_item.get("text")
+                if isinstance(text, str) and text:
+                    events.append(
+                        ModelEvent(
+                            type=ModelEventType.REASONING_DELTA,
+                            text=text,
+                            provider_id=provider_id,
+                        )
+                    )
+        return events
 
     def stream_response(
         self,
