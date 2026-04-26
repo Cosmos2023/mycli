@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Iterator
 from typing import Any
 from typing import Protocol
 
@@ -61,8 +62,27 @@ class ModelAdapter(Protocol):
         ...
 
 
+class EventProducingModelClient(Protocol):
+    def create_events(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> list[ModelEvent]:
+        ...
+
+    def stream_events(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> Iterator[ModelEvent]:
+        ...
+
+
 __all__ = [
     "BlockType",
+    "EventProducingModelClient",
     "ModelAction",
     "ModelAdapter",
     "ModelEvent",
