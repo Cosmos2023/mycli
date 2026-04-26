@@ -9,6 +9,7 @@ import pytest
 from openai import APIConnectionError, BadRequestError
 
 from mycli.domain.logging import ModelLogContext
+from mycli.domain.model_events import ModelEventType
 from mycli.infrastructure.openai_client import (
     DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
     ModelResponseError,
@@ -191,6 +192,52 @@ def test_openai_chat_client_accepts_thinking_config_without_request_failure(
     payload = client.complete([{"role": "user", "content": "inspect the repo"}])
 
     assert payload["assistant_message"] == "done"
+
+
+def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_001",
+                                "type": "function",
+                                "function": {
+                                    "name": "list_directory",
+                                    "arguments": "{\"path\":\".\"}",
+                                },
+                            }
+                        ],
+                        "content": "I will inspect the repository.",
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    events = client.create_events(
+        input_items=[{"role": "user", "content": "inspect the repo"}],
+        tools=[],
+    )
+
+    assert [event.type for event in events] == [
+        ModelEventType.MESSAGE_DELTA,
+        ModelEventType.TOOL_CALL_REQUESTED,
+        ModelEventType.TURN_COMPLETED,
+    ]
 
 
 def test_build_openai_sdk_client_uses_extended_timeout(monkeypatch) -> None:

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, APITimeoutError, OpenAI
 
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
+from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
 from mycli.domain.runtime import ModelDecision, StopReason
 from mycli.domain.tools import ToolCall
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
@@ -239,53 +240,53 @@ class OpenAIChatClient:
         )
 
         message = payload["choices"][0]["message"]
-        if tools:
-            raw_tool_calls = message.get("tool_calls")
-            if isinstance(raw_tool_calls, list) and raw_tool_calls:
-                first_tool_call = raw_tool_calls[0]
-                if isinstance(first_tool_call, dict):
-                    function_payload = first_tool_call.get("function", {})
-                    arguments_payload = (
-                        function_payload.get("arguments", {})
-                        if isinstance(function_payload, dict)
+        raw_tool_calls = message.get("tool_calls")
+        if isinstance(raw_tool_calls, list) and raw_tool_calls:
+            first_tool_call = raw_tool_calls[0]
+            if isinstance(first_tool_call, dict):
+                function_payload = first_tool_call.get("function", {})
+                arguments_payload = (
+                    function_payload.get("arguments", {})
+                    if isinstance(function_payload, dict)
+                    else {}
+                )
+                arguments: dict[str, object]
+                if isinstance(arguments_payload, str):
+                    try:
+                        loaded_arguments = json.loads(arguments_payload)
+                    except json.JSONDecodeError as exc:
+                        raise ModelResponseError(
+                            "Native tool call arguments were not valid JSON."
+                        ) from exc
+                    arguments = (
+                        loaded_arguments
+                        if isinstance(loaded_arguments, dict)
                         else {}
                     )
-                    arguments: dict[str, object]
-                    if isinstance(arguments_payload, str):
-                        try:
-                            loaded_arguments = json.loads(arguments_payload)
-                        except json.JSONDecodeError as exc:
-                            raise ModelResponseError(
-                                "Native tool call arguments were not valid JSON."
-                            ) from exc
-                        arguments = (
-                            loaded_arguments
-                            if isinstance(loaded_arguments, dict)
-                            else {}
-                        )
-                    elif isinstance(arguments_payload, dict):
-                        arguments = arguments_payload
-                    else:
-                        arguments = {}
-                    return {
-                        "assistant_message": (
+                elif isinstance(arguments_payload, dict):
+                    arguments = arguments_payload
+                else:
+                    arguments = {}
+                return {
+                    "assistant_message": (
+                        None
+                        if message.get("content") is None
+                        else str(message["content"])
+                    ),
+                    "progress_message": None,
+                    "tool_call": {
+                        "id": (
                             None
-                            if message.get("content") is None
-                            else str(message["content"])
+                            if first_tool_call.get("id") is None
+                            else str(first_tool_call["id"])
                         ),
-                        "progress_message": None,
-                        "tool_call": {
-                            "id": (
-                                None
-                                if first_tool_call.get("id") is None
-                                else str(first_tool_call["id"])
-                            ),
-                            "name": str(function_payload["name"]),
-                            "arguments": arguments,
-                            "reason": "model requested tool",
-                        },
-                        "done": False,
-                    }
+                        "name": str(function_payload["name"]),
+                        "arguments": arguments,
+                        "reason": "model requested tool",
+                    },
+                    "done": False,
+                }
+        if tools:
             content = "" if message.get("content") is None else str(message["content"])
             return {
                 "assistant_message": content.strip(),
@@ -335,6 +336,40 @@ class OpenAIChatClient:
             tool_call=tool_call,
             done=bool(decision_payload.get("done", False)),
         )
+
+    def create_events(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> list[ModelEvent]:
+        payload = self.complete(messages=input_items, tools=tools)
+        events: list[ModelEvent] = []
+        assistant_message = payload.get("assistant_message")
+        if isinstance(assistant_message, str) and assistant_message:
+            events.append(ModelEvent.message_delta(text=assistant_message))
+        raw_tool_call = payload.get("tool_call")
+        if isinstance(raw_tool_call, dict):
+            raw_arguments = raw_tool_call.get("arguments", {})
+            events.append(
+                ModelEvent.tool_call_requested(
+                    tool_name=str(raw_tool_call["name"]),
+                    tool_arguments=raw_arguments if isinstance(raw_arguments, dict) else {},
+                    call_id=str(
+                        raw_tool_call.get("id")
+                        or raw_tool_call.get("call_id")
+                        or "tool_call"
+                    ),
+                    source=ToolExecutionSource.NATIVE,
+                )
+            )
+        events.append(
+            ModelEvent(
+                type=ModelEventType.TURN_COMPLETED,
+                metadata={"done": bool(payload.get("done", False))},
+            )
+        )
+        return events
 
     def _log_request(
         self,
