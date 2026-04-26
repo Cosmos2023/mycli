@@ -22,6 +22,10 @@ from mycli.evaluation.runner import (
 )
 from mycli.domain.providers import ProtocolId
 from mycli.domain.runtime import DecisionAction, PendingDecision, TurnItem, TurnItemType, TurnRecord
+from mycli.infrastructure.anthropic_messages_client import AnthropicMessagesClient
+from mycli.infrastructure.models.anthropic_messages_adapter import (
+    AnthropicMessagesModelAdapter,
+)
 from mycli.infrastructure.models.base import ModelAdapter
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
 from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
@@ -127,7 +131,19 @@ def build_turn_service(
 
     model_adapter: ModelAdapter
     provider_adapter = chat_adapter_for_provider(config.provider)
-    if config.protocol is ProtocolId.CHAT_COMPLETIONS:
+    if config.protocol is ProtocolId.ANTHROPIC_MESSAGES:
+        anthropic_client = AnthropicMessagesClient(
+            api_key=config.api_key,
+            base_url=config.api_base_url,
+            model=config.model,
+            max_output_tokens=config.max_output_tokens,
+            log_service=workspace_log_service,
+        )
+        model_adapter = cast(
+            ModelAdapter,
+            AnthropicMessagesModelAdapter(client=anthropic_client),
+        )
+    elif config.protocol is ProtocolId.CHAT_COMPLETIONS:
         chat_client = OpenAIChatClient(
             api_key=config.api_key,
             base_url=config.api_base_url,

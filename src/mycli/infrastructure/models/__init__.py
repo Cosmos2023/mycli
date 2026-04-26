@@ -10,6 +10,9 @@ from mycli.infrastructure.models.base import (
     RuntimeItem,
     RuntimeRole,
 )
+from mycli.infrastructure.models.anthropic_messages_adapter import (
+    AnthropicMessagesModelAdapter,
+)
 from mycli.infrastructure.models.compat_chat_adapter import (
     CompatChatModelAdapter as LegacyCompatChatModelAdapter,
 )
@@ -23,6 +26,7 @@ NativeToolModelAdapter = LegacyNativeToolModelAdapter
 
 __all__ = [
     "BlockType",
+    "AnthropicMessagesModelAdapter",
     # Legacy fallback surfaces. Prefer the Responses adapter for new integrations.
     "LegacyCompatChatModelAdapter",
     "LegacyNativeToolModelAdapter",
