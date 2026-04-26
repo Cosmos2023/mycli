@@ -14,7 +14,7 @@
 - skill runtime 已支持 metadata 索引与正文按需加载，匹配到的 skill 会以独立指令消息注入当前 turn
 - 高风险工具调用会挂起当前 turn，待确认后恢复执行
 - 默认协议已切换到 OpenAI 兼容 `responses`，运行时主链按 block 驱动
-- `legacy_chat` 兼容路径仍保留（`chat/completions`），仅用于不支持 `responses` 的 provider 回退
+- `chat_completions` 兼容路径用于 DeepSeek 等不支持 `responses` 的 provider
 
 ## 内部运行时协议
 
@@ -79,6 +79,7 @@ export MYCLI_PROTOCOL="responses"
 
 ```toml
 model = "gpt-5"
+provider = "openai"
 protocol = "responses"
 api_base_url = "https://api.openai.com/v1"
 api_key = "your-api-key"
@@ -134,6 +135,7 @@ uv run mycli --session demo --model gpt-5
 
 ```toml
 model = "gpt-5"
+provider = "openai"
 protocol = "responses"
 api_base_url = "https://api.openai.com/v1"
 api_key = "your-api-key"
@@ -147,6 +149,7 @@ recent_message_count = 6
 配置优先级：
 
 - `model`：`--model` > `MYCLI_MODEL` > 项目配置 > 用户配置 > 默认值 `gpt-5`
+- `provider`：`MYCLI_PROVIDER` > 项目配置 > 用户配置 > 根据 `api_base_url` 推断 > 默认值 `openai`
 - `protocol`：`MYCLI_PROTOCOL` > 项目配置 > 用户配置 > 默认值 `responses`
 - `api_base_url`：`MYCLI_BASE_URL` > 项目配置 > 用户配置 > 默认值 `https://api.openai.com/v1`
 - `api_key`：`MYCLI_API_KEY` > 项目配置 > 用户配置
@@ -158,20 +161,60 @@ recent_message_count = 6
 - `compression_threshold_tokens`：`MYCLI_COMPRESSION_THRESHOLD_TOKENS` > 项目配置 > 用户配置 > 默认值 `8000`
 - `recent_message_count`：`MYCLI_RECENT_MESSAGE_COUNT` > 项目配置 > 用户配置 > 默认值 `6`
 
-## Legacy 回退示例（DeepSeek）
+## Model Providers
 
-当 provider 暂时不支持 `responses` 时，可以显式切到 `legacy_chat`。下面示例是 DeepSeek 的常见兼容接入方式：
-当前已知 DeepSeek 需要明确配置 `protocol = legacy_chat` 才能走兼容路径。
+`mycli` 通过 provider 和 protocol 组合来解析模型访问方式：
+
+```toml
+provider = "openai"
+protocol = "responses"
+```
+
+支持的 provider：
+
+- `openai`
+- `deepseek`
+- `compatible`
+
+支持的 protocol：
+
+- `responses`
+- `chat_completions`
+
+`legacy_chat` 不是支持的协议名，请使用 `chat_completions`。
+
+### DeepSeek
+
+DeepSeek 使用 OpenAI-compatible chat completions 协议：
 
 ```bash
 export MYCLI_API_KEY="your-deepseek-key"
-export MYCLI_BASE_URL="https://api.deepseek.com/v1"
-export MYCLI_MODEL="deepseek-chat"
-export MYCLI_PROTOCOL="legacy_chat"
-uv run mycli --session deepseek-legacy
+export MYCLI_PROVIDER="deepseek"
+export MYCLI_BASE_URL="https://api.deepseek.com"
+export MYCLI_MODEL="deepseek-v4-flash"
+export MYCLI_PROTOCOL="chat_completions"
+export MYCLI_THINKING_ENABLED="true"
+uv run mycli --session deepseek-demo
 ```
 
-等 provider 支持 `responses` 后，建议移除 `MYCLI_PROTOCOL` 或改回 `responses`。
+也可以写入配置文件：
+
+```toml
+provider = "deepseek"
+protocol = "chat_completions"
+model = "deepseek-v4-flash"
+api_base_url = "https://api.deepseek.com"
+thinking_enabled = true
+thinking_effort = "medium"
+```
+
+当 DeepSeek thinking mode 在工具循环中返回 provider-private `reasoning_content` 时，`mycli` 会把它保存为内部 metadata，并在工具结果 follow-up 请求里传回 DeepSeek。它不会作为 assistant 文本展示，也不会被当成用户可见 transcript 内容。
+
+对于不支持 thinking metadata 的 provider，可以关闭 thinking：
+
+```toml
+thinking_enabled = false
+```
 
 ## 直接上手示例
 
@@ -307,7 +350,7 @@ uv run mypy src
 
 ## 已知限制
 
-- 主路径默认请求 `POST /responses`，provider 不支持时会在模型请求阶段报错，需要手动切换到 `legacy_chat`。
-- `legacy_chat` 兼容模式仍依赖 `chat/completions` 语义，行为一致性取决于 provider 的兼容程度。
+- OpenAI 主路径默认请求 `POST /responses`，不支持 Responses API 的 provider 需要配置 `protocol = "chat_completions"`。
+- `chat_completions` 兼容模式依赖 provider 的 OpenAI-compatible 行为，工具调用和 thinking metadata 的一致性取决于 provider 支持程度。
 - 当前上下文窗口使用的是轻量级近似 token 估算与压缩摘要，不是 provider 原生 tokenizer。
 - 当前版本重点是把 Agent 骨架跑通，不是完整复刻 Claude Code 或 Codex 的全部交互能力。

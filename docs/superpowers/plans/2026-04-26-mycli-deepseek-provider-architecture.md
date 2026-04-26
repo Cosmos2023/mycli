@@ -1557,7 +1557,7 @@ git commit -m "Route runtime construction through provider protocols" \
 - Test: `tests/unit/infrastructure/models/test_native_tool_adapter.py`
 - Test: `tests/integration/test_cli_repl.py`
 
-- [ ] **Step 1: Update README provider documentation**
+- [x] **Step 1: Update README provider documentation**
 
 Add this section to `README.md`:
 
@@ -1608,7 +1608,7 @@ thinking_enabled = false
 ```
 ````
 
-- [ ] **Step 2: Run the focused test suite**
+- [x] **Step 2: Run the focused test suite**
 
 Run:
 
@@ -1618,7 +1618,7 @@ uv run pytest tests/unit/services/test_config_service.py tests/unit/infrastructu
 
 Expected: all selected tests pass.
 
-- [ ] **Step 3: Run lint**
+- [x] **Step 3: Run lint**
 
 Run:
 
@@ -1628,7 +1628,7 @@ uv run ruff check src tests
 
 Expected: `All checks passed!`
 
-- [ ] **Step 4: Run full tests**
+- [x] **Step 4: Run full tests**
 
 Run:
 
@@ -1638,7 +1638,7 @@ uv run pytest
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Run mypy and record existing baseline if it fails**
+- [x] **Step 5: Run mypy and record existing baseline if it fails**
 
 Run:
 
@@ -1648,7 +1648,7 @@ uv run mypy src
 
 Expected: either success, or failure only in existing baseline areas unrelated to this plan. If it fails, record the exact files in the final report and do not claim mypy is clean.
 
-- [ ] **Step 6: Run a live DeepSeek thinking tool-loop check**
+- [x] **Step 6: Run a live DeepSeek thinking tool-loop check**
 
 Use a temporary workspace and do not print the API key:
 
@@ -1678,7 +1678,7 @@ Expected output includes:
 
 Expected final assistant message is a one-line Chinese summary of `mission.txt`.
 
-- [ ] **Step 7: Commit docs and verification updates**
+- [x] **Step 7: Commit docs and verification updates**
 
 Run:
 
@@ -1696,12 +1696,12 @@ git commit -m "Document provider protocols and DeepSeek thinking loops" \
 
 ## Final Verification Checklist
 
-- [ ] `uv run pytest tests/unit/services/test_config_service.py tests/unit/infrastructure/test_openai_client.py tests/unit/infrastructure/models/test_turn_event_aggregator.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/integration/test_cli_repl.py -v`
-- [ ] `uv run ruff check src tests`
-- [ ] `uv run pytest`
-- [ ] `uv run mypy src`
-- [ ] Live DeepSeek `thinking_enabled=true` tool-loop check with `protocol=chat_completions`
-- [ ] `git status --short` reviewed so only intended tracked files are modified or committed
+- [x] `uv run pytest tests/unit/services/test_config_service.py tests/unit/infrastructure/test_openai_client.py tests/unit/infrastructure/models/test_turn_event_aggregator.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/integration/test_cli_repl.py -v`
+- [x] `uv run ruff check src tests`
+- [x] `uv run pytest`
+- [x] `uv run mypy src` (ran; existing baseline failures remain in `responses_protocol.py`, `runtime_policy.py`, `evaluation/runner.py`, `tool_exposure_planner.py`, and `turn_executor.py`)
+- [x] Live DeepSeek `thinking_enabled=true` tool-loop check with `protocol=chat_completions`
+- [x] `git status --short` reviewed so only intended tracked files are modified or committed
 
 ## Self-Review Notes
 
