@@ -6,6 +6,7 @@ runtime shape exists.
 
 ## Current Runtime Context
 
+- `2026-04-26-mycli-mcp-host-design.md`
 - `2026-04-26-mycli-anthropic-provider-design.md`
 - `2026-04-26-mycli-visible-deepseek-reasoning-content-design.md`
 - `2026-04-15-mycli-session-history-runtime-implementation-notes.md`
