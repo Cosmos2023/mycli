@@ -1331,6 +1331,62 @@ class AgentRuntime:
         )
         return self._legacy_action_to_turn_result(action), ()
 
+    def _deepseek_reasoning_content_from_block(
+        self,
+        block: RuntimeBlock,
+    ) -> str | None:
+        deepseek_metadata = block.metadata.get("deepseek")
+        if not isinstance(deepseek_metadata, dict):
+            return None
+        reasoning_content = deepseek_metadata.get("reasoning_content")
+        if not isinstance(reasoning_content, str):
+            return None
+        stripped = reasoning_content.strip()
+        if not stripped:
+            return None
+        return reasoning_content
+
+    def _emit_visible_provider_reasoning(
+        self,
+        *,
+        block: RuntimeBlock,
+        turn_id: str,
+        progress_updates: list[str],
+        activity_events: list[ActivityEvent],
+        turn_items: list[TurnItem],
+    ) -> None:
+        reasoning_content = self._deepseek_reasoning_content_from_block(block)
+        if reasoning_content is None:
+            return
+        message = f"Thinking: {reasoning_content}"
+        metadata = {
+            "provider_id": block.provider_id,
+            "provider": "deepseek",
+            "source": "provider_reasoning_content",
+            "deepseek": {"reasoning_content": reasoning_content},
+        }
+        progress_updates.append(reasoning_content)
+        activity_events.append(ActivityEvent(kind="thinking", message=message))
+        self._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.REASONING,
+                text=message,
+                metadata=metadata,
+            ),
+        )
+        self._workspace_log_service.log(
+            level=LogLevel.INFO,
+            event="provider_reasoning_content",
+            message="Exposed provider reasoning content",
+            context={
+                "session_id": self._config.session_id,
+                "turn_id": turn_id,
+                **metadata,
+            },
+        )
+
     def _consume_assistant_blocks(
         self,
         *,
@@ -1430,6 +1486,13 @@ class AgentRuntime:
                 flush_pending_text()
                 turn_has_tool_call = True
                 tool_call = self._tool_call_from_block(block)
+                self._emit_visible_provider_reasoning(
+                    block=block,
+                    turn_id=turn_id,
+                    progress_updates=progress_updates,
+                    activity_events=activity_events,
+                    turn_items=turn_items,
+                )
                 if tool_call.name not in tool_exposure.callable_tool_names():
                     rendered_names = ", ".join(tool_exposure.callable_tool_names()) or "none"
                     warning_message = (

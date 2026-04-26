@@ -33,7 +33,7 @@ This plan covers one focused behavior change: visible DeepSeek provider reasonin
 - Modify: `tests/unit/application/test_agent_runtime_provider_metadata.py`
 - Modify: `src/mycli/application/runtime/agent_runtime.py`
 
-- [ ] **Step 1: Replace the runtime provider metadata test adapter with a configurable adapter**
+- [x] **Step 1: Replace the runtime provider metadata test adapter with a configurable adapter**
 
 In `tests/unit/application/test_agent_runtime_provider_metadata.py`, replace `MetadataToolThenDoneAdapter` with this configurable version:
 
@@ -95,7 +95,7 @@ adapter = MetadataToolThenDoneAdapter(
 )
 ```
 
-- [ ] **Step 2: Add failing runtime visibility and persistence test**
+- [x] **Step 2: Add failing runtime visibility and persistence test**
 
 Add this test to `tests/unit/application/test_agent_runtime_provider_metadata.py`:
 
@@ -143,7 +143,7 @@ def test_agent_runtime_exposes_deepseek_reasoning_content_for_tool_call(
     assert reasoning_content in app_log
 ```
 
-- [ ] **Step 3: Add failing malformed metadata test**
+- [x] **Step 3: Add failing malformed metadata test**
 
 Add this test to `tests/unit/application/test_agent_runtime_provider_metadata.py`:
 
@@ -176,7 +176,7 @@ def test_agent_runtime_ignores_malformed_deepseek_reasoning_metadata(
     )
 ```
 
-- [ ] **Step 4: Run runtime tests and verify they fail**
+- [x] **Step 4: Run runtime tests and verify they fail**
 
 Run:
 
@@ -186,7 +186,7 @@ uv run pytest tests/unit/application/test_agent_runtime_provider_metadata.py -v
 
 Expected: fail because runtime preserves DeepSeek metadata but does not yet emit visible reasoning or workspace log entries.
 
-- [ ] **Step 5: Add DeepSeek reasoning metadata reader and emitter**
+- [x] **Step 5: Add DeepSeek reasoning metadata reader and emitter**
 
 In `src/mycli/application/runtime/agent_runtime.py`, add this helper method near `_consume_assistant_blocks()`:
 
@@ -252,7 +252,7 @@ Add this helper below it:
         )
 ```
 
-- [ ] **Step 6: Call the emitter before tool execution**
+- [x] **Step 6: Call the emitter before tool execution**
 
 In `src/mycli/application/runtime/agent_runtime.py`, inside `_consume_assistant_blocks()`, after:
 
@@ -276,7 +276,7 @@ insert:
 
 This placement displays provider reasoning before unsupported-tool checks, approval checks, and tool execution. That preserves the fact that the provider emitted the reasoning before the runtime decided what to do with the requested tool.
 
-- [ ] **Step 7: Run runtime tests and verify they pass**
+- [x] **Step 7: Run runtime tests and verify they pass**
 
 Run:
 
@@ -286,7 +286,7 @@ uv run pytest tests/unit/application/test_agent_runtime_provider_metadata.py -v
 
 Expected: all tests pass.
 
-- [ ] **Step 8: Run focused lint and type checks for runtime changes**
+- [x] **Step 8: Run focused lint and type checks for runtime changes**
 
 Run:
 
@@ -297,7 +297,7 @@ uv run mypy src/mycli/application/runtime/agent_runtime.py
 
 Expected: ruff passes and mypy reports no issues for `agent_runtime.py`.
 
-- [ ] **Step 9: Commit runtime visibility**
+- [x] **Step 9: Commit runtime visibility**
 
 Run:
 
