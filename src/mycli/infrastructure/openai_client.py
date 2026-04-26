@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, APITimeoutError, OpenAI
@@ -180,7 +180,7 @@ class OpenAIChatClient:
         )
         try:
             payload = _sdk_payload_to_dict(
-                self._sdk_client.chat.completions.create(**payload_body)
+                cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
             )
         except APIStatusError as exc:
             detail = _api_status_error_detail(exc)
@@ -239,7 +239,16 @@ class OpenAIChatClient:
             response_path=self._log_response(payload),
         )
 
-        message = payload["choices"][0]["message"]
+        raw_choices = payload.get("choices", [])
+        if not isinstance(raw_choices, list) or not raw_choices:
+            raise ModelResponseError("Model provider response did not include choices.")
+        first_choice = raw_choices[0]
+        if not isinstance(first_choice, dict):
+            raise ModelResponseError("Model provider response choice was not an object.")
+        raw_message = first_choice.get("message", {})
+        if not isinstance(raw_message, dict):
+            raise ModelResponseError("Model provider response message was not an object.")
+        message = raw_message
         raw_tool_calls = message.get("tool_calls")
         if isinstance(raw_tool_calls, list) and raw_tool_calls:
             first_tool_call = raw_tool_calls[0]

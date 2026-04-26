@@ -16,6 +16,16 @@
 - 默认协议已切换到 OpenAI 兼容 `responses`，运行时主链按 block 驱动
 - `legacy_chat` 兼容路径仍保留（`chat/completions`），仅用于不支持 `responses` 的 provider 回退
 
+## 内部运行时协议
+
+`mycli` 不把任何 provider 的 wire format 当作内部运行时契约。OpenAI Responses、chat completions 以及未来的 Anthropic / MCP / skill 接入都应该先转换到内部协议：
+
+- provider transport 负责解析自己的请求与响应格式
+- transport 输出统一的 `ModelEvent` 事件，例如 message delta、reasoning delta、tool call 和 turn completed
+- 共享 turn aggregator 把事件流转换成 `RuntimeItem`、`RuntimeBlock` 和 `ModelTurnResult`
+- native tool、MCP tool 和 skill 都统一表示为 tool call / tool result，只通过 source 区分来源
+- thinking 控制统一为 `thinking_enabled` 与 `thinking_effort`，再由 transport 映射到 provider 支持的请求字段
+
 ## 当前能力
 
 - 对话式 CLI REPL
@@ -77,6 +87,8 @@ max_prompt_tokens = 12000
 max_output_tokens = 2048
 compression_threshold_tokens = 8000
 recent_message_count = 6
+thinking_enabled = true
+thinking_effort = "medium"
 ```
 
 说明：
@@ -141,6 +153,8 @@ recent_message_count = 6
 - `session_id`：`--session` > 默认值 `default`
 - `max_prompt_tokens`：`MYCLI_MAX_PROMPT_TOKENS` > 项目配置 > 用户配置 > 默认值 `12000`
 - `max_output_tokens`：`MYCLI_MAX_OUTPUT_TOKENS` > 项目配置 > 用户配置 > 默认值 `2048`
+- `thinking_enabled`：`MYCLI_THINKING_ENABLED` > 项目配置 > 用户配置 > 默认值 `true`
+- `thinking_effort`：`MYCLI_THINKING_EFFORT` > `MYCLI_REASONING_EFFORT` > 项目配置 > 用户配置 > 默认值 `medium`
 - `compression_threshold_tokens`：`MYCLI_COMPRESSION_THRESHOLD_TOKENS` > 项目配置 > 用户配置 > 默认值 `8000`
 - `recent_message_count`：`MYCLI_RECENT_MESSAGE_COUNT` > 项目配置 > 用户配置 > 默认值 `6`
 

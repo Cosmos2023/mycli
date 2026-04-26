@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, APITimeoutError
@@ -251,7 +252,7 @@ class OpenAIResponsesClient:
 
             try:
                 payload = _sdk_payload_to_dict(
-                    self._sdk_client.responses.create(**payload_body)
+                    cast(Any, self._sdk_client.responses.create)(**payload_body)
                 )
             except APIStatusError as exc:
                 continuation_retry_reason = self._continuation_retry_reason(
@@ -483,7 +484,7 @@ class OpenAIResponsesClient:
 
             try:
                 terminated = False
-                stream_response = self._sdk_client.responses.create(**payload_body)
+                stream_response = cast(Any, self._sdk_client.responses.create)(**payload_body)
                 try:
                     for raw_event in stream_response:
                         for event in self._iter_stream_events(
@@ -998,7 +999,7 @@ class OpenAIResponsesClient:
         provider_name = self._provider_name()
         classification = self._classify_provider_failure(
             detail=detail,
-            status_code=exc.code,
+            status_code=exc.code if isinstance(exc.code, int) else None,
             provider_error_code=None,
         )
         error_path = self._log_failure(

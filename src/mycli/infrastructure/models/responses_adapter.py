@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from mycli.domain.logging import LogLevel, ModelLogContext
 from mycli.domain.runtime import StopReason
@@ -107,7 +107,7 @@ class ResponsesModelAdapter:
     def get_continuation_state(self) -> object | None:
         getter = getattr(self._client, "get_continuation_state", None)
         if callable(getter):
-            return getter()
+            return cast(object | None, getter())
         return None
 
     def next_turn(
