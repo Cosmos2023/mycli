@@ -15,6 +15,7 @@
 - 高风险工具调用会挂起当前 turn，待确认后恢复执行
 - 默认协议已切换到 OpenAI 兼容 `responses`，运行时主链按 block 驱动
 - `chat_completions` 兼容路径用于 DeepSeek 等不支持 `responses` 的 provider
+- `anthropic_messages` 原生路径用于 Anthropic Messages API，支持 tool use、tool result replay 和 extended thinking
 
 ## 内部运行时协议
 
@@ -175,12 +176,14 @@ protocol = "responses"
 - `openai`
 - `qwen`
 - `deepseek`
+- `anthropic`
 - `compatible`
 
 支持的 protocol：
 
 - `responses`
 - `chat_completions`
+- `anthropic_messages`
 
 `legacy_chat` 不是支持的协议名，请使用 `chat_completions`。
 
@@ -240,6 +243,36 @@ thinking_effort = "medium"
 ```toml
 thinking_enabled = false
 ```
+
+### Anthropic
+
+Anthropic 使用原生 Messages API，不走 OpenAI-compatible shim：
+
+```bash
+export MYCLI_API_KEY="your-anthropic-key"
+export MYCLI_PROVIDER="anthropic"
+export MYCLI_BASE_URL="https://api.anthropic.com"
+export MYCLI_MODEL="claude-sonnet-4-6"
+export MYCLI_PROTOCOL="anthropic_messages"
+export MYCLI_THINKING_ENABLED="true"
+export MYCLI_THINKING_EFFORT="medium"
+uv run mycli --session anthropic-demo
+```
+
+也可以写入配置文件：
+
+```toml
+provider = "anthropic"
+protocol = "anthropic_messages"
+model = "claude-sonnet-4-6"
+api_base_url = "https://api.anthropic.com"
+api_key = "your-anthropic-key"
+max_output_tokens = 4096
+thinking_enabled = true
+thinking_effort = "medium"
+```
+
+如果没有显式配置 `provider`，`mycli` 会从 `anthropic.com` 自动推断为 `anthropic`。开启 thinking 时，`mycli` 会把 `thinking_effort` 映射为 Anthropic `budget_tokens`，并要求该预算小于 `max_output_tokens`；如果你使用 `high` 或 `xhigh`，需要相应提高 `max_output_tokens`。
 
 ## 直接上手示例
 
