@@ -135,6 +135,13 @@ class AnthropicMessagesModelAdapter:
                 )
                 continue
             if block.type == "reasoning" and block.text:
+                raw_anthropic_block = block.metadata.get("anthropic")
+                if (
+                    isinstance(raw_anthropic_block, dict)
+                    and raw_anthropic_block.get("type") == "thinking"
+                ):
+                    content.append(dict(raw_anthropic_block))
+                    continue
                 content.append({"type": "thinking", "thinking": block.text})
         return content
 
