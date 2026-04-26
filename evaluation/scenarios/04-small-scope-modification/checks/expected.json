@@ -1,0 +1,32 @@
+{
+  "scenario_id": "04-small-scope-modification",
+  "deterministic_checks": {
+    "allowed_primary_files": [
+      "src/report_tool/__init__.py",
+      "src/report_tool/cli.py",
+      "src/report_tool/service.py",
+      "src/report_tool_template/cli.py",
+      "src/report_tool_template/service.py",
+      "tests/test_service.py",
+      "README.md"
+    ],
+    "required_paths_exist": [
+      "src/report_tool/__init__.py",
+      "src/report_tool/cli.py",
+      "src/report_tool/service.py"
+    ],
+    "preserved_file_contains": {
+      "src/report_tool_template/service.py": "config.get(\"output-dir\", \"dist\")",
+      "src/report_tool_template/cli.py": "parser.add_argument(\"--output-dir\", default=\"dist\")"
+    },
+    "must_keep_cli_flag": "--output-dir",
+    "verification_command": "pytest -q",
+    "expected_fixed_behavior": "reports/daily.txt"
+  },
+  "rubric_focus": [
+    "是否保留原始坏模板并只修复制后的目录",
+    "是否精确定位修改点",
+    "是否遵守不改接口和不加依赖的限制",
+    "是否给出真实验证证据"
+  ]
+}

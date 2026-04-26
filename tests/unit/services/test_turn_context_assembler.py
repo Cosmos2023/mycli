@@ -1,0 +1,367 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from mycli.domain.dynamic_tools import (
+    DynamicToolDescriptor,
+    DynamicToolLifecycleState,
+    DynamicToolScope,
+    DynamicToolSource,
+)
+from mycli.domain.conversation import Message
+from mycli.domain.memory import MemoryKind, MemoryRecord
+from mycli.domain.runtime import (
+    AgentConfig,
+    BaselineFragment,
+    CapabilityActivation,
+    CapabilityActivationDependencyStatus,
+    CapabilityActivationSource,
+    ContextBaseline,
+    ExecutionContext,
+    HistoryItem,
+    HistoryItemType,
+    PlanItem,
+    PlanState,
+    PlanStatus,
+    TurnContextSectionType,
+)
+from mycli.domain.skills import SkillDefinition
+from mycli.domain.tool_exposure import (
+    ToolExposure,
+    ToolExposureEntry,
+    ToolExposureKind,
+    ToolRouteKey,
+    ToolRouteSource,
+)
+from mycli.services.context.turn_context_assembler import TurnContextAssembler
+from mycli.tools.base import ToolSpec
+
+
+def test_turn_context_assembler_builds_deterministic_sections() -> None:
+    assembler = TurnContextAssembler()
+    turn_context = assembler.assemble(
+        user_message="请分析这个仓库",
+        context=ExecutionContext(
+            config=AgentConfig(
+                workspace_root=Path("/tmp/workspace"),
+                session_id="demo",
+                model="gpt-test",
+                protocol="responses",
+            ),
+            memory_records=(
+                MemoryRecord(
+                    kind=MemoryKind.PROJECT_NOTE,
+                    key="repo",
+                    value="This repo uses src layout.",
+                ),
+            ),
+            active_skill=SkillDefinition(
+                name="grounding",
+                description="Prefer verified evidence.",
+                trigger_hints=("grounding",),
+                body="Use real files before answering.",
+                source_path="/tmp/skills/grounding/SKILL.md",
+            ),
+            tool_exposure=ToolExposure(
+                direct=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("list_directory"),
+                        kind=ToolExposureKind.DIRECT,
+                        source=ToolRouteSource.REGISTRY,
+                        spec=ToolSpec(name="list_directory", description="List directory"),
+                    ),
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("read_file_range"),
+                        kind=ToolExposureKind.DIRECT,
+                        source=ToolRouteSource.REGISTRY,
+                        spec=ToolSpec(name="read_file_range", description="Read file range"),
+                    ),
+                ),
+                deferred=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("search_text"),
+                        kind=ToolExposureKind.DEFERRED,
+                        source=ToolRouteSource.REGISTRY,
+                        spec=ToolSpec(name="search_text", description="Search text"),
+                    ),
+                ),
+                dynamic=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("workspace_summary"),
+                        kind=ToolExposureKind.DYNAMIC,
+                        source=ToolRouteSource.RUNTIME,
+                        spec=ToolSpec(name="workspace_summary", description="Summarize workspace"),
+                    ),
+                ),
+            ),
+            plan_state=PlanState(
+                items=(
+                    PlanItem(id="1", content="Inspect root", status=PlanStatus.IN_PROGRESS),
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="之前我让你看一下项目"),
+                Message(role="assistant", content="我先检查结构"),
+            ),
+            conversation_summary="- user: asked for a repo summary",
+            runtime_reminders=("Do not assume files exist.",),
+        ),
+        workspace_instructions="Follow AGENTS.md for repository conventions.",
+    )
+
+    assert [section.type for section in turn_context.sections] == [
+        TurnContextSectionType.BASE_INSTRUCTIONS,
+        TurnContextSectionType.WORKSPACE_INSTRUCTIONS,
+        TurnContextSectionType.ENVIRONMENT_CONTEXT,
+        TurnContextSectionType.CONVERSATION_CONTEXT,
+        TurnContextSectionType.MEMORY,
+        TurnContextSectionType.PLAN,
+        TurnContextSectionType.RUNTIME_REMINDERS,
+        TurnContextSectionType.CAPABILITY,
+        TurnContextSectionType.TOOL_EXPOSURE,
+        TurnContextSectionType.USER_REQUEST,
+    ]
+    assert turn_context.sections[1].enabled is True
+    assert turn_context.sections[7].metadata["skill_name"] == "grounding"
+    assert "Direct tools: list_directory, read_file_range" in turn_context.sections[8].content
+    assert "Deferred tools: search_text" in turn_context.sections[8].content
+    assert "Dynamic tools: workspace_summary" in turn_context.sections[8].content
+    assert turn_context.debug_summary()["enabled_sections"] == [
+        "base_instructions",
+        "workspace_instructions",
+        "environment_context",
+        "conversation_context",
+        "memory",
+        "plan",
+        "runtime_reminders",
+        "capability",
+        "tool_exposure",
+        "user_request",
+    ]
+
+
+def test_turn_context_assembler_keeps_empty_sections_but_marks_them_disabled() -> None:
+    assembler = TurnContextAssembler()
+    turn_context = assembler.assemble(
+        user_message="hello",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+        ),
+    )
+
+    sections = {section.type: section for section in turn_context.sections}
+
+    assert sections[TurnContextSectionType.WORKSPACE_INSTRUCTIONS].enabled is False
+    assert sections[TurnContextSectionType.MEMORY].enabled is False
+    assert sections[TurnContextSectionType.CAPABILITY].enabled is False
+    assert sections[TurnContextSectionType.TOOL_EXPOSURE].enabled is False
+    assert sections[TurnContextSectionType.USER_REQUEST].enabled is True
+
+
+def test_turn_context_assembler_renders_capability_activations() -> None:
+    assembler = TurnContextAssembler()
+    turn_context = assembler.assemble(
+        user_message="inspect repo with $repository-analysis",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            capability_activations=(
+                CapabilityActivation(
+                    name="repository-analysis",
+                    description="Inspect repositories",
+                    instructions="Inspect repositories before answering.",
+                    source=CapabilityActivationSource.EXPLICIT_MENTION,
+                    dependency_status=CapabilityActivationDependencyStatus.READY,
+                    source_path="/tmp/skills/repository-analysis.md",
+                ),
+            ),
+        ),
+    )
+
+    capability_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.CAPABILITY
+    )
+
+    assert capability_section.enabled is True
+    assert "repository-analysis" in capability_section.content
+    assert "explicit_mention" in capability_section.content
+    assert capability_section.metadata["capability_names"] == ["repository-analysis"]
+
+
+def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> None:
+    assembler = TurnContextAssembler()
+    turn_context = assembler.assemble(
+        user_message="inspect repo",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            tool_exposure=ToolExposure(
+                direct=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("list_directory"),
+                        kind=ToolExposureKind.DIRECT,
+                        source=ToolRouteSource.REGISTRY,
+                        spec=ToolSpec(name="list_directory", description="List directory"),
+                    ),
+                ),
+                deferred=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("run_shell"),
+                        kind=ToolExposureKind.DEFERRED,
+                        source=ToolRouteSource.REGISTRY,
+                        spec=ToolSpec(name="run_shell", description="Run shell"),
+                    ),
+                ),
+                dynamic=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("workspace_summary"),
+                        kind=ToolExposureKind.DYNAMIC,
+                        source=ToolRouteSource.RUNTIME,
+                        spec=ToolSpec(name="workspace_summary", description="Workspace summary"),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    tool_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.TOOL_EXPOSURE
+    )
+
+    assert tool_section.enabled is True
+    assert tool_section.metadata["direct_tool_names"] == ["list_directory"]
+    assert tool_section.metadata["deferred_tool_names"] == ["run_shell"]
+    assert tool_section.metadata["dynamic_tool_names"] == ["workspace_summary"]
+    assert tool_section.metadata["tool_names"] == ["list_directory", "run_shell", "workspace_summary"]
+
+
+def test_turn_context_assembler_exposes_runtime_policy_state() -> None:
+    assembler = TurnContextAssembler()
+    turn_context = assembler.assemble(
+        user_message="请检查这个实现是否已经接入 runtime 和 trace",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            runtime_reminders=("Prefer source files before logs.",),
+            runtime_policy_state={
+                "profile_name": "source_first_verification",
+                "path_bias": "source_first",
+                "evidence_status": "insufficient",
+            },
+        ),
+    )
+
+    runtime_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.RUNTIME_REMINDERS
+    )
+
+    assert runtime_section.enabled is True
+    assert runtime_section.metadata["profile_name"] == "source_first_verification"
+    assert runtime_section.metadata["path_bias"] == "source_first"
+    assert "source_first_verification" in runtime_section.content
+
+
+def test_turn_context_assembler_renders_dynamic_tool_scope_and_state_metadata() -> None:
+    assembler = TurnContextAssembler()
+    descriptor = DynamicToolDescriptor(
+        tool_id="runtime:daily_brief:thread",
+        display_name="daily_brief",
+        description="Prepare a daily brief",
+        route_key=ToolRouteKey.local("daily_brief"),
+        source=DynamicToolSource.RUNTIME,
+        scope=DynamicToolScope.THREAD,
+        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        spec=ToolSpec(name="daily_brief", description="Prepare a daily brief"),
+    )
+    turn_context = assembler.assemble(
+        user_message="help with my daily work",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            tool_exposure=ToolExposure(
+                dynamic=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("daily_brief"),
+                        kind=ToolExposureKind.DYNAMIC,
+                        source=ToolRouteSource.RUNTIME,
+                        spec=descriptor.spec,
+                        dynamic_descriptor=descriptor,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    tool_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.TOOL_EXPOSURE
+    )
+
+    assert "daily_brief [scope=thread state=exposed source=runtime]" in tool_section.content
+    assert tool_section.metadata["dynamic_tool_names"] == ["daily_brief"]
+    assert tool_section.metadata["dynamic_tools"] == [
+        {
+            "name": "daily_brief",
+            "tool_id": "runtime:daily_brief:thread",
+            "scope": "thread",
+            "state": "exposed",
+            "source": "runtime",
+        }
+    ]
+
+
+def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is_sparse() -> None:
+    assembler = TurnContextAssembler()
+    turn_context = assembler.assemble(
+        user_message="继续处理这个会话",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            conversation_messages=(),
+            conversation_summary=None,
+            history_items=(
+                HistoryItem(
+                    id="hist_1",
+                    thread_id="demo",
+                    turn_id="turn_1",
+                    type=HistoryItemType.USER_MESSAGE,
+                    text="先检查仓库结构",
+                ),
+                HistoryItem(
+                    id="hist_2",
+                    thread_id="demo",
+                    turn_id="turn_1",
+                    type=HistoryItemType.ASSISTANT_MESSAGE,
+                    text="我先看一下入口文件。",
+                ),
+            ),
+            context_baseline=ContextBaseline(
+                thread_id="demo",
+                fragments=(
+                    BaselineFragment(
+                        id="workspace",
+                        kind="workspace_instructions",
+                        title="Workspace instructions",
+                        content="Follow AGENTS.md and keep diffs focused.",
+                    ),
+                    BaselineFragment(
+                        id="environment",
+                        kind="environment_context",
+                        title="Environment context",
+                        content="Shell: zsh\nTimezone: Asia/Shanghai",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    workspace_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.WORKSPACE_INSTRUCTIONS
+    )
+    conversation_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.CONVERSATION_CONTEXT
+    )
+    environment_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT
+    )
+
+    assert workspace_section.enabled is True
+    assert "Follow AGENTS.md" in workspace_section.content
+    assert conversation_section.enabled is True
+    assert "先检查仓库结构" in conversation_section.content
+    assert "我先看一下入口文件。" in conversation_section.content
+    assert "Timezone: Asia/Shanghai" in environment_section.content

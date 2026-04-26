@@ -1,0 +1,15 @@
+{
+  "scenario_id": "06-online-research-and-recommendation",
+  "deterministic_checks": {
+    "must_include_sources": true,
+    "initial_candidate_count": 3,
+    "updated_budget_cap": 900,
+    "must_explain_rejection": true,
+    "must_distinguish_fact_vs_recommendation": true
+  },
+  "rubric_focus": [
+    "是否依赖实时检索而不是常识",
+    "是否能根据新约束重排候选项",
+    "是否正确区分事实和建议"
+  ]
+}

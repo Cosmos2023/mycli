@@ -1,0 +1,22 @@
+{
+  "scenario_id": "03-weekly-data-summary",
+  "deterministic_checks": {
+    "expected_totals": {
+      "total_revenue": 435000,
+      "total_new_deals": 18
+    },
+    "must_identify_signals": [
+      "低营收",
+      "响应时长高",
+      "加班高"
+    ],
+    "banned_names_in_turn_04_and_05": [
+      "陈舟"
+    ]
+  },
+  "rubric_focus": [
+    "是否能把数据结论迁移到周报文本",
+    "是否能解释异常成立原因",
+    "是否使用合适工具完成结构化分析"
+  ]
+}

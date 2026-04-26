@@ -1,0 +1,26 @@
+{
+  "scenario_id": "02-policy-and-doc-lookup",
+  "deterministic_checks": {
+    "required_sources": [
+      "travel-policy.md",
+      "meeting-notes.md"
+    ],
+    "expected_values": {
+      "default_train_seat": "高铁二等座",
+      "tier1_hotel_limit": 650
+    },
+    "known_conflicts": [
+      {
+        "file_a": "travel-policy.md",
+        "file_b": "faq.md",
+        "field": "一线城市住宿上限"
+      }
+    ],
+    "unknown_answer_topics": ["餐补具体金额"]
+  },
+  "rubric_focus": [
+    "是否区分事实和推断",
+    "是否正确处理跨文件冲突",
+    "面对缺失信息时是否明确说不知道"
+  ]
+}

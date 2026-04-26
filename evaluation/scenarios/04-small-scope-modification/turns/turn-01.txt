@@ -1,0 +1,1 @@
+请你看一下这个小项目。`src/report_tool_template/` 下面这套原始 py 文件现在是坏的：传 `--output-dir reports` 之后，输出目录还是会落到默认的 `dist/`。不要直接改原目录。请先把这几个 py 文件复制到 `src/report_tool/`，然后只在复制后的 py 文件里把这个问题修掉。

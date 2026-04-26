@@ -1,0 +1,14 @@
+.venv/
+.uv-cache/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.mycli/
+*.pyc
+.omx/
+.DS_Store
+.vscode/
+log/
+evaluation/runs/
+evaluation/**/fixtures/log/

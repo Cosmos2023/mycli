@@ -1,0 +1,20 @@
+{
+  "scenario_id": "07-composite-coordination",
+  "deterministic_checks": {
+    "expected_blocker_count": 3,
+    "expected_owner_map": {
+      "首页文案定稿": "沈括",
+      "埋点字段口径确认": "顾林",
+      "客服培训材料整理": "唐越"
+    },
+    "must_update_fields": [
+      "owner",
+      "next_step"
+    ]
+  },
+  "rubric_focus": [
+    "是否做到了多文件综合",
+    "是否在后续追问中保持上下文一致",
+    "是否能把状态更新、沟通起草和优先级建议串起来"
+  ]
+}
