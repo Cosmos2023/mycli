@@ -53,13 +53,16 @@ def resolve_config(
     user_config = _read_toml(home / ".config" / "mycli" / "config.toml")
     project_config = _read_toml(cwd / ".mycli" / "config.toml")
 
-    raw_api_base_url = (
+    configured_api_base_url = (
         env.get("MYCLI_BASE_URL")
         or project_config.get("api_base_url")
         or user_config.get("api_base_url")
-        or "https://api.openai.com/v1"
     )
-    api_base_url = str(raw_api_base_url).rstrip("/")
+    api_base_url_for_inference = (
+        str(configured_api_base_url).rstrip("/")
+        if configured_api_base_url is not None
+        else "https://api.openai.com/v1"
+    )
     raw_provider = (
         env.get("MYCLI_PROVIDER")
         or project_config.get("provider")
@@ -68,9 +71,14 @@ def resolve_config(
     provider = (
         parse_provider(raw_provider)
         if raw_provider is not None
-        else infer_provider_from_base_url(api_base_url)
+        else infer_provider_from_base_url(api_base_url_for_inference)
     )
     profile = profile_for_provider(provider)
+    api_base_url = (
+        str(configured_api_base_url).rstrip("/")
+        if configured_api_base_url is not None
+        else profile.default_base_url
+    )
     protocol = parse_protocol(
         env.get("MYCLI_PROTOCOL")
         or project_config.get("protocol")

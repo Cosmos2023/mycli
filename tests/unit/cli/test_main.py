@@ -108,7 +108,9 @@ def test_build_turn_service_defaults_to_responses_protocol(tmp_path: Path) -> No
     assert isinstance(service._runtime._model_adapter, ResponsesModelAdapter)
 
 
-def test_build_turn_service_uses_legacy_chat_when_protocol_is_explicitly_set(tmp_path: Path) -> None:
+def test_build_turn_service_uses_chat_completions_when_protocol_is_explicitly_set(
+    tmp_path: Path,
+) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
@@ -120,7 +122,7 @@ def test_build_turn_service_uses_legacy_chat_when_protocol_is_explicitly_set(tmp
         home=home_dir,
         env={
             "MYCLI_API_KEY": "test-key",
-            "MYCLI_PROTOCOL": "legacy_chat",
+            "MYCLI_PROTOCOL": "chat_completions",
         },
     )
 
@@ -134,7 +136,7 @@ def test_build_turn_service_uses_protocol_from_project_config_file(tmp_path: Pat
     workspace.mkdir()
     (workspace / ".mycli").mkdir()
     (workspace / ".mycli" / "config.toml").write_text(
-        'protocol = "legacy_chat"\n',
+        'protocol = "chat_completions"\n',
         encoding="utf-8",
     )
 

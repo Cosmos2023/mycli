@@ -20,6 +20,7 @@ from mycli.evaluation.runner import (
     run_evaluation_scenario,
     write_evaluation_report,
 )
+from mycli.domain.providers import ProtocolId
 from mycli.domain.runtime import DecisionAction, PendingDecision, TurnItemType, TurnRecord
 from mycli.infrastructure.models.base import ModelAdapter
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
@@ -124,15 +125,15 @@ def build_turn_service(
     )
 
     model_adapter: ModelAdapter
-    if config.protocol == "legacy_chat":
-        legacy_client = OpenAIChatClient(
+    if config.protocol is ProtocolId.CHAT_COMPLETIONS:
+        chat_client = OpenAIChatClient(
             api_key=config.api_key,
             base_url=config.api_base_url,
             model=config.model,
             max_output_tokens=config.max_output_tokens,
             log_service=workspace_log_service,
         )
-        model_adapter = cast(ModelAdapter, NativeToolModelAdapter(client=legacy_client))
+        model_adapter = cast(ModelAdapter, NativeToolModelAdapter(client=chat_client))
     else:
         responses_client = OpenAIResponsesClient(
             api_key=config.api_key,
@@ -637,9 +638,10 @@ def handle_evaluation_command(
     eval_env = dict(root_env)
     if root_config.api_key:
         eval_env["MYCLI_API_KEY"] = root_config.api_key
+    eval_env["MYCLI_PROVIDER"] = str(root_config.provider)
     eval_env["MYCLI_BASE_URL"] = root_config.api_base_url
     eval_env["MYCLI_MODEL"] = root_config.model
-    eval_env["MYCLI_PROTOCOL"] = root_config.protocol
+    eval_env["MYCLI_PROTOCOL"] = str(root_config.protocol)
     eval_env["MYCLI_MAX_PROMPT_TOKENS"] = str(root_config.max_prompt_tokens)
     eval_env["MYCLI_MAX_OUTPUT_TOKENS"] = str(root_config.max_output_tokens)
     eval_env["MYCLI_COMPRESSION_THRESHOLD_TOKENS"] = str(root_config.compression_threshold_tokens)

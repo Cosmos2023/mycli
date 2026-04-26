@@ -625,7 +625,7 @@ def test_openai_responses_client_maps_unsupported_provider_error(monkeypatch) ->
 
     with pytest.raises(
         ModelResponseError,
-        match="Responses API is not available for the current provider",
+        match="Use protocol='chat_completions'",
     ):
         client.create_response(
             input_items=[{"role": "user", "content": "inspect the repo"}],

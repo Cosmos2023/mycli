@@ -989,7 +989,7 @@ class OpenAIResponsesClient:
             )
             return ModelResponseError(
                 "Responses API is not available for the current provider. "
-                "Switch to a provider/model that supports Responses or set protocol=legacy_chat.",
+                "Use protocol='chat_completions' for providers that do not support the Responses API.",
                 error_path=error_path,
                 log_path=self._default_error_log_path(),
                 stop_reason=StopReason.MODEL_ERROR,

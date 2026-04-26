@@ -200,11 +200,11 @@ def test_resolve_config_prefers_env_protocol_over_project_and_user_config(tmp_pa
     (workspace / ".mycli").mkdir()
 
     (home_dir / ".config" / "mycli" / "config.toml").write_text(
-        'protocol = "legacy_chat"\n',
+        'protocol = "chat_completions"\n',
         encoding="utf-8",
     )
     (workspace / ".mycli" / "config.toml").write_text(
-        'protocol = "legacy_chat"\n',
+        'protocol = "chat_completions"\n',
         encoding="utf-8",
     )
 
@@ -256,6 +256,30 @@ def test_resolve_config_infers_deepseek_provider_and_defaults_to_chat_completion
 
     assert config.provider is ProviderId.DEEPSEEK
     assert config.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert config.api_base_url == "https://api.deepseek.com"
+
+
+def test_resolve_config_uses_deepseek_defaults_for_explicit_provider(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "deepseek",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.DEEPSEEK
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert config.model == "deepseek-chat"
     assert config.api_base_url == "https://api.deepseek.com"
 
 
