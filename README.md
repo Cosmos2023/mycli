@@ -208,7 +208,7 @@ thinking_enabled = true
 thinking_effort = "medium"
 ```
 
-当 DeepSeek thinking mode 在工具循环中返回 provider-private `reasoning_content` 时，`mycli` 会把它保存为内部 metadata，并在工具结果 follow-up 请求里传回 DeepSeek。它不会作为 assistant 文本展示，也不会被当成用户可见 transcript 内容。
+当 DeepSeek thinking mode 在工具循环中返回 provider-private `reasoning_content` 时，`mycli` 会默认完整展示为 `[activity] Thinking: ...`，同时把它保存为内部 metadata，并在工具结果 follow-up 请求里传回 DeepSeek。它不会作为 assistant 最终回答文本写入，但会进入 activity、trace、workspace log 和 session turn history，方便调试 DeepSeek 的工具调用推理链路。
 
 对于不支持 thinking metadata 的 provider，可以关闭 thinking：
 

@@ -480,7 +480,7 @@ git commit -m "Render provider reasoning content verbatim" \
 - Test: `tests/unit/infrastructure/models/test_native_tool_adapter.py`
 - Test: `tests/integration/test_cli_repl.py`
 
-- [ ] **Step 1: Update README DeepSeek reasoning wording**
+- [x] **Step 1: Update README DeepSeek reasoning wording**
 
 In `README.md`, replace this paragraph:
 
@@ -494,7 +494,7 @@ with:
 当 DeepSeek thinking mode 在工具循环中返回 provider-private `reasoning_content` 时，`mycli` 会默认完整展示为 `[activity] Thinking: ...`，同时把它保存为内部 metadata，并在工具结果 follow-up 请求里传回 DeepSeek。它不会作为 assistant 最终回答文本写入，但会进入 activity、trace、workspace log 和 session turn history，方便调试 DeepSeek 的工具调用推理链路。
 ```
 
-- [ ] **Step 2: Run focused regression suite**
+- [x] **Step 2: Run focused regression suite**
 
 Run:
 
@@ -504,7 +504,7 @@ uv run pytest tests/unit/application/test_agent_runtime_provider_metadata.py tes
 
 Expected: all selected tests pass.
 
-- [ ] **Step 3: Run full unit and integration tests**
+- [x] **Step 3: Run full unit and integration tests**
 
 Run:
 
@@ -514,7 +514,7 @@ uv run pytest
 
 Expected: all tests pass.
 
-- [ ] **Step 4: Run lint**
+- [x] **Step 4: Run lint**
 
 Run:
 
@@ -524,7 +524,7 @@ uv run ruff check src tests
 
 Expected: `All checks passed!`
 
-- [ ] **Step 5: Run mypy baseline check**
+- [x] **Step 5: Run mypy baseline check**
 
 Run:
 
@@ -534,7 +534,7 @@ uv run mypy src
 
 Expected: either success, or the existing unrelated baseline failures in `responses_protocol.py`, `runtime_policy.py`, `evaluation/runner.py`, `tool_exposure_planner.py`, and `turn_executor.py`. Do not claim full mypy cleanliness if those baseline failures remain.
 
-- [ ] **Step 6: Run a live DeepSeek visible reasoning check**
+- [x] **Step 6: Run a live DeepSeek visible reasoning check**
 
 Use the existing DeepSeek API environment without printing the key. Run:
 
@@ -565,7 +565,7 @@ Expected output includes:
 
 The final assistant message should remain a one-line Chinese summary rather than the raw reasoning content.
 
-- [ ] **Step 7: Commit docs and verification**
+- [x] **Step 7: Commit docs and verification**
 
 Run:
 
@@ -584,12 +584,12 @@ git commit -m "Document visible DeepSeek reasoning content" \
 
 ## Final Verification Checklist
 
-- [ ] `uv run pytest tests/unit/application/test_agent_runtime_provider_metadata.py tests/unit/cli/test_main.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/integration/test_cli_repl.py -v`
-- [ ] `uv run pytest`
-- [ ] `uv run ruff check src tests`
-- [ ] `uv run mypy src`
-- [ ] Live DeepSeek visible reasoning check
-- [ ] `git status --short` reviewed so only intended files are modified or committed
+- [x] `uv run pytest tests/unit/application/test_agent_runtime_provider_metadata.py tests/unit/cli/test_main.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/integration/test_cli_repl.py -v`
+- [x] `uv run pytest`
+- [x] `uv run ruff check src tests`
+- [x] `uv run mypy src` (ran; existing baseline failures remain in `responses_protocol.py`, `runtime_policy.py`, `evaluation/runner.py`, `tool_exposure_planner.py`, and `turn_executor.py`)
+- [x] Live DeepSeek visible reasoning check
+- [x] `git status --short` reviewed so only intended files are modified or committed
 
 ## Self-Review Notes
 
