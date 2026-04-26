@@ -103,7 +103,7 @@ class NativeToolModelAdapter:
             {
                 key: value
                 for key, value in {
-                    "role": message.role,
+                    "role": self._chat_role(message.role),
                     "content": message.content,
                     "tool_call_id": message.tool_call_id,
                     "tool_calls": (
@@ -126,6 +126,11 @@ class NativeToolModelAdapter:
             }
             for message in messages
         ]
+
+    def _chat_role(self, role: str) -> str:
+        if role == "developer":
+            return "system"
+        return role
 
     def _serialize_tools(
         self,
