@@ -23,8 +23,8 @@ DEFAULT_ANTHROPIC_SDK_TIMEOUT_SECONDS = 60.0
 _THINKING_BUDGETS: dict[str, int] = {
     "low": 1024,
     "medium": 1536,
-    "high": 4096,
-    "xhigh": 8192,
+    "high": 3072,
+    "xhigh": 6144,
 }
 
 

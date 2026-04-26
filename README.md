@@ -272,7 +272,7 @@ thinking_enabled = true
 thinking_effort = "medium"
 ```
 
-如果没有显式配置 `provider`，`mycli` 会从 `anthropic.com` 自动推断为 `anthropic`。开启 thinking 时，`mycli` 会把 `thinking_effort` 映射为 Anthropic `budget_tokens`，并要求该预算小于 `max_output_tokens`；如果你使用 `high` 或 `xhigh`，需要相应提高 `max_output_tokens`。
+如果没有显式配置 `provider`，`mycli` 会从 `anthropic.com` 自动推断为 `anthropic`。开启 thinking 时，`mycli` 会把 `thinking_effort` 映射为 Anthropic `budget_tokens`，并要求该预算小于 `max_output_tokens`。当前映射为 `low=1024`、`medium=1536`、`high=3072`、`xhigh=6144`；`high` 建议 `max_output_tokens >= 4096`，`xhigh` 建议 `max_output_tokens >= 8192`。
 
 ## 直接上手示例
 

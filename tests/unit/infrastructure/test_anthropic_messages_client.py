@@ -127,6 +127,60 @@ def test_anthropic_client_omits_thinking_when_disabled(tmp_path: Path) -> None:
     assert "thinking" not in sdk_client.messages.kwargs
 
 
+def test_anthropic_client_high_thinking_fits_4096_max_tokens(
+    tmp_path: Path,
+) -> None:
+    sdk_client = FakeAnthropicSdkClient(
+        {
+            "id": "msg_high",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+        }
+    )
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        max_output_tokens=4096,
+        log_service=_build_log_service(tmp_path),
+        sdk_client=sdk_client,
+    )
+    client.set_thinking_config(enabled=True, effort=ReasoningEffort.HIGH)
+
+    client.create_message(system=None, messages=[], tools=[])
+
+    assert sdk_client.messages.kwargs["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 3072,
+    }
+
+
+def test_anthropic_client_xhigh_thinking_requires_more_than_6144_max_tokens(
+    tmp_path: Path,
+) -> None:
+    sdk_client = FakeAnthropicSdkClient(
+        {
+            "id": "msg_xhigh",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+        }
+    )
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        max_output_tokens=4096,
+        log_service=_build_log_service(tmp_path),
+        sdk_client=sdk_client,
+    )
+    client.set_thinking_config(enabled=True, effort=ReasoningEffort.XHIGH)
+
+    with pytest.raises(ModelResponseError, match="budget=6144"):
+        client.create_message(system=None, messages=[], tools=[])
+
+
 def test_anthropic_client_rejects_thinking_budget_that_exceeds_max_tokens(
     tmp_path: Path,
 ) -> None:
