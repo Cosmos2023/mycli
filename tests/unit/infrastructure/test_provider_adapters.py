@@ -1,6 +1,11 @@
 from mycli.domain.providers import ProviderId
 from mycli.domain.providers import ProtocolId
-from mycli.infrastructure.providers import chat_adapter_for_provider, profile_for_provider
+from mycli.infrastructure.providers import (
+    chat_adapter_for_provider,
+    infer_provider_from_base_url,
+    profile_for_provider,
+)
+from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
@@ -28,9 +33,17 @@ def test_profile_for_provider_uses_provider_module_profiles() -> None:
     assert profile_for_provider(ProviderId.OPENAI) is OPENAI_PROFILE
     assert profile_for_provider(ProviderId.QWEN) is QWEN_PROFILE
     assert profile_for_provider(ProviderId.DEEPSEEK) is DEEPSEEK_PROFILE
+    assert profile_for_provider(ProviderId.ANTHROPIC) is ANTHROPIC_PROFILE
 
     assert OPENAI_PROFILE.default_protocol is ProtocolId.RESPONSES
     assert QWEN_PROFILE.default_base_url == (
         "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
     assert DEEPSEEK_PROFILE.default_protocol is ProtocolId.CHAT_COMPLETIONS
+    assert ANTHROPIC_PROFILE.default_protocol is ProtocolId.ANTHROPIC_MESSAGES
+    assert ANTHROPIC_PROFILE.default_base_url == "https://api.anthropic.com"
+
+
+def test_infer_provider_from_base_url_detects_anthropic_hosts() -> None:
+    assert infer_provider_from_base_url("https://api.anthropic.com") is ProviderId.ANTHROPIC
+    assert infer_provider_from_base_url("https://console.anthropic.com") is ProviderId.ANTHROPIC

@@ -3,6 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
+from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
 from mycli.infrastructure.providers.openai import OPENAI_PROFILE
 from mycli.infrastructure.providers.qwen import QWEN_PROFILE
@@ -20,6 +21,7 @@ _PROFILES: dict[ProviderId, ProviderProfile] = {
     ProviderId.OPENAI: OPENAI_PROFILE,
     ProviderId.QWEN: QWEN_PROFILE,
     ProviderId.DEEPSEEK: DEEPSEEK_PROFILE,
+    ProviderId.ANTHROPIC: ANTHROPIC_PROFILE,
     ProviderId.COMPATIBLE: COMPATIBLE_PROFILE,
 }
 
@@ -29,6 +31,8 @@ def infer_provider_from_base_url(base_url: str) -> ProviderId:
     normalized = hostname.lower()
     if normalized == "api.deepseek.com" or normalized.endswith(".deepseek.com"):
         return ProviderId.DEEPSEEK
+    if normalized == "api.anthropic.com" or normalized.endswith(".anthropic.com"):
+        return ProviderId.ANTHROPIC
     if normalized == "dashscope.aliyuncs.com" or normalized.endswith(".dashscope.aliyuncs.com"):
         return ProviderId.QWEN
     if normalized == "api.openai.com" or normalized.endswith(".openai.com"):
@@ -52,6 +56,13 @@ def validate_provider_protocol(
             f"Provider '{provider.value}' does not support protocol '{protocol.value}'.{hint}"
         )
     if protocol is ProtocolId.CHAT_COMPLETIONS and not profile.supports_chat_completions:
+        raise ValueError(
+            f"Provider '{provider.value}' does not support protocol '{protocol.value}'."
+        )
+    if (
+        protocol is ProtocolId.ANTHROPIC_MESSAGES
+        and not profile.supports_anthropic_messages
+    ):
         raise ValueError(
             f"Provider '{provider.value}' does not support protocol '{protocol.value}'."
         )

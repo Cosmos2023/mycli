@@ -8,12 +8,14 @@ class ProviderId(StrEnum):
     OPENAI = "openai"
     QWEN = "qwen"
     DEEPSEEK = "deepseek"
+    ANTHROPIC = "anthropic"
     COMPATIBLE = "compatible"
 
 
 class ProtocolId(StrEnum):
     RESPONSES = "responses"
     CHAT_COMPLETIONS = "chat_completions"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,6 +27,7 @@ class ProviderProfile:
     default_base_url: str
     default_model: str | None = None
     unsupported_responses_hint: str | None = None
+    supports_anthropic_messages: bool = False
 
 
 def parse_provider(value: object) -> ProviderId:

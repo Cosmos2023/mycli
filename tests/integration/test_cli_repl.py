@@ -2,6 +2,9 @@ from pathlib import Path
 
 from mycli.cli.main import build_turn_service, handle_slash_command, run_repl
 from mycli.domain.providers import ProtocolId, ProviderId
+from mycli.infrastructure.models.anthropic_messages_adapter import (
+    AnthropicMessagesModelAdapter,
+)
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
 from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
@@ -219,3 +222,27 @@ def test_build_turn_service_uses_qwen_chat_provider_adapter(
         service._runtime._model_adapter._provider_adapter,
         QwenChatProviderAdapter,
     )
+
+
+def test_build_turn_service_uses_anthropic_messages_adapter(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "anthropic-demo"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "anthropic",
+        },
+    )
+
+    assert service._config.provider is ProviderId.ANTHROPIC
+    assert service._config.protocol is ProtocolId.ANTHROPIC_MESSAGES
+    assert service._config.model == "claude-sonnet-4-6"
+    assert isinstance(service._runtime._model_adapter, AnthropicMessagesModelAdapter)
