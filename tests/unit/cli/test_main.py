@@ -371,6 +371,47 @@ def test_render_activity_lines_coalesces_reasoning_fragments_from_turn_items() -
     ]
 
 
+def test_render_activity_lines_preserves_provider_reasoning_content_verbatim() -> None:
+    reasoning_content = (
+        "The user wants me to read mission.txt. "
+        "I need to inspect mission.txt before answering, even if this sentence is long enough "
+        "that ordinary reasoning rendering would normally summarize it."
+    )
+    response = TurnResponse(
+        assistant_message="Read complete",
+        turn=TurnRecord(
+            thread_id="demo",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            started_at="2026-04-26T00:00:00+00:00",
+            completed_at="2026-04-26T00:00:01+00:00",
+            items=(
+                TurnItem(
+                    type=TurnItemType.REASONING,
+                    text=f"Thinking: {reasoning_content}",
+                    metadata={
+                        "provider": "deepseek",
+                        "source": "provider_reasoning_content",
+                        "deepseek": {"reasoning_content": reasoning_content},
+                    },
+                ),
+                TurnItem(
+                    type=TurnItemType.TOOL_CALL,
+                    text="Reading: mission.txt",
+                    tool_name="read_file",
+                    call_id="call_read_file_1",
+                ),
+            ),
+        ),
+    )
+
+    assert render_activity_lines(response) == [
+        f"[activity] Thinking: {reasoning_content}",
+        "[activity] Reading: mission.txt",
+    ]
+
+
 def test_render_activity_lines_turns_exploration_reasoning_into_semantic_activity() -> None:
     response = TurnResponse(
         assistant_message="plain answer",

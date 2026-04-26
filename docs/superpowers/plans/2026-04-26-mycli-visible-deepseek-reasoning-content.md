@@ -320,7 +320,7 @@ git commit -m "Expose DeepSeek reasoning content during tool calls" \
 - Modify: `tests/unit/cli/test_main.py`
 - Modify: `src/mycli/cli/main.py`
 
-- [ ] **Step 1: Add failing CLI full-render test**
+- [x] **Step 1: Add failing CLI full-render test**
 
 Add this test to `tests/unit/cli/test_main.py` near the existing `render_activity_lines` tests:
 
@@ -366,7 +366,7 @@ def test_render_activity_lines_preserves_provider_reasoning_content_verbatim() -
     ]
 ```
 
-- [ ] **Step 2: Run CLI rendering test and verify it fails**
+- [x] **Step 2: Run CLI rendering test and verify it fails**
 
 Run:
 
@@ -376,7 +376,7 @@ uv run pytest tests/unit/cli/test_main.py::test_render_activity_lines_preserves_
 
 Expected: fail because `_render_turn_activity_lines()` currently sends all reasoning through semanticization/summarization.
 
-- [ ] **Step 3: Add provider reasoning flush path**
+- [x] **Step 3: Add provider reasoning flush path**
 
 In `src/mycli/cli/main.py`, add this helper near `_flush_reasoning_activity()`:
 
@@ -398,7 +398,7 @@ def _append_provider_reasoning_activity_line(
     _append_unique_activity_line(lines, f"[activity] {label}: {body}")
 ```
 
-- [ ] **Step 4: Update turn activity rendering to bypass semanticization for provider reasoning**
+- [x] **Step 4: Update turn activity rendering to bypass semanticization for provider reasoning**
 
 In `src/mycli/cli/main.py`, inside `_render_turn_activity_lines()`, replace the top of the `if item.type == TurnItemType.REASONING:` branch with:
 
@@ -423,7 +423,7 @@ In `src/mycli/cli/main.py`, inside `_render_turn_activity_lines()`, replace the 
 
 This preserves the existing behavior for normal reasoning and only bypasses it when `metadata["source"] == "provider_reasoning_content"`.
 
-- [ ] **Step 5: Run CLI rendering test and verify it passes**
+- [x] **Step 5: Run CLI rendering test and verify it passes**
 
 Run:
 
@@ -433,7 +433,7 @@ uv run pytest tests/unit/cli/test_main.py::test_render_activity_lines_preserves_
 
 Expected: pass.
 
-- [ ] **Step 6: Run the full CLI test file**
+- [x] **Step 6: Run the full CLI test file**
 
 Run:
 
@@ -443,7 +443,7 @@ uv run pytest tests/unit/cli/test_main.py -v
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Run focused lint and type checks for CLI changes**
+- [x] **Step 7: Run focused lint and type checks for CLI changes**
 
 Run:
 
@@ -454,7 +454,7 @@ uv run mypy src/mycli/cli/main.py
 
 Expected: ruff passes and mypy reports no issues for `main.py`.
 
-- [ ] **Step 8: Commit CLI rendering**
+- [x] **Step 8: Commit CLI rendering**
 
 Run:
 

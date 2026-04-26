@@ -21,7 +21,7 @@ from mycli.evaluation.runner import (
     write_evaluation_report,
 )
 from mycli.domain.providers import ProtocolId
-from mycli.domain.runtime import DecisionAction, PendingDecision, TurnItemType, TurnRecord
+from mycli.domain.runtime import DecisionAction, PendingDecision, TurnItem, TurnItemType, TurnRecord
 from mycli.infrastructure.models.base import ModelAdapter
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
 from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
@@ -328,6 +328,12 @@ def _render_turn_activity_lines(turn: TurnRecord) -> list[str]:
     reasoning_fragments: list[str] = []
     for item in turn.items:
         if item.type == TurnItemType.REASONING:
+            if _is_provider_reasoning_item(item):
+                _flush_reasoning_activity(lines, reasoning_label, reasoning_fragments)
+                reasoning_label = None
+                reasoning_fragments = []
+                _append_provider_reasoning_activity_line(lines, item)
+                continue
             label, body = _split_reasoning_item(item.text)
             if label is None or not body:
                 continue
@@ -355,6 +361,20 @@ def _render_turn_activity_lines(turn: TurnRecord) -> list[str]:
 
     _flush_reasoning_activity(lines, reasoning_label, reasoning_fragments)
     return lines
+
+
+def _is_provider_reasoning_item(item: TurnItem) -> bool:
+    return item.metadata.get("source") == "provider_reasoning_content"
+
+
+def _append_provider_reasoning_activity_line(
+    lines: list[str],
+    item: TurnItem,
+) -> None:
+    label, body = _split_reasoning_item(item.text)
+    if label is None or not body:
+        return
+    _append_unique_activity_line(lines, f"[activity] {label}: {body}")
 
 
 def _flush_reasoning_activity(
