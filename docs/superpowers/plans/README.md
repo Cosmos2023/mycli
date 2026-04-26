@@ -5,6 +5,7 @@ as active context and earlier plans as historical design memory.
 
 ## Active Or Recent
 
+- `2026-04-27-mycli-mcp-host.md` - stdio MCP host and dynamic tool integration.
 - `2026-04-26-mycli-anthropic-provider.md` - native Anthropic Messages provider implementation.
 - `2026-04-26-mycli-unified-runtime-protocol.md` - internal runtime protocol and provider abstraction direction.
 - `2026-04-26-mycli-deepseek-provider-architecture.md` - DeepSeek chat-completions provider architecture.
