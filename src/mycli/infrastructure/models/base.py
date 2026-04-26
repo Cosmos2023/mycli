@@ -17,6 +17,7 @@ from mycli.domain.model_events import (
     ModelEventType,
     ToolExecutionSource,
 )
+from mycli.domain.runtime import ReasoningEffort
 from mycli.domain.tools import ToolCall
 
 
@@ -80,6 +81,16 @@ class EventProducingModelClient(Protocol):
         ...
 
 
+class ThinkingConfigurableClient(Protocol):
+    def set_thinking_config(
+        self,
+        *,
+        enabled: bool,
+        effort: ReasoningEffort | str | None,
+    ) -> None:
+        ...
+
+
 __all__ = [
     "BlockType",
     "EventProducingModelClient",
@@ -94,5 +105,6 @@ __all__ = [
     "RuntimeBlock",
     "RuntimeItem",
     "RuntimeRole",
+    "ThinkingConfigurableClient",
     "ToolExecutionSource",
 ]

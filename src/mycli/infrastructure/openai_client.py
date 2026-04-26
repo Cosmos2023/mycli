@@ -1,0 +1,446 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from typing import Protocol
+from urllib.parse import urlparse
+
+from openai import APIConnectionError, APIResponseValidationError, APIStatusError, APITimeoutError, OpenAI
+
+from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
+from mycli.domain.runtime import ModelDecision, StopReason
+from mycli.domain.tools import ToolCall
+from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
+from mycli.services.workspace_log_service import WorkspaceLogService
+
+DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS = 60.0
+
+
+class ModelClient(Protocol):
+    def decide(self, prompt: str) -> ModelDecision:
+        """Return the next model decision for the current ReAct step."""
+
+
+class ModelResponseError(RuntimeError):
+    """Raised when the model provider returns an invalid or non-decodable response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_path: str | None = None,
+        log_path: str | None = None,
+        stop_reason: StopReason | None = None,
+        is_retryable: bool = False,
+        failure_kind: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_path = error_path
+        self.log_path = log_path
+        self.stop_reason = stop_reason
+        self.is_retryable = is_retryable
+        self.failure_kind = failure_kind
+
+
+def _build_openai_sdk_client(*, api_key: str, base_url: str) -> OpenAI:
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+
+
+def _sdk_payload_to_dict(payload: object) -> dict[str, object]:
+    if isinstance(payload, dict):
+        return dict(payload)
+    for attr in ("to_dict", "model_dump", "dict"):
+        serializer = getattr(payload, attr, None)
+        if callable(serializer):
+            serialized = serializer()
+            if isinstance(serialized, dict):
+                return dict(serialized)
+    raise TypeError("OpenAI SDK payload must serialize to a dictionary.")
+
+
+def _api_status_error_detail(exc: APIStatusError) -> str:
+    body = exc.body
+    if isinstance(body, dict):
+        error_payload = body.get("error")
+        if isinstance(error_payload, dict):
+            message = error_payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message
+        message = body.get("message")
+        if isinstance(message, str) and message.strip():
+            return message
+        return json.dumps(body, ensure_ascii=False)
+    if isinstance(body, str) and body.strip():
+        return body
+    return str(exc)
+
+
+class OpenAIChatClient:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        max_output_tokens: int,
+        log_service: WorkspaceLogService | None = None,
+        log_context_provider: Callable[[], ModelLogContext] | None = None,
+    ) -> None:
+        ensure_certifi_ca_bundle()
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._max_output_tokens = max_output_tokens
+        self._sdk_client = _build_openai_sdk_client(api_key=api_key, base_url=base_url)
+        self._thinking_enabled = True
+        self._thinking_effort: str | None = None
+        self._log_service = log_service
+        self._log_context_provider = log_context_provider
+
+    def set_log_context_provider(
+        self,
+        provider: Callable[[], ModelLogContext],
+    ) -> None:
+        self._log_context_provider = provider
+
+    def set_thinking_config(
+        self,
+        *,
+        enabled: bool,
+        effort: object,
+    ) -> None:
+        self._thinking_enabled = enabled
+        value = getattr(effort, "value", effort)
+        self._thinking_effort = str(value) if enabled and value is not None else None
+
+    def _normalize_tool_definitions(
+        self,
+        tools: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        normalized_tools: list[dict[str, object]] = []
+        for tool in tools:
+            raw_parameters = tool.get("parameters", [])
+            parameters = raw_parameters if isinstance(raw_parameters, list) else []
+            properties: dict[str, object] = {}
+            required: list[str] = []
+            for parameter in parameters:
+                if not isinstance(parameter, dict):
+                    continue
+                name = str(parameter["name"])
+                property_schema: dict[str, object] = {
+                    "type": str(parameter["type"]),
+                }
+                description = parameter.get("description")
+                if description is not None:
+                    property_schema["description"] = str(description)
+                items_schema = parameter.get("items_schema")
+                if isinstance(items_schema, dict):
+                    property_schema["items"] = dict(items_schema)
+                properties[name] = property_schema
+                if bool(parameter.get("required", True)):
+                    required.append(name)
+            normalized_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": str(tool["name"]),
+                        "description": str(tool["description"]),
+                        "parameters": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": required,
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            )
+        return normalized_tools
+
+    def complete(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        payload_body: dict[str, object] = {
+            "model": self._model,
+            "messages": messages,
+            "max_tokens": self._max_output_tokens,
+            "temperature": 0,
+        }
+        if tools:
+            payload_body["tools"] = self._normalize_tool_definitions(tools)
+        request_path = self._log_request(
+            url=f"{self._base_url}/chat/completions",
+            payload_body=payload_body,
+        )
+        try:
+            payload = _sdk_payload_to_dict(
+                self._sdk_client.chat.completions.create(**payload_body)
+            )
+        except APIStatusError as exc:
+            detail = _api_status_error_detail(exc)
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                    "status_code": exc.status_code,
+                    "response_body": exc.body,
+                },
+            )
+            raise ModelResponseError(
+                f"Model provider returned HTTP {exc.status_code}: {detail}",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+            ) from exc
+        except (APIConnectionError, APITimeoutError) as exc:
+            detail = str(exc)
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                },
+            )
+            raise ModelResponseError(
+                f"Failed to reach model provider: {detail}",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+            ) from exc
+        except (APIResponseValidationError, TypeError) as exc:
+            detail = str(exc)
+            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                    "response_body": response_body,
+                },
+            )
+            raise ModelResponseError(
+                "Model provider did not return valid JSON.",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+            ) from exc
+        self._log_service_event(
+            level=LogLevel.INFO,
+            event="model_response_received",
+            message="Received model response",
+            request_path=request_path,
+            response_path=self._log_response(payload),
+        )
+
+        message = payload["choices"][0]["message"]
+        if tools:
+            raw_tool_calls = message.get("tool_calls")
+            if isinstance(raw_tool_calls, list) and raw_tool_calls:
+                first_tool_call = raw_tool_calls[0]
+                if isinstance(first_tool_call, dict):
+                    function_payload = first_tool_call.get("function", {})
+                    arguments_payload = (
+                        function_payload.get("arguments", {})
+                        if isinstance(function_payload, dict)
+                        else {}
+                    )
+                    arguments: dict[str, object]
+                    if isinstance(arguments_payload, str):
+                        try:
+                            loaded_arguments = json.loads(arguments_payload)
+                        except json.JSONDecodeError as exc:
+                            raise ModelResponseError(
+                                "Native tool call arguments were not valid JSON."
+                            ) from exc
+                        arguments = (
+                            loaded_arguments
+                            if isinstance(loaded_arguments, dict)
+                            else {}
+                        )
+                    elif isinstance(arguments_payload, dict):
+                        arguments = arguments_payload
+                    else:
+                        arguments = {}
+                    return {
+                        "assistant_message": (
+                            None
+                            if message.get("content") is None
+                            else str(message["content"])
+                        ),
+                        "progress_message": None,
+                        "tool_call": {
+                            "id": (
+                                None
+                                if first_tool_call.get("id") is None
+                                else str(first_tool_call["id"])
+                            ),
+                            "name": str(function_payload["name"]),
+                            "arguments": arguments,
+                            "reason": "model requested tool",
+                        },
+                        "done": False,
+                    }
+            content = "" if message.get("content") is None else str(message["content"])
+            return {
+                "assistant_message": content.strip(),
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            }
+
+        content = message["content"]
+        try:
+            decision_payload = json.loads(content)
+        except json.JSONDecodeError:
+            plain_text = content.strip()
+            return {
+                "assistant_message": plain_text,
+                "progress_message": None,
+                "tool_name": None,
+                "arguments": {},
+                "reason": "plain text fallback",
+                "done": True,
+            }
+        if not isinstance(decision_payload, dict):
+            raise ValueError("Model response content must decode to a JSON object.")
+        return decision_payload
+
+    def decide(self, prompt: str) -> ModelDecision:
+        decision_payload = self.complete([{"role": "user", "content": prompt}])
+        tool_call = None
+        if decision_payload.get("tool_name"):
+            raw_arguments = decision_payload.get("arguments", {})
+            tool_call = ToolCall(
+                name=str(decision_payload["tool_name"]),
+                arguments=raw_arguments if isinstance(raw_arguments, dict) else {},
+                reason=str(decision_payload.get("reason", "model requested tool")),
+            )
+        return ModelDecision(
+            assistant_message=(
+                None
+                if decision_payload.get("assistant_message") is None
+                else str(decision_payload["assistant_message"])
+            ),
+            progress_message=(
+                None
+                if decision_payload.get("progress_message") is None
+                else str(decision_payload["progress_message"])
+            ),
+            tool_call=tool_call,
+            done=bool(decision_payload.get("done", False)),
+        )
+
+    def _log_request(
+        self,
+        *,
+        url: str,
+        payload_body: dict[str, object],
+    ) -> str | None:
+        if self._log_service is None:
+            return None
+        context = self._log_context()
+        path = self._log_service.write_raw_model_payload(
+            kind="request",
+            payload={
+                "url": url,
+                "method": "POST",
+                "body": payload_body,
+            },
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+        )
+        relative_path = self._log_service.relative_path(path)
+        self._log_service_event(
+            level=LogLevel.INFO,
+            event="model_request_started",
+            message="Sent model request",
+            request_path=relative_path,
+        )
+        return relative_path
+
+    def _log_response(self, payload: dict[str, object]) -> str | None:
+        if self._log_service is None:
+            return None
+        context = self._log_context()
+        path = self._log_service.write_raw_model_payload(
+            kind="response",
+            payload=payload,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+        )
+        return self._log_service.relative_path(path)
+
+    def _log_failure(
+        self,
+        *,
+        message: str,
+        request_path: str | None,
+        payload: dict[str, object],
+    ) -> str | None:
+        if self._log_service is None:
+            return None
+        context = self._log_context()
+        path = self._log_service.write_error_payload(
+            payload=payload,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+        )
+        relative_path = self._log_service.relative_path(path)
+        self._log_service_event(
+            level=LogLevel.ERROR,
+            event="model_request_failed",
+            message=message,
+            request_path=request_path,
+            error_path=relative_path,
+        )
+        return relative_path
+
+    def _log_service_event(
+        self,
+        *,
+        level: LogLevel,
+        event: str,
+        message: str,
+        request_path: str | None = None,
+        response_path: str | None = None,
+        error_path: str | None = None,
+    ) -> None:
+        if self._log_service is None:
+            return
+        context = self._log_context()
+        self._log_service.log_model_event(
+            ModelLogEvent(
+                timestamp=self._log_service.new_timestamp(),
+                level=level,
+                event=event,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                protocol="legacy_chat",
+                model=self._model,
+                provider=self._provider_name(),
+                message=message,
+                request_path=request_path,
+                response_path=response_path,
+                error_path=error_path,
+            )
+        )
+
+    def _log_context(self) -> ModelLogContext:
+        if self._log_context_provider is None:
+            return ModelLogContext()
+        return self._log_context_provider()
+
+    def _provider_name(self) -> str:
+        parsed = urlparse(self._base_url)
+        return parsed.netloc or self._base_url
+
+    def _default_error_log_path(self) -> str:
+        if self._log_service is None:
+            return "log/error.log"
+        return self._log_service.error_log_display_path()

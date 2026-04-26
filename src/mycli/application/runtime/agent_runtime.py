@@ -199,8 +199,18 @@ class AgentRuntime:
         )
 
     def _set_model_reasoning_effort(self, reasoning_effort: ReasoningEffort) -> None:
+        thinking_setter = getattr(self._model_adapter, "set_thinking_config", None)
+        if callable(thinking_setter):
+            if not self._config.thinking_enabled:
+                thinking_setter(enabled=False, effort=None)
+                return
+            thinking_setter(enabled=True, effort=reasoning_effort)
+            return
         setter = getattr(self._model_adapter, "set_reasoning_effort", None)
         if not callable(setter):
+            return
+        if not self._config.thinking_enabled:
+            setter(None)
             return
         setter(reasoning_effort.value)
 
