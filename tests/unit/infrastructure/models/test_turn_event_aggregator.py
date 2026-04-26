@@ -42,3 +42,28 @@ def test_turn_event_aggregator_marks_turn_done_when_no_tool_call_requested() -> 
 
     assert result.done is True
     assert result.items[0].blocks[0].text == "Done."
+
+
+def test_turn_event_aggregator_preserves_tool_call_metadata() -> None:
+    aggregator = TurnEventAggregator()
+
+    result = aggregator.collect(
+        [
+            ModelEvent.tool_call_requested(
+                tool_name="read_file",
+                tool_arguments={"path": "mission.txt"},
+                call_id="call_read_file_1",
+                source=ToolExecutionSource.NATIVE,
+                metadata={
+                    "deepseek": {
+                        "reasoning_content": "I need to inspect the requested file."
+                    }
+                },
+            )
+        ]
+    )
+
+    tool_block = result.items[0].blocks[0]
+    assert tool_block.metadata["deepseek"] == {
+        "reasoning_content": "I need to inspect the requested file."
+    }

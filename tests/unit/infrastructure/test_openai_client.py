@@ -254,6 +254,61 @@ def test_openai_chat_client_uses_provider_adapter_for_message_roles(
     ]
 
 
+def test_openai_chat_client_preserves_deepseek_reasoning_content_on_tool_call(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "I need to inspect the requested file.",
+                        "tool_calls": [
+                            {
+                                "id": "call_read_file_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": '{"path":"mission.txt"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    events = client.create_events(
+        input_items=[{"role": "user", "content": "read mission.txt"}],
+        tools=[
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": [{"name": "path", "type": "string"}],
+            }
+        ],
+    )
+
+    tool_event = next(event for event in events if event.tool_name == "read_file")
+    assert tool_event.metadata["deepseek"] == {
+        "reasoning_content": "I need to inspect the requested file."
+    }
+
+
 def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(
         chat_payload={

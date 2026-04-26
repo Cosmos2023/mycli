@@ -264,6 +264,7 @@ class OpenAIChatClient:
         if not isinstance(raw_message, dict):
             raise ModelResponseError("Model provider response message was not an object.")
         message = raw_message
+        provider_metadata = self._provider_adapter.extract_message_metadata(message)
         raw_tool_calls = message.get("tool_calls")
         if isinstance(raw_tool_calls, list) and raw_tool_calls:
             first_tool_call = raw_tool_calls[0]
@@ -291,6 +292,18 @@ class OpenAIChatClient:
                     arguments = arguments_payload
                 else:
                     arguments = {}
+                tool_call_payload: dict[str, object] = {
+                    "id": (
+                        None
+                        if first_tool_call.get("id") is None
+                        else str(first_tool_call["id"])
+                    ),
+                    "name": str(function_payload["name"]),
+                    "arguments": arguments,
+                    "reason": "model requested tool",
+                }
+                if provider_metadata:
+                    tool_call_payload["metadata"] = provider_metadata
                 return {
                     "assistant_message": (
                         None
@@ -298,16 +311,7 @@ class OpenAIChatClient:
                         else str(message["content"])
                     ),
                     "progress_message": None,
-                    "tool_call": {
-                        "id": (
-                            None
-                            if first_tool_call.get("id") is None
-                            else str(first_tool_call["id"])
-                        ),
-                        "name": str(function_payload["name"]),
-                        "arguments": arguments,
-                        "reason": "model requested tool",
-                    },
+                    "tool_call": tool_call_payload,
                     "done": False,
                 }
         if tools:
@@ -385,6 +389,11 @@ class OpenAIChatClient:
                         or "tool_call"
                     ),
                     source=ToolExecutionSource.NATIVE,
+                    metadata=(
+                        raw_tool_call.get("metadata")
+                        if isinstance(raw_tool_call.get("metadata"), dict)
+                        else {}
+                    ),
                 )
             )
         events.append(

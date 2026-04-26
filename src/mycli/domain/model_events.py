@@ -76,6 +76,7 @@ class ModelEvent:
         call_id: str,
         source: ToolExecutionSource,
         provider_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> ModelEvent:
         return cls(
             type=ModelEventType.TOOL_CALL_REQUESTED,
@@ -84,6 +85,7 @@ class ModelEvent:
             call_id=call_id,
             source=source,
             provider_id=provider_id,
+            metadata={} if metadata is None else dict(metadata),
         )
 
 

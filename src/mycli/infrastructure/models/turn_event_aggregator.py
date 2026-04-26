@@ -21,6 +21,7 @@ class TurnEventAggregator:
                         type="reasoning",
                         text=event.text,
                         provider_id=event.provider_id,
+                        metadata=dict(event.metadata),
                     )
                 )
                 continue
@@ -30,6 +31,7 @@ class TurnEventAggregator:
                         type="text",
                         text=event.text,
                         provider_id=event.provider_id,
+                        metadata=dict(event.metadata),
                     )
                 )
                 continue
@@ -42,6 +44,7 @@ class TurnEventAggregator:
                         call_id=event.call_id,
                         provider_id=event.provider_id,
                         source=event.source.value if event.source is not None else None,
+                        metadata=dict(event.metadata),
                     )
                 )
                 done = False
