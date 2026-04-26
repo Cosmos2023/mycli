@@ -43,7 +43,12 @@ class DefaultChatProviderAdapter:
         self,
         messages: list[dict[str, object]],
     ) -> list[dict[str, object]]:
-        return [dict(message) for message in messages]
+        adapted_messages: list[dict[str, object]] = []
+        for message in messages:
+            adapted_message = dict(message)
+            adapted_message.pop("metadata", None)
+            adapted_messages.append(adapted_message)
+        return adapted_messages
 
     def adapt_request_body(
         self,

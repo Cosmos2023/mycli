@@ -16,8 +16,15 @@ class DeepSeekChatProviderAdapter:
         adapted_messages: list[dict[str, object]] = []
         for message in messages:
             adapted_message = dict(message)
+            metadata = adapted_message.pop("metadata", None)
             if adapted_message.get("role") == "developer":
                 adapted_message["role"] = "system"
+            reasoning_content = self._reasoning_content_from_metadata(metadata)
+            if (
+                adapted_message.get("role") == "assistant"
+                and reasoning_content is not None
+            ):
+                adapted_message["reasoning_content"] = reasoning_content
             adapted_messages.append(adapted_message)
         return adapted_messages
 
@@ -44,6 +51,17 @@ class DeepSeekChatProviderAdapter:
                 }
             }
         return {}
+
+    def _reasoning_content_from_metadata(self, metadata: object) -> str | None:
+        if not isinstance(metadata, dict):
+            return None
+        deepseek_metadata = metadata.get(DEEPSEEK_METADATA_KEY)
+        if not isinstance(deepseek_metadata, dict):
+            return None
+        reasoning_content = deepseek_metadata.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            return reasoning_content
+        return None
 
 
 __all__ = [

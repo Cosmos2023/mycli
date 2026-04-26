@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any
 from typing import Protocol
 
@@ -27,6 +27,7 @@ class ModelMessage:
     content: str
     tool_call_id: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)

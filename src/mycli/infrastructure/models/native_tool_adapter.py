@@ -1,10 +1,10 @@
-"""Legacy fallback adapter for `legacy_chat` providers with tool-call compatibility."""
+"""Chat-completions adapter with native tool-call compatibility."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Protocol
+from typing import Protocol, cast
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.tools import ToolCall
@@ -13,8 +13,11 @@ from mycli.infrastructure.models.base import (
     ModelMessage,
     ModelToolDefinition,
     ModelTurnResult,
+    RuntimeBlock,
+    RuntimeItem,
 )
 from mycli.infrastructure.models.turn_event_aggregator import TurnEventAggregator
+from mycli.infrastructure.providers import ChatProviderAdapter, DefaultChatProviderAdapter
 
 
 class NativeToolClient(Protocol):
@@ -28,10 +31,15 @@ class NativeToolClient(Protocol):
 
 
 class NativeToolModelAdapter:
-    """Legacy fallback adapter for `legacy_chat` providers with tool-call compatibility."""
+    """Chat-completions adapter with native tool-call compatibility."""
 
-    def __init__(self, client: NativeToolClient) -> None:
+    def __init__(
+        self,
+        client: NativeToolClient,
+        provider_adapter: ChatProviderAdapter | None = None,
+    ) -> None:
         self._client = client
+        self._provider_adapter = provider_adapter or DefaultChatProviderAdapter()
         self._aggregator = TurnEventAggregator()
 
     def set_log_context_provider(
@@ -66,6 +74,33 @@ class NativeToolModelAdapter:
             messages=serialized_messages,
             tools=serialized_tools,
         )
+        return self._model_action_from_payload(payload)
+
+    def next_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+    ) -> ModelTurnResult:
+        serialized_messages = self._serialize_messages(
+            self._messages_from_runtime_items(items)
+        )
+        serialized_tools = self._serialize_tools(tools)
+        create_events = getattr(self._client, "create_events", None)
+        if callable(create_events):
+            return self._aggregator.collect(
+                create_events(input_items=serialized_messages, tools=serialized_tools)
+            )
+
+        payload = self._client.complete(
+            messages=serialized_messages,
+            tools=serialized_tools,
+        )
+        return self._legacy_action_to_turn_result(
+            self._model_action_from_payload(payload)
+        )
+
+    def _model_action_from_payload(self, payload: dict[str, object]) -> ModelAction:
         tool_call = None
         raw_tool_call = payload.get("tool_call")
         if isinstance(raw_tool_call, dict):
@@ -99,13 +134,14 @@ class NativeToolModelAdapter:
         self,
         messages: list[ModelMessage],
     ) -> list[dict[str, object]]:
-        return [
+        serialized_messages = [
             {
                 key: value
                 for key, value in {
-                    "role": self._chat_role(message.role),
+                    "role": message.role,
                     "content": message.content,
                     "tool_call_id": message.tool_call_id,
+                    "metadata": message.metadata if message.metadata else None,
                     "tool_calls": (
                         [
                             {
@@ -126,11 +162,9 @@ class NativeToolModelAdapter:
             }
             for message in messages
         ]
-
-    def _chat_role(self, role: str) -> str:
-        if role == "developer":
-            return "system"
-        return role
+        return self._provider_adapter.adapt_messages(
+            cast("list[dict[str, object]]", serialized_messages)
+        )
 
     def _serialize_tools(
         self,
@@ -152,6 +186,69 @@ class NativeToolModelAdapter:
             }
             for tool in tools
         ]
+
+    def _messages_from_runtime_items(
+        self,
+        items: list[RuntimeItem],
+    ) -> list[ModelMessage]:
+        messages: list[ModelMessage] = []
+        for item in items:
+            if item.role == "tool":
+                messages.extend(self._tool_messages_from_runtime_item(item))
+                continue
+            messages.append(
+                ModelMessage(
+                    role=item.role,
+                    content="".join(
+                        block.text or ""
+                        for block in item.blocks
+                        if block.type == "text"
+                    ),
+                    tool_calls=tuple(
+                        ToolCall(
+                            name=block.tool_name or "",
+                            arguments=block.tool_arguments or {},
+                            reason="model requested tool",
+                            call_id=block.call_id,
+                        )
+                        for block in item.blocks
+                        if block.type == "tool_call"
+                    ),
+                    metadata=self._merge_block_metadata(item),
+                )
+            )
+        return messages
+
+    def _tool_messages_from_runtime_item(
+        self,
+        item: RuntimeItem,
+    ) -> list[ModelMessage]:
+        messages: list[ModelMessage] = []
+        for block in item.blocks:
+            if block.type != "tool_result" or not block.call_id:
+                continue
+            messages.append(
+                ModelMessage(
+                    role="tool",
+                    content=block.text or "",
+                    tool_call_id=block.call_id,
+                    metadata=dict(block.metadata),
+                )
+            )
+        return messages
+
+    def _merge_block_metadata(self, item: RuntimeItem) -> dict[str, object]:
+        merged: dict[str, object] = {}
+        for block in item.blocks:
+            for key, value in block.metadata.items():
+                existing = merged.get(key)
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    nested = dict(existing)
+                    nested.update(value)
+                    merged[key] = nested
+                    continue
+                merged[key] = value
+        return merged
 
     def _model_action_from_turn_result(self, turn_result: ModelTurnResult) -> ModelAction:
         assistant_item = turn_result.items[0] if turn_result.items else None
@@ -177,3 +274,25 @@ class NativeToolModelAdapter:
             ),
             done=turn_result.done,
         )
+
+    def _legacy_action_to_turn_result(self, action: ModelAction) -> ModelTurnResult:
+        blocks: list[RuntimeBlock] = []
+        if action.progress_message:
+            blocks.append(RuntimeBlock(type="reasoning", text=action.progress_message))
+        if action.tool_call is not None:
+            call = action.tool_call
+            blocks.append(
+                RuntimeBlock(
+                    type="tool_call",
+                    tool_name=call.name,
+                    tool_arguments=call.arguments,
+                    call_id=call.call_id or "call_missing",
+                )
+            )
+        if action.assistant_message:
+            blocks.append(RuntimeBlock(type="text", text=action.assistant_message))
+
+        items: tuple[RuntimeItem, ...] = ()
+        if blocks:
+            items = (RuntimeItem(role="assistant", blocks=tuple(blocks)),)
+        return ModelTurnResult(items=items, done=action.done)

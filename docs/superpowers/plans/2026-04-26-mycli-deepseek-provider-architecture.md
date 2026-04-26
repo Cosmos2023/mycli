@@ -54,7 +54,7 @@ This is one subsystem plan: provider-aware chat-completions support. It touches 
   Responsibility: verify provider metadata survives event aggregation.
 - Modify: `tests/unit/infrastructure/models/test_native_tool_adapter.py`
   Responsibility: verify provider-aware role/message adaptation replaces hardcoded legacy behavior.
-- Modify: `tests/unit/application/test_agent_runtime.py`
+- Create: `tests/unit/application/test_agent_runtime_provider_metadata.py`
   Responsibility: verify assistant tool-call metadata is replayed into the next model message.
 - Modify: `tests/integration/test_cli_repl.py`
   Responsibility: verify DeepSeek resolves to the chat-completions runtime path.
@@ -970,9 +970,9 @@ git commit -m "Preserve provider-private metadata through model events" \
 - Modify: `src/mycli/infrastructure/models/native_tool_adapter.py`
 - Modify: `src/mycli/application/runtime/agent_runtime.py`
 - Test: `tests/unit/infrastructure/models/test_native_tool_adapter.py`
-- Test: `tests/unit/application/test_agent_runtime.py`
+- Test: `tests/unit/application/test_agent_runtime_provider_metadata.py`
 
-- [ ] **Step 1: Write failing DeepSeek replay tests**
+- [x] **Step 1: Write failing DeepSeek replay tests**
 
 Add this test to `tests/unit/infrastructure/models/test_native_tool_adapter.py`:
 
@@ -1020,7 +1020,7 @@ def test_native_tool_adapter_replays_deepseek_reasoning_content() -> None:
     )
 ```
 
-Add this adapter class to `tests/unit/application/test_agent_runtime.py` near the other fake model adapters:
+Add this adapter class to `tests/unit/application/test_agent_runtime_provider_metadata.py`:
 
 ```python
 class MetadataToolThenDoneAdapter:
@@ -1067,7 +1067,7 @@ class MetadataToolThenDoneAdapter:
         )
 ```
 
-Add this test to `tests/unit/application/test_agent_runtime.py`:
+Add this test to `tests/unit/application/test_agent_runtime_provider_metadata.py`:
 
 ```python
 def test_agent_runtime_preserves_tool_call_metadata_for_next_turn(
@@ -1096,17 +1096,17 @@ def test_agent_runtime_preserves_tool_call_metadata_for_next_turn(
     }
 ```
 
-- [ ] **Step 2: Run replay tests and verify they fail**
+- [x] **Step 2: Run replay tests and verify they fail**
 
 Run:
 
 ```bash
-uv run pytest tests/unit/infrastructure/models/test_native_tool_adapter.py::test_native_tool_adapter_replays_deepseek_reasoning_content tests/unit/application/test_agent_runtime.py::test_agent_runtime_preserves_tool_call_metadata_for_next_turn -v
+uv run pytest tests/unit/infrastructure/models/test_native_tool_adapter.py::test_native_tool_adapter_replays_deepseek_reasoning_content tests/unit/application/test_agent_runtime_provider_metadata.py::test_agent_runtime_preserves_tool_call_metadata_for_next_turn -v
 ```
 
 Expected: fail because `ModelMessage` does not carry metadata, `NativeToolModelAdapter` has no provider adapter, and runtime does not preserve tool-call block metadata when it records assistant tool calls into conversation history.
 
-- [ ] **Step 3: Add metadata to `ModelMessage`**
+- [x] **Step 3: Add metadata to `ModelMessage`**
 
 In `src/mycli/infrastructure/models/base.py`, update `ModelMessage`:
 
@@ -1126,7 +1126,7 @@ Add `field` to the dataclass import:
 from dataclasses import dataclass, field
 ```
 
-- [ ] **Step 4: Add DeepSeek replay behavior to the provider adapter**
+- [x] **Step 4: Add DeepSeek replay behavior to the provider adapter**
 
 In `src/mycli/infrastructure/providers/deepseek.py`, update `adapt_messages()`:
 
@@ -1157,7 +1157,7 @@ In `src/mycli/infrastructure/providers/deepseek.py`, update `adapt_messages()`:
         return adapted
 ```
 
-- [ ] **Step 5: Make `NativeToolModelAdapter` provider-aware and metadata-preserving**
+- [x] **Step 5: Make `NativeToolModelAdapter` provider-aware and metadata-preserving**
 
 In `src/mycli/infrastructure/models/native_tool_adapter.py`, import:
 
@@ -1330,7 +1330,7 @@ Add these serialization helpers below `_legacy_action_to_turn_result()`:
 
 Add imports for `RuntimeBlock`, `RuntimeItem`, and `ModelTurnResult` from `mycli.infrastructure.models.base`.
 
-- [ ] **Step 6: Preserve assistant tool-call metadata in runtime conversation history**
+- [x] **Step 6: Preserve assistant tool-call metadata in runtime conversation history**
 
 In `src/mycli/application/runtime/agent_runtime.py`, update `_record_assistant_tool_call()` so it accepts metadata:
 
@@ -1390,29 +1390,29 @@ Update every `_execute_tool_call(...)` call inside `_consume_assistant_blocks()`
                         metadata=dict(block.metadata),
 ```
 
-- [ ] **Step 7: Run replay tests and verify they pass**
+- [x] **Step 7: Run replay tests and verify they pass**
 
 Run:
 
 ```bash
-uv run pytest tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/application/test_agent_runtime.py::test_agent_runtime_preserves_tool_call_metadata_for_next_turn -v
+uv run pytest tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/application/test_agent_runtime_provider_metadata.py::test_agent_runtime_preserves_tool_call_metadata_for_next_turn -v
 ```
 
 Expected: all selected tests pass.
 
-- [ ] **Step 8: Commit reasoning replay**
+- [x] **Step 8: Commit reasoning replay**
 
 Run:
 
 ```bash
-git add src/mycli/infrastructure/models/base.py src/mycli/infrastructure/providers/deepseek.py src/mycli/infrastructure/models/native_tool_adapter.py src/mycli/application/runtime/agent_runtime.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/application/test_agent_runtime.py
+git add docs/superpowers/plans/2026-04-26-mycli-deepseek-provider-architecture.md src/mycli/infrastructure/models/base.py src/mycli/infrastructure/providers/chat.py src/mycli/infrastructure/providers/deepseek.py src/mycli/infrastructure/models/native_tool_adapter.py src/mycli/application/runtime/agent_runtime.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/application/test_agent_runtime_provider_metadata.py
 git commit -m "Replay DeepSeek reasoning state through tool loops" \
   -m "Assistant tool-call metadata now carries DeepSeek reasoning_content back into the next chat-completions request, satisfying DeepSeek thinking-mode tool-loop requirements without exposing provider-private state as transcript text." \
   -m "Constraint: DeepSeek requires reasoning_content to be passed back after thinking-mode tool calls" \
   -m "Rejected: Disable thinking for all DeepSeek tool loops | works around the issue but blocks supported reasoning behavior" \
   -m "Confidence: medium" \
   -m "Scope-risk: moderate" \
-  -m "Tested: uv run pytest tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/application/test_agent_runtime.py::test_agent_runtime_preserves_tool_call_metadata_for_next_turn -v"
+  -m "Tested: uv run pytest tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/application/test_agent_runtime_provider_metadata.py::test_agent_runtime_preserves_tool_call_metadata_for_next_turn -v"
 ```
 
 ## Task 5: Wire Provider Profiles Into CLI Runtime Construction

@@ -1,4 +1,5 @@
 from mycli.domain.tools import ToolCall
+from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.infrastructure.models.base import ModelMessage, ModelToolDefinition, ModelToolParameter
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
 
@@ -57,7 +58,10 @@ def test_native_tool_adapter_translates_shared_messages_and_tools() -> None:
 
 def test_native_tool_adapter_maps_developer_messages_to_system_role() -> None:
     client = FakeNativeClient()
-    adapter = NativeToolModelAdapter(client=client)
+    adapter = NativeToolModelAdapter(
+        client=client,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
 
     adapter.next_action(
         messages=[
@@ -101,3 +105,43 @@ def test_native_tool_adapter_serializes_assistant_tool_calls_and_tool_messages()
     assert client.captured_messages[0]["tool_calls"][0]["id"] == "call_list_directory_1"
     assert client.captured_messages[0]["tool_calls"][0]["function"]["arguments"] == '{"path": "."}'
     assert client.captured_messages[1]["tool_call_id"] == "call_list_directory_1"
+
+
+def test_native_tool_adapter_replays_deepseek_reasoning_content() -> None:
+    client = FakeNativeClient()
+    adapter = NativeToolModelAdapter(
+        client=client,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    adapter.next_action(
+        messages=[
+            ModelMessage(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "mission.txt"},
+                        reason="inspect mission",
+                        call_id="call_read_file_1",
+                    ),
+                ),
+                metadata={
+                    "deepseek": {
+                        "reasoning_content": "I need to inspect the requested file."
+                    }
+                },
+            ),
+            ModelMessage(
+                role="tool",
+                content="Tool read_file: mission accomplished",
+                tool_call_id="call_read_file_1",
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages[0]["reasoning_content"] == (
+        "I need to inspect the requested file."
+    )

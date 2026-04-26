@@ -467,6 +467,19 @@ class AgentRuntime:
             return (RuntimeBlock(type="text", text=message.content),)
         return ()
 
+    def _message_metadata_from_blocks(self, message: Message) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        for block in message.blocks:
+            for key, value in block.metadata.items():
+                existing = metadata.get(key)
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    nested = dict(existing)
+                    nested.update(value)
+                    metadata[key] = nested
+                    continue
+                metadata[key] = value
+        return metadata
+
     def _build_messages(
         self,
         *,
@@ -495,6 +508,7 @@ class AgentRuntime:
                 content=message.content,
                 tool_call_id=message.tool_call_id,
                 tool_calls=message.tool_calls,
+                metadata=self._message_metadata_from_blocks(message),
             )
             for message in contract.conversation_messages
         )
@@ -937,8 +951,10 @@ class AgentRuntime:
         tool_call: ToolCall,
         provider_id: str | None = None,
         response_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> None:
         normalized_call = self._normalize_tool_call(tool_call)
+        block_metadata = {} if metadata is None else dict(metadata)
         conversation.append(
             Message(
                 role="assistant",
@@ -951,6 +967,7 @@ class AgentRuntime:
                         tool_arguments=normalized_call.arguments,
                         call_id=normalized_call.call_id or "",
                         provider_id=provider_id,
+                        metadata=block_metadata,
                     ),
                 ),
                 response_id=response_id,
@@ -970,6 +987,7 @@ class AgentRuntime:
         turn_items: list[TurnItem],
         provider_id: str | None = None,
         response_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> PlanState:
         normalized_call = self._normalize_tool_call(call)
         start_event = self._tool_activity_event(normalized_call, phase="start")
@@ -993,6 +1011,7 @@ class AgentRuntime:
             tool_call=normalized_call,
             provider_id=provider_id,
             response_id=response_id,
+            metadata=metadata,
         )
         try:
             result = tool_router.execute(normalized_call, exposure=tool_exposure)
@@ -1461,6 +1480,7 @@ class AgentRuntime:
                         turn_items=turn_items,
                         provider_id=block.provider_id,
                         response_id=turn_result.response_id,
+                        metadata=dict(block.metadata),
                     )
                     continue
 
@@ -1476,6 +1496,7 @@ class AgentRuntime:
                         turn_items=turn_items,
                         provider_id=block.provider_id,
                         response_id=turn_result.response_id,
+                        metadata=dict(block.metadata),
                     )
                     continue
 
@@ -1575,6 +1596,7 @@ class AgentRuntime:
                     turn_items=turn_items,
                     provider_id=block.provider_id,
                     response_id=turn_result.response_id,
+                    metadata=dict(block.metadata),
                 )
 
             flush_pending_text()
