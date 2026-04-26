@@ -16,6 +16,7 @@ from mycli.infrastructure.openai_client import (
     OpenAIChatClient,
     _build_openai_sdk_client,
 )
+from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.services.workspace_log_service import WorkspaceLogService
 
 
@@ -194,7 +195,7 @@ def test_openai_chat_client_accepts_thinking_config_without_request_failure(
     assert payload["assistant_message"] == "done"
 
 
-def test_openai_chat_client_disables_deepseek_thinking_via_extra_body(
+def test_openai_chat_client_uses_provider_adapter_for_request_body(
     monkeypatch,
 ) -> None:
     sdk_client = _FakeOpenAISdkClient(
@@ -210,6 +211,7 @@ def test_openai_chat_client_disables_deepseek_thinking_via_extra_body(
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
         max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
     )
     client.set_thinking_config(enabled=False, effort=None)
 
@@ -218,6 +220,38 @@ def test_openai_chat_client_disables_deepseek_thinking_via_extra_body(
     assert sdk_client.chat_completions.calls[-1]["extra_body"] == {
         "thinking": {"type": "disabled"}
     }
+
+
+def test_openai_chat_client_uses_provider_adapter_for_message_roles(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={"choices": [{"message": {"content": "done"}}]}
+    )
+    monkeypatch.setattr(
+        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    client.complete(
+        [
+            {"role": "developer", "content": "You are a careful assistant."},
+            {"role": "user", "content": "inspect the repo"},
+        ]
+    )
+
+    assert sdk_client.chat_completions.calls[-1]["messages"] == [
+        {"role": "system", "content": "You are a careful assistant."},
+        {"role": "user", "content": "inspect the repo"},
+    ]
 
 
 def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) -> None:

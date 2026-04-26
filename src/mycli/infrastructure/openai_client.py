@@ -11,6 +11,11 @@ from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
 from mycli.domain.runtime import ModelDecision, StopReason
 from mycli.domain.tools import ToolCall
+from mycli.infrastructure.providers.chat import (
+    ChatProviderAdapter,
+    ChatProviderSettings,
+    DefaultChatProviderAdapter,
+)
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.services.workspace_log_service import WorkspaceLogService
 
@@ -90,6 +95,7 @@ class OpenAIChatClient:
         max_output_tokens: int,
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
+        provider_adapter: ChatProviderAdapter | None = None,
     ) -> None:
         ensure_certifi_ca_bundle()
         self._api_key = api_key
@@ -101,6 +107,7 @@ class OpenAIChatClient:
         self._thinking_effort: str | None = None
         self._log_service = log_service
         self._log_context_provider = log_context_provider
+        self._provider_adapter = provider_adapter or DefaultChatProviderAdapter()
 
     def set_log_context_provider(
         self,
@@ -166,16 +173,22 @@ class OpenAIChatClient:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
+        adapted_messages = self._provider_adapter.adapt_messages(messages)
         payload_body: dict[str, object] = {
             "model": self._model,
-            "messages": messages,
+            "messages": adapted_messages,
             "max_tokens": self._max_output_tokens,
             "temperature": 0,
         }
-        if self._uses_deepseek_api() and not self._thinking_enabled:
-            payload_body["extra_body"] = {"thinking": {"type": "disabled"}}
         if tools:
             payload_body["tools"] = self._normalize_tool_definitions(tools)
+        payload_body = self._provider_adapter.adapt_request_body(
+            payload_body,
+            settings=ChatProviderSettings(
+                thinking_enabled=self._thinking_enabled,
+                thinking_effort=self._thinking_effort,
+            ),
+        )
         request_path = self._log_request(
             url=f"{self._base_url}/chat/completions",
             payload_body=payload_body,
@@ -467,7 +480,7 @@ class OpenAIChatClient:
                 event=event,
                 session_id=context.session_id,
                 turn_id=context.turn_id,
-                protocol="legacy_chat",
+                protocol="chat_completions",
                 model=self._model,
                 provider=self._provider_name(),
                 message=message,
@@ -485,12 +498,6 @@ class OpenAIChatClient:
     def _provider_name(self) -> str:
         parsed = urlparse(self._base_url)
         return parsed.netloc or self._base_url
-
-    def _uses_deepseek_api(self) -> bool:
-        hostname = urlparse(self._base_url).hostname
-        return hostname is not None and (
-            hostname == "deepseek.com" or hostname.endswith(".deepseek.com")
-        )
 
     def _default_error_log_path(self) -> str:
         if self._log_service is None:
