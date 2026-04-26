@@ -27,6 +27,7 @@ from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapt
 from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
 from mycli.infrastructure.openai_client import OpenAIChatClient
 from mycli.infrastructure.openai_responses_client import OpenAIResponsesClient
+from mycli.infrastructure.providers import chat_adapter_for_provider
 from mycli.services.config_service import resolve_config
 from mycli.services.workspace_log_service import WorkspaceLogService
 from mycli.tools.append_file import AppendFileTool
@@ -125,6 +126,7 @@ def build_turn_service(
     )
 
     model_adapter: ModelAdapter
+    provider_adapter = chat_adapter_for_provider(config.provider)
     if config.protocol is ProtocolId.CHAT_COMPLETIONS:
         chat_client = OpenAIChatClient(
             api_key=config.api_key,
@@ -132,8 +134,15 @@ def build_turn_service(
             model=config.model,
             max_output_tokens=config.max_output_tokens,
             log_service=workspace_log_service,
+            provider_adapter=provider_adapter,
         )
-        model_adapter = cast(ModelAdapter, NativeToolModelAdapter(client=chat_client))
+        model_adapter = cast(
+            ModelAdapter,
+            NativeToolModelAdapter(
+                client=chat_client,
+                provider_adapter=provider_adapter,
+            ),
+        )
     else:
         responses_client = OpenAIResponsesClient(
             api_key=config.api_key,

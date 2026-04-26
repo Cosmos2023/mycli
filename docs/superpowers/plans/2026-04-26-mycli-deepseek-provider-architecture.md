@@ -1423,7 +1423,7 @@ git commit -m "Replay DeepSeek reasoning state through tool loops" \
 - Test: `tests/integration/test_cli_repl.py`
 - Test: `tests/unit/infrastructure/test_openai_responses_client.py`
 
-- [ ] **Step 1: Write failing CLI runtime selection tests**
+- [x] **Step 1: Write failing CLI runtime selection tests**
 
 Add this integration test to `tests/integration/test_cli_repl.py`:
 
@@ -1455,7 +1455,7 @@ def test_build_turn_service_uses_chat_completions_for_deepseek(tmp_path: Path) -
     assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
 ```
 
-- [ ] **Step 2: Run the CLI runtime selection test and verify it fails**
+- [x] **Step 2: Run the CLI runtime selection test and verify it fails**
 
 Run:
 
@@ -1465,7 +1465,7 @@ uv run pytest tests/integration/test_cli_repl.py::test_build_turn_service_uses_c
 
 Expected: fail because runtime still branches on `"legacy_chat"` and does not construct provider adapters.
 
-- [ ] **Step 3: Update CLI runtime construction**
+- [x] **Step 3: Update CLI runtime construction**
 
 In `src/mycli/cli/main.py`, import:
 
@@ -1513,7 +1513,7 @@ Update the transport selection:
 
 Remove the old `if config.protocol == "legacy_chat"` branch.
 
-- [ ] **Step 4: Update responses guidance away from legacy chat**
+- [x] **Step 4: Update responses guidance away from legacy chat**
 
 In `src/mycli/infrastructure/openai_responses_client.py`, replace user-facing references to `legacy_chat` with `chat_completions`. The exact replacement text for unsupported Responses guidance must be:
 
@@ -1523,7 +1523,7 @@ Use protocol='chat_completions' for providers that do not support the Responses 
 
 Update or add a unit test in `tests/unit/infrastructure/test_openai_responses_client.py` that asserts this text appears in the error message when Responses is unsupported.
 
-- [ ] **Step 5: Run CLI and Responses tests**
+- [x] **Step 5: Run CLI and Responses tests**
 
 Run:
 
@@ -1533,7 +1533,7 @@ uv run pytest tests/integration/test_cli_repl.py tests/unit/infrastructure/test_
 
 Expected: all selected tests pass.
 
-- [ ] **Step 6: Commit runtime provider wiring**
+- [x] **Step 6: Commit runtime provider wiring**
 
 Run:
 

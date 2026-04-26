@@ -1,7 +1,9 @@
 from pathlib import Path
 
 from mycli.cli.main import build_turn_service, handle_slash_command, run_repl
+from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
+from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 
 
 def test_help_lists_approval_and_memory_controls() -> None:
@@ -106,3 +108,31 @@ def test_build_turn_service_uses_native_adapter_when_protocol_is_chat_completion
     )
 
     assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
+
+
+def test_build_turn_service_uses_chat_completions_for_deepseek(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "deepseek-demo"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "deepseek",
+            "MYCLI_MODEL": "deepseek-v4-flash",
+        },
+    )
+
+    assert service._config.provider is ProviderId.DEEPSEEK
+    assert service._config.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
+    assert isinstance(
+        service._runtime._model_adapter._provider_adapter,
+        DeepSeekChatProviderAdapter,
+    )
