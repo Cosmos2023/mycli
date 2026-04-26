@@ -172,6 +172,8 @@ class OpenAIChatClient:
             "max_tokens": self._max_output_tokens,
             "temperature": 0,
         }
+        if self._uses_deepseek_api() and not self._thinking_enabled:
+            payload_body["extra_body"] = {"thinking": {"type": "disabled"}}
         if tools:
             payload_body["tools"] = self._normalize_tool_definitions(tools)
         request_path = self._log_request(
@@ -483,6 +485,12 @@ class OpenAIChatClient:
     def _provider_name(self) -> str:
         parsed = urlparse(self._base_url)
         return parsed.netloc or self._base_url
+
+    def _uses_deepseek_api(self) -> bool:
+        hostname = urlparse(self._base_url).hostname
+        return hostname is not None and (
+            hostname == "deepseek.com" or hostname.endswith(".deepseek.com")
+        )
 
     def _default_error_log_path(self) -> str:
         if self._log_service is None:
