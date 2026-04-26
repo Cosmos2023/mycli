@@ -6,9 +6,13 @@ from mycli.infrastructure.providers.chat import (
     ChatProviderSettings,
     DefaultChatProviderAdapter,
 )
+from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
+from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
+from mycli.infrastructure.providers.openai import OPENAI_PROFILE
 from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
+from mycli.infrastructure.providers.qwen import QWEN_PROFILE
 from mycli.infrastructure.providers.registry import (
     infer_provider_from_base_url,
     profile_for_provider,
@@ -27,11 +31,15 @@ def chat_adapter_for_provider(provider: ProviderId) -> ChatProviderAdapter:
 
 
 __all__ = [
+    "ANTHROPIC_PROFILE",
     "ChatProviderAdapter",
     "ChatProviderSettings",
+    "DEEPSEEK_PROFILE",
     "DeepSeekChatProviderAdapter",
     "DefaultChatProviderAdapter",
+    "OPENAI_PROFILE",
     "OpenAIChatProviderAdapter",
+    "QWEN_PROFILE",
     "QwenChatProviderAdapter",
     "chat_adapter_for_provider",
     "infer_provider_from_base_url",

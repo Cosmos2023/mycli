@@ -283,6 +283,54 @@ def test_resolve_config_uses_deepseek_defaults_for_explicit_provider(
     assert config.api_base_url == "https://api.deepseek.com"
 
 
+def test_resolve_config_infers_anthropic_provider_and_defaults_to_messages(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "anthropic-demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_BASE_URL": "https://api.anthropic.com",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.ANTHROPIC
+    assert config.protocol is ProtocolId.ANTHROPIC_MESSAGES
+    assert config.model == "claude-sonnet-4-6"
+    assert config.api_base_url == "https://api.anthropic.com"
+
+
+def test_resolve_config_uses_anthropic_defaults_for_explicit_provider(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "anthropic-demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "anthropic",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.ANTHROPIC
+    assert config.protocol is ProtocolId.ANTHROPIC_MESSAGES
+    assert config.model == "claude-sonnet-4-6"
+    assert config.api_base_url == "https://api.anthropic.com"
+
+
 def test_resolve_config_infers_qwen_provider_and_defaults_to_responses(
     tmp_path: Path,
 ) -> None:
@@ -409,6 +457,54 @@ def test_resolve_config_rejects_deepseek_with_responses_protocol(
                 "MYCLI_API_KEY": "test-key",
                 "MYCLI_PROVIDER": "deepseek",
                 "MYCLI_PROTOCOL": "responses",
+            },
+            cwd=workspace,
+            home=home_dir,
+        )
+
+
+def test_resolve_config_rejects_anthropic_with_responses_protocol(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="Provider 'anthropic' does not support protocol 'responses'",
+    ):
+        resolve_config(
+            cli_args={"session": "anthropic-demo"},
+            env={
+                "MYCLI_API_KEY": "test-key",
+                "MYCLI_PROVIDER": "anthropic",
+                "MYCLI_PROTOCOL": "responses",
+            },
+            cwd=workspace,
+            home=home_dir,
+        )
+
+
+def test_resolve_config_rejects_anthropic_with_chat_completions_protocol(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="Provider 'anthropic' does not support protocol 'chat_completions'",
+    ):
+        resolve_config(
+            cli_args={"session": "anthropic-demo"},
+            env={
+                "MYCLI_API_KEY": "test-key",
+                "MYCLI_PROVIDER": "anthropic",
+                "MYCLI_PROTOCOL": "chat_completions",
             },
             cwd=workspace,
             home=home_dir,
