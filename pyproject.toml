@@ -5,6 +5,7 @@ description = "CLI-hosted ReAct personal coding agent"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=0.97.0",
     "langchain>=1.2.15",
     "openai>=2.30.0",
 ]
