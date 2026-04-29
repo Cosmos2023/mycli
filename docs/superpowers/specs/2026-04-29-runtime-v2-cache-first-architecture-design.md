@@ -8,6 +8,8 @@ Runtime v2 围绕稳定请求形状、provider 中立 replay、检索式记忆�
 
 问题是架构性的，不是单个 DeepSeek provider bug。当前 runtime 会让动态上下文、工具暴露状态、记忆摘要和 provider replay 细节漂移到请求前部。Runtime v2 将缓存稳定性提升为所有 provider 的一等架构不变量，包括 DeepSeek、Qwen、OpenAI 和 Anthropic。
 
+Implementation starts with Phase 1, which adds provider-neutral `RequestShape` domain types and cache shape diagnostics without changing runtime behavior. Later phases migrate tools, memory, provider formatting, and runtime assembly onto those contracts.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：

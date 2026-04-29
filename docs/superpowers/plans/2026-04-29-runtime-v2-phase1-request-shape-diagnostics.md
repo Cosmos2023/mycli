@@ -22,6 +22,8 @@ The full Runtime v2 spec spans request shape, memory, tool policy, provider form
 
 Later plans should cover `ToolCatalog/ToolPolicy`, memory v2, provider formatter migration, and runtime wiring.
 
+Phase 1 deliberately avoids changing live request assembly. It must land before plans that alter tool schema ordering, memory injection, provider formatter boundaries, or deterministic replay wiring.
+
 ## File Structure
 
 - Create `src/mycli/domain/runtime/request_shape.py`
