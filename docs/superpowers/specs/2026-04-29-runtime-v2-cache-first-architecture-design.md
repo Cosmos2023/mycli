@@ -1,83 +1,83 @@
-# Runtime V2 Cache-First Architecture Design
+# Runtime V2 缓存优先架构设计
 
-Date: 2026-04-29
+日期：2026-04-29
 
-## Summary
+## 摘要
 
-Runtime v2 redesigns the agent runtime around stable request shape, provider-neutral replay, retrieval-based memory, and deterministic tool schema assembly. The immediate pressure is DeepSeek cache cost: real logs showed complex and controlled multi-turn sessions at roughly 30-40% cache hit rate, while an AgentScope spike against `deepseek-v4-flash` showed stable-prefix requests can reach roughly 96% prompt cache hit after warmup.
+Runtime v2 围绕稳定请求形状、provider 中立 replay、检索式记忆，以及确定性的工具 schema 组装来重新设计 agent runtime。当前最直接的压力来自 DeepSeek 缓存成本：真实日志显示，复杂任务和受控多轮会话的缓存命中率大约只有 30-40%；而针对 `deepseek-v4-flash` 的 AgentScope spike 显示，稳定前缀请求在 warmup 后可以达到约 96% 的 prompt cache hit。
 
-The problem is architectural, not a single DeepSeek provider bug. The current runtime lets dynamic context, tool exposure state, memory summaries, and provider replay details drift into early request positions. Runtime v2 makes cache stability a first-class invariant for all providers, including DeepSeek, Qwen, OpenAI, and Anthropic.
+问题是架构性的，不是单个 DeepSeek provider bug。当前 runtime 会让动态上下文、工具暴露状态、记忆摘要和 provider replay 细节漂移到请求前部。Runtime v2 将缓存稳定性提升为所有 provider 的一等架构不变量，包括 DeepSeek、Qwen、OpenAI 和 Anthropic。
 
-## Evidence
+## 证据
 
-DeepSeek log analysis found these cache killers:
+DeepSeek 日志分析发现了这些缓存杀手：
 
-- `messages[1]` is a large dynamic contextual user message and is usually the first changed message between adjacent requests.
-- `messages[0]` changes when `Direct tools` and `Deferred tools` change, which breaks the cache from the system prompt.
-- Tool schema order changes when direct/deferred membership changes, even when the tool set is the same.
-- Session memory injects recent assistant summaries that duplicate conversation context.
-- Tool evidence appears both in contextual summaries and transcript replay.
-- Provider reasoning/thinking replay is mixed too closely with general context and memory concerns.
+- `messages[1]` 是一条很大的动态 contextual user message，通常也是相邻请求之间第一个发生变化的 message。
+- 当 `Direct tools` 和 `Deferred tools` 变化时，`messages[0]` 也会变化，这会从 system prompt 开始破坏缓存。
+- 即使工具集合相同，只要 direct/deferred 归属变化，工具 schema 顺序也会变化。
+- Session memory 会注入最近 assistant 摘要，并与 conversation context 重复。
+- Tool evidence 同时出现在 contextual summaries 和 transcript replay 中。
+- Provider reasoning/thinking replay 与通用 context、memory 关注点混在一起。
 
-AgentScope spike:
+AgentScope spike：
 
-- Stable prefix second call: prompt `2939`, cache hit `2816`, miss `123`, ratio `0.9581`.
-- Dynamic context before stable content second call: prompt `3190`, cache hit `1152`, miss `2038`, ratio `0.3611`.
-- Reversing tool schema order on the same messages dropped ratio from about `0.9598` to `0.3926`.
+- 稳定前缀的第二次调用：prompt `2939`，cache hit `2816`，miss `123`，ratio `0.9581`。
+- 动态 context 放在稳定内容之前的第二次调用：prompt `3190`，cache hit `1152`，miss `2038`，ratio `0.3611`。
+- 在相同 messages 下反转工具 schema 顺序，会让命中率从约 `0.9598` 下降到 `0.3926`。
 
-This confirms that SDK choice is less important than request shape. AgentScope's useful lesson is boundary design: model, formatter, and message blocks are separated. Runtime v2 should adopt the boundary idea without requiring a wholesale SDK replacement.
+这说明 SDK 选择不如 request shape 重要。AgentScope 真正值得借鉴的是边界设计：model、formatter 和 message blocks 是分离的。Runtime v2 应该吸收这种边界思想，但不需要整体替换成 AgentScope。
 
-## Goals
+## 目标
 
-- Keep stable system content unchanged within a session.
-- Keep tool schema order and tool schema hash stable unless the actual tool catalog changes.
-- Move volatile runtime context after stable request prefix.
-- Make memory retrieval-based, budgeted, and deduplicated.
-- Keep tool evidence in a single authoritative channel.
-- Keep provider reasoning/thinking replay out of memory and contextual summaries.
-- Make provider adapters protocol translators, not prompt designers.
-- Add diagnostics that explain which request fragment breaks cache reuse.
-- Preserve tool correctness, approval behavior, and provider replay requirements across DeepSeek, Qwen, OpenAI, and Anthropic.
+- 在同一个 session 内保持 stable system content 不变。
+- 除非实际 tool catalog 变化，否则保持工具 schema 顺序和工具 schema hash 稳定。
+- 将 volatile runtime context 移到稳定请求前缀之后。
+- 将 memory 改为检索式、有预算、可去重。
+- 让 tool evidence 只保留在一个权威通道中。
+- 避免 provider reasoning/thinking replay 进入 memory 和 contextual summaries。
+- 让 provider adapters 成为协议转换器，而不是 prompt 设计器。
+- 增加 diagnostics，解释哪个 request fragment 破坏了缓存复用。
+- 在 DeepSeek、Qwen、OpenAI 和 Anthropic 上保留工具正确性、审批行为和 provider replay 需求。
 
-## Non-Goals
+## 非目标
 
-- Do not replace all runtime code with AgentScope.
-- Do not make DeepSeek-only hacks the default architecture.
-- Do not rely on prompt text alone for safety or tool permission enforcement.
-- Do not promise 99% hit rate for every task. The goal is stable prefix behavior and measurable improvement; user requests, tool results, and new evidence still create legitimate cache misses.
+- 不把全部 runtime 代码替换成 AgentScope。
+- 不把 DeepSeek-only hack 做成默认架构。
+- 不只依赖 prompt 文本来保证安全或工具权限。
+- 不承诺每个任务都达到 99% 命中率。目标是稳定前缀行为和可测量提升；用户请求、工具结果和新 evidence 仍然会产生合理的 cache miss。
 
-## Architecture
+## 架构
 
-Runtime v2 splits the current runtime into explicit layers:
+Runtime v2 将当前 runtime 拆成显式分层：
 
 1. `TurnRuntime`
-   - Owns the turn loop, tool execution, approvals, suspension/resume, and activity events.
-   - Does not construct provider payloads directly.
+   - 负责 turn loop、工具执行、审批、suspension/resume 和 activity events。
+   - 不直接构造 provider payload。
 
 2. `RequestShapeBuilder`
-   - Converts runtime state into provider-neutral request shape.
-   - Applies cache policy, context ordering, memory selection, and tool catalog references.
+   - 将 runtime state 转换成 provider-neutral request shape。
+   - 应用 cache policy、context ordering、memory selection 和 tool catalog references。
 
-3. `ToolCatalog` and `ToolPolicy`
-   - `ToolCatalog` is the stable model-visible schema set.
-   - `ToolPolicy` is the current runtime permission, approval, deny, and recommendation layer.
-   - Direct/deferred status must not reorder model-visible schemas.
+3. `ToolCatalog` 和 `ToolPolicy`
+   - `ToolCatalog` 是稳定的 model-visible schema 集合。
+   - `ToolPolicy` 是当前 runtime permission、approval、deny 和 recommendation 层。
+   - Direct/deferred 状态不得重排 model-visible schemas。
 
 4. `MemoryRetriever`
-   - Selects relevant memory records by current intent.
-   - Deduplicates against transcript and summaries.
-   - Enforces budget and excludes reasoning/thinking.
+   - 根据当前 intent 选择相关 memory records。
+   - 对 transcript 和 summaries 去重。
+   - 执行预算限制，并排除 reasoning/thinking。
 
 5. `ProviderFormatter`
-   - Converts `RequestShape` to provider payloads.
-   - Handles provider-specific replay metadata such as DeepSeek `reasoning_content`, Anthropic thinking, and Responses API items.
+   - 将 `RequestShape` 转成 provider payload。
+   - 处理 provider-specific replay metadata，例如 DeepSeek `reasoning_content`、Anthropic thinking 和 Responses API items。
 
 6. `CacheShapeDiagnostics`
-   - Records shape hashes, fragment sizes, first-diff index, and provider usage cache hit/miss data.
+   - 记录 shape hashes、fragment sizes、first-diff index，以及 provider usage 中的 cache hit/miss 数据。
 
-## Request Shape
+## 请求形状
 
-Runtime v2 uses a provider-neutral request shape:
+Runtime v2 使用 provider-neutral request shape：
 
 ```text
 Stable System
@@ -89,14 +89,14 @@ Volatile Runtime Context
 
 ### Stable System
 
-Stable system contains long-lived operating rules only:
+Stable system 只包含长期稳定的运行规则：
 
-- role and safety baseline
-- tool-use contract at a stable abstraction level
+- role 和 safety baseline
+- 稳定抽象层级上的 tool-use contract
 - provider-neutral behavior rules
-- workspace instructions only when they are stable baseline fragments
+- 只有在 workspace instructions 是 stable baseline fragments 时才进入 system
 
-It must not include:
+它不得包含：
 
 - direct/deferred tool lists
 - runtime policy state
@@ -110,29 +110,29 @@ It must not include:
 
 ### Stable Tool Schema
 
-Tool schema is serialized from `ToolCatalog` in a deterministic order. Recommended order is static registry order with a persisted catalog version hash. If registry order is not stable enough, sort by route key.
+Tool schema 从 `ToolCatalog` 按确定性顺序序列化。推荐顺序是静态 registry 顺序，并配合持久化的 catalog version hash。如果 registry 顺序还不够稳定，则按 route key 排序。
 
-Dynamic tools are appended after static tools using a stable route key. A dynamic tool lifecycle change may legitimately change tool schema hash, but volatile direct/deferred changes must not.
+Dynamic tools 使用稳定 route key 追加在 static tools 之后。Dynamic tool lifecycle 变化可以合理地改变 tool schema hash，但 volatile direct/deferred 变化不能改变它。
 
 ### Provider Replay Transcript
 
-Replay transcript is the authoritative history channel for provider-required state:
+Replay transcript 是 provider-required state 的权威历史通道：
 
 - user messages
-- assistant text that must be replayed
+- 必须 replay 的 assistant text
 - assistant tool calls
-- tool results paired by call id
-- provider reasoning metadata required for valid replay
+- 按 call id 配对的 tool results
+- 有效 replay 所需的 provider reasoning metadata
 
-Replay transcript should not carry extra contextual summaries that duplicate later volatile context.
+Replay transcript 不应该携带会与后续 volatile context 重复的额外 contextual summaries。
 
 ### Current User Intent
 
-The current user request is represented once. Runtime v2 must avoid duplicating it in both contextual fragments and the actual user message.
+当前用户请求只表示一次。Runtime v2 必须避免它同时出现在 contextual fragments 和实际 user message 中。
 
 ### Volatile Runtime Context
 
-Volatile context comes last and stays short. It can include:
+Volatile context 放在最后，并保持简短。它可以包含：
 
 - compact runtime reminders
 - active plan status
@@ -140,54 +140,70 @@ Volatile context comes last and stays short. It can include:
 - evidence index summaries
 - tool policy notes
 
-It must not include full tool evidence already present in transcript.
+它不得包含 transcript 中已经存在的完整 tool evidence。
 
 ## Typed Fragments
 
-`RequestShapeBuilder` works with typed fragments rather than raw concatenated strings:
+`RequestShapeBuilder` 使用 typed fragments，而不是原始拼接字符串：
 
-- `StableFragment`: stable system or baseline content.
-- `ReplayFragment`: provider-required transcript and metadata.
-- `IntentFragment`: current request.
-- `VolatileFragment`: short runtime policy, plan, or reminder content.
-- `RetrievedMemoryFragment`: selected memory only.
-- `EvidenceIndexFragment`: compact tool result index.
-- `ToolPolicyFragment`: current allowed/denied/recommended tool policy, rendered late.
+- `StableFragment`：stable system 或 baseline content。
+- `ReplayFragment`：provider-required transcript 和 metadata。
+- `IntentFragment`：当前请求。
+- `VolatileFragment`：简短 runtime policy、plan 或 reminder content。
+- `RetrievedMemoryFragment`：只包含被选中的 memory。
+- `EvidenceIndexFragment`：紧凑 tool result index。
+- `ToolPolicyFragment`：当前 allowed/denied/recommended tool policy，后置渲染。
 
-Each fragment carries:
+每个 fragment 携带：
 
 - `id`
 - `kind`
 - `content`
-- `stability`: `stable`, `replay`, or `volatile`
+- `stability`：`stable`、`replay` 或 `volatile`
 - `dedupe_key`
 - `budget_weight`
 - `provider_visibility`
 - diagnostic hash
 
+## Deterministic Replay Contract
+
+Runtime v2 必须把 replay transcript 视为不可变事件日志。凡是用户已经输入、模型已经返回、工具已经调用或 provider 已经要求 replay 的内容，后续进入 prompt 时都必须来自持久化原始记录，而不是由 context assembler、memory summary 或 runtime policy 重新改写一版。
+
+固定性要求：
+
+- `system prompt`：session 内固定，hash 不变。
+- `tools` 描述与顺序：固定，除非真实 `ToolCatalog` 变更。
+- 用户 query：当前 turn 内固定；历史 query replay 时逐字保留。
+- LLM thinking/reasoning：生成前不可控，但 provider 返回后必须作为 replay metadata 原样保存并逐字回放。
+- assistant 回复话术和最终回复：生成前不可控，但一旦进入历史，就不能被 summary 改写后替代 replay。
+- tool call：`call_id`、tool name、arguments 和顺序固定 replay。
+- tool result：与 call id 配对，内容和顺序固定 replay。
+
+Summary、memory 和 evidence index 只能作为后置 volatile context 的补充索引，不能替代权威 replay transcript。语义相同但话术不同也会破坏缓存，因此 Runtime v2 不允许用重新生成的自然语言摘要替换已经发生过的原始 transcript。
+
 ## Memory V2
 
-Memory changes from default injection to retrieval-based injection.
+Memory 从默认注入改为检索式注入。
 
-Rules:
+规则：
 
-- Session summaries are stored but not automatically injected.
-- Recent assistant responses are not copied back into prompt as memory by default.
-- Memory must be selected by relevance to current user intent.
-- Memory is deduplicated against replay transcript, conversation summary, and selected volatile fragments.
-- Memory has a strict budget.
-- Reasoning/thinking blocks are never stored in memory.
-- Tool evidence is not stored as memory unless explicitly distilled into a stable fact.
+- Session summaries 会被存储，但不会自动注入。
+- 最近 assistant responses 默认不会作为 memory 复制回 prompt。
+- Memory 必须根据当前 user intent 的相关性选择。
+- Memory 会对 replay transcript、conversation summary 和 selected volatile fragments 去重。
+- Memory 有严格预算。
+- Reasoning/thinking blocks 永远不会存入 memory。
+- Tool evidence 不会作为 memory 存储，除非它被明确提炼成稳定事实。
 
-Memory output should be short facts, not long previous answers.
+Memory 输出应该是简短事实，而不是很长的历史回答。
 
 ## Tool System V2
 
-Runtime v2 separates catalog, policy, and execution.
+Runtime v2 分离 catalog、policy 和 execution。
 
 ### ToolCatalog
 
-ToolCatalog owns stable tool definitions:
+ToolCatalog 拥有稳定工具定义：
 
 - name
 - description
@@ -196,11 +212,11 @@ ToolCatalog owns stable tool definitions:
 - source
 - catalog version hash
 
-It produces model-visible schema in deterministic order.
+它按确定性顺序生成 model-visible schema。
 
 ### ToolPolicy
 
-ToolPolicy owns current decision state:
+ToolPolicy 拥有当前决策状态：
 
 - allowed tools
 - denied tools
@@ -209,49 +225,49 @@ ToolPolicy owns current decision state:
 - user-forbidden tools
 - risk-derived constraints
 
-Policy is enforced at execution time. It may be summarized in volatile context, but it must not reorder schema.
+Policy 在执行时强制生效。它可以被摘要到 volatile context 中，但绝不能重排 schema。
 
-Negated instructions must be parsed conservatively. For example, "do not call git_diff or run_shell" must mark those tools denied or discouraged, not promote them because the words `git` or `shell` appeared.
+否定指令必须保守解析。例如，“do not call git_diff or run_shell” 必须将这些工具标记为 denied 或 discouraged，不能因为出现了 `git` 或 `shell` 这些词就提升它们。
 
 ### ToolExecutor
 
-ToolExecutor validates every model tool call against `ToolPolicy` before execution. Prompt guidance is advisory; execution policy is authoritative.
+ToolExecutor 在执行前根据 `ToolPolicy` 校验每一个模型工具调用。Prompt guidance 只是建议；execution policy 才是权威。
 
 ## Reasoning and Thinking Replay
 
-Provider thinking belongs to replay metadata only.
+Provider thinking 只属于 replay metadata。
 
-Rules:
+规则：
 
-- DeepSeek `reasoning_content` is preserved on assistant replay messages when required.
-- Anthropic thinking blocks are preserved through provider formatter replay.
-- OpenAI/Qwen Responses items are normalized into replay blocks.
-- Thinking content is not written to memory.
-- Thinking content is not rendered into volatile context.
-- Thinking content is not summarized into conversation summaries.
+- DeepSeek `reasoning_content` 在需要时保留到 assistant replay messages 上。
+- Anthropic thinking blocks 通过 provider formatter replay 保留。
+- OpenAI/Qwen Responses items 归一化为 replay blocks。
+- Thinking content 不写入 memory。
+- Thinking content 不渲染进 volatile context。
+- Thinking content 不总结进 conversation summaries。
 
-Provider adapters declare their replay requirements so the runtime does not guess.
+Provider adapters 声明自己的 replay requirements，runtime 不再猜测。
 
 ## Provider Formatter Boundary
 
-Provider formatters accept `RequestShape` and return provider payloads:
+Provider formatters 接受 `RequestShape` 并返回 provider payload：
 
-- Chat Completions payload for DeepSeek and compatible providers.
-- Responses payload for OpenAI/Qwen-compatible Responses providers.
-- Anthropic Messages payload for Anthropic.
+- 面向 DeepSeek 和兼容 provider 的 Chat Completions payload。
+- 面向 OpenAI/Qwen-compatible Responses providers 的 Responses payload。
+- 面向 Anthropic 的 Anthropic Messages payload。
 
-Formatters may adapt roles, merge system messages when required by provider protocol, and encode replay metadata. They must not decide memory selection, tool policy, or context ordering.
+Formatters 可以适配 roles、在 provider 协议要求时合并 system messages，并编码 replay metadata。它们不得决定 memory selection、tool policy 或 context ordering。
 
 ## Cache Policy
 
-All providers use a cache-first default policy. Providers can override details:
+所有 provider 默认使用 cache-first policy。Provider 可以覆盖细节：
 
-- DeepSeek: strict stable system, strict stable tools, reasoning replay metadata, aggressive volatile compaction.
-- Qwen Responses: stable instructions and tools, Responses item replay, no DeepSeek-specific reasoning fields.
-- OpenAI Responses: stable instructions and tools, Responses item replay, provider-native tool item handling.
-- Anthropic: stable system/messages split, thinking replay according to Anthropic protocol.
+- DeepSeek：严格 stable system、严格 stable tools、reasoning replay metadata、激进 volatile compaction。
+- Qwen Responses：stable instructions 和 tools、Responses item replay，不带 DeepSeek-specific reasoning fields。
+- OpenAI Responses：stable instructions 和 tools、Responses item replay、provider-native tool item handling。
+- Anthropic：stable system/messages split，并按 Anthropic 协议 replay thinking。
 
-Policy knobs:
+Policy knobs：
 
 - `stable_system_required`
 - `stable_tool_schema_required`
@@ -264,7 +280,7 @@ Policy knobs:
 
 ## Diagnostics
 
-Every model request should emit a shape diagnostic event:
+每个模型请求都应该发出一个 shape diagnostic event：
 
 - provider
 - protocol
@@ -277,68 +293,69 @@ Every model request should emit a shape diagnostic event:
 - volatile hash
 - per-fragment character lengths
 - per-message character lengths
-- first changed fragment compared with previous request
-- first changed provider message index compared with previous request
+- 与前一个请求相比第一个发生变化的 fragment
+- 与前一个请求相比第一个发生变化的 provider message index
 - prompt tokens
 - cache hit tokens
 - cache miss tokens
 - cache hit ratio
 
-Diagnostics must redact secrets and must not log API keys.
+Diagnostics 必须 redact secrets，且不得记录 API keys。
 
 ## Migration Plan
 
-1. Add request shape domain types and diagnostics without changing behavior.
-2. Recreate current prompt output through `RequestShapeBuilder` and lock it with snapshot-style unit tests.
-3. Introduce `ToolCatalog`, `ToolPolicy`, and stable schema serialization.
-4. Move provider payload construction behind formatter boundaries.
-5. Replace automatic memory injection with retrieval, budget, and dedupe.
-6. Move tool evidence duplication into single-channel replay plus compact evidence index.
-7. Enable cache-first ordering for all providers.
-8. Run provider-specific regression tests and real DeepSeek smoke tests.
+1. 添加 request shape domain types 和 diagnostics，不改变现有行为。
+2. 通过 `RequestShapeBuilder` 复现当前 prompt 输出，并用 snapshot-style unit tests 锁住。
+3. 引入 `ToolCatalog`、`ToolPolicy` 和 stable schema serialization。
+4. 将 provider payload construction 移到 formatter boundaries 后面。
+5. 用 retrieval、budget 和 dedupe 替换 automatic memory injection。
+6. 将 tool evidence duplication 改为 single-channel replay 加 compact evidence index。
+7. 为所有 provider 启用 cache-first ordering。
+8. 运行 provider-specific regression tests 和真实 DeepSeek smoke tests。
 
 ## Testing
 
-Unit tests:
+Unit tests：
 
-- system content stays stable across turns when only tool policy changes.
-- tool schema order stays stable when direct/deferred changes.
-- negated tool instructions do not promote forbidden tools.
-- memory retrieval excludes duplicated recent assistant content.
-- reasoning/thinking does not enter memory or volatile context.
-- evidence index excludes full duplicated evidence when transcript already contains it.
-- provider formatters preserve required replay metadata.
+- 当只有 tool policy 变化时，system content 在多 turn 中保持稳定。
+- 当 direct/deferred 变化时，tool schema order 保持稳定。
+- 否定工具指令不会提升 forbidden tools。
+- memory retrieval 排除重复的 recent assistant content。
+- reasoning/thinking 不进入 memory 或 volatile context。
+- 当 transcript 已经包含 evidence 时，evidence index 不包含完整重复 evidence。
+- provider formatters 保留必要 replay metadata。
 
-Integration tests:
+Integration tests：
 
-- DeepSeek chat-completions tool call and reasoning replay.
-- Qwen Responses multi-turn tool call.
-- OpenAI Responses replay and tool result continuation.
-- Anthropic thinking/tool replay.
-- approval and denied tool execution still work.
+- DeepSeek chat-completions tool call 和 reasoning replay。
+- Qwen Responses multi-turn tool call。
+- OpenAI Responses replay 和 tool result continuation。
+- Anthropic thinking/tool replay。
+- approval 和 denied tool execution 仍然工作。
 
-Manual smoke:
+Manual smoke：
 
-- DeepSeek complex repository task with follow-up no-tool questions.
-- Compare cache hit ratio against current 30-40% baseline.
-- Confirm system hash and tool schema hash remain stable after warmup.
+- DeepSeek complex repository task 加 follow-up no-tool questions。
+- 与当前 30-40% baseline 对比 cache hit ratio。
+- 确认 warmup 后 system hash 和 tool schema hash 保持稳定。
 
 ## Risks
 
-- Aggressive memory reduction may make some follow-up answers less context-rich. Mitigation: retrieval by current intent and explicit transcript replay.
-- Provider replay requirements differ and can regress if hidden in formatter details. Mitigation: provider-specific replay tests.
-- Stable tool schema may expose tools that current policy will deny at execution. Mitigation: clear execution error and late volatile policy note.
-- Cache hit rate remains workload-dependent. New evidence and tool results will still create misses; diagnostics will identify legitimate misses.
+- 激进减少 memory 可能让某些 follow-up answers 上下文不够丰富。缓解方式：按当前 intent 检索，并显式 replay transcript。
+- Provider replay requirements 不同，如果隐藏在 formatter 细节里可能回归。缓解方式：provider-specific replay tests。
+- Stable tool schema 可能暴露当前 policy 会拒绝执行的工具。缓解方式：清晰的执行错误和后置 volatile policy note。
+- Cache hit rate 仍然取决于 workload。新 evidence 和 tool results 仍会产生 miss；diagnostics 会识别合理 miss。
 
 ## Acceptance Criteria
 
-- Runtime v2 design boundaries are implemented without provider-specific prompt hacks in `agent_runtime`.
-- DeepSeek multi-turn requests keep stable system hash across a session.
-- Tool schema order hash remains stable unless the actual catalog changes.
-- Direct/deferred policy changes do not change model-visible tool schema order.
-- Dynamic tool lifecycle changes are deterministic and diagnosable.
-- Memory injection is retrieval-based and deduplicated.
-- Tool evidence is not duplicated between contextual user blocks and transcript replay.
-- Provider reasoning/thinking replay remains correct and excluded from memory/context summaries.
-- Cache diagnostics identify the first fragment responsible for request drift.
-- DeepSeek real smoke shows a substantial cache hit improvement from the current 30-40% complex-task baseline.
+- Runtime v2 design boundaries 已实现，且 `agent_runtime` 中没有 provider-specific prompt hacks。
+- DeepSeek multi-turn requests 在同一个 session 内保持 stable system hash。
+- 除非实际 catalog 变化，否则 tool schema order hash 保持稳定。
+- Direct/deferred policy changes 不改变 model-visible tool schema order。
+- Dynamic tool lifecycle changes 是确定性的、可诊断的。
+- Memory injection 是检索式且可去重的。
+- Tool evidence 不在 contextual user blocks 和 transcript replay 之间重复。
+- Provider reasoning/thinking replay 保持正确，并从 memory/context summaries 中排除。
+- Deterministic replay contract 保证历史用户输入、assistant 输出、thinking metadata、tool call 和 tool result 不被 summary/memory/context 重新改写后替代。
+- Cache diagnostics 能识别导致 request drift 的第一个 fragment。
+- DeepSeek real smoke 相比当前 30-40% 的 complex-task baseline 有显著 cache hit improvement。
