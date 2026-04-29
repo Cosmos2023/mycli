@@ -34,7 +34,7 @@ class FakeTool:
         return ToolResultV2(success=True, summary=f"{self.spec.name} ok")
 
 
-def test_tool_exposure_planner_separates_direct_and_deferred_tools_for_repo_analysis() -> None:
+def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> None:
     registry = ToolRegistryV2.from_tools(
         [
             FakeTool("list_directory", "List files"),
@@ -48,14 +48,17 @@ def test_tool_exposure_planner_separates_direct_and_deferred_tools_for_repo_anal
 
     planned = planner.plan(user_message="please inspect this repository and summarize it")
 
-    assert "list_directory" in planned.exposure.callable_tool_names()
-    assert "read_file" in planned.exposure.callable_tool_names()
-    assert "run_shell" in planned.exposure.callable_tool_names()
-    assert "edit_file" in planned.exposure.callable_tool_names()
-    assert {entry.name for entry in planned.exposure.deferred} >= {"run_shell", "edit_file"}
+    assert set(planned.exposure.callable_tool_names()) == {
+        "list_directory",
+        "read_file",
+        "search_text",
+        "run_shell",
+        "edit_file",
+    }
+    assert [entry.name for entry in planned.exposure.deferred] == []
 
 
-def test_tool_exposure_planner_promotes_write_tools_for_chinese_modify_intent() -> None:
+def test_tool_exposure_planner_keeps_write_tools_equal_for_chinese_modify_intent() -> None:
     registry = ToolRegistryV2.from_tools(
         [
             FakeTool("list_directory", "List files"),
@@ -69,9 +72,14 @@ def test_tool_exposure_planner_promotes_write_tools_for_chinese_modify_intent() 
 
     planned = planner.plan(user_message="请直接修一下这个 bug，顺手补一条测试")
 
-    direct_names = {entry.name for entry in planned.exposure.direct}
-
-    assert {"edit_file", "replace_in_file", "append_file"} <= direct_names
+    assert set(planned.exposure.callable_tool_names()) == {
+        "list_directory",
+        "read_file",
+        "edit_file",
+        "replace_in_file",
+        "append_file",
+    }
+    assert [entry.name for entry in planned.exposure.deferred] == []
 
 
 def test_tool_exposure_planner_collects_runtime_and_capability_dynamic_tools() -> None:

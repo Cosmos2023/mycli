@@ -41,7 +41,7 @@ class ToolExposurePlanner:
         capability_activations: tuple[CapabilityActivation, ...] = (),
         runtime_dynamic_tools: tuple[object, ...] = (),
     ) -> PlannedToolExposure:
-        direct_names = set(self._default_direct_tool_names(user_message))
+        del user_message
         direct_entries: list[ToolExposureEntry] = []
         deferred_entries: list[ToolExposureEntry] = []
         seen: set[str] = set()
@@ -50,19 +50,12 @@ class ToolExposurePlanner:
         for spec in self._tool_registry.specs.values():
             entry = ToolExposureEntry(
                 route_key=ToolRouteKey.local(spec.name),
-                kind=(
-                    ToolExposureKind.DIRECT
-                    if spec.name in direct_names
-                    else ToolExposureKind.DEFERRED
-                ),
+                kind=ToolExposureKind.DIRECT,
                 source=ToolRouteSource.REGISTRY,
                 spec=spec,
             )
             seen.add(entry.name)
-            if entry.kind is ToolExposureKind.DIRECT:
-                direct_entries.append(entry)
-            else:
-                deferred_entries.append(entry)
+            direct_entries.append(entry)
 
         dynamic_entries: list[ToolExposureEntry] = []
         dynamic_tools: dict[str, DynamicToolRegistration] = {}
@@ -120,74 +113,6 @@ class ToolExposurePlanner:
             dynamic_tools=dynamic_tools,
             lifecycle_events=tuple(lifecycle_events),
         )
-
-    def _default_direct_tool_names(self, user_message: str) -> tuple[str, ...]:
-        lowered = user_message.lower()
-        direct = {
-            "list_directory",
-            "read_file",
-            "read_file_range",
-            "search_text",
-            "update_plan",
-        }
-        if any(
-            token in lowered
-            for token in (
-                "edit",
-                "write",
-                "modify",
-                "create",
-                "fix",
-                "implement",
-                "append",
-                "replace",
-                "refactor",
-                "修改",
-                "修复",
-                "修一下",
-                "改一下",
-                "改动",
-                "补一条",
-                "补充",
-                "新增",
-                "创建",
-                "删除",
-                "移动",
-                "重命名",
-                "写入",
-                "替换",
-                "测试",
-            )
-        ):
-            direct.update(
-                {
-                    "append_file",
-                    "create_file",
-                    "delete_path",
-                    "edit_file",
-                    "mkdir",
-                    "move_path",
-                    "replace_in_file",
-                }
-            )
-        if any(
-            token in lowered
-            for token in (
-                "shell",
-                "command",
-                "pytest",
-                "ruff",
-                "mypy",
-                "git",
-                "install",
-                "push",
-                "branch",
-                "commit",
-                "publish",
-            )
-        ):
-            direct.update({"run_shell", "git_diff", "git_log", "git_status"})
-        return tuple(sorted(direct))
 
     def _activation_dynamic_tools(
         self,
