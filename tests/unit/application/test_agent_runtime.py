@@ -1069,9 +1069,14 @@ def test_agent_runtime_sends_current_user_turn_once_in_legacy_path(tmp_path: Pat
         message
         for message in adapter.seen_messages[0]
         if getattr(message, "role", None) == "user"
-        and getattr(message, "content", None) == request
+        and getattr(message, "content", None) == f"Current user request: {request}"
     ]
     assert len(matching_user_messages) == 1
+    assert not any(
+        getattr(message, "role", None) == "user"
+        and getattr(message, "content", None) == request
+        for message in adapter.seen_messages[0]
+    )
 
 
 def test_agent_runtime_places_stable_action_guidance_before_contextual_user_messages(

@@ -35,6 +35,7 @@ from mycli.domain.runtime import (
     PlanState,
     RuntimeBlock,
     RuntimeItem,
+    RequestShape,
     RuntimeTraceEvent,
     ReasoningEffort,
     StopReason,
@@ -75,6 +76,7 @@ from mycli.services.dynamic_tool_provider import DynamicToolProvider
 from mycli.services.memory_service import MemoryService
 from mycli.services.planning.planning_service import PlanningService
 from mycli.services.request_shape_builder import RequestShapeBuilder
+from mycli.services.request_shape_payload_formatter import RequestShapePayloadFormatter
 from mycli.services.session_service import SessionService
 from mycli.services.skill_registry import SkillRegistry
 from mycli.services.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
@@ -134,6 +136,7 @@ class AgentRuntime:
         self._turn_context_assembler = TurnContextAssembler()
         self._instruction_contract_assembler = InstructionContractAssembler()
         self._request_shape_builder = RequestShapeBuilder()
+        self._request_shape_payload_formatter = RequestShapePayloadFormatter()
         self._tool_exposure_planner = ToolExposurePlanner(tool_registry=tool_registry)
         self._dynamic_tool_registry = DynamicToolRegistry()
         self._dynamic_tool_providers = tuple(dynamic_tool_providers)
@@ -486,37 +489,9 @@ class AgentRuntime:
     def _build_messages(
         self,
         *,
-        contract: InstructionContract,
+        request_shape: RequestShape,
     ) -> list[ModelMessage]:
-        messages: list[ModelMessage] = [
-            ModelMessage(role="system", content=contract.base_instructions),
-        ]
-        messages.extend(
-            ModelMessage(role="developer", content=section.content)
-            for section in contract.developer_sections
-        )
-        messages.extend(
-            ModelMessage(role="user", content=section.content)
-            for section in contract.contextual_user_sections
-        )
-        if contract.assistant_scaffold:
-            messages.append(
-                ModelMessage(
-                    role="assistant",
-                    content=contract.assistant_scaffold,
-                )
-            )
-        messages.extend(
-            ModelMessage(
-                role=message.role,
-                content=message.content,
-                tool_call_id=message.tool_call_id,
-                tool_calls=message.tool_calls,
-                metadata=self._message_metadata_from_blocks(message),
-            )
-            for message in contract.conversation_messages
-        )
-        return messages
+        return self._request_shape_payload_formatter.legacy_messages(request_shape)
 
     def _assemble_instruction_contract(
         self,
@@ -1291,13 +1266,13 @@ class AgentRuntime:
             return tool_router.render_for_model(tool_exposure)
         return []
 
-    def _trace_request_shape(
+    def _build_and_trace_request_shape(
         self,
         *,
         turn_id: str,
         contract: InstructionContract,
         tools: list[ModelToolDefinition],
-    ) -> None:
+    ) -> RequestShape:
         shape = self._request_shape_builder.build(
             config=self._config,
             contract=contract,
@@ -1324,6 +1299,7 @@ class AgentRuntime:
                 "tool_order_hash": payload["tool_order_hash"],
             },
         )
+        return shape
 
     def _request_model_turn(
         self,

@@ -161,3 +161,28 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
     assert provider_roles == ["system", "developer", "user", "assistant", "user", "user"]
     assert provider_contents[-2] == "Current user request: current task"
     assert provider_contents[-1] == "volatile runtime context"
+
+
+def test_request_shape_builder_does_not_duplicate_current_user_request_in_replay(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(role="user", content="current task"),
+                Message(role="assistant", content="I will inspect it."),
+            ),
+            current_user_request="current task",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    user_messages = [
+        message.content for message in shape.provider_messages if message.role == "user"
+    ]
+
+    assert user_messages == ["Current user request: current task"]
+    assert "user: current task" not in shape.fragments[2].content
+    assert "assistant: I will inspect it." in shape.fragments[2].content

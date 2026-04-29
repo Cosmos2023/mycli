@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from mycli.domain.runtime import ProviderMessageShape, RequestShape
+from mycli.domain.tools import ToolCall
+from mycli.services.request_shape_payload_formatter import RequestShapePayloadFormatter
+
+
+def test_request_shape_payload_formatter_builds_legacy_messages_in_shape_order() -> None:
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable",
+        provider_messages=(
+            ProviderMessageShape(role="system", content="stable"),
+            ProviderMessageShape(role="developer", content="tools"),
+            ProviderMessageShape(role="assistant", content="replay"),
+            ProviderMessageShape(role="user", content="Current user request: fix cache"),
+            ProviderMessageShape(role="user", content="volatile context"),
+        ),
+    )
+
+    messages = RequestShapePayloadFormatter().legacy_messages(shape)
+
+    assert [message.role for message in messages] == [
+        "system",
+        "developer",
+        "assistant",
+        "user",
+        "user",
+    ]
+    assert [message.content for message in messages] == [
+        "stable",
+        "tools",
+        "replay",
+        "Current user request: fix cache",
+        "volatile context",
+    ]
+
+
+def test_request_shape_payload_formatter_preserves_legacy_tool_replay_metadata() -> None:
+    tool_call = ToolCall(
+        name="read_file",
+        arguments={"path": "README.md"},
+        reason="inspect",
+        call_id="call_read_1",
+    )
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable",
+        provider_messages=(
+            ProviderMessageShape(
+                role="assistant",
+                content='[{"name":"read_file"}]',
+                metadata={
+                    "legacy_content": "",
+                    "tool_calls": (tool_call,),
+                    "model_metadata": {"deepseek": {"reasoning_content": "inspect first"}},
+                },
+            ),
+            ProviderMessageShape(
+                role="tool",
+                content="Tool read_file: README",
+                metadata={
+                    "legacy_content": "Tool read_file: README",
+                    "tool_call_id": "call_read_1",
+                },
+            ),
+        ),
+    )
+
+    messages = RequestShapePayloadFormatter().legacy_messages(shape)
+
+    assert messages[0].content == ""
+    assert messages[0].tool_calls == (tool_call,)
+    assert messages[0].metadata == {"deepseek": {"reasoning_content": "inspect first"}}
+    assert messages[1].tool_call_id == "call_read_1"

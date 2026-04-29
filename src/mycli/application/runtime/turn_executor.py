@@ -347,17 +347,17 @@ class TurnExecutor:
             )
             latest_context_baseline = runtime._context_baseline_from_contract(contract)
             runtime_items = runtime._build_runtime_items(contract=contract)
-            legacy_messages = runtime._build_messages(contract=contract)
             tools = runtime._render_model_tools(
                 tool_exposure=planned_exposure.exposure,
                 tool_router=tool_router,
                 allow_tools=not force_answer,
             )
-            runtime._trace_request_shape(
+            request_shape = runtime._build_and_trace_request_shape(
                 turn_id=turn_id,
                 contract=contract,
                 tools=tools,
             )
+            legacy_messages = runtime._build_messages(request_shape=request_shape)
             try:
                 turn_result, turn_streamed_chunks = runtime._request_model_turn(
                     runtime_items=runtime_items,

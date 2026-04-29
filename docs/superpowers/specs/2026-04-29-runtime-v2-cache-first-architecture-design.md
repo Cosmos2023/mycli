@@ -14,6 +14,8 @@ Phase 2 replaces prompt-visible tool hierarchy with an equal `ToolSet`, stabiliz
 
 Phase 3 adds a provider-neutral `RequestShapeBuilder` and emits cache-first request shape diagnostics from live runtime turns. Existing provider payload formatting remains unchanged in this phase; the new shape is a verified migration target for later formatter replacement.
 
+Phase 4a makes legacy chat-style `ModelMessage` payloads come from `RequestShape.provider_messages`, so chat-completions providers start receiving cache-first ordering while structured block replay remains on the existing RuntimeItem path.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：

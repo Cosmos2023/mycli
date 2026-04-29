@@ -28,7 +28,6 @@ class RequestShapeBuilder:
         normalized_tools = self._normalized_tools(tools)
         tool_schema = self._tool_schema_content(normalized_tools)
         tool_order = "\n".join(tool["name"] for tool in normalized_tools)
-        replay_content = self._render_replay(contract.conversation_messages)
         volatile_context = self._render_volatile_context(contract)
         intent_content = f"Current user request: {contract.current_user_request}"
 
@@ -48,7 +47,9 @@ class RequestShapeBuilder:
             RequestFragment(
                 id="replay:conversation",
                 kind=RequestFragmentKind.REPLAY,
-                content=replay_content,
+                content=self._render_replay(
+                    self._replay_messages(contract),
+                ),
                 stability=FragmentStability.REPLAY,
             ),
             RequestFragment(
@@ -94,10 +95,10 @@ class RequestShapeBuilder:
         )
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
-        for message in contract.conversation_messages:
-            content = self._message_content(message)
-            if content:
-                messages.append(ProviderMessageShape(role=message.role, content=content))
+        for message in self._replay_messages(contract):
+            provider_message = self._provider_message_from_replay_message(message)
+            if provider_message is not None:
+                messages.append(provider_message)
         if intent_content:
             messages.append(ProviderMessageShape(role="user", content=intent_content))
         if volatile_context:
@@ -109,6 +110,16 @@ class RequestShapeBuilder:
             f"{message.role}: {self._message_content(message)}"
             for message in messages
             if self._message_content(message)
+        )
+
+    def _replay_messages(self, contract: InstructionContract) -> tuple[Message, ...]:
+        return tuple(
+            message
+            for message in contract.conversation_messages
+            if not (
+                message.role == "user"
+                and message.content == contract.current_user_request
+            )
         )
 
     def _render_volatile_context(self, contract: InstructionContract) -> str:
@@ -134,6 +145,40 @@ class RequestShapeBuilder:
                 ensure_ascii=False,
             )
         return ""
+
+    def _provider_message_from_replay_message(
+        self,
+        message: Message,
+    ) -> ProviderMessageShape | None:
+        content = self._message_content(message)
+        if not content:
+            return None
+        metadata: dict[str, Any] = {
+            "legacy_content": message.content,
+            "model_metadata": self._message_metadata_from_blocks(message),
+        }
+        if message.tool_call_id:
+            metadata["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            metadata["tool_calls"] = message.tool_calls
+        return ProviderMessageShape(
+            role=message.role,
+            content=content,
+            metadata=metadata,
+        )
+
+    def _message_metadata_from_blocks(self, message: Message) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        for block in message.blocks:
+            for key, value in block.metadata.items():
+                existing = metadata.get(key)
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    nested = dict(existing)
+                    nested.update(value)
+                    metadata[key] = nested
+                    continue
+                metadata[key] = value
+        return metadata
 
     def _normalized_tools(
         self,
