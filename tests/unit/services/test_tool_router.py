@@ -97,6 +97,58 @@ def test_tool_router_renders_only_callable_tools() -> None:
     assert [tool.name for tool in rendered] == ["list_directory", "run_shell", "workspace_summary"]
 
 
+def test_tool_router_schema_order_does_not_change_when_compatibility_groups_change() -> None:
+    registry = ToolRegistryV2.from_tools(
+        [
+            FakeTool("list_directory", "listed"),
+            FakeTool("run_shell", "ran"),
+        ]
+    )
+    first_exposure = ToolExposure(
+        direct=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("run_shell"),
+                kind=ToolExposureKind.DIRECT,
+                source=ToolRouteSource.REGISTRY,
+                spec=registry.specs["run_shell"],
+            ),
+        ),
+        deferred=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("list_directory"),
+                kind=ToolExposureKind.DEFERRED,
+                source=ToolRouteSource.REGISTRY,
+                spec=registry.specs["list_directory"],
+            ),
+        ),
+    )
+    second_exposure = ToolExposure(
+        direct=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("list_directory"),
+                kind=ToolExposureKind.DIRECT,
+                source=ToolRouteSource.REGISTRY,
+                spec=registry.specs["list_directory"],
+            ),
+        ),
+        deferred=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("run_shell"),
+                kind=ToolExposureKind.DEFERRED,
+                source=ToolRouteSource.REGISTRY,
+                spec=registry.specs["run_shell"],
+            ),
+        ),
+    )
+    router = ToolRouter(tool_registry=registry)
+
+    first_names = [tool.name for tool in router.render_for_model(first_exposure)]
+    second_names = [tool.name for tool in router.render_for_model(second_exposure)]
+
+    assert first_names == ["list_directory", "run_shell"]
+    assert second_names == ["list_directory", "run_shell"]
+
+
 def test_tool_router_preserves_array_parameter_item_schema() -> None:
     tool = FakeTool("update_plan", "updated")
     tool.spec = ToolSpec(

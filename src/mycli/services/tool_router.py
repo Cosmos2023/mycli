@@ -6,6 +6,7 @@ from mycli.domain.dynamic_tools import (
     DynamicToolRegistration,
 )
 from mycli.domain.tool_exposure import ToolExposure
+from mycli.domain.tool_set import ToolSet
 from mycli.domain.tools import ToolCall
 from mycli.services.dynamic_tool_registry import DynamicToolRegistry
 from mycli.infrastructure.models.base import ModelToolDefinition, ModelToolParameter
@@ -27,6 +28,7 @@ class ToolRouter:
         self._lifecycle_events: list[DynamicToolLifecycleEvent] = []
 
     def render_for_model(self, exposure: ToolExposure) -> list[ModelToolDefinition]:
+        tool_set = ToolSet.from_exposure(exposure)
         return [
             ModelToolDefinition(
                 name=entry.name,
@@ -42,7 +44,7 @@ class ToolRouter:
                     for parameter in entry.spec.parameters
                 ),
             )
-            for entry in exposure.callable_entries()
+            for entry in tool_set.model_visible_entries()
         ]
 
     def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResultV2:
