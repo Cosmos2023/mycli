@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from mycli.domain.runtime.blocks import RuntimeBlock, RuntimeRole
 
 
 def stable_hash(value: str) -> str:
@@ -74,6 +77,52 @@ class ProviderMessageShape:
 
 
 @dataclass(slots=True, frozen=True)
+class ProviderRuntimeItemShape:
+    role: RuntimeRole
+    blocks: tuple[RuntimeBlock, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.role.strip():
+            raise ValueError("provider runtime item role cannot be blank")
+
+    @property
+    def content_hash(self) -> str:
+        return stable_hash(
+            f"{self.role}\n"
+            + json.dumps(
+                [self._block_payload(block) for block in self.blocks],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
+
+    @property
+    def char_length(self) -> int:
+        return len(
+            json.dumps(
+                [self._block_payload(block) for block in self.blocks],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
+
+    def _block_payload(self, block: RuntimeBlock) -> dict[str, object]:
+        return {
+            "type": block.type,
+            "text": block.text,
+            "tool_name": block.tool_name,
+            "tool_arguments": block.tool_arguments,
+            "call_id": block.call_id,
+            "provider_id": block.provider_id,
+            "source": block.source,
+            "metadata": block.metadata,
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class RequestShape:
     provider: str
     protocol: str
@@ -83,6 +132,7 @@ class RequestShape:
     tool_order_hash: str | None = None
     fragments: tuple[RequestFragment, ...] = ()
     provider_messages: tuple[ProviderMessageShape, ...] = ()
+    provider_runtime_items: tuple[ProviderRuntimeItemShape, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.provider.strip():
@@ -120,6 +170,9 @@ class RequestShape:
     def provider_message_hashes(self) -> tuple[str, ...]:
         return tuple(message.content_hash for message in self.provider_messages)
 
+    def provider_runtime_item_hashes(self) -> tuple[str, ...]:
+        return tuple(item.content_hash for item in self.provider_runtime_items)
+
     def summary(self) -> dict[str, object]:
         return {
             "provider": self.provider,
@@ -132,10 +185,14 @@ class RequestShape:
             "volatile_hash": self.volatile_hash,
             "fragment_hashes": self.fragment_hashes(),
             "provider_message_hashes": self.provider_message_hashes(),
+            "provider_runtime_item_hashes": self.provider_runtime_item_hashes(),
             "fragment_lengths": {
                 fragment.id: fragment.char_length for fragment in self.fragments
             },
             "provider_message_lengths": tuple(
                 message.char_length for message in self.provider_messages
+            ),
+            "provider_runtime_item_lengths": tuple(
+                item.char_length for item in self.provider_runtime_items
             ),
         }

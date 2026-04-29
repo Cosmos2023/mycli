@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mycli.domain.conversation import Message
-from mycli.domain.runtime import AgentConfig, InstructionContract, InstructionFragment
+from mycli.domain.runtime import AgentConfig, InstructionContract, InstructionFragment, RuntimeBlock
 from mycli.domain.runtime.request_shape import (
     FragmentStability,
     RequestFragmentKind,
@@ -186,3 +186,51 @@ def test_request_shape_builder_does_not_duplicate_current_user_request_in_replay
     assert user_messages == ["Current user request: current task"]
     assert "user: current task" not in shape.fragments[2].content
     assert "assistant: I will inspect it." in shape.fragments[2].content
+
+
+def test_request_shape_builder_preserves_structured_runtime_replay_blocks(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(
+                    role="assistant",
+                    content="",
+                    blocks=(
+                        RuntimeBlock(type="text", text="I will inspect."),
+                        RuntimeBlock(
+                            type="tool_call",
+                            tool_name="read_file",
+                            tool_arguments={"path": "README.md"},
+                            call_id="call_read_1",
+                        ),
+                    ),
+                ),
+                Message(
+                    role="tool",
+                    content="Tool read_file: README",
+                    tool_call_id="call_read_1",
+                    blocks=(
+                        RuntimeBlock(
+                            type="tool_result",
+                            text="Tool read_file: README",
+                            call_id="call_read_1",
+                        ),
+                    ),
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assistant_item = next(item for item in shape.provider_runtime_items if item.role == "assistant")
+    tool_item = next(item for item in shape.provider_runtime_items if item.role == "tool")
+
+    assert [block.type for block in assistant_item.blocks] == ["text", "tool_call"]
+    assert assistant_item.blocks[1].call_id == "call_read_1"
+    assert tool_item.blocks[0].type == "tool_result"
+    assert tool_item.blocks[0].call_id == "call_read_1"

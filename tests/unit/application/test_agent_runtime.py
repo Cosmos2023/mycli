@@ -1048,9 +1048,18 @@ def test_agent_runtime_sends_current_user_turn_once_in_block_path(tmp_path: Path
         item
         for item in adapter.seen_items[0]
         if item.role == "user"
-        and any(block.type == "text" and block.text == request for block in item.blocks)
+        and any(
+            block.type == "text"
+            and block.text == f"Current user request: {request}"
+            for block in item.blocks
+        )
     ]
     assert len(matching_user_items) == 1
+    assert not any(
+        item.role == "user"
+        and any(block.type == "text" and block.text == request for block in item.blocks)
+        for item in adapter.seen_items[0]
+    )
 
 
 def test_agent_runtime_sends_current_user_turn_once_in_legacy_path(tmp_path: Path) -> None:
@@ -2501,7 +2510,12 @@ def test_agent_runtime_runtime_items_allow_responses_adapter_to_consume_history_
         context=context,
         turn_context=turn_context,
     )
-    runtime_items = runtime._build_runtime_items(contract=contract)
+    request_shape = runtime._request_shape_builder.build(
+        config=runtime._config,
+        contract=contract,
+        tools=(),
+    )
+    runtime_items = runtime._build_runtime_items(request_shape=request_shape)
     client = CapturingResponsesClient()
     adapter = ResponsesModelAdapter(client=client)
 

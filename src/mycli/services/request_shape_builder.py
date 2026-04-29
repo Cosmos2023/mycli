@@ -9,9 +9,11 @@ from mycli.domain.runtime import (
     FragmentStability,
     InstructionContract,
     ProviderMessageShape,
+    ProviderRuntimeItemShape,
     RequestFragment,
     RequestFragmentKind,
     RequestShape,
+    RuntimeBlock,
     stable_hash,
 )
 from mycli.infrastructure.models.base import ModelToolDefinition
@@ -78,6 +80,11 @@ class RequestShapeBuilder:
                 intent_content=intent_content,
                 volatile_context=volatile_context,
             ),
+            provider_runtime_items=self._provider_runtime_items(
+                contract=contract,
+                intent_content=intent_content,
+                volatile_context=volatile_context,
+            ),
         )
 
     def _provider_messages(
@@ -104,6 +111,49 @@ class RequestShapeBuilder:
         if volatile_context:
             messages.append(ProviderMessageShape(role="user", content=volatile_context))
         return tuple(messages)
+
+    def _provider_runtime_items(
+        self,
+        *,
+        contract: InstructionContract,
+        intent_content: str,
+        volatile_context: str,
+    ) -> tuple[ProviderRuntimeItemShape, ...]:
+        items: list[ProviderRuntimeItemShape] = [
+            ProviderRuntimeItemShape(
+                role="system",
+                blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
+            )
+        ]
+        developer_content = self._join_content(
+            section.content for section in contract.developer_sections
+        )
+        if developer_content:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="developer",
+                    blocks=(RuntimeBlock(type="text", text=developer_content),),
+                )
+            )
+        for message in self._replay_messages(contract):
+            blocks = self._runtime_blocks_from_message(message)
+            if blocks:
+                items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        if intent_content:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=intent_content),),
+                )
+            )
+        if volatile_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=volatile_context),),
+                )
+            )
+        return tuple(items)
 
     def _render_replay(self, messages: tuple[Message, ...]) -> str:
         return self._join_content(
@@ -145,6 +195,39 @@ class RequestShapeBuilder:
                 ensure_ascii=False,
             )
         return ""
+
+    def _runtime_blocks_from_message(self, message: Message) -> tuple[RuntimeBlock, ...]:
+        if message.blocks:
+            return message.blocks
+        if message.role == "assistant":
+            blocks: list[RuntimeBlock] = []
+            if message.content:
+                blocks.append(RuntimeBlock(type="text", text=message.content))
+            for call in message.tool_calls:
+                if not call.call_id:
+                    continue
+                blocks.append(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name=call.name,
+                        tool_arguments=call.arguments,
+                        call_id=call.call_id,
+                    )
+                )
+            return tuple(blocks)
+        if message.role == "tool":
+            if not message.tool_call_id:
+                return ()
+            return (
+                RuntimeBlock(
+                    type="tool_result",
+                    text=message.content,
+                    call_id=message.tool_call_id,
+                ),
+            )
+        if message.content:
+            return (RuntimeBlock(type="text", text=message.content),)
+        return ()
 
     def _provider_message_from_replay_message(
         self,

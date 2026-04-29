@@ -346,7 +346,6 @@ class TurnExecutor:
                 turn_context=turn_context,
             )
             latest_context_baseline = runtime._context_baseline_from_contract(contract)
-            runtime_items = runtime._build_runtime_items(contract=contract)
             tools = runtime._render_model_tools(
                 tool_exposure=planned_exposure.exposure,
                 tool_router=tool_router,
@@ -357,6 +356,7 @@ class TurnExecutor:
                 contract=contract,
                 tools=tools,
             )
+            runtime_items = runtime._build_runtime_items(request_shape=request_shape)
             legacy_messages = runtime._build_messages(request_shape=request_shape)
             try:
                 turn_result, turn_streamed_chunks = runtime._request_model_turn(

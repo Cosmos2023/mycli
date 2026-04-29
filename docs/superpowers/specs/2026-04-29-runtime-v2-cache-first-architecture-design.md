@@ -16,6 +16,8 @@ Phase 3 adds a provider-neutral `RequestShapeBuilder` and emits cache-first requ
 
 Phase 4a makes legacy chat-style `ModelMessage` payloads come from `RequestShape.provider_messages`, so chat-completions providers start receiving cache-first ordering while structured block replay remains on the existing RuntimeItem path.
 
+Phase 4b adds block-aware runtime item shapes and makes structured `RuntimeItem` payloads come from `RequestShape`, preserving tool-call/tool-result replay while applying the same cache-first ordering to Responses/Anthropic-style adapters.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：

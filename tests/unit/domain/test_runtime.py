@@ -191,9 +191,11 @@ def test_runtime_exports_request_shape_types() -> None:
     from mycli.domain.runtime import (
         FragmentStability,
         ProviderMessageShape,
+        ProviderRuntimeItemShape,
         RequestFragment,
         RequestFragmentKind,
         RequestShape,
+        RuntimeBlock,
     )
 
     fragment = RequestFragment(
@@ -209,6 +211,13 @@ def test_runtime_exports_request_shape_types() -> None:
         stable_system="system",
         fragments=(fragment,),
         provider_messages=(ProviderMessageShape(role="user", content="hello"),),
+        provider_runtime_items=(
+            ProviderRuntimeItemShape(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="hello"),),
+            ),
+        ),
     )
 
     assert shape.fragment_hashes()["intent:current"] == fragment.content_hash
+    assert shape.provider_runtime_item_hashes()

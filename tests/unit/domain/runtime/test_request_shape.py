@@ -5,11 +5,13 @@ import pytest
 from mycli.domain.runtime.request_shape import (
     FragmentStability,
     ProviderMessageShape,
+    ProviderRuntimeItemShape,
     RequestFragment,
     RequestFragmentKind,
     RequestShape,
     stable_hash,
 )
+from mycli.domain.runtime.blocks import RuntimeBlock
 
 
 def test_stable_hash_is_deterministic() -> None:
@@ -77,3 +79,21 @@ def test_request_shape_summarizes_fragments_and_messages() -> None:
         stable_hash("system\nstable system"),
         stable_hash("user\nfix cache"),
     )
+
+
+def test_provider_runtime_item_shape_hashes_structured_blocks() -> None:
+    item = ProviderRuntimeItemShape(
+        role="assistant",
+        blocks=(
+            RuntimeBlock(type="text", text="I will inspect."),
+            RuntimeBlock(
+                type="tool_call",
+                tool_name="read_file",
+                tool_arguments={"path": "README.md"},
+                call_id="call_read_1",
+            ),
+        ),
+    )
+
+    assert item.content_hash == item.content_hash
+    assert item.char_length > 0

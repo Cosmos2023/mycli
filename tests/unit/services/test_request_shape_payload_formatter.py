@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mycli.domain.runtime import ProviderMessageShape, RequestShape
+from mycli.domain.runtime import ProviderMessageShape, ProviderRuntimeItemShape, RequestShape, RuntimeBlock
 from mycli.domain.tools import ToolCall
 from mycli.services.request_shape_payload_formatter import RequestShapePayloadFormatter
 
@@ -77,3 +77,35 @@ def test_request_shape_payload_formatter_preserves_legacy_tool_replay_metadata()
     assert messages[0].tool_calls == (tool_call,)
     assert messages[0].metadata == {"deepseek": {"reasoning_content": "inspect first"}}
     assert messages[1].tool_call_id == "call_read_1"
+
+
+def test_request_shape_payload_formatter_builds_runtime_items_in_shape_order() -> None:
+    shape = RequestShape(
+        provider="qwen",
+        protocol="responses",
+        model="qwen3.6-plus",
+        stable_system="stable",
+        provider_runtime_items=(
+            ProviderRuntimeItemShape(
+                role="system",
+                blocks=(RuntimeBlock(type="text", text="stable"),),
+            ),
+            ProviderRuntimeItemShape(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="Current user request: inspect"),),
+            ),
+            ProviderRuntimeItemShape(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="volatile context"),),
+            ),
+        ),
+    )
+
+    items = RequestShapePayloadFormatter().runtime_items(shape)
+
+    assert [item.role for item in items] == ["system", "user", "user"]
+    assert [item.blocks[0].text for item in items] == [
+        "stable",
+        "Current user request: inspect",
+        "volatile context",
+    ]

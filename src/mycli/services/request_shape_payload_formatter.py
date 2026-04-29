@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.runtime import RequestShape
-from mycli.infrastructure.models.base import ModelMessage
+from mycli.infrastructure.models.base import ModelMessage, RuntimeItem
 from mycli.domain.tools import ToolCall
 
 
@@ -17,6 +17,16 @@ class RequestShapePayloadFormatter:
             )
             for message in shape.provider_messages
             if message.content.strip()
+        ]
+
+    def runtime_items(self, shape: RequestShape) -> list[RuntimeItem]:
+        return [
+            RuntimeItem(
+                role=item.role,
+                blocks=item.blocks,
+            )
+            for item in shape.provider_runtime_items
+            if item.blocks
         ]
 
     def _legacy_content(self, content: str, metadata: dict[str, object]) -> str:
