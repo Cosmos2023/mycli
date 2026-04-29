@@ -185,3 +185,30 @@ def test_tool_exposure_keeps_callable_and_namespaced_routes_stable() -> None:
         "edit_file",
         "mcp.github.search_code",
     )
+
+
+def test_runtime_exports_request_shape_types() -> None:
+    from mycli.domain.runtime import (
+        FragmentStability,
+        ProviderMessageShape,
+        RequestFragment,
+        RequestFragmentKind,
+        RequestShape,
+    )
+
+    fragment = RequestFragment(
+        id="intent:current",
+        kind=RequestFragmentKind.INTENT,
+        content="hello",
+        stability=FragmentStability.VOLATILE,
+    )
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="system",
+        fragments=(fragment,),
+        provider_messages=(ProviderMessageShape(role="user", content="hello"),),
+    )
+
+    assert shape.fragment_hashes()["intent:current"] == fragment.content_hash

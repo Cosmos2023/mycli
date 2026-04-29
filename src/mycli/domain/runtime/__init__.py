@@ -32,6 +32,14 @@ from mycli.domain.runtime.planning import (
     PlanState as PlanState,
     PlanStatus as PlanStatus,
 )
+from mycli.domain.runtime.request_shape import (
+    FragmentStability as FragmentStability,
+    ProviderMessageShape as ProviderMessageShape,
+    RequestFragment as RequestFragment,
+    RequestFragmentKind as RequestFragmentKind,
+    RequestShape as RequestShape,
+    stable_hash as stable_hash,
+)
 from mycli.domain.runtime.protocol import (
     StopReason as StopReason,
     TurnItem as TurnItem,
@@ -211,6 +219,7 @@ __all__ = [
     "DecisionAction",
     "DecisionKind",
     "ExecutionContext",
+    "FragmentStability",
     "HistoryItem",
     "HistoryItemType",
     "InstructionContract",
@@ -223,6 +232,10 @@ __all__ = [
     "PlanItem",
     "PlanState",
     "PlanStatus",
+    "ProviderMessageShape",
+    "RequestFragment",
+    "RequestFragmentKind",
+    "RequestShape",
     "RiskLevel",
     "RuntimeBlock",
     "RuntimeEvent",
@@ -249,4 +262,5 @@ __all__ = [
     "TurnRollout",
     "TurnRolloutEvent",
     "TurnStatus",
+    "stable_hash",
 ]
