@@ -56,7 +56,7 @@ from mycli.domain.tool_exposure import (
     ToolRouteSource,
 )
 from mycli.domain.tools import ToolCall
-from mycli.infrastructure.models.base import ModelAdapter, ModelMessage
+from mycli.infrastructure.models.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.infrastructure.openai_client import ModelResponseError
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.prompts.react import build_react_prompt
@@ -74,6 +74,7 @@ from mycli.services.dynamic_tool_registry import DynamicToolRegistry
 from mycli.services.dynamic_tool_provider import DynamicToolProvider
 from mycli.services.memory_service import MemoryService
 from mycli.services.planning.planning_service import PlanningService
+from mycli.services.request_shape_builder import RequestShapeBuilder
 from mycli.services.session_service import SessionService
 from mycli.services.skill_registry import SkillRegistry
 from mycli.services.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
@@ -132,6 +133,7 @@ class AgentRuntime:
         self._runtime_policy = RuntimePolicy()
         self._turn_context_assembler = TurnContextAssembler()
         self._instruction_contract_assembler = InstructionContractAssembler()
+        self._request_shape_builder = RequestShapeBuilder()
         self._tool_exposure_planner = ToolExposurePlanner(tool_registry=tool_registry)
         self._dynamic_tool_registry = DynamicToolRegistry()
         self._dynamic_tool_providers = tuple(dynamic_tool_providers)
@@ -413,17 +415,18 @@ class AgentRuntime:
                     ),
                 )
             )
-        items.append(
-            RuntimeItem(
-                role="assistant",
-                blocks=(
-                    RuntimeBlock(
-                        type="text",
-                        text=contract.assistant_scaffold or build_react_prompt(contract),
+        if contract.assistant_scaffold:
+            items.append(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(
+                        RuntimeBlock(
+                            type="text",
+                            text=contract.assistant_scaffold,
+                        ),
                     ),
-                ),
+                )
             )
-        )
         for message in contract.conversation_messages:
             blocks = self._runtime_blocks_from_message(message)
             if not blocks:
@@ -496,12 +499,13 @@ class AgentRuntime:
             ModelMessage(role="user", content=section.content)
             for section in contract.contextual_user_sections
         )
-        messages.append(
-            ModelMessage(
-                role="assistant",
-                content=contract.assistant_scaffold or build_react_prompt(contract),
+        if contract.assistant_scaffold:
+            messages.append(
+                ModelMessage(
+                    role="assistant",
+                    content=contract.assistant_scaffold,
+                )
             )
-        )
         messages.extend(
             ModelMessage(
                 role=message.role,
@@ -526,13 +530,18 @@ class AgentRuntime:
             base_instructions=build_system_prompt(),
             conversation_messages=context.conversation_messages,
         )
+        stable_action_guidance = build_react_prompt(
+            contract,
+            include_context_sections=False,
+            include_dynamic_guidance=False,
+        )
         contract = InstructionContract(
-            base_instructions=contract.base_instructions,
+            base_instructions=f"{contract.base_instructions}\n\n{stable_action_guidance}",
             developer_sections=contract.developer_sections,
             contextual_user_sections=contract.contextual_user_sections,
             conversation_messages=contract.conversation_messages,
             current_user_request=contract.current_user_request,
-            assistant_scaffold=build_react_prompt(contract),
+            assistant_scaffold=None,
         )
         self._trace_service.append(
             self._config.session_id,
@@ -1010,6 +1019,9 @@ class AgentRuntime:
         record_assistant_call: bool = True,
     ) -> PlanState:
         normalized_call = self._normalize_tool_call(call)
+        turn_metadata = dict(metadata or {})
+        turn_metadata["arguments"] = normalized_call.arguments
+        turn_metadata["provider_id"] = provider_id
         start_event = self._tool_activity_event(normalized_call, phase="start")
         activity_events.append(start_event)
         self._append_turn_item(
@@ -1020,10 +1032,7 @@ class AgentRuntime:
                 text=start_event.message,
                 tool_name=normalized_call.name,
                 call_id=normalized_call.call_id,
-                metadata={
-                    "arguments": normalized_call.arguments,
-                    "provider_id": provider_id,
-                },
+                metadata=turn_metadata,
             ),
         )
         if record_assistant_call:
@@ -1271,19 +1280,58 @@ class AgentRuntime:
             done=bool(getattr(action, "done", False)),
         )
 
+    def _render_model_tools(
+        self,
+        *,
+        tool_exposure: ToolExposure | None,
+        tool_router: ToolRouter | None,
+        allow_tools: bool,
+    ) -> list[ModelToolDefinition]:
+        if allow_tools and tool_exposure is not None and tool_router is not None:
+            return tool_router.render_for_model(tool_exposure)
+        return []
+
+    def _trace_request_shape(
+        self,
+        *,
+        turn_id: str,
+        contract: InstructionContract,
+        tools: list[ModelToolDefinition],
+    ) -> None:
+        shape = self._request_shape_builder.build(
+            config=self._config,
+            contract=contract,
+            tools=tools,
+        )
+        payload = shape.summary()
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="request_shape",
+                turn_id=turn_id,
+                payload=payload,
+            ),
+        )
+        self._workspace_log_service.log(
+            level=LogLevel.INFO,
+            event="request_shape_built",
+            message="Built cache-first request shape",
+            context={
+                "session_id": self._config.session_id,
+                "turn_id": turn_id,
+                "system_hash": payload["system_hash"],
+                "tool_schema_hash": payload["tool_schema_hash"],
+                "tool_order_hash": payload["tool_order_hash"],
+            },
+        )
+
     def _request_model_turn(
         self,
         *,
         runtime_items: list[RuntimeItem],
         legacy_messages: list[ModelMessage],
-        tool_exposure: ToolExposure | None,
-        tool_router: ToolRouter | None,
-        allow_tools: bool = True,
+        tools: list[ModelToolDefinition],
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
-        if allow_tools and tool_exposure is not None and tool_router is not None:
-            tools = tool_router.render_for_model(tool_exposure)
-        else:
-            tools = []
         stream_turn = getattr(self._model_adapter, "stream_turn", None)
         if callable(stream_turn):
             blocks: list[RuntimeBlock] = []

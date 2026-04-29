@@ -1074,6 +1074,28 @@ def test_agent_runtime_sends_current_user_turn_once_in_legacy_path(tmp_path: Pat
     assert len(matching_user_messages) == 1
 
 
+def test_agent_runtime_places_stable_action_guidance_before_contextual_user_messages(
+    tmp_path: Path,
+) -> None:
+    adapter = LegacySingleTurnCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    response = runtime.handle_user_turn("inspect cache shape")
+
+    assert response.assistant_message == "done"
+    messages = adapter.seen_messages[0]
+    assert getattr(messages[0], "role", None) == "system"
+    assert "从当前用户请求和可见上下文出发" in str(
+        getattr(messages[0], "content", "")
+    )
+    assert any(getattr(message, "role", None) == "user" for message in messages[1:])
+    assert not any(getattr(message, "role", None) == "assistant" for message in messages)
+
+
 def test_agent_runtime_uses_recent_conversation_window_in_block_path(tmp_path: Path) -> None:
     adapter = BlockSingleTurnCaptureAdapter()
     runtime = build_runtime_with_capture_adapter(
@@ -1783,13 +1805,16 @@ def test_agent_runtime_records_capability_turn_item_and_prompt_context(tmp_path:
     capability_item = next(item for item in response.turn.items if item.type is TurnItemType.CAPABILITY)
     assert capability_item.metadata["capability_name"] == "repository-analysis"
     assert capability_item.metadata["source"] == "explicit_mention"
-    assistant_prompt = next(
-        str(message.content)
+    assert any(
+        getattr(message, "role", None) == "user"
+        and "repository-analysis" in str(getattr(message, "content", ""))
         for message in adapter.seen_messages[0]
-        if getattr(message, "role", None) == "assistant"
     )
-    assert "repository-analysis" in assistant_prompt
-    assert "explicit_mention" in assistant_prompt
+    assert any(
+        getattr(message, "role", None) == "user"
+        and "explicit_mention" in str(getattr(message, "content", ""))
+        for message in adapter.seen_messages[0]
+    )
 
 
 class FailingAdapter:
@@ -1901,14 +1926,14 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
     response = runtime.handle_user_turn("inspect this repo")
 
     assert response.assistant_message == "Memory captured"
-    assistant_prompt = next(
-        message.content
+    contextual_user_content = "\n".join(
+        str(getattr(message, "content", ""))
         for message in adapter.seen_messages[0]
-        if getattr(message, "role", None) == "assistant"
+        if getattr(message, "role", None) == "user"
     )
-    assert "concise" in assistant_prompt
-    assert "src/mycli/cli/main.py" in assistant_prompt
-    assert "Inspected the repo root" in assistant_prompt
+    assert "concise" in contextual_user_content
+    assert "src/mycli/cli/main.py" in contextual_user_content
+    assert "Inspected the repo root" in contextual_user_content
 
 
 def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
@@ -1932,6 +1957,12 @@ def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
     assert any(event.kind == "tool_exposure" for event in loaded)
     assert any(event.kind == "runtime_policy" for event in loaded)
     assert any(event.kind == "instruction_contract" for event in loaded)
+    request_shape = next(event for event in loaded if event.kind == "request_shape")
+    assert request_shape.payload["provider"] == "openai"
+    assert request_shape.payload["system_hash"]
+    assert request_shape.payload["tool_schema_hash"]
+    assert request_shape.payload["tool_order_hash"]
+    assert request_shape.payload["fragment_hashes"]["intent:current"]
 
 
 class RepeatMissingReadAdapter:

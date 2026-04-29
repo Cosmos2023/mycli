@@ -12,6 +12,8 @@ Implementation starts with Phase 1, which adds provider-neutral `RequestShape` d
 
 Phase 2 replaces prompt-visible tool hierarchy with an equal `ToolSet`, stabilizes model-visible tool schema ordering, and keeps execution safety outside schema visibility. It preserves compatibility with existing runtime containers while removing direct/deferred/recommended language from agent-facing context.
 
+Phase 3 adds a provider-neutral `RequestShapeBuilder` and emits cache-first request shape diagnostics from live runtime turns. Existing provider payload formatting remains unchanged in this phase; the new shape is a verified migration target for later formatter replacement.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：
