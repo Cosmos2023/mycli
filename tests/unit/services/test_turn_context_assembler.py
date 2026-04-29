@@ -123,8 +123,9 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
     ]
     assert turn_context.sections[1].enabled is True
     assert turn_context.sections[7].metadata["skill_name"] == "grounding"
-    assert "Direct tools: list_directory, read_file_range" in turn_context.sections[8].content
-    assert "Deferred tools: search_text" in turn_context.sections[8].content
+    assert "Available tools: list_directory, read_file_range, search_text" in turn_context.sections[8].content
+    assert "Direct tools:" not in turn_context.sections[8].content
+    assert "Deferred tools:" not in turn_context.sections[8].content
     assert "Dynamic tools: workspace_summary" in turn_context.sections[8].content
     assert turn_context.debug_summary()["enabled_sections"] == [
         "base_instructions",
@@ -365,3 +366,89 @@ def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is
     assert "先检查仓库结构" in conversation_section.content
     assert "我先看一下入口文件。" in conversation_section.content
     assert "Timezone: Asia/Shanghai" in environment_section.content
+
+
+def test_turn_context_assembler_renders_conversation_as_stable_transcript() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            conversation_messages=(
+                Message(
+                    role="assistant",
+                    content="Tool read_file: README.md",
+                    blocks=(),
+                ),
+            ),
+            conversation_summary="Derived from structured history.",
+        ),
+    )
+
+    conversation_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.CONVERSATION_CONTEXT
+    )
+
+    assert "assistant: Tool read_file: README.md" in conversation_section.content
+    assert "Message(role=" not in conversation_section.content
+    assert "RuntimeBlock(" not in conversation_section.content
+
+
+def test_turn_context_assembler_does_not_recursively_duplicate_environment_baseline() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(
+                workspace_root=Path("/tmp/workspace"),
+                session_id="demo",
+                model="deepseek-v4-flash",
+                protocol="chat_completions",
+            ),
+            context_baseline=ContextBaseline(
+                thread_id="demo",
+                fragments=(
+                    BaselineFragment(
+                        id="environment",
+                        kind="environment_context",
+                        title="Environment context",
+                        content=(
+                            "这是本轮相关的环境事实。\n"
+                            "Workspace root: /tmp/workspace\n"
+                            "Workspace root: /tmp/workspace\n"
+                            "Session id: demo"
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    environment_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT
+    )
+
+    assert environment_section.content.count("Workspace root: /tmp/workspace") == 1
+    assert "这是本轮相关的环境事实。" not in environment_section.content
+    assert "Session id:" not in environment_section.content
+
+
+def test_turn_context_assembler_omits_low_value_runtime_identity_from_environment_text() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(
+                workspace_root=Path("/tmp/workspace"),
+                session_id="volatile-session",
+                model="deepseek-v4-flash",
+                protocol="chat_completions",
+            ),
+        ),
+    )
+
+    environment_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT
+    )
+
+    assert "Workspace root: /tmp/workspace" in environment_section.content
+    assert "Session id:" not in environment_section.content
+    assert "Model:" not in environment_section.content
+    assert "Protocol:" not in environment_section.content

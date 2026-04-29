@@ -28,7 +28,7 @@ class InstructionContractAssembler:
             if section.type is TurnContextSectionType.BASE_INSTRUCTIONS:
                 continue
             if section.type is TurnContextSectionType.RUNTIME_REMINDERS:
-                developer_sections.append(
+                contextual_user_sections.append(
                     self._runtime_policy_fragment(section)
                 )
                 continue
@@ -88,14 +88,6 @@ class InstructionContractAssembler:
                 continue
             if section.type is TurnContextSectionType.USER_REQUEST:
                 current_user_request = turn_context.user_message
-                contextual_user_sections.append(
-                    self._directed_fragment(
-                        section=section,
-                        kind=InstructionFragmentKind.USER_REQUEST,
-                        include_in_memory=True,
-                        prefix="这是当前用户请求。请围绕这个请求推进，不要漂移到无关工作上。",
-                    )
-                )
 
         return InstructionContract(
             base_instructions=base_instructions,
@@ -170,7 +162,8 @@ class InstructionContractAssembler:
             kind=InstructionFragmentKind.TOOL_EXPOSURE,
             title=section.title,
             content=(
-                "本轮只使用已暴露且可调用的工具。能用专门工具解决时，优先不要退化成临时 shell 操作。\n"
+                "本轮只使用已暴露且可调用的工具。工具没有 direct/deferred 等等级之分；"
+                "能用专门工具解决时，优先不要退化成临时 shell 操作。\n"
                 f"{section.content}"
             ),
             source=section.source,

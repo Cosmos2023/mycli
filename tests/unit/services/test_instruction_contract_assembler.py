@@ -69,19 +69,25 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
 
     assert contract.base_instructions == "You are mycli."
     assert [section.kind for section in contract.developer_sections] == [
-        "runtime_policy",
         "tool_exposure",
     ]
-    assert "本轮请遵循这组 runtime policy。" in contract.developer_sections[0].content
-    assert "本轮只使用已暴露且可调用的工具" in contract.developer_sections[1].content
+    assert "本轮只使用已暴露且可调用的工具" in contract.developer_sections[0].content
+    assert "工具没有 direct/deferred 等等级之分" in contract.developer_sections[0].content
     assert [fragment.kind for fragment in contract.contextual_user_sections] == [
         "workspace_instructions",
         "environment_context",
+        "runtime_policy",
         "capability_body",
-        "user_request",
     ]
+    assert contract.current_user_request == "inspect this repo with $repository-analysis"
     assert contract.contextual_user_sections[0].include_in_memory is False
     assert "这是本轮的工作区/项目说明。" in contract.contextual_user_sections[0].content
+    runtime_policy_fragment = next(
+        fragment
+        for fragment in contract.contextual_user_sections
+        if fragment.kind == "runtime_policy"
+    )
+    assert "本轮请遵循这组 runtime policy。" in runtime_policy_fragment.content
     capability_fragment = next(
         fragment
         for fragment in contract.contextual_user_sections

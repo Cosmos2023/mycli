@@ -108,21 +108,43 @@ class TurnContextAssembler:
         return TurnContext(user_message=user_message, sections=sections)
 
     def _render_environment_context(self, context: ExecutionContext) -> str:
-        runtime_context = (
-            f"Workspace root: {context.config.workspace_root}\n"
-            f"Session id: {context.config.session_id}\n"
-            f"Model: {context.config.model}\n"
-            f"Protocol: {context.config.protocol}"
+        runtime_context = f"Workspace root: {context.config.workspace_root}"
+        baseline_environment = self._deduplicated_environment_baseline(
+            self._baseline_fragment_content(context, "environment_context")
         )
-        baseline_environment = self._baseline_fragment_content(context, "environment_context")
         if baseline_environment:
             return f"{baseline_environment}\n{runtime_context}"
         return runtime_context
 
+    def _deduplicated_environment_baseline(self, content: str) -> str:
+        if not content:
+            return ""
+        dynamic_prefixes = (
+            "这是本轮相关的环境事实。",
+            "Workspace root:",
+            "Session id:",
+            "Model:",
+            "Protocol:",
+        )
+        lines: list[str] = []
+        seen: set[str] = set()
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line in seen:
+                continue
+            if line.startswith(dynamic_prefixes):
+                continue
+            lines.append(line)
+            seen.add(line)
+        return "\n".join(lines)
+
     def _render_conversation_context(self, context: ExecutionContext) -> str:
         messages = context.conversation_messages or self._messages_from_history(context)
         summary = context.conversation_summary or ("none" if not messages else "Derived from structured history.")
-        return f"Conversation summary: {summary}\nRecent conversation:\n{messages}"
+        return (
+            f"Conversation summary: {summary}\n"
+            f"Recent conversation:\n{self._render_messages(messages)}"
+        )
 
     def _render_messages(self, messages: tuple[Message, ...]) -> str:
         if not messages:
@@ -240,14 +262,12 @@ class TurnContextAssembler:
     def _render_tool_exposure(self, context: ExecutionContext) -> str:
         if context.tool_exposure is not None:
             summary = context.tool_exposure.summary()
-            direct = ", ".join(summary["direct"]) or "none"
-            deferred = ", ".join(summary["deferred"]) or "none"
+            tool_names = summary["direct"] + summary["deferred"] + summary["dynamic"]
+            tools = ", ".join(dict.fromkeys(tool_names)) or "none"
             dynamic = self._render_dynamic_tools(context)
-            return (
-                f"Direct tools: {direct}\n"
-                f"Deferred tools: {deferred}\n"
-                f"Dynamic tools: {dynamic}"
-            )
+            if dynamic == "none":
+                return f"Available tools: {tools}"
+            return f"Available tools: {tools}\nDynamic tools: {dynamic}"
         tools = ", ".join(context.available_tool_names) or "none"
         return f"Available tools: {tools}"
 
