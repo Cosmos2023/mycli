@@ -32,7 +32,7 @@ AgentScope spike：
 ## 目标
 
 - 在同一个 session 内保持 stable system content 不变。
-- 除非实际 tool catalog 变化，否则保持工具 schema 顺序和工具 schema hash 稳定。
+- 除非实际 ToolSet 变化，否则保持工具 schema 顺序和工具 schema hash 稳定。
 - 将 volatile runtime context 移到稳定请求前缀之后。
 - 将 memory 改为检索式、有预算、可去重。
 - 让 tool evidence 只保留在一个权威通道中。
@@ -58,12 +58,12 @@ Runtime v2 将当前 runtime 拆成显式分层：
 
 2. `RequestShapeBuilder`
    - 将 runtime state 转换成 provider-neutral request shape。
-   - 应用 cache policy、context ordering、memory selection 和 tool catalog references。
+   - 应用 cache policy、context ordering、memory selection 和 ToolSet references。
 
-3. `ToolCatalog` 和 `ToolPolicy`
-   - `ToolCatalog` 是稳定的 model-visible schema 集合。
-   - `ToolPolicy` 是当前 runtime permission、approval、deny 和 recommendation 层。
-   - Direct/deferred 状态不得重排 model-visible schemas。
+3. `ToolSet` 和 `ToolSafetyGate`
+   - `ToolSet` 是稳定、平等、model-visible 的工具集合。
+   - 所有工具在 agent 系统中不再有 direct/deferred/recommended 等等级之分。
+   - `ToolSafetyGate` 只在执行时处理审批、拒绝和外部安全约束，不影响工具 schema 可见性或顺序。
 
 4. `MemoryRetriever`
    - 根据当前 intent 选择相关 memory records。
@@ -112,9 +112,9 @@ Stable system 只包含长期稳定的运行规则：
 
 ### Stable Tool Schema
 
-Tool schema 从 `ToolCatalog` 按确定性顺序序列化。推荐顺序是静态 registry 顺序，并配合持久化的 catalog version hash。如果 registry 顺序还不够稳定，则按 route key 排序。
+Tool schema 从 `ToolSet` 按确定性顺序序列化。推荐顺序是静态 registry 顺序，并配合持久化的 toolset version hash。如果 registry 顺序还不够稳定，则按 route key 排序。
 
-Dynamic tools 使用稳定 route key 追加在 static tools 之后。Dynamic tool lifecycle 变化可以合理地改变 tool schema hash，但 volatile direct/deferred 变化不能改变它。
+Dynamic tools 使用稳定 route key 追加在 static tools 之后。Dynamic tool lifecycle 变化可以合理地改变 tool schema hash；但 prompt 策略、用户话术、执行审批状态不能改变工具 schema hash。
 
 ### Provider Replay Transcript
 
@@ -140,7 +140,7 @@ Volatile context 放在最后，并保持简短。它可以包含：
 - active plan status
 - selected memory snippets
 - evidence index summaries
-- tool policy notes
+- tool safety notes
 
 它不得包含 transcript 中已经存在的完整 tool evidence。
 
@@ -154,7 +154,7 @@ Volatile context 放在最后，并保持简短。它可以包含：
 - `VolatileFragment`：简短 runtime policy、plan 或 reminder content。
 - `RetrievedMemoryFragment`：只包含被选中的 memory。
 - `EvidenceIndexFragment`：紧凑 tool result index。
-- `ToolPolicyFragment`：当前 allowed/denied/recommended tool policy，后置渲染。
+- `ToolSafetyFragment`：当前执行安全约束，后置渲染；它不表达工具等级。
 
 每个 fragment 携带：
 
@@ -174,7 +174,7 @@ Runtime v2 必须把 replay transcript 视为不可变事件日志。凡是用�
 固定性要求：
 
 - `system prompt`：session 内固定，hash 不变。
-- `tools` 描述与顺序：固定，除非真实 `ToolCatalog` 变更。
+- `tools` 描述与顺序：固定，除非真实 `ToolSet` 变更。
 - 用户 query：当前 turn 内固定；历史 query replay 时逐字保留。
 - LLM thinking/reasoning：生成前不可控，但 provider 返回后必须作为 replay metadata 原样保存并逐字回放。
 - assistant 回复话术和最终回复：生成前不可控，但一旦进入历史，就不能被 summary 改写后替代 replay。
@@ -201,39 +201,40 @@ Memory 输出应该是简短事实，而不是很长的历史回答。
 
 ## Tool System V2
 
-Runtime v2 分离 catalog、policy 和 execution。
+Runtime v2 将工具系统改成平等工具集，并把执行安全从工具可见性中分离出来。
 
-### ToolCatalog
+### ToolSet
 
-ToolCatalog 拥有稳定工具定义：
+ToolSet 拥有稳定工具定义：
 
 - name
 - description
 - parameter schema
 - route key
 - source
-- catalog version hash
+- toolset version hash
 
 它按确定性顺序生成 model-visible schema。
 
-### ToolPolicy
+所有工具在 model-visible schema 中地位平等。Runtime v2 不再向 agent 暴露 direct、deferred、recommended 等等级，也不再根据当前任务把某些工具排到前面。
 
-ToolPolicy 拥有当前决策状态：
+### ToolSafetyGate
 
-- allowed tools
-- denied tools
+ToolSafetyGate 拥有执行时安全状态：
+
 - tools requiring approval
-- recommended tools
 - user-forbidden tools
+- externally denied tools
 - risk-derived constraints
+- session command allowances
 
-Policy 在执行时强制生效。它可以被摘要到 volatile context 中，但绝不能重排 schema。
+Safety gate 在执行时强制生效。它可以被摘要到后置 volatile context 中，但不得改变工具 schema、工具顺序或制造工具等级。
 
-否定指令必须保守解析。例如，“do not call git_diff or run_shell” 必须将这些工具标记为 denied 或 discouraged，不能因为出现了 `git` 或 `shell` 这些词就提升它们。
+否定指令必须保守解析。例如，“do not call git_diff or run_shell” 必须在执行安全层阻止这些工具，不能因为出现了 `git` 或 `shell` 这些词就改变工具集或提升它们。
 
 ### ToolExecutor
 
-ToolExecutor 在执行前根据 `ToolPolicy` 校验每一个模型工具调用。Prompt guidance 只是建议；execution policy 才是权威。
+ToolExecutor 在执行前根据 `ToolSafetyGate` 校验每一个模型工具调用。Prompt guidance 只是建议；execution safety 才是权威。
 
 ## Reasoning and Thinking Replay
 
@@ -258,7 +259,7 @@ Provider formatters 接受 `RequestShape` 并返回 provider payload：
 - 面向 OpenAI/Qwen-compatible Responses providers 的 Responses payload。
 - 面向 Anthropic 的 Anthropic Messages payload。
 
-Formatters 可以适配 roles、在 provider 协议要求时合并 system messages，并编码 replay metadata。它们不得决定 memory selection、tool policy 或 context ordering。
+Formatters 可以适配 roles、在 provider 协议要求时合并 system messages，并编码 replay metadata。它们不得决定 memory selection、tool safety 或 context ordering。
 
 ## Cache Policy
 
@@ -275,7 +276,7 @@ Policy knobs：
 - `stable_tool_schema_required`
 - `volatile_context_position`
 - `memory_injection_mode`
-- `tool_policy_render_mode`
+- `tool_safety_render_mode`
 - `reasoning_replay_mode`
 - `max_volatile_chars`
 - `diagnostics_enabled`
@@ -308,7 +309,7 @@ Diagnostics 必须 redact secrets，且不得记录 API keys。
 
 1. 添加 request shape domain types 和 diagnostics，不改变现有行为。
 2. 通过 `RequestShapeBuilder` 复现当前 prompt 输出，并用 snapshot-style unit tests 锁住。
-3. 引入 `ToolCatalog`、`ToolPolicy` 和 stable schema serialization。
+3. 引入 `ToolSet`、`ToolSafetyGate` 和 stable schema serialization。
 4. 将 provider payload construction 移到 formatter boundaries 后面。
 5. 用 retrieval、budget 和 dedupe 替换 automatic memory injection。
 6. 将 tool evidence duplication 改为 single-channel replay 加 compact evidence index。
@@ -319,8 +320,8 @@ Diagnostics 必须 redact secrets，且不得记录 API keys。
 
 Unit tests：
 
-- 当只有 tool policy 变化时，system content 在多 turn 中保持稳定。
-- 当 direct/deferred 变化时，tool schema order 保持稳定。
+- 当只有 tool safety state 变化时，system content 在多 turn 中保持稳定。
+- 所有工具作为平等工具集渲染；不存在 direct/deferred/recommended 等等级导致的 schema 变化。
 - 否定工具指令不会提升 forbidden tools。
 - memory retrieval 排除重复的 recent assistant content。
 - reasoning/thinking 不进入 memory 或 volatile context。
@@ -345,15 +346,15 @@ Manual smoke：
 
 - 激进减少 memory 可能让某些 follow-up answers 上下文不够丰富。缓解方式：按当前 intent 检索，并显式 replay transcript。
 - Provider replay requirements 不同，如果隐藏在 formatter 细节里可能回归。缓解方式：provider-specific replay tests。
-- Stable tool schema 可能暴露当前 policy 会拒绝执行的工具。缓解方式：清晰的执行错误和后置 volatile policy note。
+- Stable tool schema 可能暴露当前 safety gate 会拒绝执行的工具。缓解方式：清晰的执行错误和后置 volatile safety note。
 - Cache hit rate 仍然取决于 workload。新 evidence 和 tool results 仍会产生 miss；diagnostics 会识别合理 miss。
 
 ## Acceptance Criteria
 
 - Runtime v2 design boundaries 已实现，且 `agent_runtime` 中没有 provider-specific prompt hacks。
 - DeepSeek multi-turn requests 在同一个 session 内保持 stable system hash。
-- 除非实际 catalog 变化，否则 tool schema order hash 保持稳定。
-- Direct/deferred policy changes 不改变 model-visible tool schema order。
+- 除非实际 ToolSet 变化，否则 tool schema order hash 保持稳定。
+- 工具系统不存在 direct/deferred/recommended 等等级；所有 model-visible tools 平等且确定性排序。
 - Dynamic tool lifecycle changes 是确定性的、可诊断的。
 - Memory injection 是检索式且可去重的。
 - Tool evidence 不在 contextual user blocks 和 transcript replay 之间重复。
