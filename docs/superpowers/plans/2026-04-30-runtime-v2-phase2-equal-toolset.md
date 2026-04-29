@@ -22,6 +22,8 @@ This plan implements the Runtime v2 equal-toolset slice:
 
 There is intentionally no `ToolPolicy`, no `recommended` tool state, and no direct/deferred hierarchy in the target model-visible design.
 
+Phase 2 depends on Phase 1 only for the architectural direction and diagnostics vocabulary. It does not require live `RequestShape` integration yet.
+
 ## File Structure
 
 - Create `src/mycli/domain/tool_set.py`

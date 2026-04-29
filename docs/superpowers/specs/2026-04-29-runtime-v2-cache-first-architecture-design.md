@@ -10,6 +10,8 @@ Runtime v2 围绕稳定请求形状、provider 中立 replay、检索式记忆�
 
 Implementation starts with Phase 1, which adds provider-neutral `RequestShape` domain types and cache shape diagnostics without changing runtime behavior. Later phases migrate tools, memory, provider formatting, and runtime assembly onto those contracts.
 
+Phase 2 replaces prompt-visible tool hierarchy with an equal `ToolSet`, stabilizes model-visible tool schema ordering, and keeps execution safety outside schema visibility. It preserves compatibility with existing runtime containers while removing direct/deferred/recommended language from agent-facing context.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：
