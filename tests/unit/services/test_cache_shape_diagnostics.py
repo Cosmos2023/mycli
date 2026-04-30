@@ -71,3 +71,50 @@ def test_diagnostic_finds_first_changed_provider_message_index() -> None:
 
     assert diagnostic.first_changed_fragment_id is None
     assert diagnostic.first_changed_provider_message_index == 1
+
+
+def test_diagnostic_identifies_split_memory_fragment_change() -> None:
+    previous = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable system",
+        fragments=(
+            RequestFragment(
+                id="intent:current",
+                kind=RequestFragmentKind.INTENT,
+                content="inspect",
+                stability=FragmentStability.VOLATILE,
+            ),
+            RequestFragment(
+                id="retrieved_memory",
+                kind=RequestFragmentKind.RETRIEVED_MEMORY,
+                content="Memory: old",
+                stability=FragmentStability.VOLATILE,
+            ),
+        ),
+    )
+    current = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable system",
+        fragments=(
+            RequestFragment(
+                id="intent:current",
+                kind=RequestFragmentKind.INTENT,
+                content="inspect",
+                stability=FragmentStability.VOLATILE,
+            ),
+            RequestFragment(
+                id="retrieved_memory",
+                kind=RequestFragmentKind.RETRIEVED_MEMORY,
+                content="Memory: new",
+                stability=FragmentStability.VOLATILE,
+            ),
+        ),
+    )
+
+    diagnostic = CacheShapeDiagnostics().build(current=current, previous=previous)
+
+    assert diagnostic.first_changed_fragment_id == "retrieved_memory"

@@ -18,6 +18,8 @@ Phase 4a makes legacy chat-style `ModelMessage` payloads come from `RequestShape
 
 Phase 4b adds block-aware runtime item shapes and makes structured `RuntimeItem` payloads come from `RequestShape`, preserving tool-call/tool-result replay while applying the same cache-first ordering to Responses/Anthropic-style adapters.
 
+Phase 5a splits volatile context diagnostics into section-level request fragments such as `volatile:runtime_policy`, `volatile:plan`, and `retrieved_memory`. Provider payload text is unchanged in this phase; the split exists to identify which volatile slice breaks cache reuse first.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：

@@ -154,13 +154,64 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
         "stable:tool_schema",
         "replay:conversation",
         "intent:current",
-        "volatile:context",
+        "volatile:runtime_policy",
     ]
     assert shape.fragments[2].kind is RequestFragmentKind.REPLAY
     assert shape.fragments[2].stability is FragmentStability.REPLAY
     assert provider_roles == ["system", "developer", "user", "assistant", "user", "user"]
     assert provider_contents[-2] == "Current user request: current task"
     assert provider_contents[-1] == "volatile runtime context"
+
+
+def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="Workspace root: /tmp/demo",
+                ),
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content="Memory: prefers concise replies",
+                ),
+                InstructionFragment(
+                    kind="plan",
+                    title="Plan",
+                    content="Current plan: inspect",
+                ),
+                InstructionFragment(
+                    kind="runtime_policy",
+                    title="Runtime policy",
+                    content="Runtime policy: source_first",
+                ),
+            ),
+            current_user_request="inspect",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    fragments = {fragment.id: fragment for fragment in shape.fragments}
+
+    assert "volatile:context" not in fragments
+    assert fragments["volatile:environment_context"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["retrieved_memory"].kind is RequestFragmentKind.RETRIEVED_MEMORY
+    assert fragments["volatile:plan"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["volatile:runtime_policy"].kind is RequestFragmentKind.VOLATILE
+    assert shape.provider_messages[-1].content == "\n".join(
+        [
+            "Workspace root: /tmp/demo",
+            "Memory: prefers concise replies",
+            "Current plan: inspect",
+            "Runtime policy: source_first",
+        ]
+    )
 
 
 def test_request_shape_builder_does_not_duplicate_current_user_request_in_replay(

@@ -60,12 +60,7 @@ class RequestShapeBuilder:
                 content=intent_content,
                 stability=FragmentStability.VOLATILE,
             ),
-            RequestFragment(
-                id="volatile:context",
-                kind=RequestFragmentKind.VOLATILE,
-                content=volatile_context,
-                stability=FragmentStability.VOLATILE,
-            ),
+            *self._contextual_fragments(contract),
         )
         return RequestShape(
             provider=str(config.provider),
@@ -176,6 +171,46 @@ class RequestShapeBuilder:
         return self._join_content(
             section.content for section in contract.contextual_user_sections
         )
+
+    def _contextual_fragments(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[RequestFragment, ...]:
+        fragments: list[RequestFragment] = []
+        seen: dict[str, int] = {}
+        for section in contract.contextual_user_sections:
+            content = section.content.strip()
+            if not content:
+                continue
+            base_id, kind = self._fragment_identity(str(section.kind))
+            index = seen.get(base_id, 0)
+            seen[base_id] = index + 1
+            fragment_id = base_id if index == 0 else f"{base_id}:{index + 1}"
+            fragments.append(
+                RequestFragment(
+                    id=fragment_id,
+                    kind=kind,
+                    content=content,
+                    stability=FragmentStability.VOLATILE,
+                    metadata={
+                        "title": section.title,
+                        "source": section.source,
+                        "instruction_fragment_kind": str(section.kind),
+                    },
+                )
+            )
+        return tuple(fragments)
+
+    def _fragment_identity(
+        self,
+        section_kind: str,
+    ) -> tuple[str, RequestFragmentKind]:
+        normalized = section_kind.strip().lower().replace(" ", "_")
+        if normalized == "memory":
+            return "retrieved_memory", RequestFragmentKind.RETRIEVED_MEMORY
+        if normalized == "tool_exposure":
+            return "stable:tool_exposure", RequestFragmentKind.STABLE
+        return f"volatile:{normalized}", RequestFragmentKind.VOLATILE
 
     def _message_content(self, message: Message) -> str:
         if message.content:
