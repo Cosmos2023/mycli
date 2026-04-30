@@ -84,3 +84,71 @@ The system can make repeated complex shapes hit above 99%, but it cannot guarant
 - keep replay authoritative,
 - avoid duplicating memory/evidence/tool text in volatile context,
 - keep volatile context compact and late.
+
+## Real mycli Agent Long-Cycle Run
+
+After the synthetic request-shape benchmark, a real `mycli` agent run was executed against an isolated temporary Python repository. The run used:
+
+- 3 user turns in the same session,
+- real DeepSeek `deepseek-v4-flash`,
+- real `mycli` tool loop execution,
+- 14 model requests total,
+- read/search/list/shell-style tool activity,
+- no API key output.
+
+Turn activity:
+
+| Turn | Activity Events | Progress Updates | Pending Decision | Result |
+| --- | ---: | ---: | --- | --- |
+| 1 | 35 | 8 | false | completed |
+| 2 | 18 | 3 | false | completed |
+| 3 | 53 | 14 | false | completed |
+
+Observed raw response usage:
+
+| Request | Prompt Tokens | Cache Hit | Cache Miss | Hit Ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2039 | 256 | 1783 | 0.1256 |
+| 2 | 2196 | 256 | 1940 | 0.1166 |
+| 3 | 3308 | 1536 | 1772 | 0.4643 |
+| 4 | 2490 | 256 | 2234 | 0.1028 |
+| 5 | 3564 | 1664 | 1900 | 0.4669 |
+| 6 | 3942 | 1664 | 2278 | 0.4221 |
+| 7 | 3605 | 256 | 3349 | 0.0710 |
+| 8 | 4703 | 1664 | 3039 | 0.3538 |
+| 9 | 4807 | 1664 | 3143 | 0.3462 |
+| 10 | 4807 | 4736 | 71 | 0.9852 |
+| 11 | 5577 | 1664 | 3913 | 0.2984 |
+| 12 | 5533 | 1664 | 3869 | 0.3007 |
+| 13 | 4091 | 1664 | 2427 | 0.4067 |
+| 14 | 5364 | 1664 | 3700 | 0.3102 |
+
+### Real-Run Diagnosis
+
+The real agent benchmark confirms that the provider can cache warmed stable shapes, but the live runtime still has cache-hostile behavior in long tool loops:
+
+1. Replay window sliding changes the early provider messages.
+   - The live requests do not keep an append-only replay prefix.
+   - Older messages are dropped as `recent_message_count` shifts.
+   - This changes provider message index 1 onward across tool-loop requests.
+
+2. Force-answer requests remove the tool schema.
+   - Normal tool-loop requests send `tools=16`.
+   - Some final-answer requests send `tools=0`.
+   - This changes provider request body shape and defeats tool-schema cache reuse.
+
+3. Tool results include absolute temporary paths.
+   - This is expected for real file tools, but it makes replay evidence highly volatile.
+   - The important fix is not to duplicate this evidence elsewhere; replay itself will still grow.
+
+4. Some assistant messages replay DSML-style tool-call text as assistant content.
+   - These messages are model-generated and become part of replay.
+   - They should be preserved if provider requires them, but the runtime should avoid generating parallel summaries of them.
+
+### Next Required Fixes
+
+The remaining runtime work is:
+
+- Make provider replay prefix append-only within a session until explicit compaction, instead of using a sliding recent-message window for provider payloads.
+- Keep native tool schema stable even when runtime wants to force a final answer; enforce no-more-tools at the runtime/policy layer rather than removing `tools`.
+- Add request-shape diagnostics to real runtime logs with provider usage, so cache regressions can be caught without parsing raw model response files.
