@@ -24,6 +24,8 @@ Phase 5b keeps replay transcript as the authority for recent conversation and to
 
 Phase 5c compacts volatile runtime state by rendering runtime policy in deterministic key order and plan state as counts plus current/next actions, avoiding completed plan text churn after the current user intent.
 
+Phase 5d removes remaining high-impact drift by keeping tool names authoritative in native tool schema instead of developer text, excluding reasoning-only content from summaries and textual replay, stopping automatic session-summary memory injection, and sorting dynamic tool context deterministically.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：

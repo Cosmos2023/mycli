@@ -330,3 +330,87 @@ def test_request_shape_builder_removes_replayed_lines_from_volatile_conversation
     assert "user: inspect repo" not in volatile_payload
     assert "assistant: I will inspect README." not in volatile_payload
     assert "tool: Tool read_file: README content" not in volatile_payload
+
+
+def test_request_shape_builder_does_not_duplicate_tool_names_in_developer_payload(
+    tmp_path: Path,
+) -> None:
+    first = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(
+                InstructionFragment(
+                    kind="tool_exposure",
+                    title="Tool exposure",
+                    content=(
+                        "Use exposed tools only.\n"
+                        "Available tools: read_file, search_text"
+                    ),
+                ),
+            ),
+            current_user_request="inspect",
+        ),
+        tools=(_tool("read_file"), _tool("search_text")),
+    )
+    second = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(
+                InstructionFragment(
+                    kind="tool_exposure",
+                    title="Tool exposure",
+                    content="Use exposed tools only.\nAvailable tools: run_shell",
+                ),
+            ),
+            current_user_request="inspect",
+        ),
+        tools=(_tool("read_file"), _tool("search_text")),
+    )
+
+    first_developer = next(
+        message for message in first.provider_messages if message.role == "developer"
+    )
+    second_developer = next(
+        message for message in second.provider_messages if message.role == "developer"
+    )
+
+    assert first_developer.content == second_developer.content
+    assert "Available tools:" not in first_developer.content
+    assert "read_file" not in first_developer.content
+    assert "run_shell" not in second_developer.content
+
+
+def test_request_shape_builder_keeps_reasoning_blocks_out_of_textual_replay(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(
+                    role="assistant",
+                    content="Private reasoning that must not become assistant text.",
+                    blocks=(
+                        RuntimeBlock(
+                            type="reasoning",
+                            text="Private reasoning that must not become assistant text.",
+                            metadata={"deepseek": {"reasoning_content": "private"}},
+                        ),
+                    ),
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assert "Private reasoning" not in shape.fragments[2].content
+    assert not any(
+        message.role == "assistant" and "Private reasoning" in message.content
+        for message in shape.provider_messages
+    )
+    assistant_item = next(item for item in shape.provider_runtime_items if item.role == "assistant")
+    assert assistant_item.blocks[0].type == "reasoning"

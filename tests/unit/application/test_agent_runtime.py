@@ -1947,7 +1947,7 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
     )
     assert "concise" in contextual_user_content
     assert "src/mycli/cli/main.py" in contextual_user_content
-    assert "Inspected the repo root" in contextual_user_content
+    assert "Inspected the repo root" not in contextual_user_content
 
 
 def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:

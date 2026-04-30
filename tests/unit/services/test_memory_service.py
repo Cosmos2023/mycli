@@ -45,3 +45,24 @@ def test_memory_service_queries_records_across_scopes(tmp_path: Path) -> None:
         MemoryKind.SESSION_SUMMARY,
     ]
     assert records[0].value == "src/mycli/cli/main.py"
+
+
+def test_memory_service_does_not_auto_inject_session_summaries_into_runtime_context(
+    tmp_path: Path,
+) -> None:
+    service = MemoryService(
+        home_dir=tmp_path / "home",
+        workspace_root=tmp_path / "workspace",
+    )
+    service.save_preference("tone", "concise")
+    service.append_session_summary("demo", "Assistant answer from the previous turn")
+
+    records = service.collect_runtime_context(
+        user_message="continue",
+        session_id="demo",
+    )
+
+    assert [record.kind for record in records] == [MemoryKind.PREFERENCE]
+    assert "Assistant answer from the previous turn" not in {
+        record.value for record in records
+    }

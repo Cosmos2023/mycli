@@ -23,6 +23,29 @@ def test_context_manager_summarizes_older_messages() -> None:
     assert "first question" in context.summary
 
 
+def test_context_manager_excludes_reasoning_blocks_from_older_summary() -> None:
+    manager = ContextManager()
+
+    context = manager.build(
+        conversation=(
+            Message(
+                role="assistant",
+                content="Private reasoning that should not become summary text.",
+                blocks=(
+                    RuntimeBlock(
+                        type="reasoning",
+                        text="Private reasoning that should not become summary text.",
+                    ),
+                ),
+            ),
+            Message(role="assistant", content="Public answer."),
+        ),
+        recent_message_count=1,
+    )
+
+    assert context.summary is None
+
+
 def test_context_manager_expands_recent_messages_to_avoid_orphaned_tool_results() -> None:
     manager = ContextManager()
     tool_call_message = Message(

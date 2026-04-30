@@ -598,3 +598,60 @@ def test_turn_context_assembler_renders_runtime_policy_state_in_deterministic_or
         "Runtime policy: evidence_status=insufficient; "
         "path_bias=source_first; profile_name=source_first_verification"
     )
+
+
+def test_turn_context_assembler_renders_dynamic_tool_metadata_in_deterministic_order() -> None:
+    first_descriptor = DynamicToolDescriptor(
+        tool_id="runtime:z_tool:thread",
+        display_name="z_tool",
+        description="Z tool",
+        route_key=ToolRouteKey.local("z_tool"),
+        source=DynamicToolSource.RUNTIME,
+        scope=DynamicToolScope.THREAD,
+        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        spec=ToolSpec(name="z_tool", description="Z tool"),
+    )
+    second_descriptor = DynamicToolDescriptor(
+        tool_id="runtime:a_tool:thread",
+        display_name="a_tool",
+        description="A tool",
+        route_key=ToolRouteKey.local("a_tool"),
+        source=DynamicToolSource.RUNTIME,
+        scope=DynamicToolScope.THREAD,
+        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        spec=ToolSpec(name="a_tool", description="A tool"),
+    )
+
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            tool_exposure=ToolExposure(
+                dynamic=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("z_tool"),
+                        kind=ToolExposureKind.DYNAMIC,
+                        source=ToolRouteSource.RUNTIME,
+                        spec=first_descriptor.spec,
+                        dynamic_descriptor=first_descriptor,
+                    ),
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("a_tool"),
+                        kind=ToolExposureKind.DYNAMIC,
+                        source=ToolRouteSource.RUNTIME,
+                        spec=second_descriptor.spec,
+                        dynamic_descriptor=second_descriptor,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    tool_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.TOOL_EXPOSURE
+    )
+
+    assert tool_section.content.index("a_tool") < tool_section.content.index("z_tool")
+    assert [
+        item["name"] for item in tool_section.metadata["dynamic_tools"]
+    ] == ["a_tool", "z_tool"]

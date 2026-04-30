@@ -328,7 +328,7 @@ class TurnContextAssembler:
     def _render_tool_exposure(self, context: ExecutionContext) -> str:
         if context.tool_exposure is not None:
             summary = context.tool_exposure.summary()
-            tool_names = summary["direct"] + summary["deferred"] + summary["dynamic"]
+            tool_names = sorted(summary["direct"] + summary["deferred"] + summary["dynamic"])
             tools = ", ".join(dict.fromkeys(tool_names)) or "none"
             dynamic = self._render_dynamic_tools(context)
             if dynamic == "none":
@@ -342,18 +342,18 @@ class TurnContextAssembler:
             return {"tool_names": list(context.available_tool_names)}
         summary = context.tool_exposure.summary()
         return {
-            "direct_tool_names": summary["direct"],
-            "deferred_tool_names": summary["deferred"],
-            "dynamic_tool_names": summary["dynamic"],
+            "direct_tool_names": sorted(summary["direct"]),
+            "deferred_tool_names": sorted(summary["deferred"]),
+            "dynamic_tool_names": sorted(summary["dynamic"]),
             "dynamic_tools": self._dynamic_tool_metadata(context),
-            "tool_names": summary["direct"] + summary["deferred"] + summary["dynamic"],
+            "tool_names": sorted(summary["direct"] + summary["deferred"] + summary["dynamic"]),
         }
 
     def _render_dynamic_tools(self, context: ExecutionContext) -> str:
         if context.tool_exposure is None or not context.tool_exposure.dynamic:
             return "none"
         rendered: list[str] = []
-        for entry in context.tool_exposure.dynamic:
+        for entry in sorted(context.tool_exposure.dynamic, key=lambda item: item.name):
             descriptor = entry.dynamic_descriptor
             if descriptor is None:
                 rendered.append(entry.name)
@@ -370,7 +370,7 @@ class TurnContextAssembler:
         if context.tool_exposure is None:
             return []
         metadata: list[dict[str, object]] = []
-        for entry in context.tool_exposure.dynamic:
+        for entry in sorted(context.tool_exposure.dynamic, key=lambda item: item.name):
             descriptor = entry.dynamic_descriptor
             if descriptor is None:
                 metadata.append({"name": entry.name})

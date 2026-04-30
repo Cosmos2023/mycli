@@ -94,7 +94,8 @@ class RequestShapeBuilder:
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
         developer_content = self._join_content(
-            section.content for section in contract.developer_sections
+            self._developer_section_content(section)
+            for section in contract.developer_sections
         )
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
@@ -122,7 +123,8 @@ class RequestShapeBuilder:
             )
         ]
         developer_content = self._join_content(
-            section.content for section in contract.developer_sections
+            self._developer_section_content(section)
+            for section in contract.developer_sections
         )
         if developer_content:
             items.append(
@@ -172,6 +174,14 @@ class RequestShapeBuilder:
         return self._join_content(
             self._contextual_section_content(section, contract)
             for section in contract.contextual_user_sections
+        )
+
+    def _developer_section_content(self, section: InstructionFragment) -> str:
+        if str(section.kind) != "tool_exposure":
+            return section.content.strip()
+        return (
+            "Use the tool schema attached to this request as the authoritative, "
+            "equal toolset. Tool execution safety is enforced by the runtime."
         )
 
     def _contextual_fragments(
@@ -250,6 +260,8 @@ class RequestShapeBuilder:
         return f"volatile:{normalized}", RequestFragmentKind.VOLATILE
 
     def _message_content(self, message: Message) -> str:
+        if message.blocks and all(block.type == "reasoning" for block in message.blocks):
+            return ""
         if message.content:
             return message.content
         if message.tool_calls:

@@ -121,8 +121,4 @@ class MemoryService:
                 kinds=(MemoryKind.PROJECT_NOTE,),
                 limit=5,
             )
-        session_summary_records = tuple(
-            MemoryRecord(kind=MemoryKind.SESSION_SUMMARY, key="recent", value=value)
-            for value in self.load_session_summaries(session_id)[-2:]
-        )
-        return preference_records + project_records + session_summary_records
+        return preference_records + project_records

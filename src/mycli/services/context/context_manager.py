@@ -43,16 +43,24 @@ class ContextManager:
         summary = None
         if older:
             lines = [
-                f"- {message.role}: {' '.join(message.content.split())[:96]}"
+                f"- {message.role}: {content[:96]}"
                 for message in older
+                if (content := self._summary_content(message))
             ]
             rendered = "\n".join(lines)
-            summary = (
-                rendered
-                if len(rendered) <= max_summary_chars
-                else rendered[: max_summary_chars - 3].rstrip() + "..."
-            )
+            if rendered:
+                summary = (
+                    rendered
+                    if len(rendered) <= max_summary_chars
+                    else rendered[: max_summary_chars - 3].rstrip() + "..."
+                )
         return ManagedContext(messages=recent, summary=summary)
+
+    def _summary_content(self, message: Message) -> str:
+        if not message.blocks:
+            return " ".join(message.content.split())
+        text = Message.text_content_from_blocks(message.blocks)
+        return " ".join(text.split())
 
     def _expand_recent_start_to_tool_boundary(
         self,
