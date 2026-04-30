@@ -285,3 +285,48 @@ def test_request_shape_builder_preserves_structured_runtime_replay_blocks(
     assert assistant_item.blocks[1].call_id == "call_read_1"
     assert tool_item.blocks[0].type == "tool_result"
     assert tool_item.blocks[0].call_id == "call_read_1"
+
+
+def test_request_shape_builder_removes_replayed_lines_from_volatile_conversation_context(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="conversation_context",
+                    title="Conversation context",
+                    content=(
+                        "这是本轮相关的近期对话上下文。\n"
+                        "Conversation summary: User asked for a repo inspection.\n"
+                        "Recent conversation:\n"
+                        "user: inspect repo\n"
+                        "assistant: I will inspect README.\n"
+                        "tool: Tool read_file: README content"
+                    ),
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="inspect repo"),
+                Message(role="assistant", content="I will inspect README."),
+                Message(role="tool", content="Tool read_file: README content"),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    volatile_fragment = next(
+        fragment for fragment in shape.fragments if fragment.id == "volatile:conversation_context"
+    )
+    volatile_payload = shape.provider_messages[-1].content
+
+    assert "Conversation summary: User asked for a repo inspection." in volatile_fragment.content
+    assert "user: inspect repo" not in volatile_fragment.content
+    assert "assistant: I will inspect README." not in volatile_fragment.content
+    assert "tool: Tool read_file: README content" not in volatile_fragment.content
+    assert "user: inspect repo" not in volatile_payload
+    assert "assistant: I will inspect README." not in volatile_payload
+    assert "tool: Tool read_file: README content" not in volatile_payload

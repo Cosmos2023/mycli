@@ -452,3 +452,68 @@ def test_turn_context_assembler_omits_low_value_runtime_identity_from_environmen
     assert "Session id:" not in environment_section.content
     assert "Model:" not in environment_section.content
     assert "Protocol:" not in environment_section.content
+
+
+def test_turn_context_assembler_filters_memory_values_already_present_in_replay() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            conversation_messages=(
+                Message(role="assistant", content="I found README.md and pyproject.toml."),
+                Message(role="tool", content="Tool read_file: README content"),
+            ),
+            memory_records=(
+                MemoryRecord(
+                    kind=MemoryKind.SESSION_SUMMARY,
+                    key="last_assistant",
+                    value="I found README.md and pyproject.toml.",
+                ),
+                MemoryRecord(
+                    kind=MemoryKind.PROJECT_NOTE,
+                    key="layout",
+                    value="Project uses a src layout.",
+                ),
+            ),
+        ),
+    )
+
+    memory_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.MEMORY
+    )
+
+    assert memory_section.enabled is True
+    assert "Project uses a src layout." in memory_section.content
+    assert "I found README.md and pyproject.toml." not in memory_section.content
+
+
+def test_turn_context_assembler_disables_memory_when_all_records_are_replay_duplicates() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            history_items=(
+                HistoryItem(
+                    id="hist_1",
+                    thread_id="demo",
+                    turn_id="turn_1",
+                    type=HistoryItemType.ASSISTANT_MESSAGE,
+                    text="I already inspected src/mycli.",
+                ),
+            ),
+            memory_records=(
+                MemoryRecord(
+                    kind=MemoryKind.SESSION_SUMMARY,
+                    key="last_turn",
+                    value="I already inspected src/mycli.",
+                ),
+            ),
+        ),
+    )
+
+    memory_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.MEMORY
+    )
+
+    assert memory_section.enabled is False
+    assert memory_section.content == "Memory: none"

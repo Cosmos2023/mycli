@@ -8,6 +8,7 @@ from mycli.domain.runtime import (
     AgentConfig,
     FragmentStability,
     InstructionContract,
+    InstructionFragment,
     ProviderMessageShape,
     ProviderRuntimeItemShape,
     RequestFragment,
@@ -169,7 +170,8 @@ class RequestShapeBuilder:
 
     def _render_volatile_context(self, contract: InstructionContract) -> str:
         return self._join_content(
-            section.content for section in contract.contextual_user_sections
+            self._contextual_section_content(section, contract)
+            for section in contract.contextual_user_sections
         )
 
     def _contextual_fragments(
@@ -179,7 +181,7 @@ class RequestShapeBuilder:
         fragments: list[RequestFragment] = []
         seen: dict[str, int] = {}
         for section in contract.contextual_user_sections:
-            content = section.content.strip()
+            content = self._contextual_section_content(section, contract).strip()
             if not content:
                 continue
             base_id, kind = self._fragment_identity(str(section.kind))
@@ -200,6 +202,41 @@ class RequestShapeBuilder:
                 )
             )
         return tuple(fragments)
+
+    def _contextual_section_content(
+        self,
+        section: InstructionFragment,
+        contract: InstructionContract,
+    ) -> str:
+        content = section.content.strip()
+        if str(section.kind) != "conversation_context":
+            return content
+        return self._deduplicated_conversation_context(content, contract)
+
+    def _deduplicated_conversation_context(
+        self,
+        content: str,
+        contract: InstructionContract,
+    ) -> str:
+        replay_lines = {
+            f"{message.role}: {self._message_content(message)}"
+            for message in self._replay_messages(contract)
+            if self._message_content(message)
+        }
+        if not replay_lines:
+            return content
+
+        lines: list[str] = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line == "Recent conversation:":
+                continue
+            if line in replay_lines:
+                continue
+            lines.append(line)
+        return "\n".join(lines)
 
     def _fragment_identity(
         self,

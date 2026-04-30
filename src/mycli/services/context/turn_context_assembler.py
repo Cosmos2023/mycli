@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mycli.domain.capabilities import CapabilityActivationDependencyStatus
 from mycli.domain.conversation import Message
+from mycli.domain.memory import MemoryRecord
 from mycli.domain.runtime import (
     ExecutionContext,
     HistoryItemType,
@@ -19,6 +20,9 @@ class TurnContextAssembler:
         context: ExecutionContext,
         workspace_instructions: str | None = None,
     ) -> TurnContext:
+        workspace_content = self._workspace_instructions(context, workspace_instructions)
+        memory_records = self._deduplicated_memory_records(context)
+        memory_content = self._render_memory(memory_records)
         sections = (
             TurnContextSection(
                 type=TurnContextSectionType.BASE_INSTRUCTIONS,
@@ -30,8 +34,8 @@ class TurnContextAssembler:
             TurnContextSection(
                 type=TurnContextSectionType.WORKSPACE_INSTRUCTIONS,
                 title="Workspace instructions",
-                content=self._workspace_instructions(context, workspace_instructions),
-                enabled=bool(self._workspace_instructions(context, workspace_instructions)),
+                content=workspace_content,
+                enabled=bool(workspace_content),
                 source="workspace" if workspace_instructions else "baseline",
             ),
             TurnContextSection(
@@ -61,8 +65,8 @@ class TurnContextAssembler:
             TurnContextSection(
                 type=TurnContextSectionType.MEMORY,
                 title="Memory",
-                content=self._render_memory(context),
-                enabled=bool(context.memory_records),
+                content=memory_content,
+                enabled=bool(memory_records),
                 source="memory",
             ),
             TurnContextSection(
@@ -182,8 +186,36 @@ class TurnContextAssembler:
         fragments = [fragment.content for fragment in baseline.fragments if fragment.kind == kind]
         return "\n".join(fragment for fragment in fragments if fragment)
 
-    def _render_memory(self, context: ExecutionContext) -> str:
-        return "Memory: " + ("; ".join(record.value for record in context.memory_records) or "none")
+    def _render_memory(self, records: tuple[MemoryRecord, ...]) -> str:
+        return "Memory: " + ("; ".join(record.value for record in records) or "none")
+
+    def _deduplicated_memory_records(self, context: ExecutionContext) -> tuple[MemoryRecord, ...]:
+        replay_texts = self._replay_texts(context)
+        if not replay_texts:
+            return context.memory_records
+        return tuple(
+            record
+            for record in context.memory_records
+            if self._normalized_text(record.value) not in replay_texts
+        )
+
+    def _replay_texts(self, context: ExecutionContext) -> set[str]:
+        texts: set[str] = set()
+        messages = (*context.conversation_messages, *self._messages_from_history(context))
+        for message in messages:
+            content = message.content or Message.text_content_from_blocks(message.blocks)
+            self._add_replay_text(texts, content)
+            if content:
+                self._add_replay_text(texts, f"{message.role}: {content}")
+        return texts
+
+    def _add_replay_text(self, texts: set[str], value: str) -> None:
+        normalized = self._normalized_text(value)
+        if normalized:
+            texts.add(normalized)
+
+    def _normalized_text(self, value: str) -> str:
+        return " ".join(value.split())
 
     def _render_plan(self, context: ExecutionContext) -> str:
         summary = (
