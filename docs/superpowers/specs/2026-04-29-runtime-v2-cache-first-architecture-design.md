@@ -20,6 +20,10 @@ Phase 4b adds block-aware runtime item shapes and makes structured `RuntimeItem`
 
 Phase 5a splits volatile context diagnostics into section-level request fragments such as `volatile:runtime_policy`, `volatile:plan`, and `retrieved_memory`. Provider payload text is unchanged in this phase; the split exists to identify which volatile slice breaks cache reuse first.
 
+Phase 5b keeps replay transcript as the authority for recent conversation and tool evidence by removing replay duplicates from retrieved memory and volatile conversation context.
+
+Phase 5c compacts volatile runtime state by rendering runtime policy in deterministic key order and plan state as counts plus current/next actions, avoiding completed plan text churn after the current user intent.
+
 ## 证据
 
 DeepSeek 日志分析发现了这些缓存杀手：

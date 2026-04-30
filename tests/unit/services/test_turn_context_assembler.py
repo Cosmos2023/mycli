@@ -517,3 +517,84 @@ def test_turn_context_assembler_disables_memory_when_all_records_are_replay_dupl
 
     assert memory_section.enabled is False
     assert memory_section.content == "Memory: none"
+
+
+def test_turn_context_assembler_renders_plan_as_compact_action_state() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            plan_state=PlanState(
+                items=(
+                    PlanItem(
+                        id="1",
+                        content="Completed discovery step with lots of volatile evidence",
+                        status=PlanStatus.COMPLETED,
+                    ),
+                    PlanItem(
+                        id="2",
+                        content="Implement compact volatile state rendering",
+                        status=PlanStatus.IN_PROGRESS,
+                    ),
+                    PlanItem(
+                        id="3",
+                        content="Run focused tests",
+                        status=PlanStatus.PENDING,
+                    ),
+                    PlanItem(
+                        id="4",
+                        content="Run full verification",
+                        status=PlanStatus.PENDING,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    plan_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.PLAN
+    )
+
+    assert "Plan status: completed=1, in_progress=1, pending=2" in plan_section.content
+    assert "Current: Implement compact volatile state rendering" in plan_section.content
+    assert "Next:" in plan_section.content
+    assert "Run focused tests" in plan_section.content
+    assert "Completed discovery step with lots of volatile evidence" not in plan_section.content
+
+
+def test_turn_context_assembler_renders_runtime_policy_state_in_deterministic_order() -> None:
+    first = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            runtime_policy_state={
+                "profile_name": "source_first_verification",
+                "path_bias": "source_first",
+                "evidence_status": "insufficient",
+            },
+        ),
+    )
+    second = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            runtime_policy_state={
+                "evidence_status": "insufficient",
+                "profile_name": "source_first_verification",
+                "path_bias": "source_first",
+            },
+        ),
+    )
+
+    first_section = next(
+        section for section in first.sections if section.type is TurnContextSectionType.RUNTIME_REMINDERS
+    )
+    second_section = next(
+        section for section in second.sections if section.type is TurnContextSectionType.RUNTIME_REMINDERS
+    )
+
+    assert first_section.content == second_section.content
+    assert first_section.content.splitlines()[0] == (
+        "Runtime policy: evidence_status=insufficient; "
+        "path_bias=source_first; profile_name=source_first_verification"
+    )

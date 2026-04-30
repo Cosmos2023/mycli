@@ -6,6 +6,9 @@ from mycli.domain.memory import MemoryRecord
 from mycli.domain.runtime import (
     ExecutionContext,
     HistoryItemType,
+    PlanItem,
+    PlanState,
+    PlanStatus,
     TurnContext,
     TurnContextSection,
     TurnContextSectionType,
@@ -218,20 +221,51 @@ class TurnContextAssembler:
         return " ".join(value.split())
 
     def _render_plan(self, context: ExecutionContext) -> str:
-        summary = (
-            "\n".join(
-                f"- {item.status.value}: {item.content}" for item in context.plan_state.items
-            )
-            or "none"
-        )
-        return f"Current plan:\n{summary}"
+        if not context.plan_state.items:
+            return "Current plan: none"
+
+        counts = self._plan_status_counts(context.plan_state)
+        lines = [
+            "Current plan:",
+            (
+                "Plan status: "
+                f"completed={counts[PlanStatus.COMPLETED]}, "
+                f"in_progress={counts[PlanStatus.IN_PROGRESS]}, "
+                f"pending={counts[PlanStatus.PENDING]}"
+            ),
+        ]
+        current_item = self._current_plan_item(context.plan_state)
+        if current_item is not None:
+            lines.append(f"Current: {current_item.content}")
+        pending_items = self._pending_plan_items(context.plan_state)
+        if pending_items:
+            lines.append("Next:")
+            lines.extend(f"- {item.content}" for item in pending_items[:2])
+        return "\n".join(lines)
+
+    def _plan_status_counts(self, plan_state: PlanState) -> dict[PlanStatus, int]:
+        return {
+            status: sum(1 for item in plan_state.items if item.status is status)
+            for status in PlanStatus
+        }
+
+    def _current_plan_item(self, plan_state: PlanState) -> PlanItem | None:
+        for item in plan_state.items:
+            if item.status is PlanStatus.IN_PROGRESS:
+                return item
+        return None
+
+    def _pending_plan_items(self, plan_state: PlanState) -> tuple[PlanItem, ...]:
+        return tuple(item for item in plan_state.items if item.status is PlanStatus.PENDING)
 
     def _render_runtime_reminders(self, context: ExecutionContext) -> str:
         lines: list[str] = []
         if context.runtime_policy_state:
-            lines.append("Runtime policy state:")
-            for key, value in context.runtime_policy_state.items():
-                lines.append(f"- {key}: {value}")
+            policy_state = "; ".join(
+                f"{key}={context.runtime_policy_state[key]}"
+                for key in sorted(context.runtime_policy_state)
+            )
+            lines.append(f"Runtime policy: {policy_state}")
         reminders = "\n".join(f"- {item}" for item in context.runtime_reminders) or "none"
         lines.append("Runtime reminders:")
         lines.append(reminders)
