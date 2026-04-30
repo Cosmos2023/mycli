@@ -47,3 +47,21 @@ def test_profile_for_provider_uses_provider_module_profiles() -> None:
 def test_infer_provider_from_base_url_detects_anthropic_hosts() -> None:
     assert infer_provider_from_base_url("https://api.anthropic.com") is ProviderId.ANTHROPIC
     assert infer_provider_from_base_url("https://console.anthropic.com") is ProviderId.ANTHROPIC
+
+
+def test_deepseek_adapter_merges_developer_rules_into_cacheable_system_prefix() -> None:
+    messages = DeepSeekChatProviderAdapter().adapt_messages(
+        [
+            {"role": "system", "content": "Base instructions."},
+            {"role": "developer", "content": "Stable runtime rules."},
+            {"role": "user", "content": "Current request."},
+        ]
+    )
+
+    assert messages == [
+        {
+            "role": "system",
+            "content": "Base instructions.\n\nStable runtime rules.",
+        },
+        {"role": "user", "content": "Current request."},
+    ]

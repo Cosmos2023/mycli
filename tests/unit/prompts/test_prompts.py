@@ -55,6 +55,28 @@ def test_build_react_prompt_stays_protocol_agnostic_and_prefers_specialized_tool
     assert turn_context.sections[-1].type is TurnContextSectionType.USER_REQUEST
 
 
+def test_build_react_prompt_can_omit_rendered_context_sections_for_chat_messages() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="检查 README",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            available_tool_names=("read_file",),
+            runtime_policy_state={
+                "profile_name": "source_first_overview",
+                "path_bias": "source_first",
+            },
+        ),
+    )
+
+    prompt = build_react_prompt(turn_context, include_context_sections=False)
+
+    assert "开发者指令：" not in prompt
+    assert "上下文化用户片段：" not in prompt
+    assert "Current user request: 检查 README" not in prompt
+    assert "从当前用户请求和可见上下文出发" in prompt
+    assert "采用源码优先策略" in prompt
+
+
 def test_build_react_prompt_adds_repo_analysis_fact_and_inference_contract() -> None:
     turn_context = TurnContextAssembler().assemble(
         user_message="请分析这个仓库的入口文件和主要模块，给我一个简短总结。",

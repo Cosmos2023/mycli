@@ -59,12 +59,14 @@ class ModelEvent:
         text: str,
         role: RuntimeRole = "assistant",
         provider_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> ModelEvent:
         return cls(
             type=ModelEventType.MESSAGE_DELTA,
             role=role,
             text=text,
             provider_id=provider_id,
+            metadata={} if metadata is None else dict(metadata),
         )
 
     @classmethod

@@ -126,6 +126,15 @@ def _decode_native_tool_call(
     return tool_call_payload
 
 
+def _with_provider_metadata(
+    payload: dict[str, object],
+    provider_metadata: dict[str, object],
+) -> dict[str, object]:
+    if provider_metadata:
+        payload["metadata"] = provider_metadata
+    return payload
+
+
 class OpenAIChatClient:
     def __init__(
         self,
@@ -316,7 +325,7 @@ class OpenAIChatClient:
                 if isinstance(raw_tool_call, dict)
             ]
             if tool_call_payloads:
-                return {
+                return _with_provider_metadata({
                     "assistant_message": (
                         None
                         if message.get("content") is None
@@ -326,29 +335,29 @@ class OpenAIChatClient:
                     "tool_call": tool_call_payloads[0],
                     "tool_calls": tool_call_payloads,
                     "done": False,
-                }
+                }, provider_metadata)
         if tools:
             content = "" if message.get("content") is None else str(message["content"])
-            return {
+            return _with_provider_metadata({
                 "assistant_message": content.strip(),
                 "progress_message": None,
                 "tool_call": None,
                 "done": True,
-            }
+            }, provider_metadata)
 
         content = message["content"]
         try:
             decision_payload = json.loads(content)
         except json.JSONDecodeError:
             plain_text = content.strip()
-            return {
+            return _with_provider_metadata({
                 "assistant_message": plain_text,
                 "progress_message": None,
                 "tool_name": None,
                 "arguments": {},
                 "reason": "plain text fallback",
                 "done": True,
-            }
+            }, provider_metadata)
         if not isinstance(decision_payload, dict):
             raise ValueError("Model response content must decode to a JSON object.")
         return decision_payload
@@ -388,7 +397,17 @@ class OpenAIChatClient:
         events: list[ModelEvent] = []
         assistant_message = payload.get("assistant_message")
         if isinstance(assistant_message, str) and assistant_message:
-            events.append(ModelEvent.message_delta(text=assistant_message))
+            metadata = payload.get("metadata")
+            events.append(
+                ModelEvent.message_delta(
+                    text=assistant_message,
+                    metadata=(
+                        cast("dict[str, object]", metadata)
+                        if isinstance(metadata, dict)
+                        else None
+                    ),
+                )
+            )
         raw_tool_call = payload.get("tool_call")
         raw_tool_calls = payload.get("tool_calls")
         if isinstance(raw_tool_calls, list):

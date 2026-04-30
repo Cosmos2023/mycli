@@ -1,4 +1,5 @@
 from mycli.domain.tools import ToolCall
+from mycli.domain.runtime import RuntimeBlock, RuntimeItem
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.infrastructure.models.base import ModelMessage, ModelToolDefinition, ModelToolParameter
 from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
@@ -145,3 +146,25 @@ def test_native_tool_adapter_replays_deepseek_reasoning_content() -> None:
     assert client.captured_messages[0]["reasoning_content"] == (
         "I need to inspect the requested file."
     )
+
+
+def test_native_tool_adapter_separates_runtime_text_blocks() -> None:
+    client = FakeNativeClient()
+    adapter = NativeToolModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="user",
+                blocks=(
+                    RuntimeBlock(type="text", text="Environment facts."),
+                    RuntimeBlock(type="text", text="Current user request."),
+                ),
+            )
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages == [
+        {"role": "user", "content": "Environment facts.\nCurrent user request."}
+    ]

@@ -199,7 +199,7 @@ class NativeToolModelAdapter:
             messages.append(
                 ModelMessage(
                     role=item.role,
-                    content="".join(
+                    content="\n".join(
                         block.text or ""
                         for block in item.blocks
                         if block.type == "text"

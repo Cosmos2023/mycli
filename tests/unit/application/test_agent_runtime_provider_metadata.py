@@ -85,6 +85,40 @@ def test_agent_runtime_preserves_tool_call_metadata_for_next_turn(
     }
 
 
+def test_agent_runtime_persists_tool_call_metadata_after_history_sync(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mission.txt").write_text("mission accomplished\n", encoding="utf-8")
+    adapter = MetadataToolThenDoneAdapter(
+        metadata={
+            "deepseek": {
+                "reasoning_content": "I need to inspect the requested file."
+            }
+        }
+    )
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    runtime.handle_user_turn("read mission.txt")
+
+    loaded = runtime._session_service.load_conversation(runtime._config.session_id)
+    assistant_tool_message = next(
+        message
+        for message in loaded.messages
+        if message.role == "assistant"
+        and any(block.type == "tool_call" for block in message.blocks)
+    )
+    tool_block = next(
+        block for block in assistant_tool_message.blocks if block.type == "tool_call"
+    )
+    assert tool_block.metadata["deepseek"] == {
+        "reasoning_content": "I need to inspect the requested file."
+    }
+
+
 def test_agent_runtime_exposes_deepseek_reasoning_content_for_tool_call(
     tmp_path: Path,
 ) -> None:

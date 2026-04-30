@@ -34,7 +34,7 @@ class DeepSeekChatProviderAdapter:
                 and reasoning_content is not None
             ):
                 adapted_message["reasoning_content"] = reasoning_content
-            adapted_messages.append(adapted_message)
+            self._append_message(adapted_messages, adapted_message)
         return adapted_messages
 
     def adapt_request_body(
@@ -71,6 +71,32 @@ class DeepSeekChatProviderAdapter:
         if isinstance(reasoning_content, str) and reasoning_content.strip():
             return reasoning_content
         return None
+
+    def _append_message(
+        self,
+        messages: list[dict[str, object]],
+        message: dict[str, object],
+    ) -> None:
+        if not self._can_merge_system_message(message):
+            messages.append(message)
+            return
+        if not messages or not self._can_merge_system_message(messages[-1]):
+            messages.append(message)
+            return
+        previous_content = str(messages[-1]["content"])
+        current_content = str(message["content"])
+        messages[-1] = {
+            "role": "system",
+            "content": f"{previous_content}\n\n{current_content}",
+        }
+
+    def _can_merge_system_message(self, message: dict[str, object]) -> bool:
+        return (
+            set(message) == {"role", "content"}
+            and message.get("role") == "system"
+            and isinstance(message.get("content"), str)
+            and bool(str(message["content"]).strip())
+        )
 
 
 __all__ = [

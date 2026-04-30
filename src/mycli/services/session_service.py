@@ -563,7 +563,26 @@ class SessionService:
                 messages.append(Message(role="user", content=item.text or ""))
                 continue
             if item.type is HistoryItemType.ASSISTANT_MESSAGE:
-                messages.append(Message(role="assistant", content=item.text or ""))
+                provider_id = item.metadata.get("provider_id")
+                text = item.text or ""
+                messages.append(
+                    Message(
+                        role="assistant",
+                        content=text,
+                        blocks=(
+                            ()
+                            if not text
+                            else (
+                                RuntimeBlock(
+                                    type="text",
+                                    text=text,
+                                    provider_id=provider_id if isinstance(provider_id, str) else None,
+                                    metadata=dict(item.metadata),
+                                ),
+                            )
+                        ),
+                    )
+                )
                 continue
             if item.type is HistoryItemType.TOOL_CALL:
                 arguments = item.metadata.get("arguments")

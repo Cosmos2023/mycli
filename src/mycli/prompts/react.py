@@ -5,14 +5,25 @@ from mycli.prompts.system import build_system_prompt
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 
 
-def build_react_prompt(contract_or_turn_context: InstructionContract | TurnContext) -> str:
+def build_react_prompt(
+    contract_or_turn_context: InstructionContract | TurnContext,
+    *,
+    include_context_sections: bool = True,
+    include_dynamic_guidance: bool = True,
+) -> str:
     contract = _coerce_instruction_contract(contract_or_turn_context)
-    rendered_sections = _render_contract_sections(contract)
+    rendered_sections = (
+        f"{_render_contract_sections(contract)}\n"
+        if include_context_sections
+        else ""
+    )
     runtime_policy_state = _runtime_policy_state(contract)
-    dynamic_guidance = _dynamic_guidance(runtime_policy_state)
-    return (
-        f"{rendered_sections}\n"
+    dynamic_guidance = (
+        _dynamic_guidance(runtime_policy_state) if include_dynamic_guidance else ""
+    )
+    guidance = (
         "从当前用户请求和可见上下文出发。\n"
+        "始终围绕当前用户请求推进，不要漂移到无关工作上。\n"
         "如果你已经有足够信息可以帮助用户，就直接回答。\n"
         "如果信息不足，选择最合适的下一步工具动作，而不是猜测。\n"
         "编辑文件或执行有影响的命令前，先检查相关上下文。\n"
@@ -30,6 +41,7 @@ def build_react_prompt(contract_or_turn_context: InstructionContract | TurnConte
         "不要在 assistant 文本里输出 JSON。\n"
         "决定当前最合适的下一步动作。"
     )
+    return rendered_sections + guidance
 
 
 def _coerce_instruction_contract(
@@ -58,7 +70,7 @@ def _render_contract_sections(contract: InstructionContract) -> str:
 
 
 def _runtime_policy_state(contract: InstructionContract) -> dict[str, object]:
-    for section in contract.developer_sections:
+    for section in (*contract.developer_sections, *contract.contextual_user_sections):
         if str(section.kind) == InstructionFragmentKind.RUNTIME_POLICY.value:
             return section.metadata
     return {}

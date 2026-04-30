@@ -186,13 +186,18 @@ class TurnService:
                 base_instructions=build_system_prompt(),
                 conversation_messages=context.conversation_messages,
             )
+            stable_action_guidance = build_react_prompt(
+                contract,
+                include_context_sections=False,
+                include_dynamic_guidance=False,
+            )
             contract = InstructionContract(
-                base_instructions=contract.base_instructions,
+                base_instructions=f"{contract.base_instructions}\n\n{stable_action_guidance}",
                 developer_sections=contract.developer_sections,
                 contextual_user_sections=contract.contextual_user_sections,
                 conversation_messages=contract.conversation_messages,
                 current_user_request=contract.current_user_request,
-                assistant_scaffold=build_react_prompt(contract),
+                assistant_scaffold=None,
             )
             prompt = "\n\n".join(
                 [

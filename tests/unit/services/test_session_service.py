@@ -172,6 +172,53 @@ def test_session_service_rebuilds_tool_call_and_tool_result_messages_from_histor
     )
 
 
+def test_session_service_rebuilds_assistant_text_metadata_from_history(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    session_id = "demo"
+    service.append_history_items(
+        session_id,
+        (
+            HistoryItem(
+                id="turn_1:item:1",
+                thread_id=session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="Done.",
+                metadata={
+                    "provider_id": "msg_001",
+                    "deepseek": {
+                        "reasoning_content": "I have enough evidence to answer."
+                    },
+                },
+            ),
+        ),
+    )
+
+    loaded = service.load_conversation(session_id)
+
+    assert loaded.messages == [
+        Message(
+            role="assistant",
+            content="Done.",
+            blocks=(
+                RuntimeBlock(
+                    type="text",
+                    text="Done.",
+                    provider_id="msg_001",
+                    metadata={
+                        "provider_id": "msg_001",
+                        "deepseek": {
+                            "reasoning_content": "I have enough evidence to answer."
+                        },
+                    },
+                ),
+            ),
+        )
+    ]
+
+
 def test_session_service_persists_runtime_snapshot_without_json_sidecars(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     service = SessionService(

@@ -262,7 +262,7 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_tool_call(
             "choices": [
                 {
                     "message": {
-                        "content": None,
+                        "content": "I will read the requested file.",
                         "reasoning_content": "I need to inspect the requested file.",
                         "tool_calls": [
                             {
@@ -304,6 +304,14 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_tool_call(
     )
 
     tool_event = next(event for event in events if event.tool_name == "read_file")
+    message_event = next(
+        event
+        for event in events
+        if event.type is ModelEventType.MESSAGE_DELTA
+    )
+    assert message_event.metadata["deepseek"] == {
+        "reasoning_content": "I need to inspect the requested file."
+    }
     assert tool_event.metadata["deepseek"] == {
         "reasoning_content": "I need to inspect the requested file."
     }
@@ -398,6 +406,50 @@ def test_openai_chat_client_emits_all_tool_calls_with_deepseek_reasoning_content
         {"reasoning_content": "I need to inspect source and tests."},
         {"reasoning_content": "I need to inspect source and tests."},
     ]
+
+
+def test_openai_chat_client_preserves_deepseek_reasoning_content_on_text(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": "Mission complete.",
+                        "role": "assistant",
+                        "reasoning_content": "I have enough evidence to answer.",
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    events = client.create_events(
+        input_items=[{"role": "user", "content": "finish"}],
+        tools=[],
+    )
+
+    message_event = next(
+        event
+        for event in events
+        if event.type is ModelEventType.MESSAGE_DELTA
+    )
+    assert message_event.metadata["deepseek"] == {
+        "reasoning_content": "I have enough evidence to answer."
+    }
 
 
 def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) -> None:
