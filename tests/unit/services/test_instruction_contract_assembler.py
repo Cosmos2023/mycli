@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.dynamic_tools import (
-    DynamicToolDescriptor,
-    DynamicToolLifecycleState,
-    DynamicToolScope,
-    DynamicToolSource,
+from mycli.domain.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionScope,
+    ToolContributionSource,
 )
 from mycli.domain.runtime import (
     AgentConfig,
@@ -72,7 +72,9 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
         "tool_exposure",
     ]
     assert "本轮只使用已暴露且可调用的工具" in contract.developer_sections[0].content
-    assert "工具没有 direct/deferred 等等级之分" in contract.developer_sections[0].content
+    assert "所有工具都属于同一个平等工具集" in contract.developer_sections[0].content
+    assert "direct/deferred" not in contract.developer_sections[0].content
+    assert "动态工具" not in contract.developer_sections[0].content
     assert [fragment.kind for fragment in contract.contextual_user_sections] == [
         "workspace_instructions",
         "environment_context",
@@ -98,15 +100,15 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
     assert "Inspect repositories before answering." in capability_fragment.content
 
 
-def test_instruction_contract_assembler_moves_dynamic_tool_context_into_contextual_fragments() -> None:
-    descriptor = DynamicToolDescriptor(
+def test_instruction_contract_assembler_keeps_added_tools_inside_plain_toolset() -> None:
+    descriptor = ToolContributionDescriptor(
         tool_id="runtime:daily_brief:thread",
         display_name="daily_brief",
         description="Prepare a daily brief",
         route_key=ToolRouteKey.local("daily_brief"),
-        source=DynamicToolSource.RUNTIME,
-        scope=DynamicToolScope.THREAD,
-        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        source=ToolContributionSource.RUNTIME,
+        scope=ToolContributionScope.THREAD,
+        lifecycle_state=ToolContributionLifecycleState.EXPOSED,
         spec=ToolSpec(name="daily_brief", description="Prepare a daily brief"),
     )
     turn_context = TurnContextAssembler().assemble(
@@ -114,13 +116,13 @@ def test_instruction_contract_assembler_moves_dynamic_tool_context_into_contextu
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             tool_exposure=ToolExposure(
-                dynamic=(
+                contributed=(
                     ToolExposureEntry(
                         route_key=ToolRouteKey.local("daily_brief"),
-                        kind=ToolExposureKind.DYNAMIC,
+                        kind=ToolExposureKind.CONTRIBUTED,
                         source=ToolRouteSource.RUNTIME,
                         spec=descriptor.spec,
-                        dynamic_descriptor=descriptor,
+                        contributed_descriptor=descriptor,
                     ),
                 ),
             ),
@@ -133,9 +135,14 @@ def test_instruction_contract_assembler_moves_dynamic_tool_context_into_contextu
         conversation_messages=(),
     )
 
-    assert any(
-        fragment.kind == "dynamic_tool_context"
-        and "这是本轮可用的动态工具。" in fragment.content
-        and "daily_brief" in fragment.content
+    assert not any(
+        "动态工具" in fragment.content or "Contributed tool" in fragment.content
         for fragment in contract.contextual_user_sections
     )
+    tool_fragment = next(
+        fragment
+        for fragment in contract.developer_sections
+        if fragment.kind == "tool_exposure"
+    )
+    assert "Available tools: daily_brief" in tool_fragment.content
+    assert "动态工具" not in tool_fragment.content

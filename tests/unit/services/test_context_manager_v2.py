@@ -46,6 +46,30 @@ def test_context_manager_excludes_reasoning_blocks_from_older_summary() -> None:
     assert context.summary is None
 
 
+def test_context_manager_keeps_provider_replay_append_only_while_recent_context_slides() -> None:
+    manager = ContextManager()
+    conversation = (
+        Message(role="user", content="first question"),
+        Message(
+            role="assistant",
+            content="Private reasoning.",
+            blocks=(RuntimeBlock(type="reasoning", text="Private reasoning."),),
+        ),
+        Message(role="assistant", content="first answer"),
+        Message(role="user", content="second question"),
+    )
+
+    managed = manager.build(conversation=conversation, recent_message_count=1)
+    provider_replay = manager.provider_replay_messages(
+        conversation=conversation,
+        history_items=(),
+    )
+
+    assert managed.messages == (conversation[-1],)
+    assert managed.summary == "- user: first question\n- assistant: first answer"
+    assert provider_replay == conversation
+
+
 def test_context_manager_expands_recent_messages_to_avoid_orphaned_tool_results() -> None:
     manager = ContextManager()
     tool_call_message = Message(
@@ -150,14 +174,184 @@ def test_context_manager_reconstructs_block_aware_messages_from_history_items() 
         )
     )
 
-    assert [message.role for message in messages] == ["user", "assistant", "assistant", "tool", "assistant"]
-    assert messages[1].blocks[0].type == "reasoning"
-    assert messages[1].blocks[0].provider_id == "rs_1"
-    assert messages[2].blocks[0].type == "tool_call"
-    assert messages[2].blocks[0].tool_arguments == {"path": "pyproject.toml"}
-    assert messages[3].blocks[0].type == "tool_result"
-    assert messages[3].blocks[0].provider_id == "tr_1"
-    assert messages[4].blocks[0].type == "text"
+    assert [message.role for message in messages] == ["user", "assistant", "tool", "assistant"]
+    assert messages[1].content == ""
+    assert messages[1].tool_calls[0].name == "read_file"
+    assert messages[1].blocks[0].type == "tool_call"
+    assert messages[1].blocks[0].tool_arguments == {"path": "pyproject.toml"}
+    assert messages[2].blocks[0].type == "tool_result"
+    assert messages[2].blocks[0].provider_id == "tr_1"
+    assert messages[3].blocks[0].type == "text"
+
+
+def test_context_manager_rejoins_assistant_text_and_tool_call_history_items() -> None:
+    manager = ContextManager()
+
+    messages = manager.messages_from_history(
+        (
+            HistoryItem(
+                id="hist_user_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="inspect repo",
+            ),
+            HistoryItem(
+                id="hist_assistant_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="I will read README.",
+                metadata={
+                    "provider_id": "chatcmpl_1",
+                    "deepseek": {"reasoning_content": "Need README."},
+                },
+            ),
+            HistoryItem(
+                id="hist_tool_call_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_CALL,
+                text="Reading README.",
+                tool_name="read_file",
+                call_id="call_read_1",
+                metadata={
+                    "arguments": {"path": "README.md"},
+                    "provider_id": "chatcmpl_1",
+                    "deepseek": {"reasoning_content": "Need README."},
+                },
+            ),
+            HistoryItem(
+                id="hist_tool_result_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_RESULT,
+                text="Read README.",
+                tool_name="read_file",
+                call_id="call_read_1",
+                metadata={"transcript_content": "README contents"},
+            ),
+        )
+    )
+
+    assert [message.role for message in messages] == ["user", "assistant", "tool"]
+    assert messages[1].content == "I will read README."
+    assert messages[1].tool_calls == (
+        ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="model requested tool",
+            call_id="call_read_1",
+        ),
+    )
+    assert [block.type for block in messages[1].blocks] == ["text", "tool_call"]
+    assert messages[1].blocks[0].metadata == {
+        "provider_id": "chatcmpl_1",
+        "deepseek": {"reasoning_content": "Need README."},
+    }
+
+
+def test_context_manager_rejoins_multi_tool_call_history_batch() -> None:
+    manager = ContextManager()
+
+    messages = manager.messages_from_history(
+        (
+            HistoryItem(
+                id="hist_call_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_CALL,
+                tool_name="list_directory",
+                call_id="call_list_1",
+                metadata={"arguments": {"path": "src"}, "provider_id": "chatcmpl_1"},
+            ),
+            HistoryItem(
+                id="hist_result_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_RESULT,
+                tool_name="list_directory",
+                call_id="call_list_1",
+                metadata={"transcript_content": "sample_app"},
+            ),
+            HistoryItem(
+                id="hist_call_2",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_CALL,
+                tool_name="read_file",
+                call_id="call_read_1",
+                metadata={
+                    "arguments": {"path": "pyproject.toml"},
+                    "provider_id": "chatcmpl_1",
+                },
+            ),
+            HistoryItem(
+                id="hist_result_2",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_RESULT,
+                tool_name="read_file",
+                call_id="call_read_1",
+                metadata={"transcript_content": "pyproject contents"},
+            ),
+        )
+    )
+
+    assert [message.role for message in messages] == ["assistant", "tool", "tool"]
+    assert [call.name for call in messages[0].tool_calls] == [
+        "list_directory",
+        "read_file",
+    ]
+    assert [block.type for block in messages[0].blocks] == ["tool_call", "tool_call"]
+    assert [message.tool_call_id for message in messages[1:]] == [
+        "call_list_1",
+        "call_read_1",
+    ]
+
+
+def test_context_manager_does_not_batch_tool_calls_without_provider_id() -> None:
+    manager = ContextManager()
+
+    messages = manager.messages_from_history(
+        (
+            HistoryItem(
+                id="hist_call_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_CALL,
+                tool_name="list_directory",
+                call_id="call_list_1",
+                metadata={"arguments": {"path": "src"}},
+            ),
+            HistoryItem(
+                id="hist_result_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_RESULT,
+                tool_name="list_directory",
+                call_id="call_list_1",
+                metadata={"transcript_content": "sample_app"},
+            ),
+            HistoryItem(
+                id="hist_call_2",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_CALL,
+                tool_name="read_file",
+                call_id="call_read_1",
+                metadata={"arguments": {"path": "pyproject.toml"}},
+            ),
+        )
+    )
+
+    assert [message.role for message in messages] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert len(messages[0].tool_calls) == 1
+    assert len(messages[2].tool_calls) == 1
 
 
 def test_context_manager_trims_tool_result_output() -> None:

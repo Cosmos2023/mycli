@@ -34,7 +34,6 @@ class InstructionContractAssembler:
                 continue
             if section.type is TurnContextSectionType.TOOL_EXPOSURE:
                 developer_sections.append(self._tool_exposure_fragment(section))
-                contextual_user_sections.extend(self._dynamic_tool_fragments(section))
                 continue
             if section.type is TurnContextSectionType.WORKSPACE_INSTRUCTIONS:
                 contextual_user_sections.append(
@@ -157,12 +156,11 @@ class InstructionContractAssembler:
 
     def _tool_exposure_fragment(self, section: TurnContextSection) -> InstructionFragment:
         metadata = dict(section.metadata)
-        metadata.pop("dynamic_tools", None)
         return InstructionFragment(
             kind=InstructionFragmentKind.TOOL_EXPOSURE,
             title=section.title,
             content=(
-                "本轮只使用已暴露且可调用的工具。工具没有 direct/deferred 等等级之分；"
+                "本轮只使用已暴露且可调用的工具。所有工具都属于同一个平等工具集；"
                 "能用专门工具解决时，优先不要退化成临时 shell 操作。\n"
                 f"{section.content}"
             ),
@@ -170,34 +168,3 @@ class InstructionContractAssembler:
             metadata=metadata,
             include_in_memory=False,
         )
-
-    def _dynamic_tool_fragments(
-        self,
-        section: TurnContextSection,
-    ) -> tuple[InstructionFragment, ...]:
-        dynamic_tools = section.metadata.get("dynamic_tools", [])
-        if not isinstance(dynamic_tools, list):
-            return ()
-        rendered: list[InstructionFragment] = []
-        for item in dynamic_tools:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "dynamic_tool"))
-            rendered.append(
-                InstructionFragment(
-                    kind=InstructionFragmentKind.DYNAMIC_TOOL_CONTEXT,
-                    title=f"Dynamic tool context: {name}",
-                    content=(
-                        "这是本轮可用的动态工具。只有在它确实有帮助、且作用域/状态适合当前任务时才使用它。\n"
-                        f"Dynamic tool: {name}\n"
-                        f"Tool id: {item.get('tool_id', '')}\n"
-                        f"Scope: {item.get('scope', '')}\n"
-                        f"State: {item.get('state', '')}\n"
-                        f"Source: {item.get('source', '')}"
-                    ),
-                    source=section.source,
-                    metadata=dict(item),
-                    include_in_memory=False,
-                )
-            )
-        return tuple(rendered)

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.dynamic_tools import (
-    DynamicToolDescriptor,
-    DynamicToolLifecycleState,
-    DynamicToolScope,
-    DynamicToolSource,
+from mycli.domain.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionScope,
+    ToolContributionSource,
 )
 from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryKind, MemoryRecord
@@ -85,10 +85,10 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
                         spec=ToolSpec(name="search_text", description="Search text"),
                     ),
                 ),
-                dynamic=(
+                contributed=(
                     ToolExposureEntry(
                         route_key=ToolRouteKey.local("workspace_summary"),
-                        kind=ToolExposureKind.DYNAMIC,
+                        kind=ToolExposureKind.CONTRIBUTED,
                         source=ToolRouteSource.RUNTIME,
                         spec=ToolSpec(name="workspace_summary", description="Summarize workspace"),
                     ),
@@ -126,7 +126,8 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
     assert "Available tools: list_directory, read_file_range, search_text" in turn_context.sections[8].content
     assert "Direct tools:" not in turn_context.sections[8].content
     assert "Deferred tools:" not in turn_context.sections[8].content
-    assert "Dynamic tools: workspace_summary" in turn_context.sections[8].content
+    assert "Contributed tools:" not in turn_context.sections[8].content
+    assert "workspace_summary" in turn_context.sections[8].content
     assert turn_context.debug_summary()["enabled_sections"] == [
         "base_instructions",
         "workspace_instructions",
@@ -211,10 +212,10 @@ def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> N
                         spec=ToolSpec(name="run_shell", description="Run shell"),
                     ),
                 ),
-                dynamic=(
+                contributed=(
                     ToolExposureEntry(
                         route_key=ToolRouteKey.local("workspace_summary"),
-                        kind=ToolExposureKind.DYNAMIC,
+                        kind=ToolExposureKind.CONTRIBUTED,
                         source=ToolRouteSource.RUNTIME,
                         spec=ToolSpec(name="workspace_summary", description="Workspace summary"),
                     ),
@@ -228,9 +229,6 @@ def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> N
     )
 
     assert tool_section.enabled is True
-    assert tool_section.metadata["direct_tool_names"] == ["list_directory"]
-    assert tool_section.metadata["deferred_tool_names"] == ["run_shell"]
-    assert tool_section.metadata["dynamic_tool_names"] == ["workspace_summary"]
     assert tool_section.metadata["tool_names"] == ["list_directory", "run_shell", "workspace_summary"]
 
 
@@ -259,16 +257,16 @@ def test_turn_context_assembler_exposes_runtime_policy_state() -> None:
     assert "source_first_verification" in runtime_section.content
 
 
-def test_turn_context_assembler_renders_dynamic_tool_scope_and_state_metadata() -> None:
+def test_turn_context_assembler_renders_added_tool_as_plain_tool() -> None:
     assembler = TurnContextAssembler()
-    descriptor = DynamicToolDescriptor(
+    descriptor = ToolContributionDescriptor(
         tool_id="runtime:daily_brief:thread",
         display_name="daily_brief",
         description="Prepare a daily brief",
         route_key=ToolRouteKey.local("daily_brief"),
-        source=DynamicToolSource.RUNTIME,
-        scope=DynamicToolScope.THREAD,
-        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        source=ToolContributionSource.RUNTIME,
+        scope=ToolContributionScope.THREAD,
+        lifecycle_state=ToolContributionLifecycleState.EXPOSED,
         spec=ToolSpec(name="daily_brief", description="Prepare a daily brief"),
     )
     turn_context = assembler.assemble(
@@ -276,13 +274,13 @@ def test_turn_context_assembler_renders_dynamic_tool_scope_and_state_metadata() 
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             tool_exposure=ToolExposure(
-                dynamic=(
+                contributed=(
                     ToolExposureEntry(
                         route_key=ToolRouteKey.local("daily_brief"),
-                        kind=ToolExposureKind.DYNAMIC,
+                        kind=ToolExposureKind.CONTRIBUTED,
                         source=ToolRouteSource.RUNTIME,
                         spec=descriptor.spec,
-                        dynamic_descriptor=descriptor,
+                        contributed_descriptor=descriptor,
                     ),
                 ),
             ),
@@ -293,17 +291,8 @@ def test_turn_context_assembler_renders_dynamic_tool_scope_and_state_metadata() 
         section for section in turn_context.sections if section.type is TurnContextSectionType.TOOL_EXPOSURE
     )
 
-    assert "daily_brief [scope=thread state=exposed source=runtime]" in tool_section.content
-    assert tool_section.metadata["dynamic_tool_names"] == ["daily_brief"]
-    assert tool_section.metadata["dynamic_tools"] == [
-        {
-            "name": "daily_brief",
-            "tool_id": "runtime:daily_brief:thread",
-            "scope": "thread",
-            "state": "exposed",
-            "source": "runtime",
-        }
-    ]
+    assert tool_section.content == "Available tools: daily_brief"
+    assert tool_section.metadata == {"tool_names": ["daily_brief"]}
 
 
 def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is_sparse() -> None:
@@ -600,25 +589,25 @@ def test_turn_context_assembler_renders_runtime_policy_state_in_deterministic_or
     )
 
 
-def test_turn_context_assembler_renders_dynamic_tool_metadata_in_deterministic_order() -> None:
-    first_descriptor = DynamicToolDescriptor(
+def test_turn_context_assembler_renders_added_tools_in_deterministic_order() -> None:
+    first_descriptor = ToolContributionDescriptor(
         tool_id="runtime:z_tool:thread",
         display_name="z_tool",
         description="Z tool",
         route_key=ToolRouteKey.local("z_tool"),
-        source=DynamicToolSource.RUNTIME,
-        scope=DynamicToolScope.THREAD,
-        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        source=ToolContributionSource.RUNTIME,
+        scope=ToolContributionScope.THREAD,
+        lifecycle_state=ToolContributionLifecycleState.EXPOSED,
         spec=ToolSpec(name="z_tool", description="Z tool"),
     )
-    second_descriptor = DynamicToolDescriptor(
+    second_descriptor = ToolContributionDescriptor(
         tool_id="runtime:a_tool:thread",
         display_name="a_tool",
         description="A tool",
         route_key=ToolRouteKey.local("a_tool"),
-        source=DynamicToolSource.RUNTIME,
-        scope=DynamicToolScope.THREAD,
-        lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+        source=ToolContributionSource.RUNTIME,
+        scope=ToolContributionScope.THREAD,
+        lifecycle_state=ToolContributionLifecycleState.EXPOSED,
         spec=ToolSpec(name="a_tool", description="A tool"),
     )
 
@@ -627,20 +616,20 @@ def test_turn_context_assembler_renders_dynamic_tool_metadata_in_deterministic_o
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             tool_exposure=ToolExposure(
-                dynamic=(
+                contributed=(
                     ToolExposureEntry(
                         route_key=ToolRouteKey.local("z_tool"),
-                        kind=ToolExposureKind.DYNAMIC,
+                        kind=ToolExposureKind.CONTRIBUTED,
                         source=ToolRouteSource.RUNTIME,
                         spec=first_descriptor.spec,
-                        dynamic_descriptor=first_descriptor,
+                        contributed_descriptor=first_descriptor,
                     ),
                     ToolExposureEntry(
                         route_key=ToolRouteKey.local("a_tool"),
-                        kind=ToolExposureKind.DYNAMIC,
+                        kind=ToolExposureKind.CONTRIBUTED,
                         source=ToolRouteSource.RUNTIME,
                         spec=second_descriptor.spec,
-                        dynamic_descriptor=second_descriptor,
+                        contributed_descriptor=second_descriptor,
                     ),
                 ),
             ),
@@ -652,6 +641,4 @@ def test_turn_context_assembler_renders_dynamic_tool_metadata_in_deterministic_o
     )
 
     assert tool_section.content.index("a_tool") < tool_section.content.index("z_tool")
-    assert [
-        item["name"] for item in tool_section.metadata["dynamic_tools"]
-    ] == ["a_tool", "z_tool"]
+    assert tool_section.metadata == {"tool_names": ["a_tool", "z_tool"]}
