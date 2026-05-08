@@ -30,7 +30,6 @@ from mycli.tools.base import ToolSpec
 
 def test_agent_config_defaults_are_stable(tmp_path: Path) -> None:
     config = AgentConfig(workspace_root=tmp_path)
-    assert config.max_steps == 4
     assert config.session_id == "default"
     assert config.auto_approve_medium is True
 
@@ -170,10 +169,10 @@ def test_tool_exposure_keeps_callable_and_namespaced_routes_stable() -> None:
                 spec=ToolSpec(name="edit_file", description="Edit file"),
             ),
         ),
-        dynamic=(
+        contributed=(
             ToolExposureEntry(
                 route_key=ToolRouteKey(namespace="mcp.github", name="search_code"),
-                kind=ToolExposureKind.DYNAMIC,
+                kind=ToolExposureKind.CONTRIBUTED,
                 source=ToolRouteSource.PROVIDER,
                 spec=ToolSpec(name="search_code", description="Search remote code"),
             ),

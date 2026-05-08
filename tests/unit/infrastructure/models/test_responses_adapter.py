@@ -6,21 +6,21 @@ import pytest
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
-from mycli.infrastructure.models.base import (
+from mycli.llms.adapters.base import (
     ModelToolDefinition,
     ModelToolParameter,
     ModelTurnResult,
     RuntimeBlock,
     RuntimeItem,
 )
-from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
-from mycli.infrastructure.openai_client import ModelResponseError
+from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
+from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.schemas.responses_protocol import (
     ResponsesCompletedEvent,
     ResponsesInProgressEvent,
     ResponsesOutputTextDeltaEvent,
 )
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.utils.workspace_logger import WorkspaceLogService
 
 
 def test_runtime_block_contract_supports_text_and_tool_call_blocks() -> None:

@@ -7,7 +7,7 @@ from mycli.domain.runtime import (
     RequestFragmentKind,
     RequestShape,
 )
-from mycli.services.cache_shape_diagnostics import CacheShapeDiagnostics
+from mycli.application.runtime.request import CacheShapeDiagnostics
 
 
 def _shape(*, fragment_content: str, second_message: str = "same") -> RequestShape:
@@ -51,6 +51,23 @@ def test_diagnostic_without_previous_shape_has_no_first_diff() -> None:
     assert payload["cache_hit_tokens"] == 80
     assert payload["cache_miss_tokens"] == 20
     assert payload["cache_hit_ratio"] == 0.8
+
+
+def test_diagnostic_normalizes_nested_cached_token_usage() -> None:
+    diagnostic = CacheShapeDiagnostics().build(
+        current=_shape(fragment_content="first"),
+        usage={
+            "prompt_tokens": 100,
+            "prompt_tokens_details": {"cached_tokens": 64},
+        },
+    )
+
+    payload = diagnostic.to_dict()
+
+    assert payload["prompt_tokens"] == 100
+    assert payload["cache_hit_tokens"] == 64
+    assert payload["cache_miss_tokens"] == 36
+    assert payload["cache_hit_ratio"] == 0.64
 
 
 def test_diagnostic_finds_first_changed_fragment() -> None:

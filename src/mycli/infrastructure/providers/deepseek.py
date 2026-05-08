@@ -4,6 +4,9 @@ from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
 from mycli.infrastructure.providers.chat import ChatProviderSettings
 
 DEEPSEEK_METADATA_KEY = "deepseek"
+DEEPSEEK_SYNTHETIC_REASONING_CONTENT = (
+    "Provider omitted reasoning_content for this tool call."
+)
 DEEPSEEK_PROFILE = ProviderProfile(
     provider=ProviderId.DEEPSEEK,
     default_protocol=ProtocolId.CHAT_COMPLETIONS,
@@ -29,6 +32,10 @@ class DeepSeekChatProviderAdapter:
             if adapted_message.get("role") == "developer":
                 adapted_message["role"] = "system"
             reasoning_content = self._reasoning_content_from_metadata(metadata)
+            if reasoning_content is None and self._requires_reasoning_replay(
+                adapted_message
+            ):
+                reasoning_content = DEEPSEEK_SYNTHETIC_REASONING_CONTENT
             if (
                 adapted_message.get("role") == "assistant"
                 and reasoning_content is not None
@@ -46,7 +53,20 @@ class DeepSeekChatProviderAdapter:
         adapted_payload = dict(payload_body)
         if not settings.thinking_enabled:
             adapted_payload["extra_body"] = {"thinking": {"type": "disabled"}}
+            adapted_payload.pop("reasoning_effort", None)
+            return adapted_payload
+        adapted_payload["extra_body"] = {"thinking": {"type": "enabled"}}
+        adapted_payload["reasoning_effort"] = self._reasoning_effort(
+            settings.thinking_effort
+        )
         return adapted_payload
+
+    def _reasoning_effort(self, effort: str | None) -> str:
+        if effort == "max":
+            return "max"
+        if effort == "xhigh":
+            return "max"
+        return "high"
 
     def extract_message_metadata(
         self,
@@ -57,6 +77,13 @@ class DeepSeekChatProviderAdapter:
             return {
                 DEEPSEEK_METADATA_KEY: {
                     "reasoning_content": reasoning_content,
+                }
+            }
+        if self._has_tool_calls(message):
+            return {
+                DEEPSEEK_METADATA_KEY: {
+                    "reasoning_content": DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
+                    "reasoning_content_missing": True,
                 }
             }
         return {}
@@ -71,6 +98,13 @@ class DeepSeekChatProviderAdapter:
         if isinstance(reasoning_content, str) and reasoning_content.strip():
             return reasoning_content
         return None
+
+    def _requires_reasoning_replay(self, message: dict[str, object]) -> bool:
+        return message.get("role") == "assistant" and self._has_tool_calls(message)
+
+    def _has_tool_calls(self, message: dict[str, object]) -> bool:
+        tool_calls = message.get("tool_calls")
+        return isinstance(tool_calls, list) and bool(tool_calls)
 
     def _append_message(
         self,
@@ -102,5 +136,6 @@ class DeepSeekChatProviderAdapter:
 __all__ = [
     "DEEPSEEK_METADATA_KEY",
     "DEEPSEEK_PROFILE",
+    "DEEPSEEK_SYNTHETIC_REASONING_CONTENT",
     "DeepSeekChatProviderAdapter",
 ]

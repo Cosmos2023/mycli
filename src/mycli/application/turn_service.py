@@ -1,35 +1,36 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
+from mycli.application.runtime import AgentRuntime
 from mycli.domain.capabilities import CapabilityActivation, CapabilityActivationDependencyStatus
-from mycli.domain.conversation import Message
+from mycli.domain.conversation import Conversation, Message
 from mycli.domain.skills import SkillDefinition
 from mycli.domain.runtime import (
     AgentConfig,
     DecisionAction,
-    DecisionKind,
-    ExecutionContext,
-    InstructionContract,
-    PendingDecision,
-    SessionCommandAllowance,
+    HistoryItem,
+    HistoryItemType,
     TurnResponse,
 )
 from mycli.domain.tools import ToolResult
-from mycli.prompts.react import build_react_prompt
-from mycli.prompts.system import build_system_prompt
-from mycli.services.capability_resolver import CapabilityResolver
+from mycli.domain.tooling.calls import ToolCall
+from mycli.llms.adapters.base import ModelAction, ModelAdapter, ModelMessage, ModelToolDefinition
+from mycli.services.capabilities import CapabilityResolver
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
-from mycli.services.context_window_service import ContextWindowService
-from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
-from mycli.services.memory_service import MemoryService
-from mycli.services.safety_policy import SafetyPolicy
+from mycli.services.file_history import FileHistoryService
+from mycli.memory.service import MemoryService
+from mycli.services.approval.approval_service import ApprovalService
+from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
-from mycli.services.skill_registry import SkillRegistry
-from mycli.services.trace_service import TraceService
+from mycli.services.skills import SkillRegistry
+from mycli.services.tracing import TraceService
+from mycli.tools.base import ToolResultV2, ToolSpec
+from mycli.tools.registry import ToolRegistryV2
 
 
 class TurnService:
@@ -40,12 +41,21 @@ class TurnService:
         config: AgentConfig | None = None,
         home_dir: Path | None = None,
         runtime: Any | None = None,
+        approval_service: ApprovalService | None = None,
     ) -> None:
         if config is None:
             raise ValueError("config is required")
         if home_dir is None:
             raise ValueError("home_dir is required")
 
+        if runtime is None and model_client is not None and tool_registry is not None:
+            runtime = AgentRuntime(
+                model_adapter=cast(ModelAdapter, _LegacyModelAdapter(model_client)),
+                tool_registry=cast(ToolRegistryV2, _LegacyToolRegistryAdapter(tool_registry)),
+                config=config,
+                home_dir=home_dir,
+                approval_service=approval_service,
+            )
         self._runtime = runtime
         if runtime is not None:
             self._tool_registry = getattr(runtime, "_tool_registry", tool_registry)
@@ -76,7 +86,21 @@ class TurnService:
                 "_trace_service",
                 TraceService(home_dir=home_dir),
             )
-            self._turn_context_assembler = getattr(runtime, "_turn_context_assembler", TurnContextAssembler())
+            self._observability_service = getattr(
+                runtime,
+                "_observability_service",
+                ObservabilityService(),
+            )
+            self._file_history_service = getattr(
+                runtime,
+                "_file_history_service",
+                FileHistoryService(home_dir=home_dir, workspace_root=self._config.workspace_root),
+            )
+            self._turn_context_assembler = getattr(
+                runtime,
+                "_turn_context_assembler",
+                TurnContextAssembler(),
+            )
             self._instruction_contract_assembler = getattr(
                 runtime,
                 "_instruction_contract_assembler",
@@ -93,36 +117,7 @@ class TurnService:
             )
             return
 
-        if model_client is None or tool_registry is None:
-            raise ValueError("model_client and tool_registry are required without runtime")
-        self._tool_registry = tool_registry
-        self._model_client = model_client
-        self._safety_policy = SafetyPolicy()
-        self._config = config
-        session_store = SQLiteSessionStore(home_dir / ".mycli" / "sessions.db")
-        self._memory_service = MemoryService(
-            home_dir=home_dir,
-            workspace_root=config.workspace_root,
-            session_store=session_store,
-        )
-        self._session_service = SessionService(
-            home_dir=home_dir,
-            workspace_root=config.workspace_root,
-            session_store=session_store,
-        )
-        self._context_window_service = ContextWindowService()
-        self._skill_registry = SkillRegistry(
-            builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",
-            user_root=home_dir / ".mycli" / "skills",
-        )
-        self._trace_service = TraceService(home_dir=home_dir)
-        self._turn_context_assembler = TurnContextAssembler()
-        self._instruction_contract_assembler = InstructionContractAssembler()
-        self._capability_resolver = CapabilityResolver(
-            skill_registry=self._skill_registry,
-            workspace_root=self._config.workspace_root,
-            env=dict(os.environ),
-        )
+        raise ValueError("runtime or model_client/tool_registry are required")
 
     def _select_skill(self, user_message: str) -> SkillDefinition | None:
         lowered = user_message.lower()
@@ -168,277 +163,29 @@ class TurnService:
             return f"{allowed_choices[0]} or {allowed_choices[1]}"
         return ", ".join(allowed_choices[:-1]) + f", or {allowed_choices[-1]}"
 
-    def _run_agent(self, user_message: str, context: ExecutionContext) -> TurnResponse:
-        assert self._model_client is not None
-        assert self._safety_policy is not None
-        assert self._tool_registry is not None
-        progress_updates: list[str] = []
-        last_tool_result: ToolResult | None = None
-        available_tool_names = self._available_tool_names()
-
-        for _step in range(context.config.max_steps):
-            turn_context = self._turn_context_assembler.assemble(
-                user_message=user_message,
-                context=context,
-            )
-            contract = self._instruction_contract_assembler.assemble(
-                turn_context=turn_context,
-                base_instructions=build_system_prompt(),
-                conversation_messages=context.conversation_messages,
-            )
-            stable_action_guidance = build_react_prompt(
-                contract,
-                include_context_sections=False,
-                include_dynamic_guidance=False,
-            )
-            contract = InstructionContract(
-                base_instructions=f"{contract.base_instructions}\n\n{stable_action_guidance}",
-                developer_sections=contract.developer_sections,
-                contextual_user_sections=contract.contextual_user_sections,
-                conversation_messages=contract.conversation_messages,
-                current_user_request=contract.current_user_request,
-                assistant_scaffold=None,
-            )
-            prompt = "\n\n".join(
-                [
-                    contract.base_instructions,
-                    "\n".join(section.content for section in contract.developer_sections),
-                    "\n".join(section.content for section in contract.contextual_user_sections),
-                    contract.assistant_scaffold or "",
-                    f"Last tool result: {last_tool_result.summary if last_tool_result else 'none'}",
-                ]
-            )
-            decision = self._model_client.decide(prompt)
-            if decision.progress_message:
-                progress_updates.append(decision.progress_message)
-
-            if decision.tool_call is not None:
-                call = decision.tool_call
-                if call.name not in available_tool_names:
-                    rendered_names = ", ".join(available_tool_names) or "none"
-                    return TurnResponse(
-                        assistant_message=(
-                            f"The model requested unsupported tool '{call.name}'. "
-                            f"Available tools: {rendered_names}."
-                        ),
-                        progress_updates=tuple(progress_updates),
-                    )
-
-                safety = self._safety_policy.evaluate(call)
-                kind = safety.kind
-                if safety.command_pattern and self._session_service.is_command_allowed(
-                    self._config.session_id,
-                    safety.command_pattern,
-                ):
-                    kind = DecisionKind.AUTO_ALLOW
-
-                if kind is DecisionKind.DENY:
-                    return TurnResponse(
-                        assistant_message=(
-                            f"Denied: {safety.reason} (preview: {safety.preview})"
-                        ),
-                        progress_updates=tuple(progress_updates),
-                    )
-
-                if kind is DecisionKind.NEEDS_CHOICE:
-                    pending = PendingDecision(
-                        tool_call=call,
-                        kind=DecisionKind.NEEDS_CHOICE,
-                        reason=safety.reason,
-                        preview=safety.preview,
-                        options=(
-                            DecisionAction.APPROVE_ONCE,
-                            DecisionAction.REJECT,
-                            DecisionAction.ALLOW_SESSION,
-                        ),
-                        command_pattern=safety.command_pattern,
-                    )
-                    return TurnResponse(
-                        assistant_message=(
-                            "A risky action is waiting for your decision. "
-                            "Choose 1 to approve once, 2 to reject, or 3 to allow for this session."
-                        ),
-                        progress_updates=tuple(progress_updates),
-                        pending_decision=pending,
-                    )
-
-                try:
-                    last_tool_result = self._tool_registry.run(call)
-                except Exception as exc:  # pragma: no cover
-                    return TurnResponse(
-                        assistant_message=f"Tool execution failed: {exc}",
-                        progress_updates=tuple(progress_updates),
-                    )
-                continue
-
-            if decision.done and decision.assistant_message:
-                return TurnResponse(
-                    assistant_message=decision.assistant_message,
-                    progress_updates=tuple(progress_updates),
-                )
-
-        return TurnResponse(
-            assistant_message="I hit the step limit before reaching a confident answer.",
-            progress_updates=tuple(progress_updates),
-        )
-
     def handle_user_turn(self, user_message: str) -> TurnResponse:
-        if self._runtime is not None:
-            return cast(TurnResponse, self._runtime.handle_user_turn(user_message))
-
-        pending_decision = self._session_service.load_pending_decision(self._config.session_id)
-        if pending_decision is not None:
-            return TurnResponse(
-                assistant_message=(
-                    "There is a pending risky action waiting for your decision. "
-                    f"Please choose {self._format_allowed_choices(pending_decision.options)}."
-                ),
-                pending_decision=pending_decision,
-            )
-
-        conversation = self._session_service.load_conversation(self._config.session_id)
-        assert self._context_window_service is not None
-        context_window = self._context_window_service.build(
-            conversation,
-            max_prompt_tokens=self._config.max_prompt_tokens,
-            compression_threshold_tokens=self._config.compression_threshold_tokens,
-            recent_message_count=self._config.recent_message_count,
-        )
-
-        capability_activations = self._capability_resolver.resolve(user_message)
-        context = ExecutionContext(
-            config=self._config,
-            memory_records=self._memory_service.collect_runtime_context(
-                user_message=user_message,
-                session_id=self._config.session_id,
-            ),
-            active_skill=self._active_skill_from_activations(capability_activations)
-            or self._select_skill(user_message),
-            capability_activations=capability_activations,
-            available_tool_names=self._available_tool_names(),
-            conversation_messages=context_window.recent_messages,
-            conversation_summary=context_window.summary,
-        )
-        response = self._run_agent(user_message=user_message, context=context)
-
-        conversation.append(Message(role="user", content=user_message))
-        conversation.append(Message(role="assistant", content=response.assistant_message))
-        self._session_service.save_conversation(conversation)
-        if response.pending_decision is not None:
-            self._session_service.save_pending_decision(self._config.session_id, response.pending_decision)
-        else:
-            self._session_service.clear_pending_decision(self._config.session_id)
-        self._memory_service.append_session_summary(self._config.session_id, response.assistant_message)
-        return response
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("TurnService has no runtime.")
+        return cast(TurnResponse, runtime.handle_user_turn(user_message))
 
     def resolve_pending_decision(self, choice: str) -> TurnResponse:
-        if self._runtime is not None:
-            return cast(TurnResponse, self._runtime.resolve_pending_approval(choice))
-
-        decision = self._session_service.load_pending_decision(self._config.session_id)
-        if decision is None:
-            return TurnResponse(assistant_message="There is no pending decision to resolve.")
-
-        normalized = choice.strip()
-        choice_to_action = {
-            "1": DecisionAction.APPROVE_ONCE,
-            "2": DecisionAction.REJECT,
-            "3": DecisionAction.ALLOW_SESSION,
-        }
-        allowed_choices = tuple(
-            key for key, action in choice_to_action.items()
-            if action in decision.options
-        )
-        if normalized not in allowed_choices:
-            return TurnResponse(
-                assistant_message=f"Please choose {self._format_allowed_choices(decision.options)}.",
-                pending_decision=decision,
-            )
-        selected_action = choice_to_action[normalized]
-
-        if selected_action is DecisionAction.REJECT:
-            self._session_service.clear_pending_decision(self._config.session_id)
-            message = f"Rejected {decision.tool_call.name}. Pending decision cleared."
-            self._memory_service.append_session_summary(self._config.session_id, message)
-            return TurnResponse(
-                assistant_message=message,
-                progress_updates=("[decision] rejected",),
-            )
-
-        if decision.tool_call.name not in self._available_tool_names():
-            self._session_service.clear_pending_decision(self._config.session_id)
-            message = (
-                f"Pending decision uses unsupported tool '{decision.tool_call.name}' and was cleared."
-            )
-            self._memory_service.append_session_summary(self._config.session_id, message)
-            return TurnResponse(
-                assistant_message=message,
-                progress_updates=("[decision] cleared invalid tool",),
-            )
-
-        if selected_action is DecisionAction.ALLOW_SESSION:
-            if decision.command_pattern:
-                self._session_service.add_command_allowance(
-                    self._config.session_id,
-                    SessionCommandAllowance(command_pattern=decision.command_pattern),
-                )
-
-        assert self._tool_registry is not None
-        try:
-            tool_result = self._tool_registry.run(decision.tool_call)
-        except Exception as exc:
-            self._session_service.clear_pending_decision(self._config.session_id)
-            message = (
-                f"Pending decision could not be executed: {exc}. "
-                "The pending decision was cleared."
-            )
-            self._memory_service.append_session_summary(self._config.session_id, message)
-            return TurnResponse(
-                assistant_message=message,
-                progress_updates=("[decision] failed",),
-            )
-
-        self._session_service.clear_pending_decision(self._config.session_id)
-        if not tool_result.success:
-            message = (
-                f"Pending decision could not be executed: "
-                f"{tool_result.error or tool_result.summary}. The pending decision was cleared."
-            )
-            self._memory_service.append_session_summary(self._config.session_id, message)
-            return TurnResponse(
-                assistant_message=message,
-                progress_updates=("[decision] failed",),
-            )
-
-        if selected_action is DecisionAction.ALLOW_SESSION and decision.command_pattern:
-            message = (
-                f"Approved {decision.tool_call.name}: {tool_result.summary}. "
-                f"Allowlisted '{decision.command_pattern}' for this session."
-            )
-        else:
-            message = f"Approved {decision.tool_call.name}: {tool_result.summary}"
-        self._memory_service.append_session_summary(self._config.session_id, message)
-        return TurnResponse(
-            assistant_message=message,
-            progress_updates=("[decision] approved",),
-        )
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("TurnService has no runtime.")
+        return cast(TurnResponse, runtime.resolve_pending_approval(choice))
 
     def confirm_pending_action(self) -> TurnResponse:
-        # Compatibility shim for older CLI commands (/confirm).
         return self.resolve_pending_decision("1")
 
     def reject_pending_action(self) -> TurnResponse:
-        # Compatibility shim for older CLI commands (/reject).
         return self.resolve_pending_decision("2")
 
     def inspect_plan(self) -> tuple[str, ...]:
         plan_state = self._session_service.load_plan_state(self._config.session_id)
         if not plan_state.items:
             return ("no active plan",)
-        return tuple(
-            f"{item.status.value}: {item.content}"
-            for item in plan_state.items
-        )
+        return tuple(f"{item.status.value}: {item.content}" for item in plan_state.items)
 
     def inspect_skills(self) -> tuple[str, ...]:
         lines: list[str] = []
@@ -460,10 +207,7 @@ class TurnService:
 
     def inspect_memory(self) -> tuple[str, ...]:
         records = self._memory_service.list_records(self._config.session_id)
-        lines = [
-            f"{record.kind.value} {record.key}={record.value}"
-            for record in records[:10]
-        ]
+        lines = [f"{record.kind.value} {record.key}={record.value}" for record in records[:10]]
         if not lines:
             return ("no memory stored",)
         return tuple(lines)
@@ -483,6 +227,82 @@ class TurnService:
             f"allowances={len(allowances)}",
         )
 
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        target_session_id = (session_id or self._config.session_id).strip() or self._config.session_id
+        try:
+            conversation = self._session_service.resume_conversation(target_session_id)
+        except KeyError:
+            return (f"session not found: {target_session_id}",)
+        self._backfill_history_from_conversation(conversation)
+        self._activate_session(target_session_id)
+        return (
+            f"resumed {target_session_id}",
+            f"messages={len(conversation.messages)}",
+        )
+
+    def fork_session(
+        self,
+        source_session_id: str | None = None,
+        new_session_id: str | None = None,
+        fork_point: int | None = None,
+    ) -> tuple[str, ...]:
+        source = (source_session_id or self._config.session_id).strip() or self._config.session_id
+        target = (
+            new_session_id.strip()
+            if isinstance(new_session_id, str) and new_session_id.strip()
+            else f"{source}-fork"
+        )
+        try:
+            conversation = self._session_service.fork_conversation(
+                source,
+                target,
+                fork_point=fork_point,
+            )
+        except (KeyError, ValueError) as exc:
+            return (str(exc),)
+        self._backfill_history_from_conversation(conversation)
+        self._activate_session(target)
+        return (
+            f"forked {source} -> {target}",
+            f"fork_point={conversation.fork_point}",
+            f"messages={len(conversation.messages)}",
+        )
+
+    def _activate_session(self, session_id: str) -> None:
+        self._config = replace(self._config, session_id=session_id)
+        if self._runtime is not None:
+            self._runtime.rebind_session(self._config)
+
+    def _backfill_history_from_conversation(self, conversation: Conversation) -> None:
+        if self._session_service.load_history_items(conversation.session_id):
+            return
+        items: list[HistoryItem] = []
+        turn_index = 0
+        for message_index, message in enumerate(conversation.messages, start=1):
+            item_type = _history_type_for_message(message)
+            if item_type is None:
+                continue
+            if item_type is HistoryItemType.USER_MESSAGE:
+                turn_index += 1
+            turn_id = f"backfill_{turn_index or 1}"
+            items.append(
+                HistoryItem(
+                    id=f"{turn_id}:message:{message_index}",
+                    thread_id=conversation.session_id,
+                    turn_id=turn_id,
+                    type=item_type,
+                    text=message.content,
+                    tool_name=_tool_name_for_message(message),
+                    call_id=message.tool_call_id,
+                    metadata={},
+                )
+            )
+        if items:
+            self._session_service.append_history_items(
+                conversation.session_id,
+                tuple(items),
+            )
+
     def inspect_sessions(self) -> tuple[str, ...]:
         overviews = self._session_service.list_sessions(limit=10)
         if not overviews:
@@ -494,6 +314,32 @@ class TurnService:
                 f"{current_marker} {overview.session_id} {overview.status} "
                 f"messages={overview.message_count} summaries={overview.summary_count}"
             )
+        return tuple(lines)
+
+    def inspect_stats(self) -> tuple[str, ...]:
+        payload = self._observability_service.stats_payload()
+        metrics = payload.get("metrics")
+        alerts = payload.get("alerts")
+        lines: list[str] = []
+        if isinstance(metrics, dict):
+            for key in (
+                "cache_hit_rate",
+                "compaction_ratio",
+                "budget_curve",
+                "consecutive_l4",
+                "ptl_rate",
+            ):
+                if key in metrics:
+                    lines.append(f"{key}={metrics[key]}")
+        if isinstance(alerts, list) and alerts:
+            for alert in alerts:
+                if isinstance(alert, dict):
+                    rule = alert.get("rule", "unknown")
+                    severity = alert.get("severity", "info")
+                    observed = alert.get("observed", "")
+                    lines.append(f"alert {severity} {rule} observed={observed}")
+        else:
+            lines.append("alerts=none")
         return tuple(lines)
 
     def inspect_trace(self) -> tuple[str, ...]:
@@ -537,3 +383,85 @@ class TurnService:
 
             lines.append(" ".join(parts))
         return tuple(lines)
+
+    def undo_last_file_change(self) -> str:
+        result = self._file_history_service.rewind_latest(
+            session_id=self._config.session_id,
+        )
+        if result.error is not None:
+            return result.error
+        restored = [f"restored {path}" for path in result.restored_paths]
+        deleted = [f"deleted {path}" for path in result.deleted_paths]
+        changes = (*restored, *deleted)
+        if not changes:
+            return f"No file changes found in snapshot {result.snapshot_id}."
+        return f"{result.snapshot_id}: " + ", ".join(changes)
+
+
+def _history_type_for_message(message: Message) -> HistoryItemType | None:
+    if message.role == "user":
+        return HistoryItemType.USER_MESSAGE
+    if message.role == "assistant":
+        return HistoryItemType.ASSISTANT_MESSAGE
+    if message.role == "tool":
+        return HistoryItemType.TOOL_RESULT
+    return None
+
+
+def _tool_name_for_message(message: Message) -> str | None:
+    for block in message.blocks:
+        if block.type == "tool_result":
+            value = block.metadata.get("tool_name")
+            return value if isinstance(value, str) else None
+    return None
+
+
+class _LegacyModelAdapter:
+    def __init__(self, model_client: Any) -> None:
+        self._model_client = model_client
+
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        prompt = "\n\n".join(message.content for message in messages if message.content)
+        decide = getattr(self._model_client, "decide", None)
+        if callable(decide):
+            return cast(ModelAction, decide(prompt))
+        next_action = getattr(self._model_client, "next_action", None)
+        if callable(next_action):
+            return cast(ModelAction, next_action(messages=messages, tools=tools))
+        raise TypeError("legacy model client must provide decide() or next_action()")
+
+
+class _LegacyToolAdapter:
+    def __init__(self, name: str, legacy_registry: Any) -> None:
+        self._legacy_registry = legacy_registry
+        self.spec = ToolSpec(name=name, description=f"Legacy tool {name}", parameters=())
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+        result = self._legacy_registry.run(
+            ToolCall(name=self.spec.name, arguments=arguments, reason="legacy tool call")
+        )
+        return ToolResultV2(
+            success=result.success,
+            summary=result.summary,
+            artifacts=result.artifacts,
+            raw_payload=result.raw_payload,
+            evidence=result.evidence,
+            error=result.error,
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        return self.execute(call.arguments).to_legacy()
+
+
+class _LegacyToolRegistryAdapter(ToolRegistryV2):
+    def __init__(self, legacy_registry: Any) -> None:
+        tools = [_LegacyToolAdapter(name, legacy_registry) for name in legacy_registry.list_names()]
+        super().__init__(
+            specs={tool.spec.name: tool.spec for tool in tools},
+            executors={tool.spec.name: tool for tool in tools},
+        )

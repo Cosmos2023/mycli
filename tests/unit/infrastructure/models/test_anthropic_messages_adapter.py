@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from mycli.domain.tools import ToolCall
-from mycli.infrastructure.models.anthropic_messages_adapter import (
+from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
 )
-from mycli.infrastructure.models.base import (
+from mycli.llms.adapters.base import (
     ModelMessage,
     ModelToolDefinition,
     ModelToolParameter,

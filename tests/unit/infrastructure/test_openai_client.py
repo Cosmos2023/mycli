@@ -10,14 +10,17 @@ from openai import APIConnectionError, BadRequestError
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
-from mycli.infrastructure.openai_client import (
+from mycli.llms.clients.openai_chat import (
     DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
     ModelResponseError,
     OpenAIChatClient,
     _build_openai_sdk_client,
 )
-from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.infrastructure.providers.deepseek import (
+    DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
+    DeepSeekChatProviderAdapter,
+)
+from mycli.utils.workspace_logger import WorkspaceLogService
 
 
 class _FakeChatCompletionsApi:
@@ -99,7 +102,7 @@ def test_openai_chat_client_decodes_json_decision(monkeypatch) -> None:
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -127,6 +130,7 @@ def test_openai_chat_client_decodes_json_decision(monkeypatch) -> None:
 def test_openai_chat_client_uses_openai_sdk_transport(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(
         chat_payload={
+            "id": "chatcmpl_multi_tool",
             "choices": [
                 {
                     "message": {
@@ -147,7 +151,7 @@ def test_openai_chat_client_uses_openai_sdk_transport(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -171,6 +175,40 @@ def test_openai_chat_client_uses_openai_sdk_transport(monkeypatch) -> None:
     assert payload["assistant_message"] == "done"
 
 
+def test_openai_chat_client_sends_tool_choice_none_with_stable_tools(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={"choices": [{"message": {"content": "done"}}]}
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+    client.set_tool_choice("none")
+
+    payload = client.complete(
+        [{"role": "user", "content": "answer now"}],
+        tools=[
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": [{"name": "path", "type": "string", "required": True}],
+            }
+        ],
+    )
+
+    assert payload["assistant_message"] == "done"
+    assert sdk_client.chat_completions.calls[-1]["tool_choice"] == "none"
+    assert len(sdk_client.chat_completions.calls[-1]["tools"]) == 1
+
+
 def test_openai_chat_client_accepts_thinking_config_without_request_failure(
     monkeypatch,
 ) -> None:
@@ -178,7 +216,7 @@ def test_openai_chat_client_accepts_thinking_config_without_request_failure(
         chat_payload={"choices": [{"message": {"content": "done"}}]}
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -195,6 +233,36 @@ def test_openai_chat_client_accepts_thinking_config_without_request_failure(
     assert payload["assistant_message"] == "done"
 
 
+def test_openai_chat_client_create_events_preserves_usage_metadata(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [{"message": {"content": "done"}}],
+            "usage": {
+                "prompt_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 64},
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    events = client.create_events(input_items=[{"role": "user", "content": "inspect"}])
+
+    completed = [event for event in events if event.type is ModelEventType.TURN_COMPLETED]
+    assert completed[0].usage == {
+        "prompt_tokens": 100,
+        "prompt_tokens_details": {"cached_tokens": 64},
+    }
+
+
 def test_openai_chat_client_uses_provider_adapter_for_request_body(
     monkeypatch,
 ) -> None:
@@ -202,7 +270,7 @@ def test_openai_chat_client_uses_provider_adapter_for_request_body(
         chat_payload={"choices": [{"message": {"content": "done"}}]}
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -222,6 +290,32 @@ def test_openai_chat_client_uses_provider_adapter_for_request_body(
     }
 
 
+def test_openai_chat_client_enables_deepseek_thinking_with_supported_effort(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={"choices": [{"message": {"content": "done"}}]}
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    client.set_thinking_config(enabled=True, effort="medium")
+    client.complete([{"role": "user", "content": "inspect the repo"}])
+
+    body = sdk_client.chat_completions.calls[-1]
+    assert body["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert body["reasoning_effort"] == "high"
+
+
 def test_openai_chat_client_uses_provider_adapter_for_message_roles(
     monkeypatch,
 ) -> None:
@@ -229,7 +323,7 @@ def test_openai_chat_client_uses_provider_adapter_for_message_roles(
         chat_payload={"choices": [{"message": {"content": "done"}}]}
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -280,7 +374,7 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_tool_call(
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -322,6 +416,7 @@ def test_openai_chat_client_emits_all_tool_calls_with_deepseek_reasoning_content
 ) -> None:
     sdk_client = _FakeOpenAISdkClient(
         chat_payload={
+            "id": "chatcmpl_multi_tool",
             "choices": [
                 {
                     "message": {
@@ -359,7 +454,7 @@ def test_openai_chat_client_emits_all_tool_calls_with_deepseek_reasoning_content
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -406,6 +501,69 @@ def test_openai_chat_client_emits_all_tool_calls_with_deepseek_reasoning_content
         {"reasoning_content": "I need to inspect source and tests."},
         {"reasoning_content": "I need to inspect source and tests."},
     ]
+    assert [event.provider_id for event in tool_events] == [
+        "chatcmpl_multi_tool",
+        "chatcmpl_multi_tool",
+        "chatcmpl_multi_tool",
+    ]
+
+
+def test_openai_chat_client_marks_missing_deepseek_reasoning_on_tool_call(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "id": "chatcmpl_missing_reasoning",
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_pwd",
+                                "type": "function",
+                                "function": {
+                                    "name": "run_shell",
+                                    "arguments": '{"args":["pwd"]}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    events = client.create_events(
+        input_items=[{"role": "user", "content": "pwd"}],
+        tools=[
+            {
+                "name": "run_shell",
+                "description": "Run a command",
+                "parameters": [{"name": "args", "type": "array"}],
+            }
+        ],
+    )
+
+    tool_event = next(
+        event for event in events if event.type is ModelEventType.TOOL_CALL_REQUESTED
+    )
+    assert tool_event.provider_id == "chatcmpl_missing_reasoning"
+    assert tool_event.metadata["deepseek"] == {
+        "reasoning_content": DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
+        "reasoning_content_missing": True,
+    }
 
 
 def test_openai_chat_client_preserves_deepseek_reasoning_content_on_text(
@@ -425,7 +583,7 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_text(
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -475,7 +633,7 @@ def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) 
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -505,7 +663,7 @@ def test_build_openai_sdk_client_uses_extended_timeout(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr("mycli.infrastructure.openai_client.OpenAI", FakeOpenAI)
+    monkeypatch.setattr("mycli.llms.clients.openai_chat.OpenAI", FakeOpenAI)
 
     _build_openai_sdk_client(
         api_key="test-key",
@@ -521,7 +679,7 @@ def test_openai_chat_client_logs_request_and_response_payloads(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             chat_payload={
                 "choices": [
@@ -560,7 +718,7 @@ def test_openai_chat_client_falls_back_to_plain_assistant_message_for_non_json_c
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             chat_payload={
                 "choices": [
@@ -595,7 +753,7 @@ def test_openai_chat_client_falls_back_to_plain_assistant_message_for_non_json_c
 
 def test_openai_chat_client_surfaces_http_error_body(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             chat_error=_status_error(
                 status_code=400,
@@ -620,7 +778,7 @@ def test_openai_chat_client_logs_http_errors(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             chat_error=_status_error(
                 status_code=400,
@@ -672,7 +830,7 @@ def test_openai_chat_client_serializes_native_tool_request_and_parses_tool_call(
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -735,6 +893,120 @@ def test_openai_chat_client_serializes_native_tool_request_and_parses_tool_call(
     }
 
 
+def test_openai_chat_client_repairs_python_literal_native_tool_arguments(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_read_file_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": "{'path': 'README.md'}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    payload = client.complete(
+        [{"role": "user", "content": "read README"}],
+        tools=[
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": [{"name": "path", "type": "string"}],
+            }
+        ],
+    )
+
+    assert payload["tool_call"] == {
+        "id": "call_read_file_1",
+        "name": "read_file",
+        "arguments": {"path": "README.md"},
+        "reason": "model requested tool",
+    }
+
+
+def test_openai_chat_client_preserves_unrepairable_native_tool_call_as_invalid_args(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_read_file_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": '{"path":',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    payload = client.complete(
+        [{"role": "user", "content": "read README"}],
+        tools=[
+            {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": [{"name": "path", "type": "string"}],
+            }
+        ],
+    )
+
+    assert payload["tool_call"] == {
+        "id": "call_read_file_1",
+        "name": "read_file",
+        "arguments": {},
+        "reason": "model requested tool",
+        "metadata": {
+            "native_tool_arguments_parse_error": "Native tool call arguments were not valid JSON.",
+            "native_tool_arguments_raw": '{"path":',
+        },
+    }
+
+
 def test_openai_chat_client_omits_null_parameter_descriptions_in_native_tool_schema(
     monkeypatch,
 ) -> None:
@@ -750,7 +1022,7 @@ def test_openai_chat_client_omits_null_parameter_descriptions_in_native_tool_sch
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -807,7 +1079,7 @@ def test_openai_chat_client_omits_null_parameter_descriptions_in_native_tool_sch
 
 def test_openai_chat_client_maps_sdk_connection_errors(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             chat_error=APIConnectionError(
                 message="connection reset by peer",

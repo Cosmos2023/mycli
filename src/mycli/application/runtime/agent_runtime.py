@@ -1,33 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import UTC, datetime
 import os
 from pathlib import Path
-import traceback
-from uuid import uuid4
 
-from mycli.domain.capabilities import (
-    CapabilityActivation,
-    CapabilityActivationDependencyStatus,
+from mycli.domain.capabilities import CapabilityActivation
+from mycli.domain.conversation import Conversation
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionLifecycleEvent,
 )
-from mycli.domain.conversation import Conversation, Message
-from mycli.domain.dynamic_tools import (
-    DynamicToolLifecycleEvent,
-    DynamicToolLifecycleState,
-    DynamicToolRegistration,
-    DynamicToolSource,
-)
-from mycli.domain.logging import LogLevel, ModelLogContext
 from mycli.domain.runtime import (
     ActivityEvent,
     AgentConfig,
-    BaselineFragment,
     ContextBaseline,
     DecisionAction,
     ExecutionContext,
-    HistoryItem,
-    HistoryItemType,
     InstructionContract,
     ModelTurnResult,
     PendingApproval,
@@ -36,55 +22,74 @@ from mycli.domain.runtime import (
     RuntimeBlock,
     RuntimeItem,
     RequestShape,
-    RuntimeTraceEvent,
     ReasoningEffort,
     StopReason,
-    SuspendedTurn,
     TurnContext,
     TurnItem,
-    TurnItemType,
     TurnRecord,
-    TurnRollout,
-    TurnRolloutEvent,
     TurnResponse,
     TurnStatus,
 )
 from mycli.domain.skills import SkillDefinition, SkillMetadata
-from mycli.domain.tool_exposure import (
+from mycli.domain.tooling.exposure import (
     ToolExposure,
-    ToolExposureEntry,
-    ToolExposureKind,
-    ToolRouteSource,
 )
-from mycli.domain.tools import ToolCall
-from mycli.infrastructure.models.base import ModelAdapter, ModelMessage, ModelToolDefinition
-from mycli.infrastructure.openai_client import ModelResponseError
+from mycli.domain.tooling.calls import ToolCall
+from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
-from mycli.prompts.react import build_react_prompt
-from mycli.prompts.system import build_system_prompt
-from mycli.schemas.responses_protocol import (
-    ResponsesContinuationState,
-    ResponsesFunctionCallOutputPayload,
-)
 from mycli.services.approval.approval_service import ApprovalService
-from mycli.services.capability_resolver import CapabilityResolver
+from mycli.services.capabilities import CapabilityResolver
 from mycli.services.context.context_manager import ContextManager
+from mycli.services.context.compaction import (
+    CompactionCostProfile,
+    ContextBudget,
+    CompactionPipeline,
+    LLMSummarization,
+    SlidingWindowEviction,
+    ToolResultBudget,
+    ToolResultDedup,
+)
+from mycli.services.context.token_counter import TokenCounter
+from mycli.services.context.tool_result_formatter import ToolResultFormatter
+from mycli.services.file_history import FileHistoryService
+from mycli.services.hooks import HookManager, HookPoint
+from mycli.services.hooks.builtin import permission_guard
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
-from mycli.services.dynamic_tool_registry import DynamicToolRegistry
-from mycli.services.dynamic_tool_provider import DynamicToolProvider
-from mycli.services.memory_service import MemoryService
-from mycli.services.planning.planning_service import PlanningService
-from mycli.services.request_shape_builder import RequestShapeBuilder
-from mycli.services.request_shape_payload_formatter import RequestShapePayloadFormatter
+from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
+from mycli.application.runtime.tools.contributed_tool_provider import ToolContributionProvider
+from mycli.memory.service import MemoryService
+from mycli.services.planning import PlanModeService, PlanningService
+from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
-from mycli.services.skill_registry import SkillRegistry
-from mycli.services.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
-from mycli.services.tool_router import ToolRouter
-from mycli.services.trace_service import TraceService
+from mycli.services.skills import SkillRegistry
+from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
+from mycli.tools.routing.tool_router import ToolRouter
+from mycli.services.tracing import TraceService
 from mycli.services.runtime_policy import RuntimePolicy
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.services.turn_guard import TurnCheckpoint
+from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.tools.registry import ToolRegistryV2
+from mycli.application.runtime.context import RuntimeContextBuilder
+from mycli.application.runtime.approval_decisions import RuntimeApprovalDecisions
+from mycli.application.runtime.capability_turn_recorder import CapabilityTurnRecorder
+from mycli.application.runtime.ledger import RuntimeEventLedger
+from mycli.application.runtime.model import (
+    AssistantConversationRecorder,
+    AssistantBlockConsumer,
+    ModelTurnRequester,
+    RuntimeModelState,
+)
+from mycli.application.runtime.planning_effects import RuntimePlanningEffects
+from mycli.application.runtime.request import (
+    RequestPipeline,
+    RequestShapeBuilder,
+    RequestShapePayloadFormatter,
+)
+from mycli.application.runtime.response_finalizer import RuntimeResponseFinalizer
+from mycli.application.runtime.runtime_error_logger import RuntimeErrorLogger
+from mycli.application.runtime.runtime_policy_coordinator import RuntimePolicyCoordinator
+from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
 
 
 class AgentRuntime:
@@ -102,14 +107,48 @@ class AgentRuntime:
         planning_service: PlanningService | None = None,
         skill_registry: SkillRegistry | None = None,
         trace_service: TraceService | None = None,
+        observability_service: ObservabilityService | None = None,
         workspace_log_service: WorkspaceLogService | None = None,
-        dynamic_tool_providers: tuple[DynamicToolProvider, ...] = (),
+        contributed_tool_providers: tuple[ToolContributionProvider, ...] = (),
     ) -> None:
         self._model_adapter = model_adapter
         self._tool_registry = tool_registry
         self._config = config
         self._approval_service = approval_service or ApprovalService()
-        self._context_manager = context_manager or ContextManager()
+        self._tool_result_formatter = ToolResultFormatter()
+        self._token_counter = TokenCounter()
+        self._observability_service = observability_service or ObservabilityService()
+        self._hook_manager = HookManager()
+        self._hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        self._compaction_pipeline = CompactionPipeline(
+            tool_result_budget=ToolResultBudget(self._tool_result_formatter),
+            tool_result_dedup=ToolResultDedup(trigger_ratio=0.4),
+            sliding_window_eviction=SlidingWindowEviction(
+                trigger_ratio=0.7,
+                keep_recent=8,
+            ),
+            llm_summarization=LLMSummarization(
+                trigger_ratio=config.compaction_l4_trigger_ratio,
+                model_name=config.model,
+                trigger_ratios_by_model=config.compaction_l4_trigger_ratios_by_model,
+                cost_profile=CompactionCostProfile(
+                    input_cost_per_1k=config.compaction_l4_input_cost_per_1k,
+                    output_cost_per_1k=config.compaction_l4_output_cost_per_1k,
+                    carry_cost_per_1k=config.compaction_l4_carry_cost_per_1k,
+                    expected_summary_tokens=config.compaction_l4_expected_summary_tokens,
+                    min_savings_ratio=config.compaction_l4_min_savings_ratio,
+                    carry_turns=config.compaction_l4_carry_turns,
+                ),
+            ),
+            hook_manager=self._hook_manager,
+        )
+        self._context_manager = context_manager or ContextManager(
+            formatter=self._tool_result_formatter,
+        )
+        self._file_history_service = FileHistoryService(
+            home_dir=home_dir,
+            workspace_root=config.workspace_root,
+        )
         self._session_store = SQLiteSessionStore(home_dir / ".mycli" / "sessions.db")
         self._session_service = session_service or SessionService(
             home_dir=home_dir,
@@ -133,16 +172,119 @@ class AgentRuntime:
         )
         self._trace_service = trace_service or TraceService(home_dir=home_dir)
         self._runtime_policy = RuntimePolicy()
+        self._checkpoint = TurnCheckpoint(
+            max_tool_calls_per_turn=config.max_tool_calls_per_turn,
+            max_tokens_per_turn=config.max_tokens_per_turn,
+            max_same_tool_calls=config.max_same_tool_calls,
+            no_progress_threshold=config.no_progress_threshold,
+            force_answer_threshold=config.force_answer_threshold,
+            reroute_threshold=config.reroute_threshold,
+        )
         self._turn_context_assembler = TurnContextAssembler()
         self._instruction_contract_assembler = InstructionContractAssembler()
         self._request_shape_builder = RequestShapeBuilder()
         self._request_shape_payload_formatter = RequestShapePayloadFormatter()
         self._tool_exposure_planner = ToolExposurePlanner(tool_registry=tool_registry)
-        self._dynamic_tool_registry = DynamicToolRegistry()
-        self._dynamic_tool_providers = tuple(dynamic_tool_providers)
+        self._contributed_tool_registry = ToolContributionRegistry()
+        self._contributed_tool_providers = tuple(contributed_tool_providers)
         self._workspace_log_service = workspace_log_service or WorkspaceLogService(
             workspace_root=config.workspace_root
         )
+        self._event_ledger = RuntimeEventLedger(
+            session_id=config.session_id,
+            session_service=self._session_service,
+            trace_service=self._trace_service,
+            continuation_state_provider=self._model_continuation_state,
+        )
+        self._assistant_conversation_recorder = AssistantConversationRecorder()
+        self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
+        self._capability_turn_recorder = CapabilityTurnRecorder(self._append_turn_item)
+        self._planning_effects = RuntimePlanningEffects(
+            session_id=config.session_id,
+            planning_service=self._planning_service,
+            session_service=self._session_service,
+        )
+        self._runtime_policy_coordinator = RuntimePolicyCoordinator(
+            config=config,
+            runtime_policy=self._runtime_policy,
+            trace_service=self._trace_service,
+            append_turn_item=self._append_turn_item,
+        )
+        self._response_finalizer = RuntimeResponseFinalizer(
+            config=config,
+            contributed_tool_registry=self._contributed_tool_registry,
+            session_service=self._session_service,
+            event_ledger=self._event_ledger,
+            append_lifecycle_events=self._append_contributed_tool_lifecycle_events,
+        )
+        self._request_pipeline = RequestPipeline(
+            config=config,
+            instruction_contract_assembler=self._instruction_contract_assembler,
+            request_shape_builder=self._request_shape_builder,
+            request_shape_payload_formatter=self._request_shape_payload_formatter,
+            trace_service=self._trace_service,
+            workspace_log_service=self._workspace_log_service,
+        )
+        self._tool_orchestrator = ToolOrchestrator(
+            session_id=config.session_id,
+            tool_registry=tool_registry,
+            tool_exposure_planner=self._tool_exposure_planner,
+            contributed_tool_registry=self._contributed_tool_registry,
+            contributed_tool_providers=self._contributed_tool_providers,
+            trace_service=self._trace_service,
+            append_turn_item=self._append_turn_item,
+        )
+        self._tool_execution_service = ToolExecutionService(
+            session_id=config.session_id,
+            context_manager=self._context_manager,
+            trace_service=self._trace_service,
+            append_turn_item=self._append_turn_item,
+            append_lifecycle_events=self._append_contributed_tool_lifecycle_events,
+            apply_tool_effects=self._apply_tool_effects,
+            normalize_tool_call=self._normalize_tool_call,
+            hook_manager=self._hook_manager,
+            file_history=self._file_history_service,
+        )
+        self._model_turn_requester = ModelTurnRequester(
+            model_adapter=model_adapter,
+            normalize_tool_call=self._normalize_tool_call,
+        )
+        self._assistant_block_consumer = AssistantBlockConsumer(
+            session_id=config.session_id,
+            session_service=self._session_service,
+            approval_service=self._approval_service,
+            workspace_log_service=self._workspace_log_service,
+            append_turn_item=self._append_turn_item,
+            tool_call_from_block=self._tool_call_from_block,
+            record_assistant_text_block=self._record_assistant_text_block,
+            record_assistant_tool_calls=self._record_assistant_tool_calls,
+            execute_tool_call=self._execute_tool_call,
+            execute_tool_calls=self._execute_tool_calls,
+            pending_decision_from_approval=self._pending_decision_from_approval,
+        )
+        self._model_state = RuntimeModelState(
+            model_adapter=model_adapter,
+            config=config,
+            session_service=self._session_service,
+            trace_service=self._trace_service,
+            workspace_log_service=self._workspace_log_service,
+        )
+        self._runtime_error_logger = RuntimeErrorLogger(
+            config=config,
+            workspace_log_service=self._workspace_log_service,
+        )
+        self._runtime_context_builder = RuntimeContextBuilder(
+            config=config,
+            session_service=self._session_service,
+            memory_service=self._memory_service,
+            context_manager=self._context_manager,
+            turn_context_assembler=self._turn_context_assembler,
+            capability_resolver=self._capability_resolver,
+            skill_registry=self._skill_registry,
+            tool_registry=tool_registry,
+            workspace_log_service=self._workspace_log_service,
+        )
+        self._recover_plan_mode_anchor()
 
     @classmethod
     def for_tests(
@@ -153,6 +295,7 @@ class AgentRuntime:
     ) -> AgentRuntime:
         from mycli.tools.edit_file import EditFileTool
         from mycli.tools.list_directory import ListDirectoryTool
+        from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
         from mycli.tools.read_file import ReadFileTool
         from mycli.tools.read_file_range import ReadFileRangeTool
         from mycli.tools.run_shell import RunShellTool
@@ -168,6 +311,8 @@ class AgentRuntime:
                 EditFileTool(workspace_root),
                 RunShellTool(workspace_root),
                 UpdatePlanTool(),
+                EnterPlanModeTool(workspace_root),
+                ExitPlanModeTool(workspace_root),
             ]
         )
         return cls(
@@ -178,122 +323,37 @@ class AgentRuntime:
         )
 
     def _set_model_log_context(self, turn_id: str) -> None:
-        setter = getattr(self._model_adapter, "set_log_context_provider", None)
-        if not callable(setter):
-            return
-        setter(
-            lambda: ModelLogContext(
-                session_id=self._config.session_id,
-                turn_id=turn_id,
-            )
-        )
+        self._model_state.set_config(self._config)
+        self._model_state.set_log_context(turn_id)
+
+    def _recover_plan_mode_anchor(self) -> None:
+        plan_mode = PlanModeService(workspace_root=self._config.workspace_root)
+        existing = self._session_service.load_plan_state(self._config.session_id)
+        recovered = plan_mode.recover_current_plan(existing)
+        if recovered.items and not existing.items:
+            self._session_service.save_plan_state(self._config.session_id, recovered)
 
     def _set_model_runtime_event_recorder(self, turn_id: str) -> None:
-        setter = getattr(self._model_adapter, "set_runtime_event_recorder", None)
-        if not callable(setter):
-            return
-        setter(
-            lambda kind, payload: self._trace_service.append(
-                self._config.session_id,
-                RuntimeTraceEvent(
-                    kind=kind,
-                    turn_id=turn_id,
-                    payload=dict(payload),
-                ),
-            )
-        )
+        self._model_state.set_config(self._config)
+        self._model_state.set_runtime_event_recorder(turn_id)
 
     def _set_model_reasoning_effort(self, reasoning_effort: ReasoningEffort) -> None:
-        thinking_setter = getattr(self._model_adapter, "set_thinking_config", None)
-        if callable(thinking_setter):
-            if not self._config.thinking_enabled:
-                thinking_setter(enabled=False, effort=None)
-                return
-            thinking_setter(enabled=True, effort=reasoning_effort)
-            return
-        setter = getattr(self._model_adapter, "set_reasoning_effort", None)
-        if not callable(setter):
-            return
-        if not self._config.thinking_enabled:
-            setter(None)
-            return
-        setter(reasoning_effort.value)
+        self._model_state.set_config(self._config)
+        self._model_state.set_reasoning_effort(reasoning_effort)
+
+    def _set_model_tool_choice(self, tool_choice: str | None) -> None:
+        self._model_state.set_tool_choice(tool_choice)
 
     def _load_model_continuation_state(self, *, turn_id: str) -> None:
-        setter = getattr(self._model_adapter, "set_continuation_state", None)
-        if not callable(setter):
-            return
-        state = self._session_service.load_responses_continuation_state(
-            self._config.session_id
-        )
-        setter(state)
-        self._record_responses_continuation_state(
-            turn_id=turn_id,
-            kind="responses_continuation_loaded",
-            state=state,
-        )
+        self._model_state.set_config(self._config)
+        self._model_state.load_continuation_state(turn_id=turn_id)
 
     def _persist_model_continuation_state(self, *, turn_id: str, phase: str) -> None:
-        getter = getattr(self._model_adapter, "get_continuation_state", None)
-        if not callable(getter):
-            return
-        state = getter()
-        if state is not None and not isinstance(state, ResponsesContinuationState):
-            raise ModelResponseError(
-                "Model adapter get_continuation_state must return ResponsesContinuationState or None."
-            )
-        self._session_service.save_responses_continuation_state(
-            self._config.session_id,
-            state,
-        )
-        self._record_responses_continuation_state(
-            turn_id=turn_id,
-            kind="responses_continuation_persisted",
-            state=state,
-            phase=phase,
-        )
-
-    def _record_responses_continuation_state(
-        self,
-        *,
-        turn_id: str,
-        kind: str,
-        state: ResponsesContinuationState | None,
-        phase: str | None = None,
-    ) -> None:
-        payload = {
-            "phase": phase,
-            "has_state": state is not None,
-            "response_id": None if state is None else state.response_id,
-            "eligible": None if state is None else state.eligible,
-            "failure_reason": None if state is None else state.failure_reason,
-            "request_input_count": 0 if state is None else len(state.request_input),
-            "response_output_count": 0 if state is None else len(state.response_output),
-        }
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind=kind,
-                turn_id=turn_id,
-                payload=payload,
-            ),
-        )
-        self._workspace_log_service.log(
-            level=LogLevel.INFO,
-            event=kind,
-            message="Updated Responses continuation state",
-            context={
-                "session_id": self._config.session_id,
-                "turn_id": turn_id,
-                **payload,
-            },
-        )
+        self._model_state.set_config(self._config)
+        self._model_state.persist_continuation_state(turn_id=turn_id, phase=phase)
 
     def _error_details(self, error_path: str | None) -> tuple[str, ...]:
-        details = [f"Details logged to {self._workspace_log_service.error_log_display_path()}"]
-        if error_path:
-            details.append(f"Raw error saved to {error_path}")
-        return tuple(details)
+        return self._runtime_error_logger.details(error_path)
 
     def _log_runtime_exception(
         self,
@@ -302,47 +362,18 @@ class AgentRuntime:
         phase: str,
         exc: Exception,
     ) -> str:
-        payload = {
-            "error_type": type(exc).__name__,
-            "message": str(exc),
-            "traceback": traceback.format_exc(),
-            "phase": phase,
-            "session_id": self._config.session_id,
-            "turn_id": turn_id,
-            "model": self._config.model,
-            "protocol": self._config.protocol,
-        }
-        path = self._workspace_log_service.write_error_payload(
-            payload=payload,
-            session_id=self._config.session_id,
+        self._runtime_error_logger.set_config(self._config)
+        return self._runtime_error_logger.log_exception(
             turn_id=turn_id,
+            phase=phase,
+            exc=exc,
         )
-        relative_path = self._workspace_log_service.relative_path(path)
-        self._workspace_log_service.log(
-            level=LogLevel.ERROR,
-            event=phase,
-            message=str(exc),
-            context={
-                "session_id": self._config.session_id,
-                "turn_id": turn_id,
-                "error_path": relative_path,
-            },
-        )
-        return relative_path
 
     def _select_skill_metadata(self, user_message: str) -> SkillMetadata | None:
-        lowered = user_message.lower()
-        for name in self._skill_registry.list_names():
-            skill = self._skill_registry.get_metadata(name)
-            if skill and any(hint in lowered for hint in skill.trigger_hints):
-                return skill
-        return None
+        return self._runtime_context_builder.select_skill_metadata(user_message)
 
     def _load_selected_skill(self, user_message: str) -> SkillDefinition | None:
-        metadata = self._select_skill_metadata(user_message)
-        if metadata is None:
-            return None
-        return self._skill_registry.load(metadata.name)
+        return self._runtime_context_builder.load_selected_skill(user_message)
 
     def _build_context(
         self,
@@ -354,37 +385,15 @@ class AgentRuntime:
         capability_activations: tuple[CapabilityActivation, ...] = (),
         tool_exposure: ToolExposure | None = None,
     ) -> ExecutionContext:
-        runtime_snapshot = self._session_service.load_runtime_snapshot(self._config.session_id)
-        history_items = () if runtime_snapshot is None else runtime_snapshot.history_items
-        context_baseline = None if runtime_snapshot is None else runtime_snapshot.context_baseline
-        managed = self._context_manager.build(
-            conversation=tuple(conversation.messages),
-            history_items=history_items,
-            recent_message_count=self._config.recent_message_count,
-        )
-        available_tool_names = (
-            tool_exposure.callable_tool_names()
-            if tool_exposure is not None
-            else tuple(self._tool_registry.list_names())
-        )
-        return ExecutionContext(
-            config=self._config,
-            memory_records=self._memory_service.collect_runtime_context(
-                user_message=user_message,
-                session_id=self._config.session_id,
-            ),
-            active_skill=self._active_skill_from_activations(capability_activations)
-            or self._load_selected_skill(user_message),
+        self._runtime_context_builder.set_config(self._config)
+        return self._runtime_context_builder.build_context(
+            user_message=user_message,
+            conversation=conversation,
+            plan_state=plan_state,
+            runtime_reminders=runtime_reminders,
+            runtime_policy_state=runtime_policy_state,
             capability_activations=capability_activations,
             tool_exposure=tool_exposure,
-            available_tool_names=available_tool_names,
-            plan_state=plan_state,
-            conversation_messages=managed.messages,
-            conversation_summary=managed.summary,
-            history_items=history_items,
-            context_baseline=context_baseline,
-            runtime_reminders=runtime_reminders,
-            runtime_policy_state={} if runtime_policy_state is None else dict(runtime_policy_state),
         )
 
     def _build_runtime_items(
@@ -392,14 +401,14 @@ class AgentRuntime:
         *,
         request_shape: RequestShape,
     ) -> list[RuntimeItem]:
-        return self._request_shape_payload_formatter.runtime_items(request_shape)
+        return self._request_pipeline.runtime_items(request_shape=request_shape)
 
     def _build_messages(
         self,
         *,
         request_shape: RequestShape,
     ) -> list[ModelMessage]:
-        return self._request_shape_payload_formatter.legacy_messages(request_shape)
+        return self._request_pipeline.legacy_messages(request_shape=request_shape)
 
     def _assemble_instruction_contract(
         self,
@@ -408,51 +417,11 @@ class AgentRuntime:
         context: ExecutionContext,
         turn_context: TurnContext,
     ) -> InstructionContract:
-        contract = self._instruction_contract_assembler.assemble(
+        return self._request_pipeline.assemble_instruction_contract(
+            turn_id=turn_id,
+            context=context,
             turn_context=turn_context,
-            base_instructions=build_system_prompt(),
-            conversation_messages=context.conversation_messages,
         )
-        stable_action_guidance = build_react_prompt(
-            contract,
-            include_context_sections=False,
-            include_dynamic_guidance=False,
-        )
-        contract = InstructionContract(
-            base_instructions=f"{contract.base_instructions}\n\n{stable_action_guidance}",
-            developer_sections=contract.developer_sections,
-            contextual_user_sections=contract.contextual_user_sections,
-            conversation_messages=contract.conversation_messages,
-            current_user_request=contract.current_user_request,
-            assistant_scaffold=None,
-        )
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="instruction_contract",
-                turn_id=turn_id,
-                payload=contract.trace_summary(),
-            ),
-        )
-        self._workspace_log_service.log(
-            level=LogLevel.INFO,
-            event="instruction_contract_assembled",
-            message="Assembled instruction contract",
-            context={
-                "session_id": self._config.session_id,
-                "developer_kinds": [
-                    str(section.kind) for section in contract.developer_sections
-                ],
-                "contextual_kinds": [
-                    str(section.kind) for section in contract.contextual_user_sections
-                ],
-                "memory_excluded_contextual_kinds": [
-                    str(section.kind)
-                    for section in contract.memory_excluded_contextual_sections()
-                ],
-            },
-        )
-        return contract
 
     def _assemble_turn_context(
         self,
@@ -465,93 +434,24 @@ class AgentRuntime:
         capability_activations: tuple[CapabilityActivation, ...] = (),
         tool_exposure: ToolExposure | None = None,
     ) -> tuple[ExecutionContext, TurnContext]:
-        context = self._build_context(
-            user_message,
-            conversation,
-            plan_state,
-            runtime_reminders,
-            runtime_policy_state,
-            capability_activations,
-            tool_exposure,
-        )
-        turn_context = self._turn_context_assembler.assemble(
+        self._runtime_context_builder.set_config(self._config)
+        return self._runtime_context_builder.assemble_turn_context(
             user_message=user_message,
-            context=context,
+            conversation=conversation,
+            plan_state=plan_state,
+            runtime_reminders=runtime_reminders,
+            runtime_policy_state=runtime_policy_state,
+            capability_activations=capability_activations,
+            tool_exposure=tool_exposure,
         )
-        summary = turn_context.debug_summary()
-        self._workspace_log_service.log(
-            level=LogLevel.INFO,
-            event="turn_context_assembled",
-            message="Assembled turn context",
-            context={
-                "session_id": self._config.session_id,
-                "enabled_sections": summary["enabled_sections"],
-                "section_order": summary["section_order"],
-            },
-        )
-        return context, turn_context
 
     def _resolve_capability_activations(
         self,
         user_message: str,
     ) -> tuple[CapabilityActivation, ...]:
-        return self._capability_resolver.resolve(user_message)
+        return self._runtime_context_builder.resolve_capability_activations(user_message)
 
-    def _dynamic_tool_route_source(
-        self,
-        source: DynamicToolSource,
-    ) -> ToolRouteSource:
-        if source is DynamicToolSource.RUNTIME:
-            return ToolRouteSource.RUNTIME
-        if source is DynamicToolSource.CAPABILITY:
-            return ToolRouteSource.CAPABILITY
-        return ToolRouteSource.PROVIDER
-
-    def _dynamic_tool_entry(
-        self,
-        registration: DynamicToolRegistration,
-    ) -> ToolExposureEntry:
-        descriptor = registration.descriptor
-        metadata = {
-            "tool_id": descriptor.tool_id,
-            "scope": descriptor.scope.value,
-            "state": descriptor.lifecycle_state.value,
-        }
-        metadata.update(descriptor.origin_metadata)
-        return ToolExposureEntry(
-            route_key=descriptor.route_key,
-            kind=ToolExposureKind.DYNAMIC,
-            source=self._dynamic_tool_route_source(descriptor.source),
-            spec=descriptor.spec,
-            metadata=metadata,
-            dynamic_descriptor=descriptor,
-        )
-
-    def _bind_visible_dynamic_registrations(
-        self,
-        exposure: ToolExposure,
-    ) -> tuple[ToolExposure, dict[str, DynamicToolRegistration]]:
-        blocked_names = {entry.name for entry in (*exposure.direct, *exposure.deferred)}
-        visible_dynamic: dict[str, DynamicToolRegistration] = {}
-        dynamic_entries: list[ToolExposureEntry] = []
-
-        for registration in self._dynamic_tool_registry.get_visible_registrations():
-            route_name = registration.descriptor.route_name
-            if route_name in blocked_names:
-                continue
-            visible_dynamic[route_name] = registration
-            dynamic_entries.append(self._dynamic_tool_entry(registration))
-
-        return (
-            ToolExposure(
-                direct=exposure.direct,
-                deferred=exposure.deferred,
-                dynamic=tuple(dynamic_entries),
-            ),
-            visible_dynamic,
-        )
-
-    def _runtime_dynamic_tools(
+    def _runtime_contributed_tools(
         self,
         *,
         user_message: str,
@@ -559,16 +459,12 @@ class AgentRuntime:
         plan_state: PlanState,
         capability_activations: tuple[CapabilityActivation, ...] = (),
     ) -> tuple[object, ...]:
-        registrations: list[object] = []
-        for provider in self._dynamic_tool_providers:
-            provided = provider.provide(
-                user_message=user_message,
-                conversation=conversation,
-                plan_state=plan_state,
-                capability_activations=capability_activations,
-            )
-            registrations.extend(provided)
-        return tuple(registrations)
+        return self._tool_orchestrator._runtime_contributed_tools(
+            user_message=user_message,
+            conversation=conversation,
+            plan_state=plan_state,
+            capability_activations=capability_activations,
+        )
 
     def _plan_tool_exposure(
         self,
@@ -578,53 +474,22 @@ class AgentRuntime:
         plan_state: PlanState,
         capability_activations: tuple[CapabilityActivation, ...],
     ) -> PlannedToolExposure:
-        runtime_dynamic_tools = self._runtime_dynamic_tools(
+        runtime_contributed_tools = self._runtime_contributed_tools(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
             capability_activations=capability_activations,
         )
-        planned = self._tool_exposure_planner.plan(
+        return self._tool_orchestrator.plan_tool_exposure(
             user_message=user_message,
+            conversation=conversation,
+            plan_state=plan_state,
             capability_activations=capability_activations,
-            runtime_dynamic_tools=runtime_dynamic_tools,
-        )
-        lifecycle_events: list[DynamicToolLifecycleEvent] = []
-
-        for registration in planned.dynamic_tools.values():
-            result = self._dynamic_tool_registry.register(registration)
-            if result.lifecycle_event is not None:
-                lifecycle_events.append(result.lifecycle_event)
-
-        rebound_exposure, visible_dynamic_tools = self._bind_visible_dynamic_registrations(
-            planned.exposure
-        )
-
-        for registration in tuple(visible_dynamic_tools.values()):
-            if registration.descriptor.lifecycle_state is not DynamicToolLifecycleState.DECLARED:
-                continue
-            event = self._dynamic_tool_registry.transition(
-                registration.descriptor.tool_id,
-                DynamicToolLifecycleState.EXPOSED,
-            )
-            if event is not None:
-                lifecycle_events.append(event)
-
-        rebound_exposure, visible_dynamic_tools = self._bind_visible_dynamic_registrations(
-            planned.exposure
-        )
-        return PlannedToolExposure(
-            exposure=rebound_exposure,
-            dynamic_tools=visible_dynamic_tools,
-            lifecycle_events=tuple(lifecycle_events),
+            runtime_contributed_tools=runtime_contributed_tools,
         )
 
     def _build_tool_router(self, planned_exposure: PlannedToolExposure) -> ToolRouter:
-        return ToolRouter(
-            tool_registry=self._tool_registry,
-            dynamic_tools=planned_exposure.dynamic_tools,
-            dynamic_tool_registry=self._dynamic_tool_registry,
-        )
+        return self._tool_orchestrator.build_tool_router(planned_exposure)
 
     def _append_tool_exposure_turn_item(
         self,
@@ -634,95 +499,35 @@ class AgentRuntime:
         activity_events: list[ActivityEvent],
         tool_exposure: ToolExposure,
     ) -> None:
-        summary = tool_exposure.summary()
-        text = (
-            "Tool exposure: "
-            f"direct={', '.join(summary['direct']) or 'none'}; "
-            f"deferred={', '.join(summary['deferred']) or 'none'}; "
-            f"dynamic={', '.join(summary['dynamic']) or 'none'}"
-        )
-        self._append_turn_item(
+        self._tool_orchestrator.append_tool_exposure_turn_item(
             turn_id=turn_id,
             turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.TOOL_EXPOSURE,
-                text=text,
-                metadata={
-                    "direct_tool_names": summary["direct"],
-                    "deferred_tool_names": summary["deferred"],
-                    "dynamic_tool_names": summary["dynamic"],
-                },
-            ),
-        )
-        activity_events.append(ActivityEvent(kind="tool_exposure", message=text))
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="tool_exposure",
-                turn_id=turn_id,
-                payload={
-                    "direct_tool_names": summary["direct"],
-                    "deferred_tool_names": summary["deferred"],
-                    "dynamic_tool_names": summary["dynamic"],
-                },
-            ),
+            activity_events=activity_events,
+            tool_exposure=tool_exposure,
         )
 
-    def _append_dynamic_tool_lifecycle_events(
+    def _append_contributed_tool_lifecycle_events(
         self,
         *,
         turn_id: str,
         turn_items: list[TurnItem],
         activity_events: list[ActivityEvent],
-        lifecycle_events: tuple[DynamicToolLifecycleEvent, ...],
+        lifecycle_events: tuple[ToolContributionLifecycleEvent, ...],
     ) -> None:
-        for event in lifecycle_events:
-            text = (
-                f"Dynamic tool: {event.route_name} "
-                f"[scope={event.scope.value} state={event.state.value} source={event.source.value}]"
-            )
-            self._append_turn_item(
-                turn_id=turn_id,
-                turn_items=turn_items,
-                item=TurnItem(
-                    type=TurnItemType.DYNAMIC_TOOL,
-                    text=text,
-                    tool_name=event.route_name,
-                    metadata=event.to_dict(),
-                ),
-            )
-            activity_events.append(
-                ActivityEvent(
-                    kind="dynamic_tool_lifecycle",
-                    message=text,
-                    tool_name=event.route_name,
-                    preview=event.state.value,
-                )
-            )
-            self._trace_service.append(
-                self._config.session_id,
-                RuntimeTraceEvent(
-                    kind="dynamic_tool_lifecycle",
-                    turn_id=turn_id,
-                    payload=event.to_dict(),
-                ),
-            )
+        self._tool_orchestrator.append_tool_lifecycle_events(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            activity_events=activity_events,
+            lifecycle_events=lifecycle_events,
+        )
 
     def _active_skill_from_activations(
         self,
         capability_activations: tuple[CapabilityActivation, ...],
     ) -> SkillDefinition | None:
-        for activation in capability_activations:
-            if activation.dependency_status is not CapabilityActivationDependencyStatus.READY:
-                continue
-            return SkillDefinition(
-                name=activation.name,
-                description=activation.description,
-                trigger_hints=(),
-                body=activation.instructions,
-                source_path=activation.source_path,
-            )
-        return None
+        return self._runtime_context_builder.active_skill_from_activations(
+            capability_activations
+        )
 
     def _append_capability_turn_items(
         self,
@@ -731,48 +536,17 @@ class AgentRuntime:
         turn_items: list[TurnItem],
         capability_activations: tuple[CapabilityActivation, ...],
     ) -> None:
-        for activation in capability_activations:
-            text = (
-                f"Capability activated: {activation.name}"
-                if activation.dependency_status is CapabilityActivationDependencyStatus.READY
-                else f"Capability unavailable: {activation.name}"
-            )
-            self._append_turn_item(
-                turn_id=turn_id,
-                turn_items=turn_items,
-                item=TurnItem(
-                    type=TurnItemType.CAPABILITY,
-                    text=text,
-                    metadata={
-                        "capability_name": activation.name,
-                        "source": activation.source.value,
-                        "dependency_status": activation.dependency_status.value,
-                        "source_path": activation.source_path,
-                        **activation.metadata,
-                    },
-                ),
-            )
+        self._capability_turn_recorder.append_capability_turn_items(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            capability_activations=capability_activations,
+        )
 
     def _normalize_tool_call(self, call: ToolCall) -> ToolCall:
-        if call.call_id:
-            return call
-        return ToolCall(
-            name=call.name,
-            arguments=call.arguments,
-            reason=call.reason,
-            call_id=f"call_{uuid4().hex}",
-        )
+        return self._assistant_conversation_recorder.normalize_tool_call(call)
 
     def _tool_call_from_block(self, block: RuntimeBlock) -> ToolCall:
-        tool_arguments = block.tool_arguments
-        return self._normalize_tool_call(
-            ToolCall(
-                name=block.tool_name or "",
-                arguments=tool_arguments if isinstance(tool_arguments, dict) else {},
-                reason="model requested tool",
-                call_id=block.call_id,
-            )
-        )
+        return self._assistant_conversation_recorder.tool_call_from_block(block)
 
     def _record_assistant_text_block(
         self,
@@ -781,89 +555,10 @@ class AgentRuntime:
         block: RuntimeBlock,
         response_id: str | None,
     ) -> None:
-        if not block.text:
-            return
-        conversation.append(
-            Message(
-                role="assistant",
-                content=block.text,
-                blocks=(block,),
-                response_id=response_id,
-            )
-        )
-
-    def _record_tool_message(
-        self,
-        conversation: Conversation,
-        *,
-        tool_name: str,
-        content: str,
-        success: bool,
-        summary: str,
-        error: str | None,
-        raw_payload: dict[str, object],
-        tool_call_id: str | None = None,
-    ) -> None:
-        blocks: tuple[RuntimeBlock, ...] = ()
-        if tool_call_id:
-            blocks = (
-                RuntimeBlock(
-                    type="tool_result",
-                    text=content,
-                    call_id=tool_call_id,
-                    metadata={
-                        "tool_name": tool_name,
-                        "success": success,
-                        "summary": summary,
-                        "error": error,
-                        "path": raw_payload.get("path"),
-                        "error_kind": raw_payload.get("error_kind"),
-                        "function_call_output_payload": (
-                            ResponsesFunctionCallOutputPayload.from_text(
-                                content,
-                                success=success,
-                            ).to_dict()
-                        ),
-                    },
-                ),
-            )
-        conversation.append(
-            Message(
-                role="tool",
-                content=f"Tool {tool_name}: {content}",
-                tool_call_id=tool_call_id,
-                blocks=blocks,
-            )
-        )
-
-    def _record_assistant_tool_call(
-        self,
-        conversation: Conversation,
-        *,
-        tool_call: ToolCall,
-        provider_id: str | None = None,
-        response_id: str | None = None,
-        metadata: dict[str, object] | None = None,
-    ) -> None:
-        normalized_call = self._normalize_tool_call(tool_call)
-        block_metadata = {} if metadata is None else dict(metadata)
-        conversation.append(
-            Message(
-                role="assistant",
-                content="",
-                tool_calls=(normalized_call,),
-                blocks=(
-                    RuntimeBlock(
-                        type="tool_call",
-                        tool_name=normalized_call.name,
-                        tool_arguments=normalized_call.arguments,
-                        call_id=normalized_call.call_id or "",
-                        provider_id=provider_id,
-                        metadata=block_metadata,
-                    ),
-                ),
-                response_id=response_id,
-            )
+        self._assistant_conversation_recorder.record_text_block(
+            conversation,
+            block=block,
+            response_id=response_id,
         )
 
     def _record_assistant_tool_calls(
@@ -874,15 +569,11 @@ class AgentRuntime:
         blocks: tuple[RuntimeBlock, ...],
         response_id: str | None = None,
     ) -> None:
-        normalized_calls = tuple(self._normalize_tool_call(call) for call in tool_calls)
-        conversation.append(
-            Message(
-                role="assistant",
-                content="",
-                tool_calls=normalized_calls,
-                blocks=blocks,
-                response_id=response_id,
-            )
+        self._assistant_conversation_recorder.record_tool_calls(
+            conversation,
+            tool_calls=tool_calls,
+            blocks=blocks,
+            response_id=response_id,
         )
 
     def _execute_tool_call(
@@ -901,266 +592,50 @@ class AgentRuntime:
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
     ) -> PlanState:
-        normalized_call = self._normalize_tool_call(call)
-        turn_metadata = dict(metadata or {})
-        turn_metadata["arguments"] = normalized_call.arguments
-        turn_metadata["provider_id"] = provider_id
-        start_event = self._tool_activity_event(normalized_call, phase="start")
-        activity_events.append(start_event)
-        self._append_turn_item(
+        return self._tool_execution_service.execute_tool_call(
+            conversation=conversation,
+            call=call,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+            plan_state=plan_state,
             turn_id=turn_id,
+            activity_events=activity_events,
             turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.TOOL_CALL,
-                text=start_event.message,
-                tool_name=normalized_call.name,
-                call_id=normalized_call.call_id,
-                metadata=turn_metadata,
-            ),
-        )
-        if record_assistant_call:
-            self._record_assistant_tool_call(
-                conversation,
-                tool_call=normalized_call,
-                provider_id=provider_id,
-                response_id=response_id,
-                metadata=metadata,
-            )
-        try:
-            result = tool_router.execute(normalized_call, exposure=tool_exposure)
-            next_plan_state = self._apply_tool_effects(
-                call=normalized_call,
-                result_summary=result.summary,
-                result_payload=result.raw_payload,
-                plan_state=plan_state,
-            )
-            tool_transcript_content = self._context_manager.render_tool_result(result)
-            self._record_tool_message(
-                conversation,
-                tool_name=normalized_call.name,
-                content=tool_transcript_content,
-                success=result.success,
-                summary=result.summary,
-                error=result.error,
-                raw_payload=result.raw_payload,
-                tool_call_id=normalized_call.call_id,
-            )
-            finish_event = self._tool_activity_event(
-                normalized_call,
-                phase="finish",
-                result_summary=result.summary,
-            )
-            activity_events.append(finish_event)
-            self._append_turn_item(
-                turn_id=turn_id,
-                turn_items=turn_items,
-                item=TurnItem(
-                    type=TurnItemType.TOOL_RESULT,
-                    text=finish_event.message,
-                    tool_name=normalized_call.name,
-                    call_id=normalized_call.call_id,
-                    metadata={
-                        "success": result.success,
-                        "summary": result.summary,
-                        "error": result.error,
-                        "path": result.raw_payload.get("path"),
-                        "error_kind": result.raw_payload.get("error_kind"),
-                        "raw_payload": dict(result.raw_payload),
-                        "transcript_content": tool_transcript_content,
-                        "file_changes": self._file_changes_for_tool_result(
-                            call=normalized_call,
-                            result_payload=result.raw_payload,
-                        ),
-                    },
-                ),
-            )
-            self._trace_service.append(
-                self._config.session_id,
-                RuntimeTraceEvent(
-                    kind="tool_execution",
-                    turn_id=turn_id,
-                    payload={
-                        "tool_name": normalized_call.name,
-                        "tool_call_id": normalized_call.call_id or "",
-                        "arguments": normalized_call.arguments,
-                        "summary": result.summary,
-                        "success": result.success,
-                        "stdout_preview": self._trace_preview(result.raw_payload.get("stdout")),
-                        "stderr_preview": self._trace_preview(result.raw_payload.get("stderr")),
-                    },
-                ),
-            )
-            return next_plan_state
-        finally:
-            lifecycle_events = tool_router.pop_lifecycle_events()
-            if lifecycle_events:
-                self._append_dynamic_tool_lifecycle_events(
-                    turn_id=turn_id,
-                    turn_items=turn_items,
-                    activity_events=activity_events,
-                    lifecycle_events=lifecycle_events,
-                )
-
-    def _file_changes_for_tool_result(
-        self,
-        *,
-        call: ToolCall,
-        result_payload: dict[str, object],
-    ) -> list[dict[str, object]]:
-        if call.name in {"create_file", "edit_file", "replace_in_file", "append_file"}:
-            path = result_payload.get("path") or call.arguments.get("path")
-            if isinstance(path, str) and path:
-                return [{"kind": call.name, "path": path}]
-        if call.name == "delete_path":
-            path = result_payload.get("path") or call.arguments.get("path")
-            if isinstance(path, str) and path:
-                return [{"kind": "delete", "path": path}]
-        if call.name == "mkdir":
-            path = result_payload.get("path") or call.arguments.get("path")
-            if isinstance(path, str) and path:
-                return [{"kind": "mkdir", "path": path}]
-        if call.name == "move_path":
-            source = result_payload.get("source") or call.arguments.get("source")
-            destination = result_payload.get("destination") or call.arguments.get("destination")
-            if isinstance(source, str) and source and isinstance(destination, str) and destination:
-                return [
-                    {
-                        "kind": "move",
-                        "source": source,
-                        "destination": destination,
-                    }
-                ]
-        return []
-
-    def _tool_activity_event(
-        self,
-        call: ToolCall,
-        *,
-        phase: str,
-        result_summary: str | None = None,
-    ) -> ActivityEvent:
-        prefix = self._tool_activity_prefix(call)
-        if phase == "start":
-            return ActivityEvent(
-                kind="tool_started",
-                message=prefix,
-                tool_name=call.name,
-                path=self._activity_path(call),
-                query=self._activity_query(call),
-                preview=self._activity_preview(call),
-            )
-        done_message = self._tool_finished_message(call, result_summary=result_summary)
-        return ActivityEvent(
-            kind="tool_finished",
-            message=done_message,
-            tool_name=call.name,
-            path=self._activity_path(call),
-            query=self._activity_query(call),
-            preview=self._activity_preview(call),
+            provider_id=provider_id,
+            response_id=response_id,
+            metadata=metadata,
+            record_assistant_call=record_assistant_call,
         )
 
-    def _tool_activity_prefix(self, call: ToolCall) -> str:
-        path = self._activity_path(call)
-        query = self._activity_query(call)
-        if call.name == "list_directory":
-            return f"Listing: {path or '.'}"
-        if call.name == "read_file":
-            return f"Reading: {path or '<unknown>'}"
-        if call.name == "read_file_range":
-            start = call.arguments.get("start_line")
-            end = call.arguments.get("end_line")
-            if path and isinstance(start, int) and isinstance(end, int):
-                return f"Reading: {path}:{start}-{end}"
-            return f"Reading: {path or '<unknown>'}"
-        if call.name == "search_text":
-            message = f"Searching: query={query or '<unknown>'}"
-            glob = call.arguments.get("glob")
-            if isinstance(glob, str) and glob:
-                message += f" glob={glob}"
-            return message
-        if call.name in {"edit_file", "replace_in_file", "append_file"}:
-            verb = "Appending" if call.name == "append_file" else "Editing"
-            return f"{verb}: {path or '<unknown>'}"
-        if call.name == "update_plan":
-            return "Planning: updating task plan"
-        if call.name.startswith("git_"):
-            return f"Git: {call.name.removeprefix('git_')}"
-        if call.name == "run_shell":
-            return f"Shell: {self._activity_preview(call) or call.name}"
-        return f"Tool: {call.name}"
-
-    def _tool_finished_message(self, call: ToolCall, *, result_summary: str | None) -> str:
-        path = self._activity_path(call)
-        query = self._activity_query(call)
-        if call.name == "search_text":
-            return f"Done searching: query={query or '<unknown>'}"
-        if call.name in {"read_file", "read_file_range"}:
-            return f"Done reading: {path or '<unknown>'}"
-        if call.name in {"edit_file", "replace_in_file"}:
-            return f"Done editing: {path or '<unknown>'}"
-        if call.name == "append_file":
-            return f"Done appending: {path or '<unknown>'}"
-        if call.name.startswith("git_"):
-            return f"Done git: {call.name.removeprefix('git_')}"
-        if call.name == "run_shell":
-            return f"Done shell: {self._activity_preview(call) or (result_summary or call.name)}"
-        if call.name == "update_plan":
-            return "Done planning: updated task plan"
-        return f"Done: {call.name}"
-
-    def _activity_path(self, call: ToolCall) -> str | None:
-        value = call.arguments.get("path")
-        return value if isinstance(value, str) and value else None
-
-    def _activity_query(self, call: ToolCall) -> str | None:
-        value = call.arguments.get("query")
-        return value if isinstance(value, str) and value else None
-
-    def _activity_preview(self, call: ToolCall) -> str | None:
-        args = call.arguments.get("args")
-        if isinstance(args, list):
-            parts = [item for item in args if isinstance(item, str)]
-            if parts:
-                return " ".join(parts)
-        return None
-
-    def _trace_preview(self, value: object, *, max_chars: int = 120) -> str | None:
-        if not isinstance(value, str) or not value.strip():
-            return None
-        normalized = self._context_manager._normalize_whitespace(value)
-        if len(normalized) <= max_chars:
-            return normalized
-        return normalized[: max_chars - 3] + "..."
-
-    def _legacy_action_to_turn_result(self, action: object) -> ModelTurnResult:
-        blocks: list[RuntimeBlock] = []
-        progress_message = getattr(action, "progress_message", None)
-        if isinstance(progress_message, str) and progress_message:
-            blocks.append(RuntimeBlock(type="reasoning", text=progress_message))
-
-        tool_call = getattr(action, "tool_call", None)
-        if isinstance(tool_call, ToolCall):
-            normalized_call = self._normalize_tool_call(tool_call)
-            blocks.append(
-                RuntimeBlock(
-                    type="tool_call",
-                    tool_name=normalized_call.name,
-                    tool_arguments=normalized_call.arguments,
-                    call_id=normalized_call.call_id or "",
-                )
-            )
-
-        assistant_message = getattr(action, "assistant_message", None)
-        if isinstance(assistant_message, str) and assistant_message:
-            blocks.append(RuntimeBlock(type="text", text=assistant_message))
-
-        items: tuple[RuntimeItem, ...] = ()
-        if blocks:
-            items = (RuntimeItem(role="assistant", blocks=tuple(blocks)),)
-
-        return ModelTurnResult(
-            items=items,
-            done=bool(getattr(action, "done", False)),
+    def _execute_tool_calls(
+        self,
+        *,
+        conversation: Conversation,
+        calls: tuple[ToolCall, ...],
+        tool_router: ToolRouter,
+        tool_exposure: ToolExposure,
+        plan_state: PlanState,
+        turn_id: str,
+        activity_events: list[ActivityEvent],
+        turn_items: list[TurnItem],
+        provider_id: str | None = None,
+        response_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+        record_assistant_call: bool = True,
+    ) -> PlanState:
+        return self._tool_execution_service.execute_tool_calls(
+            conversation=conversation,
+            calls=calls,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+            plan_state=plan_state,
+            turn_id=turn_id,
+            activity_events=activity_events,
+            turn_items=turn_items,
+            provider_id=provider_id,
+            response_id=response_id,
+            metadata=metadata,
+            record_assistant_call=record_assistant_call,
         )
 
     def _render_model_tools(
@@ -1181,33 +656,70 @@ class AgentRuntime:
         contract: InstructionContract,
         tools: list[ModelToolDefinition],
     ) -> RequestShape:
-        shape = self._request_shape_builder.build(
-            config=self._config,
+        return self._request_pipeline.build_and_trace_request_shape(
+            turn_id=turn_id,
             contract=contract,
             tools=tools,
         )
-        payload = shape.summary()
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="request_shape",
-                turn_id=turn_id,
-                payload=payload,
-            ),
+
+    def _trace_cache_shape_diagnostic(
+        self,
+        *,
+        turn_id: str,
+        request_shape: RequestShape,
+        usage: dict[str, object] | None,
+    ) -> None:
+        diagnostic = self._request_pipeline.trace_cache_shape_diagnostic(
+            turn_id=turn_id,
+            request_shape=request_shape,
+            usage=usage,
         )
-        self._workspace_log_service.log(
-            level=LogLevel.INFO,
-            event="request_shape_built",
-            message="Built cache-first request shape",
-            context={
-                "session_id": self._config.session_id,
-                "turn_id": turn_id,
-                "system_hash": payload["system_hash"],
-                "tool_schema_hash": payload["tool_schema_hash"],
-                "tool_order_hash": payload["tool_order_hash"],
-            },
+        self._observability_service.metrics.record_cache_tokens(
+            hit_tokens=diagnostic.cache_hit_tokens,
+            miss_tokens=diagnostic.cache_miss_tokens,
         )
-        return shape
+
+    def _record_budget_metric(self, *, total_tokens: int, max_tokens: int | None = None) -> None:
+        self._observability_service.metrics.record_budget(
+            total_tokens=total_tokens,
+            max_tokens=max_tokens or self._config.max_tokens_per_turn,
+        )
+
+    def _estimate_window_budget(self, conversation: Conversation) -> ContextBudget:
+        return ContextBudget.from_estimate(
+            max_tokens=self._config.max_prompt_tokens,
+            estimated_input_tokens=self._estimated_conversation_tokens(conversation),
+        )
+
+    def _record_compaction_metric(
+        self,
+        *,
+        before_messages: Conversation,
+        after_messages: Conversation,
+    ) -> None:
+        before_tokens = self._estimated_conversation_tokens(before_messages)
+        after_tokens = self._estimated_conversation_tokens(after_messages)
+        if before_tokens <= 0 or after_tokens == before_tokens:
+            return
+        level = "L4" if self._has_l4_compaction(after_messages) else "L1"
+        self._observability_service.metrics.record_compaction(
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            level=level,
+        )
+
+    def _record_ptl_metric(self, *, triggered: bool) -> None:
+        self._observability_service.metrics.record_ptl_event(triggered=triggered)
+
+    def _estimated_conversation_tokens(self, conversation: Conversation) -> int:
+        return sum(
+            self._token_counter.count_message(message)
+            for message in conversation.messages
+        )
+
+    @staticmethod
+    def _has_l4_compaction(conversation: Conversation) -> bool:
+        return any(message.metadata.get("compaction") is True for message in conversation.messages)
 
     def _request_model_turn(
         self,
@@ -1216,128 +728,10 @@ class AgentRuntime:
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
-        stream_turn = getattr(self._model_adapter, "stream_turn", None)
-        if callable(stream_turn):
-            blocks: list[RuntimeBlock] = []
-            streamed_chunks: list[str] = []
-            response_id: str | None = None
-            metadata: dict[str, object] = {}
-            has_tool_call = False
-
-            for event in stream_turn(items=runtime_items, tools=tools):
-                if not isinstance(event, dict):
-                    raise ModelResponseError("Model adapter stream_turn must yield dict events.")
-                event_type = event.get("type")
-                if event_type == "reasoning":
-                    text = event.get("text")
-                    if isinstance(text, str) and text:
-                        blocks.append(RuntimeBlock(type="reasoning", text=text))
-                    continue
-                if event_type == "text_delta":
-                    text = event.get("text")
-                    if isinstance(text, str) and text:
-                        blocks.append(RuntimeBlock(type="text", text=text))
-                        streamed_chunks.append(text)
-                    continue
-                if event_type == "tool_call":
-                    block = event.get("block")
-                    if not isinstance(block, RuntimeBlock) or block.type != "tool_call":
-                        raise ModelResponseError(
-                            "Model adapter tool_call stream event must include tool_call RuntimeBlock."
-                        )
-                    blocks.append(block)
-                    has_tool_call = True
-                    continue
-                if event_type == "completed":
-                    raw_response_id = event.get("response_id")
-                    if isinstance(raw_response_id, str) and raw_response_id:
-                        response_id = raw_response_id
-                    raw_metadata = event.get("metadata")
-                    if isinstance(raw_metadata, dict):
-                        metadata = raw_metadata
-                    continue
-                raise ModelResponseError(f"Unsupported model stream event type: {event_type!r}.")
-
-            items: tuple[RuntimeItem, ...] = ()
-            if blocks:
-                items = (RuntimeItem(role="assistant", blocks=tuple(blocks)),)
-            return (
-                ModelTurnResult(
-                    items=items,
-                    done=not has_tool_call,
-                    response_id=response_id,
-                    metadata=metadata,
-                ),
-                tuple(streamed_chunks),
-            )
-
-        next_turn = getattr(self._model_adapter, "next_turn", None)
-        if callable(next_turn):
-            turn_result = next_turn(items=runtime_items, tools=tools)
-            if isinstance(turn_result, ModelTurnResult):
-                return turn_result, ()
-            raise ModelResponseError("Model adapter next_turn must return ModelTurnResult.")
-
-        action = self._model_adapter.next_action(
-            messages=legacy_messages,
+        return self._model_turn_requester.request_model_turn(
+            runtime_items=runtime_items,
+            legacy_messages=legacy_messages,
             tools=tools,
-        )
-        return self._legacy_action_to_turn_result(action), ()
-
-    def _deepseek_reasoning_content_from_block(
-        self,
-        block: RuntimeBlock,
-    ) -> str | None:
-        deepseek_metadata = block.metadata.get("deepseek")
-        if not isinstance(deepseek_metadata, dict):
-            return None
-        reasoning_content = deepseek_metadata.get("reasoning_content")
-        if not isinstance(reasoning_content, str):
-            return None
-        stripped = reasoning_content.strip()
-        if not stripped:
-            return None
-        return reasoning_content
-
-    def _emit_visible_provider_reasoning(
-        self,
-        *,
-        block: RuntimeBlock,
-        turn_id: str,
-        progress_updates: list[str],
-        activity_events: list[ActivityEvent],
-        turn_items: list[TurnItem],
-    ) -> None:
-        reasoning_content = self._deepseek_reasoning_content_from_block(block)
-        if reasoning_content is None:
-            return
-        message = f"Thinking: {reasoning_content}"
-        metadata = {
-            "provider_id": block.provider_id,
-            "provider": "deepseek",
-            "source": "provider_reasoning_content",
-            "deepseek": {"reasoning_content": reasoning_content},
-        }
-        progress_updates.append(reasoning_content)
-        activity_events.append(ActivityEvent(kind="thinking", message=message))
-        self._append_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.REASONING,
-                text=message,
-                metadata=metadata,
-            ),
-        )
-        self._workspace_log_service.log(
-            level=LogLevel.INFO,
-            event="provider_reasoning_content",
-            message="Exposed provider reasoning content",
-            context={
-                "session_id": self._config.session_id,
-                "turn_id": turn_id,
-                **metadata,
-            },
         )
 
     def _consume_assistant_blocks(
@@ -1360,299 +754,18 @@ class AgentRuntime:
         list[str],
         tuple[TurnResponse, TurnStatus, StopReason] | None,
     ]:
-        current_plan_state = plan_state
-        turn_has_tool_call = False
-        turn_text_chunks: list[str] = []
-        for item in turn_result.items:
-            if item.role != "assistant":
-                continue
-            pending_text_chunks: list[str] = []
-            pending_text_block: RuntimeBlock | None = None
-            tool_call_blocks = tuple(
-                block for block in item.blocks if block.type == "tool_call"
-            )
-            tool_call_group_recorded = False
-
-            def flush_pending_text(*, record_conversation: bool = True) -> None:
-                nonlocal pending_text_chunks, pending_text_block
-                if not pending_text_chunks or pending_text_block is None:
-                    pending_text_chunks = []
-                    pending_text_block = None
-                    return
-                combined_text = "".join(pending_text_chunks)
-                combined_block = RuntimeBlock(
-                    type="text",
-                    text=combined_text,
-                    provider_id=pending_text_block.provider_id,
-                    metadata=dict(pending_text_block.metadata),
-                )
-                if record_conversation:
-                    self._record_assistant_text_block(
-                        conversation,
-                        block=combined_block,
-                        response_id=turn_result.response_id,
-                    )
-                turn_text_chunks.append(combined_text)
-                self._append_turn_item(
-                    turn_id=turn_id,
-                    turn_items=turn_items,
-                    item=TurnItem(
-                        type=TurnItemType.ASSISTANT_MESSAGE,
-                        text=combined_text,
-                        metadata={"provider_id": combined_block.provider_id, **combined_block.metadata},
-                    ),
-                )
-                pending_text_chunks = []
-                pending_text_block = None
-
-            def record_tool_call_group_once() -> None:
-                nonlocal tool_call_group_recorded
-                if tool_call_group_recorded or not tool_call_blocks:
-                    return
-                self._record_assistant_tool_calls(
-                    conversation,
-                    tool_calls=tuple(
-                        self._tool_call_from_block(tool_block)
-                        for tool_block in tool_call_blocks
-                    ),
-                    blocks=tuple(
-                        replay_block
-                        for replay_block in item.blocks
-                        if replay_block.type in {"text", "tool_call"}
-                    ),
-                    response_id=turn_result.response_id,
-                )
-                tool_call_group_recorded = True
-
-            for block in item.blocks:
-                if block.type == "reasoning":
-                    flush_pending_text(record_conversation=not tool_call_blocks)
-                    if block.text:
-                        progress_updates.append(block.text)
-                        reasoning_message = (
-                            f"Planning: {block.text}"
-                            if "plan" in block.text.lower()
-                            else f"Thinking: {block.text}"
-                        )
-                        activity_events.append(
-                            ActivityEvent(
-                                kind="planning" if "plan" in block.text.lower() else "thinking",
-                                message=reasoning_message,
-                            )
-                        )
-                        self._append_turn_item(
-                            turn_id=turn_id,
-                            turn_items=turn_items,
-                            item=TurnItem(
-                                type=TurnItemType.REASONING,
-                                text=reasoning_message,
-                                metadata={"provider_id": block.provider_id, **block.metadata},
-                            ),
-                        )
-                    continue
-
-                if block.type == "text":
-                    if block.text:
-                        pending_text_chunks.append(block.text)
-                        pending_text_block = block
-                    continue
-
-                if block.type != "tool_call":
-                    continue
-
-                flush_pending_text(record_conversation=not tool_call_blocks)
-                turn_has_tool_call = True
-                tool_call = self._tool_call_from_block(block)
-                self._emit_visible_provider_reasoning(
-                    block=block,
-                    turn_id=turn_id,
-                    progress_updates=progress_updates,
-                    activity_events=activity_events,
-                    turn_items=turn_items,
-                )
-                if tool_call.name not in tool_exposure.callable_tool_names():
-                    rendered_names = ", ".join(tool_exposure.callable_tool_names()) or "none"
-                    warning_message = (
-                        f"The model requested unsupported tool '{tool_call.name}' that is not exposed for this turn. "
-                        f"Callable tools: {rendered_names}."
-                    )
-                    self._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.WARNING,
-                            text=warning_message,
-                            tool_name=tool_call.name,
-                            call_id=tool_call.call_id,
-                        ),
-                    )
-                    return (
-                        current_plan_state,
-                        turn_has_tool_call,
-                        turn_text_chunks,
-                        (
-                            TurnResponse(
-                                assistant_message=warning_message,
-                                streamed_chunks=tuple(streamed_chunks),
-                                progress_updates=tuple(progress_updates),
-                            ),
-                            TurnStatus.FAILED,
-                            StopReason.MODEL_ERROR,
-                        ),
-                    )
-
-                if self._session_service.is_command_allowed(
-                    self._config.session_id,
-                    getattr(
-                        self._approval_service._safety_policy.evaluate(tool_call),
-                        "command_pattern",
-                        None,
-                    ),
-                ):
-                    record_tool_call_group_once()
-                    current_plan_state = self._execute_tool_call(
-                        conversation=conversation,
-                        call=tool_call,
-                        tool_router=tool_router,
-                        tool_exposure=tool_exposure,
-                        plan_state=current_plan_state,
-                        turn_id=turn_id,
-                        activity_events=activity_events,
-                        turn_items=turn_items,
-                        provider_id=block.provider_id,
-                        response_id=turn_result.response_id,
-                        metadata=dict(block.metadata),
-                        record_assistant_call=False,
-                    )
-                    continue
-
-                if tool_call.name in {entry.name for entry in tool_exposure.dynamic}:
-                    record_tool_call_group_once()
-                    current_plan_state = self._execute_tool_call(
-                        conversation=conversation,
-                        call=tool_call,
-                        tool_router=tool_router,
-                        tool_exposure=tool_exposure,
-                        plan_state=current_plan_state,
-                        turn_id=turn_id,
-                        activity_events=activity_events,
-                        turn_items=turn_items,
-                        provider_id=block.provider_id,
-                        response_id=turn_result.response_id,
-                        metadata=dict(block.metadata),
-                        record_assistant_call=False,
-                    )
-                    continue
-
-                approval = self._approval_service.evaluate(tool_call)
-                if approval.denied_reason is not None:
-                    warning_message = f"Denied: {approval.denied_reason}"
-                    self._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.WARNING,
-                            text=warning_message,
-                            tool_name=tool_call.name,
-                            call_id=tool_call.call_id,
-                        ),
-                    )
-                    return (
-                        current_plan_state,
-                        turn_has_tool_call,
-                        turn_text_chunks,
-                        (
-                            TurnResponse(
-                                assistant_message=warning_message,
-                                streamed_chunks=tuple(streamed_chunks),
-                                progress_updates=tuple(progress_updates),
-                            ),
-                            TurnStatus.COMPLETED,
-                            StopReason.ASSISTANT_COMPLETED,
-                        ),
-                    )
-
-                if approval.pending_approval is not None:
-                    record_tool_call_group_once()
-                    pending_decision = self._pending_decision_from_approval(
-                        approval.pending_approval
-                    )
-                    self._session_service.save_pending_decision(
-                        self._config.session_id,
-                        pending_decision,
-                    )
-                    self._session_service.save_suspended_turn(
-                        self._config.session_id,
-                        SuspendedTurn(
-                            user_message=user_message,
-                            conversation=tuple(conversation.messages),
-                            plan_state=current_plan_state,
-                            pending_approval=approval.pending_approval,
-                        ),
-                    )
-                    waiting_message = f"Waiting approval: {pending_decision.preview}"
-                    self._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.APPROVAL_REQUEST,
-                            text=waiting_message,
-                            tool_name=pending_decision.tool_call.name,
-                            call_id=pending_decision.tool_call.call_id,
-                            metadata={"preview": pending_decision.preview},
-                        ),
-                    )
-                    return (
-                        current_plan_state,
-                        turn_has_tool_call,
-                        turn_text_chunks,
-                        (
-                            TurnResponse(
-                                assistant_message=(
-                                    "A risky action is waiting for your decision. "
-                                    "Choose 1 to approve once, 2 to reject, or 3 to allow for this session."
-                                ),
-                                activity_events=(
-                                    *activity_events,
-                                    ActivityEvent(
-                                        kind="waiting_approval",
-                                        message=waiting_message,
-                                        tool_name=pending_decision.tool_call.name,
-                                        preview=pending_decision.preview,
-                                    ),
-                                ),
-                                streamed_chunks=tuple(streamed_chunks),
-                                progress_updates=tuple(progress_updates),
-                                pending_decision=pending_decision,
-                            ),
-                            TurnStatus.WAITING_APPROVAL,
-                            StopReason.APPROVAL_REQUIRED,
-                        ),
-                    )
-
-                record_tool_call_group_once()
-                current_plan_state = self._execute_tool_call(
-                    conversation=conversation,
-                    call=tool_call,
-                    tool_router=tool_router,
-                    tool_exposure=tool_exposure,
-                    plan_state=current_plan_state,
-                    turn_id=turn_id,
-                    activity_events=activity_events,
-                    turn_items=turn_items,
-                    provider_id=block.provider_id,
-                    response_id=turn_result.response_id,
-                    metadata=dict(block.metadata),
-                    record_assistant_call=False,
-                )
-
-            flush_pending_text(record_conversation=not tool_call_blocks)
-
-        return (
-            current_plan_state,
-            turn_has_tool_call,
-            turn_text_chunks,
-            None,
+        return self._assistant_block_consumer.consume_assistant_blocks(
+            turn_result=turn_result,
+            conversation=conversation,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+            plan_state=plan_state,
+            turn_id=turn_id,
+            user_message=user_message,
+            progress_updates=progress_updates,
+            activity_events=activity_events,
+            streamed_chunks=streamed_chunks,
+            turn_items=turn_items,
         )
 
     def _append_turn_item(
@@ -1662,18 +775,14 @@ class AgentRuntime:
         turn_items: list[TurnItem],
         item: TurnItem,
     ) -> None:
-        turn_items.append(item)
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="turn_item",
-                turn_id=turn_id,
-                payload=item.to_dict(),
-            ),
+        self._event_ledger.append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=item,
         )
 
     def _timestamp(self) -> str:
-        return datetime.now(UTC).isoformat()
+        return self._event_ledger.timestamp()
 
     def _persist_turn_record(
         self,
@@ -1685,122 +794,27 @@ class AgentRuntime:
         stop_reason: StopReason | None,
         turn_items: list[TurnItem],
     ) -> TurnRecord:
-        turn = TurnRecord(
-            thread_id=self._config.session_id,
+        return self._response_finalizer.persist_turn_record(
             turn_id=turn_id,
-            status=status,
-            started_at=started_at,
-            completed_at=self._timestamp() if status is not TurnStatus.IN_PROGRESS else None,
-            stop_reason=stop_reason,
             user_message=user_message,
-            items=tuple(turn_items),
+            started_at=started_at,
+            status=status,
+            stop_reason=stop_reason,
+            turn_items=turn_items,
         )
-        self._session_service.save_turn_record(self._config.session_id, turn)
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="turn_state",
-                turn_id=turn_id,
-                payload={
-                    "status": status.value,
-                    "stop_reason": None if stop_reason is None else stop_reason.value,
-                },
-            ),
-        )
-        return turn
-
-    def _history_item_type_for_turn_item(self, item: TurnItem) -> HistoryItemType:
-        return HistoryItemType(item.type.value)
-
-    def _history_items_from_turn(self, turn: TurnRecord) -> tuple[HistoryItem, ...]:
-        history_items: list[HistoryItem] = []
-        for index, item in enumerate(turn.items, start=1):
-            history_items.append(
-                HistoryItem(
-                    id=f"{turn.turn_id}:item:{index}",
-                    thread_id=turn.thread_id,
-                    turn_id=turn.turn_id,
-                    type=self._history_item_type_for_turn_item(item),
-                    text=item.text,
-                    tool_name=item.tool_name,
-                    call_id=item.call_id,
-                    metadata=dict(item.metadata),
-                )
-            )
-            file_changes = item.metadata.get("file_changes")
-            if not isinstance(file_changes, list):
-                continue
-            for change_index, change in enumerate(file_changes, start=1):
-                if not isinstance(change, dict):
-                    continue
-                path = change.get("path") or change.get("destination")
-                text = f"File change: {path}" if isinstance(path, str) else "File change recorded"
-                history_items.append(
-                    HistoryItem(
-                        id=f"{turn.turn_id}:file-change:{index}:{change_index}",
-                        thread_id=turn.thread_id,
-                        turn_id=turn.turn_id,
-                        type=HistoryItemType.FILE_CHANGE,
-                        text=text,
-                        tool_name=item.tool_name,
-                        call_id=item.call_id,
-                        metadata=dict(change),
-                    )
-                )
-        return tuple(history_items)
 
     def _context_baseline_from_contract(
         self,
         contract: InstructionContract | None,
     ) -> ContextBaseline | None:
-        if contract is None:
-            return None
+        return self._event_ledger.context_baseline_from_contract(contract)
 
-        excluded_kinds = {"conversation_context", "memory", "plan", "user_request"}
-        fragments: list[BaselineFragment] = []
-        for index, section in enumerate(contract.developer_sections, start=1):
-            fragments.append(
-                BaselineFragment(
-                    id=f"developer:{index}",
-                    kind=str(section.kind),
-                    title=section.title,
-                    content=section.content,
-                    source=section.source,
-                    metadata=dict(section.metadata),
-                )
-            )
-        contextual_index = 0
-        for section in contract.contextual_user_sections:
-            if str(section.kind) in excluded_kinds:
-                continue
-            contextual_index += 1
-            fragments.append(
-                BaselineFragment(
-                    id=f"contextual:{contextual_index}",
-                    kind=str(section.kind),
-                    title=section.title,
-                    content=section.content,
-                    source=section.source,
-                    metadata=dict(section.metadata),
-                )
-            )
-        if not fragments:
-            return None
-        return ContextBaseline(
-            thread_id=self._config.session_id,
-            fragments=tuple(fragments),
-        )
-
-    def _continuation_state_payload(self) -> dict[str, object]:
+    def _model_continuation_state(self) -> object | None:
         getter = getattr(self._model_adapter, "get_continuation_state", None)
         if not callable(getter):
-            return {}
-        state = getter()
-        if state is None:
-            return {}
-        if isinstance(state, ResponsesContinuationState):
-            return state.to_dict()
-        return {}
+            return None
+        state: object | None = getter()
+        return state
 
     def _persist_structured_runtime_state(
         self,
@@ -1809,60 +823,11 @@ class AgentRuntime:
         started_at: str,
         context_baseline: ContextBaseline | None,
     ) -> None:
-        history_items = self._history_items_from_turn(turn)
-        if history_items:
-            self._session_service.append_history_items(
-                self._config.session_id,
-                history_items,
-            )
-
-        previous_baseline = self._session_service.load_context_baseline(self._config.session_id)
-        if context_baseline is not None and context_baseline != previous_baseline:
-            self._session_service.save_context_baseline(
-                self._config.session_id,
-                context_baseline,
-            )
-            self._session_service.append_history_items(
-                self._config.session_id,
-                (
-                    HistoryItem(
-                        id=f"{turn.turn_id}:baseline",
-                        thread_id=turn.thread_id,
-                        turn_id=turn.turn_id,
-                        type=HistoryItemType.CONTEXT_BASELINE_UPDATE,
-                        text="Updated context baseline",
-                        metadata={
-                            "fragment_ids": [fragment.id for fragment in context_baseline.fragments],
-                            "fragment_kinds": [fragment.kind for fragment in context_baseline.fragments],
-                        },
-                    ),
-                ),
-            )
-
-        rollout_trace_events = self._trace_service.load_for_turn(
-            self._config.session_id,
-            turn.turn_id,
-        )
-        rollout = TurnRollout(
-            thread_id=turn.thread_id,
-            turn_id=turn.turn_id,
-            status=turn.status,
+        self._response_finalizer.persist_structured_runtime_state(
+            turn=turn,
             started_at=started_at,
-            completed_at=turn.completed_at,
-            stop_reason=turn.stop_reason,
-            events=tuple(
-                TurnRolloutEvent(
-                    event_id=f"{turn.turn_id}:trace:{index}",
-                    kind=event.kind,
-                    created_at=turn.completed_at or started_at,
-                    payload=event.payload,
-                )
-                for index, event in enumerate(rollout_trace_events, start=1)
-            ),
-            continuation_state=self._continuation_state_payload(),
+            context_baseline=context_baseline,
         )
-        self._session_service.append_turn_rollout(self._config.session_id, rollout)
-        self._session_service.sync_conversation_view_from_history(self._config.session_id)
 
     def _finalize_response(
         self,
@@ -1876,34 +841,17 @@ class AgentRuntime:
         turn_items: list[TurnItem],
         context_baseline: ContextBaseline | None = None,
     ) -> TurnResponse:
-        activity_events = list(response.activity_events)
-        if status is not TurnStatus.WAITING_APPROVAL:
-            expired_events = self._dynamic_tool_registry.expire_turn_scoped()
-            if expired_events:
-                self._append_dynamic_tool_lifecycle_events(
-                    turn_id=turn_id,
-                    turn_items=turn_items,
-                    activity_events=activity_events,
-                    lifecycle_events=expired_events,
-                )
-        self._session_service.save_dynamic_tool_state(
-            self._config.session_id,
-            self._dynamic_tool_registry.snapshot(),
-        )
-        turn = self._persist_turn_record(
+        self._response_finalizer.set_config(self._config)
+        return self._response_finalizer.finalize_response(
+            response=response,
             turn_id=turn_id,
             user_message=user_message,
             started_at=started_at,
             status=status,
             stop_reason=stop_reason,
             turn_items=turn_items,
-        )
-        self._persist_structured_runtime_state(
-            turn=turn,
-            started_at=started_at,
             context_baseline=context_baseline,
         )
-        return replace(response, turn=turn, activity_events=tuple(activity_events))
 
     def _policy_decision(
         self,
@@ -1912,31 +860,13 @@ class AgentRuntime:
         conversation: Conversation,
         plan_state: PlanState,
         step_index: int,
-    ) -> tuple[int, ReasoningEffort, tuple[str, ...], dict[str, object], bool, str | None, TurnResponse | None]:
-        decision = self._runtime_policy.evaluate(
+    ) -> tuple[ReasoningEffort, tuple[str, ...], dict[str, object], bool, str | None, TurnResponse | None]:
+        self._runtime_policy_coordinator.set_config(self._config)
+        return self._runtime_policy_coordinator.policy_decision(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
             step_index=step_index,
-            configured_max_steps=self._config.max_steps,
-            configured_reasoning_effort=self._config.reasoning_effort,
-        )
-        stage_message = self._runtime_policy.decision_stage_message(
-            user_message=user_message,
-            conversation=conversation,
-            force_answer=decision.force_answer,
-        )
-        early_response = None
-        if decision.stop_reason is not None and decision.assistant_message:
-            early_response = TurnResponse(assistant_message=decision.assistant_message)
-        return (
-            decision.max_steps,
-            decision.reasoning_effort,
-            decision.reminders,
-            decision.policy_state,
-            decision.force_answer,
-            stage_message,
-            early_response,
         )
 
     def _append_runtime_policy_activity(
@@ -1947,33 +877,12 @@ class AgentRuntime:
         activity_events: list[ActivityEvent],
         policy_state: dict[str, object],
     ) -> None:
-        if not policy_state:
-            return
-        profile_name = policy_state.get("profile_name", "general")
-        evidence_status = policy_state.get("evidence_status", "unknown")
-        path_bias = policy_state.get("path_bias", "balanced")
-        planning_mode = policy_state.get("planning_mode", "plan_if_needed")
-        plan_status = policy_state.get("plan_status", "none")
-        text = (
-            "Planning: runtime policy "
-            f"profile={profile_name} path_bias={path_bias} evidence={evidence_status} "
-            f"planning={planning_mode} plan={plan_status}"
-        )
-        if turn_items and turn_items[-1].type is TurnItemType.REASONING and turn_items[-1].text == text:
-            return
-        activity_events.append(ActivityEvent(kind="runtime_policy", message=text))
-        self._append_turn_item(
+        self._runtime_policy_coordinator.set_config(self._config)
+        self._runtime_policy_coordinator.append_runtime_policy_activity(
             turn_id=turn_id,
             turn_items=turn_items,
-            item=TurnItem(type=TurnItemType.REASONING, text=text, metadata=dict(policy_state)),
-        )
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="runtime_policy",
-                turn_id=turn_id,
-                payload=dict(policy_state),
-            ),
+            activity_events=activity_events,
+            policy_state=policy_state,
         )
 
     def _append_structured_repo_activity(
@@ -1984,16 +893,11 @@ class AgentRuntime:
         activity_events: list[ActivityEvent],
         stage_message: str | None,
     ) -> None:
-        if not stage_message:
-            return
-        text = f"Planning: {stage_message}"
-        if turn_items and turn_items[-1].type is TurnItemType.REASONING and turn_items[-1].text == text:
-            return
-        activity_events.append(ActivityEvent(kind="planning", message=text))
-        self._append_turn_item(
+        self._runtime_policy_coordinator.append_structured_repo_activity(
             turn_id=turn_id,
             turn_items=turn_items,
-            item=TurnItem(type=TurnItemType.REASONING, text=text),
+            activity_events=activity_events,
+            stage_message=stage_message,
         )
 
     def _save_runtime_state(
@@ -2013,57 +917,42 @@ class AgentRuntime:
         result_payload: dict[str, object],
         plan_state: PlanState,
     ) -> PlanState:
-        if call.name != "update_plan":
-            return plan_state
-        items = result_payload.get("items", [])
-        if not isinstance(items, list):
-            return plan_state
-        next_plan = self._planning_service.replace(items)
-        self._session_service.save_plan_state(self._config.session_id, next_plan)
-        return next_plan
+        return self._planning_effects.apply_tool_effects(
+            call=call,
+            result_payload=result_payload,
+            plan_state=plan_state,
+        )
 
     def _complete_task_if_active(
         self,
         plan_state: PlanState,
         item_id: str | None,
     ) -> PlanState:
-        if item_id is None:
-            return plan_state
-        current_item_id = plan_state.current_in_progress_item_id()
-        if current_item_id != item_id:
-            return plan_state
-        return self._planning_service.mark_completed(plan_state, item_id)
+        return self._planning_effects.complete_task_if_active(plan_state, item_id)
 
     def _pending_decision_from_approval(
         self,
         approval: PendingApproval,
     ) -> PendingDecision:
-        options = [DecisionAction.APPROVE_ONCE, DecisionAction.REJECT]
-        if approval.command_pattern:
-            options.append(DecisionAction.ALLOW_SESSION)
-        return PendingDecision(
-            tool_call=approval.tool_call,
-            kind=self._approval_service._safety_policy.evaluate(approval.tool_call).kind,
-            reason=approval.reason,
-            preview=approval.preview,
-            options=tuple(options),
-            command_pattern=approval.command_pattern,
-        )
+        return self._approval_decisions.pending_decision_from_approval(approval)
 
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
-        choice_to_action = {
-            "1": DecisionAction.APPROVE_ONCE,
-            "2": DecisionAction.REJECT,
-            "3": DecisionAction.ALLOW_SESSION,
-        }
-        allowed_choices = tuple(
-            key for key, action in choice_to_action.items() if action in options
-        )
-        if len(allowed_choices) == 1:
-            return allowed_choices[0]
-        if len(allowed_choices) == 2:
-            return f"{allowed_choices[0]} or {allowed_choices[1]}"
-        return ", ".join(allowed_choices[:-1]) + f", or {allowed_choices[-1]}"
+        return self._approval_decisions.format_allowed_choices(options)
+
+    def rebind_session(self, config: AgentConfig) -> None:
+        self._config = config
+        session_id = config.session_id
+        self._model_state.set_config(config)
+        self._runtime_context_builder.set_config(config)
+        self._request_pipeline.set_config(config)
+        self._runtime_error_logger.set_config(config)
+        self._runtime_policy_coordinator.set_config(config)
+        self._response_finalizer.set_config(config)
+        self._tool_execution_service._session_id = session_id
+        self._tool_orchestrator._session_id = session_id
+        self._event_ledger._session_id = session_id
+        self._assistant_block_consumer.set_session_id(session_id)
+        self._planning_effects.set_session_id(session_id)
 
     def handle_user_turn(self, user_message: str) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor

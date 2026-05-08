@@ -3,16 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 
 from mycli.domain.conversation import Message
-from mycli.domain.runtime import AgentConfig, InstructionContract, InstructionFragment, RuntimeBlock
+from mycli.domain.runtime import (
+    AgentConfig,
+    InstructionContract,
+    InstructionFragment,
+    ProtocolId,
+    RuntimeBlock,
+)
 from mycli.domain.runtime.request_shape import (
     FragmentStability,
     RequestFragmentKind,
 )
-from mycli.infrastructure.models.base import (
+from mycli.llms.adapters.base import (
     ModelToolDefinition,
     ModelToolParameter,
 )
-from mycli.services.request_shape_builder import RequestShapeBuilder
+from mycli.application.runtime.request import RequestShapeBuilder, RequestShapePayloadFormatter
+from mycli.domain.tools import ToolCall
 
 
 def _tool(
@@ -137,7 +144,10 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
-        config=AgentConfig(workspace_root=tmp_path),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+        ),
         contract=_contract(
             current_user_request="current task",
             contextual_content="volatile runtime context",
@@ -163,11 +173,262 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
     assert provider_contents[-1] == "volatile runtime context"
 
 
+def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_policy_for_responses_payload(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            protocol=ProtocolId.RESPONSES,
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(
+                InstructionFragment(
+                    kind="tool_exposure",
+                    title="Tool exposure",
+                    content="Available tools: read_file",
+                ),
+            ),
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="conversation_context",
+                    title="Conversation context",
+                    content=(
+                        "这是本轮相关的近期对话上下文。\n"
+                        "Conversation summary: previous user summary\n"
+                        "- [file_excerpt] src/mycli/application/runtime/agent_runtime.py:1-100"
+                    ),
+                ),
+                InstructionFragment(
+                    kind="runtime_policy",
+                    title="Runtime policy",
+                    content="Runtime policy: source_first",
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="previous request"),
+                Message(role="assistant", content="previous answer"),
+            ),
+            current_user_request="new query",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    provider_payload = "\n".join(message.content for message in shape.provider_messages)
+    runtime_payload = "\n".join(
+        block.text or ""
+        for item in shape.provider_runtime_items
+        for block in item.blocks
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "developer",
+        "user",
+        "assistant",
+        "user",
+        "user",
+    ]
+    assert shape.provider_runtime_items[-2].blocks == (
+        RuntimeBlock(type="text", text="new query"),
+    )
+    assert shape.provider_runtime_items[-1].blocks == (
+        RuntimeBlock(type="text", text="Runtime policy: source_first"),
+    )
+    assert shape.provider_messages[-2].content == "new query"
+    assert shape.provider_messages[-1].content == "Runtime policy: source_first"
+    assert "Conversation summary:" not in provider_payload
+    assert "[file_excerpt]" not in provider_payload
+    assert "Current user request:" not in provider_payload
+    assert "Runtime policy: source_first" in provider_payload
+    assert "Conversation summary:" not in runtime_payload
+    assert "[file_excerpt]" not in runtime_payload
+    assert "Current user request:" not in runtime_payload
+    assert "Runtime policy: source_first" in runtime_payload
+    assert any(
+        fragment.id == "volatile:conversation_context"
+        and "Conversation summary:" in fragment.content
+        for fragment in shape.fragments
+    )
+
+
+def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
+    tmp_path: Path,
+) -> None:
+    tool_call = ToolCall(
+        name="read_file",
+        arguments={"path": "README.md"},
+        reason="inspect",
+        call_id="call_read_1",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(
+                InstructionFragment(
+                    kind="tool_exposure",
+                    title="Tool exposure",
+                    content="Available tools: read_file, search_text",
+                ),
+            ),
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="runtime_policy",
+                    title="Runtime policy",
+                    content="Runtime policy: source_first",
+                ),
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="Workspace root: /tmp/demo",
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="inspect README"),
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=(tool_call,),
+                    blocks=(
+                        RuntimeBlock(
+                            type="reasoning",
+                            text="Need the README before answering.",
+                            metadata={
+                                "deepseek": {
+                                    "reasoning_content": "Need the README before answering."
+                                }
+                            },
+                        ),
+                        RuntimeBlock(type="text", text="I will read README."),
+                        RuntimeBlock(
+                            type="tool_call",
+                            tool_name="read_file",
+                            tool_arguments={"path": "README.md"},
+                            call_id="call_read_1",
+                        ),
+                    ),
+                ),
+                Message(
+                    role="tool",
+                    content="README contents",
+                    tool_call_id="call_read_1",
+                ),
+            ),
+            current_user_request="summarize the result",
+        ),
+        tools=(_tool("search_text"), _tool("read_file")),
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert [message.content for message in shape.provider_messages] == [
+        "Stable system rules.",
+        "inspect README",
+        "I will read README.",
+        "README contents",
+        "summarize the result",
+    ]
+    assert [item.role for item in shape.provider_runtime_items] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert shape.provider_runtime_items[-1].blocks == (
+        RuntimeBlock(type="text", text="summarize the result"),
+    )
+    assert all(message.role != "developer" for message in shape.provider_messages)
+    assert all(item.role != "developer" for item in shape.provider_runtime_items)
+    assert all(
+        "Current user request:" not in message.content
+        for message in shape.provider_messages
+    )
+    runtime_payload = "\n".join(
+        block.text or ""
+        for item in shape.provider_runtime_items
+        for block in item.blocks
+    )
+    assert "Current user request:" not in runtime_payload
+    assert "Runtime policy:" not in runtime_payload
+    assert "Workspace root:" not in runtime_payload
+    provider_payload = "\n".join(message.content for message in shape.provider_messages)
+    assert "Runtime policy:" not in provider_payload
+    assert "Workspace root:" not in provider_payload
+    assistant_message = shape.provider_messages[2]
+    assert assistant_message.metadata["tool_calls"] == (tool_call,)
+    assert assistant_message.metadata["model_metadata"] == {
+        "deepseek": {"reasoning_content": "Need the README before answering."}
+    }
+    legacy_messages = RequestShapePayloadFormatter().legacy_messages(shape)
+    assert legacy_messages[2].content == "I will read README."
+    assert legacy_messages[2].tool_calls == (tool_call,)
+    assert legacy_messages[2].metadata == {
+        "deepseek": {"reasoning_content": "Need the README before answering."}
+    }
+
+
+def test_request_shape_builder_keeps_current_user_query_in_replay_for_tool_loop_prefix(
+    tmp_path: Path,
+) -> None:
+    builder = RequestShapeBuilder()
+    config = AgentConfig(workspace_root=tmp_path)
+    first = builder.build(
+        config=config,
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(Message(role="user", content="inspect repo"),),
+            current_user_request="inspect repo",
+        ),
+        tools=(_tool("read_file"),),
+    )
+    second = builder.build(
+        config=config,
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(role="user", content="inspect repo"),
+                Message(role="assistant", content="I will inspect README."),
+                Message(role="tool", content="Read README.md"),
+            ),
+            current_user_request="inspect repo",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assert [message.content for message in first.provider_messages] == [
+        "Stable system rules.",
+        "inspect repo",
+    ]
+    assert [message.content for message in second.provider_messages[:2]] == [
+        "Stable system rules.",
+        "inspect repo",
+    ]
+    assert first.provider_messages[1].role == "user"
+    assert second.provider_messages[1].role == "user"
+    assert "user: inspect repo" in first.fragments[2].content
+
+
 def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
-        config=AgentConfig(workspace_root=tmp_path),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+        ),
         contract=InstructionContract(
             base_instructions="Stable system rules.",
             contextual_user_sections=(
@@ -214,7 +475,7 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     )
 
 
-def test_request_shape_builder_does_not_duplicate_current_user_request_in_replay(
+def test_request_shape_builder_uses_replayed_current_user_request_without_duplicate_intent_message(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -234,8 +495,8 @@ def test_request_shape_builder_does_not_duplicate_current_user_request_in_replay
         message.content for message in shape.provider_messages if message.role == "user"
     ]
 
-    assert user_messages == ["Current user request: current task"]
-    assert "user: current task" not in shape.fragments[2].content
+    assert user_messages == ["current task"]
+    assert "user: current task" in shape.fragments[2].content
     assert "assistant: I will inspect it." in shape.fragments[2].content
 
 

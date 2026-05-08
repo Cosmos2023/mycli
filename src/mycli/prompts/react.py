@@ -9,7 +9,7 @@ def build_react_prompt(
     contract_or_turn_context: InstructionContract | TurnContext,
     *,
     include_context_sections: bool = True,
-    include_dynamic_guidance: bool = True,
+    include_adaptive_guidance: bool = True,
 ) -> str:
     contract = _coerce_instruction_contract(contract_or_turn_context)
     rendered_sections = (
@@ -18,29 +18,38 @@ def build_react_prompt(
         else ""
     )
     runtime_policy_state = _runtime_policy_state(contract)
-    dynamic_guidance = (
-        _dynamic_guidance(runtime_policy_state) if include_dynamic_guidance else ""
+    adaptive_guidance = (
+        _adaptive_guidance(runtime_policy_state) if include_adaptive_guidance else ""
     )
-    guidance = (
-        "从当前用户请求和可见上下文出发。\n"
-        "始终围绕当前用户请求推进，不要漂移到无关工作上。\n"
-        "如果你已经有足够信息可以帮助用户，就直接回答。\n"
-        "如果信息不足，选择最合适的下一步工具动作，而不是猜测。\n"
-        "编辑文件或执行有影响的命令前，先检查相关上下文。\n"
-        "优先依据文件、命令输出和工具结果中的已验证事实。"
-        "凡是不能直接验证的内容，都要标记为推断。\n"
-        "对于代码、实现和仓库类工作，优先查看源码或配置文件，再看日志、生成产物或宽泛文档。\n"
-        "对于个人助手类和日常工作类任务，优先选择最小、最安全、但能真正推进事情的动作。\n"
-        "如果需要工具，只能使用 Available tools 中的确切工具名。\n"
-        "非简单任务优先使用 planning tool；简单直接的请求不要为了形式而规划。\n"
-        "优先使用专门的工作区工具，而不是 run_shell。\n"
-        "优先使用 rg 风格搜索和专门的文件编辑工具，而不是 edit_file 或 run_shell。\n"
-        "在工具结果确认之前，不要假设文件、路径或状态一定存在。\n"
-        "如果你已经有足够证据或上下文帮助用户，就停止探索并回答。\n"
-        f"{dynamic_guidance}"
-        "不要在 assistant 文本里输出 JSON。\n"
-        "决定当前最合适的下一步动作。"
-    )
+    guidance = "\n".join((
+        "从当前用户请求和可见上下文出发。",
+        "始终围绕当前用户请求推进，不要漂移到无关工作上。",
+        "",
+        "── 何时停止探索，直接回答 ──",
+        "如果你已经有足够信息可以帮助用户，就直接回答——不要再调工具验证已知事实。",
+        "连续 3 步没有获得实质性新信息 → 停止探索，基于已有证据回答。",
+        "准备重复同一个工具调用 → 停止探索，你已经看过这个结果了。",
+        '收到"你必须现在回答"的提示 → 立即停止所有工具调用，用普通文本回复。',
+        "",
+        "── 何时继续探索 ──",
+        "信息确实不足以回答用户 → 选择最合适的单一工具动作。",
+        "需要编辑文件但还没读过目标文件 → 先读再改。",
+        "编辑文件或执行有影响的命令前，先检查相关上下文。",
+        "任务明显需要多步推进 → 可以用 update_plan 规划，然后逐步执行。",
+        "非简单任务优先使用 planning tool，避免边做边丢失目标。",
+        "",
+        "── 工具调用原则 ──",
+        "每次工具调用必须直接服务于当前答案或下一步修改。工具不是步骤计数器。",
+        "优先使用工作区专用工具（read_file, search_text, edit_file 等），而不是 run_shell。",
+        "优先使用专门的工作区工具，而不是 run_shell。",
+        "优先使用 rg 风格搜索和专门的文件编辑工具。",
+        "在工具结果确认之前，不要假设文件、路径或状态一定存在。",
+        "优先依据源码、配置文件、命令输出中的已验证事实。不能直接验证的内容标记为推断。",
+        "对于代码实现类任务，源码和配置是真值，README 和文档是辅助。",
+        adaptive_guidance,
+        "不要在 assistant 文本里输出 JSON、工具 schema 或底层协议细节。",
+        "决定当前最合适的下一步动作。",
+    ))
     return rendered_sections + guidance
 
 
@@ -76,7 +85,7 @@ def _runtime_policy_state(contract: InstructionContract) -> dict[str, object]:
     return {}
 
 
-def _dynamic_guidance(runtime_policy_state: dict[str, object]) -> str:
+def _adaptive_guidance(runtime_policy_state: dict[str, object]) -> str:
     profile_name = str(runtime_policy_state.get("profile_name", ""))
     path_bias = str(runtime_policy_state.get("path_bias", ""))
     planning_mode = str(runtime_policy_state.get("planning_mode", ""))

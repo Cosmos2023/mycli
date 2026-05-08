@@ -10,12 +10,12 @@ import pytest
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.runtime import ReasoningEffort
-from mycli.infrastructure.anthropic_messages_client import (
+from mycli.llms.clients.anthropic_messages import (
     AnthropicMessagesClient,
     _build_anthropic_sdk_client,
 )
-from mycli.infrastructure.openai_client import ModelResponseError
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.utils.workspace_logger import WorkspaceLogService
 
 
 class FakeMessagesResource:

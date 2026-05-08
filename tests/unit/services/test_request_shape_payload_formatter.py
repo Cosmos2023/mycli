@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from mycli.domain.runtime import ProviderMessageShape, ProviderRuntimeItemShape, RequestShape, RuntimeBlock
 from mycli.domain.tools import ToolCall
-from mycli.services.request_shape_payload_formatter import RequestShapePayloadFormatter
+from mycli.application.runtime.request import RequestShapePayloadFormatter
 
 
 def test_request_shape_payload_formatter_builds_legacy_messages_in_shape_order() -> None:
@@ -77,6 +77,40 @@ def test_request_shape_payload_formatter_preserves_legacy_tool_replay_metadata()
     assert messages[0].tool_calls == (tool_call,)
     assert messages[0].metadata == {"deepseek": {"reasoning_content": "inspect first"}}
     assert messages[1].tool_call_id == "call_read_1"
+
+
+def test_request_shape_payload_formatter_keeps_empty_assistant_tool_call_messages() -> None:
+    tool_call = ToolCall(
+        name="read_file",
+        arguments={"path": "README.md"},
+        reason="inspect",
+        call_id="call_read_1",
+    )
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable",
+        provider_messages=(
+            ProviderMessageShape(
+                role="assistant",
+                content="",
+                metadata={
+                    "tool_calls": (tool_call,),
+                    "model_metadata": {
+                        "deepseek": {"reasoning_content": "Need README."}
+                    },
+                },
+            ),
+        ),
+    )
+
+    messages = RequestShapePayloadFormatter().legacy_messages(shape)
+
+    assert len(messages) == 1
+    assert messages[0].content == ""
+    assert messages[0].tool_calls == (tool_call,)
+    assert messages[0].metadata == {"deepseek": {"reasoning_content": "Need README."}}
 
 
 def test_request_shape_payload_formatter_builds_runtime_items_in_shape_order() -> None:

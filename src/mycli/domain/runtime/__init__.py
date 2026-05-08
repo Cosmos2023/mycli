@@ -70,14 +70,14 @@ from mycli.domain.runtime.session_history import (
 from mycli.domain.runtime.turn_state import SuspendedTurn as SuspendedTurn
 from mycli.domain.runtime.tracing import RuntimeTraceEvent as RuntimeTraceEvent
 from mycli.domain.skills import SkillDefinition
-from mycli.domain.tool_exposure import (
+from mycli.domain.tooling.exposure import (
     ToolExposure as ToolExposure,
     ToolExposureEntry as ToolExposureEntry,
     ToolExposureKind as ToolExposureKind,
     ToolRouteKey as ToolRouteKey,
     ToolRouteSource as ToolRouteSource,
 )
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 
 
 class RiskLevel(StrEnum):
@@ -114,15 +114,28 @@ class AgentConfig:
     api_base_url: str = "https://api.openai.com/v1"
     api_key: str | None = None
     session_id: str = "default"
-    max_steps: int = 4
     max_prompt_tokens: int = 12000
     max_output_tokens: int = 2048
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
     thinking_enabled: bool = True
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
     compression_threshold_tokens: int = 8000
+    compaction_l4_trigger_ratio: float = 0.9
+    compaction_l4_min_savings_ratio: float | None = None
+    compaction_l4_input_cost_per_1k: float = 0.0
+    compaction_l4_output_cost_per_1k: float = 0.0
+    compaction_l4_carry_cost_per_1k: float = 0.0
+    compaction_l4_expected_summary_tokens: int = 500
+    compaction_l4_carry_turns: int = 1
+    compaction_l4_trigger_ratios_by_model: dict[str, float] = field(default_factory=dict)
     recent_message_count: int = 6
     auto_approve_medium: bool = True
+    max_tool_calls_per_turn: int = 25
+    max_tokens_per_turn: int = 200_000
+    max_same_tool_calls: int = 4
+    no_progress_threshold: int = 6
+    force_answer_threshold: int = 12
+    reroute_threshold: int = 3
 
 
 @dataclass(slots=True, frozen=True)

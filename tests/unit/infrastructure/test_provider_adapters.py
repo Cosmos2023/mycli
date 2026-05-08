@@ -6,7 +6,10 @@ from mycli.infrastructure.providers import (
     profile_for_provider,
 )
 from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
-from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
+from mycli.infrastructure.providers.deepseek import (
+    DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
+    DeepSeekChatProviderAdapter,
+)
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
 from mycli.infrastructure.providers.openai import OPENAI_PROFILE
@@ -65,3 +68,45 @@ def test_deepseek_adapter_merges_developer_rules_into_cacheable_system_prefix() 
         },
         {"role": "user", "content": "Current request."},
     ]
+
+
+def test_deepseek_adapter_adds_stable_reasoning_fallback_for_tool_call_replay() -> None:
+    messages = DeepSeekChatProviderAdapter().adapt_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\"}"},
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert messages[0]["reasoning_content"] == DEEPSEEK_SYNTHETIC_REASONING_CONTENT
+
+
+def test_deepseek_adapter_marks_missing_provider_reasoning_metadata_for_tool_calls() -> None:
+    metadata = DeepSeekChatProviderAdapter().extract_message_metadata(
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_read_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\"}"},
+                }
+            ],
+        }
+    )
+
+    assert metadata == {
+        "deepseek": {
+            "reasoning_content": DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
+            "reasoning_content_missing": True,
+        }
+    }

@@ -18,7 +18,7 @@ class HistoryItemType(StrEnum):
     WARNING = "warning"
     CAPABILITY = "capability"
     TOOL_EXPOSURE = "tool_exposure"
-    DYNAMIC_TOOL = "dynamic_tool"
+    CONTRIBUTED_TOOL = "contributed_tool"
     CONTEXT_BASELINE_UPDATE = "context_baseline_update"
     COMPACTION = "compaction"
     FILE_CHANGE = "file_change"

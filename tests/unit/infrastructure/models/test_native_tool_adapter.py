@@ -1,8 +1,11 @@
 from mycli.domain.tools import ToolCall
 from mycli.domain.runtime import RuntimeBlock, RuntimeItem
-from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
-from mycli.infrastructure.models.base import ModelMessage, ModelToolDefinition, ModelToolParameter
-from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
+from mycli.infrastructure.providers.deepseek import (
+    DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
+    DeepSeekChatProviderAdapter,
+)
+from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition, ModelToolParameter
+from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
 
 
 class FakeNativeClient:
@@ -145,6 +148,36 @@ def test_native_tool_adapter_replays_deepseek_reasoning_content() -> None:
 
     assert client.captured_messages[0]["reasoning_content"] == (
         "I need to inspect the requested file."
+    )
+
+
+def test_native_tool_adapter_adds_deepseek_reasoning_fallback_for_tool_call_replay() -> None:
+    client = FakeNativeClient()
+    adapter = NativeToolModelAdapter(
+        client=client,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    adapter.next_action(
+        messages=[
+            ModelMessage(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "mission.txt"},
+                        reason="inspect mission",
+                        call_id="call_read_file_1",
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages[0]["reasoning_content"] == (
+        DEEPSEEK_SYNTHETIC_REASONING_CONTENT
     )
 
 

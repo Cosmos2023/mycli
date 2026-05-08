@@ -5,17 +5,17 @@ import json
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.domain.conversation import Conversation, Message
-from mycli.domain.dynamic_tools import (
-    DynamicToolDescriptor,
-    DynamicToolLifecycleState,
-    DynamicToolRegistration,
-    DynamicToolScope,
-    DynamicToolSource,
+from mycli.domain.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionRegistration,
+    ToolContributionScope,
+    ToolContributionSource,
 )
 from mycli.domain.memory import MemoryKind, MemoryRecord
-from mycli.infrastructure.openai_client import ModelResponseError
-from mycli.infrastructure.openai_responses_client import OpenAIResponsesClient
-from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
+from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.llms.clients.openai_responses import OpenAIResponsesClient
+from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.domain.runtime import (
     ActivityEvent,
@@ -37,11 +37,11 @@ from mycli.domain.runtime import (
 )
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.trace_service import TraceService
-from mycli.services.dynamic_tool_provider import DynamicToolProvider
+from mycli.application.runtime.tools.contributed_tool_provider import ToolContributionProvider
 from mycli.domain.tools import ToolCall
-from mycli.services.memory_service import MemoryService
+from mycli.memory.service import MemoryService
 from mycli.services.skill_registry import SkillRegistry
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.edit_file import EditFileTool
 from mycli.tools.list_directory import ListDirectoryTool
@@ -120,8 +120,8 @@ def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(
     assert "thinking" in kinds
     assert "tool_started" in kinds
     assert "tool_finished" in kinds
-    assert any(message.startswith("Searching:") for message in messages)
-    assert any(message.startswith("Done searching:") for message in messages)
+    assert any(message.startswith("query=search_text") for message in messages)
+    assert any(message.startswith("query=search_text") for message in messages)
 
 
 class InspectThenDoneAdapter:
@@ -600,6 +600,46 @@ class ReasoningToolThenDoneAdapter:
         )
 
 
+class InvalidToolArgumentsThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        if self.calls == 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="read_file",
+                                tool_arguments={},
+                                call_id="call_read_missing_args",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(
+                        RuntimeBlock(
+                            type="text",
+                            text="Recovered from invalid tool arguments.",
+                        ),
+                    ),
+                ),
+            ),
+            done=True,
+        )
+
+
 class ReasoningTextDoneAdapter:
     def next_turn(self, *, items, tools):
         del items, tools
@@ -923,6 +963,83 @@ def test_agent_runtime_turns_reasoning_blocks_into_activity_events(tmp_path: Pat
     assert "Summarizing the repository." in response.progress_updates
 
 
+def test_turn_service_resume_switches_runtime_session_for_follow_up_turn(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    service = TurnService(
+        model_client=runtime._model_adapter,
+        tool_registry=runtime._tool_registry,
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    target = Conversation(session_id="backlog")
+    target.append(Message(role="user", content="older request"))
+    runtime._session_service.save_conversation(target)
+
+    rendered = service.resume_session("backlog")
+    response = service.handle_user_turn("inspect resumed session")
+
+    assert rendered == ("resumed backlog", "messages=1")
+    assert response.assistant_message == "Repository summary complete."
+    assert service._config.session_id == "backlog"
+    assert runtime._config.session_id == "backlog"
+    assert runtime._event_ledger._session_id == "backlog"
+    resumed = runtime._session_service.load_conversation("backlog")
+    default = runtime._session_service.load_conversation("default")
+    assert [message.content for message in resumed.messages if message.role == "user"] == [
+        "older request",
+        "inspect resumed session",
+    ]
+    assert default.messages == []
+
+
+def test_turn_service_fork_switches_active_session_to_branch(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    service = TurnService(
+        model_client=runtime._model_adapter,
+        tool_registry=runtime._tool_registry,
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    source = Conversation(session_id="default")
+    source.append(Message(role="user", content="original request"))
+    source.append(Message(role="assistant", content="original answer"))
+    runtime._session_service.save_conversation(source)
+
+    rendered = service.fork_session(None, "branch", None)
+    response = service.handle_user_turn("continue on branch")
+
+    assert rendered == ("forked default -> branch", "fork_point=2", "messages=2")
+    assert response.assistant_message == "Repository summary complete."
+    assert service._config.session_id == "branch"
+    branch = runtime._session_service.load_conversation("branch")
+    default = runtime._session_service.load_conversation("default")
+    assert [message.content for message in branch.messages if message.role == "user"] == [
+        "original request",
+        "continue on branch",
+    ]
+    assert [message.content for message in default.messages if message.role == "user"] == [
+        "original request",
+    ]
+
+
 def test_agent_runtime_keeps_reasoning_and_tool_call_in_same_turn(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
     runtime = AgentRuntime.for_tests(
@@ -963,7 +1080,9 @@ def test_agent_runtime_collects_streamed_chunks_and_reasoning_activity(tmp_path:
     assert assistant_messages == ["Repository summary complete."]
 
 
-def test_agent_runtime_adjusts_reasoning_effort_across_overview_turns(tmp_path: Path) -> None:
+def test_agent_runtime_uses_configured_reasoning_effort_across_overview_turns(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "README.md").write_text("This is mycli.\n", encoding="utf-8")
     adapter = OverviewReasoningEffortAdapter()
     runtime = AgentRuntime.for_tests(
@@ -975,7 +1094,7 @@ def test_agent_runtime_adjusts_reasoning_effort_across_overview_turns(tmp_path: 
     response = runtime.handle_user_turn("请给我这个仓库的简短总结")
 
     assert response.assistant_message == "Repository summary complete."
-    assert adapter.reasoning_efforts == ["low", "medium", "low"]
+    assert adapter.reasoning_efforts == ["medium", "medium", "medium"]
 
 
 def test_agent_runtime_supports_streamed_tool_call_execution(tmp_path: Path) -> None:
@@ -1050,14 +1169,18 @@ def test_agent_runtime_sends_current_user_turn_once_in_block_path(tmp_path: Path
         if item.role == "user"
         and any(
             block.type == "text"
-            and block.text == f"Current user request: {request}"
+            and block.text == request
             for block in item.blocks
         )
     ]
     assert len(matching_user_items) == 1
     assert not any(
         item.role == "user"
-        and any(block.type == "text" and block.text == request for block in item.blocks)
+        and any(
+            block.type == "text"
+            and block.text == f"Current user request: {request}"
+            for block in item.blocks
+        )
         for item in adapter.seen_items[0]
     )
 
@@ -1078,13 +1201,68 @@ def test_agent_runtime_sends_current_user_turn_once_in_legacy_path(tmp_path: Pat
         message
         for message in adapter.seen_messages[0]
         if getattr(message, "role", None) == "user"
-        and getattr(message, "content", None) == f"Current user request: {request}"
+        and getattr(message, "content", None) == request
     ]
     assert len(matching_user_messages) == 1
     assert not any(
         getattr(message, "role", None) == "user"
-        and getattr(message, "content", None) == request
+        and getattr(message, "content", None) == f"Current user request: {request}"
         for message in adapter.seen_messages[0]
+    )
+
+
+def test_agent_runtime_writes_only_provider_transcript_items_to_history(
+    tmp_path: Path,
+) -> None:
+    adapter = BlockSingleTurnCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    response = runtime.handle_user_turn("inspect runtime ledger")
+
+    assert any(item.type is TurnItemType.TOOL_EXPOSURE for item in response.turn.items)
+    assert any(item.type is TurnItemType.REASONING for item in response.turn.items)
+    history_items = runtime._session_service.load_history_items(runtime._config.session_id)
+    assert [item.type for item in history_items] == [
+        HistoryItemType.USER_MESSAGE,
+        HistoryItemType.ASSISTANT_MESSAGE,
+    ]
+    assert not any(
+        item.type
+        in {
+            HistoryItemType.TOOL_EXPOSURE,
+            HistoryItemType.CAPABILITY,
+            HistoryItemType.WARNING,
+            HistoryItemType.REASONING,
+            HistoryItemType.CONTEXT_BASELINE_UPDATE,
+            HistoryItemType.FILE_CHANGE,
+        }
+        for item in history_items
+    )
+
+
+def test_agent_runtime_does_not_replay_visible_thinking_text_as_transcript(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningToolThenDoneAdapter(),
+    )
+
+    response = runtime.handle_user_turn("inspect reasoning boundary")
+
+    assert any(item.type is TurnItemType.REASONING for item in response.turn.items)
+    history_items = runtime._session_service.load_history_items(runtime._config.session_id)
+    assert HistoryItemType.REASONING not in {item.type for item in history_items}
+    assert not any(
+        isinstance(item.text, str)
+        and (item.text.startswith("Thinking:") or item.text.startswith("Planning:"))
+        for item in history_items
     )
 
 
@@ -1110,7 +1288,7 @@ def test_agent_runtime_places_stable_action_guidance_before_contextual_user_mess
     assert not any(getattr(message, "role", None) == "assistant" for message in messages)
 
 
-def test_agent_runtime_uses_recent_conversation_window_in_block_path(tmp_path: Path) -> None:
+def test_agent_runtime_keeps_append_only_provider_replay_in_block_path(tmp_path: Path) -> None:
     adapter = BlockSingleTurnCaptureAdapter()
     runtime = build_runtime_with_capture_adapter(
         tmp_path=tmp_path,
@@ -1130,10 +1308,10 @@ def test_agent_runtime_uses_recent_conversation_window_in_block_path(tmp_path: P
         if item.role == "user"
         and any(block.type == "text" and block.text == "first question" for block in item.blocks)
     ]
-    assert transcript_user_items == []
+    assert len(transcript_user_items) == 1
 
 
-def test_agent_runtime_uses_recent_conversation_window_in_legacy_path(tmp_path: Path) -> None:
+def test_agent_runtime_keeps_append_only_provider_replay_in_legacy_path(tmp_path: Path) -> None:
     adapter = LegacySingleTurnCaptureAdapter()
     runtime = build_runtime_with_capture_adapter(
         tmp_path=tmp_path,
@@ -1153,7 +1331,7 @@ def test_agent_runtime_uses_recent_conversation_window_in_legacy_path(tmp_path: 
         if getattr(message, "role", None) == "user"
         and getattr(message, "content", None) == "first question"
     ]
-    assert transcript_user_messages == []
+    assert len(transcript_user_messages) == 1
 
 
 def test_agent_runtime_reinjects_tool_results_as_transcript_messages(tmp_path: Path) -> None:
@@ -1179,7 +1357,7 @@ def test_agent_runtime_reinjects_tool_results_as_transcript_messages(tmp_path: P
     assert any(
         message.role == "tool"
         and message.tool_call_id == "call_list_directory_1"
-        and "Tool list_directory" in str(message.content)
+        and "Tool list_directory" not in str(message.content)
         for message in adapter.seen_messages[1]
     )
 
@@ -1247,17 +1425,14 @@ def test_agent_runtime_preserves_grounded_tool_messages_across_reinjection(
     read_content = str(read_tool_message.content)
     edit_content = str(edit_tool_message.content)
 
-    assert search_content.startswith("Tool search_text:")
     assert "Evidence:" in search_content
     assert "[search_match] notes.txt:1" in search_content
     assert "snippet: needle one" in search_content
 
-    assert read_content.startswith("Tool read_file:")
     assert "Evidence:" in read_content
     assert "[file_excerpt] notes.txt:1-2" in read_content
     assert "snippet: needle one line two" in read_content
 
-    assert edit_content.startswith("Tool edit_file:")
     assert "Diff preview:" in edit_content
     assert "-line two" in edit_content
     assert "+line three" in edit_content
@@ -1407,7 +1582,7 @@ def test_agent_runtime_passes_session_and_turn_context_to_model_logging(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: FakeResponsesSdkClient(),
     )
 
@@ -1979,6 +2154,60 @@ def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
     assert request_shape.payload["fragment_hashes"]["intent:current"]
 
 
+class UsageMetadataAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text=f"done {self.calls}"),),
+                ),
+            ),
+            done=True,
+            metadata={
+                "usage": {
+                    "prompt_tokens": 1200 + self.calls,
+                    "prompt_cache_hit_tokens": 1000,
+                    "prompt_cache_miss_tokens": 200,
+                }
+            },
+        )
+
+
+def test_agent_runtime_traces_cache_shape_diagnostic_from_provider_usage(
+    tmp_path: Path,
+) -> None:
+    adapter = UsageMetadataAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    runtime.handle_user_turn("first stable request")
+    runtime.handle_user_turn("second stable request")
+
+    loaded = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    diagnostics = [event for event in loaded if event.kind == "cache_shape_diagnostic"]
+
+    assert len(diagnostics) == 2
+    assert diagnostics[-1].payload["prompt_tokens"] == 1202
+    assert diagnostics[-1].payload["cache_hit_tokens"] == 1000
+    assert diagnostics[-1].payload["cache_miss_tokens"] == 200
+    assert diagnostics[-1].payload["cache_hit_ratio"] == 1000 / 1200
+    assert diagnostics[-1].payload["first_changed_fragment_id"] is not None
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.cache_hit_tokens == 2000
+    assert snapshot.cache_miss_tokens == 400
+    assert snapshot.cache_hit_rate == 2000 / 2400
+    assert snapshot.budget_curve
+
+
 class RepeatMissingReadAdapter:
     def next_turn(self, *, items, tools):
         del items, tools
@@ -2004,6 +2233,10 @@ class OverviewForceAnswerAdapter:
     def __init__(self) -> None:
         self.calls = 0
         self.seen_tool_counts: list[int] = []
+        self.tool_choices: list[str | None] = []
+
+    def set_tool_choice(self, tool_choice: str | None) -> None:
+        self.tool_choices.append(tool_choice)
 
     def next_turn(self, *, items, tools):
         del items
@@ -2043,23 +2276,6 @@ class OverviewForceAnswerAdapter:
                 ),
                 done=False,
             )
-        if tools:
-            return ModelTurnResult(
-                items=(
-                    RuntimeItem(
-                        role="assistant",
-                        blocks=(
-                            RuntimeBlock(
-                                type="tool_call",
-                                tool_name="list_directory",
-                                tool_arguments={"path": "src"},
-                                call_id="call_list_src",
-                            ),
-                        ),
-                    ),
-                ),
-                done=False,
-            )
         return ModelTurnResult(
             items=(
                 RuntimeItem(
@@ -2093,6 +2309,10 @@ class ImplementationAuditForceAnswerAdapter:
     def __init__(self) -> None:
         self.calls = 0
         self.seen_tool_counts: list[int] = []
+        self.tool_choices: list[str | None] = []
+
+    def set_tool_choice(self, tool_choice: str | None) -> None:
+        self.tool_choices.append(tool_choice)
 
     def next_turn(self, *, items, tools):
         del items
@@ -2137,19 +2357,36 @@ class ImplementationAuditForceAnswerAdapter:
                 items=(
                     RuntimeItem(
                         role="assistant",
-                        blocks=(
-                            RuntimeBlock(
-                                type="tool_call",
-                                tool_name="read_file",
-                                tool_arguments={"path": "src/mycli/application/runtime/agent_runtime.py"},
-                                call_id="call_read_agent_runtime",
-                            ),
-                        ),
+                        blocks=(RuntimeBlock(type="text", text="Implementation audit complete."),),
                     ),
                 ),
-                done=False,
+                done=True,
             )
-        if tools:
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Implementation audit complete."),),
+                ),
+            ),
+            done=True,
+        )
+
+
+class ForceAnswerRequestShapeAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_tool_counts: list[int] = []
+        self.tool_choices: list[str | None] = []
+
+    def set_tool_choice(self, tool_choice: str | None) -> None:
+        self.tool_choices.append(tool_choice)
+
+    def next_turn(self, *, items, tools):
+        del items
+        self.calls += 1
+        self.seen_tool_counts.append(len(tools))
+        if self.calls <= 12:
             return ModelTurnResult(
                 items=(
                     RuntimeItem(
@@ -2157,9 +2394,9 @@ class ImplementationAuditForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="search_text",
-                                tool_arguments={"query": "trace", "path": ".", "glob": "*.py"},
-                                call_id="call_search_trace_again",
+                                tool_name="read_file",
+                                tool_arguments={"path": f"evidence_{self.calls}.txt"},
+                                call_id=f"call_read_evidence_{self.calls}",
                             ),
                         ),
                     ),
@@ -2170,7 +2407,7 @@ class ImplementationAuditForceAnswerAdapter:
             items=(
                 RuntimeItem(
                     role="assistant",
-                    blocks=(RuntimeBlock(type="text", text="Implementation audit complete."),),
+                    blocks=(RuntimeBlock(type="text", text="收口回答。"),),
                 ),
             ),
             done=True,
@@ -2198,7 +2435,7 @@ class DeferredToolRequestAdapter:
         )
 
 
-class DynamicSummaryTool:
+class ContributedSummaryTool:
     def __init__(self) -> None:
         self.spec = ToolSpec(
             name="workspace_summary",
@@ -2211,7 +2448,7 @@ class DynamicSummaryTool:
         return ToolResultV2(success=True, summary="Workspace summary ready", raw_payload={"path": "."})
 
 
-class OverviewDynamicToolProvider(DynamicToolProvider):
+class OverviewToolContributionProvider(ToolContributionProvider):
     def provide(
         self,
         *,
@@ -2223,17 +2460,17 @@ class OverviewDynamicToolProvider(DynamicToolProvider):
         del conversation, plan_state, capability_activations
         if "概览" not in user_message and "overview" not in user_message.lower():
             return ()
-        tool = DynamicSummaryTool()
+        tool = ContributedSummaryTool()
         return (
-            DynamicToolRegistration(
-                descriptor=DynamicToolDescriptor(
+            ToolContributionRegistration(
+                descriptor=ToolContributionDescriptor(
                     tool_id="provider:workspace_summary:thread",
                     display_name="workspace_summary",
                     description="Summarize workspace",
                     route_key=ToolRouteKey.local("workspace_summary"),
-                    source=DynamicToolSource.PROVIDER,
-                    scope=DynamicToolScope.THREAD,
-                    lifecycle_state=DynamicToolLifecycleState.DECLARED,
+                    source=ToolContributionSource.PROVIDER,
+                    scope=ToolContributionScope.THREAD,
+                    lifecycle_state=ToolContributionLifecycleState.DECLARED,
                     spec=tool.spec,
                 ),
                 tool=tool,
@@ -2241,7 +2478,7 @@ class OverviewDynamicToolProvider(DynamicToolProvider):
         )
 
 
-class DynamicToolAdapter:
+class ToolContributionAdapter:
     def __init__(self) -> None:
         self.calls = 0
         self.seen_tool_names: list[list[str]] = []
@@ -2271,7 +2508,7 @@ class DynamicToolAdapter:
             items=(
                 RuntimeItem(
                     role="assistant",
-                    blocks=(RuntimeBlock(type="text", text="Dynamic summary complete"),),
+                    blocks=(RuntimeBlock(type="text", text="Contributed summary complete"),),
                 ),
             ),
             done=True,
@@ -2298,7 +2535,7 @@ def test_agent_runtime_persists_turn_record_with_stop_reason(tmp_path: Path) -> 
     assert any(item.type is TurnItemType.ASSISTANT_MESSAGE for item in response.turn.items)
 
 
-def test_agent_runtime_persists_structured_history_baseline_and_rollout_for_completed_turn(
+def test_agent_runtime_persists_provider_history_baseline_state_and_runtime_rollout(
     tmp_path: Path,
 ) -> None:
     runtime = AgentRuntime.for_tests(
@@ -2314,17 +2551,23 @@ def test_agent_runtime_persists_structured_history_baseline_and_rollout_for_comp
 
     assert response.turn is not None
     assert any(item.type is HistoryItemType.USER_MESSAGE for item in history_items)
-    assert any(item.type is HistoryItemType.REASONING for item in history_items)
     assert any(item.type is HistoryItemType.ASSISTANT_MESSAGE for item in history_items)
+    assert not any(item.type is HistoryItemType.REASONING for item in history_items)
+    assert any(item.type is TurnItemType.REASONING for item in response.turn.items)
     assert baseline is not None
     assert isinstance(baseline, ContextBaseline)
     assert baseline.fragments
-    assert any(fragment.kind == "runtime_policy" for fragment in baseline.fragments)
+    assert not any(fragment.kind == "runtime_policy" for fragment in baseline.fragments)
     assert rollouts
     assert isinstance(rollouts[0], TurnRollout)
     assert rollouts[0].turn_id == response.turn.turn_id
     assert rollouts[0].status is TurnStatus.COMPLETED
     assert rollouts[0].stop_reason is StopReason.ASSISTANT_COMPLETED
+    assert any(
+        event.kind == "turn_item"
+        and event.payload.get("type") == TurnItemType.REASONING.value
+        for event in rollouts[0].events
+    )
 
 
 def test_agent_runtime_persists_tool_calls_and_results_into_structured_history(
@@ -2346,6 +2589,91 @@ def test_agent_runtime_persists_tool_calls_and_results_into_structured_history(
     tool_result = next(item for item in history_items if item.type is HistoryItemType.TOOL_RESULT)
     assert tool_result.tool_name == "read_file"
     assert tool_result.metadata["success"] is True
+
+
+def test_agent_runtime_returns_tool_validation_failures_to_model(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=InvalidToolArgumentsThenDoneAdapter(),
+    )
+
+    response = runtime.handle_user_turn("read README")
+    history_items = runtime._session_service.load_history_items(runtime._config.session_id)
+
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.COMPLETED
+    assert response.assistant_message == "Recovered from invalid tool arguments."
+    tool_result = next(item for item in history_items if item.type is HistoryItemType.TOOL_RESULT)
+    assert tool_result.tool_name == "read_file"
+    assert tool_result.metadata["success"] is False
+    assert tool_result.metadata["error_kind"] == "tool_validation_error"
+
+
+def test_agent_runtime_file_history_undo_restores_mutating_tool_change(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    class EditThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(
+                                RuntimeBlock(
+                                    type="tool_call",
+                                    tool_name="edit_file",
+                                    tool_arguments={
+                                        "path": "notes.txt",
+                                        "new_content": "after\n",
+                                    },
+                                    call_id="call_edit_1",
+                                ),
+                            ),
+                        ),
+                    ),
+                    done=False,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Edited."),),
+                    ),
+                ),
+                done=True,
+            )
+
+    (tmp_path / "notes.txt").write_text("before\n", encoding="utf-8")
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=EditThenDoneAdapter(),
+    )
+    service = TurnService(
+        model_client=runtime._model_adapter,
+        tool_registry=runtime._tool_registry,
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+
+    response = service.handle_user_turn("edit notes")
+    undo_message = service.undo_last_file_change()
+
+    assert response.assistant_message == "Edited."
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "before\n"
+    assert "restored notes.txt" in undo_message
 
 
 def test_agent_runtime_build_context_uses_runtime_snapshot_history_and_baseline(
@@ -2401,6 +2729,60 @@ def test_agent_runtime_build_context_uses_runtime_snapshot_history_and_baseline(
     assert context.context_baseline is not None
     assert context.context_baseline.fragments[0].content == "Prefer focused diffs."
     assert [message.role for message in context.conversation_messages] == ["user", "assistant"]
+
+
+def test_agent_runtime_build_context_uses_append_only_provider_replay(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id=runtime._config.session_id,
+        recent_message_count=1,
+    )
+    runtime._session_service.append_history_items(
+        runtime._config.session_id,
+        (
+            HistoryItem(
+                id="hist_1",
+                thread_id=runtime._config.session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="first request",
+            ),
+            HistoryItem(
+                id="hist_2",
+                thread_id=runtime._config.session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="first answer",
+            ),
+            HistoryItem(
+                id="hist_3",
+                thread_id=runtime._config.session_id,
+                turn_id="turn_2",
+                type=HistoryItemType.USER_MESSAGE,
+                text="second request",
+            ),
+        ),
+    )
+
+    context = runtime._build_context(
+        user_message="continue",
+        conversation=Conversation(session_id=runtime._config.session_id),
+        plan_state=PlanState(),
+    )
+
+    assert [message.content for message in context.conversation_messages] == [
+        "first request",
+        "first answer",
+        "second request",
+    ]
+    assert context.conversation_summary == "- user: first request\n- assistant: first answer"
 
 
 def test_agent_runtime_build_context_reconstructs_block_aware_messages_from_history(
@@ -2578,7 +2960,7 @@ def test_agent_runtime_converts_missing_file_reads_into_recoverable_loop_stop(
         home_dir=tmp_path / "home",
         model_adapter=RepeatMissingReadAdapter(),
     )
-    runtime._config = AgentConfig(workspace_root=tmp_path, max_steps=6)
+    runtime._config = AgentConfig(workspace_root=tmp_path)
 
     response = runtime.handle_user_turn("请简短总结这个仓库的入口文件和主要模块")
 
@@ -2594,7 +2976,7 @@ def test_agent_runtime_converts_missing_file_reads_into_recoverable_loop_stop(
     )
 
 
-def test_agent_runtime_forces_answer_mode_when_overview_evidence_is_sufficient(
+def test_agent_runtime_observes_sufficient_overview_evidence_without_forcing_answer(
     tmp_path: Path,
 ) -> None:
     adapter = OverviewForceAnswerAdapter()
@@ -2604,22 +2986,68 @@ def test_agent_runtime_forces_answer_mode_when_overview_evidence_is_sufficient(
         model_adapter=adapter,
     )
     (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-    runtime._config = AgentConfig(workspace_root=tmp_path, max_steps=6)
+    runtime._config = AgentConfig(workspace_root=tmp_path)
 
     response = runtime.handle_user_turn("请分析这个仓库的入口文件和主要模块，给我一个简短总结。")
 
     assert response.assistant_message == "入口在 CLI，主要模块在 src/mycli 下。"
     assert response.turn is not None
     assert response.turn.stop_reason is StopReason.ASSISTANT_COMPLETED
-    assert adapter.seen_tool_counts[-1] == 0
+    assert adapter.seen_tool_counts[0] > 0
+    assert adapter.seen_tool_counts[-1] == adapter.seen_tool_counts[0]
+    assert "none" not in adapter.tool_choices
     assert any(
-        item.type is TurnItemType.REASONING and item.text == "Planning: 正在检查仓库结构"
+        item.type is TurnItemType.REASONING and item.text == "正在检查仓库结构"
         for item in response.turn.items
     )
     assert any(
-        item.type is TurnItemType.REASONING and item.text == "Planning: 已从确认的证据收口回答"
+        item.type is TurnItemType.REASONING and item.text == "已从确认的证据收口回答"
         for item in response.turn.items
     )
+
+
+class CompactionMetricsAdapter:
+    def next_turn(self, *, items, tools):
+        del items, tools
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Compacted response."),),
+                ),
+            ),
+            done=True,
+            metadata={"usage": {"total_tokens": 1000}},
+        )
+
+
+def test_agent_runtime_records_compaction_metrics_when_window_changes(tmp_path: Path) -> None:
+    runtime = AgentRuntime(
+        model_adapter=CompactionMetricsAdapter(),
+        tool_registry=ToolRegistryV2.from_tools([]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            max_tokens_per_turn=1000,
+            compaction_l4_trigger_ratio=0.1,
+        ),
+        home_dir=tmp_path / "home",
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(8):
+        conversation.append(
+            Message(
+                role="assistant",
+                content=" ".join(f"evidence_{index}_{token}" for token in range(60)),
+            )
+        )
+    runtime._session_service.save_conversation(conversation)
+
+    runtime.handle_user_turn("summarize from compacted history")
+
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.compaction_levels.get("L4") == 1
+    assert snapshot.compaction_before_tokens > 0
+    assert snapshot.compaction_after_tokens > 0
 
 
 def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) -> None:
@@ -2673,20 +3101,53 @@ def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -
     )
 
 
-def test_agent_runtime_executes_runtime_dynamic_tool_via_router(tmp_path: Path) -> None:
-    adapter = DynamicToolAdapter()
+def test_agent_runtime_batches_adjacent_safe_tool_calls_from_same_model_item(
+    tmp_path: Path,
+) -> None:
+    adapter = MultiToolThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    (tmp_path / "README.md").write_text("readme\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    batch_calls: list[tuple[str, ...]] = []
+    original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
+
+    def capture_execute_tool_calls(**kwargs):
+        calls = tuple(kwargs["calls"])
+        batch_calls.append(tuple(call.name for call in calls))
+        return original_execute_tool_calls(**kwargs)
+
+    runtime._tool_execution_service.execute_tool_calls = capture_execute_tool_calls
+
+    response = runtime.handle_user_turn("inspect both files")
+
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.COMPLETED
+    assert batch_calls == [("read_file", "read_file")]
+    assert [
+        item.call_id
+        for item in response.turn.items
+        if item.type is TurnItemType.TOOL_RESULT
+    ] == ["call_read_readme", "call_read_pyproject"]
+
+
+def test_agent_runtime_executes_runtime_contributed_tool_via_router(tmp_path: Path) -> None:
+    adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
-        config=AgentConfig(workspace_root=tmp_path, max_steps=4),
+        config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
-    runtime._runtime_dynamic_tools = lambda **_kwargs: (DynamicSummaryTool(),)
+    runtime._runtime_contributed_tools = lambda **_kwargs: (ContributedSummaryTool(),)
 
     response = runtime.handle_user_turn("summarize the workspace")
 
     assert response.turn is not None
-    assert response.assistant_message == "Dynamic summary complete"
+    assert response.assistant_message == "Contributed summary complete"
     assert "workspace_summary" in adapter.seen_tool_names[0]
     assert any(
         item.type is TurnItemType.TOOL_RESULT and item.tool_name == "workspace_summary"
@@ -2694,27 +3155,27 @@ def test_agent_runtime_executes_runtime_dynamic_tool_via_router(tmp_path: Path) 
     )
 
 
-def test_agent_runtime_records_dynamic_tool_lifecycle_and_persists_thread_snapshot(
+def test_agent_runtime_records_contributed_tool_lifecycle_and_persists_thread_snapshot(
     tmp_path: Path,
 ) -> None:
-    adapter = DynamicToolAdapter()
+    adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
-        config=AgentConfig(workspace_root=tmp_path, max_steps=4),
+        config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
-    thread_tool = DynamicSummaryTool()
-    runtime._runtime_dynamic_tools = lambda **_kwargs: (
-        DynamicToolRegistration(
-            descriptor=DynamicToolDescriptor(
+    thread_tool = ContributedSummaryTool()
+    runtime._runtime_contributed_tools = lambda **_kwargs: (
+        ToolContributionRegistration(
+            descriptor=ToolContributionDescriptor(
                 tool_id="runtime:workspace_summary:thread",
                 display_name="workspace_summary",
                 description="Summarize workspace",
                 route_key=runtime._tool_exposure_planner._route_key_for_tool_name("workspace_summary"),
-                source=DynamicToolSource.RUNTIME,
-                scope=DynamicToolScope.THREAD,
-                lifecycle_state=DynamicToolLifecycleState.DECLARED,
+                source=ToolContributionSource.RUNTIME,
+                scope=ToolContributionScope.THREAD,
+                lifecycle_state=ToolContributionLifecycleState.DECLARED,
                 spec=thread_tool.spec,
             ),
             tool=thread_tool,
@@ -2724,10 +3185,15 @@ def test_agent_runtime_records_dynamic_tool_lifecycle_and_persists_thread_snapsh
     response = runtime.handle_user_turn("summarize the workspace")
     trace_service = TraceService(home_dir=tmp_path / "home")
     trace = trace_service.load(runtime._config.session_id)
-    snapshot = runtime._session_service.load_dynamic_tool_state(runtime._config.session_id)
+    snapshot = runtime._session_service.load_contributed_tool_state(runtime._config.session_id)
 
     assert response.turn is not None
-    assert any(item.type is TurnItemType.DYNAMIC_TOOL for item in response.turn.items)
+    assert any(
+        item.type is TurnItemType.TOOL_EXPOSURE
+        and item.tool_name == "workspace_summary"
+        and item.text.startswith("workspace_summary")
+        for item in response.turn.items
+    )
     assert snapshot == [
         {
             "tool_id": "runtime:workspace_summary:thread",
@@ -2741,7 +3207,7 @@ def test_agent_runtime_records_dynamic_tool_lifecycle_and_persists_thread_snapsh
         }
     ]
     lifecycle_events = [
-        event for event in trace if event.kind == "dynamic_tool_lifecycle"
+        event for event in trace if event.kind == "tool_lifecycle"
     ]
     assert [event.payload["state"] for event in lifecycle_events] == [
         "declared",
@@ -2751,29 +3217,29 @@ def test_agent_runtime_records_dynamic_tool_lifecycle_and_persists_thread_snapsh
     ]
 
 
-def test_agent_runtime_reexposes_thread_scoped_dynamic_tools_on_later_turns(tmp_path: Path) -> None:
-    adapter = DynamicToolAdapter()
+def test_agent_runtime_reexposes_thread_scoped_contributed_tools_on_later_turns(tmp_path: Path) -> None:
+    adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
-        config=AgentConfig(workspace_root=tmp_path, max_steps=4),
+        config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
-    thread_tool = DynamicSummaryTool()
-    registration = DynamicToolRegistration(
-        descriptor=DynamicToolDescriptor(
+    thread_tool = ContributedSummaryTool()
+    registration = ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
             tool_id="runtime:workspace_summary:thread",
             display_name="workspace_summary",
             description="Summarize workspace",
             route_key=runtime._tool_exposure_planner._route_key_for_tool_name("workspace_summary"),
-            source=DynamicToolSource.RUNTIME,
-            scope=DynamicToolScope.THREAD,
-            lifecycle_state=DynamicToolLifecycleState.DECLARED,
+            source=ToolContributionSource.RUNTIME,
+            scope=ToolContributionScope.THREAD,
+            lifecycle_state=ToolContributionLifecycleState.DECLARED,
             spec=thread_tool.spec,
         ),
         tool=thread_tool,
     )
-    runtime._runtime_dynamic_tools = lambda **_kwargs: (registration,)
+    runtime._runtime_contributed_tools = lambda **_kwargs: (registration,)
 
     first = runtime.handle_user_turn("summarize the workspace")
     second = runtime.handle_user_turn("do I still have my helper tool?")
@@ -2784,16 +3250,16 @@ def test_agent_runtime_reexposes_thread_scoped_dynamic_tools_on_later_turns(tmp_
     assert "workspace_summary" in adapter.seen_tool_names[-1]
 
 
-def test_agent_runtime_accepts_provider_contributed_dynamic_tool_for_overview_requests(
+def test_agent_runtime_accepts_provider_contributed_contributed_tool_for_overview_requests(
     tmp_path: Path,
 ) -> None:
-    adapter = DynamicToolAdapter()
+    adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
-        config=AgentConfig(workspace_root=tmp_path, max_steps=4),
+        config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
-        dynamic_tool_providers=(OverviewDynamicToolProvider(),),
+        contributed_tool_providers=(OverviewToolContributionProvider(),),
     )
     (tmp_path / "README.md").write_text("# demo\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
@@ -2803,12 +3269,14 @@ def test_agent_runtime_accepts_provider_contributed_dynamic_tool_for_overview_re
     assert response.turn is not None
     assert "workspace_summary" in adapter.seen_tool_names[0]
     assert any(
-        item.type is TurnItemType.DYNAMIC_TOOL and item.tool_name == "workspace_summary"
+        item.type is TurnItemType.TOOL_EXPOSURE
+        and item.tool_name == "workspace_summary"
+        and item.text.startswith("workspace_summary")
         for item in response.turn.items
     )
 
 
-def test_agent_runtime_forces_answer_mode_for_implementation_audit_after_source_evidence(
+def test_agent_runtime_observes_sufficient_implementation_audit_without_forcing_answer(
     tmp_path: Path,
 ) -> None:
     adapter = ImplementationAuditForceAnswerAdapter()
@@ -2827,7 +3295,7 @@ def test_agent_runtime_forces_answer_mode_for_implementation_audit_after_source_
         "class AgentRuntime: ...\n",
         encoding="utf-8",
     )
-    runtime._config = AgentConfig(workspace_root=tmp_path, max_steps=6)
+    runtime._config = AgentConfig(workspace_root=tmp_path)
 
     response = runtime.handle_user_turn(
         "请检查 turn context、runtime 和 trace 是否已经接入 capability activation。"
@@ -2835,5 +3303,34 @@ def test_agent_runtime_forces_answer_mode_for_implementation_audit_after_source_
 
     assert response.assistant_message == "Implementation audit complete."
     assert response.turn is not None
-    assert adapter.seen_tool_counts[-1] == 0
+    assert adapter.seen_tool_counts[0] > 0
+    assert adapter.seen_tool_counts[-1] == adapter.seen_tool_counts[0]
+    assert "none" not in adapter.tool_choices
     assert any(event.kind == "runtime_policy" for event in response.activity_events)
+
+
+def test_agent_runtime_force_answer_request_keeps_native_tool_affordance(
+    tmp_path: Path,
+) -> None:
+    adapter = ForceAnswerRequestShapeAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    for index in range(1, 13):
+        (tmp_path / f"evidence_{index}.txt").write_text(
+            f"evidence {index}\n",
+            encoding="utf-8",
+        )
+    runtime._config = AgentConfig(workspace_root=tmp_path)
+
+    response = runtime.handle_user_turn("请持续读取证据，最后收口回答。")
+
+    assert response.assistant_message == "收口回答。"
+    assert response.turn is not None
+    assert response.turn.stop_reason is StopReason.ASSISTANT_COMPLETED
+    assert adapter.seen_tool_counts[:12]
+    assert all(count > 0 for count in adapter.seen_tool_counts[:12])
+    assert adapter.seen_tool_counts[12] == adapter.seen_tool_counts[0]
+    assert "none" not in adapter.tool_choices

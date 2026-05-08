@@ -11,13 +11,13 @@ from openai import APIConnectionError, BadRequestError, NotFoundError
 from mycli.domain.runtime import StopReason
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
-from mycli.infrastructure.openai_client import ModelResponseError
-from mycli.infrastructure.openai_responses_client import OpenAIResponsesClient
+from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.schemas.responses_protocol import (
     ResponsesCapabilityProfile,
     ResponsesContinuationState,
 )
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.utils.workspace_logger import WorkspaceLogService
 
 
 class _FakeSdkPayload:
@@ -108,7 +108,7 @@ def test_openai_responses_client_posts_request_and_preserves_id_and_output(monke
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -196,7 +196,7 @@ def test_openai_responses_client_maps_output_payload_to_model_events(monkeypatch
         }
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -228,7 +228,7 @@ def test_openai_responses_client_uses_openai_sdk_transport(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -260,7 +260,7 @@ def test_openai_responses_client_normalizes_assistant_input_text_to_output_text(
 ) -> None:
     sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -297,7 +297,7 @@ def test_openai_responses_client_normalizes_empty_function_call_output(
 ) -> None:
     sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -343,7 +343,7 @@ def test_openai_responses_client_uses_previous_response_id_when_continuation_mat
         ]
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -407,7 +407,7 @@ def test_openai_responses_client_uses_previous_response_id_when_continuation_mat
 def test_openai_responses_client_includes_reasoning_effort_when_configured(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -432,7 +432,7 @@ def test_openai_responses_client_omits_reasoning_payload_when_thinking_disabled(
 ) -> None:
     sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -455,7 +455,7 @@ def test_openai_responses_client_omits_reasoning_payload_when_thinking_disabled(
 def test_openai_responses_client_serializes_update_plan_array_item_schema(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -527,7 +527,7 @@ def test_openai_responses_client_serializes_update_plan_array_item_schema(monkey
 def test_openai_responses_client_serializes_run_shell_string_array_schema(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -567,7 +567,7 @@ def test_openai_responses_client_logs_request_and_response_payloads(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []}),
     )
 
@@ -607,7 +607,7 @@ def test_openai_responses_client_logs_request_and_response_payloads(
 
 def test_openai_responses_client_maps_unsupported_provider_error(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             handler=lambda kwargs: _status_error(
                 status_code=404,
@@ -637,7 +637,7 @@ def test_openai_responses_client_maps_invalid_json_response_to_model_response_er
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: '{"id":"resp_123","output":'),
     )
 
@@ -660,7 +660,7 @@ def test_openai_responses_client_logs_transport_errors(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: _connection_error()),
     )
 
@@ -695,7 +695,7 @@ def test_openai_responses_client_logs_invalid_json_errors(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: '{"id":"resp_123","output":'),
     )
 
@@ -755,7 +755,7 @@ def test_openai_responses_client_streams_provider_events(
         ]
     )
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: sdk_client,
     )
 
@@ -787,7 +787,7 @@ def test_openai_responses_client_logs_stream_parse_errors(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: [b"data: {invalid json}\n\n"]),
     )
 
@@ -816,7 +816,7 @@ def test_openai_responses_client_logs_stream_parse_errors(
 
 def test_openai_responses_client_surfaces_provider_name_in_http_error(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             handler=lambda kwargs: _status_error(
                 status_code=500,
@@ -843,7 +843,7 @@ def test_openai_responses_client_surfaces_provider_name_in_http_error(monkeypatc
 
 def test_openai_responses_client_maps_transport_error_to_model_response_error(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: _connection_error()),
     )
 
@@ -877,7 +877,7 @@ def test_openai_responses_client_retries_stream_transport_failures(monkeypatch) 
         ]
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=handler),
     )
 
@@ -904,7 +904,7 @@ def test_openai_responses_client_marks_retry_exhausted_when_stream_retry_budget_
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=lambda kwargs: _connection_error()),
     )
 
@@ -960,7 +960,7 @@ def test_openai_responses_client_falls_back_to_create_after_stream_retry_exhaust
         }
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=handler),
     )
 
@@ -1006,7 +1006,7 @@ def test_openai_responses_client_stream_retries_without_previous_response_id_whe
         ]
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=handler),
     )
 
@@ -1083,7 +1083,7 @@ def test_openai_responses_client_maps_context_window_failures_to_structured_stop
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(
             handler=lambda kwargs: _status_error(
                 status_code=400,
@@ -1125,7 +1125,7 @@ def test_openai_responses_client_retries_without_previous_response_id_when_provi
         return {"id": "resp_new_1", "output": []}
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=handler),
     )
 
@@ -1191,7 +1191,7 @@ def test_openai_responses_client_retries_without_previous_response_id_when_provi
         return {"id": "resp_new_502", "output": []}
 
     monkeypatch.setattr(
-        "mycli.infrastructure.openai_responses_client._build_openai_sdk_client",
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
         lambda **_: _FakeOpenAISdkClient(handler=handler),
     )
 

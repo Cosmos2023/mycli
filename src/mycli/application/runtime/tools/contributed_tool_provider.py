@@ -7,7 +7,7 @@ from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import PlanState
 
 
-class DynamicToolProvider(Protocol):
+class ToolContributionProvider(Protocol):
     def provide(
         self,
         *,

@@ -7,16 +7,16 @@ from mycli.domain.capabilities import (
     CapabilityActivationDependencyStatus,
     CapabilityActivationSource,
 )
-from mycli.domain.dynamic_tools import (
-    DynamicToolDescriptor,
-    DynamicToolLifecycleState,
-    DynamicToolRegistration,
-    DynamicToolScope,
-    DynamicToolSource,
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionRegistration,
+    ToolContributionScope,
+    ToolContributionSource,
 )
 from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.domain.tool_exposure import ToolRouteSource
-from mycli.services.tool_exposure_planner import ToolExposurePlanner
+from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.registry import ToolRegistryV2
 
@@ -55,7 +55,7 @@ def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> N
         "run_shell",
         "edit_file",
     }
-    assert [entry.name for entry in planned.exposure.deferred] == []
+    assert [entry.source for entry in planned.exposure.entries] == [ToolRouteSource.REGISTRY] * 5
 
 
 def test_tool_exposure_planner_keeps_write_tools_equal_for_chinese_modify_intent() -> None:
@@ -79,14 +79,14 @@ def test_tool_exposure_planner_keeps_write_tools_equal_for_chinese_modify_intent
         "replace_in_file",
         "append_file",
     }
-    assert [entry.name for entry in planned.exposure.deferred] == []
+    assert [entry.source for entry in planned.exposure.entries] == [ToolRouteSource.REGISTRY] * 5
 
 
-def test_tool_exposure_planner_collects_runtime_and_capability_dynamic_tools() -> None:
+def test_tool_exposure_planner_collects_runtime_and_capability_contributed_tools() -> None:
     registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "List files")])
     planner = ToolExposurePlanner(tool_registry=registry)
-    runtime_dynamic_tool = FakeTool("workspace_summary", "Summarize workspace facts")
-    capability_dynamic_tool = FakeTool("capability_outline", "Outline capability state")
+    runtime_contributed_tool = FakeTool("workspace_summary", "Summarize workspace facts")
+    capability_contributed_tool = FakeTool("capability_outline", "Outline capability state")
     activation = CapabilityActivation(
         name="repository-analysis",
         description="Inspect repositories",
@@ -94,36 +94,40 @@ def test_tool_exposure_planner_collects_runtime_and_capability_dynamic_tools() -
         source=CapabilityActivationSource.EXPLICIT_MENTION,
         dependency_status=CapabilityActivationDependencyStatus.READY,
         source_path=str(Path("/tmp/repository-analysis.md")),
-        metadata={"dynamic_tools": (capability_dynamic_tool,)},
+        metadata={"contributed_tools": (capability_contributed_tool,)},
     )
 
     planned = planner.plan(
         user_message="inspect this repo with capability help",
         capability_activations=(activation,),
-        runtime_dynamic_tools=(runtime_dynamic_tool,),
+        runtime_contributed_tools=(runtime_contributed_tool,),
     )
 
-    dynamic_entries = {entry.name: entry for entry in planned.exposure.dynamic}
+    contributed_entries = {
+        entry.name: entry
+        for entry in planned.exposure.entries
+        if entry.source is not ToolRouteSource.REGISTRY
+    }
 
-    assert set(dynamic_entries) == {"workspace_summary", "capability_outline"}
-    assert dynamic_entries["workspace_summary"].source is ToolRouteSource.RUNTIME
-    assert dynamic_entries["capability_outline"].source is ToolRouteSource.CAPABILITY
-    assert dynamic_entries["capability_outline"].metadata["capability_name"] == "repository-analysis"
+    assert set(contributed_entries) == {"workspace_summary", "capability_outline"}
+    assert contributed_entries["workspace_summary"].source is ToolRouteSource.RUNTIME
+    assert contributed_entries["capability_outline"].source is ToolRouteSource.CAPABILITY
+    assert contributed_entries["capability_outline"].metadata["capability_name"] == "repository-analysis"
 
 
-def test_tool_exposure_planner_preserves_descriptor_backed_dynamic_metadata() -> None:
+def test_tool_exposure_planner_preserves_descriptor_backed_contribution_metadata() -> None:
     registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "List files")])
     planner = ToolExposurePlanner(tool_registry=registry)
     tool = FakeTool("daily_brief", "Prepare a daily brief")
-    registration = DynamicToolRegistration(
-        descriptor=DynamicToolDescriptor(
+    registration = ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
             tool_id="capability:daily_brief:thread",
             display_name="daily_brief",
             description="Prepare a daily brief",
             route_key=ToolRouteKey.local("daily_brief"),
-            source=DynamicToolSource.CAPABILITY,
-            scope=DynamicToolScope.THREAD,
-            lifecycle_state=DynamicToolLifecycleState.DECLARED,
+            source=ToolContributionSource.CAPABILITY,
+            scope=ToolContributionScope.THREAD,
+            lifecycle_state=ToolContributionLifecycleState.DECLARED,
             spec=tool.spec,
             origin_metadata={"capability_name": "daily-assistant"},
         ),
@@ -132,12 +136,12 @@ def test_tool_exposure_planner_preserves_descriptor_backed_dynamic_metadata() ->
 
     planned = planner.plan(
         user_message="help me with my daily work",
-        runtime_dynamic_tools=(registration,),
+        runtime_contributed_tools=(registration,),
     )
 
-    dynamic_entry = planned.exposure.dynamic[0]
+    contribution_entry = next(
+        entry for entry in planned.exposure.entries if entry.name == "daily_brief"
+    )
 
-    assert dynamic_entry.dynamic_descriptor is not None
-    assert dynamic_entry.dynamic_descriptor.scope is DynamicToolScope.THREAD
-    assert dynamic_entry.metadata["tool_id"] == "capability:daily_brief:thread"
-    assert dynamic_entry.metadata["scope"] == "thread"
+    assert contribution_entry.metadata["tool_id"] == "capability:daily_brief:thread"
+    assert contribution_entry.metadata["scope"] == "thread"

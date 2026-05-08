@@ -16,7 +16,6 @@ class InstructionFragmentKind(StrEnum):
     WORKSPACE_INSTRUCTIONS = "workspace_instructions"
     ENVIRONMENT_CONTEXT = "environment_context"
     CAPABILITY_BODY = "capability_body"
-    DYNAMIC_TOOL_CONTEXT = "dynamic_tool_context"
     USER_REQUEST = "user_request"
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -16,7 +17,11 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
-from mycli.infrastructure.openai_client import ModelResponseError
+from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
+from mycli.services.context.compaction import ContextBudget
+from mycli.services.hooks import HookContext, HookPoint
+from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.services.turn_guard import NoProgressTracker
 
 if TYPE_CHECKING:
     from mycli.application.runtime.agent_runtime import AgentRuntime
@@ -26,9 +31,19 @@ if TYPE_CHECKING:
 class TurnExecutor:
     def __init__(self, runtime: AgentRuntime) -> None:
         self._runtime = runtime
+        self._error_finalizer = TurnErrorFinalizer(runtime)
 
     def execute_user_turn(self, user_message: str) -> TurnResponse:
         runtime = self._runtime
+        decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
+        if decision is not None:
+            return TurnResponse(
+                assistant_message=(
+                    "There is a pending risky action waiting for your decision. "
+                    f"Please choose {runtime._format_allowed_choices(decision.options)}."
+                ),
+                pending_decision=decision,
+            )
         suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
         if suspended is not None and suspended.pending_approval is not None:
             pending_decision = runtime._pending_decision_from_approval(
@@ -80,14 +95,6 @@ class TurnExecutor:
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
         if decision is None:
             return TurnResponse(assistant_message="There is no pending decision to resolve.")
-        suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
-        if suspended is None:
-            suspended = runtime._session_service.reconstruct_suspended_turn(
-                runtime._config.session_id,
-                decision,
-            )
-        if suspended is None or suspended.pending_approval is None:
-            return TurnResponse(assistant_message="There is no pending decision to resolve.")
 
         normalized = choice.strip()
         choice_to_action = {
@@ -107,6 +114,21 @@ class TurnExecutor:
             )
 
         selected_action = choice_to_action[normalized]
+        if selected_action is DecisionAction.ALLOW_SESSION and not decision.command_pattern:
+            return TurnResponse(
+                assistant_message=(
+                    f"Please choose {runtime._format_allowed_choices(decision.options)}."
+                ),
+                pending_decision=decision,
+            )
+
+        suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+        if suspended is None:
+            suspended = runtime._session_service.reconstruct_suspended_turn(
+                runtime._config.session_id,
+                decision,
+            )
+
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
         turn_id = f"turn_{uuid4().hex}"
         started_at = runtime._timestamp()
@@ -126,17 +148,26 @@ class TurnExecutor:
             runtime._session_service.clear_suspended_turn(runtime._config.session_id)
             message = f"Rejected {decision.tool_call.name}. Pending decision cleared."
             runtime._memory_service.append_session_summary(runtime._config.session_id, message)
+            user_message = suspended.user_message if suspended is not None else ""
             return runtime._finalize_response(
                 response=TurnResponse(
                     assistant_message=message,
                     progress_updates=("[decision] rejected",),
                 ),
                 turn_id=turn_id,
-                user_message=suspended.user_message,
+                user_message=user_message,
                 started_at=started_at,
                 status=TurnStatus.COMPLETED,
                 stop_reason=StopReason.ASSISTANT_COMPLETED,
                 turn_items=turn_items,
+            )
+
+        if suspended is None or suspended.pending_approval is None:
+            return TurnResponse(
+                assistant_message=(
+                    "The pending decision exists, but the suspended turn cannot be resumed."
+                ),
+                pending_decision=decision,
             )
 
         if (
@@ -181,7 +212,7 @@ class TurnExecutor:
             capability_activations=capability_activations,
         )
         if initial_planned_exposure.lifecycle_events:
-            runtime._append_dynamic_tool_lifecycle_events(
+            runtime._append_contributed_tool_lifecycle_events(
                 turn_id=turn_id,
                 turn_items=turn_items,
                 activity_events=activity_events,
@@ -242,14 +273,57 @@ class TurnExecutor:
         runtime = self._runtime
         last_runtime_policy_state: dict[str, object] | None = None
         latest_context_baseline: ContextBaseline | None = None
-        hard_turn_limit = runtime._runtime_policy.hard_step_limit(
-            user_message=user_message,
-            configured_max_steps=runtime._config.max_steps,
-        )
+        step_index = 0
+        cumulative_tokens = 0
+        budget = ContextBudget(max_tokens=runtime._config.max_tokens_per_turn)
+        no_progress_tracker = NoProgressTracker()
+        loop_state = LoopState()
+        carryover_runtime_reminders: tuple[str, ...] = ()
 
-        for step_index in range(hard_turn_limit):
+        while True:
+            checkpoint_result = runtime._checkpoint.evaluate(
+                step_index=step_index,
+                conversation=conversation,
+                cumulative_tokens=cumulative_tokens,
+                plan_state=current_plan_state,
+                no_progress_tracker=no_progress_tracker,
+            )
+            if checkpoint_result.exit_reason is not None:
+                assistant_message = (
+                    checkpoint_result.assistant_message
+                    or "I stopped because this turn is no longer making progress."
+                )
+                runtime._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.WARNING,
+                        text=assistant_message,
+                        metadata={"exit_reason": checkpoint_result.exit_reason.value},
+                    ),
+                )
+                runtime._save_runtime_state(
+                    conversation=conversation,
+                    plan_state=current_plan_state,
+                )
+                return runtime._finalize_response(
+                    response=TurnResponse(
+                        assistant_message=assistant_message,
+                        activity_events=tuple(activity_events),
+                        streamed_chunks=tuple(streamed_chunks),
+                        progress_updates=tuple(progress_updates),
+                        plan_steps=runtime._planning_service.render_steps(current_plan_state),
+                    ),
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    started_at=started_at,
+                    status=TurnStatus.COMPLETED,
+                    stop_reason=checkpoint_result.stop_reason,
+                    turn_items=turn_items,
+                    context_baseline=latest_context_baseline,
+                )
+
             (
-                _soft_budget,
                 reasoning_effort,
                 runtime_reminders,
                 runtime_policy_state,
@@ -286,10 +360,31 @@ class TurnExecutor:
                     context_baseline=latest_context_baseline,
                 )
 
+            runtime_reminders = tuple(
+                dict.fromkeys(
+                    (
+                        *runtime_reminders,
+                        *carryover_runtime_reminders,
+                        *checkpoint_result.reminders,
+                    )
+                )
+            )
+            carryover_runtime_reminders = ()
+            runtime_reminders = BudgetNudge().apply(budget, runtime_reminders)
+            if force_answer:
+                runtime_reminders = tuple(
+                    dict.fromkeys(
+                        (
+                            *runtime_reminders,
+                            "You already have enough evidence. Answer now using the current context. Do NOT call any more tools.",
+                        )
+                    )
+                )
+
             activity_events.append(
                 ActivityEvent(
                     kind="thinking",
-                    message="Thinking: deciding next action",
+                    message="deciding next action",
                 )
             )
             if runtime_policy_state != last_runtime_policy_state:
@@ -309,6 +404,7 @@ class TurnExecutor:
             runtime._set_model_log_context(turn_id)
             runtime._set_model_runtime_event_recorder(turn_id)
             runtime._set_model_reasoning_effort(reasoning_effort)
+            runtime._set_model_tool_choice(None)
             planned_exposure = runtime._plan_tool_exposure(
                 user_message=user_message,
                 conversation=conversation,
@@ -316,7 +412,7 @@ class TurnExecutor:
                 capability_activations=capability_activations,
             )
             if planned_exposure.lifecycle_events:
-                runtime._append_dynamic_tool_lifecycle_events(
+                runtime._append_contributed_tool_lifecycle_events(
                     turn_id=turn_id,
                     turn_items=turn_items,
                     activity_events=activity_events,
@@ -331,12 +427,26 @@ class TurnExecutor:
                 )
                 last_tool_exposure_summary = planned_exposure.exposure.summary()
             tool_router = runtime._build_tool_router(planned_exposure)
+            conversation_before_compaction = conversation
+            window_budget = runtime._estimate_window_budget(conversation)
+            runtime._record_budget_metric(
+                total_tokens=window_budget.total_tokens,
+                max_tokens=window_budget.max_tokens,
+            )
+            conversation_for_model = runtime._compaction_pipeline.apply(
+                conversation,
+                window_budget,
+            )
+            runtime._record_compaction_metric(
+                before_messages=conversation_before_compaction,
+                after_messages=conversation_for_model,
+            )
             context, turn_context = runtime._assemble_turn_context(
                 user_message=user_message,
-                conversation=conversation,
+                conversation=conversation_for_model,
                 plan_state=current_plan_state,
                 runtime_reminders=runtime_reminders,
-                runtime_policy_state=runtime_policy_state,
+                runtime_policy_state={},
                 capability_activations=capability_activations,
                 tool_exposure=planned_exposure.exposure,
             )
@@ -349,8 +459,9 @@ class TurnExecutor:
             tools = runtime._render_model_tools(
                 tool_exposure=planned_exposure.exposure,
                 tool_router=tool_router,
-                allow_tools=not force_answer,
+                allow_tools=True,
             )
+            model_tool_exposure = planned_exposure.exposure
             request_shape = runtime._build_and_trace_request_shape(
                 turn_id=turn_id,
                 contract=contract,
@@ -364,15 +475,66 @@ class TurnExecutor:
                     legacy_messages=legacy_messages,
                     tools=tools,
                 )
+                usage_payload = turn_result.metadata.get("usage")
+                runtime._trace_cache_shape_diagnostic(
+                    turn_id=turn_id,
+                    request_shape=request_shape,
+                    usage=usage_payload if isinstance(usage_payload, dict) else None,
+                )
+                if isinstance(usage_payload, dict):
+                    tokens = _usage_total_tokens(usage_payload)
+                    cumulative_tokens += tokens
+                    budget.record(usage_payload)
+                    runtime._record_budget_metric(total_tokens=budget.total_tokens)
                 streamed_chunks.extend(turn_streamed_chunks)
                 runtime._persist_model_continuation_state(
                     turn_id=turn_id,
                     phase="model_turn_completed",
                 )
             except ModelResponseError as exc:
-                return self._finalize_model_error(
+                recovery_action = self._recovery_action_for_model_error(
+                    exc=exc,
+                    loop_state=loop_state,
+                    runtime_reminders=runtime_reminders,
+                )
+                if recovery_action.should_retry:
+                    loop_state = recovery_action.next_state
+                    carryover_runtime_reminders = recovery_action.runtime_reminders
+                    if recovery_action.escalated_max_output_tokens is not None:
+                        _set_max_output_tokens(
+                            runtime._model_adapter,
+                            recovery_action.escalated_max_output_tokens,
+                        )
+                    runtime._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.WARNING,
+                            text=recovery_action.warning_text,
+                        ),
+                    )
+                    activity_events.append(
+                        ActivityEvent(kind="model_error", message=recovery_action.warning_text)
+                    )
+                    if recovery_action.invoke_pre_compact_hook:
+                        runtime._hook_manager.execute(
+                            HookPoint.PRE_COMPACT,
+                            HookContext(
+                                hook_point=HookPoint.PRE_COMPACT,
+                                session_id=runtime._config.session_id,
+                                metadata={
+                                    "usage_ratio": budget.usage_ratio,
+                                    "remaining_tokens": budget.remaining,
+                                    "message_count": len(conversation.messages),
+                                    "recovery_reason": exc.failure_kind
+                                    or (exc.stop_reason.value if exc.stop_reason else "model_error"),
+                                    "recovery_retry": True,
+                                },
+                            ),
+                        )
+                    continue
+                return self._error_finalizer.finalize_model_error(
                     user_message=user_message,
-                    conversation=conversation,
                     current_plan_state=current_plan_state,
                     turn_id=turn_id,
                     started_at=started_at,
@@ -385,10 +547,48 @@ class TurnExecutor:
                     stop_reason=exc.stop_reason or StopReason.MODEL_ERROR,
                     assistant_message=f"Model request failed: {exc}",
                 )
-            except Exception as exc:  # pragma: no cover - guarded by focused tests
-                return self._finalize_runtime_exception(
-                    user_message=user_message,
+            except KeyboardInterrupt:
+                interrupt_warning = (
+                    "Turn interrupted. Runtime state was preserved; resume from the saved context if needed."
+                )
+                runtime._persist_model_continuation_state(
+                    turn_id=turn_id,
+                    phase="interrupted",
+                )
+                activity_events.append(
+                    ActivityEvent(kind="model_error", message=interrupt_warning)
+                )
+                runtime._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.WARNING,
+                        text=interrupt_warning,
+                    ),
+                )
+                runtime._save_runtime_state(
                     conversation=conversation,
+                    plan_state=current_plan_state,
+                )
+                return runtime._finalize_response(
+                    response=TurnResponse(
+                        assistant_message=interrupt_warning,
+                        activity_events=tuple(activity_events),
+                        streamed_chunks=tuple(streamed_chunks),
+                        progress_updates=tuple(progress_updates),
+                        plan_steps=runtime._planning_service.render_steps(current_plan_state),
+                    ),
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    started_at=started_at,
+                    status=TurnStatus.INTERRUPTED,
+                    stop_reason=StopReason.MODEL_ERROR,
+                    turn_items=turn_items,
+                    context_baseline=latest_context_baseline,
+                )
+            except Exception as exc:  # pragma: no cover - guarded by focused tests
+                return self._error_finalizer.finalize_runtime_exception(
+                    user_message=user_message,
                     current_plan_state=current_plan_state,
                     turn_id=turn_id,
                     started_at=started_at,
@@ -408,7 +608,7 @@ class TurnExecutor:
                 turn_result=turn_result,
                 conversation=conversation,
                 tool_router=tool_router,
-                tool_exposure=planned_exposure.exposure,
+                tool_exposure=model_tool_exposure,
                 plan_state=current_plan_state,
                 turn_id=turn_id,
                 user_message=user_message,
@@ -436,6 +636,12 @@ class TurnExecutor:
                 )
 
             if turn_has_tool_call:
+                no_progress_tracker.update(conversation)
+                step_index += 1
+                runtime._record_ptl_metric(
+                    triggered=checkpoint_result.continue_reason.value
+                    in {"force_answer", "reroute", "truncation_aware"}
+                )
                 continue
 
             assistant_message = "".join(turn_text_chunks)
@@ -470,134 +676,210 @@ class TurnExecutor:
                     turn_items=turn_items,
                     context_baseline=latest_context_baseline,
                 )
+            step_index += 1
 
-        runtime._append_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.WARNING,
-                text="I hit the step limit before reaching a confident answer.",
-            ),
-        )
-        runtime._save_runtime_state(
-            conversation=conversation,
-            plan_state=current_plan_state,
-        )
-        return runtime._finalize_response(
-            response=TurnResponse(
-                assistant_message="I hit the step limit before reaching a confident answer.",
-                activity_events=tuple(activity_events),
-                progress_updates=tuple(progress_updates),
-            ),
-            turn_id=turn_id,
-            user_message=user_message,
-            started_at=started_at,
-            status=TurnStatus.COMPLETED,
-            stop_reason=StopReason.MAX_STEPS_REACHED,
-            turn_items=turn_items,
-            context_baseline=latest_context_baseline,
-        )
-
-    def _finalize_model_error(
+    def _recovery_action_for_model_error(
         self,
         *,
-        user_message: str,
-        conversation: Conversation,
-        current_plan_state: PlanState,
-        turn_id: str,
-        started_at: str,
-        turn_items: list[TurnItem],
-        latest_context_baseline: ContextBaseline | None,
-        activity_events: list[ActivityEvent],
-        progress_updates: list[str],
         exc: ModelResponseError,
-        phase: str,
-        stop_reason: StopReason,
-        assistant_message: str,
-    ) -> TurnResponse:
-        runtime = self._runtime
-        runtime._persist_model_continuation_state(turn_id=turn_id, phase=phase)
-        activity_events.append(
-            ActivityEvent(kind="model_error", message=f"Model error: {exc}")
-        )
-        runtime._append_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.WARNING,
-                text=f"Model error: {exc}",
-            ),
-        )
-        error_path = exc.error_path or runtime._log_runtime_exception(
-            turn_id=turn_id,
-            phase="model_request_failed",
-            exc=exc,
-        )
-        return runtime._finalize_response(
-            response=TurnResponse(
-                assistant_message=assistant_message,
-                activity_events=tuple(activity_events),
-                error_details=runtime._error_details(error_path),
-                progress_updates=tuple(progress_updates),
-                plan_steps=runtime._planning_service.render_steps(current_plan_state),
-            ),
-            turn_id=turn_id,
-            user_message=user_message,
-            started_at=started_at,
-            status=TurnStatus.FAILED,
-            stop_reason=stop_reason,
-            turn_items=turn_items,
-            context_baseline=latest_context_baseline,
-        )
+        loop_state: "LoopState",
+        runtime_reminders: tuple[str, ...],
+    ) -> "TurnRecoveryAction":
+        failure_kind = exc.failure_kind or ""
+        stop_reason = exc.stop_reason
 
-    def _finalize_runtime_exception(
+        if stop_reason is StopReason.CONTEXT_WINDOW_EXCEEDED or failure_kind == "context_window_exceeded":
+            if loop_state.context_window_retries == 0:
+                warning_text = (
+                    "Context window exceeded. Retrying after draining redundant context."
+                )
+                return TurnRecoveryAction(
+                    should_retry=True,
+                    warning_text=warning_text,
+                    runtime_reminders=tuple(
+                        dict.fromkeys(
+                            (
+                                *runtime_reminders,
+                                "Context window exceeded. Drain redundant tool output and retry using only distinct evidence.",
+                            )
+                        )
+                    ),
+                    next_state=LoopState(
+                        context_window_retries=1,
+                        transport_retries=loop_state.transport_retries,
+                        output_token_retries=loop_state.output_token_retries,
+                        context_recovery_stage="collapse_drain",
+                    ),
+                )
+            if loop_state.context_window_retries == 1:
+                warning_text = (
+                    "Context window still exceeded. Retrying once after reactive compaction."
+                )
+                return TurnRecoveryAction(
+                    should_retry=True,
+                    warning_text=warning_text,
+                    runtime_reminders=tuple(
+                        dict.fromkeys(
+                            (
+                                *runtime_reminders,
+                                "Reactive compaction applied. Answer with the most relevant remaining context and avoid expanding old tool output.",
+                            )
+                        )
+                    ),
+                    next_state=LoopState(
+                        context_window_retries=2,
+                        transport_retries=loop_state.transport_retries,
+                        output_token_retries=loop_state.output_token_retries,
+                        context_recovery_stage="reactive_compact",
+                    ),
+                    invoke_pre_compact_hook=True,
+                )
+            if loop_state.context_window_retries >= 2:
+                return TurnRecoveryAction(next_state=loop_state)
+
+        if failure_kind in {"output_token_limit", "max_output_tokens", "output_tokens_exceeded"}:
+            if loop_state.output_token_retries >= 3:
+                return TurnRecoveryAction(next_state=loop_state)
+            if loop_state.output_token_retries == 0:
+                warning_text = (
+                    "Model output hit the token limit. Retrying with an escalated output budget."
+                )
+                return TurnRecoveryAction(
+                    should_retry=True,
+                    warning_text=warning_text,
+                    runtime_reminders=tuple(
+                        dict.fromkeys(
+                            (
+                                *runtime_reminders,
+                                "The previous response hit the output budget. Continue directly with a concise complete answer.",
+                            )
+                        )
+                    ),
+                    next_state=LoopState(
+                        context_window_retries=loop_state.context_window_retries,
+                        transport_retries=loop_state.transport_retries,
+                        output_token_retries=1,
+                        context_recovery_stage=loop_state.context_recovery_stage,
+                    ),
+                    escalated_max_output_tokens=65_536,
+                )
+            warning_text = (
+                f"Model output hit the token limit again. Retrying recovery message ({loop_state.output_token_retries + 1}/3)."
+            )
+            return TurnRecoveryAction(
+                should_retry=True,
+                warning_text=warning_text,
+                runtime_reminders=tuple(
+                    dict.fromkeys(
+                        (
+                            *runtime_reminders,
+                            "Continue directly from the current answer. Do not apologize. Finish the response in compact form.",
+                        )
+                    )
+                ),
+                next_state=LoopState(
+                    context_window_retries=loop_state.context_window_retries,
+                    transport_retries=loop_state.transport_retries,
+                    output_token_retries=loop_state.output_token_retries + 1,
+                    context_recovery_stage=loop_state.context_recovery_stage,
+                ),
+            )
+
+        if exc.is_retryable or stop_reason is StopReason.TRANSPORT_FAILED:
+            if loop_state.transport_retries >= 2:
+                return TurnRecoveryAction(next_state=loop_state)
+            attempt = loop_state.transport_retries + 1
+            warning_text = (
+                f"Temporary model transport failure. Retrying request ({attempt}/2) with the current turn state."
+            )
+            return TurnRecoveryAction(
+                should_retry=True,
+                warning_text=warning_text,
+                runtime_reminders=tuple(
+                    dict.fromkeys(
+                        (
+                            *runtime_reminders,
+                            "The previous model request failed due to a temporary transport issue. Continue from the existing context and avoid repeating completed work.",
+                        )
+                    )
+                ),
+                next_state=LoopState(
+                    context_window_retries=loop_state.context_window_retries,
+                    transport_retries=loop_state.transport_retries + 1,
+                    output_token_retries=loop_state.output_token_retries,
+                    context_recovery_stage=loop_state.context_recovery_stage,
+                ),
+            )
+
+        return TurnRecoveryAction(next_state=loop_state)
+
+
+@dataclass(slots=True, frozen=True)
+class LoopState:
+    context_window_retries: int = 0
+    transport_retries: int = 0
+    output_token_retries: int = 0
+    context_recovery_stage: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class TurnRecoveryAction:
+    should_retry: bool = False
+    warning_text: str = ""
+    runtime_reminders: tuple[str, ...] = ()
+    next_state: LoopState = LoopState()
+    invoke_pre_compact_hook: bool = False
+    escalated_max_output_tokens: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class BudgetNudge:
+    warning_threshold: float = 0.6
+    force_answer_threshold: float = 0.85
+
+    def apply(
         self,
-        *,
-        user_message: str,
-        conversation: Conversation,
-        current_plan_state: PlanState,
-        turn_id: str,
-        started_at: str,
-        turn_items: list[TurnItem],
-        latest_context_baseline: ContextBaseline | None,
-        activity_events: list[ActivityEvent],
-        progress_updates: list[str],
-        exc: Exception,
-    ) -> TurnResponse:
-        runtime = self._runtime
-        runtime._persist_model_continuation_state(
-            turn_id=turn_id,
-            phase="runtime_error",
-        )
-        activity_events.append(
-            ActivityEvent(kind="model_error", message=f"Runtime error: {exc}")
-        )
-        runtime._append_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.WARNING,
-                text=f"Runtime error: {exc}",
-            ),
-        )
-        error_path = runtime._log_runtime_exception(
-            turn_id=turn_id,
-            phase="runtime_error",
-            exc=exc,
-        )
-        return runtime._finalize_response(
-            response=TurnResponse(
-                assistant_message=f"Internal runtime error: {exc}",
-                activity_events=tuple(activity_events),
-                error_details=runtime._error_details(error_path),
-                progress_updates=tuple(progress_updates),
-                plan_steps=runtime._planning_service.render_steps(current_plan_state),
-            ),
-            turn_id=turn_id,
-            user_message=user_message,
-            started_at=started_at,
-            status=TurnStatus.FAILED,
-            stop_reason=StopReason.RUNTIME_ERROR,
-            turn_items=turn_items,
-            context_baseline=latest_context_baseline,
-        )
+        budget: ContextBudget,
+        runtime_reminders: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        reminders = list(runtime_reminders)
+
+        if budget.usage_ratio >= self.warning_threshold:
+            warning = (
+                f"Turn budget is above 60% ({budget.total_tokens}/{budget.max_tokens} tokens, about {budget.remaining} remaining). Prefer shorter reasoning and only essential tool calls."
+            )
+            if warning not in reminders:
+                reminders.append(warning)
+
+        if budget.usage_ratio >= self.force_answer_threshold:
+            warning = (
+                f"Turn budget is above 85% ({budget.total_tokens}/{budget.max_tokens} tokens, about {budget.remaining} remaining). If you have enough evidence, answer now and avoid more tool calls."
+            )
+            if warning not in reminders:
+                reminders.append(warning)
+
+        return tuple(reminders)
+
+
+def _usage_total_tokens(usage_payload: dict[str, object]) -> int:
+    total_tokens = usage_payload.get("total_tokens")
+    if isinstance(total_tokens, int):
+        return total_tokens
+
+    input_tokens = usage_payload.get("input_tokens")
+    output_tokens = usage_payload.get("output_tokens")
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        return input_tokens + output_tokens
+
+    prompt_tokens = usage_payload.get("prompt_tokens")
+    completion_tokens = usage_payload.get("completion_tokens")
+    if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+        return prompt_tokens + completion_tokens
+
+    return 0
+
+
+def _set_max_output_tokens(model_adapter: object, value: int) -> None:
+    setter = getattr(model_adapter, "set_max_output_tokens", None)
+    if callable(setter):
+        setter(value)

@@ -63,13 +63,19 @@ def test_react_agent_returns_error_for_unknown_tool(tmp_path: Path) -> None:
     assert "execute_command" in response.assistant_message
 
 
-class EditFileModel:
+class EditThenDoneModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def decide(self, *_args, **_kwargs) -> ModelDecision:
+        self.calls += 1
+        if self.calls > 1:
+            return ModelDecision(assistant_message="Edit complete", done=True)
         return ModelDecision(
             progress_message="Preparing an edit",
             tool_call=ToolCall(
                 name="edit_file",
-                arguments={"path": "README.md", "content": "updated"},
+                arguments={"path": "README.md", "new_content": "updated"},
                 reason="update docs",
             ),
         )
@@ -108,18 +114,18 @@ class NeedsChoiceSafetyPolicy:
         )
 
 
-def test_react_agent_requires_decision_for_edit_file_when_auto_approve_medium_disabled(tmp_path: Path) -> None:
+def test_react_agent_delegates_edit_execution_to_runtime(tmp_path: Path) -> None:
     registry = MultiToolRegistry()
-    agent = ReactAgent(model_client=EditFileModel(), tool_registry=registry)
+    agent = ReactAgent(model_client=EditThenDoneModel(), tool_registry=registry)
 
     response = agent.run(
         user_message="Update the readme",
-        context=ExecutionContext(config=AgentConfig(workspace_root=tmp_path, auto_approve_medium=False)),
+        context=ExecutionContext(config=AgentConfig(workspace_root=tmp_path)),
     )
 
-    assert response.pending_decision is not None
-    assert response.pending_decision.tool_call.name == "edit_file"
-    assert len(registry.run_calls) == 0
+    assert response.pending_decision is None
+    assert response.assistant_message == "Edit complete"
+    assert len(registry.run_calls) == 1
 
 
 def test_react_agent_returns_pending_decision_for_needs_choice_from_safety_policy(tmp_path: Path) -> None:

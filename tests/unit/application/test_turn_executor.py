@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
-from mycli.domain.runtime import AgentConfig, StopReason
+from mycli.domain.runtime import StopReason
 from mycli.domain.tools import ToolCall
 
 
@@ -98,7 +98,7 @@ class ThirdStepCompletionAdapter:
         )()
 
 
-def test_turn_executor_prefers_loop_detection_before_compatibility_step_limit(
+def test_turn_executor_stops_repeated_tool_loop_without_step_limit(
     tmp_path: Path,
 ) -> None:
     from mycli.application.runtime.turn_executor import TurnExecutor
@@ -108,7 +108,6 @@ def test_turn_executor_prefers_loop_detection_before_compatibility_step_limit(
         home_dir=tmp_path / "home",
         model_adapter=LoopingDirectoryAdapter(),
     )
-    runtime._config = AgentConfig(workspace_root=tmp_path, max_steps=2)
 
     response = TurnExecutor(runtime).execute_user_turn("inspect the repo")
 
@@ -117,7 +116,7 @@ def test_turn_executor_prefers_loop_detection_before_compatibility_step_limit(
     assert "repeated exploration" in response.assistant_message.lower()
 
 
-def test_turn_executor_allows_completion_beyond_configured_soft_budget(tmp_path: Path) -> None:
+def test_turn_executor_allows_completion_after_multiple_tool_calls(tmp_path: Path) -> None:
     from mycli.application.runtime.turn_executor import TurnExecutor
 
     adapter = ThirdStepCompletionAdapter()
@@ -126,7 +125,6 @@ def test_turn_executor_allows_completion_beyond_configured_soft_budget(tmp_path:
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
-    runtime._config = AgentConfig(workspace_root=tmp_path, max_steps=2)
 
     response = TurnExecutor(runtime).execute_user_turn("inspect the repo and then answer")
 
@@ -136,7 +134,7 @@ def test_turn_executor_allows_completion_beyond_configured_soft_budget(tmp_path:
     assert adapter.calls == 3
 
 
-def test_turn_executor_handles_resumed_approval_step_limit(tmp_path: Path) -> None:
+def test_turn_executor_handles_resumed_approval_loop_detection(tmp_path: Path) -> None:
     from mycli.application.runtime.turn_executor import TurnExecutor
 
     runtime = AgentRuntime.for_tests(
@@ -144,7 +142,6 @@ def test_turn_executor_handles_resumed_approval_step_limit(tmp_path: Path) -> No
         home_dir=tmp_path / "home",
         model_adapter=PushThenLoopAdapter(),
     )
-    runtime._config = AgentConfig(workspace_root=tmp_path, max_steps=2)
 
     first = runtime.handle_user_turn("push the branch")
     assert first.pending_decision is not None
@@ -152,5 +149,5 @@ def test_turn_executor_handles_resumed_approval_step_limit(tmp_path: Path) -> No
     resumed = TurnExecutor(runtime).resolve_pending_approval("1")
 
     assert resumed.turn is not None
-    assert resumed.turn.stop_reason is StopReason.MAX_STEPS_REACHED
-    assert resumed.assistant_message == "I hit the step limit before reaching a confident answer."
+    assert resumed.turn.stop_reason is StopReason.LOOP_DETECTED
+    assert "repeated exploration" in resumed.assistant_message.lower()

@@ -1,4 +1,4 @@
-from mycli.infrastructure.models.base import (
+from mycli.llms.adapters.base import (
     BlockType,
     ModelAction,
     ModelAdapter,
@@ -10,13 +10,13 @@ from mycli.infrastructure.models.base import (
     RuntimeItem,
     RuntimeRole,
 )
-from mycli.infrastructure.models.anthropic_messages_adapter import (
+from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
 )
-from mycli.infrastructure.models.compat_chat_adapter import (
+from mycli.llms.adapters.compat_chat_adapter import (
     CompatChatModelAdapter as LegacyCompatChatModelAdapter,
 )
-from mycli.infrastructure.models.native_tool_adapter import (
+from mycli.llms.adapters.native_tool_adapter import (
     NativeToolModelAdapter as LegacyNativeToolModelAdapter,
 )
 

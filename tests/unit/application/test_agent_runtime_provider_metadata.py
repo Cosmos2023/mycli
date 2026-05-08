@@ -139,7 +139,7 @@ def test_agent_runtime_exposes_deepseek_reasoning_content_for_tool_call(
 
     assert reasoning_content in response.progress_updates
     assert any(
-        event.kind == "thinking" and event.message == f"Thinking: {reasoning_content}"
+        event.kind == "thinking" and event.message == reasoning_content
         for event in response.activity_events
     )
     assert response.turn is not None
@@ -149,11 +149,12 @@ def test_agent_runtime_exposes_deepseek_reasoning_content_for_tool_call(
         if item.type.value == "reasoning"
         and item.metadata.get("source") == "provider_reasoning_content"
     )
-    assert reasoning_item.text == f"Thinking: {reasoning_content}"
+    assert reasoning_item.text == reasoning_content
     assert reasoning_item.metadata == {
         "provider_id": None,
         "provider": "deepseek",
         "source": "provider_reasoning_content",
+        "activity_kind": "thinking",
         "deepseek": {"reasoning_content": reasoning_content},
     }
 
@@ -180,6 +181,40 @@ def test_agent_runtime_ignores_malformed_deepseek_reasoning_metadata(
     assert response.assistant_message == "Read complete"
     assert not any(
         event.kind == "thinking" and event.message == "Thinking:    "
+        for event in response.activity_events
+    )
+    assert response.turn is not None
+    assert not any(
+        item.type.value == "reasoning"
+        and item.metadata.get("source") == "provider_reasoning_content"
+        for item in response.turn.items
+    )
+
+
+def test_agent_runtime_does_not_display_synthetic_deepseek_reasoning_fallback(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mission.txt").write_text("mission accomplished\n", encoding="utf-8")
+    adapter = MetadataToolThenDoneAdapter(
+        metadata={
+            "deepseek": {
+                "reasoning_content": "Provider omitted reasoning_content for this tool call.",
+                "reasoning_content_missing": True,
+            }
+        },
+    )
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    response = runtime.handle_user_turn("read mission.txt")
+
+    assert response.assistant_message == "Read complete"
+    assert not any(
+        event.kind == "thinking"
+        and "Provider omitted reasoning_content" in event.message
         for event in response.activity_events
     )
     assert response.turn is not None

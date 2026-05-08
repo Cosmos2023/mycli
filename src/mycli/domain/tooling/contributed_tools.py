@@ -4,22 +4,22 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
-from mycli.domain.tool_exposure import ToolRouteKey
+from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.tools.base import SchemaTool, ToolSpec
 
 
-class DynamicToolSource(StrEnum):
+class ToolContributionSource(StrEnum):
     RUNTIME = "runtime"
     CAPABILITY = "capability"
     PROVIDER = "provider"
 
 
-class DynamicToolScope(StrEnum):
+class ToolContributionScope(StrEnum):
     TURN = "turn"
     THREAD = "thread"
 
 
-class DynamicToolLifecycleState(StrEnum):
+class ToolContributionLifecycleState(StrEnum):
     DECLARED = "declared"
     EXPOSED = "exposed"
     INVOKED = "invoked"
@@ -28,7 +28,7 @@ class DynamicToolLifecycleState(StrEnum):
     EXPIRED = "expired"
 
 
-class DynamicToolConflictOutcome(StrEnum):
+class ToolContributionConflictOutcome(StrEnum):
     ACCEPTED = "accepted"
     REJECTED_DUPLICATE_TOOL_ID = "rejected_duplicate_tool_id"
     REJECTED_ROUTE_CONFLICT = "rejected_route_conflict"
@@ -36,14 +36,14 @@ class DynamicToolConflictOutcome(StrEnum):
 
 
 @dataclass(slots=True, frozen=True)
-class DynamicToolDescriptor:
+class ToolContributionDescriptor:
     tool_id: str
     display_name: str
     description: str
     route_key: ToolRouteKey
-    source: DynamicToolSource
-    scope: DynamicToolScope
-    lifecycle_state: DynamicToolLifecycleState
+    source: ToolContributionSource
+    scope: ToolContributionScope
+    lifecycle_state: ToolContributionLifecycleState
     spec: ToolSpec
     origin_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -53,8 +53,8 @@ class DynamicToolDescriptor:
 
     def with_lifecycle_state(
         self,
-        lifecycle_state: DynamicToolLifecycleState,
-    ) -> "DynamicToolDescriptor":
+        lifecycle_state: ToolContributionLifecycleState,
+    ) -> "ToolContributionDescriptor":
         return replace(self, lifecycle_state=lifecycle_state)
 
     def to_snapshot(self) -> dict[str, Any]:
@@ -71,27 +71,27 @@ class DynamicToolDescriptor:
 
 
 @dataclass(slots=True, frozen=True)
-class DynamicToolRegistration:
-    descriptor: DynamicToolDescriptor
+class ToolContributionRegistration:
+    descriptor: ToolContributionDescriptor
     tool: SchemaTool
 
     def with_lifecycle_state(
         self,
-        lifecycle_state: DynamicToolLifecycleState,
-    ) -> "DynamicToolRegistration":
-        return DynamicToolRegistration(
+        lifecycle_state: ToolContributionLifecycleState,
+    ) -> "ToolContributionRegistration":
+        return ToolContributionRegistration(
             descriptor=self.descriptor.with_lifecycle_state(lifecycle_state),
             tool=self.tool,
         )
 
 
 @dataclass(slots=True, frozen=True)
-class DynamicToolLifecycleEvent:
+class ToolContributionLifecycleEvent:
     tool_id: str
     route_name: str
-    scope: DynamicToolScope
-    state: DynamicToolLifecycleState
-    source: DynamicToolSource
+    scope: ToolContributionScope
+    state: ToolContributionLifecycleState
+    source: ToolContributionSource
     origin_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

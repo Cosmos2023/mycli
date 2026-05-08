@@ -17,10 +17,14 @@ from mycli.domain.runtime import (
     RuntimeBlock,
     stable_hash,
 )
-from mycli.infrastructure.models.base import ModelToolDefinition
+from mycli.application.runtime.request.message_projection import RequestMessageProjector
+from mycli.llms.adapters.base import ModelToolDefinition
 
 
 class RequestShapeBuilder:
+    def __init__(self) -> None:
+        self._messages = RequestMessageProjector()
+
     def build(
         self,
         *,
@@ -50,7 +54,7 @@ class RequestShapeBuilder:
             RequestFragment(
                 id="replay:conversation",
                 kind=RequestFragmentKind.REPLAY,
-                content=self._render_replay(
+                content=self._messages.render_replay(
                     self._replay_messages(contract),
                 ),
                 stability=FragmentStability.REPLAY,
@@ -72,11 +76,13 @@ class RequestShapeBuilder:
             tool_order_hash=stable_hash(tool_order),
             fragments=fragments,
             provider_messages=self._provider_messages(
+                config=config,
                 contract=contract,
                 intent_content=intent_content,
                 volatile_context=volatile_context,
             ),
             provider_runtime_items=self._provider_runtime_items(
+                config=config,
                 contract=contract,
                 intent_content=intent_content,
                 volatile_context=volatile_context,
@@ -86,10 +92,16 @@ class RequestShapeBuilder:
     def _provider_messages(
         self,
         *,
+        config: AgentConfig,
         contract: InstructionContract,
         intent_content: str,
         volatile_context: str,
     ) -> tuple[ProviderMessageShape, ...]:
+        if self._uses_transcript_only_messages(config):
+            return self._transcript_provider_messages(contract)
+        if self._uses_responses_delta_input(config):
+            return self._responses_provider_messages(contract)
+
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
@@ -100,22 +112,87 @@ class RequestShapeBuilder:
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
         for message in self._replay_messages(contract):
-            provider_message = self._provider_message_from_replay_message(message)
+            provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
-        if intent_content:
+        if intent_content and not self._replay_contains_current_user_request(contract):
             messages.append(ProviderMessageShape(role="user", content=intent_content))
         if volatile_context:
             messages.append(ProviderMessageShape(role="user", content=volatile_context))
         return tuple(messages)
 
+    def _uses_transcript_only_messages(self, config: AgentConfig) -> bool:
+        return str(config.protocol) == "chat_completions"
+
+    def _uses_responses_delta_input(self, config: AgentConfig) -> bool:
+        return str(config.protocol) == "responses"
+
+    def _responses_provider_messages(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[ProviderMessageShape, ...]:
+        delta_context = self._render_responses_delta_context(contract)
+        messages: list[ProviderMessageShape] = [
+            ProviderMessageShape(role="system", content=contract.base_instructions),
+        ]
+        developer_content = self._join_content(
+            self._developer_section_content(section)
+            for section in contract.developer_sections
+        )
+        if developer_content:
+            messages.append(ProviderMessageShape(role="developer", content=developer_content))
+        for message in self._replay_messages(contract):
+            provider_message = self._messages.provider_message_from_replay_message(message)
+            if provider_message is not None:
+                messages.append(provider_message)
+        if contract.current_user_request and not self._replay_contains_current_user_request(
+            contract
+        ):
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=contract.current_user_request,
+                )
+            )
+        if delta_context:
+            messages.append(ProviderMessageShape(role="user", content=delta_context))
+        return tuple(messages)
+
+    def _transcript_provider_messages(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[ProviderMessageShape, ...]:
+        messages: list[ProviderMessageShape] = [
+            ProviderMessageShape(role="system", content=contract.base_instructions),
+        ]
+        for message in self._replay_messages(contract):
+            provider_message = self._messages.provider_message_from_replay_message(message)
+            if provider_message is not None:
+                messages.append(provider_message)
+        if contract.current_user_request and not self._replay_contains_current_user_request(
+            contract
+        ):
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=contract.current_user_request,
+                )
+            )
+        return tuple(messages)
+
     def _provider_runtime_items(
         self,
         *,
+        config: AgentConfig,
         contract: InstructionContract,
         intent_content: str,
         volatile_context: str,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
+        if self._uses_transcript_only_messages(config):
+            return self._transcript_provider_runtime_items(contract)
+        if self._uses_responses_delta_input(config):
+            return self._responses_provider_runtime_items(contract)
+
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
                 role="system",
@@ -134,10 +211,10 @@ class RequestShapeBuilder:
                 )
             )
         for message in self._replay_messages(contract):
-            blocks = self._runtime_blocks_from_message(message)
+            blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
-        if intent_content:
+        if intent_content and not self._replay_contains_current_user_request(contract):
             items.append(
                 ProviderRuntimeItemShape(
                     role="user",
@@ -150,24 +227,89 @@ class RequestShapeBuilder:
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=volatile_context),),
                 )
+        )
+        return tuple(items)
+
+    def _responses_provider_runtime_items(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[ProviderRuntimeItemShape, ...]:
+        delta_context = self._render_responses_delta_context(contract)
+        items: list[ProviderRuntimeItemShape] = [
+            ProviderRuntimeItemShape(
+                role="system",
+                blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
+            )
+        ]
+        developer_content = self._join_content(
+            self._developer_section_content(section)
+            for section in contract.developer_sections
+        )
+        if developer_content:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="developer",
+                    blocks=(RuntimeBlock(type="text", text=developer_content),),
+                )
+            )
+        for message in self._replay_messages(contract):
+            blocks = self._messages.runtime_blocks_from_message(message)
+            if blocks:
+                items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        if contract.current_user_request and not self._replay_contains_current_user_request(
+            contract
+        ):
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
+                )
+            )
+        if delta_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=delta_context),),
+                )
             )
         return tuple(items)
 
-    def _render_replay(self, messages: tuple[Message, ...]) -> str:
-        return self._join_content(
-            f"{message.role}: {self._message_content(message)}"
-            for message in messages
-            if self._message_content(message)
-        )
+    def _transcript_provider_runtime_items(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[ProviderRuntimeItemShape, ...]:
+        items: list[ProviderRuntimeItemShape] = [
+            ProviderRuntimeItemShape(
+                role="system",
+                blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
+            )
+        ]
+        for message in self._replay_messages(contract):
+            blocks = self._messages.runtime_blocks_from_message(message)
+            if blocks:
+                items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        if contract.current_user_request and not self._replay_contains_current_user_request(
+            contract
+        ):
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
+                )
+            )
+        return tuple(items)
 
     def _replay_messages(self, contract: InstructionContract) -> tuple[Message, ...]:
-        return tuple(
-            message
+        return contract.conversation_messages
+
+    def _replay_contains_current_user_request(
+        self,
+        contract: InstructionContract,
+    ) -> bool:
+        return any(
+            message.role == "user"
+            and message.content == contract.current_user_request
             for message in contract.conversation_messages
-            if not (
-                message.role == "user"
-                and message.content == contract.current_user_request
-            )
         )
 
     def _render_volatile_context(self, contract: InstructionContract) -> str:
@@ -183,6 +325,24 @@ class RequestShapeBuilder:
             "Use the tool schema attached to this request as the authoritative, "
             "equal toolset. Tool execution safety is enforced by the runtime."
         )
+
+    def _render_responses_delta_context(self, contract: InstructionContract) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in contract.contextual_user_sections
+            if self._responses_contextual_section_is_model_visible(section)
+        )
+
+    def _responses_contextual_section_is_model_visible(
+        self,
+        section: InstructionFragment,
+    ) -> bool:
+        return str(section.kind) in {
+            "capability_body",
+            "memory",
+            "runtime_policy",
+            "workspace_instructions",
+        }
 
     def _contextual_fragments(
         self,
@@ -229,9 +389,9 @@ class RequestShapeBuilder:
         contract: InstructionContract,
     ) -> str:
         replay_lines = {
-            f"{message.role}: {self._message_content(message)}"
+            f"{message.role}: {self._messages.message_content(message)}"
             for message in self._replay_messages(contract)
-            if self._message_content(message)
+            if self._messages.message_content(message)
         }
         if not replay_lines:
             return content
@@ -240,8 +400,6 @@ class RequestShapeBuilder:
         for raw_line in content.splitlines():
             line = raw_line.strip()
             if not line:
-                continue
-            if line == "Recent conversation:":
                 continue
             if line in replay_lines:
                 continue
@@ -258,94 +416,6 @@ class RequestShapeBuilder:
         if normalized == "tool_exposure":
             return "stable:tool_exposure", RequestFragmentKind.STABLE
         return f"volatile:{normalized}", RequestFragmentKind.VOLATILE
-
-    def _message_content(self, message: Message) -> str:
-        if message.blocks and all(block.type == "reasoning" for block in message.blocks):
-            return ""
-        if message.content:
-            return message.content
-        if message.tool_calls:
-            return json.dumps(
-                [
-                    {
-                        "name": call.name,
-                        "arguments": call.arguments,
-                        "call_id": call.call_id,
-                    }
-                    for call in message.tool_calls
-                ],
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-        return ""
-
-    def _runtime_blocks_from_message(self, message: Message) -> tuple[RuntimeBlock, ...]:
-        if message.blocks:
-            return message.blocks
-        if message.role == "assistant":
-            blocks: list[RuntimeBlock] = []
-            if message.content:
-                blocks.append(RuntimeBlock(type="text", text=message.content))
-            for call in message.tool_calls:
-                if not call.call_id:
-                    continue
-                blocks.append(
-                    RuntimeBlock(
-                        type="tool_call",
-                        tool_name=call.name,
-                        tool_arguments=call.arguments,
-                        call_id=call.call_id,
-                    )
-                )
-            return tuple(blocks)
-        if message.role == "tool":
-            if not message.tool_call_id:
-                return ()
-            return (
-                RuntimeBlock(
-                    type="tool_result",
-                    text=message.content,
-                    call_id=message.tool_call_id,
-                ),
-            )
-        if message.content:
-            return (RuntimeBlock(type="text", text=message.content),)
-        return ()
-
-    def _provider_message_from_replay_message(
-        self,
-        message: Message,
-    ) -> ProviderMessageShape | None:
-        content = self._message_content(message)
-        if not content:
-            return None
-        metadata: dict[str, Any] = {
-            "legacy_content": message.content,
-            "model_metadata": self._message_metadata_from_blocks(message),
-        }
-        if message.tool_call_id:
-            metadata["tool_call_id"] = message.tool_call_id
-        if message.tool_calls:
-            metadata["tool_calls"] = message.tool_calls
-        return ProviderMessageShape(
-            role=message.role,
-            content=content,
-            metadata=metadata,
-        )
-
-    def _message_metadata_from_blocks(self, message: Message) -> dict[str, object]:
-        metadata: dict[str, object] = {}
-        for block in message.blocks:
-            for key, value in block.metadata.items():
-                existing = metadata.get(key)
-                if isinstance(existing, dict) and isinstance(value, dict):
-                    nested = dict(existing)
-                    nested.update(value)
-                    metadata[key] = nested
-                    continue
-                metadata[key] = value
-        return metadata
 
     def _normalized_tools(
         self,

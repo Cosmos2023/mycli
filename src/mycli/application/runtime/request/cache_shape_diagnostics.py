@@ -95,9 +95,9 @@ class CacheShapeDiagnostics:
                 current_summary=current_summary,
                 previous_summary=previous_summary,
             ),
-            prompt_tokens=self._int_usage(usage_payload, "prompt_tokens"),
-            cache_hit_tokens=self._int_usage(usage_payload, "prompt_cache_hit_tokens"),
-            cache_miss_tokens=self._int_usage(usage_payload, "prompt_cache_miss_tokens"),
+            prompt_tokens=self._prompt_tokens(usage_payload),
+            cache_hit_tokens=self._cache_hit_tokens(usage_payload),
+            cache_miss_tokens=self._cache_miss_tokens(usage_payload),
             metadata={} if metadata is None else dict(metadata),
         )
 
@@ -143,6 +143,34 @@ class CacheShapeDiagnostics:
             return value
         if isinstance(value, float):
             return int(value)
+        return 0
+
+    def _prompt_tokens(self, usage: dict[str, object]) -> int:
+        return self._int_usage(usage, "prompt_tokens") or self._int_usage(
+            usage, "input_tokens"
+        )
+
+    def _cache_hit_tokens(self, usage: dict[str, object]) -> int:
+        direct = self._int_usage(usage, "prompt_cache_hit_tokens")
+        if direct:
+            return direct
+        for details_key in ("prompt_tokens_details", "input_tokens_details"):
+            details = usage.get(details_key)
+            if not isinstance(details, dict):
+                continue
+            cached = self._int_usage(details, "cached_tokens")
+            if cached:
+                return cached
+        return 0
+
+    def _cache_miss_tokens(self, usage: dict[str, object]) -> int:
+        direct = self._int_usage(usage, "prompt_cache_miss_tokens")
+        if direct:
+            return direct
+        prompt_tokens = self._prompt_tokens(usage)
+        cache_hit_tokens = self._cache_hit_tokens(usage)
+        if prompt_tokens > 0 and cache_hit_tokens > 0:
+            return max(0, prompt_tokens - cache_hit_tokens)
         return 0
 
     def _str_dict(self, value: object) -> dict[str, str]:

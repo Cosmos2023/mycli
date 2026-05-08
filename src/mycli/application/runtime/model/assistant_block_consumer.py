@@ -1,0 +1,494 @@
+from __future__ import annotations
+
+from typing import Callable
+
+from mycli.domain.conversation import Conversation
+from mycli.domain.logging import LogLevel
+from mycli.domain.runtime import (
+    ActivityEvent,
+    ModelTurnResult,
+    PendingDecision,
+    PlanState,
+    RuntimeBlock,
+    StopReason,
+    SuspendedTurn,
+    TurnItem,
+    TurnItemType,
+    TurnResponse,
+    TurnStatus,
+)
+from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
+from mycli.domain.tooling.calls import ToolCall
+from mycli.application.runtime.tools.tool_execution_service import CONCURRENCY_SAFE_TOOLS
+from mycli.services.approval.approval_service import ApprovalService
+from mycli.state.session_service import SessionService
+from mycli.tools.routing.tool_router import ToolRouter
+from mycli.utils.workspace_logger import WorkspaceLogService
+
+
+class AssistantBlockConsumer:
+    """Consumes assistant model blocks into transcript entries and runtime events."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        session_service: SessionService,
+        approval_service: ApprovalService,
+        workspace_log_service: WorkspaceLogService,
+        append_turn_item: Callable[..., None],
+        tool_call_from_block: Callable[[RuntimeBlock], ToolCall],
+        record_assistant_text_block: Callable[..., None],
+        record_assistant_tool_calls: Callable[..., None],
+        execute_tool_call: Callable[..., PlanState],
+        execute_tool_calls: Callable[..., PlanState],
+        pending_decision_from_approval: Callable[..., PendingDecision],
+    ) -> None:
+        self._session_id = session_id
+        self._session_service = session_service
+        self._approval_service = approval_service
+        self._workspace_log_service = workspace_log_service
+        self._append_turn_item = append_turn_item
+        self._tool_call_from_block = tool_call_from_block
+        self._record_assistant_text_block = record_assistant_text_block
+        self._record_assistant_tool_calls = record_assistant_tool_calls
+        self._execute_tool_call = execute_tool_call
+        self._execute_tool_calls = execute_tool_calls
+        self._pending_decision_from_approval = pending_decision_from_approval
+
+    def set_session_id(self, session_id: str) -> None:
+        self._session_id = session_id
+
+    def consume_assistant_blocks(
+        self,
+        *,
+        turn_result: ModelTurnResult,
+        conversation: Conversation,
+        tool_router: ToolRouter,
+        tool_exposure: ToolExposure,
+        plan_state: PlanState,
+        turn_id: str,
+        user_message: str,
+        progress_updates: list[str],
+        activity_events: list[ActivityEvent],
+        streamed_chunks: list[str],
+        turn_items: list[TurnItem],
+    ) -> tuple[
+        PlanState,
+        bool,
+        list[str],
+        tuple[TurnResponse, TurnStatus, StopReason] | None,
+    ]:
+        current_plan_state = plan_state
+        turn_has_tool_call = False
+        turn_text_chunks: list[str] = []
+        for item in turn_result.items:
+            if item.role != "assistant":
+                continue
+            pending_text_chunks: list[str] = []
+            pending_text_block: RuntimeBlock | None = None
+            tool_call_blocks = tuple(
+                block for block in item.blocks if block.type == "tool_call"
+            )
+            tool_call_group_recorded = False
+            pending_safe_tool_calls: list[tuple[ToolCall, RuntimeBlock]] = []
+
+            def flush_pending_text(*, record_conversation: bool = True) -> None:
+                nonlocal pending_text_chunks, pending_text_block
+                if not pending_text_chunks or pending_text_block is None:
+                    pending_text_chunks = []
+                    pending_text_block = None
+                    return
+                combined_text = "".join(pending_text_chunks)
+                combined_block = RuntimeBlock(
+                    type="text",
+                    text=combined_text,
+                    provider_id=pending_text_block.provider_id,
+                    metadata=dict(pending_text_block.metadata),
+                )
+                if record_conversation:
+                    self._record_assistant_text_block(
+                        conversation,
+                        block=combined_block,
+                        response_id=turn_result.response_id,
+                    )
+                turn_text_chunks.append(combined_text)
+                self._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.ASSISTANT_MESSAGE,
+                        text=combined_text,
+                        metadata={"provider_id": combined_block.provider_id, **combined_block.metadata},
+                    ),
+                )
+                pending_text_chunks = []
+                pending_text_block = None
+
+            def record_tool_call_group_once() -> None:
+                nonlocal tool_call_group_recorded
+                if tool_call_group_recorded or not tool_call_blocks:
+                    return
+                self._record_assistant_tool_calls(
+                    conversation,
+                    tool_calls=tuple(
+                        self._tool_call_from_block(tool_block)
+                        for tool_block in tool_call_blocks
+                    ),
+                    blocks=tuple(
+                        replay_block
+                        for replay_block in item.blocks
+                        if replay_block.type in {"text", "tool_call"}
+                    ),
+                    response_id=turn_result.response_id,
+                )
+                tool_call_group_recorded = True
+
+            def flush_pending_safe_tool_calls() -> None:
+                nonlocal current_plan_state
+                if not pending_safe_tool_calls:
+                    return
+                record_tool_call_group_once()
+                calls = tuple(call for call, _block in pending_safe_tool_calls)
+                metadata: dict[str, object] | None = None
+                provider_id: str | None = None
+                if pending_safe_tool_calls:
+                    first_block = pending_safe_tool_calls[0][1]
+                    metadata = dict(first_block.metadata)
+                    provider_id = first_block.provider_id
+                current_plan_state = self._execute_tool_calls(
+                    conversation=conversation,
+                    calls=calls,
+                    tool_router=tool_router,
+                    tool_exposure=tool_exposure,
+                    plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    activity_events=activity_events,
+                    turn_items=turn_items,
+                    provider_id=provider_id,
+                    response_id=turn_result.response_id,
+                    metadata=metadata,
+                    record_assistant_call=False,
+                )
+                pending_safe_tool_calls.clear()
+
+            for block in item.blocks:
+                if block.type == "reasoning":
+                    flush_pending_safe_tool_calls()
+                    flush_pending_text(record_conversation=not tool_call_blocks)
+                    if block.text:
+                        progress_updates.append(block.text)
+                        activity_kind = "planning" if "plan" in block.text.lower() else "thinking"
+                        activity_events.append(
+                            ActivityEvent(
+                                kind=activity_kind,
+                                message=block.text,
+                            )
+                        )
+                        self._append_turn_item(
+                            turn_id=turn_id,
+                            turn_items=turn_items,
+                            item=TurnItem(
+                                type=TurnItemType.REASONING,
+                                text=block.text,
+                                metadata={
+                                    "activity_kind": activity_kind,
+                                    "provider_id": block.provider_id,
+                                    **block.metadata,
+                                },
+                            ),
+                        )
+                    continue
+
+                if block.type == "text":
+                    flush_pending_safe_tool_calls()
+                    if block.text:
+                        pending_text_chunks.append(block.text)
+                        pending_text_block = block
+                    continue
+
+                if block.type != "tool_call":
+                    continue
+
+                flush_pending_text(record_conversation=not tool_call_blocks)
+                turn_has_tool_call = True
+                tool_call = self._tool_call_from_block(block)
+                self._emit_visible_provider_reasoning(
+                    block=block,
+                    turn_id=turn_id,
+                    progress_updates=progress_updates,
+                    activity_events=activity_events,
+                    turn_items=turn_items,
+                )
+                if tool_call.name not in tool_exposure.callable_tool_names():
+                    flush_pending_safe_tool_calls()
+                    rendered_names = ", ".join(tool_exposure.callable_tool_names()) or "none"
+                    warning_message = (
+                        f"The model requested unsupported tool '{tool_call.name}' that is not exposed for this turn. "
+                        f"Callable tools: {rendered_names}."
+                    )
+                    self._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.WARNING,
+                            text=warning_message,
+                            tool_name=tool_call.name,
+                            call_id=tool_call.call_id,
+                        ),
+                    )
+                    return (
+                        current_plan_state,
+                        turn_has_tool_call,
+                        turn_text_chunks,
+                        (
+                            TurnResponse(
+                                assistant_message=warning_message,
+                                streamed_chunks=tuple(streamed_chunks),
+                                progress_updates=tuple(progress_updates),
+                            ),
+                            TurnStatus.FAILED,
+                            StopReason.MODEL_ERROR,
+                        ),
+                    )
+
+                if self._session_service.is_command_allowed(
+                    self._session_id,
+                    getattr(
+                        self._approval_service._safety_policy.evaluate(tool_call),
+                        "command_pattern",
+                        None,
+                    ),
+                ):
+                    if tool_call.name in CONCURRENCY_SAFE_TOOLS:
+                        pending_safe_tool_calls.append((tool_call, block))
+                        continue
+                    flush_pending_safe_tool_calls()
+                    record_tool_call_group_once()
+                    current_plan_state = self._execute_tool_call(
+                        conversation=conversation,
+                        call=tool_call,
+                        tool_router=tool_router,
+                        tool_exposure=tool_exposure,
+                        plan_state=current_plan_state,
+                        turn_id=turn_id,
+                        activity_events=activity_events,
+                        turn_items=turn_items,
+                        provider_id=block.provider_id,
+                        response_id=turn_result.response_id,
+                        metadata=dict(block.metadata),
+                        record_assistant_call=False,
+                    )
+                    continue
+
+                if self._is_auto_allowed_contributed_tool(tool_call, tool_exposure):
+                    if tool_call.name in CONCURRENCY_SAFE_TOOLS:
+                        pending_safe_tool_calls.append((tool_call, block))
+                        continue
+                    flush_pending_safe_tool_calls()
+                    record_tool_call_group_once()
+                    current_plan_state = self._execute_tool_call(
+                        conversation=conversation,
+                        call=tool_call,
+                        tool_router=tool_router,
+                        tool_exposure=tool_exposure,
+                        plan_state=current_plan_state,
+                        turn_id=turn_id,
+                        activity_events=activity_events,
+                        turn_items=turn_items,
+                        provider_id=block.provider_id,
+                        response_id=turn_result.response_id,
+                        metadata=dict(block.metadata),
+                        record_assistant_call=False,
+                    )
+                    continue
+
+                approval = self._approval_service.evaluate(tool_call)
+                if approval.denied_reason is not None:
+                    flush_pending_safe_tool_calls()
+                    warning_message = f"Denied: {approval.denied_reason}"
+                    self._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.WARNING,
+                            text=warning_message,
+                            tool_name=tool_call.name,
+                            call_id=tool_call.call_id,
+                        ),
+                    )
+                    return (
+                        current_plan_state,
+                        turn_has_tool_call,
+                        turn_text_chunks,
+                        (
+                            TurnResponse(
+                                assistant_message=warning_message,
+                                streamed_chunks=tuple(streamed_chunks),
+                                progress_updates=tuple(progress_updates),
+                            ),
+                            TurnStatus.COMPLETED,
+                            StopReason.ASSISTANT_COMPLETED,
+                        ),
+                    )
+
+                if approval.pending_approval is not None:
+                    flush_pending_safe_tool_calls()
+                    record_tool_call_group_once()
+                    pending_decision = self._pending_decision_from_approval(
+                        approval.pending_approval
+                    )
+                    self._session_service.save_pending_decision(
+                        self._session_id,
+                        pending_decision,
+                    )
+                    self._session_service.save_suspended_turn(
+                        self._session_id,
+                        SuspendedTurn(
+                            user_message=user_message,
+                            conversation=tuple(conversation.messages),
+                            plan_state=current_plan_state,
+                            pending_approval=approval.pending_approval,
+                        ),
+                    )
+                    waiting_message = f"Waiting approval: {pending_decision.preview}"
+                    self._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.APPROVAL_REQUEST,
+                            text=waiting_message,
+                            tool_name=pending_decision.tool_call.name,
+                            call_id=pending_decision.tool_call.call_id,
+                            metadata={"preview": pending_decision.preview},
+                        ),
+                    )
+                    return (
+                        current_plan_state,
+                        turn_has_tool_call,
+                        turn_text_chunks,
+                        (
+                            TurnResponse(
+                                assistant_message=(
+                                    "A risky action is waiting for your decision. "
+                                    "Choose 1 to approve once, 2 to reject, or 3 to allow for this session."
+                                ),
+                                activity_events=(
+                                    *activity_events,
+                                    ActivityEvent(
+                                        kind="waiting_approval",
+                                        message=waiting_message,
+                                        tool_name=pending_decision.tool_call.name,
+                                        preview=pending_decision.preview,
+                                    ),
+                                ),
+                                streamed_chunks=tuple(streamed_chunks),
+                                progress_updates=tuple(progress_updates),
+                                pending_decision=pending_decision,
+                            ),
+                            TurnStatus.WAITING_APPROVAL,
+                            StopReason.APPROVAL_REQUIRED,
+                        ),
+                    )
+
+                if tool_call.name in CONCURRENCY_SAFE_TOOLS:
+                    pending_safe_tool_calls.append((tool_call, block))
+                    continue
+                flush_pending_safe_tool_calls()
+                record_tool_call_group_once()
+                current_plan_state = self._execute_tool_call(
+                    conversation=conversation,
+                    call=tool_call,
+                    tool_router=tool_router,
+                    tool_exposure=tool_exposure,
+                    plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    activity_events=activity_events,
+                    turn_items=turn_items,
+                    provider_id=block.provider_id,
+                    response_id=turn_result.response_id,
+                    metadata=dict(block.metadata),
+                    record_assistant_call=False,
+                )
+
+            flush_pending_safe_tool_calls()
+            flush_pending_text(record_conversation=not tool_call_blocks)
+
+        return (
+            current_plan_state,
+            turn_has_tool_call,
+            turn_text_chunks,
+            None,
+        )
+
+    def _is_auto_allowed_contributed_tool(
+        self,
+        tool_call: ToolCall,
+        tool_exposure: ToolExposure,
+    ) -> bool:
+        for entry in tool_exposure.entries:
+            if entry.name != tool_call.name:
+                continue
+            return entry.source in {
+                ToolRouteSource.RUNTIME,
+                ToolRouteSource.CAPABILITY,
+                ToolRouteSource.PROVIDER,
+            }
+        return False
+
+    def _emit_visible_provider_reasoning(
+        self,
+        *,
+        block: RuntimeBlock,
+        turn_id: str,
+        progress_updates: list[str],
+        activity_events: list[ActivityEvent],
+        turn_items: list[TurnItem],
+    ) -> None:
+        reasoning_content = self._deepseek_reasoning_content_from_block(block)
+        if reasoning_content is None:
+            return
+        metadata = {
+            "provider_id": block.provider_id,
+            "provider": "deepseek",
+            "source": "provider_reasoning_content",
+            "activity_kind": "thinking",
+            "deepseek": {"reasoning_content": reasoning_content},
+        }
+        progress_updates.append(reasoning_content)
+        activity_events.append(ActivityEvent(kind="thinking", message=reasoning_content))
+        self._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.REASONING,
+                text=reasoning_content,
+                metadata=metadata,
+            ),
+        )
+        self._workspace_log_service.log(
+            level=LogLevel.INFO,
+            event="provider_reasoning_content",
+            message="Exposed provider reasoning content",
+            context={
+                "session_id": self._session_id,
+                "turn_id": turn_id,
+                **metadata,
+            },
+        )
+
+    def _deepseek_reasoning_content_from_block(
+        self,
+        block: RuntimeBlock,
+    ) -> str | None:
+        deepseek_metadata = block.metadata.get("deepseek")
+        if not isinstance(deepseek_metadata, dict):
+            return None
+        if deepseek_metadata.get("reasoning_content_missing") is True:
+            return None
+        reasoning_content = deepseek_metadata.get("reasoning_content")
+        if not isinstance(reasoning_content, str):
+            return None
+        if not reasoning_content.strip():
+            return None
+        return reasoning_content

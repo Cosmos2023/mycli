@@ -5,7 +5,6 @@ import pytest
 from mycli.domain.tool_exposure import (
     ToolExposure,
     ToolExposureEntry,
-    ToolExposureKind,
     ToolRouteKey,
     ToolRouteSource,
 )
@@ -13,19 +12,17 @@ from mycli.domain.tool_set import ToolSet
 from mycli.tools.base import ToolSpec
 
 
-def _entry(name: str, kind: ToolExposureKind) -> ToolExposureEntry:
+def _entry(name: str) -> ToolExposureEntry:
     return ToolExposureEntry(
         route_key=ToolRouteKey.local(name),
-        kind=kind,
         source=ToolRouteSource.REGISTRY,
         spec=ToolSpec(name=name, description=f"Tool {name}"),
     )
 
 
-def test_tool_set_orders_entries_by_route_key_not_compatibility_group() -> None:
+def test_tool_set_orders_entries_by_route_key() -> None:
     exposure = ToolExposure(
-        direct=(_entry("run_shell", ToolExposureKind.DIRECT),),
-        deferred=(_entry("list_directory", ToolExposureKind.DEFERRED),),
+        entries=(_entry("run_shell"), _entry("list_directory")),
     )
 
     tool_set = ToolSet.from_exposure(exposure)
@@ -36,17 +33,15 @@ def test_tool_set_orders_entries_by_route_key_not_compatibility_group() -> None:
     ]
 
 
-def test_tool_set_order_is_stable_when_compatibility_groups_swap() -> None:
+def test_tool_set_order_is_stable_when_exposure_order_changes() -> None:
     first = ToolSet.from_exposure(
         ToolExposure(
-            direct=(_entry("run_shell", ToolExposureKind.DIRECT),),
-            deferred=(_entry("list_directory", ToolExposureKind.DEFERRED),),
+            entries=(_entry("run_shell"), _entry("list_directory")),
         )
     )
     second = ToolSet.from_exposure(
         ToolExposure(
-            direct=(_entry("list_directory", ToolExposureKind.DIRECT),),
-            deferred=(_entry("run_shell", ToolExposureKind.DEFERRED),),
+            entries=(_entry("list_directory"), _entry("run_shell")),
         )
     )
 
@@ -57,7 +52,7 @@ def test_tool_set_order_is_stable_when_compatibility_groups_swap() -> None:
 
 
 def test_tool_set_rejects_duplicate_route_names() -> None:
-    entry = _entry("read_file", ToolExposureKind.DIRECT)
+    entry = _entry("read_file")
 
     with pytest.raises(ValueError, match="unique route names"):
         ToolSet(entries=(entry, entry))

@@ -1,5 +1,5 @@
-from mycli.infrastructure.models.base import ModelMessage, ModelToolDefinition, ModelToolParameter
-from mycli.infrastructure.models.compat_chat_adapter import CompatChatModelAdapter
+from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition, ModelToolParameter
+from mycli.llms.adapters.compat_chat_adapter import CompatChatModelAdapter
 
 
 class FakeChatClient:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 
 
 class ApprovalStatus(StrEnum):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
-from mycli.infrastructure.models.turn_event_aggregator import TurnEventAggregator
+from mycli.llms.adapters.turn_event_aggregator import TurnEventAggregator
 
 
 def test_turn_event_aggregator_builds_model_turn_result_from_mixed_events() -> None:

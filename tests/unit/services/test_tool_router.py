@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-from mycli.domain.dynamic_tools import (
-    DynamicToolDescriptor,
-    DynamicToolLifecycleState,
-    DynamicToolRegistration,
-    DynamicToolScope,
-    DynamicToolSource,
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionRegistration,
+    ToolContributionScope,
+    ToolContributionSource,
 )
 from mycli.domain.tool_exposure import (
     ToolExposure,
     ToolExposureEntry,
-    ToolExposureKind,
     ToolRouteKey,
     ToolRouteSource,
 )
 from mycli.domain.tools import ToolCall
-from mycli.services.dynamic_tool_registry import DynamicToolRegistry
-from mycli.services.tool_router import ToolRouter
+from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
+from mycli.tools.routing.tool_router import ToolRouter
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.registry import ToolRegistryV2
 
@@ -42,16 +41,16 @@ class ExplodingTool(FakeTool):
         raise RuntimeError("boom")
 
 
-def _dynamic_registration(tool: FakeTool) -> DynamicToolRegistration:
-    return DynamicToolRegistration(
-        descriptor=DynamicToolDescriptor(
+def _contribution_registration(tool: FakeTool) -> ToolContributionRegistration:
+    return ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
             tool_id=f"runtime:{tool.spec.name}:turn",
             display_name=tool.spec.name,
             description=tool.spec.description,
             route_key=ToolRouteKey.local(tool.spec.name),
-            source=DynamicToolSource.RUNTIME,
-            scope=DynamicToolScope.TURN,
-            lifecycle_state=DynamicToolLifecycleState.EXPOSED,
+            source=ToolContributionSource.RUNTIME,
+            scope=ToolContributionScope.TURN,
+            lifecycle_state=ToolContributionLifecycleState.EXPOSED,
             spec=tool.spec,
         ),
         tool=tool,
@@ -60,36 +59,29 @@ def _dynamic_registration(tool: FakeTool) -> DynamicToolRegistration:
 
 def test_tool_router_renders_only_callable_tools() -> None:
     registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "listed"), FakeTool("run_shell", "ran")])
-    dynamic = FakeTool("workspace_summary", "summarized")
+    contributed = FakeTool("workspace_summary", "summarized")
     exposure = ToolExposure(
-        direct=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("list_directory"),
-                kind=ToolExposureKind.DIRECT,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["list_directory"],
             ),
-        ),
-        deferred=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("run_shell"),
-                kind=ToolExposureKind.DEFERRED,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["run_shell"],
             ),
-        ),
-        dynamic=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("workspace_summary"),
-                kind=ToolExposureKind.DYNAMIC,
                 source=ToolRouteSource.RUNTIME,
-                spec=dynamic.spec,
+                spec=contributed.spec,
             ),
         ),
     )
     router = ToolRouter(
         tool_registry=registry,
-        dynamic_tools={"workspace_summary": _dynamic_registration(dynamic)},
+        contributed_tools={"workspace_summary": _contribution_registration(contributed)},
     )
 
     rendered = router.render_for_model(exposure)
@@ -97,7 +89,7 @@ def test_tool_router_renders_only_callable_tools() -> None:
     assert [tool.name for tool in rendered] == ["list_directory", "run_shell", "workspace_summary"]
 
 
-def test_tool_router_schema_order_does_not_change_when_compatibility_groups_change() -> None:
+def test_tool_router_schema_order_does_not_change_when_exposure_order_changes() -> None:
     registry = ToolRegistryV2.from_tools(
         [
             FakeTool("list_directory", "listed"),
@@ -105,36 +97,28 @@ def test_tool_router_schema_order_does_not_change_when_compatibility_groups_chan
         ]
     )
     first_exposure = ToolExposure(
-        direct=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("run_shell"),
-                kind=ToolExposureKind.DIRECT,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["run_shell"],
             ),
-        ),
-        deferred=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("list_directory"),
-                kind=ToolExposureKind.DEFERRED,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["list_directory"],
             ),
         ),
     )
     second_exposure = ToolExposure(
-        direct=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("list_directory"),
-                kind=ToolExposureKind.DIRECT,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["list_directory"],
             ),
-        ),
-        deferred=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("run_shell"),
-                kind=ToolExposureKind.DEFERRED,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["run_shell"],
             ),
@@ -173,10 +157,9 @@ def test_tool_router_preserves_array_parameter_item_schema() -> None:
     )
     registry = ToolRegistryV2.from_tools([tool])
     exposure = ToolExposure(
-        direct=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("update_plan"),
-                kind=ToolExposureKind.DIRECT,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["update_plan"],
             ),
@@ -197,26 +180,25 @@ def test_tool_router_preserves_array_parameter_item_schema() -> None:
     }
 
 
-def test_tool_router_executes_dynamic_tool_when_exposed() -> None:
+def test_tool_router_executes_contributed_tool_when_exposed() -> None:
     registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "listed")])
-    dynamic = FakeTool("workspace_summary", "summarized")
+    contributed = FakeTool("workspace_summary", "summarized")
     exposure = ToolExposure(
-        dynamic=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("workspace_summary"),
-                kind=ToolExposureKind.DYNAMIC,
                 source=ToolRouteSource.RUNTIME,
-                spec=dynamic.spec,
+                spec=contributed.spec,
             ),
         ),
     )
-    dynamic_registry = DynamicToolRegistry()
-    registration = _dynamic_registration(dynamic)
-    dynamic_registry.register(registration)
+    contribution_registry = ToolContributionRegistry()
+    registration = _contribution_registration(contributed)
+    contribution_registry.register(registration)
     router = ToolRouter(
         tool_registry=registry,
-        dynamic_tools={"workspace_summary": registration},
-        dynamic_tool_registry=dynamic_registry,
+        contributed_tools={"workspace_summary": registration},
+        contributed_tool_registry=contribution_registry,
     )
 
     result = router.execute(
@@ -224,37 +206,36 @@ def test_tool_router_executes_dynamic_tool_when_exposed() -> None:
             name="workspace_summary",
             arguments={"path": "."},
             reason="summarize workspace",
-            call_id="call_dynamic_1",
+            call_id="call_contributed_1",
         ),
         exposure=exposure,
     )
 
     assert result.summary == "summarized"
-    assert dynamic.calls == [{"path": "."}]
+    assert contributed.calls == [{"path": "."}]
     lifecycle = router.pop_lifecycle_events()
     assert [event.state.value for event in lifecycle] == ["invoked", "completed"]
 
 
-def test_tool_router_marks_dynamic_tool_failed_when_execution_raises() -> None:
+def test_tool_router_marks_contributed_tool_failed_when_execution_raises() -> None:
     registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "listed")])
-    dynamic = ExplodingTool("workspace_summary", "summarized")
+    contributed = ExplodingTool("workspace_summary", "summarized")
     exposure = ToolExposure(
-        dynamic=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("workspace_summary"),
-                kind=ToolExposureKind.DYNAMIC,
                 source=ToolRouteSource.RUNTIME,
-                spec=dynamic.spec,
+                spec=contributed.spec,
             ),
         ),
     )
-    dynamic_registry = DynamicToolRegistry()
-    registration = _dynamic_registration(dynamic)
-    dynamic_registry.register(registration)
+    contribution_registry = ToolContributionRegistry()
+    registration = _contribution_registration(contributed)
+    contribution_registry.register(registration)
     router = ToolRouter(
         tool_registry=registry,
-        dynamic_tools={"workspace_summary": registration},
-        dynamic_tool_registry=dynamic_registry,
+        contributed_tools={"workspace_summary": registration},
+        contributed_tool_registry=contribution_registry,
     )
 
     try:
@@ -263,26 +244,25 @@ def test_tool_router_marks_dynamic_tool_failed_when_execution_raises() -> None:
                 name="workspace_summary",
                 arguments={"path": "."},
                 reason="summarize workspace",
-                call_id="call_dynamic_2",
+                call_id="call_contributed_2",
             ),
             exposure=exposure,
         )
     except RuntimeError as exc:
         assert str(exc) == "boom"
     else:
-        raise AssertionError("router should re-raise dynamic tool execution errors")
+        raise AssertionError("router should re-raise contributed tool execution errors")
 
     lifecycle = router.pop_lifecycle_events()
     assert [event.state.value for event in lifecycle] == ["invoked", "failed"]
 
 
-def test_tool_router_executes_deferred_tool_calls() -> None:
+def test_tool_router_executes_exposed_tool_calls() -> None:
     registry = ToolRegistryV2.from_tools([FakeTool("run_shell", "ran")])
     exposure = ToolExposure(
-        deferred=(
+        entries=(
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("run_shell"),
-                kind=ToolExposureKind.DEFERRED,
                 source=ToolRouteSource.REGISTRY,
                 spec=registry.specs["run_shell"],
             ),
@@ -295,7 +275,7 @@ def test_tool_router_executes_deferred_tool_calls() -> None:
             name="run_shell",
             arguments={"path": "."},
             reason="run shell",
-            call_id="call_deferred_1",
+            call_id="call_tool_1",
         ),
         exposure=exposure,
     )
