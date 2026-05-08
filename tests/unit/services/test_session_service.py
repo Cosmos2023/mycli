@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
@@ -39,6 +40,110 @@ def test_session_service_persists_conversation(tmp_path: Path) -> None:
 
     assert loaded.session_id == "demo"
     assert loaded.messages[0].content == "hello"
+
+
+def test_session_service_round_trips_conversation_tree_metadata(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    conversation = Conversation(
+        session_id="branch",
+        parent_id="root",
+        fork_point=1,
+        messages=[Message(role="user", content="hello")],
+    )
+
+    service.save_conversation(conversation)
+    loaded = service.load_conversation("branch")
+
+    assert loaded.parent_id == "root"
+    assert loaded.fork_point == 1
+    assert loaded.messages[0].content == "hello"
+
+
+def test_session_service_persists_conversation_tree_in_dedicated_table(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+    conversation = Conversation(
+        session_id="branch",
+        parent_id="root",
+        fork_point=1,
+        messages=[Message(role="user", content="hello")],
+    )
+
+    service.save_conversation(conversation)
+
+    with sqlite3.connect(home_dir / ".mycli" / "sessions.db") as connection:
+        row = connection.execute(
+            """
+            SELECT parent_id, fork_point
+            FROM conversation_trees
+            WHERE session_id = ?
+            """,
+            ("branch",),
+        ).fetchone()
+    assert row == ("root", 1)
+
+
+def test_session_service_forks_conversation_at_requested_point(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    source = Conversation(
+        session_id="root",
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="three"),
+        ],
+    )
+    service.save_conversation(source)
+
+    forked = service.fork_conversation("root", "branch", fork_point=2)
+    loaded = service.load_conversation("branch")
+
+    assert forked.parent_id == "root"
+    assert loaded.parent_id == "root"
+    assert loaded.fork_point == 2
+    assert [message.content for message in loaded.messages] == ["one", "two"]
+
+
+def test_session_service_rewinds_conversation_in_place(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    conversation = Conversation(
+        session_id="branch",
+        parent_id="root",
+        fork_point=2,
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="three"),
+        ],
+    )
+    service.save_conversation(conversation)
+
+    rewound = service.rewind_conversation("branch", 1)
+    loaded = service.resume_conversation("branch")
+
+    assert rewound.fork_point == 1
+    assert loaded.parent_id == "root"
+    assert loaded.fork_point == 1
+    assert [message.content for message in loaded.messages] == ["one"]
+
+
+def test_session_service_round_trips_message_metadata(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    conversation = Conversation(session_id="demo")
+    conversation.append(
+        Message(
+            role="user",
+            content="hello",
+            metadata={"cache_policy": "STATIC", "source": "test"},
+        )
+    )
+
+    service.save_conversation(conversation)
+    loaded = service.load_conversation("demo")
+
+    assert loaded.messages[0].metadata == {"cache_policy": "STATIC", "source": "test"}
 
 
 def test_session_service_round_trips_conversation_blocks_and_response_id(tmp_path: Path) -> None:
@@ -163,6 +268,7 @@ def test_session_service_rebuilds_tool_call_and_tool_result_messages_from_histor
             text="/workspace",
             tool_name="run_shell",
             call_id="call_001",
+            provider_id="tool_001",
             metadata={
                 "transcript_content": "/workspace",
                 "summary": "pwd completed",
@@ -217,6 +323,57 @@ def test_session_service_rebuilds_assistant_text_metadata_from_history(
             ),
         )
     ]
+
+
+def test_session_service_rebuilds_assistant_text_and_tool_call_as_one_message(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    session_id = "demo"
+    service.append_history_items(
+        session_id,
+        (
+            HistoryItem(
+                id="turn_1:item:1",
+                thread_id=session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="I will read README.",
+                metadata={
+                    "provider_id": "chatcmpl_1",
+                    "deepseek": {"reasoning_content": "Need README."},
+                },
+            ),
+            HistoryItem(
+                id="turn_1:item:2",
+                thread_id=session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.TOOL_CALL,
+                text="Reading README.",
+                tool_name="read_file",
+                call_id="call_read_1",
+                metadata={
+                    "arguments": {"path": "README.md"},
+                    "provider_id": "chatcmpl_1",
+                    "deepseek": {"reasoning_content": "Need README."},
+                },
+            ),
+        ),
+    )
+
+    loaded = service.load_conversation(session_id)
+
+    assert [message.role for message in loaded.messages] == ["assistant"]
+    assert loaded.messages[0].content == "I will read README."
+    assert loaded.messages[0].tool_calls == (
+        ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="model requested tool",
+            call_id="call_read_1",
+        ),
+    )
+    assert [block.type for block in loaded.messages[0].blocks] == ["text", "tool_call"]
 
 
 def test_session_service_persists_runtime_snapshot_without_json_sidecars(tmp_path: Path) -> None:
@@ -590,12 +747,8 @@ def test_session_service_round_trips_tool_exposure_turn_item(tmp_path: Path) -> 
         items=(
             TurnItem(
                 type=TurnItemType.TOOL_EXPOSURE,
-                text="Tool exposure: direct=list_directory; deferred=run_shell; dynamic=workspace_summary",
-                metadata={
-                    "direct_tool_names": ["list_directory"],
-                    "deferred_tool_names": ["run_shell"],
-                    "dynamic_tool_names": ["workspace_summary"],
-                },
+                text="Tool exposure: tools=list_directory, run_shell, workspace_summary",
+                metadata={"tool_names": ["list_directory", "run_shell", "workspace_summary"]},
             ),
         ),
     )
@@ -605,10 +758,10 @@ def test_session_service_round_trips_tool_exposure_turn_item(tmp_path: Path) -> 
 
     assert loaded is not None
     assert loaded.items[0].type is TurnItemType.TOOL_EXPOSURE
-    assert loaded.items[0].metadata["dynamic_tool_names"] == ["workspace_summary"]
+    assert loaded.items[0].metadata["tool_names"] == ["list_directory", "run_shell", "workspace_summary"]
 
 
-def test_session_service_round_trips_dynamic_tool_state(tmp_path: Path) -> None:
+def test_session_service_round_trips_contributed_tool_state(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     descriptors = [
         {
@@ -623,9 +776,9 @@ def test_session_service_round_trips_dynamic_tool_state(tmp_path: Path) -> None:
         }
     ]
 
-    service.save_dynamic_tool_state("demo", descriptors)
+    service.save_contributed_tool_state("demo", descriptors)
 
-    assert service.load_dynamic_tool_state("demo") == descriptors
+    assert service.load_contributed_tool_state("demo") == descriptors
 
 
 def test_session_service_appends_and_loads_structured_history_items(tmp_path: Path) -> None:

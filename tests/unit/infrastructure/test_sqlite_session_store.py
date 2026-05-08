@@ -24,6 +24,13 @@ def test_sqlite_session_store_round_trips_runtime_payloads(tmp_path: Path) -> No
             }
         ],
     )
+    store.save_conversation_tree(
+        session_id="demo",
+        workspace_root=tmp_path / "workspace",
+        thread_id="thread_demo",
+        parent_id="root",
+        fork_point=2,
+    )
     store.append_history_items(
         session_id="demo",
         workspace_root=tmp_path / "workspace",
@@ -80,6 +87,11 @@ def test_sqlite_session_store_round_trips_runtime_payloads(tmp_path: Path) -> No
             "tool_calls": [],
         }
     ]
+    assert store.load_conversation_tree("demo") == {
+        "session_id": "demo",
+        "parent_id": "root",
+        "fork_point": 2,
+    }
     assert store.load_history_items("demo") == [
         {
             "id": "turn_1:item:1",

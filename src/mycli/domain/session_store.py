@@ -35,6 +35,18 @@ class SessionStore(Protocol):
 
     def load_conversation(self, session_id: str) -> list[JsonObject] | None: ...
 
+    def save_conversation_tree(
+        self,
+        *,
+        session_id: str,
+        workspace_root: Path,
+        thread_id: str,
+        parent_id: str | None,
+        fork_point: int | None,
+    ) -> None: ...
+
+    def load_conversation_tree(self, session_id: str) -> JsonObject | None: ...
+
     def append_history_items(
         self,
         *,

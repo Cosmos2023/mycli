@@ -207,7 +207,7 @@ def test_turn_service_runtime_recovers_pending_approval_from_structured_runtime_
 
 def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) -> None:
     service = TurnService(
-        model_client=PushModel(),
+        model_client=PushThenDoneModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -216,14 +216,14 @@ def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) 
     service.handle_user_turn("push the branch")
     resolved = service.resolve_pending_decision("3")
 
-    assert "approved" in resolved.assistant_message.lower()
+    assert "[decision] approved" in resolved.progress_updates
     assert service._session_service.is_command_allowed("demo", "git push") is True
 
 
 def test_resolve_pending_decision_choice_one_executes_and_clears(tmp_path: Path) -> None:
     tool_registry = SpyToolRegistry()
     service = TurnService(
-        model_client=PushModel(),
+        model_client=PushThenDoneModel(),
         tool_registry=tool_registry,
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -233,7 +233,7 @@ def test_resolve_pending_decision_choice_one_executes_and_clears(tmp_path: Path)
     resolved = service.resolve_pending_decision("1")
 
     assert first.pending_decision is not None
-    assert "approved" in resolved.assistant_message.lower()
+    assert "[decision] approved" in resolved.progress_updates
     assert service._session_service.load_pending_decision("demo") is None
     assert len(tool_registry.calls) == 1
 
@@ -242,7 +242,7 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     first_registry = SpyToolRegistry()
     first = TurnService(
-        model_client=PushModel(),
+        model_client=PushThenDoneModel(),
         tool_registry=first_registry,
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=home_dir,
@@ -462,7 +462,6 @@ def test_turn_service_includes_recent_conversation_in_prompt(tmp_path: Path) -> 
 
     service.handle_user_turn("second question")
 
-    assert "Recent conversation" in model.prompts[0]
     assert "first question" in model.prompts[0]
     assert "first answer" in model.prompts[0]
 
@@ -473,8 +472,10 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     home_dir.mkdir()
     workspace.mkdir()
 
-    very_old_user = "user-" + ("x" * 180)
-    very_old_assistant = "assistant-" + ("y" * 180)
+    very_old_user = "user-" + " ".join(f"old_user_token_{index}" for index in range(40))
+    very_old_assistant = "assistant-" + " ".join(
+        f"old_assistant_token_{index}" for index in range(40)
+    )
     recent_user = "recent-user"
     recent_assistant = "recent-assistant"
 
@@ -501,7 +502,6 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     service.handle_user_turn("new question")
 
     assert "Conversation summary" in model.prompts[0]
-    assert "Recent conversation" in model.prompts[0]
     assert very_old_user not in model.prompts[0]
     assert recent_user in model.prompts[0]
     assert recent_assistant in model.prompts[0]

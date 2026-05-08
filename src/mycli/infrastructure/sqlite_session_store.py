@@ -52,6 +52,17 @@ class SQLiteSessionStore:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS conversation_trees (
+                    session_id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    fork_point INTEGER,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_conversation_trees_parent
+                ON conversation_trees(parent_id);
+
                 CREATE TABLE IF NOT EXISTS history_items (
                     session_id TEXT NOT NULL,
                     sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +185,58 @@ class SQLiteSessionStore:
         if not rows:
             return None
         return self._load_object_rows(rows)
+
+    def save_conversation_tree(
+        self,
+        *,
+        session_id: str,
+        workspace_root: Path,
+        thread_id: str,
+        parent_id: str | None,
+        fork_point: int | None,
+    ) -> None:
+        with self._connect() as connection:
+            self._touch_session(
+                connection,
+                session_id=session_id,
+                workspace_root=workspace_root,
+                thread_id=thread_id,
+            )
+            connection.execute(
+                """
+                INSERT INTO conversation_trees (
+                    session_id,
+                    parent_id,
+                    fork_point,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    parent_id = excluded.parent_id,
+                    fork_point = excluded.fork_point,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, parent_id, fork_point, self._timestamp()),
+            )
+
+    def load_conversation_tree(self, session_id: str) -> JsonObject | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT session_id, parent_id, fork_point
+                FROM conversation_trees
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        fork_point = row["fork_point"]
+        return {
+            "session_id": str(row["session_id"]),
+            "parent_id": None if row["parent_id"] is None else str(row["parent_id"]),
+            "fork_point": fork_point if isinstance(fork_point, int) else None,
+        }
 
     def append_history_items(
         self,
