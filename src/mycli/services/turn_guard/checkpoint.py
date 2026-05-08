@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+from mycli.domain.conversation import Conversation, Message
+from mycli.domain.runtime import PlanState, RuntimeBlock, StopReason
+
+
+class ExitReason(StrEnum):
+    TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+    TOOL_COUNT_EXCEEDED = "tool_count_exceeded"
+    LOOP_DETECTED = "loop_detected"
+    REPEATED_REPLANNING = "repeated_replanning"
+    NO_PROGRESS = "no_progress"
+
+
+class ContinueReason(StrEnum):
+    FORCE_ANSWER = "force_answer"
+    REROUTE = "reroute"
+    TRUNCATION_AWARE = "truncation_aware"
+    NEXT_STEP = "next_step"
+
+
+@dataclass(slots=True, frozen=True)
+class CheckpointResult:
+    exit_reason: ExitReason | None = None
+    continue_reason: ContinueReason = ContinueReason.NEXT_STEP
+    stop_reason: StopReason | None = None
+    assistant_message: str | None = None
+    reminders: tuple[str, ...] = field(default_factory=tuple)
+
+
+class NoProgressTracker:
+    def __init__(self) -> None:
+        self._seen_signatures: set[str] = set()
+        self._no_progress_count = 0
+
+    def update(self, conversation: Conversation) -> None:
+        current_signatures = self._tool_call_signatures(conversation)
+        new_signatures = current_signatures - self._seen_signatures
+        if new_signatures:
+            self._no_progress_count = 0
+            self._seen_signatures |= new_signatures
+            return
+        self._no_progress_count += 1
+
+    def no_progress_count(self) -> int:
+        return self._no_progress_count
+
+    @staticmethod
+    def _tool_call_signatures(conversation: Conversation) -> set[str]:
+        sigs: set[str] = set()
+        for message in _messages_in_current_turn(conversation):
+            if message.role != "assistant":
+                continue
+            for call in message.tool_calls:
+                sigs.add(_tool_call_signature(call.name, call.arguments))
+        return sigs
+
+
+class TurnCheckpoint:
+    def __init__(
+        self,
+        *,
+        max_tool_calls_per_turn: int = 25,
+        max_tokens_per_turn: int = 200_000,
+        max_same_tool_calls: int = 4,
+        no_progress_threshold: int = 6,
+        force_answer_threshold: int = 12,
+        reroute_threshold: int = 3,
+        repeated_replanning_threshold: int = 2,
+    ) -> None:
+        self._max_tool_calls = max_tool_calls_per_turn
+        self._max_tokens = max_tokens_per_turn
+        self._max_same_tool_calls = max_same_tool_calls
+        self._no_progress_threshold = no_progress_threshold
+        self._force_answer_threshold = force_answer_threshold
+        self._reroute_threshold = reroute_threshold
+        self._repeated_replanning_threshold = repeated_replanning_threshold
+
+    def evaluate(
+        self,
+        *,
+        step_index: int,
+        conversation: Conversation,
+        cumulative_tokens: int = 0,
+        plan_state: PlanState | None = None,
+        no_progress_tracker: NoProgressTracker | None = None,
+    ) -> CheckpointResult:
+        if cumulative_tokens > self._max_tokens:
+            return CheckpointResult(
+                exit_reason=ExitReason.TOKEN_BUDGET_EXCEEDED,
+                stop_reason=StopReason.CONTEXT_WINDOW_EXCEEDED,
+                assistant_message=(
+                    f"Token budget exceeded ({cumulative_tokens}/{self._max_tokens}). "
+                    "Please narrow the request."
+                ),
+            )
+
+        if step_index > self._max_tool_calls:
+            return CheckpointResult(
+                exit_reason=ExitReason.TOOL_COUNT_EXCEEDED,
+                stop_reason=StopReason.LOOP_DETECTED,
+                assistant_message=(
+                    f"Tool call limit reached ({step_index}/{self._max_tool_calls}). "
+                    "Please narrow the request or ask me to continue from the gathered context."
+                ),
+            )
+
+        max_repeated = self._max_repeated_tool_signatures(conversation)
+        if max_repeated >= self._max_same_tool_calls:
+            return CheckpointResult(
+                exit_reason=ExitReason.LOOP_DETECTED,
+                stop_reason=StopReason.LOOP_DETECTED,
+                assistant_message=(
+                    "I stopped due to repeated exploration of the same path without new evidence. "
+                    "Please narrow the request or inspect a confirmed path."
+                ),
+            )
+
+        plan_state_obj = plan_state or PlanState()
+        replan_count = self._count_tool_calls_in_current_turn(
+            conversation,
+            "update_plan",
+        )
+        if replan_count >= self._repeated_replanning_threshold and plan_state_obj.items:
+            return CheckpointResult(
+                exit_reason=ExitReason.REPEATED_REPLANNING,
+                stop_reason=StopReason.LOOP_DETECTED,
+                assistant_message=(
+                    "I stopped due to repeated replanning without executing the current plan. "
+                    "Continue the existing plan or narrow the request."
+                ),
+            )
+
+        if (
+            no_progress_tracker is not None
+            and no_progress_tracker.no_progress_count() >= self._no_progress_threshold
+        ):
+            return CheckpointResult(
+                exit_reason=ExitReason.NO_PROGRESS,
+                stop_reason=StopReason.LOOP_DETECTED,
+                assistant_message=(
+                    "No new evidence after multiple tool calls. "
+                    "Summarizing what is known so far."
+                ),
+            )
+
+        reminders: list[str] = []
+        continue_reason = ContinueReason.NEXT_STEP
+
+        if cumulative_tokens >= self._max_tokens:
+            continue_reason = ContinueReason.FORCE_ANSWER
+            reminders.append(
+                "Token budget nearly exhausted. You MUST answer now. Do NOT call any more tools."
+            )
+
+        if step_index == self._max_tool_calls:
+            continue_reason = ContinueReason.FORCE_ANSWER
+            reminders.append(
+                "You have reached the maximum tool call limit. You MUST answer now "
+                "using only the evidence you already have. Do NOT call any more tools."
+            )
+
+        if step_index >= self._force_answer_threshold and step_index < self._max_tool_calls:
+            continue_reason = ContinueReason.FORCE_ANSWER
+            reminders.append(
+                "You have taken many steps. Stop exploring and answer now based on available evidence."
+            )
+
+        if max_repeated >= self._reroute_threshold:
+            if continue_reason == ContinueReason.NEXT_STEP:
+                continue_reason = ContinueReason.REROUTE
+            reminders.append(
+                "You are repeating the same tool exploration. Summarize what is already known or choose a different confirmed path."
+            )
+
+        if self._has_truncation_signal(conversation):
+            if continue_reason == ContinueReason.NEXT_STEP:
+                continue_reason = ContinueReason.TRUNCATION_AWARE
+            reminders.append(
+                "A recent file excerpt was truncated. Prefer read_file_range on the confirmed path instead of repeating read_file."
+            )
+
+        return CheckpointResult(
+            continue_reason=continue_reason,
+            reminders=tuple(dict.fromkeys(reminders)),
+        )
+
+    def _max_repeated_tool_signatures(self, conversation: Conversation) -> int:
+        signatures: dict[str, int] = {}
+        max_count = 0
+        for message in _messages_in_current_turn(conversation):
+            if message.role != "assistant":
+                continue
+            for call in message.tool_calls:
+                signature = _tool_call_signature(call.name, call.arguments)
+                signatures[signature] = signatures.get(signature, 0) + 1
+                max_count = max(max_count, signatures[signature])
+        return max_count
+
+    def _count_tool_calls_in_current_turn(
+        self,
+        conversation: Conversation,
+        tool_name: str,
+    ) -> int:
+        count = 0
+        for message in _messages_in_current_turn(conversation):
+            if message.role != "assistant":
+                continue
+            for call in message.tool_calls:
+                if call.name == tool_name:
+                    count += 1
+        return count
+
+    def _has_truncation_signal(self, conversation: Conversation) -> bool:
+        for message in _messages_in_current_turn(conversation):
+            if message.role != "tool":
+                continue
+            for block in message.blocks:
+                if _is_truncated_tool_result(block):
+                    return True
+        return False
+
+
+def _messages_in_current_turn(conversation: Conversation) -> tuple[Message, ...]:
+    current_turn: list[Message] = []
+    for message in reversed(conversation.messages):
+        if message.role == "user":
+            break
+        current_turn.append(message)
+    current_turn.reverse()
+    return tuple(current_turn)
+
+
+def _tool_call_signature(name: str, arguments: dict[str, object]) -> str:
+    return json.dumps(
+        {"name": name, "arguments": arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _is_truncated_tool_result(block: RuntimeBlock) -> bool:
+    if block.type != "tool_result":
+        return False
+    lowered = (block.text or "").lower()
+    return "excerpt truncated" in lowered or "use read_file_range" in lowered

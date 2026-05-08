@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from mycli.domain.providers import ProtocolId, ProviderId
-from mycli.services.config_service import resolve_config
+from mycli.config.settings import resolve_config
 
 
 def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
@@ -16,13 +16,12 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
     (workspace / ".mycli").mkdir()
 
     (home_dir / ".config" / "mycli" / "config.toml").write_text(
-        'model = "user-model"\nmax_steps = 9\napi_key = "user-token"\nmax_prompt_tokens = 6000\n',
+        'model = "user-model"\napi_key = "user-token"\nmax_prompt_tokens = 6000\n',
         encoding="utf-8",
     )
     (workspace / ".mycli" / "config.toml").write_text(
         (
             'model = "project-model"\n'
-            'max_steps = 7\n'
             'api_key = "project-token"\n'
             'max_prompt_tokens = 5000\n'
             'compression_threshold_tokens = 3200\n'
@@ -44,12 +43,48 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
 
     assert config.model == "cli-model"
     assert config.session_id == "cli-session"
-    assert config.max_steps == 7
     assert config.api_base_url == "https://example.invalid/v1"
     assert config.api_key == "test-token"
     assert config.max_prompt_tokens == 5000
     assert config.compression_threshold_tokens == 3200
     assert config.max_output_tokens == 1500
+
+
+def test_resolve_config_reads_compaction_l4_settings(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "compaction_l4_trigger_ratio = 0.82",
+                "compaction_l4_min_savings_ratio = 0.2",
+                "compaction_l4_input_cost_per_1k = 0.003",
+                "compaction_l4_output_cost_per_1k = 0.015",
+                "compaction_l4_carry_cost_per_1k = 0.001",
+                "compaction_l4_expected_summary_tokens = 300",
+                "compaction_l4_carry_turns = 4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.compaction_l4_trigger_ratio == 0.82
+    assert config.compaction_l4_min_savings_ratio == 0.2
+    assert config.compaction_l4_input_cost_per_1k == 0.003
+    assert config.compaction_l4_output_cost_per_1k == 0.015
+    assert config.compaction_l4_carry_cost_per_1k == 0.001
+    assert config.compaction_l4_expected_summary_tokens == 300
+    assert config.compaction_l4_carry_turns == 4
 
 
 def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_path: Path) -> None:

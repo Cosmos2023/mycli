@@ -199,6 +199,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional directory to save JSON request and response artifacts.",
     )
+    parser.add_argument(
+        "--min-cache-hit-rate",
+        type=float,
+        default=None,
+        help=(
+            "Optional pass/fail threshold for cached_tokens / input_tokens across successful "
+            "results. Accepts either 0.85 or 85."
+        ),
+    )
     return parser
 
 
@@ -827,7 +836,22 @@ def _error_message(exc: Exception) -> str:
     return str(exc)
 
 
-def summarize(results: list[ProbeResult]) -> None:
+def cache_hit_rate(results: list[ProbeResult]) -> float:
+    successful = [result for result in results if result.ok]
+    input_total = sum(result.input_tokens or 0 for result in successful)
+    cached_total = sum(result.cached_tokens or 0 for result in successful)
+    if input_total <= 0:
+        return 0.0
+    return cached_total / input_total
+
+
+def normalized_rate_threshold(value: float) -> float:
+    if value > 1.0:
+        return value / 100.0
+    return value
+
+
+def summarize(results: list[ProbeResult]) -> float:
     successful = [result for result in results if result.ok]
     positive_cache = [
         result
@@ -844,6 +868,9 @@ def summarize(results: list[ProbeResult]) -> None:
         print(f"  max_cached_tokens: {max_hit}")
     else:
         print("  max_cached_tokens: 0")
+    rate = cache_hit_rate(results)
+    print(f"  cache_hit_rate: {rate:.2%}")
+    return rate
 
 
 def main() -> int:
@@ -905,7 +932,15 @@ def main() -> int:
             last_family = family_index == len(tool_families) - 1
             if not (last_mode and last_family):
                 time.sleep(args.sleep_seconds)
-    summarize(results)
+    rate = summarize(results)
+    if args.min_cache_hit_rate is not None:
+        threshold = normalized_rate_threshold(args.min_cache_hit_rate)
+        if rate < threshold:
+            print(
+                f"Cache hit rate {rate:.2%} is below required threshold {threshold:.2%}.",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 

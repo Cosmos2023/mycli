@@ -195,10 +195,10 @@ def test_run_deterministic_checks_flags_unconverged_turns() -> None:
             EvaluationTurnResult(
                 turn_id="turn-01",
                 prompt="prompt",
-                assistant_message="I hit the step limit before reaching a confident answer.",
+                assistant_message="Model request failed: timeout",
                 rendered_lines=(),
                 turn_status=TurnStatus.COMPLETED.value,
-                stop_reason=StopReason.MAX_STEPS_REACHED.value,
+                stop_reason=StopReason.MODEL_ERROR.value,
             ),
         ),
     )

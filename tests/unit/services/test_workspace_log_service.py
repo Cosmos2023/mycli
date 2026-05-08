@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mycli.domain.logging import LogLevel, ModelLogEvent
-from mycli.services.workspace_log_service import WorkspaceLogService
+from mycli.utils.workspace_logger import WorkspaceLogService
 
 
 def _build_service(tmp_path: Path) -> WorkspaceLogService:

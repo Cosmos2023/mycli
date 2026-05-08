@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mycli.domain.runtime import PendingApproval
-from mycli.domain.tools import ToolCall
-from mycli.services.safety_policy import SafetyPolicy
+from mycli.domain.tooling.calls import ToolCall
+from mycli.services.approval.safety_policy import SafetyPolicy
 
 
 @dataclass(slots=True, frozen=True)

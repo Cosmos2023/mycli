@@ -194,7 +194,7 @@ def run_deterministic_checks(
     incomplete_turns = tuple(
         result
         for result in turn_results
-        if result.stop_reason in {"max_steps_reached", "runtime_error", "model_error"}
+        if result.stop_reason in {"runtime_error", "model_error"}
     )
     results.append(
         EvaluationCheckResult(
