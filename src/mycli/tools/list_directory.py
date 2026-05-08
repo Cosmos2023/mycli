@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import classify_filesystem_error, resolve_workspace_path
 
@@ -11,7 +11,7 @@ class ListDirectoryTool:
     name = "list_directory"
     spec = ToolSpec(
         name="list_directory",
-        description="List entries in a workspace-relative directory.",
+        description="List directory contents. Use this INSTEAD of ls/find/tree. Large directories will show a summary. Use reported entry names to target subsequent read_file or search_text calls.",
         parameters=(ToolParameter(name="path", type="string", required=True),),
         risk_level="low",
     )

@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from mycli.domain.tools import ToolCall
-from mycli.infrastructure.models.base import ModelToolDefinition, ModelToolParameter
+from mycli.domain.tooling.calls import ToolCall
+from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
 from mycli.tools.base import SchemaTool, ToolSpec, ToolResultV2
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import require_text_file, resolve_workspace_path
 
@@ -12,7 +12,7 @@ class AppendFileTool:
     name = "append_file"
     spec = ToolSpec(
         name="append_file",
-        description="Append UTF-8 text content to a workspace file, creating it if needed.",
+        description="Append content to the end of a file. Use for adding lines without modifying existing content. For replacing content, use replace_in_file or edit_file.",
         parameters=(
             ToolParameter(name="path", type="string", required=True),
             ToolParameter(name="content", type="string", required=True),

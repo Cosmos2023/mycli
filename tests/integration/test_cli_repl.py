@@ -2,11 +2,11 @@ from pathlib import Path
 
 from mycli.cli.main import build_turn_service, handle_slash_command, run_repl
 from mycli.domain.providers import ProtocolId, ProviderId
-from mycli.infrastructure.models.anthropic_messages_adapter import (
+from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
 )
-from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
-from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
+from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
+from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
 from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
@@ -15,6 +15,10 @@ from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
 def test_help_lists_approval_and_memory_controls() -> None:
     output = handle_slash_command("/help")
     assert "/memory" in output
+    assert "/undo" in output
+    assert "/resume <session>" in output
+    assert "/fork [source] <new-session> [message-index]" in output
+    assert "/stats" in output
     assert "/confirm" not in output
     assert "/reject" not in output
 
@@ -114,6 +118,8 @@ def test_build_turn_service_uses_native_adapter_when_protocol_is_chat_completion
     )
 
     assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
+    assert "enter_plan_mode" in service._runtime._tool_registry.list_names()
+    assert "exit_plan_mode" in service._runtime._tool_registry.list_names()
 
 
 def test_build_turn_service_uses_chat_completions_for_deepseek(

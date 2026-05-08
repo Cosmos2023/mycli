@@ -4,7 +4,7 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import require_text_file, resolve_workspace_path
 
@@ -13,7 +13,7 @@ class ReplaceInFileTool:
     name = "replace_in_file"
     spec = ToolSpec(
         name="replace_in_file",
-        description="Replace exact text in a workspace file with optional match-count validation.",
+        description="Replace a specific text fragment in a file. Use for targeted edits. Read the file first — old_text must match exactly. For full file rewrites, use edit_file instead.",
         parameters=(
             ToolParameter(name="path", type="string", required=True),
             ToolParameter(name="old_text", type="string", required=True),

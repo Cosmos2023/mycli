@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolEvidence, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import (
     classify_filesystem_error,
@@ -16,7 +16,7 @@ class ReadFileRangeTool:
     name = "read_file_range"
     spec = ToolSpec(
         name="read_file_range",
-        description="Read an inclusive line range from a UTF-8 text file in the workspace.",
+        description="Read a specific line range from a file. Use this when read_file output was truncated, or when you only need a section of a large file. Do NOT use this to re-read ranges you have already seen.",
         parameters=(
             ToolParameter(name="path", type="string", required=True),
             ToolParameter(name="start_line", type="integer", required=True),

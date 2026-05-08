@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolEvidence, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
 from mycli.infrastructure.shell_adapter import run_command
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import resolve_workspace_path
@@ -14,7 +14,7 @@ class SearchTextTool:
     name = "search_text"
     spec = ToolSpec(
         name="search_text",
-        description="Search UTF-8 text files in the workspace with rg-style filters.",
+        description="Search code by pattern (like ripgrep). Use this INSTEAD of grep/rg/find. If too many results, narrow your query. To inspect matches, use read_file_range on the reported paths.",
         parameters=(
             ToolParameter(name="query", type="string", required=True),
             ToolParameter(name="path", type="string", required=False),

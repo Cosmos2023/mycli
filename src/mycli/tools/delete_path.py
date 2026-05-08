@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import resolve_workspace_path
 
@@ -13,7 +13,7 @@ class DeletePathTool:
     name = "delete_path"
     spec = ToolSpec(
         name="delete_path",
-        description="Delete a file or directory within the workspace.",
+        description="Delete a file or directory. Use with caution — this is irreversible. Verify the path is correct before calling.",
         parameters=(ToolParameter(name="path", type="string", required=True),),
         risk_level="medium",
     )

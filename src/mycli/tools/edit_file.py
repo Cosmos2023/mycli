@@ -3,7 +3,7 @@ from __future__ import annotations
 from difflib import unified_diff
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
 
@@ -11,7 +11,7 @@ class EditFileTool:
     name = "edit_file"
     spec = ToolSpec(
         name="edit_file",
-        description="Write new content to a workspace-relative file and return a diff preview.",
+        description="Overwrite a file with new content and preview the diff. Use for full rewrites. For targeted changes, prefer replace_in_file. Read the file first — do NOT guess its current contents.",
         parameters=(
             ToolParameter(name="path", type="string", required=True),
             ToolParameter(name="new_content", type="string", required=True),

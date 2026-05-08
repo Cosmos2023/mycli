@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall, ToolEvidence, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import (
     classify_filesystem_error,
@@ -15,7 +15,7 @@ class ReadFileTool:
     name = "read_file"
     spec = ToolSpec(
         name="read_file",
-        description="Read a UTF-8 text file from the workspace.",
+        description="Read a file from the workspace. Use this INSTEAD of cat/head/tail. Do NOT re-read files you have already read. If output is truncated, switch to read_file_range for specific line ranges.",
         parameters=(ToolParameter(name="path", type="string", required=True),),
         risk_level="low",
     )

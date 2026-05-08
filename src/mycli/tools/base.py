@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from mycli.domain.tools import ToolCall, ToolEvidence, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
 
 
 @dataclass(slots=True, frozen=True)

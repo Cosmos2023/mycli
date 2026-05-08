@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import resolve_workspace_path
 
@@ -12,7 +12,7 @@ class MkdirTool:
     name = "mkdir"
     spec = ToolSpec(
         name="mkdir",
-        description="Create a directory in the workspace.",
+        description="Create a new directory. Use only when the directory does not already exist. Most file tools auto-create parent directories.",
         parameters=(ToolParameter(name="path", type="string", required=True),),
         risk_level="medium",
     )

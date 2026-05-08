@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.infrastructure.shell_adapter import run_command
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
@@ -11,7 +11,7 @@ class RunShellTool:
     name = "run_shell"
     spec = ToolSpec(
         name="run_shell",
-        description="Run a shell command in the workspace using a structured args list.",
+        description="Execute a system command. ONLY for operations that dedicated tools cannot handle (git, npm, pytest, docker). NEVER for cat/grep/find/ls/sed/awk. Output is truncated — inspect exit code and tail output.",
         parameters=(
             ToolParameter(
                 name="args",

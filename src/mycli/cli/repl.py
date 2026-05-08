@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from typing import Any
+
+from mycli.application.turn_service import TurnService
+
+
+def handle_slash_command(command: str) -> str:
+    if command == "/help":
+        return "\n".join(
+            [
+                "/help",
+                "/skill",
+                "/skills",
+                "/memory",
+                "/plan",
+                "/trace",
+                "/tools",
+                "/undo",
+                "/resume <session>",
+                "/fork [source] <new-session> [message-index]",
+                "/stats",
+                "/session",
+                "/sessions",
+                "/quit",
+            ]
+        )
+    if command == "/quit":
+        return "quit"
+    return f"Unknown command: {command}"
+
+
+def build_command_handler(
+    service: TurnService,
+) -> Callable[[str], Iterable[str]]:
+    def handle(command: str) -> Iterable[str]:
+        if command in {"/skill", "/skills"}:
+            return [f"[skill] {line}" for line in service.inspect_skills()]
+        if command == "/tools":
+            return [f"[tool] {line}" for line in service.inspect_tools()]
+        if command == "/memory":
+            return [f"[memory] {line}" for line in service.inspect_memory()]
+        if command == "/plan":
+            return [f"[plan] {line}" for line in service.inspect_plan()]
+        if command == "/session":
+            return [f"[session] {line}" for line in service.inspect_session()]
+        if command == "/sessions":
+            return [f"[session] {line}" for line in service.inspect_sessions()]
+        if command == "/stats":
+            return [f"[stats] {line}" for line in service.inspect_stats()]
+        if command.startswith("/resume"):
+            parts = command.split()
+            session_id = parts[1] if len(parts) > 1 else None
+            return [f"[session] {line}" for line in service.resume_session(session_id)]
+        if command.startswith("/fork"):
+            parts = command.split()
+            source_session_id: str | None = None
+            new_session_id: str | None = None
+            fork_point: int | None = None
+            if len(parts) == 2:
+                new_session_id = parts[1]
+            elif len(parts) >= 3:
+                source_session_id = parts[1]
+                new_session_id = parts[2]
+                if len(parts) >= 4:
+                    try:
+                        fork_point = int(parts[3])
+                    except ValueError:
+                        return [f"[session] invalid fork point: {parts[3]}"]
+            return [
+                f"[session] {line}"
+                for line in service.fork_session(source_session_id, new_session_id, fork_point)
+            ]
+        if command == "/trace":
+            return [f"[trace] {line}" for line in service.inspect_trace()]
+        if command == "/undo":
+            return [f"[undo] {service.undo_last_file_change()}"]
+        return [f"Unknown command: {command}"]
+
+    return handle
+
+
+def run_repl(
+    turn_handler: Callable[[str], str | Iterable[str]],
+    input_func: Callable[[str], str] = input,
+    output_func: Callable[[str], Any] = print,
+    session_id: str = "default",
+    decision_handler: Callable[[str], Iterable[str]] | None = None,
+    pending_decision_provider: Callable[[], bool] | None = None,
+    command_handler: Callable[[str], Iterable[str]] | None = None,
+) -> None:
+    while True:
+        try:
+            raw = input_func("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            output_func("Bye.")
+            return
+        if not raw:
+            continue
+        if raw.startswith("/"):
+            handled = handle_slash_command(raw)
+            if handled == "quit":
+                output_func("Bye.")
+                return
+            if handled.startswith("Unknown command:") and command_handler is not None:
+                for line in command_handler(raw):
+                    output_func(line)
+            else:
+                output_func(handled)
+            continue
+        if pending_decision_provider is not None and pending_decision_provider():
+            if raw in {"1", "2", "3"} and decision_handler is not None:
+                for line in decision_handler(raw):
+                    output_func(line)
+            else:
+                output_func("There is a pending risky action. Choose one of the available options.")
+            continue
+        rendered = turn_handler(raw)
+        if isinstance(rendered, str):
+            output_func(rendered)
+            continue
+        for line in rendered:
+            output_func(line)

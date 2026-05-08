@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import require_text_file, resolve_workspace_path
 
@@ -12,7 +12,7 @@ class CreateFileTool:
     name = "create_file"
     spec = ToolSpec(
         name="create_file",
-        description="Create a UTF-8 text file in the workspace.",
+        description="Create a new file. Use only when the file does not already exist. To modify an existing file, use edit_file or replace_in_file.",
         parameters=(
             ToolParameter(name="path", type="string", required=True),
             ToolParameter(name="content", type="string", required=True),

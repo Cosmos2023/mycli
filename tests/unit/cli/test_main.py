@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from rich.status import Status
+from rich.syntax import Syntax
+from rich.text import Text
+
 from mycli.cli.main import (
     build_command_handler,
     build_parser,
@@ -10,6 +14,14 @@ from mycli.cli.main import (
     handle_slash_command,
     main,
     render_activity_lines,
+)
+from mycli.cli.rendering import (
+    StreamingRenderState,
+    render_diff_view,
+    render_diff_lines,
+    render_streaming_live_output,
+    render_streaming_state_lines,
+    render_tool_status,
 )
 from mycli.domain.runtime import (
     ActivityEvent,
@@ -25,8 +37,8 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.tools import ToolCall
-from mycli.infrastructure.models.native_tool_adapter import NativeToolModelAdapter
-from mycli.infrastructure.models.responses_adapter import ResponsesModelAdapter
+from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
+from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 
 
 def test_build_parser_uses_mycli_prog_name() -> None:
@@ -75,6 +87,8 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "create_file",
         "delete_path",
         "edit_file",
+        "enter_plan_mode",
+        "exit_plan_mode",
         "git_diff",
         "git_log",
         "git_status",
@@ -150,6 +164,40 @@ def test_build_turn_service_uses_protocol_from_project_config_file(tmp_path: Pat
     )
 
     assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
+
+
+def test_build_turn_service_passes_cli_env_to_mcp_config_loader(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[servers.fs]",
+                'command = "python"',
+                'args = ["server.py"]',
+                "[servers.fs.env]",
+                'TOKEN = "${MCP_TEST_TOKEN}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MCP_TEST_TOKEN": "from-cli-env",
+        },
+    )
+
+    provider = service._runtime._contributed_tool_providers[0]
+    client = provider.adapter._clients["fs"]
+    assert client.config.env["TOKEN"] == "from-cli-env"
 
 
 def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path: Path) -> None:
@@ -300,16 +348,16 @@ def test_main_renders_activity_from_turn_items_when_present(monkeypatch, tmp_pat
                     started_at="2026-04-11T00:00:00+00:00",
                     completed_at="2026-04-11T00:00:01+00:00",
                     items=(
-                        TurnItem(type=TurnItemType.REASONING, text="Thinking: inspect repo"),
+                        TurnItem(type=TurnItemType.REASONING, text="inspect repo"),
                         TurnItem(
                             type=TurnItemType.TOOL_CALL,
-                            text="Reading: README.md",
+                            text="README.md",
                             tool_name="read_file",
                             call_id="call_1",
                         ),
                         TurnItem(
                             type=TurnItemType.TOOL_RESULT,
-                            text="Done reading: README.md",
+                            text="README.md",
                             tool_name="read_file",
                             call_id="call_1",
                         ),
@@ -349,17 +397,25 @@ def test_render_activity_lines_coalesces_reasoning_fragments_from_turn_items() -
             started_at="2026-04-11T00:00:00+00:00",
             completed_at="2026-04-11T00:00:01+00:00",
             items=(
-                TurnItem(type=TurnItemType.REASONING, text="Thinking: The"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  user wants"),
-                TurnItem(type=TurnItemType.REASONING, text="Thinking:  a short summary."),
+                TurnItem(type=TurnItemType.REASONING, text="The"),
+                TurnItem(type=TurnItemType.REASONING, text=" user wants"),
+                TurnItem(type=TurnItemType.REASONING, text=" a short summary."),
                 TurnItem(
                     type=TurnItemType.TOOL_CALL,
-                    text="Reading: pyproject.toml",
+                    text="pyproject.toml",
                     tool_name="read_file",
                     call_id="call_1",
                 ),
-                TurnItem(type=TurnItemType.REASONING, text="Planning: Summarize"),
-                TurnItem(type=TurnItemType.REASONING, text="Planning:  the architecture next."),
+                TurnItem(
+                    type=TurnItemType.REASONING,
+                    text="Summarize",
+                    metadata={"activity_kind": "planning"},
+                ),
+                TurnItem(
+                    type=TurnItemType.REASONING,
+                    text=" the architecture next.",
+                    metadata={"activity_kind": "planning"},
+                ),
             ),
         ),
     )
@@ -700,8 +756,69 @@ def test_main_skips_streamed_answer_chunks_when_final_message_is_present(
     ]
 
 
+def test_streaming_render_state_accumulates_chunks_and_tool_status() -> None:
+    state = StreamingRenderState()
+
+    assert state.start_tool("read_file", "README.md") == "[tool] running read_file: README.md"
+    assert state.append_chunk("hello") == "[stream] hello"
+    assert state.append_chunk(" world") == "[stream] hello world"
+    assert state.text == "hello world"
+    assert state.finish_tool("read_file", "README.md") == "[tool] done read_file: README.md"
+    assert state.active_tool is None
+
+
+def test_render_streaming_state_lines_shows_accumulated_output() -> None:
+    response = TurnResponse(
+        assistant_message="",
+        streamed_chunks=("hello", " ", "world"),
+    )
+
+    assert render_streaming_state_lines(response) == [
+        "[stream] hello",
+        "[stream] hello ",
+        "[stream] hello world",
+    ]
+
+
+def test_render_streaming_live_output_uses_rich_text() -> None:
+    response = TurnResponse(
+        assistant_message="",
+        streamed_chunks=("hello", " ", "world"),
+    )
+
+    rendered = render_streaming_live_output(response)
+
+    assert [item.plain for item in rendered] == ["hello", "hello ", "hello world"]
+    assert all(isinstance(item, Text) for item in rendered)
+
+
+def test_render_tool_status_uses_rich_status() -> None:
+    rendered = render_tool_status("read_file", "README.md")
+
+    assert isinstance(rendered, Status)
+    assert rendered.status == "read_file: README.md"
+
+
+def test_render_diff_view_uses_rich_syntax() -> None:
+    rendered = render_diff_view("+new")
+
+    assert isinstance(rendered, Syntax)
+    assert rendered.code == "+new"
+
+
+def test_render_diff_lines_adds_line_numbers_and_markers() -> None:
+    assert render_diff_lines("@@ -1 +1 @@\n-old\n+new") == [
+        "   1 [@]@@ -1 +1 @@",
+        "   2 [-]-old",
+        "   3 [+]+new",
+    ]
+
+
 def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     class FakeService:
+        def undo_last_file_change(self):
+            return "Restored notes.txt"
+
         def inspect_plan(self) -> tuple[str, ...]:
             return ("in_progress: Inspect runtime entrypoints",)
 
@@ -723,6 +840,18 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_sessions(self) -> tuple[str, ...]:
             return ("* demo active messages=3", "  backlog active messages=1")
 
+        def inspect_stats(self) -> tuple[str, ...]:
+            return ("cache_hit_rate=0.5", "alerts=none")
+
+        def resume_session(self, session_id=None) -> tuple[str, ...]:
+            return (f"resumed {session_id or 'demo'}", "messages=3")
+
+        def fork_session(self, source_session_id=None, new_session_id=None, fork_point=None) -> tuple[str, ...]:
+            return (
+                f"forked {source_session_id or 'demo'} -> {new_session_id or 'demo-fork'}",
+                f"fork_point={fork_point}",
+            )
+
     handler = build_command_handler(FakeService())
 
     assert list(handler("/plan")) == ["[plan] in_progress: Inspect runtime entrypoints"]
@@ -734,6 +863,16 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/sessions")) == [
         "[session] * demo active messages=3",
         "[session]   backlog active messages=1",
+    ]
+    assert list(handler("/undo")) == ["[undo] Restored notes.txt"]
+    assert list(handler("/stats")) == ["[stats] cache_hit_rate=0.5", "[stats] alerts=none"]
+    assert list(handler("/resume backlog")) == [
+        "[session] resumed backlog",
+        "[session] messages=3",
+    ]
+    assert list(handler("/fork demo branch 2")) == [
+        "[session] forked demo -> branch",
+        "[session] fork_point=2",
     ]
 
 
@@ -770,7 +909,7 @@ def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path
     )
 
 
-def test_turn_service_inspect_trace_renders_dynamic_tool_lifecycle_events(tmp_path: Path) -> None:
+def test_turn_service_inspect_trace_renders_tool_lifecycle_events(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
@@ -785,7 +924,7 @@ def test_turn_service_inspect_trace_renders_dynamic_tool_lifecycle_events(tmp_pa
     service._trace_service.append(
         "demo",
         RuntimeTraceEvent(
-            kind="dynamic_tool_lifecycle",
+            kind="tool_lifecycle",
             turn_id="turn_1",
             payload={
                 "route_name": "workspace_summary",
@@ -799,7 +938,7 @@ def test_turn_service_inspect_trace_renders_dynamic_tool_lifecycle_events(tmp_pa
     rendered = service.inspect_trace()
 
     assert rendered == (
-        "dynamic_tool_lifecycle workspace_summary scope=thread state=completed source=runtime",
+        "tool_lifecycle workspace_summary scope=thread state=completed source=runtime",
     )
 
 
@@ -827,7 +966,7 @@ def test_turn_service_inspect_trace_prefers_high_signal_events_over_turn_items(t
     service._trace_service.append(
         "demo",
         RuntimeTraceEvent(
-            kind="dynamic_tool_lifecycle",
+            kind="tool_lifecycle",
             turn_id="turn_1",
             payload={
                 "route_name": "workspace_summary",
@@ -841,5 +980,5 @@ def test_turn_service_inspect_trace_prefers_high_signal_events_over_turn_items(t
     rendered = service.inspect_trace()
 
     assert rendered == (
-        "dynamic_tool_lifecycle workspace_summary scope=thread state=completed source=runtime",
+        "tool_lifecycle workspace_summary scope=thread state=completed source=runtime",
     )

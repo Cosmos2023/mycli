@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.infrastructure.shell_adapter import run_command
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
@@ -12,7 +12,7 @@ class GitLogTool:
     name = "git_log"
     spec = ToolSpec(
         name="git_log",
-        description="Inspect recent git commit history in the current workspace.",
+        description="Show recent git commit history. Use to understand what changed recently. For uncommitted changes, use git_diff.",
         parameters=(ToolParameter(name="limit", type="integer", required=False),),
         risk_level="low",
     )

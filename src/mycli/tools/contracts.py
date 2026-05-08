@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.registry import ToolRegistryV2
 
 

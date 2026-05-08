@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.infrastructure.shell_adapter import run_command
 from mycli.tools.base import ToolResultV2, ToolSpec
 
@@ -11,7 +11,7 @@ class GitStatusTool:
     name = "git_status"
     spec = ToolSpec(
         name="git_status",
-        description="Inspect git status in the current workspace.",
+        description="Show current git status (modified, staged, untracked files). Use to check repo state before starting work. For change details, use git_diff.",
         risk_level="low",
     )
 

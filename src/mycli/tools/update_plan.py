@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
 
@@ -10,7 +10,7 @@ class UpdatePlanTool:
     name = "update_plan"
     spec = ToolSpec(
         name="update_plan",
-        description="Replace the active plan with a structured list of pending and in-progress steps.",
+        description="Manage the task plan. Use ONLY for complex multi-step tasks. Do NOT create a plan for simple single-step requests. When a plan exists, advance the current step — do NOT keep rewriting the plan.",
         parameters=(
             ToolParameter(
                 name="items",

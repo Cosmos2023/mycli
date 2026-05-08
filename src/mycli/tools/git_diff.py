@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.infrastructure.shell_adapter import run_command
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
@@ -12,7 +12,7 @@ class GitDiffTool:
     name = "git_diff"
     spec = ToolSpec(
         name="git_diff",
-        description="Inspect git diff in the current workspace or for a specific path.",
+        description="Show uncommitted git changes. Use to inspect what changed before committing. For commit history, use git_log. For current branch state, use git_status.",
         parameters=(ToolParameter(name="path", type="string", required=False),),
         risk_level="low",
     )

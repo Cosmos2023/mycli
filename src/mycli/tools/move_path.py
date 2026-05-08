@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 from mycli.tools.filesystem import resolve_workspace_path
 
@@ -13,7 +13,7 @@ class MovePathTool:
     name = "move_path"
     spec = ToolSpec(
         name="move_path",
-        description="Move a file or directory within the workspace.",
+        description="Move or rename a file or directory. Verify both source and destination paths before calling.",
         parameters=(
             ToolParameter(name="source", type="string", required=True),
             ToolParameter(name="destination", type="string", required=True),
