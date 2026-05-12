@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable, cast
 
 
 TEXT_EXTENSIONS = {
@@ -79,7 +79,10 @@ def read_file(
     handler_mod = _get_handler(ext)
     if handler_mod is not None:
         try:
-            return handler_mod.read_file(file_path, pages=pages)
+            handler = cast(
+                Callable[..., dict[str, Any]], getattr(handler_mod, "read_file")
+            )
+            return handler(file_path, pages=pages)
         except ImportError:
             return {
                 "error": (
