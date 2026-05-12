@@ -8,6 +8,9 @@ from urllib.parse import urlparse
 
 import requests  # type: ignore[import-untyped]
 
+from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+
 
 _fetch_cache: dict[str, dict[str, Any]] = {}
 _CACHE_TTL = 900
@@ -105,3 +108,37 @@ class _BasicMarkdownParser(HTMLParser):
     def markdown(self) -> str:
         lines = [line.strip() for line in "".join(self._parts).splitlines()]
         return "\n".join(line for line in lines if line)
+
+
+class WebFetchTool:
+    name = "WebFetch"
+    spec = ToolSpec(
+        name="WebFetch",
+        description="Fetch a URL and return bounded markdown content with a short cache.",
+        parameters=(
+            ToolParameter(name="url", type="string", required=True),
+            ToolParameter(name="prompt", type="string", required=False),
+        ),
+        risk_level="low",
+    )
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+        url = str(arguments.get("url") or "")
+        if not url:
+            return ToolResultV2(
+                success=False,
+                summary="Failed to fetch web page",
+                error="WebFetch requires url.",
+            )
+        prompt = arguments.get("prompt")
+        payload = web_fetch(url, prompt=prompt if isinstance(prompt, str) else None)
+        success = "error" not in payload
+        return ToolResultV2(
+            success=success,
+            summary=f"Fetched {url}" if success else f"Failed to fetch {url}",
+            error=str(payload["error"]) if "error" in payload else None,
+            raw_payload=payload,
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        return self.execute(call.arguments).to_legacy()

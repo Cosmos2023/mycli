@@ -5,6 +5,10 @@ from collections.abc import Iterator
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import RuntimeBlock
 
+READ_TOOLS = {"read_file", "read_file_range", "Read"}
+SEARCH_TOOLS = {"search_text", "Grep"}
+STRUCTURE_TOOLS = {"list_directory", "LS"}
+
 
 class RuntimePolicyEvidence:
     def has_sufficient_overview_evidence(self, conversation: Conversation) -> bool:
@@ -18,8 +22,8 @@ class RuntimePolicyEvidence:
                 tool_name = block.metadata.get("tool_name")
                 if isinstance(tool_name, str) and block.metadata.get("success") is True:
                     tool_names.add(tool_name)
-        return "list_directory" in tool_names and bool(
-            {"read_file", "read_file_range", "search_text"} & tool_names
+        return bool(STRUCTURE_TOOLS & tool_names) and bool(
+            READ_TOOLS.union(SEARCH_TOOLS) & tool_names
         )
 
     def has_sufficient_repo_analysis_evidence(self, conversation: Conversation) -> bool:
@@ -40,12 +44,12 @@ class RuntimePolicyEvidence:
                 tool_names.add(tool_name)
             if (
                 isinstance(tool_name, str)
-                and tool_name in {"read_file", "read_file_range"}
+                and tool_name in READ_TOOLS
                 and isinstance(path, str)
                 and self.is_source_or_config_path(path.lower())
             ):
                 source_paths.add(path.lower())
-        return bool(source_paths) and (len(source_paths) >= 2 or "search_text" in tool_names)
+        return bool(source_paths) and (len(source_paths) >= 2 or bool(SEARCH_TOOLS & tool_names))
 
     def has_sufficient_debugging_evidence(self, conversation: Conversation) -> bool:
         has_failure = False
@@ -63,14 +67,14 @@ class RuntimePolicyEvidence:
                     block.metadata.get("success") is True
                     and isinstance(path, str)
                     and self.is_source_or_config_path(path.lower())
-                    and block.metadata.get("tool_name") in {"read_file", "read_file_range"}
+                    and block.metadata.get("tool_name") in READ_TOOLS
                 ):
                     has_source = True
         return has_failure and has_source
 
     def has_structure_evidence(self, conversation: Conversation) -> bool:
         for block in self.iter_successful_tool_result_blocks(conversation):
-            if block.metadata.get("tool_name") == "list_directory":
+            if block.metadata.get("tool_name") in STRUCTURE_TOOLS:
                 return True
         return False
 
@@ -83,7 +87,7 @@ class RuntimePolicyEvidence:
             normalized_path = path.lower()
             if normalized_path.endswith("readme.md"):
                 continue
-            if tool_name in {"read_file", "read_file_range"} and self.is_source_or_config_path(
+            if tool_name in READ_TOOLS and self.is_source_or_config_path(
                 normalized_path
             ):
                 return True
@@ -94,7 +98,7 @@ class RuntimePolicyEvidence:
         for block in self.iter_successful_tool_result_blocks(conversation):
             tool_name = block.metadata.get("tool_name")
             path = block.metadata.get("path")
-            if tool_name not in {"read_file", "read_file_range"}:
+            if tool_name not in READ_TOOLS:
                 continue
             if not isinstance(path, str) or not path:
                 continue
@@ -108,7 +112,7 @@ class RuntimePolicyEvidence:
 
     def has_truncation_signal(self, conversation: Conversation) -> bool:
         for block in self.iter_successful_tool_result_blocks(conversation):
-            if block.metadata.get("tool_name") not in {"read_file", "read_file_range"}:
+            if block.metadata.get("tool_name") not in READ_TOOLS:
                 continue
             lowered = (block.text or "").lower()
             if "excerpt truncated" in lowered or "use read_file_range" in lowered:

@@ -45,7 +45,9 @@ class ToolExposurePlanner:
         seen: set[str] = set()
         lifecycle_events: list[ToolContributionLifecycleEvent] = []
 
-        for spec in self._tool_registry.specs.values():
+        specs = self._tool_registry.specs
+        assert specs is not None
+        for spec in specs.values():
             entry = ToolExposureEntry(
                 route_key=ToolRouteKey.local(spec.name),
                 source=ToolRouteSource.REGISTRY,

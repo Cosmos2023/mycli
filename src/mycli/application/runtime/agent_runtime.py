@@ -293,24 +293,22 @@ class AgentRuntime:
         home_dir: Path,
         model_adapter: ModelAdapter,
     ) -> AgentRuntime:
-        from mycli.tools.edit_file import EditFileTool
-        from mycli.tools.list_directory import ListDirectoryTool
+        from mycli.tools.bash import BashTool
+        from mycli.tools.edit import EditTool
+        from mycli.tools.grep import GrepTool
+        from mycli.tools.ls import LSTool
         from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
-        from mycli.tools.read_file import ReadFileTool
-        from mycli.tools.read_file_range import ReadFileRangeTool
-        from mycli.tools.run_shell import RunShellTool
-        from mycli.tools.search_text import SearchTextTool
-        from mycli.tools.update_plan import UpdatePlanTool
+        from mycli.tools.plan import PlanTool
+        from mycli.tools.read import ReadTool
 
         tool_registry = ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(workspace_root),
-                ReadFileTool(workspace_root),
-                ReadFileRangeTool(workspace_root),
-                SearchTextTool(workspace_root),
-                EditFileTool(workspace_root),
-                RunShellTool(workspace_root),
-                UpdatePlanTool(),
+                LSTool(workspace_root),
+                ReadTool(workspace_root),
+                GrepTool(workspace_root),
+                EditTool(workspace_root),
+                BashTool(workspace_root),
+                PlanTool(),
                 EnterPlanModeTool(workspace_root),
                 ExitPlanModeTool(workspace_root),
             ]

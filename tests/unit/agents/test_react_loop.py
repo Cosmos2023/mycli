@@ -11,7 +11,7 @@ class FakeModel:
         self._decisions = [
             ModelDecision(
                 progress_message="Inspecting the workspace",
-                tool_call=ToolCall(name="list_directory", arguments={"path": "."}, reason="find entrypoints"),
+                tool_call=ToolCall(name="LS", arguments={"path": "."}, reason="find entrypoints"),
             ),
             ModelDecision(
                 assistant_message="The workspace root contains README.md and src/",
@@ -28,7 +28,7 @@ class FakeToolRegistry:
         return ToolResult(success=True, summary="README.md, src", raw_payload={"entries": ["README.md", "src"]})
 
     def list_names(self) -> list[str]:
-        return ["list_directory"]
+        return ["LS"]
 
 
 def test_react_agent_runs_until_done(tmp_path: Path) -> None:
@@ -74,7 +74,7 @@ class EditThenDoneModel:
         return ModelDecision(
             progress_message="Preparing an edit",
             tool_call=ToolCall(
-                name="edit_file",
+                name="Edit",
                 arguments={"path": "README.md", "new_content": "updated"},
                 reason="update docs",
             ),
@@ -101,7 +101,7 @@ class MultiToolRegistry:
         return ToolResult(success=True, summary="ok", raw_payload={})
 
     def list_names(self) -> list[str]:
-        return ["edit_file", "run_shell", "list_directory"]
+        return ["Edit", "Bash", "LS"]
 
 
 class NeedsChoiceSafetyPolicy:
@@ -132,7 +132,7 @@ def test_react_agent_returns_pending_decision_for_needs_choice_from_safety_polic
     registry = MultiToolRegistry()
     agent = ReactAgent(
         model_client=RunShellModel(
-            ToolCall(name="run_shell", arguments={"args": ["git", "push", "origin", "main"]}, reason="publish")
+            ToolCall(name="Bash", arguments={"command": "git push origin main"}, reason="publish")
         ),
         tool_registry=registry,
         safety_policy=NeedsChoiceSafetyPolicy(),
@@ -144,7 +144,7 @@ def test_react_agent_returns_pending_decision_for_needs_choice_from_safety_polic
     )
 
     assert response.pending_decision is not None
-    assert response.pending_decision.tool_call.name == "run_shell"
+    assert response.pending_decision.tool_call.name == "Bash"
     assert len(registry.run_calls) == 0
 
 
@@ -152,7 +152,7 @@ def test_react_agent_returns_deny_message_for_safety_policy_denial(tmp_path: Pat
     registry = MultiToolRegistry()
     agent = ReactAgent(
         model_client=RunShellModel(
-            ToolCall(name="run_shell", arguments={"args": "not-a-list"}, reason="run invalid")
+            ToolCall(name="Bash", arguments={}, reason="run invalid")
         ),
         tool_registry=registry,
     )

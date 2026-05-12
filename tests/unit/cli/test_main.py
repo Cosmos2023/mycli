@@ -83,24 +83,21 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         == home_dir / ".mycli" / "logs" / "demo" / "error.log"
     )
     assert service._tool_registry.list_names() == [
-        "append_file",
-        "create_file",
-        "delete_path",
-        "edit_file",
+        "AskUserQuestion",
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "KillShell",
+        "LS",
+        "Lint",
+        "Plan",
+        "Read",
+        "WebFetch",
+        "WebSearch",
+        "Write",
         "enter_plan_mode",
         "exit_plan_mode",
-        "git_diff",
-        "git_log",
-        "git_status",
-        "list_directory",
-        "mkdir",
-        "move_path",
-        "read_file",
-        "read_file_range",
-        "replace_in_file",
-        "run_shell",
-        "search_text",
-        "update_plan",
     ]
 
 

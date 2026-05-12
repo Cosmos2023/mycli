@@ -20,24 +20,22 @@ from mycli.tools.base import ToolResultV2
 
 CONCURRENCY_SAFE_TOOLS = frozenset(
     {
-        "read_file",
-        "read_file_range",
-        "search_text",
-        "list_directory",
-        "git_status",
-        "git_diff",
-        "git_log",
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "WebSearch",
+        "WebFetch",
+        "Lint",
     }
 )
 
 FILE_MUTATION_TOOLS = frozenset(
     {
-        "append_file",
-        "create_file",
-        "delete_path",
+        "Edit",
+        "Write",
         "edit_file",
-        "move_path",
-        "replace_in_file",
+        "write_file",
     }
 )
 
@@ -485,10 +483,7 @@ class ToolExecutionService:
             turn_metadata["file_history_errors"] = errors
 
     def _mutation_paths(self, call: ToolCall) -> tuple[str, ...]:
-        if call.name == "move_path":
-            values = (call.arguments.get("source"), call.arguments.get("destination"))
-            return tuple(value for value in values if isinstance(value, str) and value)
-        value = call.arguments.get("path")
+        value = call.arguments.get("file_path") or call.arguments.get("path")
         if isinstance(value, str) and value:
             return (value,)
         return ()
@@ -579,29 +574,10 @@ class ToolExecutionService:
         call: ToolCall,
         result_payload: dict[str, object],
     ) -> list[dict[str, object]]:
-        if call.name in {"create_file", "edit_file", "replace_in_file", "append_file"}:
-            path = result_payload.get("path") or call.arguments.get("path")
+        if call.name in FILE_MUTATION_TOOLS:
+            path = result_payload.get("path") or call.arguments.get("file_path") or call.arguments.get("path")
             if isinstance(path, str) and path:
                 return [{"kind": call.name, "path": path}]
-        if call.name == "delete_path":
-            path = result_payload.get("path") or call.arguments.get("path")
-            if isinstance(path, str) and path:
-                return [{"kind": "delete", "path": path}]
-        if call.name == "mkdir":
-            path = result_payload.get("path") or call.arguments.get("path")
-            if isinstance(path, str) and path:
-                return [{"kind": "mkdir", "path": path}]
-        if call.name == "move_path":
-            source = result_payload.get("source") or call.arguments.get("source")
-            destination = result_payload.get("destination") or call.arguments.get("destination")
-            if isinstance(source, str) and source and isinstance(destination, str) and destination:
-                return [
-                    {
-                        "kind": "move",
-                        "source": source,
-                        "destination": destination,
-                    }
-                ]
         return []
 
     def _tool_activity_event(
@@ -634,53 +610,41 @@ class ToolExecutionService:
     def _tool_activity_prefix(self, call: ToolCall) -> str:
         path = self._activity_path(call)
         query = self._activity_query(call)
-        if call.name == "list_directory":
+        if call.name == "LS":
             return path or "."
-        if call.name == "read_file":
+        if call.name == "Read":
             return path or "<unknown>"
-        if call.name == "read_file_range":
-            start = call.arguments.get("start_line")
-            end = call.arguments.get("end_line")
-            if path and isinstance(start, int) and isinstance(end, int):
-                return f"{path}:{start}-{end}"
-            return path or "<unknown>"
-        if call.name == "search_text":
+        if call.name == "Grep":
             message = f"query={query or '<unknown>'}"
-            glob = call.arguments.get("glob")
-            if isinstance(glob, str) and glob:
-                message += f" glob={glob}"
+            include = call.arguments.get("include")
+            if isinstance(include, str) and include:
+                message += f" include={include}"
             return message
-        if call.name in {"edit_file", "replace_in_file", "append_file"}:
+        if call.name in FILE_MUTATION_TOOLS:
             return path or "<unknown>"
-        if call.name == "update_plan":
+        if call.name == "Plan":
             return "updating task plan"
-        if call.name.startswith("git_"):
-            return call.name.removeprefix("git_")
-        if call.name == "run_shell":
+        if call.name == "Bash":
             return self._activity_preview(call) or call.name
         return call.name
 
     def _tool_finished_message(self, call: ToolCall, *, result_summary: str | None) -> str:
         path = self._activity_path(call)
         query = self._activity_query(call)
-        if call.name == "search_text":
+        if call.name == "Grep":
             return f"query={query or '<unknown>'}"
-        if call.name in {"read_file", "read_file_range"}:
+        if call.name == "Read":
             return path or "<unknown>"
-        if call.name in {"edit_file", "replace_in_file"}:
+        if call.name in FILE_MUTATION_TOOLS:
             return path or "<unknown>"
-        if call.name == "append_file":
-            return path or "<unknown>"
-        if call.name.startswith("git_"):
-            return call.name.removeprefix("git_")
-        if call.name == "run_shell":
+        if call.name == "Bash":
             return self._activity_preview(call) or (result_summary or call.name)
-        if call.name == "update_plan":
+        if call.name == "Plan":
             return "updated task plan"
         return call.name
 
     def _activity_path(self, call: ToolCall) -> str | None:
-        value = call.arguments.get("path")
+        value = call.arguments.get("file_path") or call.arguments.get("path")
         return value if isinstance(value, str) and value else None
 
     def _activity_query(self, call: ToolCall) -> str | None:
@@ -688,6 +652,9 @@ class ToolExecutionService:
         return value if isinstance(value, str) and value else None
 
     def _activity_preview(self, call: ToolCall) -> str | None:
+        command = call.arguments.get("command")
+        if isinstance(command, str) and command:
+            return command
         args = call.arguments.get("args")
         if isinstance(args, list):
             parts = [item for item in args if isinstance(item, str)]

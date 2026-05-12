@@ -5,7 +5,7 @@ from typing import Iterable
 
 from mycli.domain.runtime import DecisionKind, RiskLevel
 from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.run_shell import derive_command_pattern
+from mycli.tools.bash import derive_command_pattern
 
 
 _SECRET_HINTS = ("secret", "token", "key", "password", "passwd", "pwd", "auth", "credential")
@@ -62,77 +62,75 @@ class ToolSafetyDecision:
 
 class SafetyPolicy:
     def classify(self, call: ToolCall) -> RiskLevel:
-        if call.name in {
-            "list_directory",
-            "read_file",
-            "read_file_range",
-            "search_text",
-            "git_status",
-            "git_diff",
-            "git_log",
-            "update_plan",
+        name = _canonical_tool_name(call.name)
+        if name in {
+            "Read",
+            "Grep",
+            "Glob",
+            "LS",
+            "WebSearch",
+            "WebFetch",
+            "Lint",
+            "AskUserQuestion",
+            "Plan",
+            "EnterPlanMode",
+            "ExitPlanMode",
         }:
             return RiskLevel.LOW
-        if call.name in {
-            "append_file",
-            "create_file",
-            "mkdir",
-            "move_path",
-            "delete_path",
-            "replace_in_file",
-            "edit_file",
-        }:
+        if name in {"Edit", "Write", "KillShell"}:
             return RiskLevel.MEDIUM
-        if call.name == "run_shell":
+        if name == "Bash":
             return RiskLevel.HIGH
         return RiskLevel.HIGH
 
     def evaluate(self, call: ToolCall) -> ToolSafetyDecision:
-        if call.name in {
-            "list_directory",
-            "read_file",
-            "read_file_range",
-            "search_text",
-            "git_status",
-            "git_diff",
-            "git_log",
-            "update_plan",
+        name = _canonical_tool_name(call.name)
+        if name in {
+            "Read",
+            "Grep",
+            "Glob",
+            "LS",
+            "WebSearch",
+            "WebFetch",
+            "Lint",
+            "AskUserQuestion",
+            "Plan",
+            "EnterPlanMode",
+            "ExitPlanMode",
         }:
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
-                preview=call.name,
+                preview=name,
             )
-        if call.name in {
-            "append_file",
-            "create_file",
-            "mkdir",
-            "move_path",
-            "delete_path",
-            "replace_in_file",
-            "edit_file",
-        }:
+        if name in {"Edit", "Write", "KillShell"}:
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
                 preview=str(
-                    call.arguments.get("path")
+                    call.arguments.get("file_path")
+                    or call.arguments.get("path")
                     or call.arguments.get("source")
                     or call.arguments.get("destination")
+                    or call.arguments.get("shell_id")
                     or ""
                 ),
             )
-        if call.name == "run_shell":
+        if name == "Bash":
+            command_value = call.arguments.get("command")
             args_value = call.arguments.get("args")
-            if not isinstance(args_value, list) or not args_value or not all(
+            if isinstance(command_value, str) and command_value:
+                args = command_value.split()
+            elif isinstance(args_value, list) and args_value and all(
                 isinstance(item, str) for item in args_value
             ):
+                args = list(args_value)
+            else:
                 return ToolSafetyDecision(
                     kind=DecisionKind.DENY,
-                    reason="run_shell requires a non-empty args list.",
+                    reason="Bash requires a non-empty command.",
                     preview="invalid shell call",
                 )
-            args = list(args_value)
             pattern = derive_command_pattern(args)
             preview = _redact_shell_preview(args)
             if pattern in {"git push", "git reset --hard", "rm -rf"}:
@@ -153,3 +151,16 @@ class SafetyPolicy:
             reason="Unsupported tool.",
             preview=call.name,
         )
+
+
+def _canonical_tool_name(name: str) -> str:
+    return {
+        "read_file": "Read",
+        "read_file_range": "Read",
+        "edit_file": "Edit",
+        "write_file": "Write",
+        "search_text": "Grep",
+        "list_directory": "LS",
+        "run_shell": "Bash",
+        "update_plan": "Plan",
+    }.get(name, name)

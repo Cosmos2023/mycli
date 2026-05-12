@@ -10,8 +10,8 @@ class ToolResultFormatter:
     def __init__(
         self,
         *,
-        read_file_max_chars: int = 3000,
-        read_file_range_max_chars: int = 2000,
+        read_file_max_chars: int = 8000,
+        read_file_range_max_chars: int = 6000,
         run_shell_max_chars: int = 500,
         search_max_matches: int = 10,
         default_max_chars: int = 1600,
@@ -30,25 +30,33 @@ class ToolResultFormatter:
         return rendered[: max_chars - 3].rstrip() + "..."
 
     def _limit_for(self, tool_name: str) -> int:
-        if tool_name == "read_file":
+        if tool_name in {"read_file", "Read"}:
             return self._read_file_max
         if tool_name == "read_file_range":
             return self._read_file_range_max
-        if tool_name == "run_shell":
+        if tool_name in {"run_shell", "Bash"}:
             return self._run_shell_max
         return self._default_max
 
     def _render(self, tool_name: str, result: ToolResultV2) -> str:
         if not result.success:
             return self._render_failure(result)
-        if result.evidence and tool_name in {"read_file", "read_file_range"}:
-            rendered = self._render_from_evidence(result)
-            if self._payload_content_is_truncated(result):
+        if result.evidence and tool_name in {"read_file", "read_file_range", "Read"}:
+            notice = (
+                "[文件内容较长，已截断。使用 read_file_range 读取后续内容。]"
+                if self._payload_content_is_truncated(tool_name, result)
+                else "[文件读取完毕。如果你已有足够信息，现在就可以回答。]"
+            )
+            rendered = self._render_from_evidence(
+                result,
+                snippet_max_chars=self._evidence_snippet_limit(tool_name, result, notice),
+            )
+            if self._payload_content_is_truncated(tool_name, result):
                 return (
                     f"{rendered}\n"
-                    "[文件内容较长，已截断。使用 read_file_range 读取后续内容。]"
+                    f"{notice}"
                 )
-            return f"{rendered}\n[文件读取完毕。如果你已有足够信息，现在就可以回答。]"
+            return f"{rendered}\n{notice}"
         payload_rendered = self._render_from_payload(tool_name, result)
         if payload_rendered is not None:
             return payload_rendered
@@ -68,13 +76,18 @@ class ToolResultFormatter:
             parts.append(f"Path: {payload_path}")
         return "\n".join(parts)
 
-    def _render_from_evidence(self, result: ToolResultV2) -> str:
+    def _render_from_evidence(
+        self,
+        result: ToolResultV2,
+        *,
+        snippet_max_chars: int = 800,
+    ) -> str:
         parts = [result.summary, "Evidence:"]
         for evidence in result.evidence:
             parts.append(self._format_evidence_header(evidence))
             if evidence.snippet:
                 snippet = _normalize_whitespace(evidence.snippet)
-                parts.append(f"  snippet: {snippet[:800]}")
+                parts.append(f"  snippet: {snippet[:snippet_max_chars]}")
         return "\n".join(parts)
 
     def _format_evidence_header(self, evidence: ToolEvidence) -> str:
@@ -92,15 +105,15 @@ class ToolResultFormatter:
         result: ToolResultV2,
     ) -> str | None:
         payload = result.raw_payload
-        if tool_name == "search_text":
+        if tool_name in {"search_text", "Grep"}:
             rendered = self._render_search_result(result)
             if rendered is not None:
                 return rendered
-        if tool_name == "list_directory":
+        if tool_name in {"list_directory", "LS"}:
             rendered = self._render_directory_result(result)
             if rendered is not None:
                 return rendered
-        if tool_name == "run_shell":
+        if tool_name in {"run_shell", "Bash"}:
             rendered = self._render_shell_result(result)
             if rendered is not None:
                 return rendered
@@ -191,9 +204,28 @@ class ToolResultFormatter:
             parts.append("[文件读取完毕。如果你已有足够信息，现在就可以回答。]")
         return "\n".join(parts)
 
-    def _payload_content_is_truncated(self, result: ToolResultV2) -> bool:
+    def _payload_content_is_truncated(self, tool_name: str, result: ToolResultV2) -> bool:
         content = result.raw_payload.get("content")
-        return isinstance(content, str) and len(content) > 1200
+        return isinstance(content, str) and len(content) > self._content_limit_for(tool_name)
+
+    def _content_limit_for(self, tool_name: str) -> int:
+        if tool_name in {"read_file", "Read"}:
+            return self._read_file_max
+        if tool_name == "read_file_range":
+            return self._read_file_range_max
+        return 1200
+
+    def _evidence_snippet_limit(
+        self,
+        tool_name: str,
+        result: ToolResultV2,
+        notice: str,
+    ) -> int:
+        max_chars = self._limit_for(tool_name)
+        fixed_chars = len(result.summary) + len("Evidence:") + len(notice) + 16
+        for evidence in result.evidence:
+            fixed_chars += len(self._format_evidence_header(evidence)) + len("  snippet: ") + 2
+        return max(200, max_chars - fixed_chars)
 
 
 def _normalize_whitespace(value: str) -> str:

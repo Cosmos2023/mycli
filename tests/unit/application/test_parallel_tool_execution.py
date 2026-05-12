@@ -87,28 +87,28 @@ def _service(
 
 def test_concurrency_safe_tools_exports_expected_names() -> None:
     assert {
-        "read_file",
-        "read_file_range",
-        "search_text",
-        "list_directory",
-        "git_status",
-        "git_diff",
-        "git_log",
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "WebSearch",
+        "WebFetch",
+        "Lint",
     }.issubset(CONCURRENCY_SAFE_TOOLS)
-    assert "edit_file" not in CONCURRENCY_SAFE_TOOLS
-    assert "update_plan" not in CONCURRENCY_SAFE_TOOLS
+    assert "Edit" not in CONCURRENCY_SAFE_TOOLS
+    assert "Plan" not in CONCURRENCY_SAFE_TOOLS
 
 
 def test_execute_tool_calls_runs_adjacent_safe_tools_in_parallel(tmp_path: Path) -> None:
-    read_file = DelayedTool(name="read_file", delay_seconds=0.20)
-    search_text = DelayedTool(name="search_text", delay_seconds=0.20)
+    read_file = DelayedTool(name="Read", delay_seconds=0.20)
+    search_text = DelayedTool(name="Grep", delay_seconds=0.20)
     service, router = _service(tmp_path, tools=[read_file, search_text])
     conversation = Conversation(session_id="demo")
     activity_events: list[ActivityEvent] = []
     turn_items: list[TurnItem] = []
     calls = (
-        ToolCall(name="read_file", arguments={"path": "alpha"}, reason="inspect", call_id="call_1"),
-        ToolCall(name="search_text", arguments={"path": "beta"}, reason="inspect", call_id="call_2"),
+        ToolCall(name="Read", arguments={"path": "alpha"}, reason="inspect", call_id="call_1"),
+        ToolCall(name="Grep", arguments={"path": "beta"}, reason="inspect", call_id="call_2"),
     )
 
     started_at = time.perf_counter()
@@ -149,17 +149,17 @@ def test_execute_tool_calls_runs_adjacent_safe_tools_in_parallel(tmp_path: Path)
 
 
 def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_path: Path) -> None:
-    read_file = DelayedTool(name="read_file", delay_seconds=0.15)
-    edit_file = DelayedTool(name="edit_file", delay_seconds=0.15)
-    search_text = DelayedTool(name="search_text", delay_seconds=0.15)
+    read_file = DelayedTool(name="Read", delay_seconds=0.15)
+    edit_file = DelayedTool(name="Edit", delay_seconds=0.15)
+    search_text = DelayedTool(name="Grep", delay_seconds=0.15)
     service, router = _service(tmp_path, tools=[read_file, edit_file, search_text])
     conversation = Conversation(session_id="demo")
     activity_events: list[ActivityEvent] = []
     turn_items: list[TurnItem] = []
     calls = (
-        ToolCall(name="read_file", arguments={"path": "alpha"}, reason="inspect", call_id="call_1"),
-        ToolCall(name="edit_file", arguments={"path": "beta"}, reason="mutate", call_id="call_2"),
-        ToolCall(name="search_text", arguments={"path": "gamma"}, reason="inspect", call_id="call_3"),
+        ToolCall(name="Read", arguments={"path": "alpha"}, reason="inspect", call_id="call_1"),
+        ToolCall(name="Edit", arguments={"path": "beta"}, reason="mutate", call_id="call_2"),
+        ToolCall(name="Grep", arguments={"path": "gamma"}, reason="inspect", call_id="call_3"),
     )
 
     started_at = time.perf_counter()
@@ -167,7 +167,7 @@ def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_pat
         conversation=conversation,
         calls=calls,
         tool_router=router,
-        tool_exposure=_tool_exposure("read_file", "edit_file", "search_text"),
+        tool_exposure=_tool_exposure("Read", "Edit", "Grep"),
         plan_state=PlanState(),
         turn_id="turn_1",
         activity_events=activity_events,
@@ -177,7 +177,7 @@ def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_pat
 
     assert elapsed >= 0.40
     assert elapsed < 0.55
-    assert "edit_file" not in CONCURRENCY_SAFE_TOOLS
+    assert "Edit" not in CONCURRENCY_SAFE_TOOLS
     assert [message.tool_call_id for message in conversation.messages if message.role == "tool"] == [
         "call_1",
         "call_2",
@@ -191,9 +191,9 @@ def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_pat
         if block.type == "tool_result"
     ]
     assert [block.metadata["tool_name"] for block in result_blocks] == [
-        "read_file",
-        "edit_file",
-        "search_text",
+        "Read",
+        "Edit",
+        "Grep",
     ]
     assert [item.call_id for item in turn_items if item.type is TurnItemType.TOOL_CALL] == [
         "call_1",
@@ -203,35 +203,35 @@ def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_pat
 
 
 def test_execute_tool_calls_executes_all_calls_and_keeps_tool_results_ordered(tmp_path: Path) -> None:
-    list_directory = DelayedTool(name="list_directory", delay_seconds=0.10)
-    git_diff = DelayedTool(name="git_diff", delay_seconds=0.10)
-    edit_file = DelayedTool(name="edit_file", delay_seconds=0.10)
-    git_log = DelayedTool(name="git_log", delay_seconds=0.10)
+    list_directory = DelayedTool(name="LS", delay_seconds=0.10)
+    git_diff = DelayedTool(name="Grep", delay_seconds=0.10)
+    edit_file = DelayedTool(name="Edit", delay_seconds=0.10)
+    git_log = DelayedTool(name="Read", delay_seconds=0.10)
     service, router = _service(tmp_path, tools=[list_directory, git_diff, edit_file, git_log])
     conversation = Conversation(session_id="demo")
     activity_events: list[ActivityEvent] = []
     turn_items: list[TurnItem] = []
     calls = (
         ToolCall(
-            name="list_directory",
+            name="LS",
             arguments={"path": "one"},
             reason="inspect",
             call_id="call_1",
         ),
         ToolCall(
-            name="git_diff",
+            name="Grep",
             arguments={"path": "two"},
             reason="inspect",
             call_id="call_2",
         ),
         ToolCall(
-            name="edit_file",
+            name="Edit",
             arguments={"path": "three"},
             reason="mutate",
             call_id="call_3",
         ),
         ToolCall(
-            name="git_log",
+            name="Read",
             arguments={"path": "four"},
             reason="inspect",
             call_id="call_4",
@@ -242,7 +242,7 @@ def test_execute_tool_calls_executes_all_calls_and_keeps_tool_results_ordered(tm
         conversation=conversation,
         calls=calls,
         tool_router=router,
-        tool_exposure=_tool_exposure("list_directory", "git_diff", "edit_file", "git_log"),
+        tool_exposure=_tool_exposure("LS", "Grep", "Edit", "Read"),
         plan_state=PlanState(),
         turn_id="turn_1",
         activity_events=activity_events,

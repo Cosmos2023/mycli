@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
@@ -10,8 +11,17 @@ from mycli.tools.base import SchemaTool, ToolSpec, ToolResultV2
 
 @dataclass(slots=True)
 class ToolRegistryV2:
-    specs: dict[str, ToolSpec]
-    executors: dict[str, SchemaTool]
+    specs: dict[str, ToolSpec] | None = None
+    executors: dict[str, SchemaTool] | None = None
+    workspace_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.specs is not None and self.executors is not None:
+            return
+        root = self.workspace_root or Path.cwd()
+        default = self.from_tools(default_tools(root))
+        self.specs = default.specs
+        self.executors = default.executors
 
     @classmethod
     def from_tools(cls, tools: list[SchemaTool]) -> ToolRegistryV2:
@@ -21,9 +31,15 @@ class ToolRegistryV2:
         )
 
     def list_names(self) -> list[str]:
+        assert self.specs is not None
         return sorted(self.specs)
 
+    def list_all(self) -> list[SchemaTool]:
+        assert self.executors is not None
+        return [self.executors[name] for name in self.list_names()]
+
     def render_for_model(self, tool_names: tuple[str, ...] | None = None) -> list[ModelToolDefinition]:
+        assert self.specs is not None
         selected_names = tuple(self.specs) if tool_names is None else tool_names
         return [
             ModelToolDefinition(
@@ -45,6 +61,7 @@ class ToolRegistryV2:
         ]
 
     def validate(self, name: str, arguments: dict[str, Any]) -> None:
+        assert self.specs is not None
         spec = self.specs.get(name)
         if spec is None:
             raise ValueError(f"Unsupported tool: {name}")
@@ -57,8 +74,44 @@ class ToolRegistryV2:
             raise ValueError(f"Missing required arguments: {', '.join(missing)}")
 
     def execute(self, call: ToolCall) -> ToolResultV2:
+        assert self.executors is not None
         self.validate(call.name, call.arguments)
         executor = self.executors.get(call.name)
         if executor is None:
             raise ValueError(f"Unsupported tool: {call.name}")
         return executor.execute(call.arguments)
+
+
+def default_tools(workspace_root: Path) -> list[SchemaTool]:
+    from mycli.tools.ask_user_question import AskUserQuestionTool
+    from mycli.tools.bash import BashTool
+    from mycli.tools.edit import EditTool
+    from mycli.tools.glob import GlobTool
+    from mycli.tools.grep import GrepTool
+    from mycli.tools.kill_shell import KillShellTool
+    from mycli.tools.lint import LintTool
+    from mycli.tools.ls import LSTool
+    from mycli.tools.plan import PlanTool
+    from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
+    from mycli.tools.read import ReadTool
+    from mycli.tools.web_fetch import WebFetchTool
+    from mycli.tools.web_search import WebSearchTool
+    from mycli.tools.write import WriteTool
+
+    return [
+        ReadTool(workspace_root),
+        EditTool(workspace_root),
+        WriteTool(workspace_root),
+        GrepTool(workspace_root),
+        GlobTool(workspace_root),
+        LSTool(workspace_root),
+        BashTool(workspace_root),
+        KillShellTool(),
+        WebSearchTool(),
+        WebFetchTool(),
+        LintTool(),
+        AskUserQuestionTool(),
+        PlanTool(),
+        EnterPlanModeTool(workspace_root),
+        ExitPlanModeTool(workspace_root),
+    ]

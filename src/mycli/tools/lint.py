@@ -5,6 +5,9 @@ import os
 import subprocess
 from typing import Any
 
+from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+
 
 PROJECT_LINTERS = {
     "pyproject.toml": ["ruff check --output-format json"],
@@ -107,3 +110,31 @@ def _parse_eslint(output: str) -> list[dict[str, Any]]:
                 }
             )
     return results
+
+
+class LintTool:
+    name = "Lint"
+    spec = ToolSpec(
+        name="Lint",
+        description="Run the detected project linter and return bounded diagnostics.",
+        parameters=(ToolParameter(name="paths", type="string", required=False),),
+        risk_level="low",
+    )
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+        paths = arguments.get("paths")
+        payload = lint(paths=paths if isinstance(paths, str) else None)
+        success = "error" not in payload
+        return ToolResultV2(
+            success=success,
+            summary=(
+                f"Found {payload.get('count', 0)} lint diagnostic(s)"
+                if success
+                else "Failed to lint"
+            ),
+            error=str(payload["error"]) if "error" in payload else None,
+            raw_payload=payload,
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        return self.execute(call.arguments).to_legacy()

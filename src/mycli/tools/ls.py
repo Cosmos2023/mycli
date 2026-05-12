@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.tools.path_utils import resolve_workspace_path
+
 
 class LSError(Exception):
     """Raised when a directory listing request is invalid."""
@@ -36,3 +40,41 @@ def ls(path: str) -> dict[str, Any]:
             files.append(entry.name)
 
     return {"dirs": dirs, "files": files, "hidden": hidden, "total": len(entries)}
+
+
+class LSTool:
+    name = "LS"
+    spec = ToolSpec(
+        name="LS",
+        description="List a directory non-recursively. Hidden entries are reported separately.",
+        parameters=(ToolParameter(name="path", type="string", required=True),),
+        risk_level="low",
+    )
+
+    def __init__(self, workspace_root: Path) -> None:
+        self._workspace_root = workspace_root
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+        raw_path = str(arguments.get("path") or "")
+        try:
+            if not raw_path:
+                raise LSError("LS requires path.")
+            target = resolve_workspace_path(self._workspace_root, raw_path)
+            payload = ls(str(target))
+        except (OSError, ValueError, LSError) as exc:
+            return ToolResultV2(
+                success=False,
+                summary="Failed to list directory",
+                error=str(exc),
+                raw_payload={"path": raw_path},
+            )
+
+        entries = [*payload["dirs"], *payload["files"], *payload.get("hidden", [])]
+        return ToolResultV2(
+            success=True,
+            summary=", ".join(entries),
+            raw_payload={"path": raw_path, "entries": entries, **payload},
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        return self.execute(call.arguments).to_legacy()

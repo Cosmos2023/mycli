@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from mycli.services.hooks.types import HookAction, HookContext, HookResult
 
-HIGH_RISK_TOOLS = {"run_shell", "edit_file", "write_file", "delete_path"}
+HIGH_RISK_TOOLS = {"Bash", "Edit", "Write"}
 
 
 def permission_guard(ctx: HookContext) -> HookResult:

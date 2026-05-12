@@ -6,11 +6,11 @@ from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
 
-class UpdatePlanTool:
-    name = "update_plan"
+class PlanTool:
+    name = "Plan"
     spec = ToolSpec(
-        name="update_plan",
-        description="Manage the task plan. Use ONLY for complex multi-step tasks. Do NOT create a plan for simple single-step requests. When a plan exists, advance the current step — do NOT keep rewriting the plan.",
+        name="Plan",
+        description="Manage the task plan for complex multi-step work.",
         parameters=(
             ToolParameter(
                 name="items",
@@ -38,7 +38,7 @@ class UpdatePlanTool:
             return ToolResultV2(
                 success=False,
                 summary="Invalid plan payload",
-                error="update_plan requires an 'items' list.",
+                error="Plan requires an 'items' list.",
             )
         return ToolResultV2(
             success=True,
@@ -48,3 +48,7 @@ class UpdatePlanTool:
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments).to_legacy()
+
+
+class UpdatePlanTool(PlanTool):
+    name = "Plan"

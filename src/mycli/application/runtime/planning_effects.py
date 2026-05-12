@@ -28,7 +28,7 @@ class RuntimePlanningEffects:
         result_payload: dict[str, object],
         plan_state: PlanState,
     ) -> PlanState:
-        if call.name != "update_plan":
+        if call.name != "Plan":
             return plan_state
         items = result_payload.get("items", [])
         if not isinstance(items, list):

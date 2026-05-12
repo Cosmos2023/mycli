@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from mycli.domain.tooling.calls import ToolEvidence
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.tools.base import ToolResultV2
 
 
 def test_read_file_gets_higher_limit() -> None:
     formatter = ToolResultFormatter()
-    assert formatter._limit_for("read_file") == 3000
-    assert formatter._limit_for("read_file_range") == 2000
+    assert formatter._limit_for("read_file") == 8000
+    assert formatter._limit_for("read_file_range") == 6000
     assert formatter._limit_for("run_shell") == 500
     assert formatter._limit_for("unknown_tool") == 1600
 
@@ -108,6 +109,61 @@ def test_read_file_adds_truncation_notice_when_long() -> None:
     )
     output = formatter.format("read_file", result)
     assert "文件内容较长，已截断" in output
+
+
+def test_read_file_evidence_keeps_medium_file_complete() -> None:
+    formatter = ToolResultFormatter()
+    content = "a = 1\n" * 200 + "UNIQUE_READ_FILE_END = True\n"
+    result = ToolResultV2(
+        success=True,
+        summary="Read medium.py",
+        raw_payload={"path": "medium.py", "content": content},
+        evidence=(
+            ToolEvidence(
+                kind="file_excerpt",
+                title="medium.py",
+                path="medium.py",
+                line_start=1,
+                line_end=201,
+                snippet=content,
+            ),
+        ),
+    )
+    output = formatter.format("read_file", result)
+    assert "UNIQUE_READ_FILE_END" in output
+    assert "文件读取完毕" in output
+    assert "文件内容较长，已截断" not in output
+
+
+def test_read_file_range_evidence_keeps_medium_range_complete() -> None:
+    formatter = ToolResultFormatter()
+    content = "value = 1\n" * 300 + "UNIQUE_RANGE_END = True\n"
+    result = ToolResultV2(
+        success=True,
+        summary="Read lines 20-321 from medium.py",
+        raw_payload={
+            "path": "medium.py",
+            "start_line": 20,
+            "end_line": 321,
+            "actual_start_line": 20,
+            "actual_end_line": 321,
+            "content": content,
+        },
+        evidence=(
+            ToolEvidence(
+                kind="file_excerpt",
+                title="medium.py:20-321",
+                path="medium.py",
+                line_start=20,
+                line_end=321,
+                snippet=content,
+            ),
+        ),
+    )
+    output = formatter.format("read_file_range", result)
+    assert "UNIQUE_RANGE_END" in output
+    assert "文件读取完毕" in output
+    assert "文件内容较长，已截断" not in output
 
 
 def test_hard_truncation_at_max_chars() -> None:

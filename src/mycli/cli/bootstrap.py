@@ -23,24 +23,21 @@ from mycli.services.mcp import (
     McpToolContributionProvider,
     load_mcp_server_configs,
 )
-from mycli.tools.append_file import AppendFileTool
-from mycli.tools.create_file import CreateFileTool
-from mycli.tools.delete_path import DeletePathTool
-from mycli.tools.edit_file import EditFileTool
-from mycli.tools.git_diff import GitDiffTool
-from mycli.tools.git_log import GitLogTool
-from mycli.tools.git_status import GitStatusTool
-from mycli.tools.list_directory import ListDirectoryTool
-from mycli.tools.mkdir import MkdirTool
-from mycli.tools.move_path import MovePathTool
+from mycli.tools.ask_user_question import AskUserQuestionTool
+from mycli.tools.bash import BashTool
+from mycli.tools.edit import EditTool
+from mycli.tools.glob import GlobTool
+from mycli.tools.grep import GrepTool
+from mycli.tools.kill_shell import KillShellTool
+from mycli.tools.lint import LintTool
+from mycli.tools.ls import LSTool
+from mycli.tools.plan import PlanTool
 from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
-from mycli.tools.read_file import ReadFileTool
-from mycli.tools.read_file_range import ReadFileRangeTool
+from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistryV2
-from mycli.tools.replace_in_file import ReplaceInFileTool
-from mycli.tools.run_shell import RunShellTool
-from mycli.tools.search_text import SearchTextTool
-from mycli.tools.update_plan import UpdatePlanTool
+from mycli.tools.web_fetch import WebFetchTool
+from mycli.tools.web_search import WebSearchTool
+from mycli.tools.write import WriteTool
 from mycli.utils.workspace_logger import WorkspaceLogService
 
 
@@ -108,22 +105,19 @@ def build_turn_service(
         )
     tool_registry = ToolRegistryV2.from_tools(
         [
-            CreateFileTool(workspace_root),
-            MkdirTool(workspace_root),
-            MovePathTool(workspace_root),
-            DeletePathTool(workspace_root),
-            ListDirectoryTool(workspace_root),
-            ReadFileTool(workspace_root),
-            ReadFileRangeTool(workspace_root),
-            SearchTextTool(workspace_root),
-            GitStatusTool(workspace_root),
-            GitDiffTool(workspace_root),
-            GitLogTool(workspace_root),
-            AppendFileTool(workspace_root),
-            ReplaceInFileTool(workspace_root),
-            EditFileTool(workspace_root),
-            RunShellTool(workspace_root),
-            UpdatePlanTool(),
+            ReadTool(workspace_root),
+            EditTool(workspace_root),
+            WriteTool(workspace_root),
+            GrepTool(workspace_root),
+            GlobTool(workspace_root),
+            LSTool(workspace_root),
+            BashTool(workspace_root),
+            KillShellTool(),
+            WebSearchTool(),
+            WebFetchTool(),
+            LintTool(),
+            AskUserQuestionTool(),
+            PlanTool(),
             EnterPlanModeTool(workspace_root),
             ExitPlanModeTool(workspace_root),
         ]

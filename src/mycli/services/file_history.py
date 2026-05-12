@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from mycli.tools.filesystem import resolve_workspace_path
+from mycli.tools.path_utils import resolve_workspace_path
 
 
 @dataclass(slots=True, frozen=True)

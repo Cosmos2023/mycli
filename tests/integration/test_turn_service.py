@@ -20,8 +20,8 @@ class PushModel:
         return ModelDecision(
             progress_message="Preparing a risky push",
             tool_call=ToolCall(
-                name="run_shell",
-                arguments={"args": ["git", "push", "origin", "main"]},
+                name="Bash",
+                arguments={"command": "git push origin main"},
                 reason="publish branch",
             ),
         )
@@ -32,7 +32,7 @@ class FakeModel:
         self._decisions = [
             ModelDecision(
                 progress_message="Checking the repository structure",
-                tool_call=ToolCall(name="list_directory", arguments={"path": "."}, reason="inspect root"),
+                tool_call=ToolCall(name="LS", arguments={"path": "."}, reason="inspect root"),
             ),
             ModelDecision(assistant_message="The repo starts with src/ and tests/", done=True),
         ]
@@ -48,7 +48,7 @@ class FakeToolRegistry:
         return ToolResult(success=True, summary="src, tests", raw_payload={"entries": ["src", "tests"]})
 
     def list_names(self) -> list[str]:
-        return ["edit_file", "list_directory", "read_file", "run_shell", "search_text"]
+        return ["Edit", "LS", "Read", "Bash", "Grep"]
 
 
 class SkillAwareModel:
@@ -57,7 +57,7 @@ class SkillAwareModel:
         self._decisions = [
             ModelDecision(
                 progress_message="Inspecting the repository with repository-analysis",
-                tool_call=ToolCall(name="list_directory", arguments={"path": "."}, reason="inspect root"),
+                tool_call=ToolCall(name="LS", arguments={"path": "."}, reason="inspect root"),
             ),
             ModelDecision(
                 assistant_message="Start with src/mycli/cli/main.py and src/mycli/application/turn_service.py",
@@ -81,10 +81,10 @@ class PromptCaptureModel:
 
 class UnusedToolRegistry:
     def run(self, _call):
-        raise AssertionError("edit_file should not execute before approval")
+        raise AssertionError("Bash should not execute before approval")
 
     def list_names(self) -> list[str]:
-        return ["edit_file", "list_directory", "read_file", "run_shell", "search_text"]
+        return ["Edit", "LS", "Read", "Bash", "Grep"]
 
 
 class CountingPushModel:
@@ -116,7 +116,7 @@ class SpyToolRegistry:
         return ToolResult(success=True, summary="ok", raw_payload={})
 
     def list_names(self) -> list[str]:
-        return ["list_directory", "read_file", "run_shell", "search_text", "edit_file"]
+        return ["LS", "Read", "Bash", "Grep", "Edit"]
 
 
 class FakeRuntime:
@@ -143,8 +143,8 @@ class PushThenDoneRuntimeAdapter:
             return ModelDecision(
                 progress_message="Preparing a risky push",
                 tool_call=ToolCall(
-                    name="run_shell",
-                    arguments={"args": ["git", "push", "origin", "main"]},
+                    name="Bash",
+                    arguments={"command": "git push origin main"},
                     reason="publish branch",
                 ),
             )

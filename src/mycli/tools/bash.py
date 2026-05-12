@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import re
 import shlex
 import subprocess
 from typing import Any
 from uuid import uuid4
+
+from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
 
 
 OUTPUT_CHAR_LIMIT = 10_000
@@ -44,6 +48,18 @@ def check_dangerous(command: str) -> tuple[bool, str]:
         if re.search(pattern, command):
             return True, reason
     return False, ""
+
+
+def derive_command_pattern(args: list[str]) -> str:
+    if args[:3] == ["git", "reset", "--hard"]:
+        return "git reset --hard"
+    if args[:2] == ["git", "push"]:
+        return "git push"
+    if args[:2] == ["rm", "-rf"]:
+        return "rm -rf"
+    if len(args) >= 3 and args[0] == "python" and args[1].endswith(".py"):
+        return " ".join(args[:3])
+    return " ".join(args[: min(3, len(args))])
 
 
 def check_forbidden(command: str) -> str | None:
@@ -127,3 +143,62 @@ def _truncate_output(output: str) -> tuple[str, bool]:
         "[Full output saved. Use Read to view the persisted file.]"
     )
     return truncated_output, True
+
+
+class BashTool:
+    name = "Bash"
+    spec = ToolSpec(
+        name="Bash",
+        description="Execute a shell command when dedicated tools cannot handle the task. Supports timeout and background execution.",
+        parameters=(
+            ToolParameter(name="command", type="string", required=True),
+            ToolParameter(
+                name="args",
+                type="array",
+                required=False,
+                items_schema={"type": "string"},
+            ),
+            ToolParameter(name="timeout", type="integer", required=False),
+            ToolParameter(name="run_in_background", type="boolean", required=False),
+        ),
+        risk_level="high",
+    )
+
+    def __init__(self, workspace_root: Path) -> None:
+        self._workspace_root = workspace_root
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+        command_value = arguments.get("command")
+        if command_value is None and isinstance(arguments.get("args"), list):
+            parts = [part for part in arguments["args"] if isinstance(part, str)]
+            command_value = shlex.join(parts)
+        if not isinstance(command_value, str) or not command_value:
+            return ToolResultV2(
+                success=False,
+                summary="Invalid shell command",
+                error="Bash requires command.",
+            )
+        payload = execute_bash(
+            command_value,
+            timeout=int(arguments.get("timeout", 120)),
+            workdir=str(self._workspace_root),
+            run_in_background=bool(arguments.get("run_in_background", False)),
+        )
+        if "output" in payload:
+            payload.setdefault("stdout", payload["output"])
+            payload.setdefault("stderr", "")
+        exit_code = payload.get("exit_code")
+        success = exit_code == 0 or payload.get("status") == "running"
+        return ToolResultV2(
+            success=success,
+            summary=(
+                f"Command exited with {exit_code}"
+                if "exit_code" in payload
+                else f"Command {payload.get('status', 'started')}"
+            ),
+            raw_payload={"command": command_value, **payload},
+            error=None if success else str(payload.get("output", "")),
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        return self.execute(call.arguments).to_legacy()

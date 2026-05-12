@@ -43,13 +43,13 @@ from mycli.memory.service import MemoryService
 from mycli.services.skill_registry import SkillRegistry
 from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
-from mycli.tools.edit_file import EditFileTool
-from mycli.tools.list_directory import ListDirectoryTool
-from mycli.tools.read_file import ReadFileTool
+from mycli.tools.edit import EditTool
+from mycli.tools.ls import LSTool
+from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistryV2
-from mycli.tools.run_shell import RunShellTool
-from mycli.tools.search_text import SearchTextTool
-from mycli.tools.update_plan import UpdatePlanTool
+from mycli.tools.bash import BashTool
+from mycli.tools.grep import GrepTool
+from mycli.tools.plan import PlanTool
 
 
 class PushThenDoneAdapter:
@@ -67,7 +67,7 @@ class PushThenDoneAdapter:
                     "assistant_message": None,
                     "progress_message": "Preparing a risky push",
                     "tool_call": ToolCall(
-                        name="run_shell",
+                        name="Bash",
                         arguments={"args": ["git", "push", "origin", "main"]},
                         reason="publish branch",
                     ),
@@ -142,7 +142,7 @@ class InspectThenDoneAdapter:
                     "progress_message": "Inspecting the workspace",
                     "tool_call": ToolCall(
                         call_id="call_list_directory_1",
-                        name="list_directory",
+                        name="LS",
                         arguments={"path": "."},
                         reason="inspect root",
                     ),
@@ -179,8 +179,8 @@ class SearchThenDoneAdapter:
                     "progress_message": "Searching the workspace",
                     "tool_call": ToolCall(
                         call_id="call_search_text_1",
-                        name="search_text",
-                        arguments={"query": "search_text", "path": ".", "glob": "*.md"},
+                        name="Grep",
+                        arguments={"query": "search_text", "path": ".", "include": "*.md", "output_mode": "content"},
                         reason="search workspace",
                     ),
                     "done": False,
@@ -219,7 +219,7 @@ class OverviewReasoningEffortAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="list_directory",
+                                tool_name="LS",
                                 tool_arguments={"path": "."},
                                 call_id="call_list_directory_1",
                             ),
@@ -236,7 +236,7 @@ class OverviewReasoningEffortAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
+                                tool_name="Read",
                                 tool_arguments={"path": "README.md"},
                                 call_id="call_readme_1",
                             ),
@@ -274,11 +274,11 @@ class SearchReadEditThenDoneAdapter:
                     "progress_message": "Searching for evidence",
                     "tool_call": ToolCall(
                         call_id="call_search_1",
-                        name="search_text",
+                        name="Grep",
                         arguments={
                             "query": "needle",
                             "path": ".",
-                            "glob": "*.txt",
+                            "include": "*.txt", "output_mode": "content",
                             "case_sensitive": True,
                             "max_matches": 5,
                         },
@@ -296,7 +296,7 @@ class SearchReadEditThenDoneAdapter:
                     "progress_message": "Reading the file",
                     "tool_call": ToolCall(
                         call_id="call_read_1",
-                        name="read_file",
+                        name="Read",
                         arguments={"path": "notes.txt"},
                         reason="inspect full file content",
                     ),
@@ -312,8 +312,8 @@ class SearchReadEditThenDoneAdapter:
                     "progress_message": "Editing the file",
                     "tool_call": ToolCall(
                         call_id="call_edit_1",
-                        name="edit_file",
-                        arguments={"path": "notes.txt", "new_content": "needle one\nline three\n"},
+                        name="Edit",
+                        arguments={"path": "notes.txt", "old_string": "line two", "new_string": "line three"},
                         reason="apply edit",
                     ),
                     "done": False,
@@ -349,8 +349,8 @@ class SearchRangeThenDoneAdapter:
                     "progress_message": "Searching for evidence",
                     "tool_call": ToolCall(
                         call_id="call_search_1",
-                        name="search_text",
-                        arguments={"query": "needle"},
+                        name="Grep",
+                        arguments={"query": "needle", "output_mode": "content"},
                         reason="find the file",
                     ),
                     "done": False,
@@ -365,8 +365,8 @@ class SearchRangeThenDoneAdapter:
                     "progress_message": "Reading the matching lines",
                     "tool_call": ToolCall(
                         call_id="call_read_range_1",
-                        name="read_file_range",
-                        arguments={"path": "notes.txt", "start_line": 1, "end_line": 2},
+                        name="Read",
+                        arguments={"file_path": "notes.txt", "offset": 1, "limit": 2},
                         reason="inspect the evidence",
                     ),
                     "done": False,
@@ -402,7 +402,7 @@ class ShellThenDoneAdapter:
                     "progress_message": "Checking the working directory",
                     "tool_call": ToolCall(
                         call_id="call_shell_1",
-                        name="run_shell",
+                        name="Bash",
                         arguments={"args": ["python3", "-c", "print('shell-output')"]},
                         reason="inspect shell output",
                     ),
@@ -438,7 +438,7 @@ class BlockInspectThenDoneAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="list_directory",
+                                tool_name="LS",
                                 tool_arguments={"path": "."},
                                 call_id="call_list_directory_1",
                             ),
@@ -476,14 +476,14 @@ class MultiToolThenDoneAdapter:
                             RuntimeBlock(type="text", text="I will inspect both files."),
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
+                                tool_name="Read",
                                 tool_arguments={"path": "README.md"},
                                 call_id="call_read_readme",
                             ),
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
-                                tool_arguments={"path": "pyproject.toml"},
+                                tool_name="Read",
+                                tool_arguments={"file_path": "pyproject.toml"},
                                 call_id="call_read_pyproject",
                             ),
                         ),
@@ -517,7 +517,7 @@ class PushThenResumedReasoningUnsupportedAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="run_shell",
+                                tool_name="Bash",
                                 tool_arguments={"args": ["git", "push", "origin", "main"]},
                                 call_id="call_push_1",
                             ),
@@ -580,8 +580,8 @@ class ReasoningToolThenDoneAdapter:
                             RuntimeBlock(type="reasoning", text="Inspect pyproject.toml first."),
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
-                                tool_arguments={"path": "pyproject.toml"},
+                                tool_name="Read",
+                                tool_arguments={"file_path": "pyproject.toml"},
                                 call_id="call_read_1",
                             ),
                         ),
@@ -615,7 +615,7 @@ class InvalidToolArgumentsThenDoneAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
+                                tool_name="Read",
                                 tool_arguments={},
                                 call_id="call_read_missing_args",
                             ),
@@ -679,8 +679,8 @@ class StreamReasoningToolThenDoneAdapter:
                 "type": "tool_call",
                 "block": RuntimeBlock(
                     type="tool_call",
-                    tool_name="read_file",
-                    tool_arguments={"path": "pyproject.toml"},
+                    tool_name="Read",
+                    tool_arguments={"file_path": "pyproject.toml"},
                     call_id="call_stream_read_1",
                 ),
             }
@@ -850,12 +850,12 @@ def build_runtime_with_capture_adapter(
 ) -> AgentRuntime:
     tool_registry = ToolRegistryV2.from_tools(
         [
-            ListDirectoryTool(tmp_path),
-            ReadFileTool(tmp_path),
-            SearchTextTool(tmp_path),
-            EditFileTool(tmp_path),
-            RunShellTool(tmp_path),
-            UpdatePlanTool(),
+            LSTool(tmp_path),
+            ReadTool(tmp_path),
+            GrepTool(tmp_path),
+            EditTool(tmp_path),
+            BashTool(tmp_path),
+            PlanTool(),
         ]
     )
     return AgentRuntime(
@@ -1052,7 +1052,7 @@ def test_agent_runtime_keeps_reasoning_and_tool_call_in_same_turn(tmp_path: Path
 
     assert response.assistant_message == "Repository summary complete."
     assert any(event.kind == "thinking" for event in response.activity_events)
-    assert any(event.kind == "tool_started" and event.tool_name == "read_file" for event in response.activity_events)
+    assert any(event.kind == "tool_started" and event.tool_name == "Read" for event in response.activity_events)
     assert any(
         message.role == "tool" and "Read pyproject.toml" in message.content
         for message in runtime._session_service.load_conversation(runtime._config.session_id).messages
@@ -1108,7 +1108,7 @@ def test_agent_runtime_supports_streamed_tool_call_execution(tmp_path: Path) -> 
     response = runtime.handle_user_turn("inspect the repo")
 
     assert response.assistant_message == "Repository summary complete."
-    assert any(event.kind == "tool_started" and event.tool_name == "read_file" for event in response.activity_events)
+    assert any(event.kind == "tool_started" and event.tool_name == "Read" for event in response.activity_events)
 
 
 def test_resumed_approval_turn_applies_block_validation_and_reasoning_updates(
@@ -1598,12 +1598,12 @@ def test_agent_runtime_passes_session_and_turn_context_to_model_logging(
         model_adapter=ResponsesModelAdapter(client=client),
         tool_registry=ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(tmp_path),
-                ReadFileTool(tmp_path),
-                SearchTextTool(tmp_path),
-                EditFileTool(tmp_path),
-                RunShellTool(tmp_path),
-                UpdatePlanTool(),
+                LSTool(tmp_path),
+                ReadTool(tmp_path),
+                GrepTool(tmp_path),
+                EditTool(tmp_path),
+                BashTool(tmp_path),
+                PlanTool(),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
@@ -1740,12 +1740,12 @@ def test_agent_runtime_logs_assembled_turn_context_summary(tmp_path: Path) -> No
         model_adapter=BlockSingleTurnCaptureAdapter(),
         tool_registry=ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(tmp_path),
-                ReadFileTool(tmp_path),
-                SearchTextTool(tmp_path),
-                EditFileTool(tmp_path),
-                RunShellTool(tmp_path),
-                UpdatePlanTool(),
+                LSTool(tmp_path),
+                ReadTool(tmp_path),
+                GrepTool(tmp_path),
+                EditTool(tmp_path),
+                BashTool(tmp_path),
+                PlanTool(),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
@@ -1778,7 +1778,7 @@ class PlanThenDoneAdapter:
                     "assistant_message": None,
                     "progress_message": "Updating the plan",
                     "tool_call": ToolCall(
-                        name="update_plan",
+                        name="Plan",
                         arguments={
                             "items": [
                                 {
@@ -1825,7 +1825,7 @@ class ProviderStylePlanThenDoneAdapter:
                     "assistant_message": None,
                     "progress_message": "Updating the plan",
                     "tool_call": ToolCall(
-                        name="update_plan",
+                        name="Plan",
                         arguments={
                             "items": [
                                 {
@@ -1930,12 +1930,12 @@ def test_agent_runtime_injects_loaded_skill_instructions_into_messages(tmp_path:
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(tmp_path),
-                ReadFileTool(tmp_path),
-                SearchTextTool(tmp_path),
-                EditFileTool(tmp_path),
-                RunShellTool(tmp_path),
-                UpdatePlanTool(),
+                LSTool(tmp_path),
+                ReadTool(tmp_path),
+                GrepTool(tmp_path),
+                EditTool(tmp_path),
+                BashTool(tmp_path),
+                PlanTool(),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path),
@@ -1974,12 +1974,12 @@ def test_agent_runtime_records_capability_turn_item_and_prompt_context(tmp_path:
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(tmp_path),
-                ReadFileTool(tmp_path),
-                SearchTextTool(tmp_path),
-                EditFileTool(tmp_path),
-                RunShellTool(tmp_path),
-                UpdatePlanTool(),
+                LSTool(tmp_path),
+                ReadTool(tmp_path),
+                GrepTool(tmp_path),
+                EditTool(tmp_path),
+                BashTool(tmp_path),
+                PlanTool(),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path),
@@ -2140,7 +2140,7 @@ def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
 
     assert any(
         event.kind == "tool_execution"
-        and event.payload.get("tool_name") == "list_directory"
+        and event.payload.get("tool_name") == "LS"
         for event in loaded
     )
     assert any(event.kind == "tool_exposure" for event in loaded)
@@ -2218,7 +2218,7 @@ class RepeatMissingReadAdapter:
                     blocks=(
                         RuntimeBlock(
                             type="tool_call",
-                            tool_name="read_file",
+                            tool_name="Read",
                             tool_arguments={"path": "missing.py"},
                             call_id="call_repeat_read",
                         ),
@@ -2250,7 +2250,7 @@ class OverviewForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="list_directory",
+                                tool_name="LS",
                                 tool_arguments={"path": "."},
                                 call_id="call_list_root",
                             ),
@@ -2267,8 +2267,8 @@ class OverviewForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
-                                tool_arguments={"path": "pyproject.toml"},
+                                tool_name="Read",
+                                tool_arguments={"file_path": "pyproject.toml"},
                                 call_id="call_read_pyproject",
                             ),
                         ),
@@ -2326,7 +2326,7 @@ class ImplementationAuditForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="search_text",
+                                tool_name="Grep",
                                 tool_arguments={"query": "capability activation", "path": ".", "glob": "*.py"},
                                 call_id="call_search_capability_activation",
                             ),
@@ -2343,7 +2343,7 @@ class ImplementationAuditForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
+                                tool_name="Read",
                                 tool_arguments={"path": "src/mycli/services/context/turn_context_assembler.py"},
                                 call_id="call_read_turn_context_assembler",
                             ),
@@ -2394,7 +2394,7 @@ class ForceAnswerRequestShapeAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="read_file",
+                                tool_name="Read",
                                 tool_arguments={"path": f"evidence_{self.calls}.txt"},
                                 call_id=f"call_read_evidence_{self.calls}",
                             ),
@@ -2424,7 +2424,7 @@ class DeferredToolRequestAdapter:
                     blocks=(
                         RuntimeBlock(
                             type="tool_call",
-                            tool_name="run_shell",
+                            tool_name="Bash",
                             tool_arguments={"args": ["pwd"]},
                             call_id="call_run_shell_deferred",
                         ),
@@ -2587,7 +2587,7 @@ def test_agent_runtime_persists_tool_calls_and_results_into_structured_history(
     assert any(item.type is HistoryItemType.TOOL_CALL for item in history_items)
     assert any(item.type is HistoryItemType.TOOL_RESULT for item in history_items)
     tool_result = next(item for item in history_items if item.type is HistoryItemType.TOOL_RESULT)
-    assert tool_result.tool_name == "read_file"
+    assert tool_result.tool_name == "Read"
     assert tool_result.metadata["success"] is True
 
 
@@ -2607,7 +2607,7 @@ def test_agent_runtime_returns_tool_validation_failures_to_model(
     assert response.turn.status is TurnStatus.COMPLETED
     assert response.assistant_message == "Recovered from invalid tool arguments."
     tool_result = next(item for item in history_items if item.type is HistoryItemType.TOOL_RESULT)
-    assert tool_result.tool_name == "read_file"
+    assert tool_result.tool_name == "Read"
     assert tool_result.metadata["success"] is False
     assert tool_result.metadata["error_kind"] == "tool_validation_error"
 
@@ -2632,7 +2632,7 @@ def test_agent_runtime_file_history_undo_restores_mutating_tool_change(
                             blocks=(
                                 RuntimeBlock(
                                     type="tool_call",
-                                    tool_name="edit_file",
+                                    tool_name="Edit",
                                     tool_arguments={
                                         "path": "notes.txt",
                                         "new_content": "after\n",
@@ -2809,7 +2809,7 @@ def test_agent_runtime_build_context_reconstructs_block_aware_messages_from_hist
                 turn_id="turn_1",
                 type=HistoryItemType.TOOL_CALL,
                 text="Reading: pyproject.toml",
-                tool_name="read_file",
+                tool_name="Read",
                 call_id="call_read_1",
                 metadata={"arguments": {"path": "pyproject.toml"}},
             ),
@@ -2819,7 +2819,7 @@ def test_agent_runtime_build_context_reconstructs_block_aware_messages_from_hist
                 turn_id="turn_1",
                 type=HistoryItemType.TOOL_RESULT,
                 text="Read pyproject.toml",
-                tool_name="read_file",
+                tool_name="Read",
                 call_id="call_read_1",
                 metadata={"transcript_content": "Read pyproject.toml"},
             ),
@@ -2862,7 +2862,7 @@ def test_agent_runtime_runtime_items_allow_responses_adapter_to_consume_history_
                 turn_id="turn_1",
                 type=HistoryItemType.TOOL_CALL,
                 text="Reading: pyproject.toml",
-                tool_name="read_file",
+                tool_name="Read",
                 call_id="call_read_1",
                 metadata={"arguments": {"path": "pyproject.toml"}},
             ),
@@ -2872,7 +2872,7 @@ def test_agent_runtime_runtime_items_allow_responses_adapter_to_consume_history_
                 turn_id="turn_1",
                 type=HistoryItemType.TOOL_RESULT,
                 text="Read pyproject.toml",
-                tool_name="read_file",
+                tool_name="Read",
                 call_id="call_read_1",
                 metadata={"transcript_content": "Read pyproject.toml"},
             ),
@@ -2906,7 +2906,7 @@ def test_agent_runtime_runtime_items_allow_responses_adapter_to_consume_history_
     assert any(
         item.get("type") == "function_call"
         and item.get("call_id") == "call_read_1"
-        and item.get("name") == "read_file"
+        and item.get("name") == "Read"
         for item in client.captured_input_items
     )
     assert any(
@@ -3056,12 +3056,12 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
         model_adapter=adapter,
         tool_registry=ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(tmp_path),
-                ReadFileTool(tmp_path),
-                SearchTextTool(tmp_path),
-                RunShellTool(tmp_path),
-                EditFileTool(tmp_path),
-                UpdatePlanTool(),
+                LSTool(tmp_path),
+                ReadTool(tmp_path),
+                GrepTool(tmp_path),
+                BashTool(tmp_path),
+                EditTool(tmp_path),
+                PlanTool(),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path),
@@ -3071,10 +3071,10 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
     response = runtime.handle_user_turn("please inspect this repository and summarize it")
 
     assert response.turn is not None
-    assert "list_directory" in adapter.seen_tool_names[0]
-    assert "read_file" in adapter.seen_tool_names[0]
-    assert "run_shell" in adapter.seen_tool_names[0]
-    assert "edit_file" in adapter.seen_tool_names[0]
+    assert "LS" in adapter.seen_tool_names[0]
+    assert "Read" in adapter.seen_tool_names[0]
+    assert "Bash" in adapter.seen_tool_names[0]
+    assert "Edit" in adapter.seen_tool_names[0]
     assert any(item.type is TurnItemType.TOOL_EXPOSURE for item in response.turn.items)
 
 
@@ -3083,8 +3083,8 @@ def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -
         model_adapter=DeferredToolRequestAdapter(),
         tool_registry=ToolRegistryV2.from_tools(
             [
-                ListDirectoryTool(tmp_path),
-                RunShellTool(tmp_path),
+                LSTool(tmp_path),
+                BashTool(tmp_path),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path),
@@ -3096,7 +3096,7 @@ def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -
     assert response.turn is not None
     assert response.turn.status is TurnStatus.COMPLETED
     assert any(
-        item.type is TurnItemType.TOOL_RESULT and item.tool_name == "run_shell"
+        item.type is TurnItemType.TOOL_RESULT and item.tool_name == "Bash"
         for item in response.turn.items
     )
 
@@ -3126,7 +3126,7 @@ def test_agent_runtime_batches_adjacent_safe_tool_calls_from_same_model_item(
 
     assert response.turn is not None
     assert response.turn.status is TurnStatus.COMPLETED
-    assert batch_calls == [("read_file", "read_file")]
+    assert batch_calls == [("Read", "Read")]
     assert [
         item.call_id
         for item in response.turn.items
@@ -3138,7 +3138,7 @@ def test_agent_runtime_executes_runtime_contributed_tool_via_router(tmp_path: Pa
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
+        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
@@ -3161,7 +3161,7 @@ def test_agent_runtime_records_contributed_tool_lifecycle_and_persists_thread_sn
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
+        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
@@ -3221,7 +3221,7 @@ def test_agent_runtime_reexposes_thread_scoped_contributed_tools_on_later_turns(
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
+        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
@@ -3256,7 +3256,7 @@ def test_agent_runtime_accepts_provider_contributed_contributed_tool_for_overvie
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([ListDirectoryTool(tmp_path)]),
+        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
         contributed_tool_providers=(OverviewToolContributionProvider(),),

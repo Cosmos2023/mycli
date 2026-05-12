@@ -32,4 +32,6 @@ def classify_filesystem_error(exc: Exception) -> str:
         return "is_directory"
     if "line range" in message:
         return "invalid_range"
+    if "does not exist" in message or "not found" in message:
+        return "not_found"
     return "invalid_path"

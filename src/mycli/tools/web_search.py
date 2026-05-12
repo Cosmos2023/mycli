@@ -3,6 +3,9 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
+from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+
 
 def web_search(
     query: str,
@@ -58,3 +61,36 @@ def _normalize_serpapi_results(data: dict[str, Any]) -> dict[str, Any]:
         if "title" in result and "link" in result
     ]
     return {"results": results, "total": len(results)}
+
+
+class WebSearchTool:
+    name = "WebSearch"
+    spec = ToolSpec(
+        name="WebSearch",
+        description="Search the web. DeepSeek returns a server-side web_search tool definition; other providers use SerpAPI fallback.",
+        parameters=(
+            ToolParameter(name="query", type="string", required=True),
+            ToolParameter(name="provider", type="string", required=False),
+        ),
+        risk_level="low",
+    )
+
+    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+        query = str(arguments.get("query") or "")
+        if not query:
+            return ToolResultV2(
+                success=False,
+                summary="Failed to search web",
+                error="WebSearch requires query.",
+            )
+        payload = web_search(query, provider=str(arguments.get("provider", "deepseek")))
+        success = "error" not in payload
+        return ToolResultV2(
+            success=success,
+            summary=f"WebSearch for {query}",
+            error=str(payload["error"]) if "error" in payload else None,
+            raw_payload=payload,
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        return self.execute(call.arguments).to_legacy()
