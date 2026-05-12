@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import time
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 
 _fetch_cache: dict[str, dict[str, Any]] = {}
@@ -62,7 +62,7 @@ def _normalize_url(url: str) -> str:
 
 def _html_to_markdown(html: str) -> str:
     try:
-        import markdownify
+        import markdownify  # type: ignore[import-not-found]
 
         return str(markdownify.markdownify(html))
     except ImportError:
@@ -77,7 +77,7 @@ def _get_cached(key: str) -> dict[str, Any] | None:
         return None
 
     if time.time() - float(entry["ts"]) < _CACHE_TTL:
-        return entry["data"]
+        return cast(dict[str, Any], entry["data"])
 
     del _fetch_cache[key]
     return None

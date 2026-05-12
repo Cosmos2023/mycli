@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 
 def web_search(
@@ -40,14 +40,14 @@ def _call_serpapi(query: str) -> dict[str, Any]:
     if not api_key:
         return {"error": "[WebSearch requires SERPAPI_API_KEY for non-DeepSeek providers]"}
 
-    import requests
+    import requests  # type: ignore[import-untyped]
 
     response = requests.get(
         "https://serpapi.com/search",
         params={"q": query, "api_key": api_key, "engine": "google"},
         timeout=10,
     )
-    return response.json()
+    return cast(dict[str, Any], response.json())
 
 
 def _normalize_serpapi_results(data: dict[str, Any]) -> dict[str, Any]:
