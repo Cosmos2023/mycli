@@ -111,6 +111,49 @@ def test_native_tool_adapter_serializes_assistant_tool_calls_and_tool_messages()
     assert client.captured_messages[1]["tool_call_id"] == "call_list_directory_1"
 
 
+def test_native_tool_adapter_drops_orphan_tool_messages_after_provider_adaptation() -> None:
+    client = FakeNativeClient()
+    adapter = NativeToolModelAdapter(client=client)
+
+    adapter.next_action(
+        messages=[
+            ModelMessage(role="system", content="You are mycli."),
+            ModelMessage(
+                role="tool",
+                content="orphan result",
+                tool_call_id="call_orphan",
+            ),
+            ModelMessage(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"file_path": "README.md"},
+                        reason="inspect",
+                        call_id="call_read_1",
+                    ),
+                ),
+            ),
+            ModelMessage(
+                role="tool",
+                content="README contents",
+                tool_call_id="call_read_1",
+            ),
+            ModelMessage(role="user", content="finish"),
+        ],
+        tools=[],
+    )
+
+    assert [message["role"] for message in client.captured_messages] == [
+        "system",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert client.captured_messages[2]["tool_call_id"] == "call_read_1"
+
+
 def test_native_tool_adapter_replays_deepseek_reasoning_content() -> None:
     client = FakeNativeClient()
     adapter = NativeToolModelAdapter(

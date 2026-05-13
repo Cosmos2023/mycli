@@ -165,7 +165,7 @@ class RequestShapeBuilder:
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
-        for message in self._replay_messages(contract):
+        for message in self._chat_completions_replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
@@ -210,7 +210,7 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=developer_content),),
                 )
             )
-        for message in self._replay_messages(contract):
+        for message in self._chat_completions_replay_messages(contract):
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
@@ -301,6 +301,29 @@ class RequestShapeBuilder:
 
     def _replay_messages(self, contract: InstructionContract) -> tuple[Message, ...]:
         return contract.conversation_messages
+
+    def _chat_completions_replay_messages(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[Message, ...]:
+        pending_tool_call_ids: set[str] = set()
+        filtered: list[Message] = []
+        for message in self._replay_messages(contract):
+            if message.role == "tool":
+                if message.tool_call_id and message.tool_call_id in pending_tool_call_ids:
+                    filtered.append(message)
+                    pending_tool_call_ids.remove(message.tool_call_id)
+                continue
+            filtered.append(message)
+            if message.role == "assistant":
+                pending_tool_call_ids = {
+                    call.call_id
+                    for call in self._messages.tool_calls_from_message(message)
+                    if call.call_id
+                }
+            else:
+                pending_tool_call_ids.clear()
+        return tuple(filtered)
 
     def _replay_contains_current_user_request(
         self,

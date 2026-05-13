@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from json import JSONDecodeError
 from pathlib import Path
 
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
@@ -26,7 +27,16 @@ class TraceService:
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            events.append(RuntimeTraceEvent.from_dict(json.loads(line)))
+            try:
+                payload = json.loads(line)
+            except JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            try:
+                events.append(RuntimeTraceEvent.from_dict(payload))
+            except (KeyError, TypeError, ValueError):
+                continue
         return tuple(events)
 
     def load_for_turn(self, session_id: str, turn_id: str) -> tuple[RuntimeTraceEvent, ...]:

@@ -32,3 +32,22 @@ def test_trace_service_loads_events_for_specific_turn(tmp_path) -> None:
 
     assert len(loaded) == 1
     assert loaded[0].payload["tool_name"] == "edit_file"
+
+
+def test_trace_service_skips_corrupt_jsonl_rows(tmp_path) -> None:
+    service = TraceService(home_dir=tmp_path)
+    service.append(
+        "demo",
+        RuntimeTraceEvent(kind="tool_execution", turn_id="turn_1", payload={"tool_name": "Read"}),
+    )
+    path = tmp_path / ".mycli" / "sessions" / "demo-trace.jsonl"
+    path.write_text(
+        f"{path.read_text(encoding='utf-8').rstrip()}\n"
+        '{"kind":"broken"}{"kind":"also-broken"}\n',
+        encoding="utf-8",
+    )
+
+    loaded = service.load("demo")
+
+    assert len(loaded) == 1
+    assert loaded[0].payload["tool_name"] == "Read"

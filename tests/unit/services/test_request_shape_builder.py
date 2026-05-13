@@ -380,6 +380,63 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     }
 
 
+def test_request_shape_builder_filters_orphan_tool_messages_for_chat_completions(
+    tmp_path: Path,
+) -> None:
+    kept_call = ToolCall(
+        name="Read",
+        arguments={"file_path": "kept.md"},
+        reason="inspect",
+        call_id="call_kept",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(),
+            contextual_user_sections=(),
+            conversation_messages=(
+                Message(role="user", content="inspect files"),
+                Message(
+                    role="tool",
+                    content="[archived: earlier tool result. call_id: call_orphan]",
+                    tool_call_id="call_orphan",
+                ),
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=(kept_call,),
+                ),
+                Message(
+                    role="tool",
+                    content="kept contents",
+                    tool_call_id="call_kept",
+                ),
+            ),
+            current_user_request="finish",
+        ),
+        tools=(_tool("Read"),),
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert all(
+        message.metadata.get("tool_call_id") != "call_orphan"
+        for message in shape.provider_messages
+    )
+    assert shape.provider_messages[3].metadata["tool_call_id"] == "call_kept"
+
+
 def test_request_shape_builder_keeps_current_user_query_in_replay_for_tool_loop_prefix(
     tmp_path: Path,
 ) -> None:

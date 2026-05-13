@@ -172,9 +172,44 @@ class NativeToolModelAdapter:
             }
             for message in messages
         ]
-        return self._provider_adapter.adapt_messages(
+        adapted_messages = self._provider_adapter.adapt_messages(
             cast("list[dict[str, object]]", serialized_messages)
         )
+        return self._sanitize_chat_transcript(adapted_messages)
+
+    def _sanitize_chat_transcript(
+        self,
+        messages: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        sanitized: list[dict[str, object]] = []
+        pending_tool_call_ids: set[str] = set()
+        for message in messages:
+            role = message.get("role")
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id")
+                if isinstance(tool_call_id, str) and tool_call_id in pending_tool_call_ids:
+                    sanitized.append(message)
+                    pending_tool_call_ids.remove(tool_call_id)
+                continue
+            sanitized.append(message)
+            if role == "assistant":
+                pending_tool_call_ids = self._tool_call_ids(message)
+            else:
+                pending_tool_call_ids.clear()
+        return sanitized
+
+    def _tool_call_ids(self, message: dict[str, object]) -> set[str]:
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return set()
+        ids: set[str] = set()
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            call_id = call.get("id")
+            if isinstance(call_id, str):
+                ids.add(call_id)
+        return ids
 
     def _serialize_tools(
         self,

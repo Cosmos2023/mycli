@@ -108,6 +108,9 @@ class RequestMessageProjector:
         return message.content
 
     def _tool_calls_from_message(self, message: Message) -> tuple[ToolCall, ...]:
+        return self.tool_calls_from_message(message)
+
+    def tool_calls_from_message(self, message: Message) -> tuple[ToolCall, ...]:
         if message.tool_calls:
             return message.tool_calls
         return tuple(
