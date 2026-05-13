@@ -104,6 +104,8 @@ class ToolResultDedup:
             message = compacted.messages[index]
             if message.role != "tool":
                 continue
+            if message.metadata.get("cache_frozen"):
+                continue
             signature = self._tool_result_signature(message)
             if signature is None:
                 continue
@@ -165,6 +167,7 @@ class SlidingWindowEviction:
             index
             for index in range(zones.fresh_start, len(compacted.messages))
             if compacted.messages[index].role == "tool"
+            and not compacted.messages[index].metadata.get("cache_frozen")
         ]
         if len(tool_result_indices) <= self._keep_recent:
             return compacted
@@ -236,7 +239,7 @@ class LLMSummarization:
             }
             return conversation
 
-        split_index = len(fresh_messages) // 2
+        split_index = _find_safe_split(fresh_messages, len(fresh_messages) // 2)
         to_summarize = fresh_messages[:split_index]
         if not to_summarize:
             return conversation
@@ -339,6 +342,54 @@ class LLMSummarization:
         if not lines:
             return "Conversation summary unavailable."
         return "Conversation summary:\n" + "\n".join(lines)
+
+
+def _find_safe_split(messages: list[Message], candidate: int) -> int:
+    """Find a split point that does not leave provider tool results orphaned."""
+    if not messages:
+        return 0
+    idx = min(max(0, candidate), len(messages))
+    result_ids_after = {
+        message.tool_call_id
+        for message in messages[idx:]
+        if message.role == "tool" and message.tool_call_id
+    }
+
+    while idx > 0:
+        if idx < len(messages):
+            current_response_id = messages[idx].response_id
+            previous_response_id = messages[idx - 1].response_id
+            if (
+                current_response_id
+                and previous_response_id
+                and current_response_id == previous_response_id
+            ):
+                idx -= 1
+                continue
+
+        previous = messages[idx - 1]
+        if previous.role == "assistant" and previous.tool_calls:
+            call_ids = {
+                call_id
+                for call in previous.tool_calls
+                if (call_id := _tool_call_identifier(call))
+            }
+            if call_ids & result_ids_after:
+                idx -= 1
+                continue
+
+        break
+    return idx
+
+
+def _tool_call_identifier(tool_call: object) -> str | None:
+    call_id = getattr(tool_call, "call_id", None)
+    if isinstance(call_id, str) and call_id:
+        return call_id
+    legacy_id = getattr(tool_call, "id", None)
+    if isinstance(legacy_id, str) and legacy_id:
+        return legacy_id
+    return None
 
 
 class CompactionPipeline:

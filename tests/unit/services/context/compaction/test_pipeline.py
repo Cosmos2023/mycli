@@ -370,8 +370,10 @@ class TestCompactionPipeline:
             ],
         )
         result = pipeline.apply(conversation, budget)
-        assert "[cleared" in result.messages[2].content
-        assert "[archived:" in result.messages[1].content
+        assert result.messages[1].metadata["cache_frozen"] is True
+        assert result.messages[2].metadata["cache_frozen"] is True
+        assert "[cleared" not in result.messages[2].content
+        assert "[archived:" not in result.messages[1].content
         assert "result" in conversation.messages[1].content
 
     def test_pipeline_emits_pre_compact_hook(self) -> None:

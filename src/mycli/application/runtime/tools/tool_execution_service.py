@@ -535,6 +535,11 @@ class ToolExecutionService:
                 content=content,
                 tool_call_id=tool_call_id,
                 blocks=blocks,
+                metadata={
+                    "tool_name": tool_name,
+                    "cache_frozen": True,
+                    "l1_truncated": True,
+                },
             )
         )
 
