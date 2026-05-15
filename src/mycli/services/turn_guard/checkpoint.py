@@ -85,16 +85,16 @@ class TurnCheckpoint:
         *,
         step_index: int,
         conversation: Conversation,
-        cumulative_tokens: int = 0,
+        current_window_tokens: int = 0,
         plan_state: PlanState | None = None,
         no_progress_tracker: NoProgressTracker | None = None,
     ) -> CheckpointResult:
-        if cumulative_tokens > self._max_tokens:
+        if current_window_tokens > self._max_tokens:
             return CheckpointResult(
                 exit_reason=ExitReason.TOKEN_BUDGET_EXCEEDED,
                 stop_reason=StopReason.CONTEXT_WINDOW_EXCEEDED,
                 assistant_message=(
-                    f"Token budget exceeded ({cumulative_tokens}/{self._max_tokens}). "
+                    f"Context window exceeded ({current_window_tokens}/{self._max_tokens}). "
                     "Please narrow the request."
                 ),
             )
@@ -151,10 +151,10 @@ class TurnCheckpoint:
         reminders: list[str] = []
         continue_reason = ContinueReason.NEXT_STEP
 
-        if cumulative_tokens >= self._max_tokens:
+        if current_window_tokens >= self._max_tokens:
             continue_reason = ContinueReason.FORCE_ANSWER
             reminders.append(
-                "Token budget nearly exhausted. You MUST answer now. Do NOT call any more tools."
+                "Context window is full. You MUST answer now. Do NOT call any more tools."
             )
 
         if step_index == self._max_tool_calls:

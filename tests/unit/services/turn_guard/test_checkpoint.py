@@ -65,13 +65,13 @@ def _conversation(*messages: Message) -> Conversation:
     )
 
 
-def test_token_budget_exceeded_hard_stops_when_over_limit() -> None:
+def test_current_window_budget_exceeded_hard_stops_when_over_limit() -> None:
     checkpoint = TurnCheckpoint(max_tokens_per_turn=1000)
 
     result = checkpoint.evaluate(
         step_index=0,
         conversation=_conversation(),
-        cumulative_tokens=1001,
+        current_window_tokens=1001,
     )
 
     assert result.exit_reason == ExitReason.TOKEN_BUDGET_EXCEEDED
@@ -79,18 +79,31 @@ def test_token_budget_exceeded_hard_stops_when_over_limit() -> None:
     assert result.assistant_message is not None
 
 
-def test_token_budget_at_limit_gives_force_answer_not_hard_stop() -> None:
+def test_current_window_budget_at_limit_gives_force_answer_not_hard_stop() -> None:
     checkpoint = TurnCheckpoint(max_tokens_per_turn=1000)
 
     result = checkpoint.evaluate(
         step_index=0,
         conversation=_conversation(),
-        cumulative_tokens=1000,
+        current_window_tokens=1000,
     )
 
     assert result.exit_reason is None
     assert result.continue_reason == ContinueReason.FORCE_ANSWER
     assert any("MUST answer" in reminder for reminder in result.reminders)
+
+
+def test_cumulative_prompt_tokens_are_not_a_checkpoint_input() -> None:
+    checkpoint = TurnCheckpoint(max_tokens_per_turn=1000)
+
+    result = checkpoint.evaluate(
+        step_index=3,
+        conversation=_conversation(),
+        current_window_tokens=700,
+    )
+
+    assert result.exit_reason is None
+    assert result.continue_reason == ContinueReason.NEXT_STEP
 
 
 def test_tool_count_exceeded_hard_stops_when_over_limit() -> None:

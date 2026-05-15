@@ -76,7 +76,7 @@ def run_deterministic_soak(
         checkpoint_result = checkpoint.evaluate(
             step_index=emitted_tools,
             conversation=conversation,
-            cumulative_tokens=total_tokens,
+            current_window_tokens=total_tokens,
         )
         if checkpoint_result.exit_reason is not None:
             hard_stop_turn = turn_index

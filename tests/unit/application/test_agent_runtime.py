@@ -600,6 +600,54 @@ class ReasoningToolThenDoneAdapter:
         )
 
 
+class HighUsageToolThenDoneAdapter:
+    def __init__(self, *, tool_calls: int = 3) -> None:
+        self.calls = 0
+        self.tool_calls = tool_calls
+
+    def next_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        if self.calls <= self.tool_calls:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="Read",
+                                tool_arguments={"file_path": "pyproject.toml"},
+                                call_id=f"call_high_usage_{self.calls}",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+                metadata={
+                    "usage": {
+                        "prompt_tokens": 90_000,
+                        "completion_tokens": 15_000,
+                    }
+                },
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Finished despite high usage."),),
+                ),
+            ),
+            done=True,
+            metadata={
+                "usage": {
+                    "prompt_tokens": 90_000,
+                    "completion_tokens": 15_000,
+                }
+            },
+        )
+
+
 class InvalidToolArgumentsThenDoneAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -2591,6 +2639,36 @@ def test_agent_runtime_persists_tool_calls_and_results_into_structured_history(
     assert tool_result.metadata["success"] is True
 
 
+def test_agent_runtime_does_not_hard_stop_on_cumulative_provider_usage(
+    tmp_path: Path,
+) -> None:
+    adapter = HighUsageToolThenDoneAdapter(tool_calls=3)
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        max_prompt_tokens=200_000,
+        max_tokens_per_turn=200_000,
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+
+    response = runtime.handle_user_turn("inspect the repo")
+
+    assert response.turn is not None
+    assert response.turn.stop_reason is StopReason.ASSISTANT_COMPLETED
+    assert response.assistant_message == "Finished despite high usage."
+    assert adapter.calls == 4
+    assert not any(
+        item.type is TurnItemType.WARNING
+        and item.text
+        and "token budget exceeded" in item.text.lower()
+        for item in response.turn.items
+    )
+
+
 def test_agent_runtime_returns_tool_validation_failures_to_model(
     tmp_path: Path,
 ) -> None:
@@ -3027,6 +3105,7 @@ def test_agent_runtime_records_compaction_metrics_when_window_changes(tmp_path: 
         tool_registry=ToolRegistryV2.from_tools([]),
         config=AgentConfig(
             workspace_root=tmp_path,
+            max_prompt_tokens=1000,
             max_tokens_per_turn=1000,
             compaction_l4_trigger_ratio=0.1,
         ),
@@ -3037,7 +3116,7 @@ def test_agent_runtime_records_compaction_metrics_when_window_changes(tmp_path: 
         conversation.append(
             Message(
                 role="assistant",
-                content=" ".join(f"evidence_{index}_{token}" for token in range(60)),
+                content=" ".join(f"evidence_{index}_{token}" for token in range(240)),
             )
         )
     runtime._session_service.save_conversation(conversation)

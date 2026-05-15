@@ -274,8 +274,7 @@ class TurnExecutor:
         last_runtime_policy_state: dict[str, object] | None = None
         latest_context_baseline: ContextBaseline | None = None
         step_index = 0
-        cumulative_tokens = 0
-        budget = ContextBudget(max_tokens=runtime._config.max_tokens_per_turn)
+        budget = ContextBudget(max_tokens=runtime._config.max_prompt_tokens)
         no_progress_tracker = NoProgressTracker()
         loop_state = LoopState()
         carryover_runtime_reminders: tuple[str, ...] = ()
@@ -284,7 +283,6 @@ class TurnExecutor:
             checkpoint_result = runtime._checkpoint.evaluate(
                 step_index=step_index,
                 conversation=conversation,
-                cumulative_tokens=cumulative_tokens,
                 plan_state=current_plan_state,
                 no_progress_tracker=no_progress_tracker,
             )
@@ -370,7 +368,6 @@ class TurnExecutor:
                 )
             )
             carryover_runtime_reminders = ()
-            runtime_reminders = BudgetNudge().apply(budget, runtime_reminders)
             if force_answer:
                 runtime_reminders = tuple(
                     dict.fromkeys(
@@ -428,19 +425,21 @@ class TurnExecutor:
                 last_tool_exposure_summary = planned_exposure.exposure.summary()
             tool_router = runtime._build_tool_router(planned_exposure)
             conversation_before_compaction = conversation
-            window_budget = runtime._estimate_window_budget(conversation)
-            runtime._record_budget_metric(
-                total_tokens=window_budget.total_tokens,
-                max_tokens=window_budget.max_tokens,
-            )
+            pre_compaction_budget = runtime._estimate_window_budget(conversation)
             conversation_for_model = runtime._compaction_pipeline.apply(
                 conversation,
-                window_budget,
+                pre_compaction_budget,
             )
             runtime._record_compaction_metric(
                 before_messages=conversation_before_compaction,
                 after_messages=conversation_for_model,
             )
+            budget = runtime._estimate_window_budget(conversation_for_model)
+            runtime._record_budget_metric(
+                total_tokens=budget.total_tokens,
+                max_tokens=budget.max_tokens,
+            )
+            runtime_reminders = BudgetNudge().apply(budget, runtime_reminders)
             context, turn_context = runtime._assemble_turn_context(
                 user_message=user_message,
                 conversation=conversation_for_model,
@@ -481,11 +480,6 @@ class TurnExecutor:
                     request_shape=request_shape,
                     usage=usage_payload if isinstance(usage_payload, dict) else None,
                 )
-                if isinstance(usage_payload, dict):
-                    tokens = _usage_total_tokens(usage_payload)
-                    cumulative_tokens += tokens
-                    budget.record(usage_payload)
-                    runtime._record_budget_metric(total_tokens=budget.total_tokens)
                 streamed_chunks.extend(turn_streamed_chunks)
                 runtime._persist_model_continuation_state(
                     turn_id=turn_id,
@@ -859,24 +853,6 @@ class BudgetNudge:
                 reminders.append(warning)
 
         return tuple(reminders)
-
-
-def _usage_total_tokens(usage_payload: dict[str, object]) -> int:
-    total_tokens = usage_payload.get("total_tokens")
-    if isinstance(total_tokens, int):
-        return total_tokens
-
-    input_tokens = usage_payload.get("input_tokens")
-    output_tokens = usage_payload.get("output_tokens")
-    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
-        return input_tokens + output_tokens
-
-    prompt_tokens = usage_payload.get("prompt_tokens")
-    completion_tokens = usage_payload.get("completion_tokens")
-    if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
-        return prompt_tokens + completion_tokens
-
-    return 0
 
 
 def _set_max_output_tokens(model_adapter: object, value: int) -> None:
