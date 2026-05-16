@@ -30,14 +30,14 @@ def _tool_msg(
     content: str,
     tool_call_id: str,
     *,
-    cache_frozen: bool = False,
+    append_only: bool = False,
     tool_name: str = "Read",
 ) -> Message:
     return Message(
         role="tool",
         content=content,
         tool_call_id=tool_call_id,
-        metadata={"tool_name": tool_name, "cache_frozen": cache_frozen},
+        metadata={"tool_name": tool_name, "append_only": append_only},
         blocks=(
             RuntimeBlock(
                 type="tool_result",
@@ -87,11 +87,11 @@ def test_compacted_conversation_builds_valid_chat_completions_transcript(
             Message(role="system", content="sys", metadata={"cache_policy": "STATIC"}),
             Message(role="user", content="read x"),
             Message(role="assistant", content="", tool_calls=(_tool_call("call_1"),)),
-            _tool_msg("file content", "call_1", cache_frozen=True),
+            _tool_msg("file content", "call_1", append_only=True),
             Message(role="assistant", content="done"),
             Message(role="user", content="edit x"),
             Message(role="assistant", content="", tool_calls=(_tool_call("call_2", "Edit"),)),
-            _tool_msg("edit success", "call_2", cache_frozen=True, tool_name="Edit"),
+            _tool_msg("edit success", "call_2", append_only=True, tool_name="Edit"),
         ],
     )
 
@@ -129,7 +129,7 @@ def test_l4_summary_does_not_leave_provider_orphan_tool_results(tmp_path: Path) 
                 tool_calls=(_tool_call("call_1"),),
                 metadata={"cache_policy": "DYNAMIC"},
             ),
-            _tool_msg("file content", "call_1", cache_frozen=True),
+            _tool_msg("file content", "call_1", append_only=True),
             Message(role="assistant", content="done", metadata={"cache_policy": "DYNAMIC"}),
             Message(role="user", content="edit x", metadata={"cache_policy": "DYNAMIC"}),
             Message(role="assistant", content="editing", metadata={"cache_policy": "DYNAMIC"}),

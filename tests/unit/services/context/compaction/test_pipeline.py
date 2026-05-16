@@ -140,6 +140,22 @@ class TestToolResultBudget:
 
         assert result.messages[1].content == conversation.messages[1].content
 
+    def test_l1_treats_legacy_cache_frozen_as_append_only(self) -> None:
+        strategy = ToolResultBudget(ToolResultFormatter(read_file_max_chars=120))
+        budget = ContextBudget(max_tokens=1000)
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="inspect", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("c1", content="x = 1\n" * 400),
+            ],
+        )
+        conversation.messages[1].metadata["cache_frozen"] = True
+
+        result = strategy.apply(conversation, _zones(conversation), budget)
+
+        assert result.messages[1].content == conversation.messages[1].content
+
 
 class StubSummarization(LLMSummarization):
     def __init__(
