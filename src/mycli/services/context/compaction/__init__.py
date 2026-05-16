@@ -5,10 +5,10 @@ from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.compaction.pipeline import (
     CompactionCostProfile,
     CompactionPipeline,
+    ContextWindowAnalyzer,
+    ContextWindowMetrics,
     LLMSummarization,
-    SlidingWindowEviction,
     ToolResultBudget,
-    ToolResultDedup,
 )
 
 __all__ = [
@@ -16,8 +16,8 @@ __all__ = [
     "CompactionCostProfile",
     "CompactionPipeline",
     "ContextBudget",
+    "ContextWindowAnalyzer",
+    "ContextWindowMetrics",
     "LLMSummarization",
-    "SlidingWindowEviction",
     "ToolResultBudget",
-    "ToolResultDedup",
 ]

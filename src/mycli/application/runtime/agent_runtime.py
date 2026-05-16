@@ -44,10 +44,9 @@ from mycli.services.context.compaction import (
     CompactionCostProfile,
     ContextBudget,
     CompactionPipeline,
+    ContextWindowAnalyzer,
     LLMSummarization,
-    SlidingWindowEviction,
     ToolResultBudget,
-    ToolResultDedup,
 )
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
@@ -122,10 +121,10 @@ class AgentRuntime:
         self._hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
         self._compaction_pipeline = CompactionPipeline(
             tool_result_budget=ToolResultBudget(self._tool_result_formatter),
-            tool_result_dedup=ToolResultDedup(trigger_ratio=0.4),
-            sliding_window_eviction=SlidingWindowEviction(
-                trigger_ratio=0.7,
-                keep_recent=8,
+            context_window_analyzer=ContextWindowAnalyzer(
+                dedup_trigger_ratio=0.4,
+                eviction_trigger_ratio=0.7,
+                keep_recent_tool_results=8,
             ),
             llm_summarization=LLMSummarization(
                 trigger_ratio=config.compaction_l4_trigger_ratio,

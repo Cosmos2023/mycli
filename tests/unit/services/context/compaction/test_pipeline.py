@@ -7,10 +7,9 @@ from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.compaction.pipeline import (
     CompactionCostProfile,
     CompactionPipeline,
+    ContextWindowAnalyzer,
     LLMSummarization,
-    SlidingWindowEviction,
     ToolResultBudget,
-    ToolResultDedup,
 )
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
@@ -50,112 +49,49 @@ def _zones(conversation: Conversation) -> CacheZones:
     return CacheZones.from_conversation(conversation)
 
 
-class TestToolResultDedup:
-    def test_dedup_triggers_at_threshold(self) -> None:
-        dedup = ToolResultDedup(trigger_ratio=0.35)
-        budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 400})
-        conversation = Conversation(
-            session_id="test",
-            messages=[
-                Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"}),
-                _tool_msg("c1", path="/a.py"),
-                _tool_msg("c2", path="/a.py"),
-                _tool_msg("c3", path="/b.py"),
-            ],
-        )
-        result = dedup.apply(conversation, _zones(conversation), budget)
-        assert "[cleared" in result.messages[2].content
-        assert "result" in conversation.messages[2].content
-
-    def test_dedup_does_not_trigger_below_threshold(self) -> None:
-        dedup = ToolResultDedup(trigger_ratio=0.4)
-        budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 300})
-        conversation = Conversation(
-            session_id="test",
-            messages=[
-                Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"}),
-                _tool_msg("c1", path="/a.py"),
-                _tool_msg("c2", path="/a.py"),
-            ],
-        )
-        result = dedup.apply(conversation, _zones(conversation), budget)
-        assert "[cleared" not in result.messages[2].content
-
-    def test_dedup_does_not_modify_messages_before_fresh_start(self) -> None:
-        dedup = ToolResultDedup(trigger_ratio=0.3)
-        budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 400})
-        conversation = Conversation(
-            session_id="test",
-            messages=[
-                Message(role="system", content="sys", metadata={"cache_policy": "STATIC"}),
-                Message(role="assistant", content="tool defs", metadata={"cache_policy": "STATIC"}),
-                Message(role="user", content="turn1", metadata={"cache_policy": "DYNAMIC"}),
-                _tool_msg("c0", path="/old.py"),
-                Message(role="assistant", content="done", metadata={"cache_policy": "DYNAMIC"}),
-                Message(role="user", content="turn2", metadata={"cache_policy": "DYNAMIC"}),
-                _tool_msg("c1", path="/old.py"),
-                _tool_msg("c2", path="/old.py"),
-            ],
-        )
-        result = dedup.apply(conversation, _zones(conversation), budget)
-        assert "[cleared" not in result.messages[1].content
-        assert "[cleared" not in result.messages[5].content
-        assert "[cleared" in result.messages[6].content
-
-
-class TestSlidingWindowEviction:
-    def test_evicts_old_tool_results_when_over_threshold(self) -> None:
-        eviction = SlidingWindowEviction(trigger_ratio=0.6, keep_recent=2)
-        budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 700})
-        messages = [Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"})]
-        for index in range(5):
-            messages.append(_tool_msg(f"c{index}"))
-        conversation = Conversation(session_id="test", messages=messages)
-
-        result = eviction.apply(conversation, _zones(conversation), budget)
-
-        assert "[archived:" in result.messages[1].content
-        assert "[archived:" in result.messages[2].content
-        assert "[archived:" in result.messages[3].content
-        assert "result" in result.messages[4].content
-        assert "result" in result.messages[5].content
-        assert "result" in conversation.messages[1].content
-
-    def test_does_not_evict_when_below_threshold(self) -> None:
-        eviction = SlidingWindowEviction(trigger_ratio=0.7, keep_recent=2)
+class TestContextWindowAnalyzer:
+    def test_records_duplicate_tool_pressure_without_modifying_messages(self) -> None:
+        analyzer = ContextWindowAnalyzer(dedup_trigger_ratio=0.1, eviction_trigger_ratio=0.9)
         budget = ContextBudget(max_tokens=1000)
         budget.record({"total_tokens": 500})
         conversation = Conversation(
             session_id="test",
             messages=[
                 Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"}),
-                _tool_msg("c1"),
-                _tool_msg("c2"),
-                _tool_msg("c3"),
+                _tool_msg("c1", path="/a.py", content="same result"),
+                _tool_msg("c2", path="/a.py", content="same result"),
             ],
         )
-        result = eviction.apply(conversation, _zones(conversation), budget)
-        assert "result" in result.messages[1].content
 
-    def test_no_eviction_when_fewer_than_keep_recent(self) -> None:
-        eviction = SlidingWindowEviction(trigger_ratio=0.6, keep_recent=8)
-        budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 700})
-        conversation = Conversation(
-            session_id="test",
-            messages=[
-                Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"}),
-                _tool_msg("c1"),
-                _tool_msg("c2"),
-            ],
+        result = analyzer.apply(conversation, _zones(conversation), budget)
+
+        assert result is conversation
+        assert analyzer.last_metrics is not None
+        assert analyzer.last_metrics.duplicate_tool_result_count == 1
+        assert analyzer.last_metrics.duplicate_tool_result_tokens > 0
+        assert conversation.messages[2].content == "same result"
+
+    def test_records_evictable_tool_pressure_without_archiving_messages(self) -> None:
+        analyzer = ContextWindowAnalyzer(
+            dedup_trigger_ratio=0.9,
+            eviction_trigger_ratio=0.1,
+            keep_recent_tool_results=2,
         )
-        result = eviction.apply(conversation, _zones(conversation), budget)
-        assert "result" in result.messages[1].content
-        assert "result" in result.messages[2].content
+        budget = ContextBudget(max_tokens=1000)
+        budget.record({"total_tokens": 800})
+        messages = [Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"})]
+        for index in range(5):
+            messages.append(_tool_msg(f"c{index}", content=f"result {index}"))
+        conversation = Conversation(session_id="test", messages=messages)
+
+        result = analyzer.apply(conversation, _zones(conversation), budget)
+
+        assert result is conversation
+        assert analyzer.last_metrics is not None
+        assert analyzer.last_metrics.evictable_tool_result_count == 3
+        assert analyzer.last_metrics.evictable_tool_result_tokens > 0
+        assert conversation.messages[1].content == "result 0"
+        assert conversation.messages[3].content == "result 2"
 
 
 class TestToolResultBudget:
@@ -181,12 +117,13 @@ class TestToolResultBudget:
 
         assert result.messages[2].content != conversation.messages[2].content
         assert result.messages[2].metadata["l1_truncated"] is True
-        assert result.messages[2].metadata["cache_frozen"] is True
+        assert result.messages[2].metadata["append_only"] is True
+        assert "cache_frozen" not in result.messages[2].metadata
         assert len(result.messages[2].content) <= 120
         assert "tool_result" == result.messages[2].blocks[0].type
         assert result.messages[2].blocks[0].metadata["compacted"] is True
 
-    def test_skips_frozen_tool_results(self) -> None:
+    def test_skips_append_only_tool_results(self) -> None:
         strategy = ToolResultBudget(ToolResultFormatter(read_file_max_chars=120))
         budget = ContextBudget(max_tokens=1000)
         conversation = Conversation(
@@ -196,7 +133,7 @@ class TestToolResultBudget:
                 _tool_msg("c1", content="x = 1\n" * 400),
             ],
         )
-        conversation.messages[1].metadata["cache_frozen"] = True
+        conversation.messages[1].metadata["append_only"] = True
 
         result = strategy.apply(conversation, _zones(conversation), budget)
 
@@ -351,10 +288,10 @@ class TestCompactionPipeline:
     def test_pipeline_applies_strategies_in_order(self) -> None:
         pipeline = CompactionPipeline(
             tool_result_budget=ToolResultBudget(ToolResultFormatter()),
-            tool_result_dedup=ToolResultDedup(trigger_ratio=0.1),
-            sliding_window_eviction=SlidingWindowEviction(
-                trigger_ratio=0.1,
-                keep_recent=2,
+            context_window_analyzer=ContextWindowAnalyzer(
+                dedup_trigger_ratio=0.1,
+                eviction_trigger_ratio=0.1,
+                keep_recent_tool_results=2,
             ),
             llm_summarization=LLMSummarization(trigger_ratio=0.99),
         )
@@ -370,10 +307,12 @@ class TestCompactionPipeline:
             ],
         )
         result = pipeline.apply(conversation, budget)
-        assert result.messages[1].metadata["cache_frozen"] is True
-        assert result.messages[2].metadata["cache_frozen"] is True
+        assert result.messages[1].metadata["append_only"] is True
+        assert result.messages[2].metadata["append_only"] is True
         assert "[cleared" not in result.messages[2].content
         assert "[archived:" not in result.messages[1].content
+        assert pipeline.last_context_window_metrics is not None
+        assert pipeline.last_context_window_metrics.duplicate_tool_result_count == 1
         assert "result" in conversation.messages[1].content
 
     def test_pipeline_emits_pre_compact_hook(self) -> None:
@@ -387,8 +326,11 @@ class TestCompactionPipeline:
         hook_manager.register(HookPoint.PRE_COMPACT, capture)
         pipeline = CompactionPipeline(
             tool_result_budget=ToolResultBudget(ToolResultFormatter()),
-            tool_result_dedup=ToolResultDedup(trigger_ratio=0.1),
-            sliding_window_eviction=SlidingWindowEviction(trigger_ratio=0.1, keep_recent=2),
+            context_window_analyzer=ContextWindowAnalyzer(
+                dedup_trigger_ratio=0.1,
+                eviction_trigger_ratio=0.1,
+                keep_recent_tool_results=2,
+            ),
             llm_summarization=LLMSummarization(trigger_ratio=0.99),
             hook_manager=hook_manager,
         )

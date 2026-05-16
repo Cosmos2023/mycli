@@ -11,10 +11,9 @@ from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.compaction.pipeline import (
     CompactionPipeline,
+    ContextWindowAnalyzer,
     LLMSummarization,
-    SlidingWindowEviction,
     ToolResultBudget,
-    ToolResultDedup,
 )
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 
@@ -73,8 +72,11 @@ def test_compacted_conversation_builds_valid_chat_completions_transcript(
 ) -> None:
     pipeline = CompactionPipeline(
         tool_result_budget=ToolResultBudget(ToolResultFormatter()),
-        tool_result_dedup=ToolResultDedup(trigger_ratio=0.05),
-        sliding_window_eviction=SlidingWindowEviction(trigger_ratio=0.05, keep_recent=2),
+        context_window_analyzer=ContextWindowAnalyzer(
+            dedup_trigger_ratio=0.05,
+            eviction_trigger_ratio=0.05,
+            keep_recent_tool_results=2,
+        ),
         llm_summarization=LLMSummarization(trigger_ratio=0.95),
     )
     budget = ContextBudget(max_tokens=200_000)

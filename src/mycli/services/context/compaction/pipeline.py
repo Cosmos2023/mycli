@@ -36,6 +36,42 @@ class CompactionStrategy(Protocol):
     ) -> Conversation: ...
 
 
+@dataclass(slots=True, frozen=True)
+class ContextWindowMetrics:
+    total_tokens: int
+    max_tokens: int
+    usage_ratio: float
+    remaining_tokens: int
+    fresh_message_count: int
+    fresh_tokens: int
+    tool_result_count: int
+    tool_result_tokens: int
+    append_only_tool_result_count: int
+    append_only_tool_result_tokens: int
+    duplicate_tool_result_count: int
+    duplicate_tool_result_tokens: int
+    evictable_tool_result_count: int
+    evictable_tool_result_tokens: int
+
+    def to_dict(self) -> dict[str, int | float]:
+        return {
+            "total_tokens": self.total_tokens,
+            "max_tokens": self.max_tokens,
+            "usage_ratio": self.usage_ratio,
+            "remaining_tokens": self.remaining_tokens,
+            "fresh_message_count": self.fresh_message_count,
+            "fresh_tokens": self.fresh_tokens,
+            "tool_result_count": self.tool_result_count,
+            "tool_result_tokens": self.tool_result_tokens,
+            "append_only_tool_result_count": self.append_only_tool_result_count,
+            "append_only_tool_result_tokens": self.append_only_tool_result_tokens,
+            "duplicate_tool_result_count": self.duplicate_tool_result_count,
+            "duplicate_tool_result_tokens": self.duplicate_tool_result_tokens,
+            "evictable_tool_result_count": self.evictable_tool_result_count,
+            "evictable_tool_result_tokens": self.evictable_tool_result_tokens,
+        }
+
+
 class ToolResultBudget:
     def __init__(self, formatter: ToolResultFormatter) -> None:
         self._formatter = formatter
@@ -53,7 +89,7 @@ class ToolResultBudget:
             message = compacted.messages[index]
             if message.role != "tool":
                 continue
-            if message.metadata.get("cache_frozen"):
+            if _is_append_only(message):
                 continue
 
             tool_name = _tool_name_for_message(message)
@@ -73,7 +109,7 @@ class ToolResultBudget:
                 message,
                 content=formatted,
                 metadata_updates={
-                    "cache_frozen": True,
+                    "append_only": True,
                     "l1_truncated": True,
                 },
                 block_metadata_updates={"compacted": True},
@@ -85,73 +121,22 @@ class ToolResultBudget:
         return self._formatter.format(tool_name, result)
 
 
-class ToolResultDedup:
-    def __init__(self, *, trigger_ratio: float = 0.4) -> None:
-        self._trigger_ratio = trigger_ratio
-
-    def apply(
-        self,
-        conversation: Conversation,
-        zones: CacheZones,
-        budget: ContextBudget,
-    ) -> Conversation:
-        if budget.usage_ratio < self._trigger_ratio:
-            return conversation
-
-        compacted = _copy_conversation(conversation)
-        seen: dict[str, int] = {}
-        for index in range(zones.fresh_start, len(compacted.messages)):
-            message = compacted.messages[index]
-            if message.role != "tool":
-                continue
-            if message.metadata.get("cache_frozen"):
-                continue
-            signature = self._tool_result_signature(message)
-            if signature is None:
-                continue
-            if signature in seen:
-                compacted.messages[index] = _placeholder_tool_message(
-                    message,
-                    content=f"[cleared: same tool result as message #{seen[signature]}]",
-                )
-                continue
-            seen[signature] = index
-        return compacted
-
-    @staticmethod
-    def _tool_result_signature(message: Message) -> str | None:
-        tool_name = None
-        path = None
-        summary = None
-        for block in message.blocks:
-            if block.type != "tool_result":
-                continue
-            tool_name = block.metadata.get("tool_name")
-            path = block.metadata.get("path")
-            summary = block.metadata.get("summary")
-            break
-        if tool_name is None:
-            return None
-        return json.dumps(
-            {
-                "path": path,
-                "summary": summary,
-                "tool_name": tool_name,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-
-
-class SlidingWindowEviction:
+class ContextWindowAnalyzer:
     def __init__(
         self,
         *,
-        trigger_ratio: float = 0.7,
-        keep_recent: int = 8,
+        dedup_trigger_ratio: float = 0.4,
+        eviction_trigger_ratio: float = 0.7,
+        keep_recent_tool_results: int = 8,
     ) -> None:
-        self._trigger_ratio = trigger_ratio
-        self._keep_recent = keep_recent
+        self._dedup_trigger_ratio = dedup_trigger_ratio
+        self._eviction_trigger_ratio = eviction_trigger_ratio
+        self._keep_recent_tool_results = keep_recent_tool_results
+        self._last_metrics: ContextWindowMetrics | None = None
+
+    @property
+    def last_metrics(self) -> ContextWindowMetrics | None:
+        return self._last_metrics
 
     def apply(
         self,
@@ -159,27 +144,57 @@ class SlidingWindowEviction:
         zones: CacheZones,
         budget: ContextBudget,
     ) -> Conversation:
-        if budget.usage_ratio < self._trigger_ratio:
-            return conversation
-
-        compacted = _copy_conversation(conversation)
-        tool_result_indices = [
-            index
-            for index in range(zones.fresh_start, len(compacted.messages))
-            if compacted.messages[index].role == "tool"
-            and not compacted.messages[index].metadata.get("cache_frozen")
+        fresh_messages = conversation.messages[zones.fresh_start :]
+        tool_messages = [message for message in fresh_messages if message.role == "tool"]
+        tool_tokens = {
+            id(message): _estimate_message_tokens(message)
+            for message in tool_messages
+        }
+        append_only_messages = [
+            message for message in tool_messages if _is_append_only(message)
         ]
-        if len(tool_result_indices) <= self._keep_recent:
-            return compacted
-
-        for index in tool_result_indices[: -self._keep_recent]:
-            message = compacted.messages[index]
-            call_id = message.tool_call_id or "unknown"
-            compacted.messages[index] = _placeholder_tool_message(
-                message,
-                content=f"[archived: earlier tool result. call_id: {call_id}]",
-            )
-        return compacted
+        duplicate_count = 0
+        duplicate_tokens = 0
+        if budget.usage_ratio >= self._dedup_trigger_ratio:
+            seen: set[str] = set()
+            for message in tool_messages:
+                signature = _tool_result_signature(message)
+                if signature is None:
+                    continue
+                if signature in seen:
+                    duplicate_count += 1
+                    duplicate_tokens += tool_tokens[id(message)]
+                    continue
+                seen.add(signature)
+        evictable_messages: list[Message] = []
+        if budget.usage_ratio >= self._eviction_trigger_ratio:
+            if self._keep_recent_tool_results <= 0:
+                evictable_messages = tool_messages
+            else:
+                evictable_messages = tool_messages[: -self._keep_recent_tool_results]
+        self._last_metrics = ContextWindowMetrics(
+            total_tokens=budget.total_tokens,
+            max_tokens=budget.max_tokens,
+            usage_ratio=budget.usage_ratio,
+            remaining_tokens=budget.remaining,
+            fresh_message_count=len(fresh_messages),
+            fresh_tokens=sum(
+                _estimate_message_tokens(message) for message in fresh_messages
+            ),
+            tool_result_count=len(tool_messages),
+            tool_result_tokens=sum(tool_tokens.values()),
+            append_only_tool_result_count=len(append_only_messages),
+            append_only_tool_result_tokens=sum(
+                tool_tokens[id(message)] for message in append_only_messages
+            ),
+            duplicate_tool_result_count=duplicate_count,
+            duplicate_tool_result_tokens=duplicate_tokens,
+            evictable_tool_result_count=len(evictable_messages),
+            evictable_tool_result_tokens=sum(
+                tool_tokens[id(message)] for message in evictable_messages
+            ),
+        )
+        return conversation
 
 
 class LLMSummarization:
@@ -397,16 +412,18 @@ class CompactionPipeline:
         self,
         *,
         tool_result_budget: ToolResultBudget,
-        tool_result_dedup: ToolResultDedup,
-        sliding_window_eviction: SlidingWindowEviction,
+        context_window_analyzer: ContextWindowAnalyzer,
         llm_summarization: LLMSummarization,
         hook_manager: HookManager | None = None,
     ) -> None:
         self.tool_result_budget = tool_result_budget
-        self.tool_result_dedup = tool_result_dedup
-        self.sliding_window_eviction = sliding_window_eviction
+        self.context_window_analyzer = context_window_analyzer
         self.llm_summarization = llm_summarization
         self._hook_manager = hook_manager or HookManager()
+
+    @property
+    def last_context_window_metrics(self) -> ContextWindowMetrics | None:
+        return self.context_window_analyzer.last_metrics
 
     def apply(
         self,
@@ -425,8 +442,7 @@ class CompactionPipeline:
         )
         zones = CacheZones.from_conversation(conversation)
         compacted = self.tool_result_budget.apply(conversation, zones, budget)
-        compacted = self.tool_result_dedup.apply(compacted, zones, budget)
-        compacted = self.sliding_window_eviction.apply(compacted, zones, budget)
+        self.context_window_analyzer.apply(compacted, zones, budget)
         return self.llm_summarization.apply(compacted, zones, budget)
 
 
@@ -443,14 +459,6 @@ def _estimate_message_tokens(message: Message) -> int:
     return _TOKEN_COUNTER.count_message(message)
 
 
-def _placeholder_tool_message(message: Message, *, content: str) -> Message:
-    return _replace_tool_message(
-        message,
-        content=content,
-        block_metadata_updates={"compacted": True},
-    )
-
-
 def _replace_tool_message(
     message: Message,
     *,
@@ -460,6 +468,7 @@ def _replace_tool_message(
 ) -> Message:
     blocks: tuple[RuntimeBlock, ...] = ()
     message_metadata = dict(message.metadata)
+    message_metadata.pop("cache_frozen", None)
     if metadata_updates:
         message_metadata.update(metadata_updates)
     if message.tool_call_id:
@@ -490,6 +499,34 @@ def _replace_tool_message(
         tool_call_id=message.tool_call_id,
         blocks=blocks,
         metadata=message_metadata,
+    )
+
+
+def _is_append_only(message: Message) -> bool:
+    return bool(message.metadata.get("append_only") or message.metadata.get("cache_frozen"))
+
+
+def _tool_result_signature(message: Message) -> str | None:
+    tool_name = None
+    path = None
+    summary = None
+    for block in message.blocks:
+        if block.type != "tool_result":
+            continue
+        tool_name = block.metadata.get("tool_name")
+        path = block.metadata.get("path")
+        summary = block.metadata.get("summary")
+        break
+    if tool_name is None:
+        return None
+    return json.dumps(
+        {
+            "path": path,
+            "summary": summary,
+            "tool_name": tool_name,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
     )
 
 
