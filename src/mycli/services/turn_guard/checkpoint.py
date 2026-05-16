@@ -18,6 +18,7 @@ class ExitReason(StrEnum):
 
 class ContinueReason(StrEnum):
     FORCE_ANSWER = "force_answer"
+    COMPACT_CONTEXT = "compact_context"
     REROUTE = "reroute"
     TRUNCATION_AWARE = "truncation_aware"
     NEXT_STEP = "next_step"
@@ -89,26 +90,6 @@ class TurnCheckpoint:
         plan_state: PlanState | None = None,
         no_progress_tracker: NoProgressTracker | None = None,
     ) -> CheckpointResult:
-        if current_window_tokens > self._max_tokens:
-            return CheckpointResult(
-                exit_reason=ExitReason.TOKEN_BUDGET_EXCEEDED,
-                stop_reason=StopReason.CONTEXT_WINDOW_EXCEEDED,
-                assistant_message=(
-                    f"Context window exceeded ({current_window_tokens}/{self._max_tokens}). "
-                    "Please narrow the request."
-                ),
-            )
-
-        if step_index > self._max_tool_calls:
-            return CheckpointResult(
-                exit_reason=ExitReason.TOOL_COUNT_EXCEEDED,
-                stop_reason=StopReason.LOOP_DETECTED,
-                assistant_message=(
-                    f"Tool call limit reached ({step_index}/{self._max_tool_calls}). "
-                    "Please narrow the request or ask me to continue from the gathered context."
-                ),
-            )
-
         max_repeated = self._max_repeated_tool_signatures(conversation)
         if max_repeated >= self._max_same_tool_calls:
             return CheckpointResult(
@@ -152,12 +133,12 @@ class TurnCheckpoint:
         continue_reason = ContinueReason.NEXT_STEP
 
         if current_window_tokens >= self._max_tokens:
-            continue_reason = ContinueReason.FORCE_ANSWER
+            continue_reason = ContinueReason.COMPACT_CONTEXT
             reminders.append(
-                "Context window is full. You MUST answer now. Do NOT call any more tools."
+                "Context window is at or over budget. Compact context before the next model request, then continue the current turn."
             )
 
-        if step_index == self._max_tool_calls:
+        if step_index >= self._max_tool_calls:
             continue_reason = ContinueReason.FORCE_ANSWER
             reminders.append(
                 "You have reached the maximum tool call limit. You MUST answer now "

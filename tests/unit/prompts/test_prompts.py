@@ -24,6 +24,8 @@ def test_build_system_prompt_remains_protocol_agnostic() -> None:
     assert "优先解决根因" in prompt
     assert "不要覆盖或回退用户修改" in prompt
     assert "在条件允许时验证重要工作" in prompt
+    assert "批量读取" in prompt
+    assert "重叠范围" in prompt
     assert "普通自然语言" in prompt
 
 

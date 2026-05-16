@@ -65,7 +65,7 @@ def _conversation(*messages: Message) -> Conversation:
     )
 
 
-def test_current_window_budget_exceeded_hard_stops_when_over_limit() -> None:
+def test_current_window_budget_exceeded_requests_compaction_without_hard_stop() -> None:
     checkpoint = TurnCheckpoint(max_tokens_per_turn=1000)
 
     result = checkpoint.evaluate(
@@ -74,12 +74,13 @@ def test_current_window_budget_exceeded_hard_stops_when_over_limit() -> None:
         current_window_tokens=1001,
     )
 
-    assert result.exit_reason == ExitReason.TOKEN_BUDGET_EXCEEDED
-    assert result.stop_reason == StopReason.CONTEXT_WINDOW_EXCEEDED
-    assert result.assistant_message is not None
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.continue_reason == ContinueReason.COMPACT_CONTEXT
+    assert any("compact" in reminder.lower() for reminder in result.reminders)
 
 
-def test_current_window_budget_at_limit_gives_force_answer_not_hard_stop() -> None:
+def test_current_window_budget_at_limit_requests_compaction_not_hard_stop() -> None:
     checkpoint = TurnCheckpoint(max_tokens_per_turn=1000)
 
     result = checkpoint.evaluate(
@@ -89,8 +90,8 @@ def test_current_window_budget_at_limit_gives_force_answer_not_hard_stop() -> No
     )
 
     assert result.exit_reason is None
-    assert result.continue_reason == ContinueReason.FORCE_ANSWER
-    assert any("MUST answer" in reminder for reminder in result.reminders)
+    assert result.continue_reason == ContinueReason.COMPACT_CONTEXT
+    assert any("Compact context" in reminder for reminder in result.reminders)
 
 
 def test_cumulative_prompt_tokens_are_not_a_checkpoint_input() -> None:
@@ -106,7 +107,7 @@ def test_cumulative_prompt_tokens_are_not_a_checkpoint_input() -> None:
     assert result.continue_reason == ContinueReason.NEXT_STEP
 
 
-def test_tool_count_exceeded_hard_stops_when_over_limit() -> None:
+def test_tool_count_exceeded_warns_without_hard_stop() -> None:
     checkpoint = TurnCheckpoint(max_tool_calls_per_turn=5)
 
     result = checkpoint.evaluate(
@@ -114,8 +115,10 @@ def test_tool_count_exceeded_hard_stops_when_over_limit() -> None:
         conversation=_conversation(),
     )
 
-    assert result.exit_reason == ExitReason.TOOL_COUNT_EXCEEDED
-    assert result.stop_reason == StopReason.LOOP_DETECTED
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.continue_reason == ContinueReason.FORCE_ANSWER
+    assert any("maximum tool call limit" in reminder for reminder in result.reminders)
 
 
 def test_tool_count_at_limit_gives_force_answer_not_hard_stop() -> None:
