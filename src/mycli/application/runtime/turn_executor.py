@@ -434,6 +434,7 @@ class TurnExecutor:
                 before_messages=conversation_before_compaction,
                 after_messages=conversation_for_model,
             )
+            runtime._record_context_window_metrics()
             budget = runtime._estimate_window_budget(conversation_for_model)
             runtime._record_budget_metric(
                 total_tokens=budget.total_tokens,

@@ -139,6 +139,7 @@ class AgentRuntime:
                     carry_turns=config.compaction_l4_carry_turns,
                 ),
             ),
+            token_counter=self._token_counter,
             hook_manager=self._hook_manager,
         )
         self._context_manager = context_manager or ContextManager(
@@ -704,6 +705,12 @@ class AgentRuntime:
             after_tokens=after_tokens,
             level=level,
         )
+
+    def _record_context_window_metrics(self) -> None:
+        metrics = self._compaction_pipeline.last_context_window_metrics
+        if metrics is None:
+            return
+        self._observability_service.metrics.record_context_window(metrics.to_dict())
 
     def _record_ptl_metric(self, *, triggered: bool) -> None:
         self._observability_service.metrics.record_ptl_event(triggered=triggered)

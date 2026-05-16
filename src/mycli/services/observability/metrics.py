@@ -12,6 +12,7 @@ class MetricsSnapshot:
     compaction_after_tokens: int
     compaction_levels: dict[str, int]
     budget_curve: tuple[float, ...]
+    context_window: dict[str, int | float]
     consecutive_l4: int
     ptl_events: int
     ptl_triggered: int
@@ -54,6 +55,7 @@ class MetricsSnapshot:
             "compaction_ratio": self.compaction_ratio,
             "compaction_levels": dict(self.compaction_levels),
             "budget_curve": self.budget_curve,
+            "context_window": dict(self.context_window),
             "consecutive_l4": self.consecutive_l4,
             "ptl_events": self.ptl_events,
             "ptl_triggered": self.ptl_triggered,
@@ -70,6 +72,7 @@ class MetricsRegistry:
     _compaction_after_tokens: int = 0
     _compaction_levels: dict[str, int] = field(default_factory=dict)
     _budget_curve: list[float] = field(default_factory=list)
+    _context_window: dict[str, int | float] = field(default_factory=dict)
     _consecutive_l4: int = 0
     _ptl_events: int = 0
     _ptl_triggered: int = 0
@@ -109,6 +112,9 @@ class MetricsRegistry:
         ratio = max(0.0, total_tokens / max_tokens)
         self._budget_curve.append(ratio)
 
+    def record_context_window(self, metrics: dict[str, int | float]) -> None:
+        self._context_window = dict(metrics)
+
     def record_ptl_event(self, *, triggered: bool) -> None:
         self._ptl_events += 1
         if triggered:
@@ -123,6 +129,7 @@ class MetricsRegistry:
             compaction_after_tokens=self._compaction_after_tokens,
             compaction_levels=dict(self._compaction_levels),
             budget_curve=tuple(self._budget_curve),
+            context_window=dict(self._context_window),
             consecutive_l4=self._consecutive_l4,
             ptl_events=self._ptl_events,
             ptl_triggered=self._ptl_triggered,

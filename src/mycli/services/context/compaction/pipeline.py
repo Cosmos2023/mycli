@@ -414,11 +414,13 @@ class CompactionPipeline:
         tool_result_budget: ToolResultBudget,
         context_window_analyzer: ContextWindowAnalyzer,
         llm_summarization: LLMSummarization,
+        token_counter: TokenCounter | None = None,
         hook_manager: HookManager | None = None,
     ) -> None:
         self.tool_result_budget = tool_result_budget
         self.context_window_analyzer = context_window_analyzer
         self.llm_summarization = llm_summarization
+        self._token_counter = token_counter or TokenCounter()
         self._hook_manager = hook_manager or HookManager()
 
     @property
@@ -442,8 +444,16 @@ class CompactionPipeline:
         )
         zones = CacheZones.from_conversation(conversation)
         compacted = self.tool_result_budget.apply(conversation, zones, budget)
-        self.context_window_analyzer.apply(compacted, zones, budget)
-        return self.llm_summarization.apply(compacted, zones, budget)
+        current_budget = ContextBudget.from_estimate(
+            max_tokens=budget.max_tokens,
+            estimated_input_tokens=sum(
+                self._token_counter.count_message(message)
+                for message in compacted.messages
+            ),
+        )
+        current_zones = CacheZones.from_conversation(compacted)
+        self.context_window_analyzer.apply(compacted, current_zones, current_budget)
+        return self.llm_summarization.apply(compacted, current_zones, current_budget)
 
 
 def _copy_conversation(conversation: Conversation) -> Conversation:

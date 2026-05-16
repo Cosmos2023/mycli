@@ -29,6 +29,35 @@ def test_metrics_registry_reports_cache_compaction_and_budget_curve() -> None:
     assert snapshot.to_dict()["cache_hit_rate"] == 0.75
 
 
+def test_metrics_registry_records_latest_context_window_metrics() -> None:
+    registry = MetricsRegistry()
+
+    registry.record_context_window(
+        {
+            "total_tokens": 900,
+            "max_tokens": 1000,
+            "usage_ratio": 0.9,
+            "remaining_tokens": 100,
+            "fresh_message_count": 5,
+            "fresh_tokens": 700,
+            "tool_result_count": 3,
+            "tool_result_tokens": 400,
+            "append_only_tool_result_count": 3,
+            "append_only_tool_result_tokens": 400,
+            "duplicate_tool_result_count": 1,
+            "duplicate_tool_result_tokens": 120,
+            "evictable_tool_result_count": 2,
+            "evictable_tool_result_tokens": 250,
+        }
+    )
+
+    snapshot = registry.snapshot()
+
+    assert snapshot.context_window["usage_ratio"] == 0.9
+    assert snapshot.context_window["duplicate_tool_result_count"] == 1
+    assert snapshot.to_dict()["context_window"]["evictable_tool_result_tokens"] == 250
+
+
 def test_alert_evaluator_flags_cache_drop_consecutive_l4_and_ptl_rate() -> None:
     evaluator = AlertEvaluator(
         cache_hit_drop_threshold=0.2,

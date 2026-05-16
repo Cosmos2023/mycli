@@ -11,6 +11,7 @@ from mycli.services.context.compaction.pipeline import (
     LLMSummarization,
     ToolResultBudget,
 )
+from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
 
@@ -289,7 +290,7 @@ class TestCompactionPipeline:
         pipeline = CompactionPipeline(
             tool_result_budget=ToolResultBudget(ToolResultFormatter()),
             context_window_analyzer=ContextWindowAnalyzer(
-                dedup_trigger_ratio=0.1,
+                dedup_trigger_ratio=0.01,
                 eviction_trigger_ratio=0.1,
                 keep_recent_tool_results=2,
             ),
@@ -346,3 +347,40 @@ class TestCompactionPipeline:
         assert len(seen) == 1
         assert seen[0].hook_point is HookPoint.PRE_COMPACT
         assert seen[0].metadata["usage_ratio"] == budget.usage_ratio
+
+    def test_pipeline_recomputes_budget_after_l1_before_l4_threshold(self) -> None:
+        pipeline = CompactionPipeline(
+            tool_result_budget=ToolResultBudget(
+                ToolResultFormatter(read_file_max_chars=80)
+            ),
+            context_window_analyzer=ContextWindowAnalyzer(
+                dedup_trigger_ratio=0.1,
+                eviction_trigger_ratio=0.1,
+                keep_recent_tool_results=2,
+            ),
+            llm_summarization=LLMSummarization(trigger_ratio=0.6),
+            token_counter=TokenCounter(),
+        )
+        stale_budget = ContextBudget(max_tokens=200)
+        stale_budget.record({"total_tokens": 190})
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="inspect", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg(
+                    "c1",
+                    tool_name="read_file",
+                    path="/big.py",
+                    content="x = 1\n" * 400,
+                    summary="Read big.py",
+                ),
+                Message(role="assistant", content="done", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="user", content="continue", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = pipeline.apply(conversation, stale_budget)
+
+        assert all(message.metadata.get("compaction") is not True for message in result.messages)
+        assert pipeline.last_context_window_metrics is not None
+        assert pipeline.last_context_window_metrics.total_tokens < stale_budget.total_tokens
