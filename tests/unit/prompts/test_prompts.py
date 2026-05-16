@@ -26,6 +26,15 @@ def test_build_system_prompt_remains_protocol_agnostic() -> None:
     assert "在条件允许时验证重要工作" in prompt
     assert "批量读取" in prompt
     assert "重叠范围" in prompt
+    assert "Read" in prompt
+    assert "Grep" in prompt
+    assert "pattern" in prompt
+    assert "offset / limit" in prompt
+    assert "Bash" in prompt
+    assert "read_file_range" not in prompt
+    assert "search_text" not in prompt
+    assert "list_directory" not in prompt
+    assert "run_shell" not in prompt
     assert "普通自然语言" in prompt
 
 
