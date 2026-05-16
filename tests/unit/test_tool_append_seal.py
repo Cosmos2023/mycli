@@ -6,7 +6,7 @@ from mycli.services.context.context_manager import ContextManager
 from mycli.services.tracing import TraceService
 
 
-def test_record_tool_message_seals_appended_tool_message(tmp_path) -> None:
+def test_record_tool_message_marks_appended_tool_message_append_only(tmp_path) -> None:
     service = ToolExecutionService(
         session_id="test",
         context_manager=ContextManager(),
@@ -32,5 +32,6 @@ def test_record_tool_message_seals_appended_tool_message(tmp_path) -> None:
     message = conversation.messages[-1]
     assert message.role == "tool"
     assert message.metadata["tool_name"] == "Read"
-    assert message.metadata["cache_frozen"] is True
+    assert message.metadata["append_only"] is True
+    assert "cache_frozen" not in message.metadata
     assert message.metadata["l1_truncated"] is True

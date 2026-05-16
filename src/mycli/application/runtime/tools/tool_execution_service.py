@@ -537,7 +537,7 @@ class ToolExecutionService:
                 blocks=blocks,
                 metadata={
                     "tool_name": tool_name,
-                    "cache_frozen": True,
+                    "append_only": True,
                     "l1_truncated": True,
                 },
             )
