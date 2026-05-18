@@ -2420,6 +2420,13 @@ def test_agent_runtime_falls_back_to_estimate_when_provider_omits_input_tokens(
     snapshot = runtime._observability_service.snapshot()
     assert snapshot.budget_curve
     assert snapshot.budget_curve != (0.9,)
+    turn = runtime._session_service.load_turn_record(runtime._config.session_id)
+    assert turn is not None
+    usage_item = next(item for item in turn.items if item.type is TurnItemType.MODEL_USAGE)
+    assert usage_item.metadata["input_tokens"] == 0
+    assert usage_item.metadata["budget_input_tokens"] > 0
+    assert usage_item.metadata["total_tokens"] == 1800
+    assert usage_item.metadata["source"] == "estimate"
 
 
 def test_agent_runtime_restores_provider_input_budget_when_rebinding_session(

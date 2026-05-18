@@ -795,9 +795,10 @@ class AgentRuntime:
         budget_input_tokens = input_tokens or max(0, fallback_total_tokens)
         usage_ratio = budget_input_tokens / max_tokens if max_tokens > 0 else 0.0
         payload: dict[str, object] = {
-            "input_tokens": budget_input_tokens,
+            "input_tokens": input_tokens,
+            "budget_input_tokens": budget_input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": total_tokens or budget_input_tokens + output_tokens,
+            "total_tokens": total_tokens or input_tokens + output_tokens,
             "cache_read_tokens": cache_read_tokens,
             "cache_write_tokens": cache_write_tokens,
             "max_tokens": max_tokens,

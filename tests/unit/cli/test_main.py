@@ -1125,6 +1125,61 @@ def test_turn_service_inspect_usage_reports_unavailable_cost_without_prices(tmp_
     )
 
 
+def test_turn_service_inspect_usage_ignores_budget_input_tokens(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_USAGE_INPUT_COST_PER_1K": "0.001",
+            "MYCLI_USAGE_OUTPUT_COST_PER_1K": "0.002",
+        },
+    )
+
+    usage_item = TurnItem(
+        type=TurnItemType.MODEL_USAGE,
+        metadata={
+            "input_tokens": 0,
+            "budget_input_tokens": 900,
+            "output_tokens": 0,
+            "total_tokens": 1800,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        },
+    )
+    service._session_service.append_turn_rollout(
+        "demo",
+        TurnRollout(
+            thread_id="demo",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            started_at="2026-05-19T00:00:00Z",
+            completed_at="2026-05-19T00:00:01Z",
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            events=(
+                TurnRolloutEvent(
+                    event_id="turn_1:trace:1",
+                    kind="turn_item",
+                    created_at="2026-05-19T00:00:01Z",
+                    payload=usage_item.to_dict(),
+                ),
+            ),
+        ),
+    )
+
+    assert service.inspect_usage() == (
+        "session=demo",
+        "turns=1",
+        "input_tokens=0 output_tokens=0 total_tokens=1800 cache_read_tokens=0 cache_write_tokens=0",
+        "estimated_cost=0.00000",
+    )
+
+
 def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
