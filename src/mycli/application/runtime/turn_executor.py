@@ -415,7 +415,16 @@ class TurnExecutor:
             runtime._record_context_window_metrics()
             budget = runtime._estimate_window_budget(conversation_for_model)
             runtime_reminders = _apply_l4_recent_file_hints(
-                runtime_reminders,
+                tuple(
+                    dict.fromkeys(
+                        (
+                            *runtime_reminders,
+                            *runtime._build_l4_rehydration_reminders(
+                                runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+                            ),
+                        )
+                    )
+                ),
                 runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
             )
             context, turn_context = runtime._assemble_turn_context(
@@ -473,7 +482,16 @@ class TurnExecutor:
                 )
                 conversation = conversation_for_model
                 runtime_reminders = _apply_l4_recent_file_hints(
-                    runtime_reminders,
+                    tuple(
+                        dict.fromkeys(
+                            (
+                                *runtime_reminders,
+                                *runtime._build_l4_rehydration_reminders(
+                                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+                                ),
+                            )
+                        )
+                    ),
                     runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
                 )
                 context, turn_context = runtime._assemble_turn_context(

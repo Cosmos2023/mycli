@@ -305,7 +305,7 @@ class LLMSummarization:
         if not to_summarize:
             return conversation
         cost_metrics = self._estimate_cost_metrics(to_summarize, trigger_ratio, budget)
-        cost_metrics["recent_files"] = _collect_recent_files(to_summarize, n=3)
+        cost_metrics["recent_files"] = _collect_recent_files(fresh_messages, n=3)
         if self._should_skip_for_cost(cost_metrics):
             cost_metrics["decision"] = "skip_cost"
             self._last_cost_metrics = cost_metrics

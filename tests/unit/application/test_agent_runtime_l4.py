@@ -304,6 +304,62 @@ def test_agent_runtime_appends_followup_tools_to_compacted_conversation(
     assert "message 0 token" not in second_request_text
 
 
+def test_agent_runtime_l4_rehydrates_recent_file_without_persisting_snapshot(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "target.py").write_text(
+        "VALUE = 'current after compaction'\n",
+        encoding="utf-8",
+    )
+    adapter = SummarizingDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=10_000,
+            compaction_l4_trigger_ratio=0.5,
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(34):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 80),
+            )
+        )
+    conversation.append(
+        Message(
+            role="tool",
+            content="read src/target.py",
+            metadata={"tool_name": "Read", "path": "src/target.py"},
+        )
+    )
+    conversation.append(Message(role="assistant", content="noted"))
+    runtime._session_service.save_conversation(conversation)
+
+    response = runtime.handle_user_turn("finish from compacted context")
+
+    assert response.assistant_message == "done"
+    main_request_text = "\n".join(message.content for message in adapter.main_requests[-1])
+    assert "[Compaction rehydration]" in main_request_text
+    assert "VALUE = 'current after compaction'" in main_request_text
+    persisted = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert not any(
+        "VALUE = 'current after compaction'" in message.content
+        for message in persisted.messages
+        if message.metadata.get("compaction") is True
+    )
+
+
 def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
     tmp_path: Path,
 ) -> None:

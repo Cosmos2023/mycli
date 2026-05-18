@@ -379,6 +379,7 @@ class RequestShapeBuilder:
         section: InstructionFragment,
     ) -> bool:
         return str(section.kind) in {
+            "runtime_reminders",
             "skill_catalog",
         }
 
