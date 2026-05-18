@@ -433,6 +433,8 @@ def test_agent_runtime_reactive_compacts_once_after_context_window_error(
     metrics = runtime._compaction_pipeline.llm_summarization.last_cost_metrics
     assert metrics is not None
     assert metrics["source"] == "reactive_error"
+    assert metrics["decision"] == "summarize"
+    assert metrics["buffer_tokens"] == runtime._config.compaction_l4_buffer_tokens
 
 
 def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
