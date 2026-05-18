@@ -876,17 +876,29 @@ class AgentRuntime:
                 if not isinstance(metadata, dict):
                     continue
                 input_tokens = metadata.get("input_tokens")
+                budget_input_tokens = metadata.get("budget_input_tokens")
                 max_tokens = metadata.get("max_tokens")
+                restored_tokens = 0
                 if (
                     isinstance(input_tokens, (int, float))
                     and not isinstance(input_tokens, bool)
                     and input_tokens > 0
+                ):
+                    restored_tokens = int(input_tokens)
+                elif (
+                    isinstance(budget_input_tokens, (int, float))
+                    and not isinstance(budget_input_tokens, bool)
+                    and budget_input_tokens > 0
+                ):
+                    restored_tokens = int(budget_input_tokens)
+                if (
+                    restored_tokens > 0
                     and isinstance(max_tokens, (int, float))
                     and not isinstance(max_tokens, bool)
                     and max_tokens > 0
                 ):
                     self._record_budget_metric(
-                        total_tokens=int(input_tokens),
+                        total_tokens=restored_tokens,
                         max_tokens=int(max_tokens),
                     )
                     return

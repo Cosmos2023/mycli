@@ -2461,6 +2461,39 @@ def test_agent_runtime_restores_provider_input_budget_when_rebinding_session(
     assert runtime._session_service.load_turn_rollouts("first")
 
 
+def test_agent_runtime_restores_estimated_budget_input_when_rebinding_session(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=TotalOnlyUsageAdapter(),
+    )
+    first_config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="first",
+        max_prompt_tokens=2000,
+        max_tokens_per_turn=2000,
+    )
+    second_config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="second",
+        max_prompt_tokens=2000,
+        max_tokens_per_turn=2000,
+    )
+    runtime.rebind_session(first_config)
+    runtime.handle_user_turn("measure first")
+    runtime.rebind_session(second_config)
+    assert runtime._observability_service.snapshot().budget_curve == ()
+
+    runtime.rebind_session(first_config)
+
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.budget_curve
+    assert snapshot.budget_curve != ()
+    assert runtime._session_service.load_turn_rollouts("first")
+
+
 def test_agent_runtime_rebind_session_clears_stale_context_compaction_metrics(
     tmp_path: Path,
 ) -> None:
