@@ -2394,6 +2394,10 @@ def test_agent_runtime_records_provider_input_tokens_for_budget_curve(
     assert turn is not None
     usage_item = next(item for item in turn.items if item.type is TurnItemType.MODEL_USAGE)
     assert usage_item.metadata["input_tokens"] == 1000
+    assert usage_item.metadata["output_tokens"] == 800
+    assert usage_item.metadata["total_tokens"] == 1800
+    assert usage_item.metadata["cache_read_tokens"] == 0
+    assert usage_item.metadata["cache_write_tokens"] == 0
     assert usage_item.metadata["source"] == "provider"
 
 

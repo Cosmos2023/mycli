@@ -227,6 +227,30 @@ def resolve_config(
         project_config.get("compaction_l4_trigger_ratios_by_model")
         or user_config.get("compaction_l4_trigger_ratios_by_model")
     )
+    usage_input_cost_per_1k = _parse_float_setting(
+        env.get("MYCLI_USAGE_INPUT_COST_PER_1K")
+        or project_config.get("usage_input_cost_per_1k")
+        or user_config.get("usage_input_cost_per_1k"),
+        default=0.0,
+    )
+    usage_output_cost_per_1k = _parse_float_setting(
+        env.get("MYCLI_USAGE_OUTPUT_COST_PER_1K")
+        or project_config.get("usage_output_cost_per_1k")
+        or user_config.get("usage_output_cost_per_1k"),
+        default=0.0,
+    )
+    usage_cache_read_cost_per_1k = _parse_float_setting(
+        env.get("MYCLI_USAGE_CACHE_READ_COST_PER_1K")
+        or project_config.get("usage_cache_read_cost_per_1k")
+        or user_config.get("usage_cache_read_cost_per_1k"),
+        default=0.0,
+    )
+    usage_cache_write_cost_per_1k = _parse_float_setting(
+        env.get("MYCLI_USAGE_CACHE_WRITE_COST_PER_1K")
+        or project_config.get("usage_cache_write_cost_per_1k")
+        or user_config.get("usage_cache_write_cost_per_1k"),
+        default=0.0,
+    )
     recent_message_count_value = (
         env.get("MYCLI_RECENT_MESSAGE_COUNT")
         or project_config.get("recent_message_count")
@@ -264,6 +288,10 @@ def resolve_config(
             else None
         ),
         compaction_l4_trigger_ratios_by_model=compaction_trigger_ratios_by_model,
+        usage_input_cost_per_1k=usage_input_cost_per_1k,
+        usage_output_cost_per_1k=usage_output_cost_per_1k,
+        usage_cache_read_cost_per_1k=usage_cache_read_cost_per_1k,
+        usage_cache_write_cost_per_1k=usage_cache_write_cost_per_1k,
         recent_message_count=int(str(recent_message_count_value)),
         auto_approve_medium=True,
     )

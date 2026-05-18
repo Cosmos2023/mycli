@@ -32,6 +32,8 @@ from mycli.domain.runtime import (
     TurnItem,
     TurnItemType,
     TurnRecord,
+    TurnRollout,
+    TurnRolloutEvent,
     TurnResponse,
     TurnStatus,
 )
@@ -845,6 +847,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_context(self) -> tuple[str, ...]:
             return ("budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider",)
 
+        def inspect_usage(self) -> tuple[str, ...]:
+            return ("session=demo", "turns=1")
+
         def resume_session(self, session_id=None) -> tuple[str, ...]:
             return (f"resumed {session_id or 'demo'}", "messages=3")
 
@@ -871,6 +876,7 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/context")) == [
         "[context] budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider"
     ]
+    assert list(handler("/usage")) == ["[usage] session=demo", "[usage] turns=1"]
     assert list(handler("/resume backlog")) == [
         "[session] resumed backlog",
         "[session] messages=3",
@@ -1039,6 +1045,84 @@ def test_turn_service_inspect_context_reports_l4_decision_without_compaction(tmp
 
     assert lines != ("no context metrics available",)
     assert lines == ("l4 last_decision=skip source=pre_request",)
+
+
+def test_turn_service_inspect_usage_sums_model_usage_rollouts(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_USAGE_INPUT_COST_PER_1K": "0.001",
+            "MYCLI_USAGE_OUTPUT_COST_PER_1K": "0.002",
+            "MYCLI_USAGE_CACHE_READ_COST_PER_1K": "0.0001",
+            "MYCLI_USAGE_CACHE_WRITE_COST_PER_1K": "0.0002",
+        },
+    )
+
+    usage_item = TurnItem(
+        type=TurnItemType.MODEL_USAGE,
+        metadata={
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "total_tokens": 1200,
+            "cache_read_tokens": 300,
+            "cache_write_tokens": 100,
+        },
+    )
+    service._session_service.append_turn_rollout(
+        "demo",
+        TurnRollout(
+            thread_id="demo",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            started_at="2026-05-19T00:00:00Z",
+            completed_at="2026-05-19T00:00:01Z",
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            events=(
+                TurnRolloutEvent(
+                    event_id="turn_1:trace:1",
+                    kind="turn_item",
+                    created_at="2026-05-19T00:00:01Z",
+                    payload=usage_item.to_dict(),
+                ),
+            ),
+        ),
+    )
+
+    lines = service.inspect_usage()
+
+    assert lines == (
+        "session=demo",
+        "turns=1",
+        "input_tokens=1000 output_tokens=200 total_tokens=1200 cache_read_tokens=300 cache_write_tokens=100",
+        "estimated_cost=0.00145",
+    )
+
+
+def test_turn_service_inspect_usage_reports_unavailable_cost_without_prices(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+
+    assert service.inspect_usage() == (
+        "session=demo",
+        "turns=0",
+        "input_tokens=0 output_tokens=0 total_tokens=0 cache_read_tokens=0 cache_write_tokens=0",
+        "estimated_cost=unavailable",
+    )
 
 
 def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path: Path) -> None:

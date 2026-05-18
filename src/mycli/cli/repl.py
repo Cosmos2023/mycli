@@ -22,6 +22,7 @@ def handle_slash_command(command: str) -> str:
                 "/fork [source] <new-session> [message-index]",
                 "/stats",
                 "/context",
+                "/usage",
                 "/session",
                 "/sessions",
                 "/quit",
@@ -52,6 +53,8 @@ def build_command_handler(
             return [f"[stats] {line}" for line in service.inspect_stats()]
         if command == "/context":
             return [f"[context] {line}" for line in service.inspect_context()]
+        if command == "/usage":
+            return [f"[usage] {line}" for line in service.inspect_usage()]
         if command.startswith("/resume"):
             parts = command.split()
             session_id = parts[1] if len(parts) > 1 else None

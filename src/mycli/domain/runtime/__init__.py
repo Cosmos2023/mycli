@@ -124,6 +124,10 @@ class AgentConfig:
     compaction_l4_carry_turns: int = 1
     compaction_l4_summarizer_model: str | None = None
     compaction_l4_trigger_ratios_by_model: dict[str, float] = field(default_factory=dict)
+    usage_input_cost_per_1k: float = 0.0
+    usage_output_cost_per_1k: float = 0.0
+    usage_cache_read_cost_per_1k: float = 0.0
+    usage_cache_write_cost_per_1k: float = 0.0
     recent_message_count: int = 6
     auto_approve_medium: bool = True
     max_tool_calls_per_turn: int = 25

@@ -10,6 +10,7 @@ from mycli.domain.runtime import (
     DecisionAction,
     HistoryItem,
     HistoryItemType,
+    TurnItemType,
     TurnResponse,
 )
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
@@ -85,6 +86,7 @@ class TurnService:
             "_instruction_contract_assembler",
             InstructionContractAssembler(),
         )
+
     def _available_tool_names(self) -> tuple[str, ...]:
         assert self._tool_registry is not None
         return tuple(self._tool_registry.list_names())
@@ -355,6 +357,52 @@ class TurnService:
             )
         return tuple(lines)
 
+    def inspect_usage(self) -> tuple[str, ...]:
+        turn_count = 0
+        input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+        cache_read_tokens = 0
+        cache_write_tokens = 0
+
+        for rollout in self._session_service.load_turn_rollouts(self._config.session_id):
+            rollout_has_usage = False
+            for event in rollout.events:
+                if event.kind != "turn_item":
+                    continue
+                payload = event.payload
+                if payload.get("type") != TurnItemType.MODEL_USAGE.value:
+                    continue
+                metadata = payload.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                rollout_has_usage = True
+                input_tokens += self._int_metric(metadata.get("input_tokens"))
+                output_tokens += self._int_metric(metadata.get("output_tokens"))
+                total_tokens += self._int_metric(metadata.get("total_tokens"))
+                cache_read_tokens += self._int_metric(metadata.get("cache_read_tokens"))
+                cache_write_tokens += self._int_metric(metadata.get("cache_write_tokens"))
+            if rollout_has_usage:
+                turn_count += 1
+
+        if total_tokens == 0:
+            total_tokens = input_tokens + output_tokens
+
+        estimated_cost = self._estimated_usage_cost(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
+        return (
+            f"session={self._config.session_id}",
+            f"turns={turn_count}",
+            "input_tokens="
+            f"{input_tokens} output_tokens={output_tokens} total_tokens={total_tokens} "
+            f"cache_read_tokens={cache_read_tokens} cache_write_tokens={cache_write_tokens}",
+            f"estimated_cost={estimated_cost}",
+        )
+
     @staticmethod
     def _int_metric(value: object) -> int:
         if isinstance(value, bool):
@@ -362,6 +410,30 @@ class TurnService:
         if isinstance(value, (int, float)):
             return int(value)
         return 0
+
+    def _estimated_usage_cost(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+    ) -> str:
+        prices = (
+            self._config.usage_input_cost_per_1k,
+            self._config.usage_output_cost_per_1k,
+            self._config.usage_cache_read_cost_per_1k,
+            self._config.usage_cache_write_cost_per_1k,
+        )
+        if all(price == 0 for price in prices):
+            return "unavailable"
+        cost = (
+            (input_tokens / 1000) * self._config.usage_input_cost_per_1k
+            + (output_tokens / 1000) * self._config.usage_output_cost_per_1k
+            + (cache_read_tokens / 1000) * self._config.usage_cache_read_cost_per_1k
+            + (cache_write_tokens / 1000) * self._config.usage_cache_write_cost_per_1k
+        )
+        return f"{cost:.5f}"
 
     def inspect_trace(self) -> tuple[str, ...]:
         events = self._trace_service.load(self._config.session_id)

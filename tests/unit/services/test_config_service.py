@@ -91,6 +91,37 @@ def test_resolve_config_reads_compaction_l4_settings(tmp_path: Path) -> None:
     assert config.compaction_l4_buffer_tokens == 9000
 
 
+def test_resolve_config_reads_usage_price_settings(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "usage_input_cost_per_1k = 0.001",
+                "usage_output_cost_per_1k = 0.002",
+                "usage_cache_read_cost_per_1k = 0.0001",
+                "usage_cache_write_cost_per_1k = 0.0002",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.usage_input_cost_per_1k == 0.001
+    assert config.usage_output_cost_per_1k == 0.002
+    assert config.usage_cache_read_cost_per_1k == 0.0001
+    assert config.usage_cache_write_cost_per_1k == 0.0002
+
+
 def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

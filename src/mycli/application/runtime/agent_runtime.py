@@ -786,12 +786,20 @@ class AgentRuntime:
         max_tokens: int,
     ) -> dict[str, object]:
         input_tokens = self._provider_input_tokens(usage)
+        output_tokens = self._provider_output_tokens(usage)
+        total_tokens = self._usage_int(usage, "total_tokens") or input_tokens + output_tokens
+        cache_read_tokens = self._cache_read_tokens(usage)
+        cache_write_tokens = self._cache_write_tokens(usage)
         source = "provider" if input_tokens > 0 else "estimate"
-        total_tokens = input_tokens or max(0, fallback_total_tokens)
         max_tokens = max(0, max_tokens)
-        usage_ratio = total_tokens / max_tokens if max_tokens > 0 else 0.0
+        budget_input_tokens = input_tokens or max(0, fallback_total_tokens)
+        usage_ratio = budget_input_tokens / max_tokens if max_tokens > 0 else 0.0
         payload: dict[str, object] = {
-            "input_tokens": total_tokens,
+            "input_tokens": budget_input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens or budget_input_tokens + output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
             "max_tokens": max_tokens,
             "usage_ratio": usage_ratio,
             "source": source,
@@ -811,6 +819,49 @@ class AgentRuntime:
             if isinstance(value, (int, float)) and value > 0:
                 return int(value)
         return 0
+
+    @classmethod
+    def _provider_output_tokens(cls, usage: dict[str, object] | None) -> int:
+        return cls._usage_int(usage, "output_tokens") or cls._usage_int(usage, "completion_tokens")
+
+    @staticmethod
+    def _usage_int(usage: dict[str, object] | None, key: str) -> int:
+        if usage is None:
+            return 0
+        value = usage.get(key)
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+        return 0
+
+    @classmethod
+    def _cache_read_tokens(cls, usage: dict[str, object] | None) -> int:
+        direct = cls._usage_int(usage, "cache_read_tokens")
+        if direct > 0:
+            return direct
+        direct = cls._usage_int(usage, "prompt_cache_hit_tokens")
+        if direct > 0:
+            return direct
+        if usage is None:
+            return 0
+        for detail_key in ("input_tokens_details", "prompt_tokens_details"):
+            details = usage.get(detail_key)
+            if not isinstance(details, dict):
+                continue
+            cached_tokens = details.get("cached_tokens")
+            if isinstance(cached_tokens, bool):
+                continue
+            if isinstance(cached_tokens, (int, float)) and cached_tokens > 0:
+                return int(cached_tokens)
+        return 0
+
+    @classmethod
+    def _cache_write_tokens(cls, usage: dict[str, object] | None) -> int:
+        direct = cls._usage_int(usage, "cache_write_tokens")
+        if direct > 0:
+            return direct
+        return cls._usage_int(usage, "prompt_cache_creation_tokens")
 
     def _restore_provider_input_budget_metric(self, session_id: str) -> None:
         for rollout in reversed(self._session_service.load_turn_rollouts(session_id)):
