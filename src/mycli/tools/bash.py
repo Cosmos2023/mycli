@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import shlex
 import subprocess
 from typing import Any
@@ -10,56 +9,30 @@ from uuid import uuid4
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.shell_safety import (
+    ShellRiskLevel,
+    analyze_shell_command,
+    dedicated_tool_for_command,
+    derive_command_pattern as _derive_command_pattern,
+)
 
 
 OUTPUT_CHAR_LIMIT = 10_000
 OUTPUT_HEAD_CHARS = 6_000
 OUTPUT_TAIL_CHARS = 4_000
 
-DANGEROUS_PATTERNS = [
-    (r"rm\s+-rf\s+/", "rm -rf / is forbidden"),
-    (
-        r"git\s+push\s+.*--force.*(main|master)",
-        "Force push to main/master requires confirmation",
-    ),
-    (r"curl.*\|.*(bash|sh|zsh)", "curl pipe to shell requires confirmation"),
-    (r"wget.*\|.*(bash|sh|zsh)", "wget pipe to shell requires confirmation"),
-    (r"chmod\s+777", "chmod 777 requires confirmation"),
-    (r"sudo\s+", "sudo requires confirmation"),
-    (r"git\s+reset\s+--hard", "git reset --hard requires confirmation"),
-]
-
-FORBIDDEN_IN_BASH = {
-    "cat": "Read",
-    "head": "Read",
-    "tail": "Read",
-    "grep": "Grep",
-    "rg": "Grep",
-    "ls": "LS",
-    "find": "Glob",
-    "sed": "Edit",
-}
-
 _background_processes: dict[str, subprocess.Popen[str]] = {}
 
 
 def check_dangerous(command: str) -> tuple[bool, str]:
-    for pattern, reason in DANGEROUS_PATTERNS:
-        if re.search(pattern, command):
-            return True, reason
+    analysis = analyze_shell_command(command)
+    if analysis.risk_level in {ShellRiskLevel.CONFIRM, ShellRiskLevel.DENY}:
+        return True, analysis.reason
     return False, ""
 
 
 def derive_command_pattern(args: list[str]) -> str:
-    if args[:3] == ["git", "reset", "--hard"]:
-        return "git reset --hard"
-    if args[:2] == ["git", "push"]:
-        return "git push"
-    if args[:2] == ["rm", "-rf"]:
-        return "rm -rf"
-    if len(args) >= 3 and args[0] == "python" and args[1].endswith(".py"):
-        return " ".join(args[:3])
-    return " ".join(args[: min(3, len(args))])
+    return _derive_command_pattern(args, " ".join(args))
 
 
 def check_forbidden(command: str) -> str | None:
@@ -68,9 +41,7 @@ def check_forbidden(command: str) -> str | None:
     except ValueError:
         return None
 
-    if tokens and tokens[0] in FORBIDDEN_IN_BASH:
-        return FORBIDDEN_IN_BASH[tokens[0]]
-    return None
+    return dedicated_tool_for_command(tokens)
 
 
 def execute_bash(
