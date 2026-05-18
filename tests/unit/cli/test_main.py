@@ -996,6 +996,29 @@ def test_turn_service_inspect_context_preserves_provider_input_token_label(tmp_p
     assert lines[0] == "budget input_tokens=640 max_tokens=1000 usage_ratio=64.0% source=provider"
 
 
+def test_turn_service_inspect_context_uses_budget_curve_when_no_context_window(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._observability_service.metrics.record_budget(total_tokens=420, max_tokens=1000)
+
+    lines = service.inspect_context()
+
+    estimated_total_tokens = int(round(0.42 * service._config.max_prompt_tokens))
+    assert lines[0] == (
+        f"budget total_tokens={estimated_total_tokens} "
+        f"max_tokens={service._config.max_prompt_tokens} "
+        "usage_ratio=42.0% source=estimate"
+    )
+
+
 def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

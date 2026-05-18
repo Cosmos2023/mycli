@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+
+ContextWindowMetricValue = int | float | str
 
 
 @dataclass(slots=True, frozen=True)
@@ -12,7 +15,7 @@ class MetricsSnapshot:
     compaction_after_tokens: int
     compaction_levels: dict[str, int]
     budget_curve: tuple[float, ...]
-    context_window: dict[str, int | float]
+    context_window: dict[str, ContextWindowMetricValue]
     consecutive_l4: int
     ptl_events: int
     ptl_triggered: int
@@ -76,7 +79,7 @@ class MetricsRegistry:
     _compaction_after_tokens: int = 0
     _compaction_levels: dict[str, int] = field(default_factory=dict)
     _budget_curve: list[float] = field(default_factory=list)
-    _context_window: dict[str, int | float] = field(default_factory=dict)
+    _context_window: dict[str, ContextWindowMetricValue] = field(default_factory=dict)
     _consecutive_l4: int = 0
     _ptl_events: int = 0
     _ptl_triggered: int = 0
@@ -123,7 +126,7 @@ class MetricsRegistry:
         ratio = max(0.0, total_tokens / max_tokens)
         self._budget_curve.append(ratio)
 
-    def record_context_window(self, metrics: dict[str, int | float]) -> None:
+    def record_context_window(self, metrics: Mapping[str, ContextWindowMetricValue]) -> None:
         self._context_window = dict(metrics)
 
     def reset_window_metrics(self) -> None:
