@@ -905,6 +905,21 @@ class AgentRuntime:
             return
         self._observability_service.metrics.record_context_window(metrics.to_dict())
 
+    def _record_l4_decision_metric(
+        self,
+        cost_metrics: dict[str, int | float | str | list[str]] | None,
+    ) -> None:
+        if cost_metrics is None:
+            return
+        decision = cost_metrics.get("decision")
+        if not isinstance(decision, str) or not decision:
+            return
+        source = cost_metrics.get("source")
+        self._observability_service.metrics.record_l4_decision(
+            decision=decision,
+            source=source if isinstance(source, str) else None,
+        )
+
     def _build_l4_rehydration_reminders(
         self,
         cost_metrics: dict[str, int | float | str | list[str]] | None,

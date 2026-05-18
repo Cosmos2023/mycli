@@ -284,6 +284,63 @@ class TurnService:
             lines.append("alerts=none")
         return tuple(lines)
 
+    def inspect_context(self) -> tuple[str, ...]:
+        snapshot = self._observability_service.snapshot()
+        context_window = snapshot.context_window
+        has_budget = bool(snapshot.budget_curve)
+        has_context = bool(context_window)
+        has_compaction = bool(snapshot.compaction_levels)
+        if not has_budget and not has_context and not has_compaction:
+            return ("no context metrics available",)
+
+        lines: list[str] = []
+        input_tokens = self._int_metric(context_window.get("input_tokens"))
+        max_tokens = self._int_metric(context_window.get("max_tokens")) or self._config.max_prompt_tokens
+        source = str(context_window.get("source") or "estimate")
+        if input_tokens == 0 and snapshot.budget_curve:
+            latest_ratio = snapshot.budget_curve[-1]
+            input_tokens = int(round(latest_ratio * max_tokens))
+        usage_ratio = input_tokens / max_tokens if max_tokens > 0 else 0.0
+        lines.append(
+            "budget "
+            f"input_tokens={input_tokens} "
+            f"max_tokens={max_tokens} "
+            f"usage_ratio={usage_ratio:.1%} "
+            f"source={source}"
+        )
+
+        if context_window:
+            lines.append(
+                "context_window "
+                f"fresh_tokens={self._int_metric(context_window.get('fresh_tokens'))} "
+                f"tool_result_tokens={self._int_metric(context_window.get('tool_result_tokens'))} "
+                f"duplicate_tool_result_tokens={self._int_metric(context_window.get('duplicate_tool_result_tokens'))} "
+                f"evictable_tool_result_tokens={self._int_metric(context_window.get('evictable_tool_result_tokens'))}"
+            )
+
+        compaction_parts = [
+            f"{level}={count}" for level, count in sorted(snapshot.compaction_levels.items())
+        ]
+        if compaction_parts:
+            lines.append(
+                "compaction "
+                + " ".join(compaction_parts)
+                + f" before_tokens={snapshot.compaction_before_tokens}"
+                + f" after_tokens={snapshot.compaction_after_tokens}"
+                + f" ratio={snapshot.compaction_ratio:.1%}"
+                + f" last_decision={snapshot.l4_last_decision or 'none'}"
+                + f" source={snapshot.l4_last_source or 'none'}"
+            )
+        return tuple(lines)
+
+    @staticmethod
+    def _int_metric(value: object) -> int:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return int(value)
+        return 0
+
     def inspect_trace(self) -> tuple[str, ...]:
         events = self._trace_service.load(self._config.session_id)
         if not events:

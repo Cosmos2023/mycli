@@ -435,6 +435,9 @@ def test_agent_runtime_reactive_compacts_once_after_context_window_error(
     assert metrics["source"] == "reactive_error"
     assert metrics["decision"] == "summarize"
     assert metrics["buffer_tokens"] == runtime._config.compaction_l4_buffer_tokens
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.l4_last_decision == "summarize"
+    assert snapshot.l4_last_source == "reactive_error"
 
 
 def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(

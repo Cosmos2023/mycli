@@ -17,6 +17,7 @@ def test_metrics_registry_reports_cache_compaction_and_budget_curve() -> None:
 
     registry.record_cache_tokens(hit_tokens=75, miss_tokens=25)
     registry.record_compaction(before_tokens=1000, after_tokens=250, level="L4")
+    registry.record_l4_decision(decision="summarize", source="pre_request")
     registry.record_budget(total_tokens=100, max_tokens=1000)
     registry.record_budget(total_tokens=450, max_tokens=1000)
 
@@ -26,7 +27,10 @@ def test_metrics_registry_reports_cache_compaction_and_budget_curve() -> None:
     assert snapshot.compaction_ratio == 0.25
     assert snapshot.budget_curve == (0.1, 0.45)
     assert snapshot.compaction_levels == {"L4": 1}
+    assert snapshot.l4_last_decision == "summarize"
+    assert snapshot.l4_last_source == "pre_request"
     assert snapshot.to_dict()["cache_hit_rate"] == 0.75
+    assert snapshot.to_dict()["l4_last_decision"] == "summarize"
 
 
 def test_metrics_registry_records_latest_context_window_metrics() -> None:

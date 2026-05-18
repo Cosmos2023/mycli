@@ -413,6 +413,9 @@ class TurnExecutor:
             if conversation_for_model is not conversation:
                 conversation = conversation_for_model
             runtime._record_context_window_metrics()
+            runtime._record_l4_decision_metric(
+                runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+            )
             budget = runtime._estimate_window_budget(conversation_for_model)
             runtime_reminders = _apply_l4_recent_file_hints(
                 tuple(
@@ -620,6 +623,9 @@ class TurnExecutor:
                                 runtime._record_compaction_metric(
                                     before_messages=before_reactive,
                                     after_messages=reactive_compacted,
+                                )
+                                runtime._record_l4_decision_metric(
+                                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics
                                 )
                                 carryover_runtime_reminders = tuple(
                                     dict.fromkeys(

@@ -16,6 +16,8 @@ class MetricsSnapshot:
     consecutive_l4: int
     ptl_events: int
     ptl_triggered: int
+    l4_last_decision: str | None = None
+    l4_last_source: str | None = None
 
     @property
     def cache_hit_rate(self) -> float:
@@ -59,6 +61,8 @@ class MetricsSnapshot:
             "consecutive_l4": self.consecutive_l4,
             "ptl_events": self.ptl_events,
             "ptl_triggered": self.ptl_triggered,
+            "l4_last_decision": self.l4_last_decision,
+            "l4_last_source": self.l4_last_source,
             "ptl_rate": self.ptl_rate,
         }
 
@@ -76,6 +80,8 @@ class MetricsRegistry:
     _consecutive_l4: int = 0
     _ptl_events: int = 0
     _ptl_triggered: int = 0
+    _l4_last_decision: str | None = None
+    _l4_last_source: str | None = None
 
     def record_cache_tokens(self, *, hit_tokens: int, miss_tokens: int) -> None:
         hit = max(0, hit_tokens)
@@ -105,6 +111,11 @@ class MetricsRegistry:
             self._consecutive_l4 += 1
         else:
             self._consecutive_l4 = 0
+
+    def record_l4_decision(self, *, decision: str, source: str | None = None) -> None:
+        normalized_decision = decision.strip() if decision else "unknown"
+        self._l4_last_decision = normalized_decision or "unknown"
+        self._l4_last_source = source.strip() if isinstance(source, str) and source.strip() else None
 
     def record_budget(self, *, total_tokens: int, max_tokens: int) -> None:
         if max_tokens <= 0:
@@ -137,4 +148,6 @@ class MetricsRegistry:
             consecutive_l4=self._consecutive_l4,
             ptl_events=self._ptl_events,
             ptl_triggered=self._ptl_triggered,
+            l4_last_decision=self._l4_last_decision,
+            l4_last_source=self._l4_last_source,
         )
