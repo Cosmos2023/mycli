@@ -33,6 +33,16 @@ class TestBashDanger:
 
         assert tool == "Grep"
 
+    def test_forbidden_sed_in_place_redirects_to_edit(self):
+        tool = check_forbidden("sed -i s/a/b/ file.txt")
+
+        assert tool == "Edit"
+
+    def test_sed_n_is_not_forbidden(self):
+        tool = check_forbidden("sed -n 1,5p file.txt")
+
+        assert tool is None
+
     def test_git_commands_not_forbidden(self):
         for cmd in ["git status", "git diff", "git log --oneline", "rm file.txt", "mv a b"]:
             assert check_forbidden(cmd) is None

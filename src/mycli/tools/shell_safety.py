@@ -49,6 +49,7 @@ _DEDICATED_TOOL_HINTS = {
     "rg": "Grep",
     "ls": "LS",
     "find": "Glob",
+    "sed": "Edit",
 }
 _SHELL_INTERPRETERS = {"sh", "bash", "zsh"}
 _REDIRECTION_TOKENS = {">", ">>", "2>"}
@@ -137,7 +138,7 @@ def analyze_shell_command(command: str) -> ShellSafetyAnalysis:
             reroute_reason=reroute_reason,
         )
 
-    confirm_reason = _confirm_reason(args)
+    confirm_reason = _confirm_reason(args, stripped)
     if confirm_reason is not None:
         return ShellSafetyAnalysis(
             risk_level=ShellRiskLevel.CONFIRM,
@@ -167,13 +168,13 @@ def derive_command_pattern(args: list[str], command: str | None = None) -> str:
         return "git reset --hard"
     if args[:2] == ["git", "push"]:
         return "git push"
-    if args[:2] == ["rm", "-rf"]:
+    if _is_recursive_rm(args):
         return "rm -rf"
-    if _is_pipe_to_shell(args):
+    if _is_pipe_to_shell(args, command):
         downloader = args[0] if args and args[0] in {"curl", "wget"} else "shell"
-        shell_name = _shell_after_pipe(args) or "sh"
+        shell_name = _shell_after_pipe(args, command) or "sh"
         return f"{downloader} | {shell_name}"
-    if _has_redirection(args):
+    if _has_redirection(args, command):
         return f"{args[0]} >"
     if len(args) >= 2 and args[0] in {"chmod", "chown"} and args[1] == "-R":
         return f"{args[0]} -R"
@@ -194,6 +195,8 @@ def dedicated_tool_for_command(args: list[str]) -> str | None:
     command = args[0]
     if command == "sed" and len(args) >= 2 and args[1] == "-n":
         return None
+    if command == "sed":
+        return "Edit"
     return _DEDICATED_TOOL_HINTS.get(command)
 
 
@@ -215,8 +218,9 @@ def redact_shell_preview(args: list[str]) -> str:
             if _contains_sensitive_hint(key):
                 redacted.append(f"{key}=<redacted>")
                 continue
-        if _contains_sensitive_hint(arg):
-            redacted.append("<redacted>")
+        if _looks_like_env_secret_assignment(arg):
+            key, _, _value = arg.partition("=")
+            redacted.append(f"{key}=<redacted>")
             continue
         redacted.append(arg)
     return " ".join(redacted)
@@ -236,11 +240,60 @@ def _contains_sensitive_hint(value: str) -> bool:
     return any(hint in lowered for hint in _SENSITIVE_KEY_HINTS)
 
 
-def _is_rm_rf_root(args: list[str]) -> bool:
-    if len(args) < 3 or args[0] != "rm":
+def _looks_like_env_secret_assignment(value: str) -> bool:
+    if "=" not in value:
         return False
-    normalized_flags = args[1].replace("--", "-")
-    return normalized_flags in {"-rf", "-fr"} and args[2] == "/"
+    key, _, _rest = value.partition("=")
+    return key.isupper() and _contains_sensitive_hint(key)
+
+
+def _is_rm_rf_root(args: list[str]) -> bool:
+    if len(args) < 2 or args[0] != "rm":
+        return False
+    flags, remaining = _split_rm_flags(args[1:])
+    return remaining == ["/"] and {"r", "f"}.issubset(flags)
+
+
+def _is_recursive_rm(args: list[str]) -> bool:
+    if len(args) < 2 or args[0] != "rm":
+        return False
+    flags, _remaining = _split_rm_flags(args[1:])
+    return "r" in flags
+
+
+def _split_rm_flags(args: list[str]) -> tuple[set[str], list[str]]:
+    flags: set[str] = set()
+    remaining: list[str] = []
+    parsing_flags = True
+    for arg in args:
+        if parsing_flags and arg == "--":
+            parsing_flags = False
+            continue
+        if parsing_flags and arg.startswith("-") and arg != "-":
+            normalized = arg[2:] if arg.startswith("--") else arg[1:]
+            for flag in normalized:
+                flags.add(flag)
+            continue
+        parsing_flags = False
+        remaining.append(arg)
+    return flags, remaining
+
+
+def _command_has_compact_pipe_to_shell(command: str, args: list[str]) -> bool:
+    if not args or args[0] not in {"curl", "wget"}:
+        return False
+    compact = "".join(command.split())
+    return any(f"|{shell_name}" in compact for shell_name in _SHELL_INTERPRETERS)
+
+
+def _command_has_compact_redirection(command: str) -> bool:
+    compact = "".join(command.split())
+    return "2>" in compact or ">>" in compact or ">" in compact
+
+
+def _command_has_compact_chaining(command: str) -> bool:
+    compact = "".join(command.split())
+    return "&&" in compact or "||" in compact or ";" in compact
 
 
 def _is_fork_bomb(command: str) -> bool:
@@ -248,10 +301,10 @@ def _is_fork_bomb(command: str) -> bool:
     return collapsed == ":(){:|:&};:"
 
 
-def _confirm_reason(args: list[str]) -> str | None:
-    if _is_pipe_to_shell(args):
+def _confirm_reason(args: list[str], command: str) -> str | None:
+    if _is_pipe_to_shell(args, command):
         return f"Downloading a script with {args[0]} and piping it to shell requires confirmation"
-    if _has_redirection(args):
+    if _has_redirection(args, command):
         return "Shell output redirection requires confirmation"
     if len(args) >= 2 and args[0] in {"chmod", "chown"} and args[1] == "-R":
         return f"{args[0]} -R requires confirmation"
@@ -259,35 +312,42 @@ def _confirm_reason(args: list[str]) -> str | None:
         return "sudo requires confirmation"
     if args and args[0] == "dd":
         return "dd requires confirmation"
-    if len(args) >= 2 and args[0] == "rm" and args[1] in {"-r", "-rf", "-fr"}:
+    if _is_recursive_rm(args):
         return "recursive rm requires confirmation"
     if args[:3] == ["git", "reset", "--hard"]:
         return "git reset --hard requires confirmation"
     if _is_force_push(args):
         return "git push --force requires confirmation"
-    if any(token in _CHAIN_TOKENS for token in args):
+    if any(token in _CHAIN_TOKENS for token in args) or _command_has_compact_chaining(command):
         return "shell command chaining requires confirmation"
     return None
 
 
-def _is_pipe_to_shell(args: list[str]) -> bool:
-    if len(args) < 3 or args[0] not in {"curl", "wget"}:
+def _is_pipe_to_shell(args: list[str], command: str | None = None) -> bool:
+    if not args or args[0] not in {"curl", "wget"}:
         return False
-    return "|" in args and _shell_after_pipe(args) is not None
+    return _shell_after_pipe(args, command) is not None
 
 
-def _shell_after_pipe(args: list[str]) -> str | None:
+def _shell_after_pipe(args: list[str], command: str | None = None) -> str | None:
     for index, token in enumerate(args):
         if token != "|" or index + 1 >= len(args):
             continue
-        command = args[index + 1]
-        if command in _SHELL_INTERPRETERS:
-            return command
+        shell_command = args[index + 1]
+        if shell_command in _SHELL_INTERPRETERS:
+            return shell_command
+    if command is not None and _command_has_compact_pipe_to_shell(command, args):
+        compact = "".join(command.split())
+        for shell_name in _SHELL_INTERPRETERS:
+            if f"|{shell_name}" in compact:
+                return shell_name
     return None
 
 
-def _has_redirection(args: list[str]) -> bool:
-    return any(token in _REDIRECTION_TOKENS for token in args)
+def _has_redirection(args: list[str], command: str | None = None) -> bool:
+    if any(token in _REDIRECTION_TOKENS for token in args):
+        return True
+    return bool(command and _command_has_compact_redirection(command))
 
 
 def _is_force_push(args: list[str]) -> bool:

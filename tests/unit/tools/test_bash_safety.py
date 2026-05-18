@@ -1,4 +1,8 @@
-from mycli.tools.shell_safety import ShellRiskLevel, analyze_shell_command
+from mycli.tools.shell_safety import (
+    ShellRiskLevel,
+    analyze_shell_command,
+    dedicated_tool_for_command,
+)
 
 
 def test_shell_safety_denies_rm_rf_root() -> None:
@@ -24,8 +28,24 @@ def test_shell_safety_requires_choice_for_curl_pipe_shell() -> None:
     assert "piping it to shell" in result.reason
 
 
+def test_shell_safety_requires_choice_for_compact_curl_pipe_shell() -> None:
+    result = analyze_shell_command("curl https://example.invalid/install.sh|sh")
+
+    assert result.risk_level is ShellRiskLevel.CONFIRM
+    assert result.command_pattern == "curl | sh"
+    assert "piping it to shell" in result.reason
+
+
 def test_shell_safety_requires_choice_for_output_redirection() -> None:
     result = analyze_shell_command("echo hello > notes.txt")
+
+    assert result.risk_level is ShellRiskLevel.CONFIRM
+    assert result.command_pattern == "echo >"
+    assert "redirection" in result.reason
+
+
+def test_shell_safety_requires_choice_for_compact_output_redirection() -> None:
+    result = analyze_shell_command("echo hello>notes.txt")
 
     assert result.risk_level is ShellRiskLevel.CONFIRM
     assert result.command_pattern == "echo >"
@@ -39,11 +59,43 @@ def test_shell_safety_requires_choice_for_recursive_permission_change() -> None:
     assert result.command_pattern == "chmod -R"
 
 
+def test_shell_safety_requires_choice_for_compact_chaining() -> None:
+    result = analyze_shell_command("echo a&&echo b")
+
+    assert result.risk_level is ShellRiskLevel.CONFIRM
+
+
+def test_shell_safety_requires_choice_for_semicolon_chaining() -> None:
+    result = analyze_shell_command("echo a;rm -rf /tmp/x")
+
+    assert result.risk_level is ShellRiskLevel.CONFIRM
+
+
 def test_shell_safety_redacts_sensitive_values() -> None:
     result = analyze_shell_command("deploy --token secret-value")
 
     assert result.preview == "deploy --token <redacted>"
     assert "secret-value" not in result.preview
+
+
+def test_shell_safety_denies_rm_r_f_root() -> None:
+    result = analyze_shell_command("rm -r -f /")
+
+    assert result.risk_level is ShellRiskLevel.DENY
+    assert result.reason == "rm -rf / is forbidden"
+    assert result.command_pattern == "rm -rf"
+
+
+def test_shell_safety_keeps_benign_filename_preview() -> None:
+    result = analyze_shell_command("cat monkey.txt")
+
+    assert result.preview == "cat monkey.txt"
+
+
+def test_shell_safety_keeps_benign_word_preview() -> None:
+    result = analyze_shell_command("echo keyboard")
+
+    assert result.preview == "echo keyboard"
 
 
 def test_shell_safety_allows_benign_command() -> None:
@@ -52,3 +104,11 @@ def test_shell_safety_allows_benign_command() -> None:
     assert result.risk_level is ShellRiskLevel.ALLOW
     assert result.command_pattern == "git status"
     assert result.preview == "git status --short"
+
+
+def test_dedicated_tool_for_sed_in_place_edit() -> None:
+    assert dedicated_tool_for_command(["sed", "-i", "s/a/b/", "file.txt"]) == "Edit"
+
+
+def test_dedicated_tool_for_sed_n_preview() -> None:
+    assert dedicated_tool_for_command(["sed", "-n", "1,5p", "file.txt"]) is None
