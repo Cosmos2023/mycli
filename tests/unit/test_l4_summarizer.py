@@ -133,3 +133,20 @@ class TestL4Summarizer:
         summarizer = LLMSummarization(trigger_ratio=0.9)
 
         assert summarizer._call_summarizer([]) == "Conversation summary unavailable."
+
+
+def test_summary_prompt_forbids_tools_and_non_text_outputs() -> None:
+    mock_client = MagicMock()
+    mock_client.complete.return_value = "summary"
+    summarizer = LLMSummarization(
+        trigger_ratio=0.1,
+        summarizer_client=mock_client,
+    )
+
+    summarizer._call_summarizer([Message(role="user", content="summarize safely")])
+
+    prompt = mock_client.complete.call_args.kwargs["messages"][0]["content"]
+    assert "CRITICAL: Respond with TEXT ONLY." in prompt
+    assert "Do NOT call tools." in prompt
+    assert "Do NOT output JSON, XML, or code fences." in prompt
+    assert "Do NOT continue the task." in prompt

@@ -445,6 +445,12 @@ class LLMSummarization:
 
 
 SUMMARY_PROMPT = (
+    "CRITICAL: Respond with TEXT ONLY. "
+    "Do NOT call tools. "
+    "Do NOT output JSON, XML, or code fences. "
+    "Do NOT ask the user for confirmation. "
+    "Do NOT continue the task. "
+    "Only produce the summary requested below.\n\n"
     "Summarize this conversation. Output exactly these 9 sections. "
     "Each section 1-3 sentences unless noted. Keep total output under 300 words.\n\n"
     "## 1. Primary Request\n"
