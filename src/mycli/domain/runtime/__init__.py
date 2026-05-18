@@ -115,6 +115,7 @@ class AgentConfig:
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
     compression_threshold_tokens: int = 8000
     compaction_l4_trigger_ratio: float = 0.9
+    compaction_l4_buffer_tokens: int = 13_000
     compaction_l4_min_savings_ratio: float | None = None
     compaction_l4_input_cost_per_1k: float = 0.0
     compaction_l4_output_cost_per_1k: float = 0.0

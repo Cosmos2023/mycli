@@ -413,6 +413,7 @@ class AgentRuntime:
         config: AgentConfig,
     ) -> None:
         summarization._trigger_ratio = config.compaction_l4_trigger_ratio
+        summarization._buffer_tokens = config.compaction_l4_buffer_tokens
         summarization._model_name = config.model
         summarization._trigger_ratios_by_model = dict(
             config.compaction_l4_trigger_ratios_by_model

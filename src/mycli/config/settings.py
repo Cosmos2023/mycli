@@ -177,6 +177,12 @@ def resolve_config(
         or user_config.get("compaction_l4_trigger_ratio")
         or 0.9
     )
+    compaction_l4_buffer_tokens_value = (
+        env.get("MYCLI_COMPACTION_L4_BUFFER_TOKENS")
+        or project_config.get("compaction_l4_buffer_tokens")
+        or user_config.get("compaction_l4_buffer_tokens")
+        or 13_000
+    )
     compaction_l4_min_savings_ratio = _parse_optional_float(
         env.get("MYCLI_COMPACTION_L4_MIN_SAVINGS_RATIO")
         or project_config.get("compaction_l4_min_savings_ratio")
@@ -243,6 +249,7 @@ def resolve_config(
         thinking_effort=thinking_effort,
         compression_threshold_tokens=int(str(compression_threshold_tokens_value)),
         compaction_l4_trigger_ratio=float(str(compaction_l4_trigger_ratio_value)),
+        compaction_l4_buffer_tokens=int(str(compaction_l4_buffer_tokens_value)),
         compaction_l4_min_savings_ratio=compaction_l4_min_savings_ratio,
         compaction_l4_input_cost_per_1k=compaction_l4_input_cost_per_1k,
         compaction_l4_output_cost_per_1k=compaction_l4_output_cost_per_1k,

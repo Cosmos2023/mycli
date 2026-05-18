@@ -18,6 +18,22 @@ _TOKEN_COUNTER = TokenCounter()
 CompactionCostMetrics = dict[str, int | float | str | list[str]]
 
 
+def effective_l4_trigger_ratio(
+    *,
+    configured_ratio: float,
+    max_tokens: int,
+    buffer_tokens: int,
+) -> float:
+    if max_tokens <= 0:
+        return max(0.0, configured_ratio)
+    normalized_configured = max(0.0, min(1.0, configured_ratio))
+    normalized_buffer = max(0, buffer_tokens)
+    if max_tokens <= normalized_buffer:
+        normalized_buffer = max(0, int(max_tokens * 0.20))
+    buffer_ratio = max(0.0, (max_tokens - normalized_buffer) / max_tokens)
+    return min(normalized_configured, buffer_ratio)
+
+
 @dataclass(slots=True, frozen=True)
 class CompactionCostProfile:
     input_cost_per_1k: float = 0.0
@@ -225,6 +241,7 @@ class LLMSummarization:
         max_consecutive_failures: int = 3,
         summarizer_client: SummarizerClient | None = None,
         summarizer_model_name: str | None = None,
+        buffer_tokens: int = 13_000,
     ) -> None:
         self._trigger_ratio = trigger_ratio
         self._model_name = model_name
@@ -236,6 +253,7 @@ class LLMSummarization:
         self._last_cost_metrics: CompactionCostMetrics | None = None
         self._summarizer_client = summarizer_client
         self._summarizer_model_name = summarizer_model_name
+        self._buffer_tokens = buffer_tokens
 
     @property
     def last_cost_metrics(self) -> CompactionCostMetrics | None:
@@ -251,9 +269,11 @@ class LLMSummarization:
         *,
         snapshot: FullContextSnapshot | None = None,
     ) -> Conversation:
-        trigger_ratio = self._active_trigger_ratio()
+        trigger_ratio = self._active_trigger_ratio(budget.max_tokens)
         if budget.usage_ratio < trigger_ratio:
             self._last_cost_metrics = {
+                "buffer_tokens": self._buffer_tokens,
+                "buffer_trigger_ratio": trigger_ratio,
                 "decision": "skip_threshold",
                 "trigger_ratio": trigger_ratio,
                 "usage_ratio": budget.usage_ratio,
@@ -261,6 +281,8 @@ class LLMSummarization:
             return conversation
         if self._failure_count >= self._max_failures:
             self._last_cost_metrics = {
+                "buffer_tokens": self._buffer_tokens,
+                "buffer_trigger_ratio": trigger_ratio,
                 "decision": "skip_failures",
                 "trigger_ratio": trigger_ratio,
                 "usage_ratio": budget.usage_ratio,
@@ -269,6 +291,8 @@ class LLMSummarization:
         fresh_messages = conversation.messages[zones.fresh_start :]
         if len(fresh_messages) < 4:
             self._last_cost_metrics = {
+                "buffer_tokens": self._buffer_tokens,
+                "buffer_trigger_ratio": trigger_ratio,
                 "decision": "skip_small_window",
                 "fresh_message_count": len(fresh_messages),
                 "trigger_ratio": trigger_ratio,
@@ -324,10 +348,18 @@ class LLMSummarization:
         ]
         return compacted
 
-    def _active_trigger_ratio(self) -> float:
+    def _active_trigger_ratio(self, max_tokens: int | None = None) -> float:
         if self._model_name is None:
-            return self._trigger_ratio
-        return self._trigger_ratios_by_model.get(self._model_name, self._trigger_ratio)
+            configured = self._trigger_ratio
+        else:
+            configured = self._trigger_ratios_by_model.get(self._model_name, self._trigger_ratio)
+        if max_tokens is None:
+            return configured
+        return effective_l4_trigger_ratio(
+            configured_ratio=configured,
+            max_tokens=max_tokens,
+            buffer_tokens=self._buffer_tokens,
+        )
 
     def _active_cost_profile(self) -> CompactionCostProfile:
         if self._model_name is None:
@@ -349,6 +381,8 @@ class LLMSummarization:
         savings = carry_cost - summary_cost
         savings_ratio = savings / carry_cost if carry_cost > 0 else 0.0
         return {
+            "buffer_tokens": self._buffer_tokens,
+            "buffer_trigger_ratio": trigger_ratio,
             "carry_cost": carry_cost,
             "carry_turns": max(1, profile.carry_turns),
             "decision": "evaluate",

@@ -5,7 +5,40 @@ from unittest.mock import MagicMock
 import pytest
 
 from mycli.domain.conversation import Message
-from mycli.services.context.compaction.pipeline import LLMSummarization
+from mycli.services.context.compaction.pipeline import (
+    LLMSummarization,
+    effective_l4_trigger_ratio,
+)
+
+
+def test_effective_l4_trigger_ratio_uses_buffer_before_configured_ratio() -> None:
+    ratio = effective_l4_trigger_ratio(
+        configured_ratio=0.95,
+        max_tokens=100_000,
+        buffer_tokens=13_000,
+    )
+
+    assert ratio == 0.87
+
+
+def test_effective_l4_trigger_ratio_keeps_lower_configured_ratio() -> None:
+    ratio = effective_l4_trigger_ratio(
+        configured_ratio=0.50,
+        max_tokens=100_000,
+        buffer_tokens=13_000,
+    )
+
+    assert ratio == 0.50
+
+
+def test_effective_l4_trigger_ratio_scales_buffer_for_small_windows() -> None:
+    ratio = effective_l4_trigger_ratio(
+        configured_ratio=0.95,
+        max_tokens=10_000,
+        buffer_tokens=13_000,
+    )
+
+    assert ratio == 0.80
 
 
 class TestL4Summarizer:
