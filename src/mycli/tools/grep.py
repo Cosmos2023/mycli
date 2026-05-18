@@ -5,8 +5,8 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import resolve_workspace_path
 
 
@@ -88,16 +88,16 @@ class GrepTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         pattern = str(arguments.get("pattern") or arguments.get("query") or "")
         if not pattern:
-            return ToolResultV2(success=False, summary="Failed to grep", error="Grep requires pattern.")
+            return ToolResult(success=False, summary="Failed to grep", error="Grep requires pattern.")
 
         raw_path = str(arguments.get("path", "."))
         try:
             search_path = resolve_workspace_path(self._workspace_root, raw_path)
         except ValueError as exc:
-            return ToolResultV2(success=False, summary="Failed to grep", error=str(exc))
+            return ToolResult(success=False, summary="Failed to grep", error=str(exc))
 
         payload = grep(
             pattern,
@@ -109,13 +109,13 @@ class GrepTool:
             ignore_case=bool(arguments.get("ignore_case", False)),
         )
         if "error" in payload:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary=f"Failed to grep for {pattern}",
                 error=str(payload["error"]),
                 raw_payload=payload,
             )
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"Found {payload['count']} matches for {pattern}",
             raw_payload={
@@ -128,7 +128,7 @@ class GrepTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)
 
     def _evidence(self, pattern: str, matches: object) -> tuple[ToolEvidence, ...]:
         if not isinstance(matches, list):

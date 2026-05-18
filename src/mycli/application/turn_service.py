@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
-from mycli.application.runtime import AgentRuntime
-from mycli.domain.capabilities import CapabilityActivation, CapabilityActivationDependencyStatus
 from mycli.domain.conversation import Conversation, Message
-from mycli.domain.skills import SkillDefinition
 from mycli.domain.runtime import (
     AgentConfig,
     DecisionAction,
@@ -16,136 +12,82 @@ from mycli.domain.runtime import (
     HistoryItemType,
     TurnResponse,
 )
-from mycli.domain.tools import ToolResult
-from mycli.domain.tooling.calls import ToolCall
-from mycli.llms.adapters.base import ModelAction, ModelAdapter, ModelMessage, ModelToolDefinition
-from mycli.services.capabilities import CapabilityResolver
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.services.file_history import FileHistoryService
 from mycli.memory.service import MemoryService
-from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
 from mycli.services.tracing import TraceService
-from mycli.tools.base import ToolResultV2, ToolSpec
-from mycli.tools.registry import ToolRegistryV2
 
 
 class TurnService:
     def __init__(
         self,
-        model_client: Any | None = None,
-        tool_registry: Any | None = None,
         config: AgentConfig | None = None,
         home_dir: Path | None = None,
         runtime: Any | None = None,
-        approval_service: ApprovalService | None = None,
     ) -> None:
         if config is None:
             raise ValueError("config is required")
         if home_dir is None:
             raise ValueError("home_dir is required")
+        if runtime is None:
+            raise ValueError("runtime is required")
 
-        if runtime is None and model_client is not None and tool_registry is not None:
-            runtime = AgentRuntime(
-                model_adapter=cast(ModelAdapter, _LegacyModelAdapter(model_client)),
-                tool_registry=cast(ToolRegistryV2, _LegacyToolRegistryAdapter(tool_registry)),
-                config=config,
-                home_dir=home_dir,
-                approval_service=approval_service,
-            )
         self._runtime = runtime
-        if runtime is not None:
-            self._tool_registry = getattr(runtime, "_tool_registry", tool_registry)
-            self._model_client = getattr(runtime, "_model_adapter", model_client)
-            self._safety_policy = getattr(runtime, "_approval_service", None)
-            self._config = getattr(runtime, "_config", config)
-            self._memory_service = getattr(
-                runtime,
-                "_memory_service",
-                MemoryService(home_dir=home_dir, workspace_root=config.workspace_root),
-            )
-            self._session_service = getattr(
-                runtime,
-                "_session_service",
-                SessionService(home_dir=home_dir),
-            )
-            self._context_window_service = None
-            self._skill_registry = getattr(
-                runtime,
-                "_skill_registry",
-                SkillRegistry(
-                    builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",
-                    user_root=home_dir / ".mycli" / "skills",
-                ),
-            )
-            self._trace_service = getattr(
-                runtime,
-                "_trace_service",
-                TraceService(home_dir=home_dir),
-            )
-            self._observability_service = getattr(
-                runtime,
-                "_observability_service",
-                ObservabilityService(),
-            )
-            self._file_history_service = getattr(
-                runtime,
-                "_file_history_service",
-                FileHistoryService(home_dir=home_dir, workspace_root=self._config.workspace_root),
-            )
-            self._turn_context_assembler = getattr(
-                runtime,
-                "_turn_context_assembler",
-                TurnContextAssembler(),
-            )
-            self._instruction_contract_assembler = getattr(
-                runtime,
-                "_instruction_contract_assembler",
-                InstructionContractAssembler(),
-            )
-            self._capability_resolver = getattr(
-                runtime,
-                "_capability_resolver",
-                CapabilityResolver(
-                    skill_registry=self._skill_registry,
-                    workspace_root=self._config.workspace_root,
-                    env=dict(os.environ),
-                ),
-            )
-            return
-
-        raise ValueError("runtime or model_client/tool_registry are required")
-
-    def _select_skill(self, user_message: str) -> SkillDefinition | None:
-        lowered = user_message.lower()
-        for name in self._skill_registry.list_names():
-            skill = self._skill_registry.get(name)
-            if skill and any(hint in lowered for hint in skill.trigger_hints):
-                return skill
-        return None
-
+        self._tool_registry = getattr(runtime, "_tool_registry", None)
+        self._model_client = getattr(runtime, "_model_adapter", None)
+        self._safety_policy = getattr(runtime, "_approval_service", None)
+        self._config = getattr(runtime, "_config", config)
+        self._memory_service = getattr(
+            runtime,
+            "_memory_service",
+            MemoryService(home_dir=home_dir, workspace_root=config.workspace_root),
+        )
+        self._session_service = getattr(
+            runtime,
+            "_session_service",
+            SessionService(home_dir=home_dir),
+        )
+        self._context_window_service = None
+        self._skill_registry = getattr(
+            runtime,
+            "_skill_registry",
+            SkillRegistry(
+                builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",
+                user_root=home_dir / ".mycli" / "skills",
+            ),
+        )
+        self._trace_service = getattr(
+            runtime,
+            "_trace_service",
+            TraceService(home_dir=home_dir),
+        )
+        self._observability_service = getattr(
+            runtime,
+            "_observability_service",
+            ObservabilityService(),
+        )
+        self._file_history_service = getattr(
+            runtime,
+            "_file_history_service",
+            FileHistoryService(home_dir=home_dir, workspace_root=self._config.workspace_root),
+        )
+        self._turn_context_assembler = getattr(
+            runtime,
+            "_turn_context_assembler",
+            TurnContextAssembler(),
+        )
+        self._instruction_contract_assembler = getattr(
+            runtime,
+            "_instruction_contract_assembler",
+            InstructionContractAssembler(),
+        )
     def _available_tool_names(self) -> tuple[str, ...]:
         assert self._tool_registry is not None
         return tuple(self._tool_registry.list_names())
-
-    def _active_skill_from_activations(
-        self,
-        capability_activations: tuple[CapabilityActivation, ...],
-    ) -> SkillDefinition | None:
-        for activation in capability_activations:
-            if activation.dependency_status is not CapabilityActivationDependencyStatus.READY:
-                continue
-            return SkillDefinition(
-                name=activation.name,
-                description=activation.description,
-                trigger_hints=(),
-                body=activation.instructions,
-                source_path=activation.source_path,
-            )
-        return None
 
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
         choice_to_action = {
@@ -414,54 +356,3 @@ def _tool_name_for_message(message: Message) -> str | None:
             value = block.metadata.get("tool_name")
             return value if isinstance(value, str) else None
     return None
-
-
-class _LegacyModelAdapter:
-    def __init__(self, model_client: Any) -> None:
-        self._model_client = model_client
-
-    def next_action(
-        self,
-        *,
-        messages: list[ModelMessage],
-        tools: list[ModelToolDefinition],
-    ) -> ModelAction:
-        prompt = "\n\n".join(message.content for message in messages if message.content)
-        decide = getattr(self._model_client, "decide", None)
-        if callable(decide):
-            return cast(ModelAction, decide(prompt))
-        next_action = getattr(self._model_client, "next_action", None)
-        if callable(next_action):
-            return cast(ModelAction, next_action(messages=messages, tools=tools))
-        raise TypeError("legacy model client must provide decide() or next_action()")
-
-
-class _LegacyToolAdapter:
-    def __init__(self, name: str, legacy_registry: Any) -> None:
-        self._legacy_registry = legacy_registry
-        self.spec = ToolSpec(name=name, description=f"Legacy tool {name}", parameters=())
-
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
-        result = self._legacy_registry.run(
-            ToolCall(name=self.spec.name, arguments=arguments, reason="legacy tool call")
-        )
-        return ToolResultV2(
-            success=result.success,
-            summary=result.summary,
-            artifacts=result.artifacts,
-            raw_payload=result.raw_payload,
-            evidence=result.evidence,
-            error=result.error,
-        )
-
-    def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
-
-
-class _LegacyToolRegistryAdapter(ToolRegistryV2):
-    def __init__(self, legacy_registry: Any) -> None:
-        tools = [_LegacyToolAdapter(name, legacy_registry) for name in legacy_registry.list_names()]
-        super().__init__(
-            specs={tool.spec.name: tool.spec for tool in tools},
-            executors={tool.spec.name: tool for tool in tools},
-        )

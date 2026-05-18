@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from mycli.domain.capabilities import CapabilityActivation
 from mycli.domain.conversation import Conversation
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionLifecycleEvent,
@@ -21,7 +20,7 @@ from mycli.application.runtime.tools.contributed_tool_registry import ToolContri
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.registry import ToolRegistry
 
 
 class ToolOrchestrator:
@@ -31,7 +30,7 @@ class ToolOrchestrator:
         self,
         *,
         session_id: str,
-        tool_registry: ToolRegistryV2,
+        tool_registry: ToolRegistry,
         tool_exposure_planner: ToolExposurePlanner,
         contributed_tool_registry: ToolContributionRegistry,
         contributed_tool_providers: tuple[ToolContributionProvider, ...],
@@ -52,7 +51,6 @@ class ToolOrchestrator:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
-        capability_activations: tuple[CapabilityActivation, ...],
         runtime_contributed_tools: tuple[object, ...] | None = None,
     ) -> PlannedToolExposure:
         runtime_tools = (
@@ -60,14 +58,12 @@ class ToolOrchestrator:
                 user_message=user_message,
                 conversation=conversation,
                 plan_state=plan_state,
-                capability_activations=capability_activations,
             )
             if runtime_contributed_tools is None
             else runtime_contributed_tools
         )
         planned = self._tool_exposure_planner.plan(
             user_message=user_message,
-            capability_activations=capability_activations,
             runtime_contributed_tools=runtime_tools,
         )
         lifecycle_events: list[ToolContributionLifecycleEvent] = []
@@ -192,7 +188,6 @@ class ToolOrchestrator:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
-        capability_activations: tuple[CapabilityActivation, ...],
     ) -> tuple[object, ...]:
         registrations: list[object] = []
         for provider in self._contributed_tool_providers:
@@ -200,7 +195,6 @@ class ToolOrchestrator:
                 user_message=user_message,
                 conversation=conversation,
                 plan_state=plan_state,
-                capability_activations=capability_activations,
             )
             registrations.extend(provided)
         return tuple(registrations)
@@ -255,6 +249,4 @@ class ToolOrchestrator:
     ) -> ToolRouteSource:
         if source is ToolContributionSource.RUNTIME:
             return ToolRouteSource.RUNTIME
-        if source is ToolContributionSource.CAPABILITY:
-            return ToolRouteSource.CAPABILITY
         return ToolRouteSource.PROVIDER

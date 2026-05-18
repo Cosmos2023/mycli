@@ -10,7 +10,6 @@ from mycli.tools.base import ToolSpec
 class ToolRouteSource(StrEnum):
     REGISTRY = "registry"
     RUNTIME = "runtime"
-    CAPABILITY = "capability"
     PROVIDER = "provider"
 
 

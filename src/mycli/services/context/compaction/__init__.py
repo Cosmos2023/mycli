@@ -7,6 +7,7 @@ from mycli.services.context.compaction.pipeline import (
     CompactionPipeline,
     ContextWindowAnalyzer,
     ContextWindowMetrics,
+    FullContextSnapshot,
     LLMSummarization,
     ToolResultBudget,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "ContextBudget",
     "ContextWindowAnalyzer",
     "ContextWindowMetrics",
+    "FullContextSnapshot",
     "LLMSummarization",
     "ToolResultBudget",
 ]

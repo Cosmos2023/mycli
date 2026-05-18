@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from mycli.domain.tools import ToolCall, ToolEvidence
-from mycli.tools.base import ToolResultV2
+from mycli.tools.base import ToolResult
 from mycli.tools.grep import GrepTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
@@ -20,11 +20,11 @@ def test_tool_result_v2_to_legacy_preserves_evidence() -> None:
         ),
     )
 
-    legacy = ToolResultV2(
+    legacy = ToolResult(
         success=True,
         summary="Found 1 match for hello",
         evidence=evidence,
-    ).to_legacy()
+    )
 
     assert legacy.evidence == evidence
 

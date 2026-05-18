@@ -36,29 +36,29 @@ def test_contributed_tool_descriptor_exposes_stable_identity_and_route() -> None
 
 def test_contributed_tool_descriptor_updates_lifecycle_in_snapshot() -> None:
     descriptor = ToolContributionDescriptor(
-        tool_id="capability:daily_brief:turn",
+        tool_id="provider:daily_brief:turn",
         display_name="daily_brief",
         description="Prepare a daily brief",
         route_key=ToolRouteKey.local("daily_brief"),
-        source=ToolContributionSource.CAPABILITY,
+        source=ToolContributionSource.PROVIDER,
         scope=ToolContributionScope.TURN,
         lifecycle_state=ToolContributionLifecycleState.DECLARED,
         spec=ToolSpec(name="daily_brief", description="Prepare a daily brief"),
-        origin_metadata={"capability_name": "daily-assistant"},
+        origin_metadata={"provider_name": "daily-assistant"},
     )
 
     updated = descriptor.with_lifecycle_state(ToolContributionLifecycleState.EXPOSED)
 
     assert updated.lifecycle_state is ToolContributionLifecycleState.EXPOSED
     assert updated.to_snapshot() == {
-        "tool_id": "capability:daily_brief:turn",
+        "tool_id": "provider:daily_brief:turn",
         "display_name": "daily_brief",
         "description": "Prepare a daily brief",
         "route_name": "daily_brief",
-        "source": "capability",
+        "source": "provider",
         "scope": "turn",
         "state": "exposed",
-        "origin_metadata": {"capability_name": "daily-assistant"},
+        "origin_metadata": {"provider_name": "daily-assistant"},
     }
 
 

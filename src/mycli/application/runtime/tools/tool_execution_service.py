@@ -16,7 +16,7 @@ from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint
 from mycli.services.security import InjectionGuard
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
-from mycli.tools.base import ToolResultV2
+from mycli.tools.base import ToolResult
 
 CONCURRENCY_SAFE_TOOLS = frozenset(
     {
@@ -167,7 +167,7 @@ class ToolExecutionService:
         )
         for hook_result in hook_results:
             if hook_result.action is HookAction.DENY:
-                denied_result = ToolResultV2(
+                denied_result = ToolResult(
                     success=False,
                     summary=f"Tool denied: {hook_result.message or normalized_call.name}",
                     error=hook_result.message or "tool denied by hook",
@@ -229,7 +229,7 @@ class ToolExecutionService:
         try:
             result = tool_router.execute(normalized_call, exposure=tool_exposure)
         except ValueError as exc:
-            result = ToolResultV2(
+            result = ToolResult(
                 success=False,
                 summary=f"Tool {normalized_call.name} could not run because its arguments were invalid.",
                 error=str(exc),
@@ -350,7 +350,7 @@ class ToolExecutionService:
         *,
         conversation: Conversation,
         normalized_call: ToolCall,
-        result: ToolResultV2,
+        result: ToolResult,
         plan_state: PlanState,
         turn_id: str,
         activity_events: list[ActivityEvent],
@@ -378,8 +378,10 @@ class ToolExecutionService:
             result,
             tool_name=normalized_call.name,
         )
-        guarded_tool_transcript_content = self._injection_guard.guard_tool_output(
-            tool_transcript_content,
+        guarded_tool_transcript_content = (
+            tool_transcript_content
+            if normalized_call.name == "Skill"
+            else self._injection_guard.guard_tool_output(tool_transcript_content)
         )
         self._record_tool_message(
             conversation,

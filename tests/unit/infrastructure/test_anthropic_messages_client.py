@@ -103,7 +103,7 @@ def test_anthropic_client_builds_messages_request_with_thinking(
     assert list((tmp_path / "log" / "model-raw").glob("*-response.json"))
 
 
-def test_anthropic_client_omits_thinking_when_disabled(tmp_path: Path) -> None:
+def test_anthropic_client_disables_thinking_explicitly(tmp_path: Path) -> None:
     sdk_client = FakeAnthropicSdkClient(
         {
             "id": "msg_2",
@@ -124,7 +124,7 @@ def test_anthropic_client_omits_thinking_when_disabled(tmp_path: Path) -> None:
 
     client.create_message(system=None, messages=[], tools=[])
 
-    assert "thinking" not in sdk_client.messages.kwargs
+    assert sdk_client.messages.kwargs["thinking"] == {"type": "disabled"}
 
 
 def test_anthropic_client_high_thinking_fits_4096_max_tokens(

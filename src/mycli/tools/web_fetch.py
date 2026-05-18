@@ -8,8 +8,8 @@ from urllib.parse import urlparse
 
 import requests  # type: ignore[import-untyped]
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 _fetch_cache: dict[str, dict[str, Any]] = {}
@@ -122,10 +122,10 @@ class WebFetchTool:
         risk_level="low",
     )
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         url = str(arguments.get("url") or "")
         if not url:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Failed to fetch web page",
                 error="WebFetch requires url.",
@@ -133,7 +133,7 @@ class WebFetchTool:
         prompt = arguments.get("prompt")
         payload = web_fetch(url, prompt=prompt if isinstance(prompt, str) else None)
         success = "error" not in payload
-        return ToolResultV2(
+        return ToolResult(
             success=success,
             summary=f"Fetched {url}" if success else f"Failed to fetch {url}",
             error=str(payload["error"]) if "error" in payload else None,
@@ -141,4 +141,4 @@ class WebFetchTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

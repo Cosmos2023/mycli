@@ -136,7 +136,7 @@ def test_tool_count_at_limit_gives_force_answer_not_hard_stop() -> None:
 
 def test_loop_detected_when_same_tool_call_repeated_4_times() -> None:
     checkpoint = TurnCheckpoint(max_same_tool_calls=4)
-    repeated = _assistant_tool_call(name="list_directory", arguments={"path": "."})
+    repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated, repeated)
 
     result = checkpoint.evaluate(
@@ -150,7 +150,7 @@ def test_loop_detected_when_same_tool_call_repeated_4_times() -> None:
 
 def test_loop_detector_is_current_turn_scoped() -> None:
     checkpoint = TurnCheckpoint(max_same_tool_calls=4)
-    repeated = _assistant_tool_call(name="list_directory", arguments={"path": "."})
+    repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = Conversation(
         session_id="test",
         messages=[
@@ -212,7 +212,7 @@ def test_repeated_replanning_does_not_stop_without_existing_plan() -> None:
 def test_no_progress_stops_after_threshold() -> None:
     checkpoint = TurnCheckpoint(no_progress_threshold=3)
     conversation = _conversation(
-        _assistant_tool_call(name="list_directory", arguments={"path": "."}),
+        _assistant_tool_call(name="LS", arguments={"path": "."}),
     )
     tracker = NoProgressTracker()
     tracker.update(conversation)
@@ -233,15 +233,15 @@ def test_no_progress_stops_after_threshold() -> None:
 def test_no_progress_resets_when_new_tool_called() -> None:
     tracker = NoProgressTracker()
     conv1 = _conversation(
-        _assistant_tool_call(name="list_directory", arguments={"path": "."}),
+        _assistant_tool_call(name="LS", arguments={"path": "."}),
     )
     tracker.update(conv1)
     tracker.update(conv1)
     assert tracker.no_progress_count() == 1
 
     conv2 = _conversation(
-        _assistant_tool_call(name="list_directory", arguments={"path": "."}),
-        _assistant_tool_call(name="read_file", arguments={"path": "a.py"}),
+        _assistant_tool_call(name="LS", arguments={"path": "."}),
+        _assistant_tool_call(name="Read", arguments={"path": "a.py"}),
     )
     tracker.update(conv2)
     assert tracker.no_progress_count() == 0
@@ -262,7 +262,7 @@ def test_force_answer_when_step_exceeds_threshold() -> None:
 
 def test_reroute_when_repeated_calls_but_below_stop_threshold() -> None:
     checkpoint = TurnCheckpoint(max_same_tool_calls=4, reroute_threshold=3)
-    repeated = _assistant_tool_call(name="list_directory", arguments={"path": "."})
+    repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated)
 
     result = checkpoint.evaluate(
@@ -279,9 +279,9 @@ def test_truncation_aware_when_truncation_signal_present() -> None:
     checkpoint = TurnCheckpoint()
     conversation = _conversation(
         _tool_message(
-            tool_name="read_file",
+            tool_name="Read",
             path="src/x.py",
-            text="... excerpt truncated; use read_file_range for exact sections if needed.",
+            text="... excerpt truncated; use Read with offset/limit for exact sections if needed.",
         ),
     )
 
@@ -292,7 +292,7 @@ def test_truncation_aware_when_truncation_signal_present() -> None:
 
     assert result.exit_reason is None
     assert result.continue_reason == ContinueReason.TRUNCATION_AWARE
-    assert any("read_file_range" in reminder for reminder in result.reminders)
+    assert any("Read with offset/limit" in reminder for reminder in result.reminders)
 
 
 def test_next_step_when_all_conditions_normal() -> None:
@@ -314,7 +314,7 @@ def test_force_answer_beats_reroute_in_priority() -> None:
         reroute_threshold=3,
         max_same_tool_calls=10,
     )
-    repeated = _assistant_tool_call(name="list_directory", arguments={"path": "."})
+    repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated)
 
     result = checkpoint.evaluate(

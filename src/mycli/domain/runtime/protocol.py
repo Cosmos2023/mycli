@@ -36,6 +36,7 @@ class TurnItemType(StrEnum):
     TOOL_RESULT = "tool_result"
     APPROVAL_REQUEST = "approval_request"
     APPROVAL_RESOLUTION = "approval_resolution"
+    MODEL_USAGE = "model_usage"
     WARNING = "warning"
 
 

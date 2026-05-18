@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from mycli.domain.tooling.calls import ToolEvidence
-from mycli.tools.base import ToolResultV2
+from mycli.tools.base import ToolResult
 
 
 class ToolResultFormatter:
@@ -22,7 +22,11 @@ class ToolResultFormatter:
         self._search_max_matches = search_max_matches
         self._default_max = default_max_chars
 
-    def format(self, tool_name: str, result: ToolResultV2) -> str:
+    def format(self, tool_name: str, result: ToolResult) -> str:
+        if tool_name == "Skill" and result.success:
+            content = result.raw_payload.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
         rendered = self._render(tool_name, result)
         max_chars = self._limit_for(tool_name)
         if len(rendered) <= max_chars:
@@ -38,12 +42,12 @@ class ToolResultFormatter:
             return self._run_shell_max
         return self._default_max
 
-    def _render(self, tool_name: str, result: ToolResultV2) -> str:
+    def _render(self, tool_name: str, result: ToolResult) -> str:
         if not result.success:
             return self._render_failure(result)
         if result.evidence and tool_name in {"read_file", "read_file_range", "Read"}:
             notice = (
-                "[文件内容较长，已截断。使用 read_file_range 读取后续内容。]"
+                "[文件内容较长，已截断。使用 Read with offset/limit 读取后续内容。]"
                 if self._payload_content_is_truncated(tool_name, result)
                 else "[文件读取完毕。如果你已有足够信息，现在就可以回答。]"
             )
@@ -64,7 +68,7 @@ class ToolResultFormatter:
             return self._render_from_evidence(result)
         return result.summary
 
-    def _render_failure(self, result: ToolResultV2) -> str:
+    def _render_failure(self, result: ToolResult) -> str:
         parts = [result.summary]
         if result.error:
             parts.append(f"Error: {result.error}")
@@ -78,7 +82,7 @@ class ToolResultFormatter:
 
     def _render_from_evidence(
         self,
-        result: ToolResultV2,
+        result: ToolResult,
         *,
         snippet_max_chars: int = 800,
     ) -> str:
@@ -102,7 +106,7 @@ class ToolResultFormatter:
     def _render_from_payload(
         self,
         tool_name: str,
-        result: ToolResultV2,
+        result: ToolResult,
     ) -> str | None:
         payload = result.raw_payload
         if tool_name in {"search_text", "Grep"}:
@@ -126,7 +130,7 @@ class ToolResultFormatter:
             return self._render_content_result(result, content)
         return None
 
-    def _render_search_result(self, result: ToolResultV2) -> str | None:
+    def _render_search_result(self, result: ToolResult) -> str | None:
         matches = result.raw_payload.get("matches")
         if not isinstance(matches, list):
             return None
@@ -153,7 +157,7 @@ class ToolResultFormatter:
                     parts.append(f"  snippet: {snippet[:800]}")
         return "\n".join(parts)
 
-    def _render_directory_result(self, result: ToolResultV2) -> str | None:
+    def _render_directory_result(self, result: ToolResult) -> str | None:
         entries = result.raw_payload.get("entries")
         if not isinstance(entries, list):
             return None
@@ -166,7 +170,7 @@ class ToolResultFormatter:
             parts.append(f"... and {len(display_entries) - len(preview)} more entries.")
         return "\n".join(parts)
 
-    def _render_shell_result(self, result: ToolResultV2) -> str | None:
+    def _render_shell_result(self, result: ToolResult) -> str | None:
         stdout = result.raw_payload.get("stdout")
         stderr = result.raw_payload.get("stderr")
         output = stdout if isinstance(stdout, str) and stdout.strip() else stderr
@@ -184,14 +188,14 @@ class ToolResultFormatter:
         ]
         return "\n".join(parts)
 
-    def _render_diff_result(self, result: ToolResultV2) -> str | None:
+    def _render_diff_result(self, result: ToolResult) -> str | None:
         diff = result.raw_payload.get("diff")
         if not isinstance(diff, str) or not diff:
             return None
         preview = diff[:800]
         return "\n".join([result.summary, f"Diff preview: {preview}"])
 
-    def _render_content_result(self, result: ToolResultV2, content: str) -> str:
+    def _render_content_result(self, result: ToolResult, content: str) -> str:
         parts = [result.summary]
         path = result.raw_payload.get("path")
         if isinstance(path, str) and path:
@@ -199,12 +203,12 @@ class ToolResultFormatter:
         preview = _normalize_whitespace(content)[:1200]
         parts.append(preview)
         if len(content) > 1200:
-            parts.append("[文件内容较长，已截断。使用 read_file_range 读取后续内容。]")
+            parts.append("[文件内容较长，已截断。使用 Read with offset/limit 读取后续内容。]")
         else:
             parts.append("[文件读取完毕。如果你已有足够信息，现在就可以回答。]")
         return "\n".join(parts)
 
-    def _payload_content_is_truncated(self, tool_name: str, result: ToolResultV2) -> bool:
+    def _payload_content_is_truncated(self, tool_name: str, result: ToolResult) -> bool:
         content = result.raw_payload.get("content")
         return isinstance(content, str) and len(content) > self._content_limit_for(tool_name)
 
@@ -218,7 +222,7 @@ class ToolResultFormatter:
     def _evidence_snippet_limit(
         self,
         tool_name: str,
-        result: ToolResultV2,
+        result: ToolResult,
         notice: str,
     ) -> int:
         max_chars = self._limit_for(tool_name)

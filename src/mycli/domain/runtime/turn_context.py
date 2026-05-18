@@ -13,7 +13,7 @@ class TurnContextSectionType(StrEnum):
     MEMORY = "memory"
     PLAN = "plan"
     RUNTIME_REMINDERS = "runtime_reminders"
-    CAPABILITY = "capability"
+    SKILL_CATALOG = "skill_catalog"
     TOOL_EXPOSURE = "tool_exposure"
     USER_REQUEST = "user_request"
 

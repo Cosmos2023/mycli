@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import resolve_workspace_path
 
 
@@ -54,7 +54,7 @@ class LSTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("path") or "")
         try:
             if not raw_path:
@@ -62,7 +62,7 @@ class LSTool:
             target = resolve_workspace_path(self._workspace_root, raw_path)
             payload = ls(str(target))
         except (OSError, ValueError, LSError) as exc:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Failed to list directory",
                 error=str(exc),
@@ -70,11 +70,11 @@ class LSTool:
             )
 
         entries = [*payload["dirs"], *payload["files"], *payload.get("hidden", [])]
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=", ".join(entries),
             raw_payload={"path": raw_path, "entries": entries, **payload},
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
-from mycli.domain.capabilities import CapabilityActivation
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionLifecycleEvent,
     ToolContributionLifecycleState,
@@ -19,7 +18,7 @@ from mycli.domain.tooling.exposure import (
     ToolRouteSource,
 )
 from mycli.tools.base import SchemaTool
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.registry import ToolRegistry
 
 
 @dataclass(slots=True, frozen=True)
@@ -30,14 +29,13 @@ class PlannedToolExposure:
 
 
 class ToolExposurePlanner:
-    def __init__(self, *, tool_registry: ToolRegistryV2) -> None:
+    def __init__(self, *, tool_registry: ToolRegistry) -> None:
         self._tool_registry = tool_registry
 
     def plan(
         self,
         *,
         user_message: str,
-        capability_activations: tuple[CapabilityActivation, ...] = (),
         runtime_contributed_tools: tuple[object, ...] = (),
     ) -> PlannedToolExposure:
         del user_message
@@ -81,49 +79,11 @@ class ToolExposurePlanner:
                 )
             )
 
-        for activation in capability_activations:
-            for registration in self._activation_contributed_tools(activation):
-                entry = self._contributed_entry(
-                    registration=registration,
-                    source=ToolRouteSource.CAPABILITY,
-                    metadata={"capability_name": activation.name},
-                )
-                if entry.name in seen:
-                    continue
-                seen.add(entry.name)
-                entries.append(entry)
-                contributed_tools[entry.name] = registration
-                lifecycle_events.append(
-                    self._lifecycle_event(
-                        registration=registration,
-                        state=ToolContributionLifecycleState.EXPOSED,
-                    )
-                )
-
         return PlannedToolExposure(
             exposure=ToolExposure(entries=tuple(entries)),
             contributed_tools=contributed_tools,
             lifecycle_events=tuple(lifecycle_events),
         )
-
-    def _activation_contributed_tools(
-        self,
-        activation: CapabilityActivation,
-    ) -> tuple[ToolContributionRegistration, ...]:
-        raw = activation.metadata.get("contributed_tools")
-        if not isinstance(raw, tuple):
-            return ()
-        tools: list[ToolContributionRegistration] = []
-        for item in raw:
-            normalized = self._normalize_registration(
-                registration=item,
-                source=ToolRouteSource.CAPABILITY,
-                scope=ToolContributionScope.TURN,
-                origin_metadata={"capability_name": activation.name},
-            )
-            if normalized is not None:
-                tools.append(normalized)
-        return tuple(tools)
 
     def _normalize_registration(
         self,
@@ -133,16 +93,13 @@ class ToolExposurePlanner:
         scope: ToolContributionScope,
         origin_metadata: dict[str, object] | None = None,
     ) -> ToolContributionRegistration | None:
+        del source
         if isinstance(registration, ToolContributionRegistration):
             return registration
         if hasattr(registration, "spec") and callable(getattr(registration, "execute", None)):
             tool = cast(SchemaTool, registration)
             route_key = self._route_key_for_tool_name(tool.spec.name)
-            source_type = (
-                ToolContributionSource.RUNTIME
-                if source is ToolRouteSource.RUNTIME
-                else ToolContributionSource.CAPABILITY
-            )
+            source_type = ToolContributionSource.RUNTIME
             tool_id = f"{source_type.value}:{route_key.value}:{scope.value}"
             return ToolContributionRegistration(
                 descriptor=self._descriptor(

@@ -10,7 +10,6 @@ from mycli.tools.base import SchemaTool, ToolSpec
 
 class ToolContributionSource(StrEnum):
     RUNTIME = "runtime"
-    CAPABILITY = "capability"
     PROVIDER = "provider"
 
 

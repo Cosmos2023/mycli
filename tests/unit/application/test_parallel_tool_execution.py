@@ -15,8 +15,8 @@ from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolR
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.hooks import HookManager
 from mycli.services.tracing import TraceService
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_router import ToolRouter
 
 
@@ -30,11 +30,11 @@ class DelayedTool:
         self._delay_seconds = delay_seconds
         self.seen_arguments: list[dict[str, object]] = []
 
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.seen_arguments.append(dict(arguments))
         time.sleep(self._delay_seconds)
         path = str(arguments["path"])
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"{self.spec.name} {path}",
             raw_payload={"path": path, "content": f"{self.spec.name}:{path}"},
@@ -67,7 +67,7 @@ def _service(
     *,
     tools: list[DelayedTool],
 ) -> tuple[ToolExecutionService, ToolRouter]:
-    registry = ToolRegistryV2.from_tools(tools)
+    registry = ToolRegistry.from_tools(tools)
     service = ToolExecutionService(
         session_id="demo",
         context_manager=ContextManager(),

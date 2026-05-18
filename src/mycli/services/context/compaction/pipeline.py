@@ -12,9 +12,10 @@ from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.hooks import HookContext, HookManager, HookPoint
-from mycli.tools.base import ToolResultV2
+from mycli.tools.base import ToolResult
 
 _TOKEN_COUNTER = TokenCounter()
+CompactionCostMetrics = dict[str, int | float | str | list[str]]
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,6 +35,21 @@ class CompactionStrategy(Protocol):
         zones: CacheZones,
         budget: ContextBudget,
     ) -> Conversation: ...
+
+
+class SummarizerClient(Protocol):
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str,
+        max_tokens: int,
+    ) -> object: ...
+
+
+@dataclass(slots=True, frozen=True)
+class FullContextSnapshot:
+    messages: tuple[Message, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,7 +110,7 @@ class ToolResultBudget:
 
             tool_name = _tool_name_for_message(message)
             raw_payload = _tool_raw_payload(message)
-            result = ToolResultV2(
+            result = ToolResult(
                 success=_tool_success_for_message(message),
                 summary=_tool_summary_for_message(message),
                 raw_payload=raw_payload,
@@ -117,7 +133,7 @@ class ToolResultBudget:
             changed = True
         return compacted if changed else conversation
 
-    def format_result(self, tool_name: str, result: ToolResultV2) -> str:
+    def format_result(self, tool_name: str, result: ToolResult) -> str:
         return self._formatter.format(tool_name, result)
 
 
@@ -207,6 +223,8 @@ class LLMSummarization:
         cost_profile: CompactionCostProfile | None = None,
         cost_profiles_by_model: dict[str, CompactionCostProfile] | None = None,
         max_consecutive_failures: int = 3,
+        summarizer_client: SummarizerClient | None = None,
+        summarizer_model_name: str | None = None,
     ) -> None:
         self._trigger_ratio = trigger_ratio
         self._model_name = model_name
@@ -215,10 +233,12 @@ class LLMSummarization:
         self._cost_profiles_by_model = dict(cost_profiles_by_model or {})
         self._max_failures = max_consecutive_failures
         self._failure_count = 0
-        self._last_cost_metrics: dict[str, int | float | str] | None = None
+        self._last_cost_metrics: CompactionCostMetrics | None = None
+        self._summarizer_client = summarizer_client
+        self._summarizer_model_name = summarizer_model_name
 
     @property
-    def last_cost_metrics(self) -> dict[str, int | float | str] | None:
+    def last_cost_metrics(self) -> CompactionCostMetrics | None:
         if self._last_cost_metrics is None:
             return None
         return dict(self._last_cost_metrics)
@@ -228,6 +248,8 @@ class LLMSummarization:
         conversation: Conversation,
         zones: CacheZones,
         budget: ContextBudget,
+        *,
+        snapshot: FullContextSnapshot | None = None,
     ) -> Conversation:
         trigger_ratio = self._active_trigger_ratio()
         if budget.usage_ratio < trigger_ratio:
@@ -259,13 +281,15 @@ class LLMSummarization:
         if not to_summarize:
             return conversation
         cost_metrics = self._estimate_cost_metrics(to_summarize, trigger_ratio, budget)
+        cost_metrics["recent_files"] = _collect_recent_files(to_summarize, n=3)
         if self._should_skip_for_cost(cost_metrics):
             cost_metrics["decision"] = "skip_cost"
             self._last_cost_metrics = cost_metrics
             return conversation
 
         try:
-            summary = self._call_summarizer(to_summarize)
+            summary_messages = list(snapshot.messages) if snapshot is not None else to_summarize
+            summary = self._call_summarizer(summary_messages)
         except Exception:
             self._failure_count += 1
             cost_metrics["decision"] = "summarizer_failed"
@@ -315,7 +339,7 @@ class LLMSummarization:
         messages: list[Message],
         trigger_ratio: float,
         budget: ContextBudget,
-    ) -> dict[str, int | float | str]:
+    ) -> CompactionCostMetrics:
         profile = self._active_cost_profile()
         input_tokens = sum(_estimate_message_tokens(message) for message in messages)
         summary_tokens = max(0, profile.expected_summary_tokens)
@@ -339,16 +363,43 @@ class LLMSummarization:
             "usage_ratio": budget.usage_ratio,
         }
 
-    def _should_skip_for_cost(self, metrics: dict[str, int | float | str]) -> bool:
+    def _should_skip_for_cost(self, metrics: CompactionCostMetrics) -> bool:
         profile = self._active_cost_profile()
         if profile.min_savings_ratio is None:
             return False
-        carry_cost = float(metrics["carry_cost"])
+        raw_carry_cost = metrics["carry_cost"]
+        if not isinstance(raw_carry_cost, int | float | str):
+            return False
+        carry_cost = float(raw_carry_cost)
         if carry_cost <= 0:
             return False
-        return float(metrics["savings_ratio"]) < profile.min_savings_ratio
+        raw_savings_ratio = metrics["savings_ratio"]
+        if not isinstance(raw_savings_ratio, int | float | str):
+            return False
+        return float(raw_savings_ratio) < profile.min_savings_ratio
 
     def _call_summarizer(self, messages: list[Message]) -> str:
+        if self._summarizer_client is None:
+            return self._fallback_summary(messages)
+
+        conversation_text = "\n\n".join(
+            f"[{message.role}]\n{message.content}"
+            for message in messages
+            if message.content.strip()
+        )
+        if not conversation_text:
+            return "Conversation summary unavailable."
+
+        prompt = SUMMARY_PROMPT.format(conversation_text=conversation_text)
+        response = self._summarizer_client.complete(
+            messages=[{"role": "user", "content": prompt}],
+            model=self._summarizer_model_name or self._model_name or "deepseek-lite",
+            max_tokens=600,
+        )
+        content = getattr(response, "content", str(response))
+        return content.strip()
+
+    def _fallback_summary(self, messages: list[Message]) -> str:
         lines = [
             f"- {message.role}: {' '.join(message.content.split())[:120]}"
             for message in messages
@@ -357,6 +408,35 @@ class LLMSummarization:
         if not lines:
             return "Conversation summary unavailable."
         return "Conversation summary:\n" + "\n".join(lines)
+
+
+SUMMARY_PROMPT = (
+    "Summarize this conversation. Output exactly these 9 sections. "
+    "Each section 1-3 sentences unless noted. Keep total output under 300 words.\n\n"
+    "## 1. Primary Request\n"
+    "The user's original goal.\n\n"
+    "## 2. Key Technical Concepts\n"
+    "Frameworks, patterns, architectures. List only.\n\n"
+    "## 3. Files Examined or Edited\n"
+    "Full paths. Mark edited files with [EDITED].\n\n"
+    "## 4. Errors and Fixes\n"
+    "Each error -> resolution. Write 'None.' if none.\n\n"
+    "## 5. Decisions Made\n"
+    "What was decided and why. One line each.\n\n"
+    "## 6. All User Messages\n"
+    "Preserved as close to verbatim as possible.\n\n"
+    "## 7. Pending Tasks\n"
+    "Work not yet done. Write 'None.' if none.\n\n"
+    "## 8. Current Work\n"
+    "What was in progress when this summary was created.\n\n"
+    "## 9. Optional Next Step\n"
+    "Write 'N/A' if unclear.\n\n"
+    "---\n\n"
+    "Conversation:\n"
+    "{conversation_text}\n\n"
+    "---\n\n"
+    "Summary:"
+)
 
 
 def _find_safe_split(messages: list[Message], candidate: int) -> int:
@@ -538,6 +618,49 @@ def _tool_result_signature(message: Message) -> str | None:
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+def _collect_recent_files(messages: list[Message], n: int = 3) -> list[str]:
+    edited: list[str] = []
+    read: list[str] = []
+    seen: set[str] = set()
+
+    for message in reversed(messages):
+        if message.role != "tool":
+            continue
+        path = _extract_tool_path(message)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        tool_name = _extract_tool_name(message)
+        if tool_name in {"Edit", "Write", "edit_file", "write_file"}:
+            edited.append(path)
+        elif tool_name in {"Read", "read_file"}:
+            read.append(path)
+
+    return (edited + read)[:n]
+
+
+def _extract_tool_path(message: Message) -> str | None:
+    for block in message.blocks:
+        if block.type != "tool_result":
+            continue
+        path = block.metadata.get("path")
+        if isinstance(path, str) and path:
+            return path
+    path = message.metadata.get("path")
+    return path if isinstance(path, str) and path else None
+
+
+def _extract_tool_name(message: Message) -> str:
+    for block in message.blocks:
+        if block.type != "tool_result":
+            continue
+        name = block.metadata.get("tool_name")
+        if isinstance(name, str) and name:
+            return name
+    name = message.metadata.get("tool_name")
+    return name if isinstance(name, str) else ""
 
 
 def _tool_name_for_message(message: Message) -> str:

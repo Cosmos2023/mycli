@@ -66,6 +66,7 @@ def test_resolve_config_reads_compaction_l4_settings(tmp_path: Path) -> None:
                 "compaction_l4_carry_cost_per_1k = 0.001",
                 "compaction_l4_expected_summary_tokens = 300",
                 "compaction_l4_carry_turns = 4",
+                'compaction_l4_summarizer_model = "summary-model"',
             ]
         ),
         encoding="utf-8",
@@ -85,6 +86,7 @@ def test_resolve_config_reads_compaction_l4_settings(tmp_path: Path) -> None:
     assert config.compaction_l4_carry_cost_per_1k == 0.001
     assert config.compaction_l4_expected_summary_tokens == 300
     assert config.compaction_l4_carry_turns == 4
+    assert config.compaction_l4_summarizer_model == "summary-model"
 
 
 def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_path: Path) -> None:

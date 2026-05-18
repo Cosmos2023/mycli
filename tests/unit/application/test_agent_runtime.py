@@ -42,11 +42,11 @@ from mycli.domain.tools import ToolCall
 from mycli.memory.service import MemoryService
 from mycli.services.skill_registry import SkillRegistry
 from mycli.utils.workspace_logger import WorkspaceLogService
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.edit import EditTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.registry import ToolRegistry
 from mycli.tools.bash import BashTool
 from mycli.tools.grep import GrepTool
 from mycli.tools.plan import PlanTool
@@ -875,6 +875,16 @@ class LegacySingleTurnCaptureAdapter:
         )()
 
 
+def test_agent_runtime_registers_skill_tool_from_skill_registry(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+    )
+
+    assert "Skill" in runtime._tool_registry.list_names()
+
+
 class CapturingResponsesClient:
     def __init__(self) -> None:
         self.captured_input_items: list[dict[str, object]] = []
@@ -896,7 +906,7 @@ def build_runtime_with_capture_adapter(
     model_adapter: object,
     recent_message_count: int,
 ) -> AgentRuntime:
-    tool_registry = ToolRegistryV2.from_tools(
+    tool_registry = ToolRegistry.from_tools(
         [
             LSTool(tmp_path),
             ReadTool(tmp_path),
@@ -1022,8 +1032,6 @@ def test_turn_service_resume_switches_runtime_session_for_follow_up_turn(
         model_adapter=ReasoningTextDoneAdapter(),
     )
     service = TurnService(
-        model_client=runtime._model_adapter,
-        tool_registry=runtime._tool_registry,
         config=runtime._config,
         home_dir=tmp_path / "home",
         runtime=runtime,
@@ -1060,8 +1068,6 @@ def test_turn_service_fork_switches_active_session_to_branch(
         model_adapter=ReasoningTextDoneAdapter(),
     )
     service = TurnService(
-        model_client=runtime._model_adapter,
-        tool_registry=runtime._tool_registry,
         config=runtime._config,
         home_dir=tmp_path / "home",
         runtime=runtime,
@@ -1272,7 +1278,7 @@ def test_agent_runtime_writes_only_provider_transcript_items_to_history(
     response = runtime.handle_user_turn("inspect runtime ledger")
 
     assert any(item.type is TurnItemType.TOOL_EXPOSURE for item in response.turn.items)
-    assert any(item.type is TurnItemType.REASONING for item in response.turn.items)
+    assert not any(item.type is TurnItemType.REASONING for item in response.turn.items)
     history_items = runtime._session_service.load_history_items(runtime._config.session_id)
     assert [item.type for item in history_items] == [
         HistoryItemType.USER_MESSAGE,
@@ -1644,7 +1650,7 @@ def test_agent_runtime_passes_session_and_turn_context_to_model_logging(
     )
     runtime = AgentRuntime(
         model_adapter=ResponsesModelAdapter(client=client),
-        tool_registry=ToolRegistryV2.from_tools(
+        tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
@@ -1786,7 +1792,7 @@ def test_agent_runtime_logs_assembled_turn_context_summary(tmp_path: Path) -> No
     log_service = WorkspaceLogService(workspace_root=tmp_path)
     runtime = AgentRuntime(
         model_adapter=BlockSingleTurnCaptureAdapter(),
-        tool_registry=ToolRegistryV2.from_tools(
+        tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
@@ -1963,7 +1969,85 @@ class SkillCaptureAdapter:
         )()
 
 
-def test_agent_runtime_injects_loaded_skill_instructions_into_messages(tmp_path: Path) -> None:
+class SkillThenAnswerAdapter:
+    def __init__(self) -> None:
+        self.seen_messages: list[list[object]] = []
+        self.seen_tools: list[list[object]] = []
+        self.calls = 0
+
+    def next_action(self, *, messages, tools):
+        self.calls += 1
+        self.seen_messages.append(list(messages))
+        self.seen_tools.append(list(tools))
+        if self.calls == 1:
+            return type(
+                "Action",
+                (),
+                {
+                    "assistant_message": "",
+                    "progress_message": None,
+                    "tool_call": ToolCall(
+                        name="Skill",
+                        arguments={"skill_name": "code-review"},
+                        reason="Need review rules",
+                    ),
+                    "done": False,
+                },
+            )()
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": "Reviewed with skill.",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
+def test_agent_runtime_continues_same_turn_with_skill_tool_result(tmp_path: Path) -> None:
+    builtin_dir = tmp_path / "builtin-skills"
+    user_dir = tmp_path / "home" / ".mycli" / "skills"
+    builtin_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    (builtin_dir / "code-review.md").write_text(
+        "---\n"
+        'name = "code-review"\n'
+        'description = "Review code"\n'
+        'trigger_hints = ["review"]\n'
+        "---\n"
+        "Find correctness bugs first.\n",
+        encoding="utf-8",
+    )
+    adapter = SkillThenAnswerAdapter()
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools([PlanTool()]),
+        config=AgentConfig(workspace_root=tmp_path),
+        home_dir=tmp_path / "home",
+        skill_registry=SkillRegistry(builtin_root=builtin_dir, user_root=user_dir),
+    )
+
+    response = runtime.handle_user_turn("review this change")
+
+    assert response.assistant_message == "Reviewed with skill."
+    assert adapter.calls == 2
+    assert any(getattr(tool, "name", "") == "Skill" for tool in adapter.seen_tools[0])
+    second_request_text = "\n".join(
+        str(getattr(message, "content", "")) for message in adapter.seen_messages[1]
+    )
+    assert "Find correctness bugs first." in second_request_text
+    assert response.turn is not None
+    assert any(
+        item.type is TurnItemType.TOOL_RESULT
+        and item.tool_name == "Skill"
+        and "Find correctness bugs first." in str(item.metadata.get("transcript_content", ""))
+        for item in response.turn.items
+    )
+
+
+def test_agent_runtime_exposes_skill_catalog_without_auto_loading_body(tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin-skills"
     user_dir = tmp_path / "home" / ".mycli" / "skills"
     builtin_dir.mkdir(parents=True)
@@ -1976,7 +2060,7 @@ def test_agent_runtime_injects_loaded_skill_instructions_into_messages(tmp_path:
     adapter = SkillCaptureAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools(
+        tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
@@ -1994,19 +2078,14 @@ def test_agent_runtime_injects_loaded_skill_instructions_into_messages(tmp_path:
     response = runtime.handle_user_turn("inspect this repo")
 
     assert response.assistant_message == "Skill captured"
-    assert any(
-        message.role == "user"
-        and "Inspect repositories before answering." in str(message.content)
-        for message in adapter.seen_messages[0]
+    first_request_text = "\n".join(
+        str(getattr(message, "content", "")) for message in adapter.seen_messages[0]
     )
-    assert not any(
-        message.role == "system"
-        and "Inspect repositories before answering." in str(message.content)
-        for message in adapter.seen_messages[0]
-    )
+    assert "repository-analysis: Inspect repos" in first_request_text
+    assert "Inspect repositories before answering." not in first_request_text
 
 
-def test_agent_runtime_records_capability_turn_item_and_prompt_context(tmp_path: Path) -> None:
+def test_agent_runtime_keeps_explicit_skill_mentions_as_plain_user_text(tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin-skills"
     user_dir = tmp_path / "home" / ".mycli" / "skills"
     builtin_dir.mkdir(parents=True)
@@ -2020,7 +2099,7 @@ def test_agent_runtime_records_capability_turn_item_and_prompt_context(tmp_path:
     adapter = LegacySingleTurnCaptureAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools(
+        tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
@@ -2038,18 +2117,19 @@ def test_agent_runtime_records_capability_turn_item_and_prompt_context(tmp_path:
     response = runtime.handle_user_turn("inspect this repo with $repository-analysis")
 
     assert response.turn is not None
-    assert any(item.type is TurnItemType.CAPABILITY for item in response.turn.items)
-    capability_item = next(item for item in response.turn.items if item.type is TurnItemType.CAPABILITY)
-    assert capability_item.metadata["capability_name"] == "repository-analysis"
-    assert capability_item.metadata["source"] == "explicit_mention"
+    assert not any(item.type is TurnItemType.CAPABILITY for item in response.turn.items)
+    first_request_text = "\n".join(
+        str(getattr(message, "content", "")) for message in adapter.seen_messages[0]
+    )
+    assert "Call the Skill tool" not in first_request_text
+    assert "Inspect repositories before answering." not in first_request_text
     assert any(
         getattr(message, "role", None) == "user"
         and "repository-analysis" in str(getattr(message, "content", ""))
         for message in adapter.seen_messages[0]
     )
-    assert any(
-        getattr(message, "role", None) == "user"
-        and "explicit_mention" in str(getattr(message, "content", ""))
+    assert not any(
+        "Inspect repositories before answering." in str(getattr(message, "content", ""))
         for message in adapter.seen_messages[0]
     )
 
@@ -2192,7 +2272,7 @@ def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
         for event in loaded
     )
     assert any(event.kind == "tool_exposure" for event in loaded)
-    assert any(event.kind == "runtime_policy" for event in loaded)
+    assert not any(event.kind == "runtime_policy" for event in loaded)
     assert any(event.kind == "instruction_contract" for event in loaded)
     request_shape = next(event for event in loaded if event.kind == "request_shape")
     assert request_shape.payload["provider"] == "openai"
@@ -2227,6 +2307,41 @@ class UsageMetadataAdapter:
         )
 
 
+class PromptCompletionUsageAdapter:
+    def next_turn(self, *, items, tools):
+        del items, tools
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="done"),),
+                ),
+            ),
+            done=True,
+            metadata={
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 800,
+                }
+            },
+        )
+
+
+class TotalOnlyUsageAdapter:
+    def next_turn(self, *, items, tools):
+        del items, tools
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="done"),),
+                ),
+            ),
+            done=True,
+            metadata={"usage": {"total_tokens": 1800}},
+        )
+
+
 def test_agent_runtime_traces_cache_shape_diagnostic_from_provider_usage(
     tmp_path: Path,
 ) -> None:
@@ -2254,6 +2369,84 @@ def test_agent_runtime_traces_cache_shape_diagnostic_from_provider_usage(
     assert snapshot.cache_miss_tokens == 400
     assert snapshot.cache_hit_rate == 2000 / 2400
     assert snapshot.budget_curve
+
+
+def test_agent_runtime_records_provider_input_tokens_for_budget_curve(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PromptCompletionUsageAdapter(),
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        max_prompt_tokens=2000,
+        max_tokens_per_turn=2000,
+    )
+
+    runtime.handle_user_turn("measure provider input")
+
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.budget_curve == (0.5,)
+    assert runtime._session_service.load_turn_record(runtime._config.session_id) is not None
+    turn = runtime._session_service.load_turn_record(runtime._config.session_id)
+    assert turn is not None
+    usage_item = next(item for item in turn.items if item.type is TurnItemType.MODEL_USAGE)
+    assert usage_item.metadata["input_tokens"] == 1000
+    assert usage_item.metadata["source"] == "provider"
+
+
+def test_agent_runtime_falls_back_to_estimate_when_provider_omits_input_tokens(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=TotalOnlyUsageAdapter(),
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        max_prompt_tokens=2000,
+        max_tokens_per_turn=2000,
+    )
+
+    runtime.handle_user_turn("measure provider input")
+
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.budget_curve
+    assert snapshot.budget_curve != (0.9,)
+
+
+def test_agent_runtime_restores_provider_input_budget_when_rebinding_session(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PromptCompletionUsageAdapter(),
+    )
+    first_config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="first",
+        max_prompt_tokens=2000,
+        max_tokens_per_turn=2000,
+    )
+    second_config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="second",
+        max_prompt_tokens=2000,
+        max_tokens_per_turn=2000,
+    )
+    runtime.rebind_session(first_config)
+    runtime.handle_user_turn("measure first")
+    runtime.rebind_session(second_config)
+    assert runtime._observability_service.snapshot().budget_curve == ()
+
+    runtime.rebind_session(first_config)
+
+    snapshot = runtime._observability_service.snapshot()
+    assert snapshot.budget_curve == (0.5,)
 
 
 class RepeatMissingReadAdapter:
@@ -2491,9 +2684,9 @@ class ContributedSummaryTool:
             parameters=(ToolParameter(name="path", type="string", required=False),),
         )
 
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
         del arguments
-        return ToolResultV2(success=True, summary="Workspace summary ready", raw_payload={"path": "."})
+        return ToolResult(success=True, summary="Workspace summary ready", raw_payload={"path": "."})
 
 
 class OverviewToolContributionProvider(ToolContributionProvider):
@@ -2503,9 +2696,8 @@ class OverviewToolContributionProvider(ToolContributionProvider):
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
-        capability_activations,
     ) -> tuple[object, ...]:
-        del conversation, plan_state, capability_activations
+        del conversation, plan_state
         if "概览" not in user_message and "overview" not in user_message.lower():
             return ()
         tool = ContributedSummaryTool()
@@ -2739,8 +2931,6 @@ def test_agent_runtime_file_history_undo_restores_mutating_tool_change(
         model_adapter=EditThenDoneAdapter(),
     )
     service = TurnService(
-        model_client=runtime._model_adapter,
-        tool_registry=runtime._tool_registry,
         config=runtime._config,
         home_dir=tmp_path / "home",
         runtime=runtime,
@@ -3074,12 +3264,9 @@ def test_agent_runtime_observes_sufficient_overview_evidence_without_forcing_ans
     assert adapter.seen_tool_counts[0] > 0
     assert adapter.seen_tool_counts[-1] == adapter.seen_tool_counts[0]
     assert "none" not in adapter.tool_choices
-    assert any(
-        item.type is TurnItemType.REASONING and item.text == "正在检查仓库结构"
-        for item in response.turn.items
-    )
-    assert any(
-        item.type is TurnItemType.REASONING and item.text == "已从确认的证据收口回答"
+    assert not any(
+        item.type is TurnItemType.REASONING
+        and item.text in {"正在检查仓库结构", "已从确认的证据收口回答"}
         for item in response.turn.items
     )
 
@@ -3102,7 +3289,7 @@ class CompactionMetricsAdapter:
 def test_agent_runtime_records_compaction_metrics_when_window_changes(tmp_path: Path) -> None:
     runtime = AgentRuntime(
         model_adapter=CompactionMetricsAdapter(),
-        tool_registry=ToolRegistryV2.from_tools([]),
+        tool_registry=ToolRegistry.from_tools([]),
         config=AgentConfig(
             workspace_root=tmp_path,
             max_prompt_tokens=1000,
@@ -3133,7 +3320,7 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
     adapter = CaptureToolExposureAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools(
+        tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
@@ -3160,7 +3347,7 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
 def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -> None:
     runtime = AgentRuntime(
         model_adapter=DeferredToolRequestAdapter(),
-        tool_registry=ToolRegistryV2.from_tools(
+        tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
                 BashTool(tmp_path),
@@ -3217,7 +3404,7 @@ def test_agent_runtime_executes_runtime_contributed_tool_via_router(tmp_path: Pa
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
+        tool_registry=ToolRegistry.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
@@ -3240,7 +3427,7 @@ def test_agent_runtime_records_contributed_tool_lifecycle_and_persists_thread_sn
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
+        tool_registry=ToolRegistry.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
@@ -3300,7 +3487,7 @@ def test_agent_runtime_reexposes_thread_scoped_contributed_tools_on_later_turns(
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
+        tool_registry=ToolRegistry.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
     )
@@ -3335,7 +3522,7 @@ def test_agent_runtime_accepts_provider_contributed_contributed_tool_for_overvie
     adapter = ToolContributionAdapter()
     runtime = AgentRuntime(
         model_adapter=adapter,
-        tool_registry=ToolRegistryV2.from_tools([LSTool(tmp_path)]),
+        tool_registry=ToolRegistry.from_tools([LSTool(tmp_path)]),
         config=AgentConfig(workspace_root=tmp_path),
         home_dir=tmp_path / "home",
         contributed_tool_providers=(OverviewToolContributionProvider(),),
@@ -3385,7 +3572,7 @@ def test_agent_runtime_observes_sufficient_implementation_audit_without_forcing_
     assert adapter.seen_tool_counts[0] > 0
     assert adapter.seen_tool_counts[-1] == adapter.seen_tool_counts[0]
     assert "none" not in adapter.tool_choices
-    assert any(event.kind == "runtime_policy" for event in response.activity_events)
+    assert not any(event.kind == "runtime_policy" for event in response.activity_events)
 
 
 def test_agent_runtime_force_answer_request_keeps_native_tool_affordance(

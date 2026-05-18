@@ -45,17 +45,22 @@ class TestReadText:
         assert result["total_lines"] == 2500
         assert result["shown_lines"] == 2000
 
-    def test_file_too_large(self, tmp_path):
+    def test_file_too_large_by_token_count(self, tmp_path):
         f = tmp_path / "huge.py"
-        f.write_text("x" * 65_000)
+        f.write_text(" ".join(str(i) for i in range(30_000)))
         result = read_text(str(f))
         assert "error" in result
         assert "too large" in result["error"].lower()
+        assert "tokens" in result["error"].lower()
 
-    def test_medium_file_head_tail(self, tmp_path):
+    def test_reads_long_low_token_file_without_head_tail_truncation(self, tmp_path):
         f = tmp_path / "medium.py"
-        content = (("line1\n" * 4000) + "\n\n\n" + ("linez\n" * 2000))
+        content = "a" * 120_000
         f.write_text(content)
+
         result = read_text(str(f))
-        assert result["truncated"] is True
-        assert "... [chars omitted] ..." in result["content"]
+
+        assert result["truncated"] is False
+        assert "... [chars omitted] ..." not in result["content"]
+        assert "a" * 100 in result["content"]
+        assert result["total_tokens"] <= 25_000

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mycli.services.context.token_counter import TokenCounter
+
 MAX_LINE_CHARS = 2000
 DEFAULT_LIMIT = 2000
-FULL_READ_CHAR_LIMIT = 15_000
-HEAD_TAIL_CHAR_LIMIT = 60_000
-HEAD_CHARS = 8_000
-TAIL_CHARS = 4_000
+MAX_READ_TOKENS = 25_000
+_TOKEN_COUNTER = TokenCounter()
 
 
 def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> dict[str, object]:
@@ -22,26 +22,18 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
     except UnicodeDecodeError as exc:
         return {"error": f"[Cannot decode file as UTF-8: {file_path}: {exc}]"}
 
-    total_chars = len(content)
-    if total_chars > HEAD_TAIL_CHAR_LIMIT:
+    total_tokens = _TOKEN_COUNTER.count(content)
+    if total_tokens > MAX_READ_TOKENS:
         return {
             "error": (
-                f"[File too large ({total_chars} chars). "
+                f"[File too large ({total_tokens} tokens). "
                 "Use offset/limit to read specific sections.]"
             )
         }
 
+    total_chars = len(content)
     original_total_lines = len(content.splitlines())
     view_content = content
-    char_truncated = False
-    if total_chars > FULL_READ_CHAR_LIMIT:
-        omitted = total_chars - HEAD_CHARS - TAIL_CHARS
-        view_content = (
-            f"{content[:HEAD_CHARS]}\n"
-            f"... [chars omitted] ... ({omitted} chars)\n"
-            f"{content[-TAIL_CHARS:]}"
-        )
-        char_truncated = True
 
     lines = view_content.splitlines()
     total_lines = len(lines)
@@ -67,7 +59,8 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
     return {
         "content": output,
         "total_chars": total_chars,
+        "total_tokens": total_tokens,
         "total_lines": original_total_lines,
         "shown_lines": min(limit, max(original_total_lines - start, 0)),
-        "truncated": char_truncated or line_truncated,
+        "truncated": line_truncated,
     }

@@ -37,9 +37,9 @@ def test_all_tools_importable():
 
 
 def test_all_tools_registered():
-    from mycli.tools.registry import ToolRegistryV2
+    from mycli.tools.registry import ToolRegistry
 
-    registry = ToolRegistryV2()
+    registry = ToolRegistry()
     names = [tool.spec.name for tool in registry.list_all()]
     expected = {
         "Read",

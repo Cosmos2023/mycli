@@ -10,9 +10,6 @@ from mycli.domain.contributed_tools import (
 )
 from mycli.domain.runtime import (
     AgentConfig,
-    CapabilityActivation,
-    CapabilityActivationDependencyStatus,
-    CapabilityActivationSource,
     ExecutionContext,
 )
 from mycli.domain.tool_exposure import (
@@ -32,21 +29,8 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
         user_message="inspect this repo with $repository-analysis",
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
-            capability_activations=(
-                CapabilityActivation(
-                    name="repository-analysis",
-                    description="Inspect repositories",
-                    instructions="Inspect repositories before answering.",
-                    source=CapabilityActivationSource.EXPLICIT_MENTION,
-                    dependency_status=CapabilityActivationDependencyStatus.READY,
-                    source_path="/tmp/skills/repository-analysis/SKILL.md",
-                ),
-            ),
+            skill_catalog="Available skills:\n- code-review: Review code",
             runtime_reminders=("Prefer source files before logs.",),
-            runtime_policy_state={
-                "profile_name": "source_first_verification",
-                "path_bias": "source_first",
-            },
             tool_exposure=ToolExposure(
                 direct=(
                     ToolExposureEntry(
@@ -78,26 +62,26 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
     assert [fragment.kind for fragment in contract.contextual_user_sections] == [
         "workspace_instructions",
         "environment_context",
-        "runtime_policy",
-        "capability_body",
+        "runtime_reminders",
+        "skill_catalog",
     ]
     assert contract.current_user_request == "inspect this repo with $repository-analysis"
     assert contract.contextual_user_sections[0].include_in_memory is False
     assert "这是本轮的工作区/项目说明。" in contract.contextual_user_sections[0].content
-    runtime_policy_fragment = next(
+    runtime_reminders_fragment = next(
         fragment
         for fragment in contract.contextual_user_sections
-        if fragment.kind == "runtime_policy"
+        if fragment.kind == "runtime_reminders"
     )
-    assert "本轮请遵循这组 runtime policy。" in runtime_policy_fragment.content
-    capability_fragment = next(
+    assert "这是本轮运行时提醒。" in runtime_reminders_fragment.content
+    assert "Prefer source files before logs." in runtime_reminders_fragment.content
+    skill_catalog_fragment = next(
         fragment
         for fragment in contract.contextual_user_sections
-        if fragment.kind == "capability_body"
+        if fragment.kind == "skill_catalog"
     )
-    assert "这是本轮可用的 capability。" in capability_fragment.content
-    assert "repository-analysis" in capability_fragment.content
-    assert "Inspect repositories before answering." in capability_fragment.content
+    assert "调用 Skill 工具" in skill_catalog_fragment.content
+    assert "code-review" in skill_catalog_fragment.content
 
 
 def test_instruction_contract_assembler_keeps_added_tools_inside_plain_toolset() -> None:

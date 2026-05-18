@@ -10,7 +10,7 @@ from mycli.domain.contributed_tools import (
 )
 from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 class FakeToolContribution:
@@ -21,8 +21,8 @@ class FakeToolContribution:
             parameters=(ToolParameter(name="path", type="string", required=False),),
         )
 
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
-        return ToolResultV2(success=True, summary=f"{self.spec.name} ok", raw_payload=arguments)
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        return ToolResult(success=True, summary=f"{self.spec.name} ok", raw_payload=arguments)
 
 
 def _registration(

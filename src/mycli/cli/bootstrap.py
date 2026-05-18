@@ -34,7 +34,7 @@ from mycli.tools.ls import LSTool
 from mycli.tools.plan import PlanTool
 from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
 from mycli.tools.read import ReadTool
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.registry import ToolRegistry
 from mycli.tools.web_fetch import WebFetchTool
 from mycli.tools.web_search import WebSearchTool
 from mycli.tools.write import WriteTool
@@ -103,7 +103,7 @@ def build_turn_service(
                 log_service=workspace_log_service,
             ),
         )
-    tool_registry = ToolRegistryV2.from_tools(
+    tool_registry = ToolRegistry.from_tools(
         [
             ReadTool(workspace_root),
             EditTool(workspace_root),

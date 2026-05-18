@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import resolve_workspace_path
 
 
@@ -47,7 +47,7 @@ class WriteTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
         try:
             if not raw_path:
@@ -58,7 +58,7 @@ class WriteTool:
             target = resolve_workspace_path(self._workspace_root, raw_path)
             payload = write_file(str(target), content)
         except (OSError, UnicodeDecodeError, ValueError) as exc:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary=f"Failed to write {raw_path}",
                 error=str(exc),
@@ -66,7 +66,7 @@ class WriteTool:
             )
 
         success = "error" not in payload
-        return ToolResultV2(
+        return ToolResult(
             success=success,
             summary=f"Wrote {raw_path}" if success else f"Failed to write {raw_path}",
             error=str(payload["error"]) if "error" in payload else None,
@@ -74,4 +74,4 @@ class WriteTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

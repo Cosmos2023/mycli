@@ -2,7 +2,7 @@ from mycli.domain.conversation import Message
 from mycli.domain.runtime import HistoryItem, HistoryItemType, RuntimeBlock
 from mycli.domain.tools import ToolCall
 from mycli.domain.tools import ToolEvidence
-from mycli.tools.base import ToolResultV2
+from mycli.tools.base import ToolResult
 from mycli.services.context.context_manager import ContextManager
 
 
@@ -358,7 +358,7 @@ def test_context_manager_trims_tool_result_output() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(success=True, summary="x" * 40),
+        ToolResult(success=True, summary="x" * 40),
         max_chars=12,
     )
 
@@ -369,7 +369,7 @@ def test_context_manager_renders_search_match_details_from_payload() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Found 2 matches for search_text",
             raw_payload={
@@ -405,7 +405,7 @@ def test_context_manager_prefers_evidence_over_payload_previews() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Found 1 match for hello",
             raw_payload={
@@ -438,7 +438,7 @@ def test_context_manager_trims_evidence_snippet_but_keeps_location() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Read README.md",
             evidence=(
@@ -465,7 +465,7 @@ def test_context_manager_keeps_small_file_excerpt_content_under_larger_budget() 
     snippet = "alpha beta gamma " * 20
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Read README.md",
             evidence=(
@@ -489,7 +489,7 @@ def test_context_manager_adds_guidance_for_large_file_excerpt() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Read README.md",
             evidence=(
@@ -506,14 +506,14 @@ def test_context_manager_adds_guidance_for_large_file_excerpt() -> None:
     )
 
     assert "[file_excerpt] README.md:1-500" in rendered
-    assert "read_file_range" in rendered
+    assert "Read with offset/limit" in rendered
 
 
 def test_context_manager_renders_file_content_preview_from_payload() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Read src/mycli/tools/search_text.py",
             raw_payload={
@@ -533,7 +533,7 @@ def test_context_manager_marks_readme_as_supporting_context() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Read README.md",
             raw_payload={
@@ -552,7 +552,7 @@ def test_context_manager_renders_diff_preview_from_payload() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Updated src/mycli/tools/search_text.py",
             raw_payload={
@@ -579,7 +579,7 @@ def test_context_manager_renders_shell_output_preview_from_payload() -> None:
     manager = ContextManager()
 
     rendered = manager.render_tool_result(
-        ToolResultV2(
+        ToolResult(
             success=True,
             summary="Command exited with 0",
             raw_payload={

@@ -10,15 +10,15 @@ from mycli.domain.tooling.tool_set import ToolSet
 from mycli.domain.tooling.calls import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
-from mycli.tools.base import ToolResultV2
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.base import ToolResult
+from mycli.tools.registry import ToolRegistry
 
 
 class ToolRouter:
     def __init__(
         self,
         *,
-        tool_registry: ToolRegistryV2,
+        tool_registry: ToolRegistry,
         contributed_tools: dict[str, ToolContributionRegistration] | None = None,
         contributed_tool_registry: ToolContributionRegistry | None = None,
     ) -> None:
@@ -47,7 +47,7 @@ class ToolRouter:
             for entry in tool_set.model_visible_entries()
         ]
 
-    def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResultV2:
+    def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResult:
         allowed_names = set(exposure.callable_tool_names())
         if call.name not in allowed_names:
             rendered = ", ".join(sorted(allowed_names)) or "none"

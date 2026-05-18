@@ -115,6 +115,10 @@ class MetricsRegistry:
     def record_context_window(self, metrics: dict[str, int | float]) -> None:
         self._context_window = dict(metrics)
 
+    def reset_window_metrics(self) -> None:
+        self._budget_curve.clear()
+        self._context_window.clear()
+
     def record_ptl_event(self, *, triggered: bool) -> None:
         self._ptl_events += 1
         if triggered:

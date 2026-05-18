@@ -5,8 +5,8 @@ import os
 import subprocess
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 PROJECT_LINTERS = {
@@ -121,11 +121,11 @@ class LintTool:
         risk_level="low",
     )
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         paths = arguments.get("paths")
         payload = lint(paths=paths if isinstance(paths, str) else None)
         success = "error" not in payload
-        return ToolResultV2(
+        return ToolResult(
             success=success,
             summary=(
                 f"Found {payload.get('count', 0)} lint diagnostic(s)"
@@ -137,4 +137,4 @@ class LintTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

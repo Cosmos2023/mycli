@@ -43,29 +43,15 @@ class ContextBudget:
         return max(0, self.max_tokens - self.total_tokens)
 
     def _tokens_from_usage(self, usage: dict[str, object]) -> int:
+        input_tokens = usage.get("input_tokens")
+        if isinstance(input_tokens, (int, float)) and input_tokens > 0:
+            return int(input_tokens)
+
+        prompt_tokens = usage.get("prompt_tokens")
+        if isinstance(prompt_tokens, (int, float)) and prompt_tokens > 0:
+            return int(prompt_tokens)
+
         total_tokens = usage.get("total_tokens")
         if isinstance(total_tokens, (int, float)) and total_tokens > 0:
             return int(total_tokens)
-
-        input_tokens = usage.get("input_tokens")
-        output_tokens = usage.get("output_tokens")
-        if isinstance(input_tokens, (int, float)) and input_tokens > 0 and output_tokens is None:
-            return int(input_tokens)
-        if (
-            isinstance(input_tokens, (int, float))
-            and input_tokens > 0
-            and isinstance(output_tokens, (int, float))
-            and output_tokens > 0
-        ):
-            return int(input_tokens + output_tokens)
-
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
-        if (
-            isinstance(prompt_tokens, (int, float))
-            and prompt_tokens > 0
-            and isinstance(completion_tokens, (int, float))
-            and completion_tokens > 0
-        ):
-            return int(prompt_tokens + completion_tokens)
         return 0

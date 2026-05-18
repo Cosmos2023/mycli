@@ -27,6 +27,9 @@ class ResponsesClientLogger:
     ) -> None:
         self._log_context_provider = provider
 
+    def set_model(self, model: str) -> None:
+        self._model = model
+
     def provider_name(self) -> str:
         parsed = urlparse(self._base_url)
         return parsed.netloc or self._base_url

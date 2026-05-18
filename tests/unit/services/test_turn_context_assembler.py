@@ -13,9 +13,6 @@ from mycli.domain.memory import MemoryKind, MemoryRecord
 from mycli.domain.runtime import (
     AgentConfig,
     BaselineFragment,
-    CapabilityActivation,
-    CapabilityActivationDependencyStatus,
-    CapabilityActivationSource,
     ContextBaseline,
     ExecutionContext,
     HistoryItem,
@@ -25,7 +22,6 @@ from mycli.domain.runtime import (
     PlanStatus,
     TurnContextSectionType,
 )
-from mycli.domain.skills import SkillDefinition
 from mycli.domain.tool_exposure import (
     ToolExposure,
     ToolExposureEntry,
@@ -55,34 +51,27 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
                     value="This repo uses src layout.",
                 ),
             ),
-            active_skill=SkillDefinition(
-                name="grounding",
-                description="Prefer verified evidence.",
-                trigger_hints=("grounding",),
-                body="Use real files before answering.",
-                source_path="/tmp/skills/grounding/SKILL.md",
-            ),
             tool_exposure=ToolExposure(
                 direct=(
                     ToolExposureEntry(
-                        route_key=ToolRouteKey.local("list_directory"),
+                        route_key=ToolRouteKey.local("LS"),
                         kind=ToolExposureKind.DIRECT,
                         source=ToolRouteSource.REGISTRY,
-                        spec=ToolSpec(name="list_directory", description="List directory"),
+                        spec=ToolSpec(name="LS", description="List directory"),
                     ),
                     ToolExposureEntry(
-                        route_key=ToolRouteKey.local("read_file_range"),
+                        route_key=ToolRouteKey.local("Read"),
                         kind=ToolExposureKind.DIRECT,
                         source=ToolRouteSource.REGISTRY,
-                        spec=ToolSpec(name="read_file_range", description="Read file range"),
+                        spec=ToolSpec(name="Read", description="Read file"),
                     ),
                 ),
                 deferred=(
                     ToolExposureEntry(
-                        route_key=ToolRouteKey.local("search_text"),
+                        route_key=ToolRouteKey.local("Grep"),
                         kind=ToolExposureKind.DEFERRED,
                         source=ToolRouteSource.REGISTRY,
-                        spec=ToolSpec(name="search_text", description="Search text"),
+                        spec=ToolSpec(name="Grep", description="Search text"),
                     ),
                 ),
                 contributed=(
@@ -117,17 +106,27 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         TurnContextSectionType.MEMORY,
         TurnContextSectionType.PLAN,
         TurnContextSectionType.RUNTIME_REMINDERS,
-        TurnContextSectionType.CAPABILITY,
+        TurnContextSectionType.SKILL_CATALOG,
         TurnContextSectionType.TOOL_EXPOSURE,
         TurnContextSectionType.USER_REQUEST,
     ]
     assert turn_context.sections[1].enabled is True
-    assert turn_context.sections[7].metadata["skill_name"] == "grounding"
-    assert "Available tools: list_directory, read_file_range, search_text" in turn_context.sections[8].content
-    assert "Direct tools:" not in turn_context.sections[8].content
-    assert "Deferred tools:" not in turn_context.sections[8].content
-    assert "Contributed tools:" not in turn_context.sections[8].content
-    assert "workspace_summary" in turn_context.sections[8].content
+    skill_catalog_section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.SKILL_CATALOG
+    )
+    tool_exposure_section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.TOOL_EXPOSURE
+    )
+    assert skill_catalog_section.enabled is False
+    assert "Available tools: Grep, LS, Read, workspace_summary" in tool_exposure_section.content
+    assert "Direct tools:" not in tool_exposure_section.content
+    assert "Deferred tools:" not in tool_exposure_section.content
+    assert "Contributed tools:" not in tool_exposure_section.content
+    assert "workspace_summary" in tool_exposure_section.content
     assert turn_context.debug_summary()["enabled_sections"] == [
         "base_instructions",
         "workspace_instructions",
@@ -136,7 +135,6 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         "memory",
         "plan",
         "runtime_reminders",
-        "capability",
         "tool_exposure",
         "user_request",
     ]
@@ -155,38 +153,29 @@ def test_turn_context_assembler_keeps_empty_sections_but_marks_them_disabled() -
 
     assert sections[TurnContextSectionType.WORKSPACE_INSTRUCTIONS].enabled is False
     assert sections[TurnContextSectionType.MEMORY].enabled is False
-    assert sections[TurnContextSectionType.CAPABILITY].enabled is False
+    assert sections[TurnContextSectionType.SKILL_CATALOG].enabled is False
     assert sections[TurnContextSectionType.TOOL_EXPOSURE].enabled is False
     assert sections[TurnContextSectionType.USER_REQUEST].enabled is True
 
 
-def test_turn_context_assembler_renders_capability_activations() -> None:
-    assembler = TurnContextAssembler()
-    turn_context = assembler.assemble(
-        user_message="inspect repo with $repository-analysis",
+def test_turn_context_assembler_renders_skill_catalog_section() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="review this",
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
-            capability_activations=(
-                CapabilityActivation(
-                    name="repository-analysis",
-                    description="Inspect repositories",
-                    instructions="Inspect repositories before answering.",
-                    source=CapabilityActivationSource.EXPLICIT_MENTION,
-                    dependency_status=CapabilityActivationDependencyStatus.READY,
-                    source_path="/tmp/skills/repository-analysis.md",
-                ),
-            ),
+            skill_catalog="Available skills:\n- code-review: Review code",
         ),
     )
 
-    capability_section = next(
-        section for section in turn_context.sections if section.type is TurnContextSectionType.CAPABILITY
+    section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.SKILL_CATALOG
     )
 
-    assert capability_section.enabled is True
-    assert "repository-analysis" in capability_section.content
-    assert "explicit_mention" in capability_section.content
-    assert capability_section.metadata["capability_names"] == ["repository-analysis"]
+    assert section.enabled is True
+    assert section.source == "skill_registry"
+    assert "code-review" in section.content
 
 
 def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> None:
@@ -198,18 +187,18 @@ def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> N
             tool_exposure=ToolExposure(
                 direct=(
                     ToolExposureEntry(
-                        route_key=ToolRouteKey.local("list_directory"),
+                        route_key=ToolRouteKey.local("LS"),
                         kind=ToolExposureKind.DIRECT,
                         source=ToolRouteSource.REGISTRY,
-                        spec=ToolSpec(name="list_directory", description="List directory"),
+                        spec=ToolSpec(name="LS", description="List directory"),
                     ),
                 ),
                 deferred=(
                     ToolExposureEntry(
-                        route_key=ToolRouteKey.local("run_shell"),
+                        route_key=ToolRouteKey.local("Bash"),
                         kind=ToolExposureKind.DEFERRED,
                         source=ToolRouteSource.REGISTRY,
-                        spec=ToolSpec(name="run_shell", description="Run shell"),
+                        spec=ToolSpec(name="Bash", description="Run shell"),
                     ),
                 ),
                 contributed=(
@@ -229,21 +218,16 @@ def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> N
     )
 
     assert tool_section.enabled is True
-    assert tool_section.metadata["tool_names"] == ["list_directory", "run_shell", "workspace_summary"]
+    assert tool_section.metadata["tool_names"] == ["Bash", "LS", "workspace_summary"]
 
 
-def test_turn_context_assembler_exposes_runtime_policy_state() -> None:
+def test_turn_context_assembler_exposes_runtime_reminders() -> None:
     assembler = TurnContextAssembler()
     turn_context = assembler.assemble(
         user_message="请检查这个实现是否已经接入 runtime 和 trace",
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             runtime_reminders=("Prefer source files before logs.",),
-            runtime_policy_state={
-                "profile_name": "source_first_verification",
-                "path_bias": "source_first",
-                "evidence_status": "insufficient",
-            },
         ),
     )
 
@@ -252,9 +236,8 @@ def test_turn_context_assembler_exposes_runtime_policy_state() -> None:
     )
 
     assert runtime_section.enabled is True
-    assert runtime_section.metadata["profile_name"] == "source_first_verification"
-    assert runtime_section.metadata["path_bias"] == "source_first"
-    assert "source_first_verification" in runtime_section.content
+    assert runtime_section.metadata == {}
+    assert "Prefer source files before logs." in runtime_section.content
 
 
 def test_turn_context_assembler_renders_added_tool_as_plain_tool() -> None:
@@ -551,27 +534,19 @@ def test_turn_context_assembler_renders_plan_as_compact_action_state() -> None:
     assert "Completed discovery step with lots of volatile evidence" not in plan_section.content
 
 
-def test_turn_context_assembler_renders_runtime_policy_state_in_deterministic_order() -> None:
+def test_turn_context_assembler_renders_runtime_reminders_in_deterministic_order() -> None:
     first = TurnContextAssembler().assemble(
         user_message="continue",
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
-            runtime_policy_state={
-                "profile_name": "source_first_verification",
-                "path_bias": "source_first",
-                "evidence_status": "insufficient",
-            },
+            runtime_reminders=("first reminder", "second reminder"),
         ),
     )
     second = TurnContextAssembler().assemble(
         user_message="continue",
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
-            runtime_policy_state={
-                "evidence_status": "insufficient",
-                "profile_name": "source_first_verification",
-                "path_bias": "source_first",
-            },
+            runtime_reminders=("first reminder", "second reminder"),
         ),
     )
 
@@ -583,10 +558,11 @@ def test_turn_context_assembler_renders_runtime_policy_state_in_deterministic_or
     )
 
     assert first_section.content == second_section.content
-    assert first_section.content.splitlines()[0] == (
-        "Runtime policy: evidence_status=insufficient; "
-        "path_bias=source_first; profile_name=source_first_verification"
-    )
+    assert first_section.content.splitlines() == [
+        "Runtime reminders:",
+        "- first reminder",
+        "- second reminder",
+    ]
 
 
 def test_turn_context_assembler_renders_added_tools_in_deterministic_order() -> None:

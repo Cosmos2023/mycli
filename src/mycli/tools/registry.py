@@ -6,11 +6,11 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
-from mycli.tools.base import SchemaTool, ToolSpec, ToolResultV2
+from mycli.tools.base import SchemaTool, ToolSpec, ToolResult
 
 
 @dataclass(slots=True)
-class ToolRegistryV2:
+class ToolRegistry:
     specs: dict[str, ToolSpec] | None = None
     executors: dict[str, SchemaTool] | None = None
     workspace_root: Path | None = None
@@ -24,7 +24,7 @@ class ToolRegistryV2:
         self.executors = default.executors
 
     @classmethod
-    def from_tools(cls, tools: list[SchemaTool]) -> ToolRegistryV2:
+    def from_tools(cls, tools: list[SchemaTool]) -> ToolRegistry:
         return cls(
             specs={tool.spec.name: tool.spec for tool in tools},
             executors={tool.spec.name: tool for tool in tools},
@@ -37,6 +37,12 @@ class ToolRegistryV2:
     def list_all(self) -> list[SchemaTool]:
         assert self.executors is not None
         return [self.executors[name] for name in self.list_names()]
+
+    def register(self, tool: SchemaTool) -> None:
+        assert self.specs is not None
+        assert self.executors is not None
+        self.specs[tool.spec.name] = tool.spec
+        self.executors[tool.spec.name] = tool
 
     def render_for_model(self, tool_names: tuple[str, ...] | None = None) -> list[ModelToolDefinition]:
         assert self.specs is not None
@@ -73,7 +79,7 @@ class ToolRegistryV2:
         if missing:
             raise ValueError(f"Missing required arguments: {', '.join(missing)}")
 
-    def execute(self, call: ToolCall) -> ToolResultV2:
+    def execute(self, call: ToolCall) -> ToolResult:
         assert self.executors is not None
         self.validate(call.name, call.arguments)
         executor = self.executors.get(call.name)

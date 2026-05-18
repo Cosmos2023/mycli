@@ -3,9 +3,9 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.bash import _background_processes
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 def kill_shell(shell_id: str) -> dict[str, Any]:
@@ -32,17 +32,17 @@ class KillShellTool:
         risk_level="medium",
     )
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         shell_id = str(arguments.get("shell_id") or arguments.get("bash_id") or "")
         if not shell_id:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Failed to kill shell",
                 error="KillShell requires shell_id.",
             )
         payload = kill_shell(shell_id)
         success = "error" not in payload
-        return ToolResultV2(
+        return ToolResult(
             success=success,
             summary=f"Killed shell {shell_id}" if success else f"Failed to kill shell {shell_id}",
             error=str(payload["error"]) if "error" in payload else None,
@@ -50,4 +50,4 @@ class KillShellTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

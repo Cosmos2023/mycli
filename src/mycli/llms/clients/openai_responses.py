@@ -81,6 +81,10 @@ class OpenAIResponsesClient:
     def set_reasoning_effort(self, reasoning_effort: str | None) -> None:
         self._reasoning_effort = reasoning_effort
 
+    def set_model(self, model: str) -> None:
+        self._model = model
+        self._logger.set_model(model)
+
     def set_max_output_tokens(self, value: int) -> None:
         self._max_output_tokens = value
 

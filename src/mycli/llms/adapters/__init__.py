@@ -13,14 +13,12 @@ from mycli.llms.adapters.base import (
     RuntimeItem,
     RuntimeRole,
 )
-from mycli.llms.adapters.compat_chat_adapter import CompatChatModelAdapter
 from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 
 __all__ = [
     "AnthropicMessagesModelAdapter",
     "BlockType",
-    "CompatChatModelAdapter",
     "ModelAction",
     "ModelAdapter",
     "ModelMessage",

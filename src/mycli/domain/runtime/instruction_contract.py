@@ -11,11 +11,11 @@ class InstructionFragmentKind(StrEnum):
     CONVERSATION_CONTEXT = "conversation_context"
     MEMORY = "memory"
     PLAN = "plan"
-    RUNTIME_POLICY = "runtime_policy"
+    RUNTIME_REMINDERS = "runtime_reminders"
     TOOL_EXPOSURE = "tool_exposure"
     WORKSPACE_INSTRUCTIONS = "workspace_instructions"
     ENVIRONMENT_CONTEXT = "environment_context"
-    CAPABILITY_BODY = "capability_body"
+    SKILL_CATALOG = "skill_catalog"
     USER_REQUEST = "user_request"
 
 

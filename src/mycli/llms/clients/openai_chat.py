@@ -107,6 +107,9 @@ class OpenAIChatClient:
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self._tool_choice = tool_choice
 
+    def set_model(self, model: str) -> None:
+        self._model = model
+
     def set_max_output_tokens(self, value: int) -> None:
         self._max_output_tokens = value
 

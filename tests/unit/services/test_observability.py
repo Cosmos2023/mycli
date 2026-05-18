@@ -58,6 +58,21 @@ def test_metrics_registry_records_latest_context_window_metrics() -> None:
     assert snapshot.to_dict()["context_window"]["evictable_tool_result_tokens"] == 250
 
 
+def test_metrics_registry_resets_window_metrics_without_clearing_cost_metrics() -> None:
+    registry = MetricsRegistry()
+
+    registry.record_cache_tokens(hit_tokens=75, miss_tokens=25)
+    registry.record_budget(total_tokens=900, max_tokens=1000)
+    registry.record_context_window({"total_tokens": 900, "usage_ratio": 0.9})
+
+    registry.reset_window_metrics()
+
+    snapshot = registry.snapshot()
+    assert snapshot.cache_hit_rate == 0.75
+    assert snapshot.budget_curve == ()
+    assert snapshot.context_window == {}
+
+
 def test_alert_evaluator_flags_cache_drop_consecutive_l4_and_ptl_rate() -> None:
     evaluator = AlertEvaluator(
         cache_hit_drop_threshold=0.2,

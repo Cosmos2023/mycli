@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
 from pathlib import Path
 
-from mycli.domain.capabilities import CapabilityActivation
-from mycli.domain.conversation import Conversation
+from mycli.domain.conversation import Conversation, Message, Role
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionLifecycleEvent,
 )
@@ -21,16 +20,17 @@ from mycli.domain.runtime import (
     PlanState,
     RuntimeBlock,
     RuntimeItem,
+    RuntimeRole,
     RequestShape,
     ReasoningEffort,
     StopReason,
     TurnContext,
     TurnItem,
+    TurnItemType,
     TurnRecord,
     TurnResponse,
     TurnStatus,
 )
-from mycli.domain.skills import SkillDefinition, SkillMetadata
 from mycli.domain.tooling.exposure import (
     ToolExposure,
 )
@@ -38,13 +38,13 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.approval.approval_service import ApprovalService
-from mycli.services.capabilities import CapabilityResolver
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.compaction import (
     CompactionCostProfile,
     ContextBudget,
     CompactionPipeline,
     ContextWindowAnalyzer,
+    FullContextSnapshot,
     LLMSummarization,
     ToolResultBudget,
 )
@@ -65,13 +65,12 @@ from mycli.services.skills import SkillRegistry
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
-from mycli.services.runtime_policy import RuntimePolicy
 from mycli.services.turn_guard import TurnCheckpoint
 from mycli.utils.workspace_logger import WorkspaceLogService
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.registry import ToolRegistry
+from mycli.tools.skill import SkillTool
 from mycli.application.runtime.context import RuntimeContextBuilder
 from mycli.application.runtime.approval_decisions import RuntimeApprovalDecisions
-from mycli.application.runtime.capability_turn_recorder import CapabilityTurnRecorder
 from mycli.application.runtime.ledger import RuntimeEventLedger
 from mycli.application.runtime.model import (
     AssistantConversationRecorder,
@@ -87,8 +86,90 @@ from mycli.application.runtime.request import (
 )
 from mycli.application.runtime.response_finalizer import RuntimeResponseFinalizer
 from mycli.application.runtime.runtime_error_logger import RuntimeErrorLogger
-from mycli.application.runtime.runtime_policy_coordinator import RuntimePolicyCoordinator
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
+
+
+class _SummarizerClientAdapter:
+    """Adapt the normal model requester into the L4 summarizer protocol."""
+
+    def __init__(
+        self,
+        requester: ModelTurnRequester,
+        *,
+        set_model: Callable[[str], None] | None = None,
+        restore_model: Callable[[], None] | None = None,
+        set_max_output_tokens: Callable[[int], None] | None = None,
+        restore_max_output_tokens: Callable[[], None] | None = None,
+        disable_thinking: Callable[[], None] | None = None,
+        restore_thinking: Callable[[], None] | None = None,
+    ) -> None:
+        self._requester = requester
+        self._set_model = set_model
+        self._restore_model = restore_model
+        self._set_max_output_tokens = set_max_output_tokens
+        self._restore_max_output_tokens = restore_max_output_tokens
+        self._disable_thinking = disable_thinking
+        self._restore_thinking = restore_thinking
+
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str,
+        max_tokens: int,
+    ) -> str:
+        legacy_messages = [
+            ModelMessage(
+                role=message["role"],
+                content=message["content"],
+            )
+            for message in messages
+        ]
+        runtime_items = [
+            RuntimeItem(
+                role=_runtime_role(message["role"]),
+                blocks=(RuntimeBlock(type="text", text=message["content"]),),
+            )
+            for message in messages
+        ]
+        if self._set_model is not None:
+            self._set_model(model)
+        if self._set_max_output_tokens is not None:
+            self._set_max_output_tokens(max_tokens)
+        if self._disable_thinking is not None:
+            self._disable_thinking()
+        try:
+            turn_result, _ = self._requester.request_model_turn(
+                runtime_items=runtime_items,
+                legacy_messages=legacy_messages,
+                tools=[],
+            )
+        finally:
+            if self._restore_thinking is not None:
+                self._restore_thinking()
+            if self._restore_max_output_tokens is not None:
+                self._restore_max_output_tokens()
+            if self._restore_model is not None:
+                self._restore_model()
+        content = "\n".join(
+            block.text or ""
+            for item in turn_result.items
+            for block in item.blocks
+            if block.type == "text" and block.text
+        ).strip()
+        return content
+
+
+def _runtime_role(role: str) -> RuntimeRole:
+    if role == "developer":
+        return "developer"
+    if role == "user":
+        return "user"
+    if role == "assistant":
+        return "assistant"
+    if role == "tool":
+        return "tool"
+    return "system"
 
 
 class AgentRuntime:
@@ -96,7 +177,7 @@ class AgentRuntime:
         self,
         *,
         model_adapter: ModelAdapter,
-        tool_registry: ToolRegistryV2,
+        tool_registry: ToolRegistry,
         config: AgentConfig,
         home_dir: Path,
         approval_service: ApprovalService | None = None,
@@ -119,6 +200,22 @@ class AgentRuntime:
         self._observability_service = observability_service or ObservabilityService()
         self._hook_manager = HookManager()
         self._hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        self._model_turn_requester = ModelTurnRequester(
+            model_adapter=model_adapter,
+            normalize_tool_call=self._normalize_tool_call,
+        )
+        llm_summarization = LLMSummarization(
+            summarizer_client=_SummarizerClientAdapter(
+                self._model_turn_requester,
+                set_model=self._set_model,
+                restore_model=self._restore_model,
+                set_max_output_tokens=self._set_model_max_output_tokens,
+                restore_max_output_tokens=self._restore_model_max_output_tokens,
+                disable_thinking=self._disable_model_thinking,
+                restore_thinking=self._restore_model_thinking,
+            ),
+        )
+        self._configure_l4_summarization(llm_summarization, config)
         self._compaction_pipeline = CompactionPipeline(
             tool_result_budget=ToolResultBudget(self._tool_result_formatter),
             context_window_analyzer=ContextWindowAnalyzer(
@@ -126,19 +223,7 @@ class AgentRuntime:
                 eviction_trigger_ratio=0.7,
                 keep_recent_tool_results=8,
             ),
-            llm_summarization=LLMSummarization(
-                trigger_ratio=config.compaction_l4_trigger_ratio,
-                model_name=config.model,
-                trigger_ratios_by_model=config.compaction_l4_trigger_ratios_by_model,
-                cost_profile=CompactionCostProfile(
-                    input_cost_per_1k=config.compaction_l4_input_cost_per_1k,
-                    output_cost_per_1k=config.compaction_l4_output_cost_per_1k,
-                    carry_cost_per_1k=config.compaction_l4_carry_cost_per_1k,
-                    expected_summary_tokens=config.compaction_l4_expected_summary_tokens,
-                    min_savings_ratio=config.compaction_l4_min_savings_ratio,
-                    carry_turns=config.compaction_l4_carry_turns,
-                ),
-            ),
+            llm_summarization=llm_summarization,
             token_counter=self._token_counter,
             hook_manager=self._hook_manager,
         )
@@ -165,13 +250,8 @@ class AgentRuntime:
             builtin_root=Path(__file__).resolve().parents[2] / "prompts" / "skills",
             user_root=home_dir / ".mycli" / "skills",
         )
-        self._capability_resolver = CapabilityResolver(
-            skill_registry=self._skill_registry,
-            workspace_root=config.workspace_root,
-            env=dict(os.environ),
-        )
+        self._tool_registry.register(SkillTool(self._skill_registry))
         self._trace_service = trace_service or TraceService(home_dir=home_dir)
-        self._runtime_policy = RuntimePolicy()
         self._checkpoint = TurnCheckpoint(
             max_tool_calls_per_turn=config.max_tool_calls_per_turn,
             max_tokens_per_turn=config.max_prompt_tokens,
@@ -184,7 +264,7 @@ class AgentRuntime:
         self._instruction_contract_assembler = InstructionContractAssembler()
         self._request_shape_builder = RequestShapeBuilder()
         self._request_shape_payload_formatter = RequestShapePayloadFormatter()
-        self._tool_exposure_planner = ToolExposurePlanner(tool_registry=tool_registry)
+        self._tool_exposure_planner = ToolExposurePlanner(tool_registry=self._tool_registry)
         self._contributed_tool_registry = ToolContributionRegistry()
         self._contributed_tool_providers = tuple(contributed_tool_providers)
         self._workspace_log_service = workspace_log_service or WorkspaceLogService(
@@ -198,17 +278,10 @@ class AgentRuntime:
         )
         self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
-        self._capability_turn_recorder = CapabilityTurnRecorder(self._append_turn_item)
         self._planning_effects = RuntimePlanningEffects(
             session_id=config.session_id,
             planning_service=self._planning_service,
             session_service=self._session_service,
-        )
-        self._runtime_policy_coordinator = RuntimePolicyCoordinator(
-            config=config,
-            runtime_policy=self._runtime_policy,
-            trace_service=self._trace_service,
-            append_turn_item=self._append_turn_item,
         )
         self._response_finalizer = RuntimeResponseFinalizer(
             config=config,
@@ -227,7 +300,7 @@ class AgentRuntime:
         )
         self._tool_orchestrator = ToolOrchestrator(
             session_id=config.session_id,
-            tool_registry=tool_registry,
+            tool_registry=self._tool_registry,
             tool_exposure_planner=self._tool_exposure_planner,
             contributed_tool_registry=self._contributed_tool_registry,
             contributed_tool_providers=self._contributed_tool_providers,
@@ -244,10 +317,6 @@ class AgentRuntime:
             normalize_tool_call=self._normalize_tool_call,
             hook_manager=self._hook_manager,
             file_history=self._file_history_service,
-        )
-        self._model_turn_requester = ModelTurnRequester(
-            model_adapter=model_adapter,
-            normalize_tool_call=self._normalize_tool_call,
         )
         self._assistant_block_consumer = AssistantBlockConsumer(
             session_id=config.session_id,
@@ -279,9 +348,8 @@ class AgentRuntime:
             memory_service=self._memory_service,
             context_manager=self._context_manager,
             turn_context_assembler=self._turn_context_assembler,
-            capability_resolver=self._capability_resolver,
             skill_registry=self._skill_registry,
-            tool_registry=tool_registry,
+            tool_registry=self._tool_registry,
             workspace_log_service=self._workspace_log_service,
         )
         self._recover_plan_mode_anchor()
@@ -301,7 +369,7 @@ class AgentRuntime:
         from mycli.tools.plan import PlanTool
         from mycli.tools.read import ReadTool
 
-        tool_registry = ToolRegistryV2.from_tools(
+        tool_registry = ToolRegistry.from_tools(
             [
                 LSTool(workspace_root),
                 ReadTool(workspace_root),
@@ -339,6 +407,57 @@ class AgentRuntime:
         self._model_state.set_config(self._config)
         self._model_state.set_reasoning_effort(reasoning_effort)
 
+    def _configure_l4_summarization(
+        self,
+        summarization: LLMSummarization,
+        config: AgentConfig,
+    ) -> None:
+        summarization._trigger_ratio = config.compaction_l4_trigger_ratio
+        summarization._model_name = config.model
+        summarization._trigger_ratios_by_model = dict(
+            config.compaction_l4_trigger_ratios_by_model
+        )
+        summarization._cost_profile = CompactionCostProfile(
+            input_cost_per_1k=config.compaction_l4_input_cost_per_1k,
+            output_cost_per_1k=config.compaction_l4_output_cost_per_1k,
+            carry_cost_per_1k=config.compaction_l4_carry_cost_per_1k,
+            expected_summary_tokens=config.compaction_l4_expected_summary_tokens,
+            min_savings_ratio=config.compaction_l4_min_savings_ratio,
+            carry_turns=config.compaction_l4_carry_turns,
+        )
+        summarization._summarizer_model_name = (
+            config.compaction_l4_summarizer_model or config.model
+        )
+
+    def _set_model(self, model: str) -> None:
+        setter = getattr(self._model_adapter, "set_model", None)
+        if callable(setter):
+            setter(model)
+
+    def _restore_model(self) -> None:
+        self._set_model(self._config.model)
+
+    def _set_model_max_output_tokens(self, max_output_tokens: int) -> None:
+        setter = getattr(self._model_adapter, "set_max_output_tokens", None)
+        if callable(setter):
+            setter(max_output_tokens)
+
+    def _restore_model_max_output_tokens(self) -> None:
+        self._set_model_max_output_tokens(self._config.max_output_tokens)
+
+    def _disable_model_thinking(self) -> None:
+        setter = getattr(self._model_adapter, "set_thinking_config", None)
+        if callable(setter):
+            setter(enabled=False, effort=None)
+            return
+        reasoning_setter = getattr(self._model_adapter, "set_reasoning_effort", None)
+        if callable(reasoning_setter):
+            reasoning_setter(None)
+
+    def _restore_model_thinking(self) -> None:
+        self._model_state.set_config(self._config)
+        self._model_state.set_reasoning_effort(self._config.reasoning_effort)
+
     def _set_model_tool_choice(self, tool_choice: str | None) -> None:
         self._model_state.set_tool_choice(tool_choice)
 
@@ -367,20 +486,12 @@ class AgentRuntime:
             exc=exc,
         )
 
-    def _select_skill_metadata(self, user_message: str) -> SkillMetadata | None:
-        return self._runtime_context_builder.select_skill_metadata(user_message)
-
-    def _load_selected_skill(self, user_message: str) -> SkillDefinition | None:
-        return self._runtime_context_builder.load_selected_skill(user_message)
-
     def _build_context(
         self,
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
         runtime_reminders: tuple[str, ...] = (),
-        runtime_policy_state: dict[str, object] | None = None,
-        capability_activations: tuple[CapabilityActivation, ...] = (),
         tool_exposure: ToolExposure | None = None,
     ) -> ExecutionContext:
         self._runtime_context_builder.set_config(self._config)
@@ -389,8 +500,6 @@ class AgentRuntime:
             conversation=conversation,
             plan_state=plan_state,
             runtime_reminders=runtime_reminders,
-            runtime_policy_state=runtime_policy_state,
-            capability_activations=capability_activations,
             tool_exposure=tool_exposure,
         )
 
@@ -428,8 +537,6 @@ class AgentRuntime:
         conversation: Conversation,
         plan_state: PlanState,
         runtime_reminders: tuple[str, ...] = (),
-        runtime_policy_state: dict[str, object] | None = None,
-        capability_activations: tuple[CapabilityActivation, ...] = (),
         tool_exposure: ToolExposure | None = None,
     ) -> tuple[ExecutionContext, TurnContext]:
         self._runtime_context_builder.set_config(self._config)
@@ -438,16 +545,8 @@ class AgentRuntime:
             conversation=conversation,
             plan_state=plan_state,
             runtime_reminders=runtime_reminders,
-            runtime_policy_state=runtime_policy_state,
-            capability_activations=capability_activations,
             tool_exposure=tool_exposure,
         )
-
-    def _resolve_capability_activations(
-        self,
-        user_message: str,
-    ) -> tuple[CapabilityActivation, ...]:
-        return self._runtime_context_builder.resolve_capability_activations(user_message)
 
     def _runtime_contributed_tools(
         self,
@@ -455,13 +554,11 @@ class AgentRuntime:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
-        capability_activations: tuple[CapabilityActivation, ...] = (),
     ) -> tuple[object, ...]:
         return self._tool_orchestrator._runtime_contributed_tools(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
-            capability_activations=capability_activations,
         )
 
     def _plan_tool_exposure(
@@ -470,19 +567,16 @@ class AgentRuntime:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
-        capability_activations: tuple[CapabilityActivation, ...],
     ) -> PlannedToolExposure:
         runtime_contributed_tools = self._runtime_contributed_tools(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
-            capability_activations=capability_activations,
         )
         return self._tool_orchestrator.plan_tool_exposure(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
-            capability_activations=capability_activations,
             runtime_contributed_tools=runtime_contributed_tools,
         )
 
@@ -517,27 +611,6 @@ class AgentRuntime:
             turn_items=turn_items,
             activity_events=activity_events,
             lifecycle_events=lifecycle_events,
-        )
-
-    def _active_skill_from_activations(
-        self,
-        capability_activations: tuple[CapabilityActivation, ...],
-    ) -> SkillDefinition | None:
-        return self._runtime_context_builder.active_skill_from_activations(
-            capability_activations
-        )
-
-    def _append_capability_turn_items(
-        self,
-        *,
-        turn_id: str,
-        turn_items: list[TurnItem],
-        capability_activations: tuple[CapabilityActivation, ...],
-    ) -> None:
-        self._capability_turn_recorder.append_capability_turn_items(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            capability_activations=capability_activations,
         )
 
     def _normalize_tool_call(self, call: ToolCall) -> ToolCall:
@@ -683,11 +756,125 @@ class AgentRuntime:
             max_tokens=max_tokens or self._config.max_tokens_per_turn,
         )
 
+    def _record_provider_input_budget_metric(
+        self,
+        *,
+        usage: dict[str, object] | None,
+        fallback_total_tokens: int,
+        max_tokens: int | None = None,
+    ) -> None:
+        budget = ContextBudget(
+            max_tokens=max_tokens or self._config.max_prompt_tokens,
+            total_tokens=self._provider_input_tokens(usage) or fallback_total_tokens,
+        )
+        self._record_budget_metric(
+            total_tokens=budget.total_tokens,
+            max_tokens=budget.max_tokens,
+        )
+
+    def _provider_input_budget_payload(
+        self,
+        *,
+        usage: dict[str, object] | None,
+        fallback_total_tokens: int,
+        max_tokens: int,
+    ) -> dict[str, object]:
+        input_tokens = self._provider_input_tokens(usage)
+        source = "provider" if input_tokens > 0 else "estimate"
+        total_tokens = input_tokens or max(0, fallback_total_tokens)
+        max_tokens = max(0, max_tokens)
+        usage_ratio = total_tokens / max_tokens if max_tokens > 0 else 0.0
+        payload: dict[str, object] = {
+            "input_tokens": total_tokens,
+            "max_tokens": max_tokens,
+            "usage_ratio": usage_ratio,
+            "source": source,
+        }
+        if usage is not None:
+            payload["provider_usage"] = dict(usage)
+        return payload
+
+    @staticmethod
+    def _provider_input_tokens(usage: dict[str, object] | None) -> int:
+        if usage is None:
+            return 0
+        for key in ("input_tokens", "prompt_tokens"):
+            value = usage.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)) and value > 0:
+                return int(value)
+        return 0
+
+    def _restore_provider_input_budget_metric(self, session_id: str) -> None:
+        for rollout in reversed(self._session_service.load_turn_rollouts(session_id)):
+            for event in reversed(rollout.events):
+                if event.kind != "turn_item":
+                    continue
+                payload = event.payload
+                if payload.get("type") != TurnItemType.MODEL_USAGE.value:
+                    continue
+                metadata = payload.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                input_tokens = metadata.get("input_tokens")
+                max_tokens = metadata.get("max_tokens")
+                if (
+                    isinstance(input_tokens, (int, float))
+                    and not isinstance(input_tokens, bool)
+                    and input_tokens > 0
+                    and isinstance(max_tokens, (int, float))
+                    and not isinstance(max_tokens, bool)
+                    and max_tokens > 0
+                ):
+                    self._record_budget_metric(
+                        total_tokens=int(input_tokens),
+                        max_tokens=int(max_tokens),
+                    )
+                    return
+
     def _estimate_window_budget(self, conversation: Conversation) -> ContextBudget:
         return ContextBudget.from_estimate(
             max_tokens=self._config.max_prompt_tokens,
             estimated_input_tokens=self._estimated_conversation_tokens(conversation),
         )
+
+    def _estimate_request_window_budget(self, request_shape: RequestShape) -> ContextBudget:
+        return ContextBudget.from_estimate(
+            max_tokens=self._config.max_prompt_tokens,
+            estimated_input_tokens=self._estimated_request_shape_tokens(request_shape),
+        )
+
+    def _full_context_snapshot(self, request_shape: RequestShape) -> FullContextSnapshot:
+        messages: list[Message] = []
+        for fragment in request_shape.fragments:
+            messages.append(
+                Message(
+                    role="system",
+                    content=f"{fragment.id}:\n{fragment.content}",
+                )
+            )
+        for message in request_shape.provider_messages:
+            messages.append(
+                Message(
+                    role=self._snapshot_role(message.role),
+                    content=message.content,
+                )
+            )
+        for item in request_shape.provider_runtime_items:
+            content = "\n".join(
+                block.text or ""
+                for block in item.blocks
+                if isinstance(block.text, str) and block.text
+            )
+            if content:
+                messages.append(
+                    Message(
+                        role=self._snapshot_role(str(item.role)),
+                        content=content,
+                    )
+                )
+        return FullContextSnapshot(messages=tuple(messages))
 
     def _record_compaction_metric(
         self,
@@ -720,6 +907,45 @@ class AgentRuntime:
             self._token_counter.count_message(message)
             for message in conversation.messages
         )
+
+    def _estimated_request_shape_tokens(self, request_shape: RequestShape) -> int:
+        seen: set[str] = set()
+        total = 0
+        for fragment in request_shape.fragments:
+            content = fragment.content.strip()
+            if not content or content in seen:
+                continue
+            seen.add(content)
+            total += self._token_counter.count(content)
+        for message in request_shape.provider_messages:
+            content = f"{message.role}: {message.content}".strip()
+            if not content or content in seen:
+                continue
+            seen.add(content)
+            total += self._token_counter.count(content)
+        for item in request_shape.provider_runtime_items:
+            for block in item.blocks:
+                if block.text:
+                    content = str(block.text).strip()
+                    if content and content not in seen:
+                        seen.add(content)
+                        total += self._token_counter.count(content)
+                if block.tool_arguments:
+                    content = str(block.tool_arguments).strip()
+                    if content and content not in seen:
+                        seen.add(content)
+                        total += self._token_counter.count(content)
+        return total
+
+    @staticmethod
+    def _snapshot_role(role: str) -> Role:
+        if role == "user":
+            return "user"
+        if role == "assistant":
+            return "assistant"
+        if role == "tool":
+            return "tool"
+        return "system"
 
     @staticmethod
     def _has_l4_compaction(conversation: Conversation) -> bool:
@@ -865,44 +1091,8 @@ class AgentRuntime:
         plan_state: PlanState,
         step_index: int,
     ) -> tuple[ReasoningEffort, tuple[str, ...], dict[str, object], bool, str | None, TurnResponse | None]:
-        self._runtime_policy_coordinator.set_config(self._config)
-        return self._runtime_policy_coordinator.policy_decision(
-            user_message=user_message,
-            conversation=conversation,
-            plan_state=plan_state,
-            step_index=step_index,
-        )
-
-    def _append_runtime_policy_activity(
-        self,
-        *,
-        turn_id: str,
-        turn_items: list[TurnItem],
-        activity_events: list[ActivityEvent],
-        policy_state: dict[str, object],
-    ) -> None:
-        self._runtime_policy_coordinator.set_config(self._config)
-        self._runtime_policy_coordinator.append_runtime_policy_activity(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            activity_events=activity_events,
-            policy_state=policy_state,
-        )
-
-    def _append_structured_repo_activity(
-        self,
-        *,
-        turn_id: str,
-        turn_items: list[TurnItem],
-        activity_events: list[ActivityEvent],
-        stage_message: str | None,
-    ) -> None:
-        self._runtime_policy_coordinator.append_structured_repo_activity(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            activity_events=activity_events,
-            stage_message=stage_message,
-        )
+        del user_message, conversation, plan_state, step_index
+        return self._config.reasoning_effort, (), {}, False, None, None
 
     def _save_runtime_state(
         self,
@@ -950,13 +1140,18 @@ class AgentRuntime:
         self._runtime_context_builder.set_config(config)
         self._request_pipeline.set_config(config)
         self._runtime_error_logger.set_config(config)
-        self._runtime_policy_coordinator.set_config(config)
         self._response_finalizer.set_config(config)
+        self._configure_l4_summarization(
+            self._compaction_pipeline.llm_summarization,
+            config,
+        )
         self._tool_execution_service._session_id = session_id
         self._tool_orchestrator._session_id = session_id
         self._event_ledger._session_id = session_id
         self._assistant_block_consumer.set_session_id(session_id)
         self._planning_effects.set_session_id(session_id)
+        self._observability_service.metrics.reset_window_metrics()
+        self._restore_provider_input_budget_metric(session_id)
 
     def handle_user_turn(self, user_message: str) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor

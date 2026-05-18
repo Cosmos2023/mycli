@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 def web_search(
@@ -75,17 +75,17 @@ class WebSearchTool:
         risk_level="low",
     )
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         query = str(arguments.get("query") or "")
         if not query:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Failed to search web",
                 error="WebSearch requires query.",
             )
         payload = web_search(query, provider=str(arguments.get("provider", "deepseek")))
         success = "error" not in payload
-        return ToolResultV2(
+        return ToolResult(
             success=success,
             summary=f"WebSearch for {query}",
             error=str(payload["error"]) if "error" in payload else None,
@@ -93,4 +93,4 @@ class WebSearchTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

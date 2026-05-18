@@ -114,7 +114,7 @@ def _render_turn_activity_lines(turn: TurnRecord) -> list[str]:
                 continue
             label, body = _split_reasoning_item(item.text)
             activity_kind = item.metadata.get("activity_kind")
-            if activity_kind in {"planning", "runtime_policy"}:
+            if activity_kind == "planning":
                 label = "Planning"
             if label is None or not body:
                 continue
@@ -187,14 +187,14 @@ def _render_activity_event_message(event: object) -> str:
     kind = getattr(event, "kind", None)
     if _has_display_prefix(message):
         return message
-    if kind in {"thinking", "planning", "runtime_policy"}:
+    if kind in {"thinking", "planning"}:
         semantic = _semanticize_reasoning_activity(
-            "Planning" if kind in {"planning", "runtime_policy"} else "Thinking",
+            "Planning" if kind == "planning" else "Thinking",
             message,
         )
         if semantic is not None:
             return semantic
-        return f"{'Planning' if kind in {'planning', 'runtime_policy'} else 'Thinking'}: {message}"
+        return f"{'Planning' if kind == 'planning' else 'Thinking'}: {message}"
     if kind == "tool_exposure":
         return f"Tool exposure: tools={message or 'none'}"
     if kind == "tool_lifecycle":
@@ -463,7 +463,6 @@ def _is_noisy_reasoning_activity(label: str | None, text: str) -> bool:
     lowered = normalized.lower()
 
     prompt_echo_markers = (
-        "active skill",
         "available tools",
         "current plan",
         "runtime reminders",

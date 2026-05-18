@@ -5,15 +5,15 @@ from pathlib import Path
 from mycli.application.runtime.tools.tool_execution_service import ToolExecutionService
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState
+from mycli.domain.runtime import PlanState, TurnItemType
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolRouteKey, ToolRouteSource
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
 from mycli.services.tracing import TraceService
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_router import ToolRouter
 
 
@@ -27,10 +27,10 @@ class FakeTool:
     def __init__(self) -> None:
         self.seen_arguments: list[dict[str, object]] = []
 
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.seen_arguments.append(dict(arguments))
         path = str(arguments["path"])
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"Read {path}",
             raw_payload={"path": path, "content": f"content of {path}"},
@@ -47,14 +47,34 @@ class FakeEditTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
         path = str(arguments["path"])
         target = self._workspace_root / path
         target.write_text(str(arguments["new_content"]), encoding="utf-8")
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"Edited {path}",
             raw_payload={"path": path},
+        )
+
+
+class FakeSkillTool:
+    spec = ToolSpec(
+        name="Skill",
+        description="Load skill",
+        parameters=(ToolParameter("skill_name", "string"),),
+    )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            success=True,
+            summary="Activated skill: code-review",
+            raw_payload={
+                "skill_name": str(arguments["skill_name"]),
+                "description": "Review code",
+                "content": "Find correctness bugs first.",
+                "source_path": "/tmp/code-review.md",
+            },
         )
 
 
@@ -74,11 +94,11 @@ def _service(
     tmp_path: Path,
     *,
     hook_manager: HookManager,
-    registry: ToolRegistryV2 | None = None,
+    registry: ToolRegistry | None = None,
     file_history: FileHistoryService | None = None,
 ) -> tuple[ToolExecutionService, FakeTool]:
     fake_tool = FakeTool()
-    tool_registry = registry or ToolRegistryV2.from_tools([fake_tool])
+    tool_registry = registry or ToolRegistry.from_tools([fake_tool])
 
     def append_turn_item(**kwargs: object) -> None:
         turn_items = kwargs["turn_items"]
@@ -134,6 +154,48 @@ def test_tool_execution_service_denies_tool_before_execution(tmp_path: Path) -> 
     assert fake_tool.seen_arguments == []
     assert conversation.messages[-1].content.startswith("<tool_output><![CDATA[")
     assert "Tool denied:" in conversation.messages[-1].content
+
+
+def test_tool_execution_service_records_skill_body_only_as_tool_result(tmp_path: Path) -> None:
+    hook_manager = HookManager()
+    skill_tool = FakeSkillTool()
+    registry = ToolRegistry.from_tools([skill_tool])
+    service, _ = _service(tmp_path, hook_manager=hook_manager, registry=registry)
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Skill"),
+                source=ToolRouteSource.REGISTRY,
+                spec=skill_tool.spec,
+            ),
+        )
+    )
+    conversation = Conversation(session_id="demo")
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="Skill",
+            arguments={"skill_name": "code-review"},
+            reason="Need code review instructions",
+            call_id="call_skill",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn-1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    tool_result = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert tool_result.tool_name == "Skill"
+    assert tool_result.call_id == "call_skill"
+    assert tool_result.metadata["transcript_content"] == "Find correctness bugs first."
+    assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
+    assert conversation.messages[-1].content == "Find correctness bugs first."
 
 
 def test_tool_execution_service_applies_modified_args(tmp_path: Path) -> None:
@@ -238,7 +300,7 @@ def test_tool_execution_service_snapshots_file_before_mutating_tool(tmp_path: Pa
     workspace.mkdir()
     (workspace / "notes.txt").write_text("before\n", encoding="utf-8")
     edit_tool = FakeEditTool(workspace)
-    registry = ToolRegistryV2.from_tools([edit_tool])
+    registry = ToolRegistry.from_tools([edit_tool])
     file_history = FileHistoryService(home_dir=tmp_path / "home", workspace_root=workspace)
     service, _fake_tool = _service(
         tmp_path,

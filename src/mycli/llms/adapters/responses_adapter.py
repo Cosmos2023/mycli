@@ -92,6 +92,11 @@ class ResponsesModelAdapter:
         if callable(setter):
             setter(value)
 
+    def set_model(self, model: str) -> None:
+        setter = getattr(self._client, "set_model", None)
+        if callable(setter):
+            setter(model)
+
     def set_thinking_config(self, *, enabled: bool, effort: object) -> None:
         setter = getattr(self._client, "set_thinking_config", None)
         if callable(setter):

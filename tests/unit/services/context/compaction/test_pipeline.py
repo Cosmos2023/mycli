@@ -8,6 +8,7 @@ from mycli.services.context.compaction.pipeline import (
     CompactionCostProfile,
     CompactionPipeline,
     ContextWindowAnalyzer,
+    FullContextSnapshot,
     LLMSummarization,
     ToolResultBudget,
 )
@@ -182,6 +183,53 @@ class StubSummarization(LLMSummarization):
 
 
 class TestLLMSummarization:
+    def test_summarizer_receives_full_context_snapshot_when_provided(self) -> None:
+        captured: list[list[Message]] = []
+
+        class CaptureSummarization(StubSummarization):
+            def _call_summarizer(self, messages: list[Message]) -> str:
+                captured.append(messages)
+                return "summary"
+
+        strategy = CaptureSummarization(
+            trigger_ratio=0.5,
+            cost_profile=CompactionCostProfile(
+                input_cost_per_1k=0.001,
+                output_cost_per_1k=0.001,
+                carry_cost_per_1k=0.01,
+                carry_turns=10,
+                expected_summary_tokens=20,
+                min_savings_ratio=0.0,
+            ),
+        )
+        budget = ContextBudget(max_tokens=1000, total_tokens=600)
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="old turn", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="old response", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="user", content="recent turn", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="recent response", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+        snapshot = FullContextSnapshot(
+            messages=(
+                Message(role="system", content="SYSTEM PROMPT"),
+                Message(role="developer", content="TOOL SCHEMA"),
+                Message(role="user", content="CURRENT REQUEST"),
+                *conversation.messages,
+            )
+        )
+
+        result = strategy.apply(conversation, _zones(conversation), budget, snapshot=snapshot)
+
+        assert result.messages[0].metadata["compaction"] is True
+        assert captured
+        summarized_text = "\n".join(message.content for message in captured[0])
+        assert "SYSTEM PROMPT" in summarized_text
+        assert "TOOL SCHEMA" in summarized_text
+        assert "CURRENT REQUEST" in summarized_text
+
     def test_skips_summary_when_carrying_tokens_is_cheaper(self) -> None:
         strategy = StubSummarization(
             trigger_ratio=0.5,

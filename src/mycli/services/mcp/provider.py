@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from mycli.domain.capabilities import CapabilityActivation
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import PlanState
 from mycli.domain.tooling.contributed_tools import ToolContributionRegistration
@@ -22,9 +21,8 @@ class McpToolContributionProvider:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
-        capability_activations: tuple[CapabilityActivation, ...],
     ) -> tuple[ToolContributionRegistration, ...]:
-        del user_message, conversation, plan_state, capability_activations
+        del user_message, conversation, plan_state
         if self._registrations is None:
             self.adapter.list_tool_stubs()
             self._registrations = self.adapter.registrations_with_full_schema()

@@ -75,6 +75,7 @@ class SafetyPolicy:
             "Plan",
             "EnterPlanMode",
             "ExitPlanMode",
+            "Skill",
         }:
             return RiskLevel.LOW
         if name in {"Edit", "Write", "KillShell"}:
@@ -97,6 +98,7 @@ class SafetyPolicy:
             "Plan",
             "EnterPlanMode",
             "ExitPlanMode",
+            "Skill",
         }:
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,

@@ -6,7 +6,7 @@ from mycli.domain.conversation import Message
 from mycli.domain.runtime import HistoryItem, HistoryItemType, RuntimeBlock
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.calls import ToolEvidence
-from mycli.tools.base import ToolResultV2
+from mycli.tools.base import ToolResult
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 
 
@@ -298,11 +298,15 @@ class ContextManager:
 
     def render_tool_result(
         self,
-        result: ToolResultV2,
+        result: ToolResult,
         *,
         tool_name: str = "",
         max_chars: int = 1600,
     ) -> str:
+        if tool_name == "Skill" and result.success:
+            content = result.raw_payload.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
         if self._formatter is not None:
             return self._formatter.format(tool_name, result)
         rendered = self._render_tool_result_details(result)
@@ -310,7 +314,7 @@ class ContextManager:
             return rendered
         return rendered[: max_chars - 3] + "..."
 
-    def _render_tool_result_details(self, result: ToolResultV2) -> str:
+    def _render_tool_result_details(self, result: ToolResult) -> str:
         if not result.success:
             details = [result.summary]
             if result.error:
@@ -326,7 +330,7 @@ class ContextManager:
             return self._render_tool_result_from_evidence(result)
         return self._render_tool_result_from_payload(result)
 
-    def _render_tool_result_from_evidence(self, result: ToolResultV2) -> str:
+    def _render_tool_result_from_evidence(self, result: ToolResult) -> str:
         details: list[str] = [result.summary]
         details.append("Evidence:")
         for evidence in result.evidence:
@@ -349,12 +353,12 @@ class ContextManager:
         if len(normalized) <= 4000:
             return [
                 f"  snippet: {normalized[:1200]}...",
-                "  note: excerpt truncated; use read_file_range for exact sections if needed.",
+                "  note: excerpt truncated; use Read with offset/limit for exact sections if needed.",
             ]
 
         return [
             f"  snippet: {normalized[:400]}...",
-            "  note: file is large; use read_file_range for exact sections.",
+            "  note: file is large; use Read with offset/limit for exact sections.",
         ]
 
     def _format_evidence_header(self, evidence: ToolEvidence) -> str:
@@ -366,7 +370,7 @@ class ContextManager:
                 location = f"{evidence.path}:{evidence.line_start}-{evidence.line_end}"
         return f"- [{evidence.kind}] {location}"
 
-    def _render_tool_result_from_payload(self, result: ToolResultV2) -> str:
+    def _render_tool_result_from_payload(self, result: ToolResult) -> str:
         details: list[str] = [result.summary]
         payload = result.raw_payload
 

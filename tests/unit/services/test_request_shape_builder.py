@@ -50,8 +50,8 @@ def _contract(
         ),
         contextual_user_sections=(
             InstructionFragment(
-                kind="runtime_policy",
-                title="Runtime policy",
+                kind="runtime_reminders",
+                title="Runtime reminders",
                 content=contextual_content,
             ),
         ),
@@ -77,7 +77,7 @@ def test_request_shape_builder_keeps_stable_hashes_when_volatile_context_changes
         config=config,
         contract=_contract(
             current_user_request="fix cache",
-            contextual_content="Runtime policy: step 1",
+            contextual_content="Runtime reminders: step 1",
         ),
         tools=(
             _tool("read_file"),
@@ -88,7 +88,7 @@ def test_request_shape_builder_keeps_stable_hashes_when_volatile_context_changes
         config=config,
         contract=_contract(
             current_user_request="fix cache again",
-            contextual_content="Runtime policy: step 2",
+            contextual_content="Runtime reminders: step 2",
         ),
         tools=(
             _tool("search_text"),
@@ -109,7 +109,7 @@ def test_request_shape_builder_changes_tool_schema_hash_for_parameter_changes(
     config = AgentConfig(workspace_root=tmp_path)
     base_contract = _contract(
         current_user_request="inspect",
-        contextual_content="Runtime policy: same",
+        contextual_content="Runtime reminders: same",
     )
 
     first = builder.build(
@@ -164,7 +164,7 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
         "stable:tool_schema",
         "replay:conversation",
         "intent:current",
-        "volatile:runtime_policy",
+        "volatile:runtime_reminders",
     ]
     assert shape.fragments[2].kind is RequestFragmentKind.REPLAY
     assert shape.fragments[2].stability is FragmentStability.REPLAY
@@ -173,7 +173,7 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
     assert provider_contents[-1] == "volatile runtime context"
 
 
-def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_policy_for_responses_payload(
+def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_reminders_for_responses_payload(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -201,9 +201,9 @@ def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_poli
                     ),
                 ),
                 InstructionFragment(
-                    kind="runtime_policy",
-                    title="Runtime policy",
-                    content="Runtime policy: source_first",
+                    kind="runtime_reminders",
+                    title="Runtime reminders",
+                    content="Runtime reminders: use compact answers",
                 ),
             ),
             conversation_messages=(
@@ -234,18 +234,18 @@ def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_poli
         RuntimeBlock(type="text", text="new query"),
     )
     assert shape.provider_runtime_items[-1].blocks == (
-        RuntimeBlock(type="text", text="Runtime policy: source_first"),
+        RuntimeBlock(type="text", text="Runtime reminders: use compact answers"),
     )
     assert shape.provider_messages[-2].content == "new query"
-    assert shape.provider_messages[-1].content == "Runtime policy: source_first"
+    assert shape.provider_messages[-1].content == "Runtime reminders: use compact answers"
     assert "Conversation summary:" not in provider_payload
     assert "[file_excerpt]" not in provider_payload
     assert "Current user request:" not in provider_payload
-    assert "Runtime policy: source_first" in provider_payload
+    assert "Runtime reminders: use compact answers" in provider_payload
     assert "Conversation summary:" not in runtime_payload
     assert "[file_excerpt]" not in runtime_payload
     assert "Current user request:" not in runtime_payload
-    assert "Runtime policy: source_first" in runtime_payload
+    assert "Runtime reminders: use compact answers" in runtime_payload
     assert any(
         fragment.id == "volatile:conversation_context"
         and "Conversation summary:" in fragment.content
@@ -280,14 +280,19 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
             ),
             contextual_user_sections=(
                 InstructionFragment(
-                    kind="runtime_policy",
-                    title="Runtime policy",
-                    content="Runtime policy: source_first",
+                    kind="runtime_reminders",
+                    title="Runtime reminders",
+                    content="Runtime reminders: use compact answers",
                 ),
                 InstructionFragment(
                     kind="environment_context",
                     title="Environment",
                     content="Workspace root: /tmp/demo",
+                ),
+                InstructionFragment(
+                    kind="skill_catalog",
+                    title="Skill catalog",
+                    content="Available skills:\n- code-review: Review code",
                 ),
             ),
             conversation_messages=(
@@ -332,6 +337,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "assistant",
         "tool",
         "user",
+        "user",
     ]
     assert [message.content for message in shape.provider_messages] == [
         "Stable system rules.",
@@ -339,6 +345,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "I will read README.",
         "README contents",
         "summarize the result",
+        "Available skills:\n- code-review: Review code",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
@@ -346,8 +353,9 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "assistant",
         "tool",
         "user",
+        "user",
     ]
-    assert shape.provider_runtime_items[-1].blocks == (
+    assert shape.provider_runtime_items[-2].blocks == (
         RuntimeBlock(type="text", text="summarize the result"),
     )
     assert all(message.role != "developer" for message in shape.provider_messages)
@@ -362,11 +370,13 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         for block in item.blocks
     )
     assert "Current user request:" not in runtime_payload
-    assert "Runtime policy:" not in runtime_payload
+    assert "Runtime reminders:" not in runtime_payload
     assert "Workspace root:" not in runtime_payload
+    assert "Available skills:" in runtime_payload
     provider_payload = "\n".join(message.content for message in shape.provider_messages)
-    assert "Runtime policy:" not in provider_payload
+    assert "Runtime reminders:" not in provider_payload
     assert "Workspace root:" not in provider_payload
+    assert "Available skills:" in provider_payload
     assistant_message = shape.provider_messages[2]
     assert assistant_message.metadata["tool_calls"] == (tool_call,)
     assert assistant_message.metadata["model_metadata"] == {
@@ -378,6 +388,39 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     assert legacy_messages[2].metadata == {
         "deepseek": {"reasoning_content": "Need the README before answering."}
     }
+
+
+def test_request_shape_builder_excludes_runtime_reminders_from_chat_completions_payload(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="runtime_reminders",
+                    title="Runtime reminders",
+                    content="Runtime reminders: use compact answers",
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="review this"),
+                Message(role="assistant", content="loading skill"),
+            ),
+            current_user_request="review this",
+        ),
+        tools=(_tool("Skill"),),
+    )
+
+    payload = "\n".join(message.content for message in shape.provider_messages)
+
+    assert "Runtime reminders:" not in payload
 
 
 def test_request_shape_builder_filters_orphan_tool_messages_for_chat_completions(
@@ -505,9 +548,9 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
                     content="Current plan: inspect",
                 ),
                 InstructionFragment(
-                    kind="runtime_policy",
-                    title="Runtime policy",
-                    content="Runtime policy: source_first",
+                    kind="runtime_reminders",
+                    title="Runtime reminders",
+                    content="Runtime reminders: use compact answers",
                 ),
             ),
             current_user_request="inspect",
@@ -521,13 +564,13 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     assert fragments["volatile:environment_context"].kind is RequestFragmentKind.VOLATILE
     assert fragments["retrieved_memory"].kind is RequestFragmentKind.RETRIEVED_MEMORY
     assert fragments["volatile:plan"].kind is RequestFragmentKind.VOLATILE
-    assert fragments["volatile:runtime_policy"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["volatile:runtime_reminders"].kind is RequestFragmentKind.VOLATILE
     assert shape.provider_messages[-1].content == "\n".join(
         [
             "Workspace root: /tmp/demo",
             "Memory: prefers concise replies",
             "Current plan: inspect",
-            "Runtime policy: source_first",
+            "Runtime reminders: use compact answers",
         ]
     )
 
@@ -732,3 +775,29 @@ def test_request_shape_builder_keeps_reasoning_blocks_out_of_textual_replay(
     )
     assistant_item = next(item for item in shape.provider_runtime_items if item.role == "assistant")
     assert assistant_item.blocks[0].type == "reasoning"
+
+
+def test_request_shape_builder_includes_skill_catalog_in_responses_delta_context(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path, protocol=ProtocolId.RESPONSES),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="skill_catalog",
+                    title="Skill catalog",
+                    content="Available skills:\n- code-review: Review code",
+                ),
+            ),
+            current_user_request="review this",
+        ),
+        tools=(_tool("Skill"),),
+    )
+
+    user_messages = [
+        message.content for message in shape.provider_messages if message.role == "user"
+    ]
+
+    assert any("Available skills" in str(content) for content in user_messages)

@@ -162,7 +162,7 @@ class TurnCheckpoint:
             if continue_reason == ContinueReason.NEXT_STEP:
                 continue_reason = ContinueReason.TRUNCATION_AWARE
             reminders.append(
-                "A recent file excerpt was truncated. Prefer read_file_range on the confirmed path instead of repeating read_file."
+                "A recent file excerpt was truncated. Prefer Read with offset/limit on the confirmed path instead of repeating broad Read."
             )
 
         return CheckpointResult(
@@ -228,4 +228,9 @@ def _is_truncated_tool_result(block: RuntimeBlock) -> bool:
     if block.type != "tool_result":
         return False
     lowered = (block.text or "").lower()
-    return "excerpt truncated" in lowered or "use read_file_range" in lowered
+    return (
+        "excerpt truncated" in lowered
+        or "use read with offset/limit" in lowered
+        or "use read using offset/limit" in lowered
+        or "use read_file_range" in lowered
+    )

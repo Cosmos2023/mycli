@@ -4,11 +4,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from mycli.domain.capabilities import (
-    CapabilityActivation as CapabilityActivation,
-    CapabilityActivationDependencyStatus as CapabilityActivationDependencyStatus,
-    CapabilityActivationSource as CapabilityActivationSource,
-)
 from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryRecord
 from mycli.domain.providers import ProtocolId, ProviderId
@@ -69,7 +64,6 @@ from mycli.domain.runtime.session_history import (
 )
 from mycli.domain.runtime.turn_state import SuspendedTurn as SuspendedTurn
 from mycli.domain.runtime.tracing import RuntimeTraceEvent as RuntimeTraceEvent
-from mycli.domain.skills import SkillDefinition
 from mycli.domain.tooling.exposure import (
     ToolExposure as ToolExposure,
     ToolExposureEntry as ToolExposureEntry,
@@ -127,6 +121,7 @@ class AgentConfig:
     compaction_l4_carry_cost_per_1k: float = 0.0
     compaction_l4_expected_summary_tokens: int = 500
     compaction_l4_carry_turns: int = 1
+    compaction_l4_summarizer_model: str | None = None
     compaction_l4_trigger_ratios_by_model: dict[str, float] = field(default_factory=dict)
     recent_message_count: int = 6
     auto_approve_medium: bool = True
@@ -177,8 +172,7 @@ class SessionCommandAllowance:
 class ExecutionContext:
     config: AgentConfig
     memory_records: tuple[MemoryRecord, ...] = ()
-    active_skill: SkillDefinition | None = None
-    capability_activations: tuple[CapabilityActivation, ...] = ()
+    skill_catalog: str = ""
     tool_exposure: ToolExposure | None = None
     available_tool_names: tuple[str, ...] = ()
     plan_state: PlanState = field(default_factory=PlanState)
@@ -187,7 +181,6 @@ class ExecutionContext:
     history_items: tuple[HistoryItem, ...] = ()
     context_baseline: ContextBaseline | None = None
     runtime_reminders: tuple[str, ...] = ()
-    runtime_policy_state: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -226,9 +219,6 @@ __all__ = [
     "ActivityEvent",
     "BlockType",
     "BaselineFragment",
-    "CapabilityActivation",
-    "CapabilityActivationDependencyStatus",
-    "CapabilityActivationSource",
     "ContextBaseline",
     "DecisionAction",
     "DecisionKind",

@@ -16,8 +16,8 @@ from mycli.domain.tool_exposure import (
 from mycli.domain.tools import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.tools.routing.tool_router import ToolRouter
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.registry import ToolRegistry
 
 
 class FakeTool:
@@ -30,13 +30,13 @@ class FakeTool:
         self.summary = summary
         self.calls: list[dict[str, object]] = []
 
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(arguments)
-        return ToolResultV2(success=True, summary=self.summary, raw_payload={"tool": self.spec.name})
+        return ToolResult(success=True, summary=self.summary, raw_payload={"tool": self.spec.name})
 
 
 class ExplodingTool(FakeTool):
-    def execute(self, arguments: dict[str, object]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(arguments)
         raise RuntimeError("boom")
 
@@ -58,19 +58,19 @@ def _contribution_registration(tool: FakeTool) -> ToolContributionRegistration:
 
 
 def test_tool_router_renders_only_callable_tools() -> None:
-    registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "listed"), FakeTool("run_shell", "ran")])
+    registry = ToolRegistry.from_tools([FakeTool("LS", "listed"), FakeTool("Bash", "ran")])
     contributed = FakeTool("workspace_summary", "summarized")
     exposure = ToolExposure(
         entries=(
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("list_directory"),
+                route_key=ToolRouteKey.local("LS"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["list_directory"],
+                spec=registry.specs["LS"],
             ),
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("run_shell"),
+                route_key=ToolRouteKey.local("Bash"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["run_shell"],
+                spec=registry.specs["Bash"],
             ),
             ToolExposureEntry(
                 route_key=ToolRouteKey.local("workspace_summary"),
@@ -86,41 +86,41 @@ def test_tool_router_renders_only_callable_tools() -> None:
 
     rendered = router.render_for_model(exposure)
 
-    assert [tool.name for tool in rendered] == ["list_directory", "run_shell", "workspace_summary"]
+    assert [tool.name for tool in rendered] == ["Bash", "LS", "workspace_summary"]
 
 
 def test_tool_router_schema_order_does_not_change_when_exposure_order_changes() -> None:
-    registry = ToolRegistryV2.from_tools(
+    registry = ToolRegistry.from_tools(
         [
-            FakeTool("list_directory", "listed"),
-            FakeTool("run_shell", "ran"),
+            FakeTool("LS", "listed"),
+            FakeTool("Bash", "ran"),
         ]
     )
     first_exposure = ToolExposure(
         entries=(
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("run_shell"),
+                route_key=ToolRouteKey.local("Bash"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["run_shell"],
+                spec=registry.specs["Bash"],
             ),
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("list_directory"),
+                route_key=ToolRouteKey.local("LS"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["list_directory"],
+                spec=registry.specs["LS"],
             ),
         ),
     )
     second_exposure = ToolExposure(
         entries=(
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("list_directory"),
+                route_key=ToolRouteKey.local("LS"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["list_directory"],
+                spec=registry.specs["LS"],
             ),
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("run_shell"),
+                route_key=ToolRouteKey.local("Bash"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["run_shell"],
+                spec=registry.specs["Bash"],
             ),
         ),
     )
@@ -129,8 +129,8 @@ def test_tool_router_schema_order_does_not_change_when_exposure_order_changes() 
     first_names = [tool.name for tool in router.render_for_model(first_exposure)]
     second_names = [tool.name for tool in router.render_for_model(second_exposure)]
 
-    assert first_names == ["list_directory", "run_shell"]
-    assert second_names == ["list_directory", "run_shell"]
+    assert first_names == ["Bash", "LS"]
+    assert second_names == ["Bash", "LS"]
 
 
 def test_tool_router_preserves_array_parameter_item_schema() -> None:
@@ -155,7 +155,7 @@ def test_tool_router_preserves_array_parameter_item_schema() -> None:
             ),
         ),
     )
-    registry = ToolRegistryV2.from_tools([tool])
+    registry = ToolRegistry.from_tools([tool])
     exposure = ToolExposure(
         entries=(
             ToolExposureEntry(
@@ -181,7 +181,7 @@ def test_tool_router_preserves_array_parameter_item_schema() -> None:
 
 
 def test_tool_router_executes_contributed_tool_when_exposed() -> None:
-    registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "listed")])
+    registry = ToolRegistry.from_tools([FakeTool("LS", "listed")])
     contributed = FakeTool("workspace_summary", "summarized")
     exposure = ToolExposure(
         entries=(
@@ -218,7 +218,7 @@ def test_tool_router_executes_contributed_tool_when_exposed() -> None:
 
 
 def test_tool_router_marks_contributed_tool_failed_when_execution_raises() -> None:
-    registry = ToolRegistryV2.from_tools([FakeTool("list_directory", "listed")])
+    registry = ToolRegistry.from_tools([FakeTool("LS", "listed")])
     contributed = ExplodingTool("workspace_summary", "summarized")
     exposure = ToolExposure(
         entries=(
@@ -258,13 +258,13 @@ def test_tool_router_marks_contributed_tool_failed_when_execution_raises() -> No
 
 
 def test_tool_router_executes_exposed_tool_calls() -> None:
-    registry = ToolRegistryV2.from_tools([FakeTool("run_shell", "ran")])
+    registry = ToolRegistry.from_tools([FakeTool("Bash", "ran")])
     exposure = ToolExposure(
         entries=(
             ToolExposureEntry(
-                route_key=ToolRouteKey.local("run_shell"),
+                route_key=ToolRouteKey.local("Bash"),
                 source=ToolRouteSource.REGISTRY,
-                spec=registry.specs["run_shell"],
+                spec=registry.specs["Bash"],
             ),
         ),
     )
@@ -272,8 +272,8 @@ def test_tool_router_executes_exposed_tool_calls() -> None:
 
     result = router.execute(
         ToolCall(
-            name="run_shell",
-            arguments={"path": "."},
+            name="Bash",
+            arguments={"command": "pwd"},
             reason="run shell",
             call_id="call_tool_1",
         ),

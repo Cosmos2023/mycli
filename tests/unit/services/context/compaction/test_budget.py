@@ -18,11 +18,11 @@ def test_budget_records_usage() -> None:
     assert budget.usage_ratio == 0.08
 
 
-def test_budget_records_provider_specific_usage_shapes() -> None:
+def test_budget_records_provider_input_usage_shapes() -> None:
     budget = ContextBudget(max_tokens=100_000)
     budget.record({"input_tokens": 1200, "output_tokens": 300})
     budget.record({"prompt_tokens": 1000, "completion_tokens": 500})
-    assert budget.total_tokens == 3000
+    assert budget.total_tokens == 2200
 
 
 def test_budget_records_input_only_usage_for_context_calibration() -> None:

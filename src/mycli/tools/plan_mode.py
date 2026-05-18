@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall
 from mycli.services.planning import PlanningService, PlanModeService
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 class EnterPlanModeTool:
@@ -38,17 +38,17 @@ class EnterPlanModeTool:
         self._plan_mode = PlanModeService(workspace_root=workspace_root)
         self._planning = PlanningService()
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         items = arguments.get("items", [])
         if not isinstance(items, list):
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Invalid plan mode payload",
                 error="enter_plan_mode requires an 'items' list.",
             )
         state = self._planning.replace(items)
         path = self._plan_mode.write_current_plan(state)
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"Wrote plan mode anchor to {path.relative_to(self._plan_mode.plan_path.parents[2]).as_posix()}",
             raw_payload={
@@ -65,7 +65,7 @@ class EnterPlanModeTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)
 
 
 class ExitPlanModeTool:
@@ -80,10 +80,10 @@ class ExitPlanModeTool:
     def __init__(self, workspace_root: Path) -> None:
         self._plan_mode = PlanModeService(workspace_root=workspace_root)
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         del arguments
         state = self._plan_mode.load_current_plan()
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"Loaded {len(state.items)} plan item(s) from docs/tasks/current.md",
             raw_payload={
@@ -100,7 +100,7 @@ class ExitPlanModeTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)
 
 
 __all__ = ["EnterPlanModeTool", "ExitPlanModeTool"]

@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
-from mycli.application.runtime.turn_executor import BudgetNudge, LoopState, TurnExecutor
+from mycli.application.runtime.turn_executor import (
+    BudgetNudge,
+    LoopState,
+    TurnExecutor,
+    _apply_l4_recent_file_hints,
+)
 from mycli.domain.runtime import (
     ModelTurnResult,
     RuntimeBlock,
@@ -93,6 +98,28 @@ class KeyboardInterruptAdapter:
         raise KeyboardInterrupt()
 
 
+class InterruptOnceThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_items: list[list[RuntimeItem]] = []
+
+    def next_turn(self, *, items, tools):
+        del tools
+        self.calls += 1
+        self.seen_items.append(items)
+        if self.calls == 1:
+            raise KeyboardInterrupt()
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Resumed after interrupt"),),
+                ),
+            ),
+            done=True,
+        )
+
+
 def _runtime_reminder_text(items: list[RuntimeItem]) -> str:
     return "\n".join(
         block.text or ""
@@ -123,6 +150,19 @@ def test_budget_nudge_adds_force_answer_at_85_percent() -> None:
     assert len(reminders) == 2
     assert any("60%" in reminder for reminder in reminders)
     assert any("85%" in reminder and "answer" in reminder.lower() for reminder in reminders)
+
+
+def test_l4_recent_file_hints_are_added_once() -> None:
+    metrics: dict[str, int | float | str | list[str]] = {
+        "recent_files": ["src/a.py", "src/b.py"]
+    }
+
+    reminders = _apply_l4_recent_file_hints((), metrics)
+    duplicate = _apply_l4_recent_file_hints(reminders, metrics)
+
+    assert reminders == duplicate
+    assert len(reminders) == 1
+    assert "src/a.py, src/b.py" in reminders[0]
 
 
 def test_turn_executor_context_window_recovery_adds_retry_reminder() -> None:
@@ -231,3 +271,56 @@ def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
         item.type is TurnItemType.WARNING and item.text and "interrupt" in item.text.lower()
         for item in response.turn.items
     )
+
+
+def test_turn_executor_saves_and_resumes_interrupted_turn(
+    tmp_path: Path,
+) -> None:
+    adapter = InterruptOnceThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    interrupted = runtime.handle_user_turn("inspect interrupted path")
+
+    assert interrupted.turn is not None
+    assert interrupted.turn.status is TurnStatus.INTERRUPTED
+    suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+    assert suspended is not None
+    assert suspended.pending_approval is None
+    assert suspended.user_message == "inspect interrupted path"
+
+    resumed = runtime.handle_user_turn("继续")
+
+    assert resumed.assistant_message == "Resumed after interrupt"
+    assert adapter.calls == 2
+    assert runtime._session_service.load_suspended_turn(runtime._config.session_id) is None
+
+
+def test_turn_executor_saves_interrupted_turn_during_pre_request_compaction(
+    tmp_path: Path,
+) -> None:
+    adapter = InterruptOnceThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    def interrupt_compaction(conversation, budget):
+        del conversation, budget
+        raise KeyboardInterrupt()
+
+    runtime._compaction_pipeline.apply = interrupt_compaction  # type: ignore[method-assign]
+
+    interrupted = runtime.handle_user_turn("inspect interrupted l4 path")
+
+    assert interrupted.turn is not None
+    assert interrupted.turn.status is TurnStatus.INTERRUPTED
+    assert adapter.calls == 0
+    suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+    assert suspended is not None
+    assert suspended.pending_approval is None
+    assert suspended.user_message == "inspect interrupted l4 path"

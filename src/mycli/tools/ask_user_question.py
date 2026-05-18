@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 @dataclass
@@ -59,7 +59,7 @@ class AskUserQuestionTool:
         risk_level="low",
     )
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         try:
             options = arguments.get("options")
             if not isinstance(options, list):
@@ -71,16 +71,16 @@ class AskUserQuestionTool:
                 multi_select=bool(arguments.get("multi_select", False)),
             )
         except ValueError as exc:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Failed to ask user question",
                 error=str(exc),
             )
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary="Awaiting user response",
             raw_payload=payload,
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

@@ -46,6 +46,11 @@ class AnthropicMessagesModelAdapter:
         if callable(setter):
             setter(value)
 
+    def set_model(self, model: str) -> None:
+        setter = getattr(self._client, "set_model", None)
+        if callable(setter):
+            setter(model)
+
     def next_action(
         self,
         *,

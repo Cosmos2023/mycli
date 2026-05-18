@@ -431,7 +431,6 @@ class AssistantBlockConsumer:
                 continue
             return entry.source in {
                 ToolRouteSource.RUNTIME,
-                ToolRouteSource.CAPABILITY,
                 ToolRouteSource.PROVIDER,
             }
         return False

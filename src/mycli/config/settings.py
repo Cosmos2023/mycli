@@ -212,6 +212,11 @@ def resolve_config(
         or user_config.get("compaction_l4_carry_turns")
         or 1
     )
+    compaction_l4_summarizer_model_value = (
+        env.get("MYCLI_COMPACTION_L4_SUMMARIZER_MODEL")
+        or project_config.get("compaction_l4_summarizer_model")
+        or user_config.get("compaction_l4_summarizer_model")
+    )
     compaction_trigger_ratios_by_model = _parse_float_map(
         project_config.get("compaction_l4_trigger_ratios_by_model")
         or user_config.get("compaction_l4_trigger_ratios_by_model")
@@ -246,6 +251,11 @@ def resolve_config(
             str(compaction_l4_expected_summary_tokens_value)
         ),
         compaction_l4_carry_turns=int(str(compaction_l4_carry_turns_value)),
+        compaction_l4_summarizer_model=(
+            str(compaction_l4_summarizer_model_value)
+            if compaction_l4_summarizer_model_value
+            else None
+        ),
         compaction_l4_trigger_ratios_by_model=compaction_trigger_ratios_by_model,
         recent_message_count=int(str(recent_message_count_value)),
         auto_approve_medium=True,

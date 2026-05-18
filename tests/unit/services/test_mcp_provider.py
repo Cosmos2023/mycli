@@ -45,7 +45,6 @@ def test_mcp_tool_contribution_provider_returns_hydrated_thread_tools() -> None:
         user_message="search docs",
         conversation=Conversation(session_id="demo"),
         plan_state=PlanState(),
-        capability_activations=(),
     )
 
     assert registrations[0].descriptor.route_name == "mcp.fs.search"

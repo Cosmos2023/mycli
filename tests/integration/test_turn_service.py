@@ -12,7 +12,9 @@ from mycli.domain.runtime import (
     PendingDecision,
     TurnResponse,
 )
-from mycli.domain.tools import ToolCall, ToolResult
+from mycli.domain.tools import ToolCall
+from mycli.tools.base import ToolResult, ToolSpec
+from mycli.tools.registry import ToolRegistry
 
 
 class PushModel:
@@ -43,7 +45,7 @@ class FakeModel:
 
 class FakeToolRegistry:
     def run(self, call: ToolCall) -> ToolResult:
-        if call.name == "run_shell":
+        if call.name == "Bash":
             return ToolResult(success=True, summary="pushed", raw_payload={"stdout": "", "stderr": ""})
         return ToolResult(success=True, summary="src, tests", raw_payload={"entries": ["src", "tests"]})
 
@@ -133,6 +135,68 @@ class FakeRuntime:
         return TurnResponse(assistant_message=f"runtime resolved {choice}")
 
 
+class DecisionModelAdapter:
+    def __init__(self, model: object) -> None:
+        self._model = model
+
+    def next_action(self, *, messages: list[object], tools: list[object]) -> ModelDecision:
+        del tools
+        prompt = "\n\n".join(
+            str(getattr(message, "content", ""))
+            for message in messages
+            if getattr(message, "content", "")
+        )
+        decide = getattr(self._model, "decide")
+        return decide(prompt)
+
+
+class SpySchemaTool:
+    def __init__(self, name: str, registry: object) -> None:
+        self.spec = ToolSpec(name=name, description=f"Test tool {name}")
+        self._registry = registry
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        result = self.run(
+            ToolCall(name=self.spec.name, arguments=arguments, reason="test tool call")
+        )
+        return ToolResult(
+            success=result.success,
+            summary=result.summary,
+            artifacts=result.artifacts,
+            raw_payload=result.raw_payload,
+            evidence=result.evidence,
+            error=result.error,
+        )
+
+    def run(self, call: ToolCall) -> ToolResult:
+        run = getattr(self._registry, "run")
+        return run(call)
+
+
+def make_turn_service(
+    *,
+    tmp_path: Path,
+    model: object,
+    tool_registry: object,
+    config: AgentConfig | None = None,
+    home_dir: Path | None = None,
+) -> TurnService:
+    resolved_config = config or AgentConfig(workspace_root=tmp_path, session_id="demo")
+    resolved_home = home_dir or tmp_path / "home"
+    tools = [SpySchemaTool(name, tool_registry) for name in tool_registry.list_names()]
+    runtime = AgentRuntime(
+        model_adapter=DecisionModelAdapter(model),
+        tool_registry=ToolRegistry.from_tools(tools),
+        config=resolved_config,
+        home_dir=resolved_home,
+    )
+    return TurnService(
+        runtime=runtime,
+        config=resolved_config,
+        home_dir=resolved_home,
+    )
+
+
 class PushThenDoneRuntimeAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -152,8 +216,9 @@ class PushThenDoneRuntimeAdapter:
 
 
 def test_turn_service_returns_pending_decision_for_risky_command(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=PushModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushModel(),
         tool_registry=UnusedToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -206,8 +271,9 @@ def test_turn_service_runtime_recovers_pending_approval_from_structured_runtime_
 
 
 def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=PushThenDoneModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushThenDoneModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -222,8 +288,9 @@ def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) 
 
 def test_resolve_pending_decision_choice_one_executes_and_clears(tmp_path: Path) -> None:
     tool_registry = SpyToolRegistry()
-    service = TurnService(
-        model_client=PushThenDoneModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushThenDoneModel(),
         tool_registry=tool_registry,
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -241,8 +308,9 @@ def test_resolve_pending_decision_choice_one_executes_and_clears(tmp_path: Path)
 def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     first_registry = SpyToolRegistry()
-    first = TurnService(
-        model_client=PushThenDoneModel(),
+    first = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushThenDoneModel(),
         tool_registry=first_registry,
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=home_dir,
@@ -252,8 +320,9 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
     first.resolve_pending_decision("3")
 
     second_registry = SpyToolRegistry()
-    second = TurnService(
-        model_client=PushThenDoneModel(),
+    second = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushThenDoneModel(),
         tool_registry=second_registry,
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=home_dir,
@@ -267,8 +336,9 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
 
 def test_turn_service_blocks_new_turns_while_decision_is_pending(tmp_path: Path) -> None:
     model = CountingPushModel()
-    service = TurnService(
-        model_client=model,
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=model,
         tool_registry=UnusedToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -283,15 +353,16 @@ def test_turn_service_blocks_new_turns_while_decision_is_pending(tmp_path: Path)
 
 
 def test_handle_user_turn_reflects_actual_pending_decision_choices(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=FakeModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=FakeModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
     )
     pending = PendingDecision(
         tool_call=ToolCall(
-            name="read_file",
+            name="Read",
             arguments={"path": "README.md"},
             reason="inspect file",
         ),
@@ -310,8 +381,9 @@ def test_handle_user_turn_reflects_actual_pending_decision_choices(tmp_path: Pat
 
 
 def test_resolve_pending_decision_reject_clears_it(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=PushModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -326,8 +398,9 @@ def test_resolve_pending_decision_reject_clears_it(tmp_path: Path) -> None:
 
 
 def test_resolve_pending_decision_invalid_choice_keeps_it(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=PushModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -341,15 +414,16 @@ def test_resolve_pending_decision_invalid_choice_keeps_it(tmp_path: Path) -> Non
 
 
 def test_resolve_pending_decision_choice_three_rejected_without_allow_session_option(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=FakeModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=FakeModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
     )
     pending = PendingDecision(
         tool_call=ToolCall(
-            name="read_file",
+            name="Read",
             arguments={"path": "README.md"},
             reason="inspect file",
         ),
@@ -368,8 +442,9 @@ def test_resolve_pending_decision_choice_three_rejected_without_allow_session_op
 
 
 def test_turn_service_returns_assistant_message_and_persists_session(tmp_path: Path) -> None:
-    service = TurnService(
-        model_client=FakeModel(),
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=FakeModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
         home_dir=tmp_path / "home",
@@ -426,8 +501,9 @@ def test_turn_service_injects_memory_and_skill_context(tmp_path: Path) -> None:
     )
 
     model = SkillAwareModel()
-    service = TurnService(
-        model_client=model,
+    service = make_turn_service(
+        tmp_path=workspace,
+        model=model,
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=workspace),
         home_dir=home_dir,
@@ -439,7 +515,8 @@ def test_turn_service_injects_memory_and_skill_context(tmp_path: Path) -> None:
     assert "repository-analysis" in model.prompts[0]
     assert "src/mycli/cli/main.py" in model.prompts[0]
     assert "concise" in model.prompts[0]
-    assert "run_shell" in model.prompts[0]
+    assert "Bash" in model.prompts[0]
+    assert "批量读取相关文件" in model.prompts[0]
 
 
 def test_turn_service_includes_recent_conversation_in_prompt(tmp_path: Path) -> None:
@@ -449,8 +526,9 @@ def test_turn_service_includes_recent_conversation_in_prompt(tmp_path: Path) -> 
     workspace.mkdir()
 
     model = PromptCaptureModel()
-    service = TurnService(
-        model_client=model,
+    service = make_turn_service(
+        tmp_path=workspace,
+        model=model,
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=workspace, session_id="demo"),
         home_dir=home_dir,
@@ -480,8 +558,9 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     recent_assistant = "recent-assistant"
 
     model = PromptCaptureModel()
-    service = TurnService(
-        model_client=model,
+    service = make_turn_service(
+        tmp_path=workspace,
+        model=model,
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(
             workspace_root=workspace,
@@ -501,7 +580,9 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
 
     service.handle_user_turn("new question")
 
-    assert "Conversation summary" in model.prompts[0]
-    assert very_old_user not in model.prompts[0]
-    assert recent_user in model.prompts[0]
-    assert recent_assistant in model.prompts[0]
+    assert "## 1. Primary Request" in model.prompts[0]
+    assert very_old_user[:80] in model.prompts[0]
+    assert "Captured prompt" in model.prompts[1]
+    assert very_old_user not in model.prompts[1]
+    assert recent_user in model.prompts[1]
+    assert recent_assistant in model.prompts[1]

@@ -67,11 +67,7 @@ class RequestPipeline:
             base_instructions=build_system_prompt(),
             conversation_messages=context.conversation_messages,
         )
-        stable_action_guidance = build_react_prompt(
-            contract,
-            include_context_sections=False,
-            include_adaptive_guidance=False,
-        )
+        stable_action_guidance = build_react_prompt()
         contract = InstructionContract(
             base_instructions=f"{contract.base_instructions}\n\n{stable_action_guidance}",
             developer_sections=contract.developer_sections,

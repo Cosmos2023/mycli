@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
     ToolContributionLifecycleState,
@@ -13,7 +13,7 @@ from mycli.domain.tooling.contributed_tools import (
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.services.mcp.client import McpClient, McpToolDescriptor
-from mycli.tools.base import ToolResultV2, ToolSpec
+from mycli.tools.base import ToolResult, ToolSpec
 
 
 @dataclass(slots=True)
@@ -22,9 +22,9 @@ class _McpSchemaTool:
     descriptor: McpToolDescriptor
     spec: ToolSpec
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         result = self.client.call_tool(self.descriptor.name, arguments)
-        return ToolResultV2(
+        return ToolResult(
             success=not result.is_error,
             summary=result.text or "MCP tool returned no content.",
             raw_payload={
@@ -37,7 +37,7 @@ class _McpSchemaTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)
 
 
 class McpToolAdapter:

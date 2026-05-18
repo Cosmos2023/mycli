@@ -1,5 +1,5 @@
 from mycli.tools.base import ToolParameter, ToolSpec
-from mycli.tools.registry import ToolRegistryV2
+from mycli.tools.registry import ToolRegistry
 
 
 def test_tool_registry_validates_required_arguments_before_execution() -> None:
@@ -8,7 +8,7 @@ def test_tool_registry_validates_required_arguments_before_execution() -> None:
         description="Read a file from the workspace",
         parameters=(ToolParameter(name="path", type="string", required=True),),
     )
-    registry = ToolRegistryV2(specs={"read_file": spec}, executors={})
+    registry = ToolRegistry(specs={"read_file": spec}, executors={})
 
     try:
         registry.validate("read_file", {})

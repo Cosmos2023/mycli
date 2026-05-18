@@ -17,7 +17,7 @@ class LoopingDirectoryAdapter:
                 "assistant_message": None,
                 "progress_message": "Still exploring",
                 "tool_call": ToolCall(
-                    name="list_directory",
+                    name="LS",
                     arguments={"path": "."},
                     reason="keep exploring",
                 ),
@@ -41,8 +41,8 @@ class PushThenLoopAdapter:
                     "assistant_message": None,
                     "progress_message": "Preparing a risky push",
                     "tool_call": ToolCall(
-                        name="run_shell",
-                        arguments={"args": ["git", "push", "origin", "main"]},
+                        name="Bash",
+                        arguments={"command": "git push origin main"},
                         reason="publish branch",
                     ),
                     "done": False,
@@ -55,7 +55,7 @@ class PushThenLoopAdapter:
                 "assistant_message": None,
                 "progress_message": "Still exploring",
                 "tool_call": ToolCall(
-                    name="list_directory",
+                    name="LS",
                     arguments={"path": "."},
                     reason="keep exploring",
                 ),
@@ -79,7 +79,7 @@ class ThirdStepCompletionAdapter:
                     "assistant_message": None,
                     "progress_message": "Exploring before answering",
                     "tool_call": ToolCall(
-                        name="list_directory",
+                        name="LS",
                         arguments={"path": "."},
                         reason="inspect workspace",
                     ),

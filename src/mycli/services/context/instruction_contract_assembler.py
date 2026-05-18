@@ -29,7 +29,7 @@ class InstructionContractAssembler:
                 continue
             if section.type is TurnContextSectionType.RUNTIME_REMINDERS:
                 contextual_user_sections.append(
-                    self._runtime_policy_fragment(section)
+                    self._runtime_reminders_fragment(section)
                 )
                 continue
             if section.type is TurnContextSectionType.TOOL_EXPOSURE:
@@ -80,9 +80,17 @@ class InstructionContractAssembler:
                     )
                 )
                 continue
-            if section.type is TurnContextSectionType.CAPABILITY:
+            if section.type is TurnContextSectionType.SKILL_CATALOG:
                 contextual_user_sections.append(
-                    self._capability_fragment(section)
+                    self._directed_fragment(
+                        section=section,
+                        kind=InstructionFragmentKind.SKILL_CATALOG,
+                        include_in_memory=False,
+                        prefix=(
+                            "这是本轮可用的 skill 目录。目录只包含名称和描述；"
+                            "需要详细指令时，调用 Skill 工具加载对应 skill。"
+                        ),
+                    )
                 )
                 continue
             if section.type is TurnContextSectionType.USER_REQUEST:
@@ -130,12 +138,12 @@ class InstructionContractAssembler:
             include_in_memory=include_in_memory,
         )
 
-    def _runtime_policy_fragment(self, section: TurnContextSection) -> InstructionFragment:
+    def _runtime_reminders_fragment(self, section: TurnContextSection) -> InstructionFragment:
         return self._directed_fragment(
             section=section,
-            kind=InstructionFragmentKind.RUNTIME_POLICY,
+            kind=InstructionFragmentKind.RUNTIME_REMINDERS,
             include_in_memory=False,
-            prefix="本轮请遵循这组 runtime policy。",
+            prefix="这是本轮运行时提醒。",
         )
 
     def _workspace_fragment(self, section: TurnContextSection) -> InstructionFragment:
@@ -144,14 +152,6 @@ class InstructionContractAssembler:
             kind=InstructionFragmentKind.WORKSPACE_INSTRUCTIONS,
             include_in_memory=False,
             prefix="这是本轮的工作区/项目说明。它适用于当前任务或你将要接触的文件时，请遵循它。",
-        )
-
-    def _capability_fragment(self, section: TurnContextSection) -> InstructionFragment:
-        return self._directed_fragment(
-            section=section,
-            kind=InstructionFragmentKind.CAPABILITY_BODY,
-            include_in_memory=False,
-            prefix="这是本轮可用的 capability。它相关时可以使用，但不要暗示系统具备未明确提供的能力。",
         )
 
     def _tool_exposure_fragment(self, section: TurnContextSection) -> InstructionFragment:

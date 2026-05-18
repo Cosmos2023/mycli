@@ -103,6 +103,9 @@ class AnthropicMessagesClient:
         value = getattr(effort, "value", effort)
         self._thinking_effort = str(value) if enabled and value is not None else None
 
+    def set_model(self, model: str) -> None:
+        self._model = model
+
     def set_max_output_tokens(self, value: int) -> None:
         self._max_output_tokens = value
 
@@ -177,7 +180,7 @@ class AnthropicMessagesClient:
 
     def _thinking_payload(self) -> dict[str, object] | None:
         if not self._thinking_enabled:
-            return None
+            return {"type": "disabled"}
         effort = self._thinking_effort or "medium"
         budget = _THINKING_BUDGETS.get(effort, _THINKING_BUDGETS["medium"])
         if budget >= self._max_output_tokens:

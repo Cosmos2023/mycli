@@ -178,6 +178,9 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
+        transcript_context = self._render_transcript_delta_context(contract)
+        if transcript_context:
+            messages.append(ProviderMessageShape(role="user", content=transcript_context))
         return tuple(messages)
 
     def _provider_runtime_items(
@@ -297,6 +300,14 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
                 )
             )
+        transcript_context = self._render_transcript_delta_context(contract)
+        if transcript_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=transcript_context),),
+                )
+            )
         return tuple(items)
 
     def _replay_messages(self, contract: InstructionContract) -> tuple[Message, ...]:
@@ -356,14 +367,29 @@ class RequestShapeBuilder:
             if self._responses_contextual_section_is_model_visible(section)
         )
 
+    def _render_transcript_delta_context(self, contract: InstructionContract) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in contract.contextual_user_sections
+            if self._transcript_contextual_section_is_model_visible(section)
+        )
+
+    def _transcript_contextual_section_is_model_visible(
+        self,
+        section: InstructionFragment,
+    ) -> bool:
+        return str(section.kind) in {
+            "skill_catalog",
+        }
+
     def _responses_contextual_section_is_model_visible(
         self,
         section: InstructionFragment,
     ) -> bool:
         return str(section.kind) in {
-            "capability_body",
             "memory",
-            "runtime_policy",
+            "runtime_reminders",
+            "skill_catalog",
             "workspace_instructions",
         }
 

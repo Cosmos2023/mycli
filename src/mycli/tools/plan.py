@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 class PlanTool:
@@ -32,22 +32,22 @@ class PlanTool:
         risk_level="low",
     )
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         items = arguments.get("items", [])
         if not isinstance(items, list):
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Invalid plan payload",
                 error="Plan requires an 'items' list.",
             )
-        return ToolResultV2(
+        return ToolResult(
             success=True,
             summary=f"Updated plan with {len(items)} items",
             raw_payload={"items": items},
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)
 
 
 class UpdatePlanTool(PlanTool):

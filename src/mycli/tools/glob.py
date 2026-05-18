@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import resolve_workspace_path
 
 
@@ -55,21 +55,21 @@ class GlobTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         pattern = str(arguments.get("pattern") or "")
         if not pattern:
-            return ToolResultV2(success=False, summary="Failed to glob", error="Glob requires pattern.")
+            return ToolResult(success=False, summary="Failed to glob", error="Glob requires pattern.")
         raw_path = str(arguments.get("path", "."))
         try:
             root = resolve_workspace_path(self._workspace_root, raw_path)
             payload = glob(pattern, path=str(root))
         except (OSError, ValueError) as exc:
-            return ToolResultV2(success=False, summary="Failed to glob", error=str(exc))
-        return ToolResultV2(
+            return ToolResult(success=False, summary="Failed to glob", error=str(exc))
+        return ToolResult(
             success=True,
             summary=f"Found {payload['count']} glob match(es)",
             raw_payload={"path": raw_path, "pattern": pattern, **payload},
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)

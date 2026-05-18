@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from mycli.domain.capabilities import CapabilityActivationDependencyStatus
 from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryRecord
 from mycli.domain.runtime import (
@@ -83,17 +82,15 @@ class TurnContextAssembler:
                 type=TurnContextSectionType.RUNTIME_REMINDERS,
                 title="Runtime reminders",
                 content=self._render_runtime_reminders(context),
-                enabled=bool(context.runtime_reminders) or bool(context.runtime_policy_state),
-                source="runtime_policy",
-                metadata=dict(context.runtime_policy_state),
+                enabled=bool(context.runtime_reminders),
+                source="runtime",
             ),
             TurnContextSection(
-                type=TurnContextSectionType.CAPABILITY,
-                title="Capability",
-                content=self._render_capability(context),
-                enabled=bool(context.capability_activations) or context.active_skill is not None,
-                source="skill",
-                metadata=self._capability_metadata(context),
+                type=TurnContextSectionType.SKILL_CATALOG,
+                title="Skill catalog",
+                content=context.skill_catalog,
+                enabled=bool(context.skill_catalog),
+                source="skill_registry",
             ),
             TurnContextSection(
                 type=TurnContextSectionType.TOOL_EXPOSURE,
@@ -259,71 +256,8 @@ class TurnContextAssembler:
         return tuple(item for item in plan_state.items if item.status is PlanStatus.PENDING)
 
     def _render_runtime_reminders(self, context: ExecutionContext) -> str:
-        lines: list[str] = []
-        if context.runtime_policy_state:
-            policy_state = "; ".join(
-                f"{key}={context.runtime_policy_state[key]}"
-                for key in sorted(context.runtime_policy_state)
-            )
-            lines.append(f"Runtime policy: {policy_state}")
         reminders = "\n".join(f"- {item}" for item in context.runtime_reminders) or "none"
-        lines.append("Runtime reminders:")
-        lines.append(reminders)
-        return "\n".join(lines)
-
-    def _render_capability(self, context: ExecutionContext) -> str:
-        if context.capability_activations:
-            rendered: list[str] = []
-            for activation in context.capability_activations:
-                rendered.append(
-                    "Activated capability: "
-                    f"{activation.name} "
-                    f"(source={activation.source.value}, status={activation.dependency_status.value})"
-                )
-                rendered.append(f"Capability instructions ({activation.name}):")
-                rendered.append(activation.instructions)
-                missing_env_dependencies = activation.metadata.get("missing_env_dependencies", [])
-                if missing_env_dependencies:
-                    rendered.append(
-                        "Missing env dependencies: "
-                        + ", ".join(str(item) for item in missing_env_dependencies)
-                    )
-                missing_workspace_dependencies = activation.metadata.get(
-                    "missing_workspace_dependencies",
-                    [],
-                )
-                if missing_workspace_dependencies:
-                    rendered.append(
-                        "Missing workspace dependencies: "
-                        + ", ".join(str(item) for item in missing_workspace_dependencies)
-                    )
-            return "\n".join(rendered)
-        if context.active_skill is None:
-            return ""
-        return (
-            f"Active skill: {context.active_skill.name}\n"
-            f"Active skill instructions ({context.active_skill.name}):\n"
-            f"{context.active_skill.body}"
-        )
-
-    def _capability_metadata(self, context: ExecutionContext) -> dict[str, object]:
-        if context.capability_activations:
-            return {
-                "capability_names": [activation.name for activation in context.capability_activations],
-                "dependency_statuses": {
-                    activation.name: activation.dependency_status.value
-                    for activation in context.capability_activations
-                },
-            }
-        return {
-            "skill_name": context.active_skill.name if context.active_skill else None,
-            "source_path": context.active_skill.source_path if context.active_skill else None,
-            "dependency_statuses": (
-                {}
-                if context.active_skill is None
-                else {context.active_skill.name: CapabilityActivationDependencyStatus.READY.value}
-            ),
-        }
+        return "\n".join(("Runtime reminders:", reminders))
 
     def _render_tool_exposure(self, context: ExecutionContext) -> str:
         if context.tool_exposure is not None:

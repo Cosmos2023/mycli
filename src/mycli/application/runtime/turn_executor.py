@@ -12,20 +12,20 @@ from mycli.domain.runtime import (
     PlanState,
     SessionCommandAllowance,
     StopReason,
+    SuspendedTurn,
     TurnItem,
     TurnItemType,
     TurnResponse,
     TurnStatus,
 )
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
-from mycli.services.context.compaction import ContextBudget
+from mycli.services.context.compaction import CacheZones, ContextBudget
 from mycli.services.hooks import HookContext, HookPoint
 from mycli.llms.clients.openai_chat import ModelResponseError
-from mycli.services.turn_guard import NoProgressTracker
+from mycli.services.turn_guard import ContinueReason, NoProgressTracker
 
 if TYPE_CHECKING:
     from mycli.application.runtime.agent_runtime import AgentRuntime
-    from mycli.domain.capabilities import CapabilityActivation
 
 
 class TurnExecutor:
@@ -56,6 +56,8 @@ class TurnExecutor:
                 ),
                 pending_decision=pending_decision,
             )
+        if suspended is not None:
+            return self._resume_interrupted_turn(suspended)
 
         conversation = runtime._session_service.load_conversation(runtime._config.session_id)
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
@@ -64,17 +66,11 @@ class TurnExecutor:
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
         runtime._load_model_continuation_state(turn_id=turn_id)
-        capability_activations = runtime._resolve_capability_activations(user_message)
         conversation.append(Message(role="user", content=user_message))
         runtime._append_turn_item(
             turn_id=turn_id,
             turn_items=turn_items,
             item=TurnItem(type=TurnItemType.USER_MESSAGE, text=user_message),
-        )
-        runtime._append_capability_turn_items(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            capability_activations=capability_activations,
         )
         return self._run_turn_loop(
             user_message=user_message,
@@ -84,9 +80,45 @@ class TurnExecutor:
             turn_id=turn_id,
             started_at=started_at,
             turn_items=turn_items,
-            capability_activations=capability_activations,
             progress_updates=[],
             activity_events=[],
+            streamed_chunks=[],
+        )
+
+    def _resume_interrupted_turn(self, suspended: SuspendedTurn) -> TurnResponse:
+        runtime = self._runtime
+        runtime._session_service.clear_suspended_turn(runtime._config.session_id)
+        current_plan_state = suspended.plan_state
+        turn_id = f"turn_{uuid4().hex}"
+        started_at = runtime._timestamp()
+        turn_items: list[TurnItem] = []
+        runtime._load_model_continuation_state(turn_id=turn_id)
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.WARNING,
+                text="Resuming interrupted turn from saved context.",
+            ),
+        )
+        return self._run_turn_loop(
+            user_message=suspended.user_message,
+            conversation=Conversation(
+                session_id=runtime._config.session_id,
+                messages=list(suspended.conversation),
+            ),
+            current_plan_state=current_plan_state,
+            initial_in_progress_item_id=current_plan_state.current_in_progress_item_id(),
+            turn_id=turn_id,
+            started_at=started_at,
+            turn_items=turn_items,
+            progress_updates=["[resume] interrupted turn"],
+            activity_events=[
+                ActivityEvent(
+                    kind="thinking",
+                    message="resuming interrupted turn",
+                )
+            ],
             streamed_chunks=[],
         )
 
@@ -189,18 +221,10 @@ class TurnExecutor:
         )
         initial_in_progress_item_id = current_plan_state.current_in_progress_item_id()
         runtime._load_model_continuation_state(turn_id=turn_id)
-        capability_activations = runtime._resolve_capability_activations(
-            suspended.user_message
-        )
         runtime._append_turn_item(
             turn_id=turn_id,
             turn_items=turn_items,
             item=TurnItem(type=TurnItemType.USER_MESSAGE, text=suspended.user_message),
-        )
-        runtime._append_capability_turn_items(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            capability_activations=capability_activations,
         )
         progress_updates = ["[decision] approved"]
         activity_events: list[ActivityEvent] = []
@@ -209,7 +233,6 @@ class TurnExecutor:
             user_message=suspended.user_message,
             conversation=conversation,
             plan_state=current_plan_state,
-            capability_activations=capability_activations,
         )
         if initial_planned_exposure.lifecycle_events:
             runtime._append_contributed_tool_lifecycle_events(
@@ -247,7 +270,6 @@ class TurnExecutor:
             turn_id=turn_id,
             started_at=started_at,
             turn_items=turn_items,
-            capability_activations=capability_activations,
             progress_updates=progress_updates,
             activity_events=activity_events,
             streamed_chunks=streamed_chunks,
@@ -264,14 +286,12 @@ class TurnExecutor:
         turn_id: str,
         started_at: str,
         turn_items: list[TurnItem],
-        capability_activations: tuple[CapabilityActivation, ...],
         progress_updates: list[str],
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
         last_tool_exposure_summary: dict[str, list[str]] | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
-        last_runtime_policy_state: dict[str, object] | None = None
         latest_context_baseline: ContextBaseline | None = None
         step_index = 0
         budget = ContextBudget(max_tokens=runtime._config.max_prompt_tokens)
@@ -321,82 +341,22 @@ class TurnExecutor:
                     context_baseline=latest_context_baseline,
                 )
 
-            (
-                reasoning_effort,
-                runtime_reminders,
-                runtime_policy_state,
-                force_answer,
-                stage_message,
-                policy_response,
-            ) = runtime._policy_decision(
-                user_message=user_message,
-                conversation=conversation,
-                plan_state=current_plan_state,
-                step_index=step_index,
-            )
-            if policy_response is not None:
-                runtime._append_turn_item(
-                    turn_id=turn_id,
-                    turn_items=turn_items,
-                    item=TurnItem(
-                        type=TurnItemType.WARNING,
-                        text=policy_response.assistant_message,
-                    ),
-                )
-                runtime._save_runtime_state(
-                    conversation=conversation,
-                    plan_state=current_plan_state,
-                )
-                return runtime._finalize_response(
-                    response=policy_response,
-                    turn_id=turn_id,
-                    user_message=user_message,
-                    started_at=started_at,
-                    status=TurnStatus.COMPLETED,
-                    stop_reason=StopReason.LOOP_DETECTED,
-                    turn_items=turn_items,
-                    context_baseline=latest_context_baseline,
-                )
-
+            reasoning_effort = runtime._config.reasoning_effort
             runtime_reminders = tuple(
                 dict.fromkeys(
                     (
-                        *runtime_reminders,
                         *carryover_runtime_reminders,
                         *checkpoint_result.reminders,
                     )
                 )
             )
             carryover_runtime_reminders = ()
-            if force_answer:
-                runtime_reminders = tuple(
-                    dict.fromkeys(
-                        (
-                            *runtime_reminders,
-                            "You already have enough evidence. Answer now using the current context. Do NOT call any more tools.",
-                        )
-                    )
-                )
 
             activity_events.append(
                 ActivityEvent(
                     kind="thinking",
                     message="deciding next action",
                 )
-            )
-            if runtime_policy_state != last_runtime_policy_state:
-                runtime._append_runtime_policy_activity(
-                    turn_id=turn_id,
-                    turn_items=turn_items,
-                    activity_events=activity_events,
-                    policy_state=runtime_policy_state,
-                )
-                last_runtime_policy_state = dict(runtime_policy_state)
-            runtime._append_structured_repo_activity(
-                turn_id=turn_id,
-                turn_items=turn_items,
-                activity_events=activity_events,
-                stage_message=stage_message,
             )
             runtime._set_model_log_context(turn_id)
             runtime._set_model_runtime_event_recorder(turn_id)
@@ -406,7 +366,6 @@ class TurnExecutor:
                 user_message=user_message,
                 conversation=conversation,
                 plan_state=current_plan_state,
-                capability_activations=capability_activations,
             )
             if planned_exposure.lifecycle_events:
                 runtime._append_contributed_tool_lifecycle_events(
@@ -426,28 +385,44 @@ class TurnExecutor:
             tool_router = runtime._build_tool_router(planned_exposure)
             conversation_before_compaction = conversation
             pre_compaction_budget = runtime._estimate_window_budget(conversation)
-            conversation_for_model = runtime._compaction_pipeline.apply(
-                conversation,
-                pre_compaction_budget,
-            )
+            try:
+                conversation_for_model = runtime._compaction_pipeline.apply(
+                    conversation,
+                    pre_compaction_budget,
+                )
+            except KeyboardInterrupt:
+                return self._finalize_interrupted_turn(
+                    user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                )
             runtime._record_compaction_metric(
                 before_messages=conversation_before_compaction,
                 after_messages=conversation_for_model,
             )
+            l4_applied_before_request = (
+                runtime._compaction_pipeline.llm_summarization.last_cost_metrics or {}
+            ).get("decision") == "summarize"
+            if conversation_for_model is not conversation:
+                conversation = conversation_for_model
             runtime._record_context_window_metrics()
             budget = runtime._estimate_window_budget(conversation_for_model)
-            runtime._record_budget_metric(
-                total_tokens=budget.total_tokens,
-                max_tokens=budget.max_tokens,
+            runtime_reminders = _apply_l4_recent_file_hints(
+                runtime_reminders,
+                runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
             )
-            runtime_reminders = BudgetNudge().apply(budget, runtime_reminders)
             context, turn_context = runtime._assemble_turn_context(
                 user_message=user_message,
                 conversation=conversation_for_model,
                 plan_state=current_plan_state,
                 runtime_reminders=runtime_reminders,
-                runtime_policy_state={},
-                capability_activations=capability_activations,
                 tool_exposure=planned_exposure.exposure,
             )
             contract = runtime._assemble_instruction_contract(
@@ -467,6 +442,61 @@ class TurnExecutor:
                 contract=contract,
                 tools=tools,
             )
+            request_budget = runtime._estimate_request_window_budget(request_shape)
+            request_needs_l4 = not l4_applied_before_request
+            if request_needs_l4:
+                conversation_before_request_compaction = conversation_for_model
+                try:
+                    conversation_for_model = runtime._compaction_pipeline.llm_summarization.apply(
+                        conversation_for_model,
+                        CacheZones.from_conversation(conversation_for_model),
+                        request_budget,
+                        snapshot=runtime._full_context_snapshot(request_shape),
+                    )
+                except KeyboardInterrupt:
+                    return self._finalize_interrupted_turn(
+                        user_message=user_message,
+                        conversation=conversation,
+                        current_plan_state=current_plan_state,
+                        turn_id=turn_id,
+                        started_at=started_at,
+                        turn_items=turn_items,
+                        latest_context_baseline=latest_context_baseline,
+                        activity_events=activity_events,
+                        streamed_chunks=streamed_chunks,
+                        progress_updates=progress_updates,
+                    )
+            if request_needs_l4 and conversation_for_model is not conversation_before_request_compaction:
+                runtime._record_compaction_metric(
+                    before_messages=conversation_before_request_compaction,
+                    after_messages=conversation_for_model,
+                )
+                conversation = conversation_for_model
+                runtime_reminders = _apply_l4_recent_file_hints(
+                    runtime_reminders,
+                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
+                )
+                context, turn_context = runtime._assemble_turn_context(
+                    user_message=user_message,
+                    conversation=conversation_for_model,
+                    plan_state=current_plan_state,
+                    runtime_reminders=runtime_reminders,
+                    tool_exposure=planned_exposure.exposure,
+                )
+                contract = runtime._assemble_instruction_contract(
+                    turn_id=turn_id,
+                    context=context,
+                    turn_context=turn_context,
+                )
+                latest_context_baseline = runtime._context_baseline_from_contract(contract)
+                request_shape = runtime._build_and_trace_request_shape(
+                    turn_id=turn_id,
+                    contract=contract,
+                    tools=tools,
+                )
+                request_budget = runtime._estimate_request_window_budget(request_shape)
+            budget = request_budget
+            runtime_reminders = BudgetNudge().apply(budget, runtime_reminders)
             runtime_items = runtime._build_runtime_items(request_shape=request_shape)
             legacy_messages = runtime._build_messages(request_shape=request_shape)
             try:
@@ -480,6 +510,23 @@ class TurnExecutor:
                     turn_id=turn_id,
                     request_shape=request_shape,
                     usage=usage_payload if isinstance(usage_payload, dict) else None,
+                )
+                runtime._record_provider_input_budget_metric(
+                    usage=usage_payload if isinstance(usage_payload, dict) else None,
+                    fallback_total_tokens=budget.total_tokens,
+                    max_tokens=budget.max_tokens,
+                )
+                runtime._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.MODEL_USAGE,
+                        metadata=runtime._provider_input_budget_payload(
+                            usage=usage_payload if isinstance(usage_payload, dict) else None,
+                            fallback_total_tokens=budget.total_tokens,
+                            max_tokens=budget.max_tokens,
+                        ),
+                    ),
                 )
                 streamed_chunks.extend(turn_streamed_chunks)
                 runtime._persist_model_continuation_state(
@@ -543,43 +590,17 @@ class TurnExecutor:
                     assistant_message=f"Model request failed: {exc}",
                 )
             except KeyboardInterrupt:
-                interrupt_warning = (
-                    "Turn interrupted. Runtime state was preserved; resume from the saved context if needed."
-                )
-                runtime._persist_model_continuation_state(
-                    turn_id=turn_id,
-                    phase="interrupted",
-                )
-                activity_events.append(
-                    ActivityEvent(kind="model_error", message=interrupt_warning)
-                )
-                runtime._append_turn_item(
-                    turn_id=turn_id,
-                    turn_items=turn_items,
-                    item=TurnItem(
-                        type=TurnItemType.WARNING,
-                        text=interrupt_warning,
-                    ),
-                )
-                runtime._save_runtime_state(
-                    conversation=conversation,
-                    plan_state=current_plan_state,
-                )
-                return runtime._finalize_response(
-                    response=TurnResponse(
-                        assistant_message=interrupt_warning,
-                        activity_events=tuple(activity_events),
-                        streamed_chunks=tuple(streamed_chunks),
-                        progress_updates=tuple(progress_updates),
-                        plan_steps=runtime._planning_service.render_steps(current_plan_state),
-                    ),
-                    turn_id=turn_id,
+                return self._finalize_interrupted_turn(
                     user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
                     started_at=started_at,
-                    status=TurnStatus.INTERRUPTED,
-                    stop_reason=StopReason.MODEL_ERROR,
                     turn_items=turn_items,
-                    context_baseline=latest_context_baseline,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
                 )
             except Exception as exc:  # pragma: no cover - guarded by focused tests
                 return self._error_finalizer.finalize_runtime_exception(
@@ -634,8 +655,12 @@ class TurnExecutor:
                 no_progress_tracker.update(conversation)
                 step_index += 1
                 runtime._record_ptl_metric(
-                    triggered=checkpoint_result.continue_reason.value
-                    in {"force_answer", "reroute", "truncation_aware"}
+                    triggered=checkpoint_result.continue_reason
+                    in {
+                        ContinueReason.FORCE_ANSWER,
+                        ContinueReason.REROUTE,
+                        ContinueReason.TRUNCATION_AWARE,
+                    }
                 )
                 continue
 
@@ -808,6 +833,68 @@ class TurnExecutor:
 
         return TurnRecoveryAction(next_state=loop_state)
 
+    def _finalize_interrupted_turn(
+        self,
+        *,
+        user_message: str,
+        conversation: Conversation,
+        current_plan_state: PlanState,
+        turn_id: str,
+        started_at: str,
+        turn_items: list[TurnItem],
+        latest_context_baseline: ContextBaseline | None,
+        activity_events: list[ActivityEvent],
+        streamed_chunks: list[str],
+        progress_updates: list[str],
+    ) -> TurnResponse:
+        runtime = self._runtime
+        interrupt_warning = (
+            "Turn interrupted. Runtime state was preserved; resume from the saved context if needed."
+        )
+        runtime._persist_model_continuation_state(
+            turn_id=turn_id,
+            phase="interrupted",
+        )
+        activity_events.append(
+            ActivityEvent(kind="model_error", message=interrupt_warning)
+        )
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.WARNING,
+                text=interrupt_warning,
+            ),
+        )
+        runtime._save_runtime_state(
+            conversation=conversation,
+            plan_state=current_plan_state,
+        )
+        runtime._session_service.save_suspended_turn(
+            runtime._config.session_id,
+            SuspendedTurn(
+                user_message=user_message,
+                conversation=tuple(conversation.messages),
+                plan_state=current_plan_state,
+            ),
+        )
+        return runtime._finalize_response(
+            response=TurnResponse(
+                assistant_message=interrupt_warning,
+                activity_events=tuple(activity_events),
+                streamed_chunks=tuple(streamed_chunks),
+                progress_updates=tuple(progress_updates),
+                plan_steps=runtime._planning_service.render_steps(current_plan_state),
+            ),
+            turn_id=turn_id,
+            user_message=user_message,
+            started_at=started_at,
+            status=TurnStatus.INTERRUPTED,
+            stop_reason=StopReason.MODEL_ERROR,
+            turn_items=turn_items,
+            context_baseline=latest_context_baseline,
+        )
+
 
 @dataclass(slots=True, frozen=True)
 class LoopState:
@@ -825,6 +912,27 @@ class TurnRecoveryAction:
     next_state: LoopState = LoopState()
     invoke_pre_compact_hook: bool = False
     escalated_max_output_tokens: int | None = None
+
+
+def _apply_l4_recent_file_hints(
+    runtime_reminders: tuple[str, ...],
+    cost_metrics: dict[str, int | float | str | list[str]] | None,
+) -> tuple[str, ...]:
+    if cost_metrics is None:
+        return runtime_reminders
+    raw_files = cost_metrics.get("recent_files")
+    if not isinstance(raw_files, list):
+        return runtime_reminders
+    files = [path for path in raw_files if isinstance(path, str) and path]
+    if not files:
+        return runtime_reminders
+    reminder = (
+        "[Compaction applied. Recent files: "
+        f"{', '.join(files)}. Re-read these files if you need current content.]"
+    )
+    if reminder in runtime_reminders:
+        return runtime_reminders
+    return (*runtime_reminders, reminder)
 
 
 @dataclass(slots=True, frozen=True)

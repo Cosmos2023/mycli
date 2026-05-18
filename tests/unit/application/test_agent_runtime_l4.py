@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from mycli.application.runtime.agent_runtime import AgentRuntime
+from mycli.domain.conversation import Conversation, Message
+from mycli.domain.providers import ProtocolId, ProviderId
+from mycli.domain.runtime import AgentConfig, ModelTurnResult, RuntimeBlock, RuntimeItem
+from mycli.domain.tooling.calls import ToolCall
+from mycli.llms.adapters.base import ModelAction, ModelAdapter, ModelMessage, ModelToolDefinition
+from mycli.tools.registry import ToolRegistry
+
+
+class DoneAdapter(ModelAdapter):
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        return ModelAction(assistant_message="done", done=True)
+
+
+class RuntimeItemSummarizerAdapter:
+    def __init__(self) -> None:
+        self.seen_items: list[list[RuntimeItem]] = []
+
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        del messages, tools
+        return ModelAction(assistant_message="unused", done=True)
+
+    def next_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+    ) -> ModelTurnResult:
+        del tools
+        self.seen_items.append(items)
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="summary"),),
+                ),
+            ),
+            done=True,
+        )
+
+
+class SummarizingDoneAdapter(ModelAdapter):
+    def __init__(self) -> None:
+        self.summarizer_prompts: list[str] = []
+        self.main_requests: list[list[ModelMessage]] = []
+
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        if not tools and messages and "Summarize this conversation" in messages[0].content:
+            self.summarizer_prompts.append(messages[0].content)
+            return ModelAction(
+                assistant_message="## 1. Primary Request\nFull-context L4 summary.",
+                done=True,
+            )
+
+        self.main_requests.append(messages)
+        return ModelAction(assistant_message="done", done=True)
+
+
+class SummarizingToolThenDoneAdapter(ModelAdapter):
+    def __init__(self) -> None:
+        self.summarizer_prompts: list[str] = []
+        self.main_requests: list[list[ModelMessage]] = []
+
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        if not tools and messages and "Summarize this conversation" in messages[0].content:
+            self.summarizer_prompts.append(messages[0].content)
+            return ModelAction(
+                assistant_message="## 1. Primary Request\nFull-context L4 summary.",
+                done=True,
+            )
+
+        self.main_requests.append(messages)
+        if len(self.main_requests) == 1:
+            return ModelAction(
+                progress_message="Inspecting after compaction",
+                tool_call=ToolCall(
+                    call_id="call_ls_after_compaction",
+                    name="LS",
+                    arguments={"path": "."},
+                    reason="verify compacted turn can continue",
+                ),
+                done=False,
+            )
+        return ModelAction(assistant_message="done", done=True)
+
+
+class ThinkingAwareSummarizingAdapter(ModelAdapter):
+    def __init__(self) -> None:
+        self.current_thinking: tuple[bool, object] | None = None
+        self.current_model = "deepseek-v4-flash"
+        self.current_max_output_tokens = 2048
+        self.summarizer_requests: list[
+            tuple[tuple[bool, object] | None, int, str, int]
+        ] = []
+        self.main_requests: list[tuple[tuple[bool, object] | None, int, str, int]] = []
+
+    def set_thinking_config(self, *, enabled: bool, effort: object) -> None:
+        self.current_thinking = (enabled, effort)
+
+    def set_model(self, model: str) -> None:
+        self.current_model = model
+
+    def set_max_output_tokens(self, value: int) -> None:
+        self.current_max_output_tokens = value
+
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        if not tools and messages and "Summarize this conversation" in messages[0].content:
+            self.summarizer_requests.append(
+                (
+                    self.current_thinking,
+                    len(tools),
+                    self.current_model,
+                    self.current_max_output_tokens,
+                )
+            )
+            return ModelAction(
+                assistant_message="## 1. Primary Request\nFull-context L4 summary.",
+                done=True,
+            )
+
+        self.main_requests.append(
+            (
+                self.current_thinking,
+                len(tools),
+                self.current_model,
+                self.current_max_output_tokens,
+            )
+        )
+        return ModelAction(assistant_message="done", done=True)
+
+
+def test_agent_runtime_l4_has_summarizer_client(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=DoneAdapter(),
+    )
+
+    summarizer = runtime._compaction_pipeline.llm_summarization
+
+    assert summarizer._summarizer_client is not None
+    assert summarizer._summarizer_model_name is not None
+
+
+def test_agent_runtime_l4_summarizer_model_falls_back_to_main_model(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime(
+        model_adapter=DoneAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=AgentConfig(workspace_root=tmp_path, model="main-model"),
+        home_dir=tmp_path / "home",
+    )
+
+    summarizer = runtime._compaction_pipeline.llm_summarization
+
+    assert summarizer._summarizer_model_name == "main-model"
+
+
+def test_agent_runtime_l4_summarizer_model_uses_configured_model(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime(
+        model_adapter=DoneAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            model="main-model",
+            compaction_l4_summarizer_model="summary-model",
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    summarizer = runtime._compaction_pipeline.llm_summarization
+
+    assert summarizer._summarizer_model_name == "summary-model"
+
+
+def test_agent_runtime_l4_summarizer_adapter_sends_runtime_items(
+    tmp_path: Path,
+) -> None:
+    adapter = RuntimeItemSummarizerAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    summary = runtime._compaction_pipeline.llm_summarization._call_summarizer(
+        [Message(role="user", content="summarize this")]
+    )
+
+    assert summary == "summary"
+    assert adapter.seen_items
+    assert adapter.seen_items[0]
+    assert "Summarize this conversation" in (adapter.seen_items[0][0].blocks[0].text or "")
+
+
+def test_agent_runtime_l4_triggers_from_full_provider_request_budget(
+    tmp_path: Path,
+) -> None:
+    adapter = SummarizingDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=10_000,
+            compaction_l4_trigger_ratio=0.5,
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(36):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 80),
+            )
+        )
+    conversation_budget = runtime._estimate_window_budget(conversation)
+    runtime._session_service.save_conversation(conversation)
+
+    response = runtime.handle_user_turn("finish from the current context")
+
+    assert response.assistant_message == "done"
+    assert conversation_budget.usage_ratio < runtime._config.compaction_l4_trigger_ratio
+    assert adapter.summarizer_prompts
+    assert adapter.main_requests
+    rendered_main_request = "\n".join(message.content for message in adapter.main_requests[0])
+    assert "Full-context L4 summary." in rendered_main_request
+    assert "Current user request: finish from the current context" in adapter.summarizer_prompts[0]
+
+
+def test_agent_runtime_appends_followup_tools_to_compacted_conversation(
+    tmp_path: Path,
+) -> None:
+    adapter = SummarizingToolThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=10_000,
+            compaction_l4_trigger_ratio=0.5,
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(36):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 80),
+            )
+        )
+    runtime._session_service.save_conversation(conversation)
+
+    response = runtime.handle_user_turn("continue after compaction")
+
+    assert response.assistant_message == "done"
+    assert len(adapter.main_requests) == 2
+    second_request_text = "\n".join(message.content for message in adapter.main_requests[1])
+    assert "Full-context L4 summary." in second_request_text
+    assert "message 0 token" not in second_request_text
+
+
+def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
+    tmp_path: Path,
+) -> None:
+    adapter = ThinkingAwareSummarizingAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=10_000,
+            compaction_l4_trigger_ratio=0.5,
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(36):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 80),
+            )
+        )
+    runtime._session_service.save_conversation(conversation)
+
+    response = runtime.handle_user_turn("finish from the current context")
+
+    assert response.assistant_message == "done"
+    assert adapter.summarizer_requests
+    assert adapter.summarizer_requests[0] == (
+        (False, None),
+        0,
+        "deepseek-v4-flash",
+        600,
+    )
+    assert adapter.main_requests
+    main_thinking, main_tool_count, main_model, main_max_output_tokens = adapter.main_requests[0]
+    assert main_thinking is not None
+    assert main_thinking[0] is True
+    assert main_tool_count > 0
+    assert main_model == "deepseek-v4-flash"
+    assert main_max_output_tokens == 2048

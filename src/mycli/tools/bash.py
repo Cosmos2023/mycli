@@ -8,8 +8,8 @@ import subprocess
 from typing import Any
 from uuid import uuid4
 
-from mycli.domain.tooling.calls import ToolCall, ToolResult
-from mycli.tools.base import ToolParameter, ToolResultV2, ToolSpec
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
 OUTPUT_CHAR_LIMIT = 10_000
@@ -167,13 +167,13 @@ class BashTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict[str, Any]) -> ToolResultV2:
+    def execute(self, arguments: dict[str, Any]) -> ToolResult:
         command_value = arguments.get("command")
         if command_value is None and isinstance(arguments.get("args"), list):
             parts = [part for part in arguments["args"] if isinstance(part, str)]
             command_value = shlex.join(parts)
         if not isinstance(command_value, str) or not command_value:
-            return ToolResultV2(
+            return ToolResult(
                 success=False,
                 summary="Invalid shell command",
                 error="Bash requires command.",
@@ -189,7 +189,7 @@ class BashTool:
             payload.setdefault("stderr", "")
         exit_code = payload.get("exit_code")
         success = exit_code == 0 or payload.get("status") == "running"
-        return ToolResultV2(
+        return ToolResult(
             success=success,
             summary=(
                 f"Command exited with {exit_code}"
@@ -201,4 +201,4 @@ class BashTool:
         )
 
     def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments).to_legacy()
+        return self.execute(call.arguments)
