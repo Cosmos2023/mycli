@@ -76,3 +76,27 @@ def test_safety_policy_marks_file_editing_tools_medium_risk() -> None:
 
 def test_derive_command_pattern_fallbacks_to_first_three_args() -> None:
     assert derive_command_pattern(["docker", "compose", "up", "-d"]) == "docker compose up"
+
+def test_bash_tool_refuses_dedicated_read_command(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    tool = BashTool(workspace_root=tmp_path)
+
+    result = tool.execute({"command": "cat README.md"})
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "dedicated_tool_required"
+    assert result.raw_payload["reroute_tool"] == "Read"
+    assert "Use Read instead" in result.error
+
+
+def test_bash_tool_refuses_denied_command(tmp_path: Path) -> None:
+    tool = BashTool(workspace_root=tmp_path)
+
+    result = tool.execute({"command": "rm -rf /"})
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "shell_command_denied"
+    assert result.error == "rm -rf / is forbidden"
+from pathlib import Path
+
+from mycli.tools.bash import BashTool

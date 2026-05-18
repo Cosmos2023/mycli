@@ -1,55 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from mycli.domain.runtime import DecisionKind, RiskLevel
 from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.bash import derive_command_pattern
-
-
-_SECRET_HINTS = ("secret", "token", "key", "password", "passwd", "pwd", "auth", "credential")
-_VALUE_PREFIXES_TO_MASK = {
-    "--token",
-    "--password",
-    "--secret",
-    "--key",
-    "--auth",
-    "--credential",
-    "-p",
-    "-k",
-    "-t",
-}
-
-
-def _contains_secret_hint(value: str) -> bool:
-    lowered = value.lower()
-    return any(hint in lowered for hint in _SECRET_HINTS)
-
-
-def _redact_shell_preview(args: Iterable[str]) -> str:
-    masked: list[str] = []
-    mask_next = False
-    for arg in args:
-        if mask_next:
-            masked.append("<redacted>")
-            mask_next = False
-            continue
-        if "=" in arg:
-            key, _, _ = arg.partition("=")
-            if _contains_secret_hint(key):
-                masked.append(f"{key}=<redacted>")
-                continue
-        normalized = arg.lower()
-        if normalized in _VALUE_PREFIXES_TO_MASK:
-            masked.append("<redacted>")
-            mask_next = True
-            continue
-        if _contains_secret_hint(arg):
-            masked.append("<redacted>")
-            continue
-        masked.append(arg)
-    return " ".join(masked)
+from mycli.tools.shell_safety import ShellRiskLevel, analyze_shell_command
 
 
 @dataclass(slots=True, frozen=True)
@@ -122,31 +77,37 @@ class SafetyPolicy:
             command_value = call.arguments.get("command")
             args_value = call.arguments.get("args")
             if isinstance(command_value, str) and command_value:
-                args = command_value.split()
+                command = command_value
             elif isinstance(args_value, list) and args_value and all(
                 isinstance(item, str) for item in args_value
             ):
-                args = list(args_value)
+                command = " ".join(args_value)
             else:
                 return ToolSafetyDecision(
                     kind=DecisionKind.DENY,
                     reason="Bash requires a non-empty command.",
                     preview="invalid shell call",
                 )
-            pattern = derive_command_pattern(args)
-            preview = _redact_shell_preview(args)
-            if pattern in {"git push", "git reset --hard", "rm -rf"}:
+            analysis = analyze_shell_command(command)
+            if analysis.risk_level is ShellRiskLevel.DENY:
+                return ToolSafetyDecision(
+                    kind=DecisionKind.DENY,
+                    reason=analysis.reason,
+                    preview=analysis.preview,
+                )
+            if analysis.risk_level is ShellRiskLevel.CONFIRM or analysis.command_pattern == "git push":
+                reason = analysis.reason.replace("piping", "pipe")
                 return ToolSafetyDecision(
                     kind=DecisionKind.NEEDS_CHOICE,
-                    reason=call.reason,
-                    preview=preview,
-                    command_pattern=pattern,
+                    reason=reason,
+                    preview=analysis.preview,
+                    command_pattern=analysis.command_pattern,
                 )
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
-                preview=preview,
-                command_pattern=pattern,
+                preview=analysis.preview,
+                command_pattern=analysis.command_pattern,
             )
         return ToolSafetyDecision(
             kind=DecisionKind.DENY,
