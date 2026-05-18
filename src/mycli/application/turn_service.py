@@ -290,7 +290,8 @@ class TurnService:
         has_budget = bool(snapshot.budget_curve)
         has_context = bool(context_window)
         has_compaction = bool(snapshot.compaction_levels)
-        if not has_budget and not has_context and not has_compaction:
+        has_l4_state = snapshot.l4_last_decision is not None or snapshot.l4_last_source is not None
+        if not has_budget and not has_context and not has_compaction and not has_l4_state:
             return ("no context metrics available",)
 
         lines: list[str] = []
@@ -314,15 +315,16 @@ class TurnService:
             latest_ratio = snapshot.budget_curve[-1]
             budget_label = "total_tokens"
             budget_tokens = int(round(latest_ratio * max_tokens))
-        if usage_ratio is None:
-            usage_ratio = budget_tokens / max_tokens if max_tokens > 0 else 0.0
-        lines.append(
-            "budget "
-            f"{budget_label}={budget_tokens} "
-            f"max_tokens={max_tokens} "
-            f"usage_ratio={usage_ratio:.1%} "
-            f"source={source}"
-        )
+        if budget_tokens > 0 or has_budget or has_context:
+            if usage_ratio is None:
+                usage_ratio = budget_tokens / max_tokens if max_tokens > 0 else 0.0
+            lines.append(
+                "budget "
+                f"{budget_label}={budget_tokens} "
+                f"max_tokens={max_tokens} "
+                f"usage_ratio={usage_ratio:.1%} "
+                f"source={source}"
+            )
 
         if context_window:
             lines.append(
@@ -345,6 +347,11 @@ class TurnService:
                 + f" ratio={snapshot.compaction_ratio:.1%}"
                 + f" last_decision={snapshot.l4_last_decision or 'none'}"
                 + f" source={snapshot.l4_last_source or 'none'}"
+            )
+        elif has_l4_state:
+            lines.append(
+                f"l4 last_decision={snapshot.l4_last_decision or 'none'} "
+                f"source={snapshot.l4_last_source or 'none'}"
             )
         return tuple(lines)
 

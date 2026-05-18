@@ -1019,6 +1019,28 @@ def test_turn_service_inspect_context_uses_budget_curve_when_no_context_window(t
     )
 
 
+def test_turn_service_inspect_context_reports_l4_decision_without_compaction(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._observability_service.metrics.record_l4_decision(
+        decision="skip",
+        source="pre_request",
+    )
+
+    lines = service.inspect_context()
+
+    assert lines != ("no context metrics available",)
+    assert lines == ("l4 last_decision=skip source=pre_request",)
+
+
 def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
