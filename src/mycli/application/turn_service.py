@@ -295,12 +295,22 @@ class TurnService:
 
         lines: list[str] = []
         input_tokens = self._int_metric(context_window.get("input_tokens"))
+        if input_tokens == 0:
+            input_tokens = self._int_metric(context_window.get("total_tokens"))
         max_tokens = self._int_metric(context_window.get("max_tokens")) or self._config.max_prompt_tokens
-        source = str(context_window.get("source") or "estimate")
+        usage_ratio_metric = context_window.get("usage_ratio")
+        usage_ratio = (
+            float(usage_ratio_metric)
+            if isinstance(usage_ratio_metric, (int, float)) and not isinstance(usage_ratio_metric, bool)
+            else None
+        )
+        raw_source = context_window.get("source")
+        source = str(raw_source) if isinstance(raw_source, str) and raw_source else "estimate"
         if input_tokens == 0 and snapshot.budget_curve:
             latest_ratio = snapshot.budget_curve[-1]
             input_tokens = int(round(latest_ratio * max_tokens))
-        usage_ratio = input_tokens / max_tokens if max_tokens > 0 else 0.0
+        if usage_ratio is None:
+            usage_ratio = input_tokens / max_tokens if max_tokens > 0 else 0.0
         lines.append(
             "budget "
             f"input_tokens={input_tokens} "

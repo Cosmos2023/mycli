@@ -130,6 +130,15 @@ class MetricsRegistry:
         self._budget_curve.clear()
         self._context_window.clear()
 
+    def reset_context_metrics(self) -> None:
+        self.reset_window_metrics()
+        self._compaction_before_tokens = 0
+        self._compaction_after_tokens = 0
+        self._compaction_levels.clear()
+        self._consecutive_l4 = 0
+        self._l4_last_decision = None
+        self._l4_last_source = None
+
     def record_ptl_event(self, *, triggered: bool) -> None:
         self._ptl_events += 1
         if triggered:

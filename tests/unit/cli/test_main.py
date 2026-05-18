@@ -911,10 +911,9 @@ def test_turn_service_inspect_context_reports_budget_and_compaction(tmp_path: Pa
     metrics.record_budget(total_tokens=900, max_tokens=1000)
     metrics.record_context_window(
         {
-            "input_tokens": 900,
+            "total_tokens": 900,
             "max_tokens": 1000,
             "usage_ratio": 0.9,
-            "source": "provider",
             "fresh_tokens": 700,
             "tool_result_tokens": 250,
             "duplicate_tool_result_tokens": 50,
@@ -926,7 +925,7 @@ def test_turn_service_inspect_context_reports_budget_and_compaction(tmp_path: Pa
 
     lines = service.inspect_context()
 
-    assert lines[0] == "budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider"
+    assert lines[0] == "budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=estimate"
     assert (
         "context_window fresh_tokens=700 tool_result_tokens=250 "
         "duplicate_tool_result_tokens=50 evictable_tool_result_tokens=100"
@@ -935,6 +934,36 @@ def test_turn_service_inspect_context_reports_budget_and_compaction(tmp_path: Pa
         "compaction L4=1 before_tokens=1200 after_tokens=300 ratio=25.0% "
         "last_decision=summarize source=pre_request"
     ) in lines
+
+
+def test_turn_service_inspect_context_uses_total_tokens_from_runtime_metrics(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    metrics = service._observability_service.metrics
+    metrics.record_budget(total_tokens=100, max_tokens=1000)
+    metrics.record_context_window(
+        {
+            "total_tokens": 900,
+            "max_tokens": 1000,
+            "usage_ratio": 0.9,
+            "fresh_tokens": 700,
+            "tool_result_tokens": 250,
+            "duplicate_tool_result_tokens": 50,
+            "evictable_tool_result_tokens": 100,
+        }
+    )
+
+    lines = service.inspect_context()
+
+    assert lines[0] == "budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=estimate"
 
 
 def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path: Path) -> None:

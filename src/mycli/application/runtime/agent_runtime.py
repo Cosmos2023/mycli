@@ -1231,7 +1231,7 @@ class AgentRuntime:
         self._event_ledger._session_id = session_id
         self._assistant_block_consumer.set_session_id(session_id)
         self._planning_effects.set_session_id(session_id)
-        self._observability_service.metrics.reset_window_metrics()
+        self._observability_service.metrics.reset_context_metrics()
         self._restore_provider_input_budget_metric(session_id)
 
     def handle_user_turn(self, user_message: str) -> TurnResponse:

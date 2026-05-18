@@ -77,6 +77,32 @@ def test_metrics_registry_resets_window_metrics_without_clearing_cost_metrics() 
     assert snapshot.context_window == {}
 
 
+def test_metrics_registry_resets_context_metrics_without_clearing_cache_or_ptl() -> None:
+    registry = MetricsRegistry()
+
+    registry.record_cache_tokens(hit_tokens=75, miss_tokens=25)
+    registry.record_budget(total_tokens=900, max_tokens=1000)
+    registry.record_context_window({"total_tokens": 900, "max_tokens": 1000, "usage_ratio": 0.9})
+    registry.record_compaction(before_tokens=1200, after_tokens=300, level="L4")
+    registry.record_l4_decision(decision="summarize", source="pre_request")
+    registry.record_ptl_event(triggered=True)
+
+    registry.reset_context_metrics()
+
+    snapshot = registry.snapshot()
+    assert snapshot.cache_hit_rate == 0.75
+    assert snapshot.ptl_events == 1
+    assert snapshot.ptl_triggered == 1
+    assert snapshot.budget_curve == ()
+    assert snapshot.context_window == {}
+    assert snapshot.compaction_levels == {}
+    assert snapshot.compaction_before_tokens == 0
+    assert snapshot.compaction_after_tokens == 0
+    assert snapshot.consecutive_l4 == 0
+    assert snapshot.l4_last_decision is None
+    assert snapshot.l4_last_source is None
+
+
 def test_alert_evaluator_flags_cache_drop_consecutive_l4_and_ptl_rate() -> None:
     evaluator = AlertEvaluator(
         cache_hit_drop_threshold=0.2,
