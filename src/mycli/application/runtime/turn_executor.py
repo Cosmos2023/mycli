@@ -483,6 +483,9 @@ class TurnExecutor:
                     before_messages=conversation_before_request_compaction,
                     after_messages=conversation_for_model,
                 )
+                runtime._record_l4_decision_metric(
+                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+                )
                 conversation = conversation_for_model
                 runtime_reminders = _apply_l4_recent_file_hints(
                     tuple(
