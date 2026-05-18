@@ -925,7 +925,7 @@ def test_turn_service_inspect_context_reports_budget_and_compaction(tmp_path: Pa
 
     lines = service.inspect_context()
 
-    assert lines[0] == "budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=estimate"
+    assert lines[0] == "budget total_tokens=900 max_tokens=1000 usage_ratio=90.0% source=estimate"
     assert (
         "context_window fresh_tokens=700 tool_result_tokens=250 "
         "duplicate_tool_result_tokens=50 evictable_tool_result_tokens=100"
@@ -963,7 +963,37 @@ def test_turn_service_inspect_context_uses_total_tokens_from_runtime_metrics(tmp
 
     lines = service.inspect_context()
 
-    assert lines[0] == "budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=estimate"
+    assert lines[0] == "budget total_tokens=900 max_tokens=1000 usage_ratio=90.0% source=estimate"
+
+
+def test_turn_service_inspect_context_preserves_provider_input_token_label(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    metrics = service._observability_service.metrics
+    metrics.record_context_window(
+        {
+            "input_tokens": 640,
+            "max_tokens": 1000,
+            "usage_ratio": 0.64,
+            "source": "provider",
+            "fresh_tokens": 500,
+            "tool_result_tokens": 100,
+            "duplicate_tool_result_tokens": 20,
+            "evictable_tool_result_tokens": 30,
+        }
+    )
+
+    lines = service.inspect_context()
+
+    assert lines[0] == "budget input_tokens=640 max_tokens=1000 usage_ratio=64.0% source=provider"
 
 
 def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path: Path) -> None:

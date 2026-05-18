@@ -59,7 +59,7 @@ def test_metrics_registry_records_latest_context_window_metrics() -> None:
 
     assert snapshot.context_window["usage_ratio"] == 0.9
     assert snapshot.context_window["duplicate_tool_result_count"] == 1
-    assert snapshot.to_dict()["context_window"]["evictable_tool_result_tokens"] == 250
+    assert snapshot.context_window["evictable_tool_result_tokens"] == 250
 
 
 def test_metrics_registry_resets_window_metrics_without_clearing_cost_metrics() -> None:

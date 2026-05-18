@@ -295,8 +295,7 @@ class TurnService:
 
         lines: list[str] = []
         input_tokens = self._int_metric(context_window.get("input_tokens"))
-        if input_tokens == 0:
-            input_tokens = self._int_metric(context_window.get("total_tokens"))
+        total_tokens = self._int_metric(context_window.get("total_tokens"))
         max_tokens = self._int_metric(context_window.get("max_tokens")) or self._config.max_prompt_tokens
         usage_ratio_metric = context_window.get("usage_ratio")
         usage_ratio = (
@@ -306,14 +305,20 @@ class TurnService:
         )
         raw_source = context_window.get("source")
         source = str(raw_source) if isinstance(raw_source, str) and raw_source else "estimate"
-        if input_tokens == 0 and snapshot.budget_curve:
+        budget_label = "input_tokens"
+        budget_tokens = input_tokens
+        if budget_tokens <= 0 and total_tokens > 0:
+            budget_label = "total_tokens"
+            budget_tokens = total_tokens
+        if budget_tokens <= 0 and snapshot.budget_curve:
             latest_ratio = snapshot.budget_curve[-1]
-            input_tokens = int(round(latest_ratio * max_tokens))
+            budget_label = "total_tokens"
+            budget_tokens = int(round(latest_ratio * max_tokens))
         if usage_ratio is None:
-            usage_ratio = input_tokens / max_tokens if max_tokens > 0 else 0.0
+            usage_ratio = budget_tokens / max_tokens if max_tokens > 0 else 0.0
         lines.append(
             "budget "
-            f"input_tokens={input_tokens} "
+            f"{budget_label}={budget_tokens} "
             f"max_tokens={max_tokens} "
             f"usage_ratio={usage_ratio:.1%} "
             f"source={source}"
