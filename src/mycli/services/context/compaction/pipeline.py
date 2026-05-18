@@ -268,36 +268,47 @@ class LLMSummarization:
         budget: ContextBudget,
         *,
         snapshot: FullContextSnapshot | None = None,
+        force: bool = False,
+        source: str = "pre_request",
     ) -> Conversation:
         trigger_ratio = self._active_trigger_ratio(budget.max_tokens)
-        if budget.usage_ratio < trigger_ratio:
-            self._last_cost_metrics = {
-                "buffer_tokens": self._buffer_tokens,
-                "buffer_trigger_ratio": trigger_ratio,
-                "decision": "skip_threshold",
-                "trigger_ratio": trigger_ratio,
-                "usage_ratio": budget.usage_ratio,
-            }
+        if not force and budget.usage_ratio < trigger_ratio:
+            self._record_skip_metrics(
+                {
+                    "buffer_tokens": self._buffer_tokens,
+                    "buffer_trigger_ratio": trigger_ratio,
+                    "decision": "skip_threshold",
+                    "source": source,
+                    "trigger_ratio": trigger_ratio,
+                    "usage_ratio": budget.usage_ratio,
+                }
+            )
             return conversation
         if self._failure_count >= self._max_failures:
-            self._last_cost_metrics = {
-                "buffer_tokens": self._buffer_tokens,
-                "buffer_trigger_ratio": trigger_ratio,
-                "decision": "skip_failures",
-                "trigger_ratio": trigger_ratio,
-                "usage_ratio": budget.usage_ratio,
-            }
+            self._record_skip_metrics(
+                {
+                    "buffer_tokens": self._buffer_tokens,
+                    "buffer_trigger_ratio": trigger_ratio,
+                    "decision": "skip_failures",
+                    "source": source,
+                    "trigger_ratio": trigger_ratio,
+                    "usage_ratio": budget.usage_ratio,
+                }
+            )
             return conversation
         fresh_messages = conversation.messages[zones.fresh_start :]
         if len(fresh_messages) < 4:
-            self._last_cost_metrics = {
-                "buffer_tokens": self._buffer_tokens,
-                "buffer_trigger_ratio": trigger_ratio,
-                "decision": "skip_small_window",
-                "fresh_message_count": len(fresh_messages),
-                "trigger_ratio": trigger_ratio,
-                "usage_ratio": budget.usage_ratio,
-            }
+            self._record_skip_metrics(
+                {
+                    "buffer_tokens": self._buffer_tokens,
+                    "buffer_trigger_ratio": trigger_ratio,
+                    "decision": "skip_small_window",
+                    "fresh_message_count": len(fresh_messages),
+                    "source": source,
+                    "trigger_ratio": trigger_ratio,
+                    "usage_ratio": budget.usage_ratio,
+                }
+            )
             return conversation
 
         split_index = _find_safe_split(fresh_messages, len(fresh_messages) // 2)
@@ -305,6 +316,7 @@ class LLMSummarization:
         if not to_summarize:
             return conversation
         cost_metrics = self._estimate_cost_metrics(to_summarize, trigger_ratio, budget)
+        cost_metrics["source"] = source
         cost_metrics["recent_files"] = _collect_recent_files(fresh_messages, n=3)
         if self._should_skip_for_cost(cost_metrics):
             cost_metrics["decision"] = "skip_cost"
@@ -347,6 +359,16 @@ class LLMSummarization:
             *fresh_messages[split_index:],
         ]
         return compacted
+
+    def _record_skip_metrics(self, metrics: CompactionCostMetrics) -> None:
+        if (
+            self._last_cost_metrics is not None
+            and self._last_cost_metrics.get("decision") == "summarize"
+            and self._last_cost_metrics.get("source") == "reactive_error"
+            and metrics.get("source") == "pre_request"
+        ):
+            return
+        self._last_cost_metrics = metrics
 
     def _active_trigger_ratio(self, max_tokens: int | None = None) -> float:
         if self._model_name is None:

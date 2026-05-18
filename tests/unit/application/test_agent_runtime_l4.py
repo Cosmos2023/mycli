@@ -5,9 +5,16 @@ from pathlib import Path
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.providers import ProtocolId, ProviderId
-from mycli.domain.runtime import AgentConfig, ModelTurnResult, RuntimeBlock, RuntimeItem
+from mycli.domain.runtime import (
+    AgentConfig,
+    ModelTurnResult,
+    RuntimeBlock,
+    RuntimeItem,
+    StopReason,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAction, ModelAdapter, ModelMessage, ModelToolDefinition
+from mycli.llms import ModelResponseError
 from mycli.tools.registry import ToolRegistry
 
 
@@ -156,6 +163,33 @@ class ThinkingAwareSummarizingAdapter(ModelAdapter):
             )
         )
         return ModelAction(assistant_message="done", done=True)
+
+
+class ContextWindowThenReactiveSummaryAdapter(ModelAdapter):
+    def __init__(self) -> None:
+        self.main_requests: list[list[ModelMessage]] = []
+        self.summarizer_prompts: list[str] = []
+
+    def next_action(
+        self,
+        *,
+        messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> ModelAction:
+        if not tools and messages and "Summarize this conversation" in messages[0].content:
+            self.summarizer_prompts.append(messages[0].content)
+            return ModelAction(
+                assistant_message="## 1. Primary Request\nReactive summary.",
+                done=True,
+            )
+        self.main_requests.append(messages)
+        if len(self.main_requests) <= 2:
+            raise ModelResponseError(
+                "prompt is too long",
+                stop_reason=StopReason.CONTEXT_WINDOW_EXCEEDED,
+                failure_kind="context_window_exceeded",
+            )
+        return ModelAction(assistant_message="recovered", done=True)
 
 
 def test_agent_runtime_l4_has_summarizer_client(tmp_path: Path) -> None:
@@ -358,6 +392,47 @@ def test_agent_runtime_l4_rehydrates_recent_file_without_persisting_snapshot(
         for message in persisted.messages
         if message.metadata.get("compaction") is True
     )
+
+
+def test_agent_runtime_reactive_compacts_once_after_context_window_error(
+    tmp_path: Path,
+) -> None:
+    adapter = ContextWindowThenReactiveSummaryAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=100_000,
+            compaction_l4_trigger_ratio=0.95,
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(20):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 50),
+            )
+        )
+    runtime._session_service.save_conversation(conversation)
+
+    response = runtime.handle_user_turn("recover from provider overflow")
+
+    assert response.assistant_message == "recovered"
+    assert len(adapter.summarizer_prompts) == 1
+    assert len(adapter.main_requests) == 3
+    retry_text = "\n".join(message.content for message in adapter.main_requests[-1])
+    assert "Reactive summary." in retry_text
+    metrics = runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+    assert metrics is not None
+    assert metrics["source"] == "reactive_error"
 
 
 def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(

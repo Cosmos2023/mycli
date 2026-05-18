@@ -592,6 +592,49 @@ class TurnExecutor:
                                 },
                             ),
                         )
+                        if not loop_state.reactive_compact_attempted:
+                            before_reactive = conversation
+                            reactive_budget = ContextBudget(
+                                max_tokens=runtime._config.max_prompt_tokens,
+                                total_tokens=runtime._config.max_prompt_tokens,
+                            )
+                            reactive_compacted = (
+                                runtime._compaction_pipeline.llm_summarization.apply(
+                                    conversation,
+                                    CacheZones.from_conversation(conversation),
+                                    reactive_budget,
+                                    snapshot=runtime._full_context_snapshot(request_shape),
+                                    force=True,
+                                    source="reactive_error",
+                                )
+                            )
+                            loop_state = LoopState(
+                                context_window_retries=loop_state.context_window_retries,
+                                transport_retries=loop_state.transport_retries,
+                                output_token_retries=loop_state.output_token_retries,
+                                context_recovery_stage="reactive_compact",
+                                reactive_compact_attempted=True,
+                            )
+                            if reactive_compacted is not before_reactive:
+                                conversation = reactive_compacted
+                                runtime._record_compaction_metric(
+                                    before_messages=before_reactive,
+                                    after_messages=reactive_compacted,
+                                )
+                                carryover_runtime_reminders = tuple(
+                                    dict.fromkeys(
+                                        (
+                                            *carryover_runtime_reminders,
+                                            *runtime._build_l4_rehydration_reminders(
+                                                runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+                                            ),
+                                            *_apply_l4_recent_file_hints(
+                                                (),
+                                                runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
+                                            ),
+                                        )
+                                    )
+                                )
                     continue
                 return self._error_finalizer.finalize_model_error(
                     user_message=user_message,
@@ -747,6 +790,7 @@ class TurnExecutor:
                         transport_retries=loop_state.transport_retries,
                         output_token_retries=loop_state.output_token_retries,
                         context_recovery_stage="collapse_drain",
+                        reactive_compact_attempted=loop_state.reactive_compact_attempted,
                     ),
                 )
             if loop_state.context_window_retries == 1:
@@ -769,6 +813,7 @@ class TurnExecutor:
                         transport_retries=loop_state.transport_retries,
                         output_token_retries=loop_state.output_token_retries,
                         context_recovery_stage="reactive_compact",
+                        reactive_compact_attempted=False,
                     ),
                     invoke_pre_compact_hook=True,
                 )
@@ -798,6 +843,7 @@ class TurnExecutor:
                         transport_retries=loop_state.transport_retries,
                         output_token_retries=1,
                         context_recovery_stage=loop_state.context_recovery_stage,
+                        reactive_compact_attempted=loop_state.reactive_compact_attempted,
                     ),
                     escalated_max_output_tokens=65_536,
                 )
@@ -820,6 +866,7 @@ class TurnExecutor:
                     transport_retries=loop_state.transport_retries,
                     output_token_retries=loop_state.output_token_retries + 1,
                     context_recovery_stage=loop_state.context_recovery_stage,
+                    reactive_compact_attempted=loop_state.reactive_compact_attempted,
                 ),
             )
 
@@ -846,6 +893,7 @@ class TurnExecutor:
                     transport_retries=loop_state.transport_retries + 1,
                     output_token_retries=loop_state.output_token_retries,
                     context_recovery_stage=loop_state.context_recovery_stage,
+                    reactive_compact_attempted=loop_state.reactive_compact_attempted,
                 ),
             )
 
@@ -920,6 +968,7 @@ class LoopState:
     transport_retries: int = 0
     output_token_retries: int = 0
     context_recovery_stage: str | None = None
+    reactive_compact_attempted: bool = False
 
 
 @dataclass(slots=True, frozen=True)
