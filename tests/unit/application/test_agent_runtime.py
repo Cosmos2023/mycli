@@ -2389,7 +2389,6 @@ def test_agent_runtime_records_provider_input_tokens_for_budget_curve(
 
     snapshot = runtime._observability_service.snapshot()
     assert snapshot.budget_curve == (0.5,)
-    assert runtime._session_service.load_turn_rollouts("first")
     assert runtime._session_service.load_turn_record(runtime._config.session_id) is not None
     turn = runtime._session_service.load_turn_record(runtime._config.session_id)
     assert turn is not None
@@ -2448,6 +2447,7 @@ def test_agent_runtime_restores_provider_input_budget_when_rebinding_session(
 
     snapshot = runtime._observability_service.snapshot()
     assert snapshot.budget_curve == (0.5,)
+    assert runtime._session_service.load_turn_rollouts("first")
 
 
 class RepeatMissingReadAdapter:

@@ -345,7 +345,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "I will read README.",
         "README contents",
         "summarize the result",
-        "Available skills:\n- code-review: Review code",
+        "Runtime reminders: use compact answers\nAvailable skills:\n- code-review: Review code",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
@@ -370,11 +370,11 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         for block in item.blocks
     )
     assert "Current user request:" not in runtime_payload
-    assert "Runtime reminders:" not in runtime_payload
+    assert "Runtime reminders:" in runtime_payload
     assert "Workspace root:" not in runtime_payload
     assert "Available skills:" in runtime_payload
     provider_payload = "\n".join(message.content for message in shape.provider_messages)
-    assert "Runtime reminders:" not in provider_payload
+    assert "Runtime reminders:" in provider_payload
     assert "Workspace root:" not in provider_payload
     assert "Available skills:" in provider_payload
     assistant_message = shape.provider_messages[2]
@@ -390,7 +390,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     }
 
 
-def test_request_shape_builder_excludes_runtime_reminders_from_chat_completions_payload(
+def test_request_shape_builder_includes_runtime_reminders_in_chat_completions_payload(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -420,7 +420,7 @@ def test_request_shape_builder_excludes_runtime_reminders_from_chat_completions_
 
     payload = "\n".join(message.content for message in shape.provider_messages)
 
-    assert "Runtime reminders:" not in payload
+    assert "Runtime reminders:" in payload
 
 
 def test_request_shape_builder_filters_orphan_tool_messages_for_chat_completions(
