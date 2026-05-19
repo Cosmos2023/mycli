@@ -25,6 +25,7 @@ from mycli.services.mcp import (
 )
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.bash import BashTool
+from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.edit import EditTool
 from mycli.tools.file_snapshot import FileSnapshotStore
 from mycli.tools.glob import GlobTool
@@ -114,6 +115,7 @@ def build_turn_service(
             GlobTool(workspace_root),
             LSTool(workspace_root),
             BashTool(workspace_root),
+            BashOutputTool(),
             KillShellTool(),
             WebSearchTool(),
             WebFetchTool(),

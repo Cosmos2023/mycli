@@ -5,7 +5,6 @@ from pathlib import Path
 import shlex
 import subprocess
 from typing import Any
-from uuid import uuid4
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
@@ -15,13 +14,14 @@ from mycli.tools.shell_safety import (
     dedicated_tool_for_command,
     derive_command_pattern as _derive_command_pattern,
 )
+from mycli.tools.shell_registry import SHELL_REGISTRY
 
 
 OUTPUT_CHAR_LIMIT = 10_000
 OUTPUT_HEAD_CHARS = 6_000
 OUTPUT_TAIL_CHARS = 4_000
 
-_background_processes: dict[str, subprocess.Popen[str]] = {}
+_background_processes = SHELL_REGISTRY.processes()
 
 
 def check_dangerous(command: str) -> tuple[bool, str]:
@@ -82,18 +82,15 @@ def _run_background(
     timeout: int,
     workdir: str | None,
 ) -> dict[str, Any]:
-    proc = subprocess.Popen(
-        command,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=workdir or os.getcwd(),
-        executable=os.environ.get("SHELL", "/bin/bash"),
-    )
-    bash_id = str(uuid4())[:8]
-    _background_processes[bash_id] = proc
-    return {"bash_id": bash_id, "status": "running", "timeout": timeout}
+    shell = SHELL_REGISTRY.start(command, workdir=workdir)
+    _background_processes.clear()
+    _background_processes.update(SHELL_REGISTRY.processes())
+    return {
+        "bash_id": shell.shell_id,
+        "shell_id": shell.shell_id,
+        "status": "running",
+        "timeout": timeout,
+    }
 
 
 def _combine_output(stdout: str, stderr: str) -> str:

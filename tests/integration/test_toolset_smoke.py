@@ -1,6 +1,7 @@
 def test_all_tools_importable():
     from mycli.tools.ask_user_question import AskUserQuestionTool
     from mycli.tools.bash import BashTool
+    from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
     from mycli.tools.glob import GlobTool
     from mycli.tools.grep import GrepTool
@@ -24,6 +25,7 @@ def test_all_tools_importable():
             GlobTool,
             LSTool,
             BashTool,
+            BashOutputTool,
             KillShellTool,
             WebSearchTool,
             WebFetchTool,
@@ -49,6 +51,7 @@ def test_all_tools_registered():
         "Glob",
         "LS",
         "Bash",
+        "BashOutput",
         "KillShell",
         "WebSearch",
         "WebFetch",

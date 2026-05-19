@@ -17,6 +17,7 @@ def handle_slash_command(command: str) -> str:
                 "/plan",
                 "/trace",
                 "/tools",
+                "/bashes",
                 "/undo",
                 "/resume <session>",
                 "/fork [source] <new-session> [message-index]",
@@ -41,6 +42,8 @@ def build_command_handler(
             return [f"[skill] {line}" for line in service.inspect_skills()]
         if command == "/tools":
             return [f"[tool] {line}" for line in service.inspect_tools()]
+        if command == "/bashes":
+            return [f"[bash] {line}" for line in service.inspect_bashes()]
         if command == "/memory":
             return [f"[memory] {line}" for line in service.inspect_memory()]
         if command == "/plan":

@@ -157,6 +157,17 @@ class TurnService:
             for spec in specs.values()
         )
 
+    def inspect_bashes(self) -> tuple[str, ...]:
+        from mycli.tools.shell_registry import SHELL_REGISTRY
+
+        rows = SHELL_REGISTRY.list()
+        if not rows:
+            return ("no background shells",)
+        return tuple(
+            f"{row['shell_id']} {row['status']} exit={row['exit_code']} {row['command']}"
+            for row in rows
+        )
+
     def inspect_memory(self) -> tuple[str, ...]:
         records = self._memory_service.list_records(self._config.session_id)
         lines = [f"{record.kind.value} {record.key}={record.value}" for record in records[:10]]

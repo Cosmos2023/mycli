@@ -62,6 +62,7 @@ def test_help_lists_sessions_command() -> None:
     assert "/session" in output
     assert "/sessions" in output
     assert "/context" in output
+    assert "/bashes" in output
 
 
 def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> None:
@@ -91,6 +92,7 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
     assert service._tool_registry.list_names() == [
         "AskUserQuestion",
         "Bash",
+        "BashOutput",
         "Edit",
         "Glob",
         "Grep",
