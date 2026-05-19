@@ -36,6 +36,48 @@ class FakeAnthropicMessagesClient:
         return self.payload
 
 
+class FakeStreamingAnthropicMessagesClient(FakeAnthropicMessagesClient):
+    def stream_message(self, *, system, messages, tools):
+        self.captured_system = system
+        self.captured_messages = messages
+        self.captured_tools = tools
+        yield {"type": "reasoning", "text": "Need a concise answer."}
+        yield {"type": "text_delta", "text": "anthropic "}
+        yield {"type": "text_delta", "text": "ok"}
+        yield {
+            "type": "completed",
+            "response_id": "msg_stream_1",
+            "metadata": {"usage": {"input_tokens": 9, "output_tokens": 2}},
+        }
+
+
+def test_anthropic_adapter_stream_turn_uses_client_stream_message() -> None:
+    client = FakeStreamingAnthropicMessagesClient({"id": "unused", "content": []})
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    events = list(
+        adapter.stream_turn(
+            items=[
+                RuntimeItem(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text="Say ok."),),
+                )
+            ],
+            tools=[],
+        )
+    )
+
+    assert [event["type"] for event in events] == [
+        "reasoning",
+        "text_delta",
+        "text_delta",
+        "completed",
+    ]
+    assert client.captured_messages == [
+        {"role": "user", "content": [{"type": "text", "text": "Say ok."}]}
+    ]
+
+
 def test_anthropic_adapter_serializes_system_developer_messages_and_tools() -> None:
     client = FakeAnthropicMessagesClient(
         {

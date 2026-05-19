@@ -94,6 +94,22 @@ class AnthropicMessagesModelAdapter:
         )
         return self._to_turn_result(payload)
 
+    def stream_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+    ):
+        system, messages = self._serialize_items(items)
+        stream_message = getattr(self._client, "stream_message", None)
+        if not callable(stream_message):
+            raise AttributeError("client does not support streaming")
+        yield from stream_message(
+            system=system,
+            messages=messages,
+            tools=self._serialize_tools(tools),
+        )
+
     def _serialize_items(
         self,
         items: list[RuntimeItem],

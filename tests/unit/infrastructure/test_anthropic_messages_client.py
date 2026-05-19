@@ -35,6 +35,51 @@ class FakeMessagesResource:
         return self.payload
 
 
+class FakeMessagesStreamResource(FakeMessagesResource):
+    def __init__(self) -> None:
+        super().__init__({"id": "unused", "content": []})
+
+    def stream(self, **kwargs: object):
+        self.kwargs = dict(kwargs)
+        return iter(
+            [
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "Thinking."},
+                },
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "hello "},
+                },
+                {
+                    "type": "content_block_delta",
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": '{"file_path":"README.md"}',
+                    },
+                    "index": 1,
+                },
+                {
+                    "type": "content_block_stop",
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Read",
+                        "input": {"file_path": "README.md"},
+                    },
+                },
+                {
+                    "type": "message_stop",
+                    "message": {
+                        "id": "msg_stream_1",
+                        "usage": {"input_tokens": 9, "output_tokens": 2},
+                    },
+                },
+            ]
+        )
+
+
 class FakeAnthropicSdkClient:
     def __init__(
         self,
@@ -42,6 +87,11 @@ class FakeAnthropicSdkClient:
         error: Exception | None = None,
     ) -> None:
         self.messages = FakeMessagesResource(payload, error)
+
+
+class FakeAnthropicStreamingSdkClient:
+    def __init__(self) -> None:
+        self.messages = FakeMessagesStreamResource()
 
 
 def _build_log_service(tmp_path: Path) -> WorkspaceLogService:
@@ -101,6 +151,38 @@ def test_anthropic_client_builds_messages_request_with_thinking(
     }
     assert list((tmp_path / "log" / "model-raw").glob("*-request.json"))
     assert list((tmp_path / "log" / "model-raw").glob("*-response.json"))
+
+
+def test_anthropic_client_stream_message_normalizes_events(tmp_path: Path) -> None:
+    sdk_client = FakeAnthropicStreamingSdkClient()
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        max_output_tokens=4096,
+        log_service=_build_log_service(tmp_path),
+        sdk_client=sdk_client,
+    )
+
+    events = list(
+        client.stream_message(
+            system=None,
+            messages=[{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
+            tools=[],
+        )
+    )
+
+    assert [event["type"] for event in events] == [
+        "reasoning",
+        "text_delta",
+        "tool_call",
+        "completed",
+    ]
+    assert events[0]["text"] == "Thinking."
+    assert events[1]["text"] == "hello "
+    assert events[2]["block"].tool_name == "Read"
+    assert events[3]["response_id"] == "msg_stream_1"
+    assert events[3]["metadata"] == {"usage": {"input_tokens": 9, "output_tokens": 2}}
 
 
 def test_anthropic_client_disables_thinking_explicitly(tmp_path: Path) -> None:

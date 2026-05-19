@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 from anthropic import (
@@ -13,7 +13,7 @@ from anthropic import (
 )
 
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
-from mycli.domain.runtime import StopReason
+from mycli.domain.runtime import RuntimeBlock, StopReason
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.utils.workspace_logger import WorkspaceLogService
@@ -116,18 +116,11 @@ class AnthropicMessagesClient:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> dict[str, object]:
-        payload_body: dict[str, object] = {
-            "model": self._model,
-            "max_tokens": self._max_output_tokens,
-            "messages": messages,
-        }
-        if system is not None:
-            payload_body["system"] = system
-        if tools:
-            payload_body["tools"] = tools
-        thinking = self._thinking_payload()
-        if thinking is not None:
-            payload_body["thinking"] = thinking
+        payload_body = self._message_payload_body(
+            system=system,
+            messages=messages,
+            tools=tools,
+        )
         request_path = self._log_request(payload_body)
         try:
             payload = _payload_to_dict(
@@ -177,6 +170,185 @@ class AnthropicMessagesClient:
             response_path=self._log_response(payload),
         )
         return payload
+
+    def stream_message(
+        self,
+        *,
+        system: str | None,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> Iterator[dict[str, object]]:
+        payload_body = self._message_payload_body(
+            system=system,
+            messages=messages,
+            tools=tools,
+        )
+        request_path = self._log_request(payload_body)
+        try:
+            stream = cast(Any, self._sdk_client).messages.stream(**payload_body)
+            yield from self._events_from_message_stream(stream)
+        except APIStatusError as exc:
+            raise self._status_error(exc=exc, request_path=request_path) from exc
+        except (APIConnectionError, APITimeoutError) as exc:
+            detail = str(exc)
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={"error_type": type(exc).__name__, "message": detail},
+            )
+            raise ModelResponseError(
+                f"Failed to reach Anthropic provider: {detail}",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+                stop_reason=StopReason.MODEL_ERROR,
+                is_retryable=True,
+                failure_kind="provider_connection_error",
+            ) from exc
+        except (APIResponseValidationError, TypeError) as exc:
+            detail = str(exc)
+            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                    "response_body": response_body,
+                },
+            )
+            raise ModelResponseError(
+                "Anthropic provider stream did not serialize to JSON objects.",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+                stop_reason=StopReason.MODEL_ERROR,
+                failure_kind="provider_response_parse_error",
+            ) from exc
+        self._log_service_event(
+            level=LogLevel.INFO,
+            event="model_response_received",
+            message="Received Anthropic Messages stream",
+            request_path=request_path,
+        )
+
+    def _message_payload_body(
+        self,
+        *,
+        system: str | None,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> dict[str, object]:
+        payload_body: dict[str, object] = {
+            "model": self._model,
+            "max_tokens": self._max_output_tokens,
+            "messages": messages,
+        }
+        if system is not None:
+            payload_body["system"] = system
+        if tools:
+            payload_body["tools"] = tools
+        thinking = self._thinking_payload()
+        if thinking is not None:
+            payload_body["thinking"] = thinking
+        return payload_body
+
+    def _events_from_message_stream(
+        self,
+        stream: object,
+    ) -> Iterator[dict[str, object]]:
+        input_json_by_index: dict[int, str] = {}
+        response_id: str | None = None
+        usage: dict[str, object] | None = None
+        for event in self._iter_stream_payloads(stream):
+            payload = _payload_to_dict(event)
+            event_type = payload.get("type")
+            if event_type == "content_block_delta":
+                delta = payload.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                delta_type = delta.get("type")
+                if delta_type == "thinking_delta":
+                    thinking = delta.get("thinking")
+                    if isinstance(thinking, str) and thinking:
+                        yield {"type": "reasoning", "text": thinking}
+                    continue
+                if delta_type == "text_delta":
+                    text = delta.get("text")
+                    if isinstance(text, str) and text:
+                        yield {"type": "text_delta", "text": text}
+                    continue
+                if delta_type == "input_json_delta":
+                    index = self._stream_event_index(payload)
+                    partial_json = delta.get("partial_json")
+                    if isinstance(partial_json, str):
+                        input_json_by_index[index] = (
+                            input_json_by_index.get(index, "") + partial_json
+                        )
+                    continue
+            if event_type == "content_block_stop":
+                block = payload.get("content_block")
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "tool_use":
+                    continue
+                index = self._stream_event_index(payload)
+                raw_input = block.get("input")
+                tool_input = raw_input if isinstance(raw_input, dict) else None
+                if tool_input is None:
+                    tool_input = self._load_stream_tool_input(
+                        input_json_by_index.get(index, "")
+                    )
+                name = block.get("name")
+                tool_id = block.get("id")
+                if isinstance(name, str) and isinstance(tool_id, str):
+                    yield {
+                        "type": "tool_call",
+                        "block": RuntimeBlock(
+                            type="tool_call",
+                            tool_name=name,
+                            tool_arguments=tool_input,
+                            call_id=tool_id,
+                            provider_id=tool_id,
+                            source="native",
+                            metadata={"anthropic": dict(block)},
+                        ),
+                    }
+                continue
+            if event_type == "message_stop":
+                message = payload.get("message")
+                if isinstance(message, dict):
+                    raw_id = message.get("id")
+                    if isinstance(raw_id, str):
+                        response_id = raw_id
+                    raw_usage = message.get("usage")
+                    if isinstance(raw_usage, dict):
+                        usage = raw_usage
+                continue
+        yield {
+            "type": "completed",
+            "response_id": response_id,
+            "metadata": {"usage": usage} if usage is not None else {},
+        }
+
+    def _iter_stream_payloads(self, stream: object) -> Iterator[object]:
+        enter = getattr(stream, "__enter__", None)
+        if callable(enter):
+            with stream as active_stream:
+                yield from active_stream
+            return
+        yield from cast(Any, stream)
+
+    def _stream_event_index(self, payload: dict[str, object]) -> int:
+        index = payload.get("index")
+        return index if isinstance(index, int) else 0
+
+    def _load_stream_tool_input(self, raw_json: str) -> dict[str, object]:
+        if not raw_json.strip():
+            return {}
+        try:
+            loaded = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
 
     def _thinking_payload(self) -> dict[str, object] | None:
         if not self._thinking_enabled:
