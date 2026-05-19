@@ -127,6 +127,25 @@ def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:
     assert isinstance(snapshot["mtime_ns"], int)
 
 
+def test_read_file_uses_read_payload_for_snapshot_metadata(monkeypatch, tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("hello world\n", encoding="utf-8")
+
+    def fail_fallback_snapshot(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ReadTool should not re-read text files for snapshots")
+
+    monkeypatch.setattr("mycli.tools.read.build_file_snapshot", fail_fallback_snapshot)
+
+    tool = ReadTool(root)
+    result = tool.run(
+        ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect")
+    )
+
+    assert result.success is True
+    assert result.raw_payload["snapshot"]["path"] == "README.md"
+
+
 def test_read_file_returns_structured_failure_for_missing_file(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()

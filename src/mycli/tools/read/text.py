@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+import hashlib
+import os
 from pathlib import Path
 
 from mycli.services.context.token_counter import TokenCounter
@@ -18,7 +21,10 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
         return {"error": f"[Path is a directory: {file_path}. Use LS to browse.]"}
 
     try:
-        content = path.read_text(encoding="utf-8")
+        with path.open("rb") as handle:
+            raw_content = handle.read()
+            stat = os.fstat(handle.fileno())
+        content = raw_content.decode("utf-8")
     except UnicodeDecodeError as exc:
         return {"error": f"[Cannot decode file as UTF-8: {file_path}: {exc}]"}
 
@@ -32,7 +38,6 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
         }
 
     total_chars = len(content)
-    stat = path.stat()
     original_total_lines = len(content.splitlines())
     view_content = content
 
@@ -60,7 +65,9 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
     return {
         "content": output,
         "mtime_ns": stat.st_mtime_ns,
-        "size": stat.st_size,
+        "size": len(raw_content),
+        "sha256": hashlib.sha256(raw_content).hexdigest(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "total_chars": total_chars,
         "total_tokens": total_tokens,
         "total_lines": original_total_lines,

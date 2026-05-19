@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 import hashlib
+import os
 from pathlib import Path
 
 
@@ -35,10 +36,29 @@ def build_file_snapshot(*, workspace_root: Path, path: Path) -> FileSnapshot:
     if resolved != root and root not in resolved.parents:
         raise ValueError("Path must stay within the current workspace.")
     stat = resolved.stat()
+    return build_file_snapshot_from_bytes(
+        workspace_root=workspace_root,
+        path=path,
+        content=resolved.read_bytes(),
+        stat_result=stat,
+    )
+
+
+def build_file_snapshot_from_bytes(
+    *,
+    workspace_root: Path,
+    path: Path,
+    content: bytes,
+    stat_result: os.stat_result,
+) -> FileSnapshot:
+    root = workspace_root.resolve()
+    resolved = path.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("Path must stay within the current workspace.")
     return FileSnapshot(
         path=resolved.relative_to(root).as_posix(),
-        sha256=hashlib.sha256(resolved.read_bytes()).hexdigest(),
-        mtime_ns=stat.st_mtime_ns,
-        size=stat.st_size,
+        sha256=hashlib.sha256(content).hexdigest(),
+        mtime_ns=stat_result.st_mtime_ns,
+        size=len(content),
         captured_at=datetime.now(UTC).isoformat(),
     )

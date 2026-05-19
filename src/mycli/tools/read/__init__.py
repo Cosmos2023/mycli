@@ -7,7 +7,11 @@ from typing import Any, Callable, cast
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
-from mycli.tools.file_snapshot import FileSnapshotStore, build_file_snapshot
+from mycli.tools.file_snapshot import (
+    FileSnapshot,
+    FileSnapshotStore,
+    build_file_snapshot,
+)
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
 
 
@@ -199,10 +203,16 @@ class ReadTool:
                 raw_payload={"path": raw_path, "error_kind": error_kind, **payload},
             )
 
-        try:
-            snapshot = build_file_snapshot(workspace_root=self._workspace_root, path=target)
-        except OSError:
-            snapshot = None
+        snapshot = _snapshot_from_read_payload(
+            workspace_root=self._workspace_root,
+            target=target,
+            payload=payload,
+        )
+        if snapshot is None:
+            try:
+                snapshot = build_file_snapshot(workspace_root=self._workspace_root, path=target)
+            except OSError:
+                snapshot = None
         if snapshot is not None:
             self._snapshot_store.record(snapshot)
             payload["snapshot"] = snapshot.to_dict()
@@ -244,3 +254,31 @@ def _strip_read_line_numbers(content: str) -> str:
         _, separator, text = line.partition("\t")
         lines.append(text if separator else line)
     return "\n".join(lines)
+
+
+def _snapshot_from_read_payload(
+    *,
+    workspace_root: Path,
+    target: Path,
+    payload: dict[str, Any],
+) -> FileSnapshot | None:
+    raw_sha = payload.get("sha256")
+    raw_mtime = payload.get("mtime_ns")
+    raw_size = payload.get("size")
+    if not isinstance(raw_sha, str) or not raw_sha:
+        return None
+    if isinstance(raw_mtime, bool) or not isinstance(raw_mtime, int):
+        return None
+    if isinstance(raw_size, bool) or not isinstance(raw_size, int):
+        return None
+    root = workspace_root.resolve()
+    resolved = target.resolve()
+    if resolved != root and root not in resolved.parents:
+        return None
+    return FileSnapshot(
+        path=resolved.relative_to(root).as_posix(),
+        sha256=raw_sha,
+        mtime_ns=raw_mtime,
+        size=raw_size,
+        captured_at=str(payload.get("captured_at") or ""),
+    )
