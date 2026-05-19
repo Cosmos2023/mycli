@@ -110,6 +110,23 @@ def test_read_file_exposes_file_excerpt_evidence(tmp_path: Path) -> None:
     assert "second line" in evidence.snippet
 
 
+def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("hello world\n", encoding="utf-8")
+
+    tool = ReadTool(root)
+    result = tool.run(
+        ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect")
+    )
+
+    snapshot = result.raw_payload["snapshot"]
+    assert snapshot["path"] == "README.md"
+    assert snapshot["sha256"]
+    assert snapshot["size"] == len("hello world\n".encode("utf-8"))
+    assert isinstance(snapshot["mtime_ns"], int)
+
+
 def test_read_file_returns_structured_failure_for_missing_file(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()

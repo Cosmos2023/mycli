@@ -32,6 +32,7 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
         }
 
     total_chars = len(content)
+    stat = path.stat()
     original_total_lines = len(content.splitlines())
     view_content = content
 
@@ -58,6 +59,8 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
 
     return {
         "content": output,
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
         "total_chars": total_chars,
         "total_tokens": total_tokens,
         "total_lines": original_total_lines,

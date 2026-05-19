@@ -7,6 +7,7 @@ from typing import Any, Callable, cast
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.file_snapshot import FileSnapshotStore, build_file_snapshot
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
 
 
@@ -156,8 +157,11 @@ class ReadTool:
         risk_level="low",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(
+        self, workspace_root: Path, snapshot_store: FileSnapshotStore | None = None
+    ) -> None:
         self._workspace_root = workspace_root
+        self._snapshot_store = snapshot_store or FileSnapshotStore()
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
@@ -194,6 +198,14 @@ class ReadTool:
                 error=error,
                 raw_payload={"path": raw_path, "error_kind": error_kind, **payload},
             )
+
+        try:
+            snapshot = build_file_snapshot(workspace_root=self._workspace_root, path=target)
+        except OSError:
+            snapshot = None
+        if snapshot is not None:
+            self._snapshot_store.record(snapshot)
+            payload["snapshot"] = snapshot.to_dict()
 
         evidence: tuple[ToolEvidence, ...] = ()
         content = payload.get("content")
