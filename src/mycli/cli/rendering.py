@@ -141,6 +141,10 @@ def _render_turn_activity_lines(turn: TurnRecord) -> list[str]:
         rendered_item = _render_turn_item_activity_message(item)
         if rendered_item:
             _append_unique_activity_line(lines, f"[activity] {rendered_item}")
+        if item.type == TurnItemType.TOOL_RESULT:
+            diff = item.metadata.get("diff")
+            if isinstance(diff, str) and diff:
+                lines.extend(_render_activity_diff_lines(diff))
 
     _flush_reasoning_activity(lines, reasoning_label, reasoning_fragments)
     return lines
@@ -623,6 +627,18 @@ def render_diff_lines(diff: str, *, max_lines: int = 80) -> list[str]:
             rendered.append(f"... truncated after {max_lines} lines")
             break
         rendered.append(f"{number:>4} {_diff_prefix(line)}{line}")
+    return rendered
+
+
+def _render_activity_diff_lines(diff: str, *, max_lines: int = 80) -> list[str]:
+    if not diff:
+        return []
+    rendered: list[str] = []
+    for number, line in enumerate(diff.splitlines(), start=1):
+        if len(rendered) >= max_lines:
+            rendered.append(f"[diff] ... truncated after {max_lines} lines")
+            break
+        rendered.append(f"[diff] {number:04d} {line}")
     return rendered
 
 

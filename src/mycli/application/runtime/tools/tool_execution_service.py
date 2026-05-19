@@ -412,6 +412,22 @@ class ToolExecutionService:
             phase="finish",
             result_summary=result.summary,
         )
+        result_metadata: dict[str, object] = {
+            "success": result.success,
+            "summary": result.summary,
+            "error": result.error,
+            "path": result.raw_payload.get("path"),
+            "error_kind": result.raw_payload.get("error_kind"),
+            "raw_payload": dict(result.raw_payload),
+            "transcript_content": guarded_tool_transcript_content,
+            "file_changes": self._file_changes_for_tool_result(
+                call=normalized_call,
+                result_payload=result.raw_payload,
+            ),
+        }
+        diff = result.raw_payload.get("diff")
+        if isinstance(diff, str) and diff:
+            result_metadata["diff"] = diff
         activity_events.append(finish_event)
         self._append_turn_item(
             turn_id=turn_id,
@@ -421,19 +437,7 @@ class ToolExecutionService:
                 text=finish_event.message,
                 tool_name=normalized_call.name,
                 call_id=normalized_call.call_id,
-                metadata={
-                    "success": result.success,
-                    "summary": result.summary,
-                    "error": result.error,
-                    "path": result.raw_payload.get("path"),
-                    "error_kind": result.raw_payload.get("error_kind"),
-                    "raw_payload": dict(result.raw_payload),
-                    "transcript_content": guarded_tool_transcript_content,
-                    "file_changes": self._file_changes_for_tool_result(
-                        call=normalized_call,
-                        result_payload=result.raw_payload,
-                    ),
-                },
+                metadata=result_metadata,
             ),
         )
         self._trace_service.append(

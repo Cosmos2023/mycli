@@ -487,6 +487,35 @@ def test_render_activity_lines_coalesces_reasoning_fragments_from_turn_items() -
     ]
 
 
+def test_render_activity_lines_includes_edit_diff_lines() -> None:
+    response = TurnResponse(
+        assistant_message="done",
+        turn=TurnRecord(
+            thread_id="demo",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            started_at="2026-04-11T00:00:00+00:00",
+            completed_at="2026-04-11T00:00:01+00:00",
+            items=(
+                TurnItem(
+                    type=TurnItemType.TOOL_RESULT,
+                    text="notes.txt",
+                    tool_name="Edit",
+                    metadata={"diff": "@@ -1 +1 @@\n-before\n+after"},
+                ),
+            ),
+        ),
+    )
+
+    lines = render_activity_lines(response)
+
+    assert "[activity] Done: notes.txt" in lines
+    assert "[diff] 0001 @@ -1 +1 @@" in lines
+    assert "[diff] 0002 -before" in lines
+    assert "[diff] 0003 +after" in lines
+
+
 def test_render_activity_lines_preserves_provider_reasoning_content_verbatim() -> None:
     reasoning_content = (
         "The user wants me to read mission.txt. "

@@ -339,3 +339,61 @@ def test_tool_execution_service_snapshots_file_before_mutating_tool(tmp_path: Pa
     assert rewind.error is None
     assert rewind.restored_paths == ("notes.txt",)
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "before\n"
+
+
+def test_tool_execution_records_edit_diff_in_turn_item(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = workspace / "notes.txt"
+    path.write_text("before\n", encoding="utf-8")
+
+    class DiffEditTool(FakeEditTool):
+        def execute(self, arguments: dict[str, object]) -> ToolResult:
+            target = self._workspace_root / str(arguments["path"])
+            before = target.read_text(encoding="utf-8")
+            target.write_text(str(arguments["new_content"]), encoding="utf-8")
+            return ToolResult(
+                success=True,
+                summary="Edited notes.txt",
+                raw_payload={
+                    "path": "notes.txt",
+                    "diff": "@@ -1 +1 @@\n-before\n+after",
+                    "before": before,
+                },
+            )
+
+    edit_tool = DiffEditTool(workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([edit_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="edit_file",
+            arguments={"path": "notes.txt", "new_content": "after\n"},
+            reason="edit",
+            call_id="call_edit_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("edit_file"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=edit_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    result_items = [item for item in turn_items if item.type is TurnItemType.TOOL_RESULT]
+    assert result_items[0].metadata["diff"] == "@@ -1 +1 @@\n-before\n+after"
