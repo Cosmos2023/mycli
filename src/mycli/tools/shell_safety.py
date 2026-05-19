@@ -49,7 +49,6 @@ _DEDICATED_TOOL_HINTS = {
     "rg": "Grep",
     "ls": "LS",
     "find": "Glob",
-    "sed": "Edit",
 }
 _SHELL_INTERPRETERS = {"sh", "bash", "zsh"}
 _REDIRECTION_TOKENS = {">", ">>", "2>"}
@@ -192,12 +191,7 @@ def derive_command_pattern(args: list[str], command: str | None = None) -> str:
 def dedicated_tool_for_command(args: list[str]) -> str | None:
     if not args:
         return None
-    command = args[0]
-    if command == "sed" and len(args) >= 2 and args[1] == "-n":
-        return None
-    if command == "sed":
-        return "Edit"
-    return _DEDICATED_TOOL_HINTS.get(command)
+    return _DEDICATED_TOOL_HINTS.get(args[0])
 
 
 def redact_shell_preview(args: list[str]) -> str:

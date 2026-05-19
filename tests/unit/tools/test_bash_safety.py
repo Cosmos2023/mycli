@@ -115,7 +115,7 @@ def test_shell_safety_requires_choice_for_git_push() -> None:
 
 
 def test_dedicated_tool_for_sed_in_place_edit() -> None:
-    assert dedicated_tool_for_command(["sed", "-i", "s/a/b/", "file.txt"]) == "Edit"
+    assert dedicated_tool_for_command(["sed", "-i", "s/a/b/", "file.txt"]) is None
 
 
 def test_dedicated_tool_for_sed_n_preview() -> None:

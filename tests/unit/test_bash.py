@@ -33,10 +33,10 @@ class TestBashDanger:
 
         assert tool == "Grep"
 
-    def test_forbidden_sed_in_place_redirects_to_edit(self):
+    def test_sed_in_place_is_not_forbidden(self):
         tool = check_forbidden("sed -i s/a/b/ file.txt")
 
-        assert tool == "Edit"
+        assert tool is None
 
     def test_sed_n_is_not_forbidden(self):
         tool = check_forbidden("sed -n 1,5p file.txt")
