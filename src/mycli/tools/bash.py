@@ -150,7 +150,18 @@ class BashTool:
                 error="Bash requires command.",
             )
         analysis = analyze_shell_command(command_value)
-        if analysis.reroute_tool is not None:
+        if analysis.risk_level is ShellRiskLevel.DENY:
+            return ToolResult(
+                success=False,
+                summary="Shell command denied",
+                error=analysis.reason,
+                raw_payload={
+                    "command": command_value,
+                    "error_kind": "shell_command_denied",
+                    "command_pattern": analysis.command_pattern,
+                },
+            )
+        if analysis.risk_level is ShellRiskLevel.ALLOW and analysis.reroute_tool is not None:
             message = f"Use {analysis.reroute_tool} instead of Bash."
             return ToolResult(
                 success=False,
@@ -161,17 +172,6 @@ class BashTool:
                     "error_kind": "dedicated_tool_required",
                     "reroute_tool": analysis.reroute_tool,
                     "reroute_reason": message,
-                },
-            )
-        if analysis.risk_level is ShellRiskLevel.DENY:
-            return ToolResult(
-                success=False,
-                summary="Shell command denied",
-                error=analysis.reason,
-                raw_payload={
-                    "command": command_value,
-                    "error_kind": "shell_command_denied",
-                    "command_pattern": analysis.command_pattern,
                 },
             )
         payload = execute_bash(

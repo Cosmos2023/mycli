@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shlex
 
 from mycli.domain.runtime import DecisionKind, RiskLevel
 from mycli.domain.tooling.calls import ToolCall
@@ -81,7 +82,7 @@ class SafetyPolicy:
             elif isinstance(args_value, list) and args_value and all(
                 isinstance(item, str) for item in args_value
             ):
-                command = " ".join(args_value)
+                command = shlex.join(args_value)
             else:
                 return ToolSafetyDecision(
                     kind=DecisionKind.DENY,
@@ -95,11 +96,10 @@ class SafetyPolicy:
                     reason=analysis.reason,
                     preview=analysis.preview,
                 )
-            if analysis.risk_level is ShellRiskLevel.CONFIRM or analysis.command_pattern == "git push":
-                reason = analysis.reason.replace("piping", "pipe")
+            if analysis.risk_level is ShellRiskLevel.CONFIRM:
                 return ToolSafetyDecision(
                     kind=DecisionKind.NEEDS_CHOICE,
-                    reason=reason,
+                    reason=analysis.reason,
                     preview=analysis.preview,
                     command_pattern=analysis.command_pattern,
                 )

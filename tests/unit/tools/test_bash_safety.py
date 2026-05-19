@@ -106,6 +106,14 @@ def test_shell_safety_allows_benign_command() -> None:
     assert result.preview == "git status --short"
 
 
+def test_shell_safety_requires_choice_for_git_push() -> None:
+    result = analyze_shell_command("git push origin main")
+
+    assert result.risk_level is ShellRiskLevel.CONFIRM
+    assert result.command_pattern == "git push"
+    assert result.reason == "git push requires confirmation."
+
+
 def test_dedicated_tool_for_sed_in_place_edit() -> None:
     assert dedicated_tool_for_command(["sed", "-i", "s/a/b/", "file.txt"]) == "Edit"
 

@@ -97,6 +97,22 @@ def test_bash_tool_refuses_denied_command(tmp_path: Path) -> None:
     assert result.success is False
     assert result.raw_payload["error_kind"] == "shell_command_denied"
     assert result.error == "rm -rf / is forbidden"
-from pathlib import Path
 
-from mycli.tools.bash import BashTool
+
+def test_bash_tool_does_not_reroute_confirm_level_command(monkeypatch, tmp_path: Path) -> None:
+    tool = BashTool(workspace_root=tmp_path)
+
+    def fake_execute_bash(
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        run_in_background: bool = False,
+    ) -> dict[str, object]:
+        return {"exit_code": 7, "output": "simulated", "truncated": False}
+
+    monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)
+
+    result = tool.execute({"command": "cat README.md && echo done"})
+
+    assert result.raw_payload.get("error_kind") != "dedicated_tool_required"
+    assert result.error == "simulated"

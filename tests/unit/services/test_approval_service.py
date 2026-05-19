@@ -15,6 +15,7 @@ def test_approval_service_suspends_git_push_with_command_pattern() -> None:
 
     assert decision.pending_approval is not None
     assert decision.pending_approval.command_pattern == "git push"
+    assert decision.pending_approval.reason == "git push requires confirmation."
 
 
 def test_approval_service_denies_rm_rf_root() -> None:

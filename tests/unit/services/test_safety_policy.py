@@ -17,6 +17,7 @@ def test_safety_policy_requires_choice_for_git_push() -> None:
     )
     assert decision.kind is DecisionKind.NEEDS_CHOICE
     assert decision.command_pattern == "git push"
+    assert decision.reason == "git push requires confirmation."
 
 
 def test_safety_policy_denies_invalid_shell_call() -> None:
@@ -73,7 +74,10 @@ def test_safety_policy_requires_choice_for_curl_pipe_shell() -> None:
 
     assert decision.kind is DecisionKind.NEEDS_CHOICE
     assert decision.command_pattern == "curl | sh"
-    assert "pipe" in decision.reason
+    assert (
+        decision.reason
+        == "Downloading a script with curl and piping it to shell requires confirmation"
+    )
 
 
 def test_safety_policy_requires_choice_for_output_redirection() -> None:
@@ -83,3 +87,13 @@ def test_safety_policy_requires_choice_for_output_redirection() -> None:
 
     assert decision.kind is DecisionKind.NEEDS_CHOICE
     assert decision.command_pattern == "echo >"
+
+
+def test_safety_policy_auto_allows_literal_special_chars_in_args() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(name="Bash", arguments={"args": ["echo", "a>b"]}, reason="show text")
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.command_pattern == "echo a>b"
+    assert decision.preview == "echo a>b"

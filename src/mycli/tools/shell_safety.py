@@ -282,18 +282,40 @@ def _split_rm_flags(args: list[str]) -> tuple[set[str], list[str]]:
 def _command_has_compact_pipe_to_shell(command: str, args: list[str]) -> bool:
     if not args or args[0] not in {"curl", "wget"}:
         return False
-    compact = "".join(command.split())
+    compact = "".join(_unquoted_shell_text(command).split())
     return any(f"|{shell_name}" in compact for shell_name in _SHELL_INTERPRETERS)
 
 
 def _command_has_compact_redirection(command: str) -> bool:
-    compact = "".join(command.split())
+    compact = "".join(_unquoted_shell_text(command).split())
     return "2>" in compact or ">>" in compact or ">" in compact
 
 
 def _command_has_compact_chaining(command: str) -> bool:
-    compact = "".join(command.split())
+    compact = "".join(_unquoted_shell_text(command).split())
     return "&&" in compact or "||" in compact or ";" in compact
+
+
+def _unquoted_shell_text(command: str) -> str:
+    result: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in command:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        result.append(char)
+    return "".join(result)
 
 
 def _is_fork_bomb(command: str) -> bool:
@@ -318,6 +340,8 @@ def _confirm_reason(args: list[str], command: str) -> str | None:
         return "git reset --hard requires confirmation"
     if _is_force_push(args):
         return "git push --force requires confirmation"
+    if args[:2] == ["git", "push"]:
+        return "git push requires confirmation."
     if any(token in _CHAIN_TOKENS for token in args) or _command_has_compact_chaining(command):
         return "shell command chaining requires confirmation"
     return None
