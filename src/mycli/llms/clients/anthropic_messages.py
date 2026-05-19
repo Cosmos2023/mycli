@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any, cast
 
 from anthropic import (
@@ -332,10 +332,10 @@ class AnthropicMessagesClient:
     def _iter_stream_payloads(self, stream: object) -> Iterator[object]:
         enter = getattr(stream, "__enter__", None)
         if callable(enter):
-            with stream as active_stream:
+            with cast(Any, stream) as active_stream:
                 yield from active_stream
             return
-        yield from cast(Any, stream)
+        yield from cast(Iterable[object], stream)
 
     def _stream_event_index(self, payload: dict[str, object]) -> int:
         index = payload.get("index")

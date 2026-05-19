@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
@@ -416,7 +416,7 @@ class OpenAIChatClient:
         tool_call_states: dict[int, dict[str, str]] = {}
         emitted_tool_calls = False
 
-        for raw_chunk in stream:
+        for raw_chunk in cast(Iterable[object], stream):
             chunk = _sdk_payload_to_dict(raw_chunk)
             raw_id = chunk.get("id")
             if isinstance(raw_id, str) and raw_id:
@@ -515,17 +515,15 @@ class OpenAIChatClient:
             }
             decoded = _decode_native_tool_call(raw_tool_call, provider_metadata={})
             raw_arguments = decoded.get("arguments", {})
+            raw_metadata = decoded.get("metadata")
+            metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
             yield ModelEvent.tool_call_requested(
                 tool_name=str(decoded["name"]),
                 tool_arguments=raw_arguments if isinstance(raw_arguments, dict) else {},
                 call_id=str(decoded.get("id") or f"tool_call_{index}"),
                 source=ToolExecutionSource.NATIVE,
                 provider_id=response_id,
-                metadata=(
-                    decoded.get("metadata")
-                    if isinstance(decoded.get("metadata"), dict)
-                    else {}
-                ),
+                metadata=metadata,
             )
 
     def create_events(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Protocol, cast
 
 from mycli.domain.logging import ModelLogContext
@@ -99,7 +99,7 @@ class AnthropicMessagesModelAdapter:
         *,
         items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
-    ):
+    ) -> Iterator[dict[str, object]]:
         system, messages = self._serialize_items(items)
         stream_message = getattr(self._client, "stream_message", None)
         if not callable(stream_message):

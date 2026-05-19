@@ -4,10 +4,11 @@
 
 ## 当前状态
 
-本清单最初写于 P0 之前。此后已完成两批：
+本清单最初写于 P0 之前。此后已完成三批：
 
 - P0 上下文稳定化：13K L4 buffer、reactive compact、L4 recent-file rehydration、L4 TEXT ONLY prompt guard、provider input token 统计与 session rebind 恢复。
 - P1 工具安全与可观测性：`/context`、`/usage`、Bash safety 第一批、专用工具 reroute、Read snapshot、Edit pre-read/stale snapshot/no-op/size/secret-like guard。
+- P2 capability pack：chat-completions/Anthropic provider stream、BashOutput + `/bashes`、session file history + `/changes`、permission precedence v1、CLI diff activity rendering。
 
 当前决策：
 
@@ -57,12 +58,12 @@
 |---|---|---|---|---|
 | 3.1 | Bash 安全 23 项检查 | ⚠️ | 元字符注入、Unicode 混淆、IFS 变量、brace expansion、zsh-specific 黑名单 | P1 第一批已覆盖 rm 根目录、fork bomb、Unicode 控制、curl/wget pipe shell、sudo/dd/递归权限/重定向等；未达 Claude 全量 23 项 |
 | 3.2 | Bash 禁止命令重定向 | ⚠️ | cat→Read, grep→Grep, find→Glob, sed→Edit, ls→LS | P1 已做 cat/head/tail→Read、grep/rg→Grep、ls→LS、简单 find→Glob；sed 因语义歧义不自动 reroute |
-| 3.3 | Bash 后台运行 + 管理 | ❌ | BashOutput + KillShell 三工具生命周期，`/bashes` 命令 | Bash + KillShell 有骨架，未实现后台 |
+| 3.3 | Bash 后台运行 + 管理 | ⚠️ | BashOutput + KillShell 三工具生命周期，`/bashes` 命令 | P2 已有共享 shell registry、BashOutput、KillShell、`/bashes`；缺 PTY stdin、跨进程恢复、长期清理策略 |
 | 3.4 | YOLO classifier | ❌ | 独立 Claude 实例评估 tool call 安全性 | 无 |
 | 3.5 | Fake tools | ❌ | review_file 占位符——强制模型在写入前停顿 | 无 |
 | 3.6 | 并行工具执行 | ✅ | 连续 safe 工具 → parallel batch，unsafe 截断 | CONCURRENCY_SAFE_TOOLS + ThreadPoolExecutor |
 | 3.7 | 编辑乐观并发控制 | ✅ | timestamp check + old_string check，先写者赢 | EditTool 要求 Read snapshot，并校验 sha256/mtime/size；变更后拒绝写入 |
-| 3.8 | 文件历史 | ❌ | fileHistoryTrackEdit / makeSnapshot / rewind | 无 |
+| 3.8 | 文件历史 | ⚠️ | fileHistoryTrackEdit / makeSnapshot / rewind | P2 已有 session-aware snapshot、`/changes` 列表、`/undo` rewind；缺多 snapshot 事务回滚和更完整 history UI |
 | 3.9 | Edit 14 步校验管道 | ⚠️ | secret detection、no-op、文件>1GiB OOM 保护、pre-read要求 | P1 已有 pre-read/stale snapshot/no-op/size/secret-like 静态 guard；非完整 14 步 |
 | 3.10 | Write 自动创建父目录 | ✅ | parent.mkdir(parents=True) | 已实现 |
 
@@ -70,7 +71,7 @@
 
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
-| 4.1 | 6 层权限防线 | ⚠️ | useCanUseTool.tsx | SafetyPolicy + ApprovalService + Bash analyzer 已有；仍不是完整 6 层权限模型 |
+| 4.1 | 6 层权限防线 | ⚠️ | useCanUseTool.tsx | P2 v1 已有 deny 优先于 session allowance、workspace write boundary hook、SafetyPolicy + ApprovalService + Bash analyzer；仍不是完整 6 层权限模型 |
 | 4.2 | 权限继承链 | ❌ | 父→子 agent 不可降级 | 无 |
 | 4.3 | Sandbox | ❌ | Bubblewrap(linux) / Seatbelt(macOS) / Windows Restricted Tokens | 无 |
 | 4.4 | Sandbox 域名过滤 | ❌ | allowedDomains / deniedDomains + allowManagedDomainsOnly | 无 |
@@ -127,8 +128,8 @@
 
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
-| 9.1 | 流式输出 | ❌ | SSE token-by-token 渲染 | 缓冲一次性输出 |
-| 9.2 | Diff 展示 | ❌ | 带行号 diff | 文本渲染 |
+| 9.1 | 流式输出 | ⚠️ | SSE token-by-token 渲染 | P2 已有 chat-completions/Anthropic provider token/event 流式输出和 `[stream]` CLI 渲染；Responses 路径和 async backpressure 仍缺 |
+| 9.2 | Diff 展示 | ⚠️ | 带行号 diff | P2 已把 Edit diff 提升到 turn item 并在 CLI activity 渲染 `[diff]` 行；缺 rich 高亮/折叠/交互 |
 | 9.3 | 语法高亮 | ❌ | pygments/rich | 无 |
 | 9.4 | spinner 可定制 | ❌ | spinnerVerbs / spinnerTips / spinnerTipsOverride | 无 |
 | 9.5 | voice mode | ❌ | hold-to-talk 语音输入 | 无 |
@@ -158,20 +159,20 @@
 |---|---|---|---|---|
 | 上下文管理 | 17 | 5 | 5 | 7 |
 | Agent Loop | 9 | 1 | 1 | 7 |
-| 工具执行 | 10 | 3 | 3 | 4 |
+| 工具执行 | 10 | 3 | 5 | 2 |
 | 权限 & 安全 | 6 | 0 | 2 | 4 |
 | 记忆 & 持久化 | 8 | 0 | 3 | 5 |
 | Prompt 工程 | 5 | 0 | 1 | 4 |
 | Sub-agent | 7 | 0 | 3 | 4 |
 | MCP & 扩展 | 6 | 0 | 4 | 2 |
-| CLI 体验 | 10 | 0 | 0 | 10 |
+| CLI 体验 | 10 | 0 | 2 | 8 |
 | 生产基础设施 | 7 | 0 | 1 | 6 |
-| **总计** | **85** | **9** | **23** | **53** |
+| **总计** | **85** | **9** | **27** | **49** |
 
 **下一步候选（MCP 与 Microcompact 暂缓后）：**
 
-1. Streaming output：先做 token/event 流式显示，不改变工具执行语义。
-2. Bash background jobs：补 BashOutput、`/bashes`、KillShell 生命周期和后台任务状态。
-3. File history + rewind：把 Edit/Write 的 `.mycli_backups` 升级为 session-aware history，并提供回滚入口。
-4. Permission model v1：补 session allowlist、tool-level policy、workspace write boundary、子 agent 权限不可放大。
-5. CLI experience：statusline/context%、更清晰 diff、`/changes`、路径补全。
+1. Sub-agent capability pack：补权限隔离、工具子集、context handoff、生命周期观测。
+2. CLI experience：statusline/context%、路径补全、viewMode、交互式 diff。
+3. Agent loop recovery：OTK 升级、529 fallback、401 refresh、Ctrl+C resume/continue 点。
+4. Prompt cache 稳定性：动态边界、beta header latch、模型切换缓存隔离。
+5. MCP resources/prompts/permission 管理：defer loading 继续暂缓，先补可观测与权限边界。
