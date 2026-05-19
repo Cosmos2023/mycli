@@ -368,18 +368,20 @@ class AgentRuntime:
     ) -> AgentRuntime:
         from mycli.tools.bash import BashTool
         from mycli.tools.edit import EditTool
+        from mycli.tools.file_snapshot import FileSnapshotStore
         from mycli.tools.grep import GrepTool
         from mycli.tools.ls import LSTool
         from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
         from mycli.tools.plan import PlanTool
         from mycli.tools.read import ReadTool
 
+        snapshot_store = FileSnapshotStore()
         tool_registry = ToolRegistry.from_tools(
             [
                 LSTool(workspace_root),
-                ReadTool(workspace_root),
+                ReadTool(workspace_root, snapshot_store=snapshot_store),
                 GrepTool(workspace_root),
-                EditTool(workspace_root),
+                EditTool(workspace_root, snapshot_store=snapshot_store),
                 BashTool(workspace_root),
                 PlanTool(),
                 EnterPlanModeTool(workspace_root),

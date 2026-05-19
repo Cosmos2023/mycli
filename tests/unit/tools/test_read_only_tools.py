@@ -5,6 +5,7 @@ from mycli.tools.base import ToolResult
 from mycli.tools.grep import GrepTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
+from mycli.tools.registry import default_tools
 
 
 def test_tool_result_v2_to_legacy_preserves_evidence() -> None:
@@ -125,6 +126,27 @@ def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:
     assert snapshot["sha256"]
     assert snapshot["size"] == len("hello world\n".encode("utf-8"))
     assert isinstance(snapshot["mtime_ns"], int)
+
+
+def test_default_tools_share_read_snapshot_with_edit(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = root / "README.md"
+    target.write_text("hello world\n", encoding="utf-8")
+    tools = {tool.name: tool for tool in default_tools(root)}
+
+    read = tools["Read"].execute({"file_path": "README.md"})
+    edited = tools["Edit"].execute(
+        {
+            "file_path": "README.md",
+            "old_string": "hello world",
+            "new_string": "hello snapshot",
+        }
+    )
+
+    assert read.success is True
+    assert edited.success is True
+    assert target.read_text(encoding="utf-8") == "hello snapshot\n"
 
 
 def test_read_file_uses_read_payload_for_snapshot_metadata(monkeypatch, tmp_path: Path) -> None:

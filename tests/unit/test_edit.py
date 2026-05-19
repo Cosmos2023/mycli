@@ -1,6 +1,8 @@
 import pytest
 
-from mycli.tools.edit import EditError, edit_file
+from mycli.tools.edit import EditError, EditTool, edit_file
+from mycli.tools.file_snapshot import FileSnapshotStore
+from mycli.tools.read import ReadTool
 
 
 class TestEdit:
@@ -80,3 +82,49 @@ class TestEdit:
         )
 
         assert "return 42" in f.read_text()
+
+
+def test_edit_tool_requires_prior_read_snapshot(tmp_path):
+    f = tmp_path / "test.py"
+    f.write_text("value = 1\n", encoding="utf-8")
+    tool = EditTool(tmp_path)
+
+    result = tool.execute(
+        {"file_path": "test.py", "old_string": "value = 1", "new_string": "value = 2"}
+    )
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "missing_read_snapshot"
+    assert "Read" in result.error
+
+
+def test_edit_tool_allows_edit_after_read_snapshot(tmp_path):
+    f = tmp_path / "test.py"
+    f.write_text("value = 1\n", encoding="utf-8")
+    store = FileSnapshotStore()
+    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "test.py"})
+    tool = EditTool(tmp_path, snapshot_store=store)
+
+    result = tool.execute(
+        {"file_path": "test.py", "old_string": "value = 1", "new_string": "value = 2"}
+    )
+
+    assert result.success is True
+    assert f.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_edit_tool_rejects_file_changed_since_read(tmp_path):
+    f = tmp_path / "test.py"
+    f.write_text("value = 1\n", encoding="utf-8")
+    store = FileSnapshotStore()
+    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "test.py"})
+    f.write_text("value = 3\n", encoding="utf-8")
+    tool = EditTool(tmp_path, snapshot_store=store)
+
+    result = tool.execute(
+        {"file_path": "test.py", "old_string": "value = 3", "new_string": "value = 4"}
+    )
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "stale_read_snapshot"
+    assert result.error == "File changed since last Read. Re-read the file and retry."

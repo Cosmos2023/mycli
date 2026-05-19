@@ -26,6 +26,7 @@ from mycli.services.mcp import (
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.bash import BashTool
 from mycli.tools.edit import EditTool
+from mycli.tools.file_snapshot import FileSnapshotStore
 from mycli.tools.glob import GlobTool
 from mycli.tools.grep import GrepTool
 from mycli.tools.kill_shell import KillShellTool
@@ -103,10 +104,11 @@ def build_turn_service(
                 log_service=workspace_log_service,
             ),
         )
+    snapshot_store = FileSnapshotStore()
     tool_registry = ToolRegistry.from_tools(
         [
-            ReadTool(workspace_root),
-            EditTool(workspace_root),
+            ReadTool(workspace_root, snapshot_store=snapshot_store),
+            EditTool(workspace_root, snapshot_store=snapshot_store),
             WriteTool(workspace_root),
             GrepTool(workspace_root),
             GlobTool(workspace_root),

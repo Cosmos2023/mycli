@@ -7,10 +7,12 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.file_snapshot import FileSnapshotStore, build_file_snapshot
 from mycli.tools.path_utils import resolve_workspace_path
 
 
 LINE_NUMBER_PATTERN = re.compile(r"^\s*\d+\t", re.MULTILINE)
+MAX_EDIT_FILE_BYTES = 1_000_000
 
 
 class EditError(Exception):
@@ -122,8 +124,33 @@ class EditTool:
         risk_level="medium",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(
+        self, workspace_root: Path, snapshot_store: FileSnapshotStore | None = None
+    ) -> None:
         self._workspace_root = workspace_root
+        self._snapshot_store = snapshot_store or FileSnapshotStore()
+
+    def _validate_snapshot(self, target: Path) -> tuple[bool, str | None, str | None]:
+        relative_path = target.resolve().relative_to(self._workspace_root.resolve()).as_posix()
+        snapshot = self._snapshot_store.latest(relative_path)
+        if snapshot is None:
+            return (
+                False,
+                "missing_read_snapshot",
+                "Edit requires a recent Read of the target file before modifying it.",
+            )
+        current = build_file_snapshot(workspace_root=self._workspace_root, path=target)
+        if (
+            current.sha256 != snapshot.sha256
+            or current.mtime_ns != snapshot.mtime_ns
+            or current.size != snapshot.size
+        ):
+            return (
+                False,
+                "stale_read_snapshot",
+                "File changed since last Read. Re-read the file and retry.",
+            )
+        return True, None, None
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
@@ -131,6 +158,14 @@ class EditTool:
             if not raw_path:
                 raise ValueError("Edit requires file_path.")
             target = resolve_workspace_path(self._workspace_root, raw_path)
+            ok, error_kind, error_message = self._validate_snapshot(target)
+            if not ok:
+                return ToolResult(
+                    success=False,
+                    summary=f"Failed to edit {raw_path}",
+                    error=error_message,
+                    raw_payload={"path": raw_path, "error_kind": error_kind},
+                )
             old_string = str(arguments.get("old_string", arguments.get("old_text", "")))
             new_string = str(arguments.get("new_string", arguments.get("new_text", "")))
             replace_all = bool(arguments.get("replace_all", False))
