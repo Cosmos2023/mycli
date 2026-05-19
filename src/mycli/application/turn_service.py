@@ -168,6 +168,21 @@ class TurnService:
             for row in rows
         )
 
+    def inspect_file_changes(self) -> tuple[str, ...]:
+        rows = self._file_history_service.list_snapshots(
+            session_id=self._config.session_id,
+            limit=10,
+        )
+        if not rows:
+            return ("no file changes",)
+        return tuple(
+            (
+                f"{row['snapshot_id']} {row['turn_id']} "
+                f"{row['tool_name']} {', '.join(cast('tuple[str, ...]', row['paths']))}"
+            )
+            for row in rows
+        )
+
     def inspect_memory(self) -> tuple[str, ...]:
         records = self._memory_service.list_records(self._config.session_id)
         lines = [f"{record.kind.value} {record.key}={record.value}" for record in records[:10]]

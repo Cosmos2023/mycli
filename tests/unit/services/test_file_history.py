@@ -60,6 +60,32 @@ def test_file_history_manifest_records_three_layer_change_detection(tmp_path) ->
     assert isinstance(detection["sha256"], str)
 
 
+def test_file_history_lists_recent_snapshots_with_paths(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("before\n", encoding="utf-8")
+    service = FileHistoryService(home_dir=home, workspace_root=workspace)
+
+    snapshot = service.snapshot_path(
+        session_id="demo",
+        turn_id="turn_1",
+        raw_path="notes.txt",
+        tool_name="Edit",
+    )
+
+    rows = service.list_snapshots(session_id="demo", limit=5)
+
+    assert rows == (
+        {
+            "snapshot_id": snapshot.snapshot_id,
+            "turn_id": "turn_1",
+            "tool_name": "Edit",
+            "paths": ("notes.txt",),
+        },
+    )
+
+
 def test_file_history_rewinds_created_file_by_deleting_it(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

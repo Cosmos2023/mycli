@@ -63,6 +63,7 @@ def test_help_lists_sessions_command() -> None:
     assert "/sessions" in output
     assert "/context" in output
     assert "/bashes" in output
+    assert "/changes" in output
 
 
 def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> None:
@@ -873,6 +874,15 @@ def test_render_diff_lines_adds_line_numbers_and_markers() -> None:
     ]
 
 
+def test_changes_command_renders_file_history_lines() -> None:
+    service = SimpleNamespace(
+        inspect_file_changes=lambda: ("snapshot_1 turn_1 Edit notes.txt",)
+    )
+    handler = build_command_handler(service)
+
+    assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
+
+
 def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     class FakeService:
         def undo_last_file_change(self):
@@ -886,6 +896,12 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
 
         def inspect_tools(self) -> tuple[str, ...]:
             return ("read_file [low]: Read a file",)
+
+        def inspect_bashes(self) -> tuple[str, ...]:
+            return ("no background shells",)
+
+        def inspect_file_changes(self) -> tuple[str, ...]:
+            return ("snapshot_1 turn_1 Edit notes.txt",)
 
         def inspect_memory(self) -> tuple[str, ...]:
             return ("preference tone=concise",)
@@ -922,6 +938,8 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/plan")) == ["[plan] in_progress: Inspect runtime entrypoints"]
     assert list(handler("/skills")) == ["[skill] repository-analysis: Inspect repos"]
     assert list(handler("/tools")) == ["[tool] read_file [low]: Read a file"]
+    assert list(handler("/bashes")) == ["[bash] no background shells"]
+    assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
     assert list(handler("/trace")) == ["[trace] tool_execution search_text"]
     assert list(handler("/session")) == ["[session] session=demo", "[session] messages=3"]

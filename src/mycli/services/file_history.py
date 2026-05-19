@@ -113,6 +113,46 @@ class FileHistoryService:
             deleted_paths=tuple(deleted),
         )
 
+    def list_snapshots(
+        self,
+        *,
+        session_id: str,
+        limit: int = 10,
+    ) -> tuple[dict[str, object], ...]:
+        rows: list[dict[str, object]] = []
+        for item in reversed(self._load_index(session_id)[-limit:]):
+            snapshot_id = str(item.get("snapshot_id", ""))
+            turn_id = str(item.get("turn_id", ""))
+            manifest_path = self._snapshot_dir(session_id, snapshot_id) / "manifest.json"
+            if not snapshot_id or not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            entries = manifest.get("entries")
+            if not isinstance(entries, list):
+                continue
+            paths = tuple(
+                str(entry.get("path"))
+                for entry in entries
+                if isinstance(entry, dict) and entry.get("path")
+            )
+            tool_name = ""
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(entry.get("tool_name"), str):
+                    tool_name = str(entry["tool_name"])
+                    break
+            rows.append(
+                {
+                    "snapshot_id": snapshot_id,
+                    "turn_id": turn_id,
+                    "tool_name": tool_name,
+                    "paths": paths,
+                }
+            )
+        return tuple(rows)
+
     def _history_root(self, session_id: str) -> Path:
         return self._home_dir / ".mycli" / "file-history" / session_id
 
