@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import shlex
 
 from mycli.domain.runtime import DecisionKind, RiskLevel
 from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.path_utils import resolve_workspace_path
 from mycli.tools.shell_safety import ShellRiskLevel, analyze_shell_command
 
 
@@ -17,6 +19,9 @@ class ToolSafetyDecision:
 
 
 class SafetyPolicy:
+    def __init__(self, *, workspace_root: Path | None = None) -> None:
+        self._workspace_root = workspace_root
+
     def classify(self, call: ToolCall) -> RiskLevel:
         name = _canonical_tool_name(call.name)
         if name in {
@@ -61,7 +66,10 @@ class SafetyPolicy:
                 reason=call.reason,
                 preview=name,
             )
-        if name in {"Edit", "Write", "KillShell"}:
+        if name in {"Edit", "Write"}:
+            boundary_decision = self._workspace_boundary_decision(call)
+            if boundary_decision is not None:
+                return boundary_decision
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
@@ -73,6 +81,12 @@ class SafetyPolicy:
                     or call.arguments.get("shell_id")
                     or ""
                 ),
+            )
+        if name == "KillShell":
+            return ToolSafetyDecision(
+                kind=DecisionKind.AUTO_ALLOW,
+                reason=call.reason,
+                preview=str(call.arguments.get("shell_id") or ""),
             )
         if name == "Bash":
             command_value = call.arguments.get("command")
@@ -114,6 +128,29 @@ class SafetyPolicy:
             reason="Unsupported tool.",
             preview=call.name,
         )
+
+    def _workspace_boundary_decision(
+        self,
+        call: ToolCall,
+    ) -> ToolSafetyDecision | None:
+        if self._workspace_root is None:
+            return None
+        raw_path = (
+            call.arguments.get("file_path")
+            or call.arguments.get("path")
+            or call.arguments.get("target")
+        )
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        try:
+            resolve_workspace_path(self._workspace_root, raw_path)
+        except ValueError as exc:
+            return ToolSafetyDecision(
+                kind=DecisionKind.DENY,
+                reason=str(exc),
+                preview=raw_path,
+            )
+        return None
 
 
 def _canonical_tool_name(name: str) -> str:

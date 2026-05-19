@@ -6,6 +6,7 @@ from mycli.domain.conversation import Conversation
 from mycli.domain.logging import LogLevel
 from mycli.domain.runtime import (
     ActivityEvent,
+    DecisionKind,
     ModelTurnResult,
     PendingDecision,
     PlanState,
@@ -252,13 +253,13 @@ class AssistantBlockConsumer:
                         ),
                     )
 
-                if self._session_service.is_command_allowed(
-                    self._session_id,
-                    getattr(
-                        self._approval_service._safety_policy.evaluate(tool_call),
-                        "command_pattern",
-                        None,
-                    ),
+                safety = self._approval_service._safety_policy.evaluate(tool_call)
+                if (
+                    safety.kind is not DecisionKind.DENY
+                    and self._session_service.is_command_allowed(
+                        self._session_id,
+                        safety.command_pattern,
+                    )
                 ):
                     if tool_call.name in CONCURRENCY_SAFE_TOOLS:
                         pending_safe_tool_calls.append((tool_call, block))

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from mycli.domain.runtime import DecisionKind
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
@@ -97,3 +99,18 @@ def test_safety_policy_auto_allows_literal_special_chars_in_args() -> None:
     assert decision.kind is DecisionKind.AUTO_ALLOW
     assert decision.command_pattern == "echo a>b"
     assert decision.preview == "echo a>b"
+
+
+def test_safety_policy_denies_write_outside_workspace() -> None:
+    policy = SafetyPolicy(workspace_root=Path("/workspace"))
+
+    decision = policy.evaluate(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "../outside.txt", "content": "x"},
+            reason="write outside",
+        )
+    )
+
+    assert decision.kind is DecisionKind.DENY
+    assert "workspace" in decision.reason.lower()

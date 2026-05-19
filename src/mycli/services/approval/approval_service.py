@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mycli.domain.runtime import PendingApproval
+from mycli.domain.runtime import DecisionKind, PendingApproval, SessionCommandAllowance
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.approval.safety_policy import SafetyPolicy
 
@@ -15,14 +15,21 @@ class ApprovalOutcome:
 
 
 class ApprovalService:
-    def __init__(self, safety_policy: SafetyPolicy | None = None) -> None:
+    def __init__(
+        self,
+        safety_policy: SafetyPolicy | None = None,
+        session_allowances: tuple[SessionCommandAllowance, ...] = (),
+    ) -> None:
         self._safety_policy = safety_policy or SafetyPolicy()
+        self._session_allowances = session_allowances
 
     def evaluate(self, call: ToolCall) -> ApprovalOutcome:
         safety = self._safety_policy.evaluate(call)
-        if safety.kind.value == "deny":
+        if safety.kind is DecisionKind.DENY:
             return ApprovalOutcome(denied_reason=safety.reason)
-        if safety.kind.value == "needs_choice":
+        if self._matches_session_allowance(call, safety.command_pattern):
+            return ApprovalOutcome(auto_approved=True)
+        if safety.kind is DecisionKind.NEEDS_CHOICE:
             return ApprovalOutcome(
                 pending_approval=PendingApproval(
                     tool_call=call,
@@ -32,3 +39,15 @@ class ApprovalService:
                 )
             )
         return ApprovalOutcome(auto_approved=True)
+
+    def _matches_session_allowance(
+        self,
+        call: ToolCall,
+        command_pattern: str | None,
+    ) -> bool:
+        if command_pattern is None or call.name not in {"Bash", "run_shell"}:
+            return False
+        return any(
+            allowance.command_pattern == command_pattern
+            for allowance in self._session_allowances
+        )
