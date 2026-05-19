@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
-from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem
+from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeStreamEvent
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.llms.clients.openai_chat import ModelResponseError
@@ -26,6 +26,7 @@ class ModelTurnRequester:
         runtime_items: list[RuntimeItem],
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         stream_turn = getattr(self._model_adapter, "stream_turn", None)
         if callable(stream_turn):
@@ -33,6 +34,7 @@ class ModelTurnRequester:
                 stream_turn=stream_turn,
                 runtime_items=runtime_items,
                 tools=tools,
+                stream_sink=stream_sink,
             )
 
         next_turn = getattr(self._model_adapter, "next_turn", None)
@@ -54,6 +56,7 @@ class ModelTurnRequester:
         stream_turn: object,
         runtime_items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         if not callable(stream_turn):
             raise ModelResponseError("Model adapter stream_turn must be callable.")
@@ -71,12 +74,20 @@ class ModelTurnRequester:
                 text = event.get("text")
                 if isinstance(text, str) and text:
                     blocks.append(RuntimeBlock(type="reasoning", text=text))
+                    self._notify_stream_sink(
+                        stream_sink,
+                        RuntimeStreamEvent(kind="reasoning", text=text),
+                    )
                 continue
             if event_type == "text_delta":
                 text = event.get("text")
                 if isinstance(text, str) and text:
                     blocks.append(RuntimeBlock(type="text", text=text))
                     streamed_chunks.append(text)
+                    self._notify_stream_sink(
+                        stream_sink,
+                        RuntimeStreamEvent(kind="text_delta", text=text),
+                    )
                 continue
             if event_type == "tool_call":
                 block = event.get("block")
@@ -86,6 +97,10 @@ class ModelTurnRequester:
                     )
                 blocks.append(block)
                 has_tool_call = True
+                self._notify_stream_sink(
+                    stream_sink,
+                    RuntimeStreamEvent(kind="tool_call", tool_name=block.tool_name or ""),
+                )
                 continue
             if event_type == "completed":
                 raw_response_id = event.get("response_id")
@@ -94,6 +109,10 @@ class ModelTurnRequester:
                 raw_metadata = event.get("metadata")
                 if isinstance(raw_metadata, dict):
                     metadata = raw_metadata
+                self._notify_stream_sink(
+                    stream_sink,
+                    RuntimeStreamEvent(kind="completed", metadata=metadata),
+                )
                 continue
             raise ModelResponseError(f"Unsupported model stream event type: {event_type!r}.")
 
@@ -109,6 +128,18 @@ class ModelTurnRequester:
             ),
             tuple(streamed_chunks),
         )
+
+    @staticmethod
+    def _notify_stream_sink(
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        event: RuntimeStreamEvent,
+    ) -> None:
+        if stream_sink is None:
+            return
+        try:
+            stream_sink(event)
+        except Exception:
+            return
 
     def _legacy_action_to_turn_result(self, action: object) -> ModelTurnResult:
         blocks: list[RuntimeBlock] = []
