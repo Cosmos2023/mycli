@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from mycli.domain.runtime import (
     DecisionAction,
     PendingDecision,
+    RuntimeStreamEvent,
     TurnItem,
     TurnItemType,
     TurnRecord,
@@ -548,6 +549,18 @@ def render_stream_lines(response: object) -> list[str]:
         if isinstance(chunk, str) and chunk:
             lines.append(f"[stream] {chunk}")
     return lines
+
+
+def render_runtime_stream_event(event: RuntimeStreamEvent) -> list[str]:
+    if event.kind == "text_delta":
+        return [f"[stream] {event.text}"] if event.text else []
+    if event.kind == "reasoning":
+        return [f"[activity] Thinking: {event.text}"] if event.text else []
+    if event.kind == "tool_call":
+        return [f"[activity] Tool: {event.tool_name}"] if event.tool_name else []
+    if event.kind == "completed":
+        return []
+    return []
 
 
 def render_streaming_state_lines(response: object) -> list[str]:

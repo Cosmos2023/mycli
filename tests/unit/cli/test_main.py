@@ -20,6 +20,7 @@ from mycli.cli.rendering import (
     StreamingRenderState,
     render_diff_view,
     render_diff_lines,
+    render_runtime_stream_event,
     render_streaming_live_output,
     render_streaming_state_lines,
     render_tool_status,
@@ -29,6 +30,7 @@ from mycli.domain.runtime import (
     DecisionAction,
     DecisionKind,
     PendingDecision,
+    RuntimeStreamEvent,
     StopReason,
     TurnItem,
     TurnItemType,
@@ -151,6 +153,30 @@ def test_turn_service_accepts_stream_sink(tmp_path: Path) -> None:
     assert response.assistant_message == "done hello"
     assert runtime.seen_sink is sink
     assert events[0].text == "hi"
+
+
+def test_render_runtime_stream_event_formats_text_delta() -> None:
+    assert render_runtime_stream_event(
+        RuntimeStreamEvent(kind="text_delta", text="hello")
+    ) == ["[stream] hello"]
+
+
+def test_render_runtime_stream_event_formats_reasoning() -> None:
+    assert render_runtime_stream_event(
+        RuntimeStreamEvent(kind="reasoning", text="thinking")
+    ) == ["[activity] Thinking: thinking"]
+
+
+def test_render_runtime_stream_event_formats_tool_call() -> None:
+    assert render_runtime_stream_event(
+        RuntimeStreamEvent(kind="tool_call", tool_name="Read")
+    ) == ["[activity] Tool: Read"]
+
+
+def test_render_runtime_stream_event_suppresses_completed() -> None:
+    assert render_runtime_stream_event(
+        RuntimeStreamEvent(kind="completed", metadata={"response_status": "completed"})
+    ) == []
 
 
 def test_build_turn_service_uses_chat_completions_when_protocol_is_explicitly_set(

@@ -20,9 +20,11 @@ from mycli.cli.rendering import (
     render_error_lines,
     render_pending_decision,
     render_progress_lines,
+    render_runtime_stream_event,
     render_stream_lines,
 )
 from mycli.config.settings import resolve_config
+from mycli.domain.runtime import RuntimeStreamEvent
 from mycli.evaluation.runner import (
     EvaluationRunReport,
     EvaluationScenario,
@@ -157,6 +159,8 @@ def main(
     cwd: Path | None = None,
     home: Path | None = None,
     env: dict[str, str] | None = None,
+    input_func: Callable[[str], str] = input,
+    output_func: Callable[[str], Any] = print,
 ) -> int:
     args = vars(build_parser().parse_args(argv))
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
@@ -164,10 +168,13 @@ def main(
         return eval_exit_code
     service = build_turn_service(args, cwd=cwd, home=home, env=env)
 
+    def emit_stream_event(event: RuntimeStreamEvent) -> None:
+        for line in render_runtime_stream_event(event):
+            output_func(line)
+
     def handle_user_message(raw: str) -> list[str]:
-        response = service.handle_user_turn(raw)
+        response = service.handle_user_turn(raw, stream_sink=emit_stream_event)
         rendered: list[str] = render_activity_lines(response)
-        rendered.extend(render_stream_lines(response))
         rendered.extend(render_error_lines(response))
         rendered.extend(render_progress_lines(response))
         rendered.extend(f"[plan] {step}" for step in response.plan_steps)
@@ -194,6 +201,8 @@ def main(
             service._session_service.load_pending_decision(service._config.session_id) is not None
         ),
         command_handler=build_command_handler(service),
+        input_func=input_func,
+        output_func=output_func,
     )
     return 0
 

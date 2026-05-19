@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from mycli.cli.main import build_turn_service, handle_slash_command, run_repl
+from mycli.cli.main import build_turn_service, handle_slash_command, main, run_repl
 from mycli.domain.providers import ProtocolId, ProviderId
+from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
 from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
 )
@@ -97,6 +98,48 @@ def test_run_repl_routes_non_help_slash_commands_to_command_handler() -> None:
     )
 
     assert "[plan] demo" in outputs
+
+
+def test_main_outputs_stream_events_before_final_answer(monkeypatch, tmp_path: Path) -> None:
+    outputs: list[str] = []
+    scripted_inputs = iter(["hello", "/quit"])
+
+    class FakeService:
+        def __init__(self) -> None:
+            self._config = type("Config", (), {"session_id": "demo"})()
+            self._session_service = type(
+                "Sessions",
+                (),
+                {"load_pending_decision": lambda _self, _session_id: None},
+            )()
+
+        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+            del message
+            assert stream_sink is not None
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text="hello"))
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text=" world"))
+            return TurnResponse(
+                assistant_message="hello world",
+                streamed_chunks=("hello", " world"),
+            )
+
+        def resolve_pending_decision(self, choice: str) -> TurnResponse:
+            del choice
+            return TurnResponse(assistant_message="unused")
+
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
+    assert main(
+        ["--session", "demo"],
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        env={"MYCLI_API_KEY": "x"},
+        input_func=lambda _prompt: next(scripted_inputs),
+        output_func=outputs.append,
+    ) == 0
+
+    assert outputs.index("[stream] hello") < outputs.index("hello world")
+    assert outputs.index("[stream]  world") < outputs.index("hello world")
+    assert outputs.count("[stream] hello") == 1
 
 
 def test_build_turn_service_uses_native_adapter_when_protocol_is_chat_completions(
