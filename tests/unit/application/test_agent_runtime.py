@@ -1134,6 +1134,28 @@ def test_agent_runtime_collects_streamed_chunks_and_reasoning_activity(tmp_path:
     assert assistant_messages == ["Repository summary complete."]
 
 
+def test_agent_runtime_forwards_stream_events_to_sink(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=StreamReasoningTextDoneAdapter(),
+    )
+    events = []
+
+    response = runtime.handle_user_turn("inspect the repo", stream_sink=events.append)
+
+    assert response.assistant_message == "Repository summary complete."
+    assert [event.kind for event in events] == [
+        "reasoning",
+        "text_delta",
+        "text_delta",
+        "completed",
+    ]
+    assert "".join(event.text for event in events if event.kind == "text_delta") == (
+        "Repository summary complete."
+    )
+
+
 def test_agent_runtime_uses_configured_reasoning_effort_across_overview_turns(
     tmp_path: Path,
 ) -> None:

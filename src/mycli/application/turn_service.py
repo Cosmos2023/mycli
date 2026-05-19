@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +11,7 @@ from mycli.domain.runtime import (
     DecisionAction,
     HistoryItem,
     HistoryItemType,
+    RuntimeStreamEvent,
     TurnItemType,
     TurnResponse,
 )
@@ -107,11 +109,15 @@ class TurnService:
             return f"{allowed_choices[0]} or {allowed_choices[1]}"
         return ", ".join(allowed_choices[:-1]) + f", or {allowed_choices[-1]}"
 
-    def handle_user_turn(self, user_message: str) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        user_message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
         runtime = self._runtime
         if runtime is None:
             raise RuntimeError("TurnService has no runtime.")
-        return cast(TurnResponse, runtime.handle_user_turn(user_message))
+        return cast(TurnResponse, runtime.handle_user_turn(user_message, stream_sink=stream_sink))
 
     def resolve_pending_decision(self, choice: str) -> TurnResponse:
         runtime = self._runtime

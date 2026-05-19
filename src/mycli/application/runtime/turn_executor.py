@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -10,6 +11,7 @@ from mycli.domain.runtime import (
     ContextBaseline,
     DecisionAction,
     PlanState,
+    RuntimeStreamEvent,
     SessionCommandAllowance,
     StopReason,
     SuspendedTurn,
@@ -33,7 +35,11 @@ class TurnExecutor:
         self._runtime = runtime
         self._error_finalizer = TurnErrorFinalizer(runtime)
 
-    def execute_user_turn(self, user_message: str) -> TurnResponse:
+    def execute_user_turn(
+        self,
+        user_message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
         runtime = self._runtime
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
         if decision is not None:
@@ -83,6 +89,7 @@ class TurnExecutor:
             progress_updates=[],
             activity_events=[],
             streamed_chunks=[],
+            stream_sink=stream_sink,
         )
 
     def _resume_interrupted_turn(self, suspended: SuspendedTurn) -> TurnResponse:
@@ -289,6 +296,7 @@ class TurnExecutor:
         progress_updates: list[str],
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         last_tool_exposure_summary: dict[str, list[str]] | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
@@ -528,6 +536,7 @@ class TurnExecutor:
                     runtime_items=runtime_items,
                     legacy_messages=legacy_messages,
                     tools=tools,
+                    stream_sink=stream_sink,
                 )
                 usage_payload = turn_result.metadata.get("usage")
                 runtime._trace_cache_shape_diagnostic(

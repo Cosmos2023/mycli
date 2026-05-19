@@ -21,6 +21,7 @@ from mycli.domain.runtime import (
     RuntimeBlock,
     RuntimeItem,
     RuntimeRole,
+    RuntimeStreamEvent,
     RequestShape,
     ReasoningEffort,
     StopReason,
@@ -1104,11 +1105,13 @@ class AgentRuntime:
         runtime_items: list[RuntimeItem],
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         return self._model_turn_requester.request_model_turn(
             runtime_items=runtime_items,
             legacy_messages=legacy_messages,
             tools=tools,
+            stream_sink=stream_sink,
         )
 
     def _consume_assistant_blocks(
@@ -1300,10 +1303,14 @@ class AgentRuntime:
         self._observability_service.metrics.reset_context_metrics()
         self._restore_provider_input_budget_metric(session_id)
 
-    def handle_user_turn(self, user_message: str) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        user_message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
-        return TurnExecutor(self).execute_user_turn(user_message)
+        return TurnExecutor(self).execute_user_turn(user_message, stream_sink=stream_sink)
 
     def resolve_pending_approval(self, choice: str) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor

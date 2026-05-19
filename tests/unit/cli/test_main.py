@@ -7,6 +7,7 @@ from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
+from mycli.application.turn_service import TurnService
 from mycli.cli.main import (
     build_command_handler,
     build_parser,
@@ -121,6 +122,35 @@ def test_build_turn_service_defaults_to_responses_protocol(tmp_path: Path) -> No
     )
 
     assert isinstance(service._runtime._model_adapter, ResponsesModelAdapter)
+
+
+def test_turn_service_accepts_stream_sink(tmp_path: Path) -> None:
+    class Runtime:
+        def __init__(self) -> None:
+            self._config = SimpleNamespace(session_id="demo", workspace_root=tmp_path)
+            self._tool_registry = SimpleNamespace(list_names=lambda: [])
+            self.seen_sink = None
+
+        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+            self.seen_sink = stream_sink
+            if stream_sink is not None:
+                stream_sink(SimpleNamespace(kind="text_delta", text="hi", tool_name=None, metadata={}))
+            return TurnResponse(assistant_message=f"done {message}")
+
+    runtime = Runtime()
+    service = TurnService(
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    events = []
+    sink = events.append
+
+    response = service.handle_user_turn("hello", stream_sink=sink)
+
+    assert response.assistant_message == "done hello"
+    assert runtime.seen_sink is sink
+    assert events[0].text == "hi"
 
 
 def test_build_turn_service_uses_chat_completions_when_protocol_is_explicitly_set(
