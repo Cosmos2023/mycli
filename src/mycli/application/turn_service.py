@@ -117,6 +117,8 @@ class TurnService:
         runtime = self._runtime
         if runtime is None:
             raise RuntimeError("TurnService has no runtime.")
+        if stream_sink is None:
+            return cast(TurnResponse, runtime.handle_user_turn(user_message))
         return cast(TurnResponse, runtime.handle_user_turn(user_message, stream_sink=stream_sink))
 
     def resolve_pending_decision(self, choice: str) -> TurnResponse:

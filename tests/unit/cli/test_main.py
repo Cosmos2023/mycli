@@ -281,7 +281,7 @@ def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path:
             )
         )
 
-        def handle_user_turn(self, _message: str) -> TurnResponse:
+        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
             return TurnResponse(
                 assistant_message="final answer",
                 activity_events=(
@@ -362,7 +362,7 @@ def test_main_keeps_existing_output_when_no_activity_events_are_present(
         _config = SimpleNamespace(session_id="demo")
         _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
 
-        def handle_user_turn(self, _message: str) -> TurnResponse:
+        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
             return TurnResponse(
                 assistant_message="plain answer",
                 progress_updates=("Working",),
@@ -394,7 +394,7 @@ def test_main_renders_activity_from_turn_items_when_present(monkeypatch, tmp_pat
         _config = SimpleNamespace(session_id="demo")
         _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
 
-        def handle_user_turn(self, _message: str) -> TurnResponse:
+        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
             return TurnResponse(
                 assistant_message="plain answer",
                 turn=TurnRecord(
@@ -697,7 +697,7 @@ def test_main_omits_duplicate_progress_lines_when_turn_activity_is_present(
         _config = SimpleNamespace(session_id="demo")
         _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
 
-        def handle_user_turn(self, _message: str) -> TurnResponse:
+        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
             return TurnResponse(
                 assistant_message="plain answer",
                 progress_updates=("The user wants a short summary.",),
@@ -749,7 +749,7 @@ def test_main_renders_error_details_when_present(monkeypatch, tmp_path: Path) ->
         _config = SimpleNamespace(session_id="demo")
         _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
 
-        def handle_user_turn(self, _message: str) -> TurnResponse:
+        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
             return TurnResponse(
                 assistant_message="Model request failed: boom",
                 error_details=(
@@ -787,7 +787,7 @@ def test_main_skips_streamed_answer_chunks_when_final_message_is_present(
         _config = SimpleNamespace(session_id="demo")
         _session_service = SimpleNamespace(load_pending_decision=lambda _session_id: None)
 
-        def handle_user_turn(self, _message: str) -> TurnResponse:
+        def handle_user_turn(self, _message: str, stream_sink=None) -> TurnResponse:
             return TurnResponse(
                 assistant_message="Repository summary complete.",
                 activity_events=(ActivityEvent(kind="thinking", message="Thinking: inspect pyproject first"),),
