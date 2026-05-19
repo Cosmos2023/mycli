@@ -1,3 +1,4 @@
+from mycli.domain.model_events import ModelEvent, ModelEventType
 from mycli.domain.tools import ToolCall
 from mycli.domain.runtime import RuntimeBlock, RuntimeItem
 from mycli.infrastructure.providers.deepseek import (
@@ -32,6 +33,46 @@ class FakeNativeClient:
             },
             "done": False,
         }
+
+
+class FakeStreamingNativeClient(FakeNativeClient):
+    def stream_events(self, *, input_items, tools):
+        self.captured_messages = input_items
+        self.captured_tools = tools
+        yield ModelEvent(type=ModelEventType.REASONING_DELTA, text="I will answer directly.")
+        yield ModelEvent.message_delta(text="streaming ")
+        yield ModelEvent.message_delta(text="ok")
+        yield ModelEvent(
+            type=ModelEventType.TURN_COMPLETED,
+            response_id="chatcmpl_1",
+            usage={"input_tokens": 11, "output_tokens": 2},
+        )
+
+
+def test_native_tool_adapter_stream_turn_uses_client_stream_events() -> None:
+    client = FakeStreamingNativeClient()
+    adapter = NativeToolModelAdapter(client=client)
+
+    events = list(
+        adapter.stream_turn(
+            items=[
+                RuntimeItem(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text="Say ok."),),
+                )
+            ],
+            tools=[],
+        )
+    )
+
+    assert [event["type"] for event in events] == [
+        "reasoning",
+        "text_delta",
+        "text_delta",
+        "completed",
+    ]
+    assert client.captured_messages == [{"role": "user", "content": "Say ok."}]
+    assert events[-1]["metadata"] == {"usage": {"input_tokens": 11, "output_tokens": 2}}
 
 
 def test_native_tool_adapter_translates_shared_messages_and_tools() -> None:

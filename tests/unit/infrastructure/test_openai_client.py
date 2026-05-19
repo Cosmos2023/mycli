@@ -41,6 +41,16 @@ class _FakeChatCompletionsApi:
         return _FakeSdkPayload(self._payload)
 
 
+class _FakeStreamingChatCompletionsApi:
+    def __init__(self, *, chunks: list[dict[str, object]]) -> None:
+        self._chunks = chunks
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return [_FakeSdkPayload(chunk) for chunk in self._chunks]
+
+
 class _FakeOpenAISdkClient:
     def __init__(
         self,
@@ -52,6 +62,16 @@ class _FakeOpenAISdkClient:
             payload=chat_payload,
             error=chat_error,
         )
+        self.chat = type(
+            "_FakeChatApi",
+            (),
+            {"completions": self.chat_completions},
+        )()
+
+
+class _FakeStreamingOpenAISdkClient:
+    def __init__(self, *, chunks: list[dict[str, object]]) -> None:
+        self.chat_completions = _FakeStreamingChatCompletionsApi(chunks=chunks)
         self.chat = type(
             "_FakeChatApi",
             (),
@@ -260,6 +280,78 @@ def test_openai_chat_client_create_events_preserves_usage_metadata(monkeypatch) 
     assert completed[0].usage == {
         "prompt_tokens": 100,
         "prompt_tokens_details": {"cached_tokens": 64},
+    }
+
+
+def test_openai_chat_client_stream_events_normalizes_chat_chunks(monkeypatch) -> None:
+    sdk_client = _FakeStreamingOpenAISdkClient(
+        chunks=[
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"content": "hello "}}]},
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"content": "world"}}]},
+            {
+                "id": "chatcmpl_stream",
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "Read",
+                                        "arguments": '{"file_path":"README.md"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_stream",
+                "choices": [{"finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    events = list(
+        client.stream_events(
+            input_items=[{"role": "user", "content": "inspect"}],
+            tools=[],
+        )
+    )
+
+    assert [event.type for event in events] == [
+        ModelEventType.REASONING_DELTA,
+        ModelEventType.MESSAGE_DELTA,
+        ModelEventType.MESSAGE_DELTA,
+        ModelEventType.TOOL_CALL_REQUESTED,
+        ModelEventType.TURN_COMPLETED,
+    ]
+    assert events[0].text == "thinking"
+    assert events[1].text == "hello "
+    assert events[2].text == "world"
+    assert events[3].tool_name == "Read"
+    assert events[3].tool_arguments == {"file_path": "README.md"}
+    assert events[3].call_id == "call_1"
+    assert events[4].response_id == "chatcmpl_stream"
+    assert events[4].usage == {"prompt_tokens": 10, "completion_tokens": 3}
+    assert sdk_client.chat_completions.calls[-1]["stream"] is True
+    assert sdk_client.chat_completions.calls[-1]["stream_options"] == {
+        "include_usage": True
     }
 
 

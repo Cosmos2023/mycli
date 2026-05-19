@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Protocol, cast
 
 from mycli.domain.logging import ModelLogContext
+from mycli.domain.model_events import ModelEventType
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import (
     ModelAction,
@@ -18,6 +19,7 @@ from mycli.llms.adapters.base import (
 )
 from mycli.llms.adapters.turn_event_aggregator import TurnEventAggregator
 from mycli.infrastructure.providers import ChatProviderAdapter, DefaultChatProviderAdapter
+from mycli.llms.clients.openai_chat import ModelResponseError
 
 
 class NativeToolClient(Protocol):
@@ -114,6 +116,47 @@ class NativeToolModelAdapter:
         return self._legacy_action_to_turn_result(
             self._model_action_from_payload(payload)
         )
+
+    def stream_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+    ) -> Iterator[dict[str, object]]:
+        serialized_messages = self._serialize_messages(
+            self._messages_from_runtime_items(items)
+        )
+        serialized_tools = self._serialize_tools(tools)
+        stream_events = getattr(self._client, "stream_events", None)
+        if not callable(stream_events):
+            raise ModelResponseError("Native tool client does not support stream_events.")
+        for event in stream_events(input_items=serialized_messages, tools=serialized_tools):
+            if event.type is ModelEventType.REASONING_DELTA and event.text:
+                yield {"type": "reasoning", "text": event.text}
+                continue
+            if event.type is ModelEventType.MESSAGE_DELTA and event.text:
+                yield {"type": "text_delta", "text": event.text}
+                continue
+            if event.type is ModelEventType.TOOL_CALL_REQUESTED:
+                yield {
+                    "type": "tool_call",
+                    "block": RuntimeBlock(
+                        type="tool_call",
+                        tool_name=event.tool_name,
+                        tool_arguments=event.tool_arguments or {},
+                        call_id=event.call_id or "",
+                        provider_id=event.provider_id,
+                        source=event.source.value if event.source is not None else None,
+                        metadata=dict(event.metadata),
+                    ),
+                }
+                continue
+            if event.type is ModelEventType.TURN_COMPLETED:
+                yield {
+                    "type": "completed",
+                    "response_id": event.response_id,
+                    "metadata": {"usage": event.usage} if event.usage is not None else {},
+                }
 
     def _model_action_from_payload(self, payload: dict[str, object]) -> ModelAction:
         tool_call = None

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
@@ -156,7 +156,7 @@ class OpenAIChatClient:
             )
         return normalized_tools
 
-    def complete(
+    def _chat_payload_body(
         self,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
@@ -172,13 +172,20 @@ class OpenAIChatClient:
             payload_body["tools"] = self._normalize_tool_definitions(tools)
             if self._tool_choice is not None:
                 payload_body["tool_choice"] = self._tool_choice
-        payload_body = self._provider_adapter.adapt_request_body(
+        return self._provider_adapter.adapt_request_body(
             payload_body,
             settings=ChatProviderSettings(
                 thinking_enabled=self._thinking_enabled,
                 thinking_effort=self._thinking_effort,
             ),
         )
+
+    def complete(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        payload_body = self._chat_payload_body(messages, tools)
         request_path = self._log_request(
             url=f"{self._base_url}/chat/completions",
             payload_body=payload_body,
@@ -330,6 +337,196 @@ class OpenAIChatClient:
             tool_call=tool_call,
             done=bool(decision_payload.get("done", False)),
         )
+
+    def stream_events(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> Iterator[ModelEvent]:
+        payload_body = self._chat_payload_body(input_items, tools)
+        payload_body["stream"] = True
+        payload_body["stream_options"] = {"include_usage": True}
+        request_path = self._log_request(
+            url=f"{self._base_url}/chat/completions",
+            payload_body=payload_body,
+        )
+        try:
+            stream = cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
+            yield from self._events_from_chat_stream(stream)
+        except APIStatusError as exc:
+            detail = _api_status_error_detail(exc)
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                    "status_code": exc.status_code,
+                    "response_body": exc.body,
+                },
+            )
+            raise ModelResponseError(
+                f"Model provider returned HTTP {exc.status_code}: {detail}",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+            ) from exc
+        except (APIConnectionError, APITimeoutError) as exc:
+            detail = str(exc)
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                },
+            )
+            raise ModelResponseError(
+                f"Failed to reach model provider: {detail}",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+            ) from exc
+        except (APIResponseValidationError, TypeError) as exc:
+            detail = str(exc)
+            response_body = exc.body if isinstance(exc, APIResponseValidationError) else None
+            error_path = self._log_failure(
+                message=detail,
+                request_path=request_path,
+                payload={
+                    "error_type": type(exc).__name__,
+                    "message": detail,
+                    "response_body": response_body,
+                },
+            )
+            raise ModelResponseError(
+                "Model provider did not return valid JSON.",
+                error_path=error_path,
+                log_path=self._default_error_log_path(),
+            ) from exc
+        self._log_service_event(
+            level=LogLevel.INFO,
+            event="model_response_received",
+            message="Received streaming model response",
+            request_path=request_path,
+        )
+
+    def _events_from_chat_stream(self, stream: object) -> Iterator[ModelEvent]:
+        response_id: str | None = None
+        usage: dict[str, object] | None = None
+        tool_call_states: dict[int, dict[str, str]] = {}
+        emitted_tool_calls = False
+
+        for raw_chunk in stream:
+            chunk = _sdk_payload_to_dict(raw_chunk)
+            raw_id = chunk.get("id")
+            if isinstance(raw_id, str) and raw_id:
+                response_id = raw_id
+            raw_usage = chunk.get("usage")
+            if isinstance(raw_usage, dict):
+                usage = raw_usage
+
+            raw_choices = chunk.get("choices", [])
+            if not isinstance(raw_choices, list):
+                continue
+            for raw_choice in raw_choices:
+                if not isinstance(raw_choice, dict):
+                    continue
+                raw_delta = raw_choice.get("delta", {})
+                delta = raw_delta if isinstance(raw_delta, dict) else {}
+                reasoning = delta.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    yield ModelEvent(
+                        type=ModelEventType.REASONING_DELTA,
+                        text=reasoning,
+                        provider_id=response_id,
+                    )
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield ModelEvent.message_delta(
+                        text=content,
+                        provider_id=response_id,
+                    )
+                self._accumulate_stream_tool_calls(
+                    delta.get("tool_calls"),
+                    tool_call_states,
+                )
+                if raw_choice.get("finish_reason") == "tool_calls":
+                    yield from self._stream_tool_call_events(
+                        tool_call_states,
+                        response_id=response_id,
+                    )
+                    emitted_tool_calls = True
+
+        if tool_call_states and not emitted_tool_calls:
+            yield from self._stream_tool_call_events(
+                tool_call_states,
+                response_id=response_id,
+            )
+        yield ModelEvent(
+            type=ModelEventType.TURN_COMPLETED,
+            response_id=response_id,
+            usage=usage,
+        )
+
+    def _accumulate_stream_tool_calls(
+        self,
+        raw_tool_calls: object,
+        tool_call_states: dict[int, dict[str, str]],
+    ) -> None:
+        if not isinstance(raw_tool_calls, list):
+            return
+        for fallback_index, raw_tool_call in enumerate(raw_tool_calls):
+            if not isinstance(raw_tool_call, dict):
+                continue
+            raw_index = raw_tool_call.get("index")
+            index = raw_index if isinstance(raw_index, int) else fallback_index
+            state = tool_call_states.setdefault(
+                index,
+                {"id": "", "name": "", "arguments": ""},
+            )
+            raw_id = raw_tool_call.get("id")
+            if isinstance(raw_id, str) and raw_id:
+                state["id"] = raw_id
+            raw_function = raw_tool_call.get("function", {})
+            if not isinstance(raw_function, dict):
+                continue
+            raw_name = raw_function.get("name")
+            if isinstance(raw_name, str) and raw_name:
+                state["name"] += raw_name
+            raw_arguments = raw_function.get("arguments")
+            if isinstance(raw_arguments, str) and raw_arguments:
+                state["arguments"] += raw_arguments
+
+    def _stream_tool_call_events(
+        self,
+        tool_call_states: dict[int, dict[str, str]],
+        *,
+        response_id: str | None,
+    ) -> Iterator[ModelEvent]:
+        for index in sorted(tool_call_states):
+            state = tool_call_states[index]
+            raw_tool_call: dict[str, object] = {
+                "id": state["id"] or f"tool_call_{index}",
+                "type": "function",
+                "function": {
+                    "name": state["name"],
+                    "arguments": state["arguments"],
+                },
+            }
+            decoded = _decode_native_tool_call(raw_tool_call, provider_metadata={})
+            raw_arguments = decoded.get("arguments", {})
+            yield ModelEvent.tool_call_requested(
+                tool_name=str(decoded["name"]),
+                tool_arguments=raw_arguments if isinstance(raw_arguments, dict) else {},
+                call_id=str(decoded.get("id") or f"tool_call_{index}"),
+                source=ToolExecutionSource.NATIVE,
+                provider_id=response_id,
+                metadata=(
+                    decoded.get("metadata")
+                    if isinstance(decoded.get("metadata"), dict)
+                    else {}
+                ),
+            )
 
     def create_events(
         self,
