@@ -13,6 +13,10 @@ from mycli.tools.path_utils import resolve_workspace_path
 
 LINE_NUMBER_PATTERN = re.compile(r"^\s*\d+\t", re.MULTILINE)
 MAX_EDIT_FILE_BYTES = 1_000_000
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+    re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*=\s*['\"][^'\"]{8,}['\"]"),
+)
 
 
 class EditError(Exception):
@@ -27,6 +31,9 @@ def edit_file(
 ) -> dict[str, Any]:
     path = Path(file_path)
     old_string = _preprocess(old_string, path)
+
+    if old_string == new_string:
+        raise EditError("Edit would be a no-op; old_string and new_string are identical.")
 
     if old_string == "":
         return _write_empty_old_string(path, new_string)
@@ -130,6 +137,15 @@ class EditTool:
         self._workspace_root = workspace_root
         self._snapshot_store = snapshot_store or FileSnapshotStore()
 
+    def _validate_size(self, target: Path) -> tuple[bool, str | None]:
+        size = target.stat().st_size
+        if size > MAX_EDIT_FILE_BYTES:
+            return False, f"File is too large to edit safely ({size} bytes)."
+        return True, None
+
+    def _contains_secret_like_content(self, value: str) -> bool:
+        return any(pattern.search(value) is not None for pattern in _SECRET_PATTERNS)
+
     def _validate_snapshot(self, target: Path) -> tuple[bool, str | None, str | None]:
         relative_path = target.resolve().relative_to(self._workspace_root.resolve()).as_posix()
         snapshot = self._snapshot_store.latest(relative_path)
@@ -169,6 +185,21 @@ class EditTool:
             old_string = str(arguments.get("old_string", arguments.get("old_text", "")))
             new_string = str(arguments.get("new_string", arguments.get("new_text", "")))
             replace_all = bool(arguments.get("replace_all", False))
+            size_ok, size_error = self._validate_size(target)
+            if not size_ok:
+                return ToolResult(
+                    success=False,
+                    summary=f"Failed to edit {raw_path}",
+                    error=size_error,
+                    raw_payload={"path": raw_path, "error_kind": "file_too_large"},
+                )
+            if self._contains_secret_like_content(new_string):
+                return ToolResult(
+                    success=False,
+                    summary=f"Failed to edit {raw_path}",
+                    error="New content looks like a secret. Refusing to write it.",
+                    raw_payload={"path": raw_path, "error_kind": "secret_like_content"},
+                )
             payload = edit_file(str(target), old_string, new_string, replace_all=replace_all)
         except (OSError, UnicodeDecodeError, ValueError, EditError) as exc:
             return ToolResult(

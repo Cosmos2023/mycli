@@ -128,3 +128,47 @@ def test_edit_tool_rejects_file_changed_since_read(tmp_path):
     assert result.success is False
     assert result.raw_payload["error_kind"] == "stale_read_snapshot"
     assert result.error == "File changed since last Read. Re-read the file and retry."
+
+
+def test_edit_file_rejects_no_op(tmp_path):
+    f = tmp_path / "test.py"
+    f.write_text("value = 1\n", encoding="utf-8")
+
+    with pytest.raises(EditError, match="no-op"):
+        edit_file(str(f), "value = 1", "value = 1")
+
+
+def test_edit_tool_rejects_secret_like_new_content(tmp_path):
+    f = tmp_path / "test.py"
+    f.write_text("TOKEN = ''\n", encoding="utf-8")
+    store = FileSnapshotStore()
+    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "test.py"})
+    tool = EditTool(tmp_path, snapshot_store=store)
+
+    result = tool.execute(
+        {
+            "file_path": "test.py",
+            "old_string": "TOKEN = ''",
+            "new_string": "TOKEN = 'sk-1234567890abcdef'",
+        }
+    )
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "secret_like_content"
+    assert "secret" in result.error.lower()
+
+
+def test_edit_tool_rejects_oversized_file(monkeypatch, tmp_path):
+    f = tmp_path / "large.txt"
+    f.write_text("x" * 10, encoding="utf-8")
+    store = FileSnapshotStore()
+    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "large.txt"})
+    monkeypatch.setattr("mycli.tools.edit.MAX_EDIT_FILE_BYTES", 5)
+    tool = EditTool(tmp_path, snapshot_store=store)
+
+    result = tool.execute(
+        {"file_path": "large.txt", "old_string": "x", "new_string": "y", "replace_all": True}
+    )
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "file_too_large"
