@@ -207,6 +207,14 @@ class ActivityEvent:
 
 
 @dataclass(slots=True, frozen=True)
+class RuntimeStreamEvent:
+    kind: str
+    text: str = ""
+    tool_name: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
 class TurnResponse:
     assistant_message: str
     activity_events: tuple[ActivityEvent, ...] = field(default_factory=tuple)
@@ -252,6 +260,7 @@ __all__ = [
     "RuntimeEventType",
     "RuntimeItem",
     "RuntimeRole",
+    "RuntimeStreamEvent",
     "RuntimeTraceEvent",
     "SessionCommandAllowance",
     "SessionRuntimeSnapshot",

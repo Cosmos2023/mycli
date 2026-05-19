@@ -81,6 +81,17 @@ def test_turn_response_remains_compatible_without_activity_events() -> None:
     assert response.progress_updates == ()
 
 
+def test_runtime_stream_event_defaults_are_empty() -> None:
+    from mycli.domain.runtime import RuntimeStreamEvent
+
+    event = RuntimeStreamEvent(kind="text_delta", text="hello")
+
+    assert event.kind == "text_delta"
+    assert event.text == "hello"
+    assert event.tool_name is None
+    assert event.metadata == {}
+
+
 def test_runtime_exposes_turn_protocol_models() -> None:
     turn = TurnRecord(
         thread_id="demo",
