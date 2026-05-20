@@ -46,7 +46,18 @@ class ChildToolExecutor(Protocol):
         ...
 
 
-@dataclass(slots=True, frozen=True)
+class RuntimeModelTurnRequester(Protocol):
+    def request_model_turn(
+        self,
+        *,
+        runtime_items: list[RuntimeItem],
+        legacy_messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+    ) -> tuple[ModelTurnResult, tuple[str, ...]]:
+        ...
+
+
+@dataclass(slots=True)
 class RuntimeChildTurn:
     text: str
     tool_calls: tuple[ToolCall, ...] = ()
@@ -54,7 +65,7 @@ class RuntimeChildTurn:
 
 @dataclass(slots=True)
 class RuntimeChildTurnRequester:
-    requester: object
+    requester: RuntimeModelTurnRequester
     tool_exposure_builder: Callable[[tuple[str, ...]], ToolExposure]
     tool_renderer: Callable[[ToolExposure], list[ModelToolDefinition]]
 
@@ -64,7 +75,7 @@ class RuntimeChildTurnRequester:
         messages: list[dict[str, object]],
         tool_names: tuple[str, ...],
         child_session_id: str,
-    ) -> RuntimeChildTurn:
+    ) -> ChildTurn:
         del child_session_id
         exposure = self.tool_exposure_builder(tool_names)
         turn_result, _streamed = self.requester.request_model_turn(
@@ -91,16 +102,17 @@ class RuntimeChildTurnRequester:
         blocks: list[RuntimeBlock] = []
         content = str(message.get("content", ""))
         if content:
-            block_type = "tool_result" if message.get("role") == "tool" else "text"
-            blocks.append(
-                RuntimeBlock(
-                    type=block_type,
-                    text=content,
-                    call_id=message.get("tool_call_id")
-                    if isinstance(message.get("tool_call_id"), str)
-                    else None,
+            if message.get("role") == "tool":
+                tool_call_id = message.get("tool_call_id")
+                blocks.append(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text=content,
+                        call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+                    )
                 )
-            )
+            else:
+                blocks.append(RuntimeBlock(type="text", text=content))
         for call in self._tool_calls(message):
             if call.call_id:
                 blocks.append(
@@ -114,17 +126,18 @@ class RuntimeChildTurnRequester:
         return tuple(blocks)
 
     def _legacy_messages(self, messages: list[dict[str, object]]) -> list[ModelMessage]:
-        return [
-            ModelMessage(
-                role=str(message.get("role", "user")),
-                content=str(message.get("content", "")),
-                tool_call_id=message.get("tool_call_id")
-                if isinstance(message.get("tool_call_id"), str)
-                else None,
-                tool_calls=self._tool_calls(message),
+        legacy_messages: list[ModelMessage] = []
+        for message in messages:
+            tool_call_id = message.get("tool_call_id")
+            legacy_messages.append(
+                ModelMessage(
+                    role=str(message.get("role", "user")),
+                    content=str(message.get("content", "")),
+                    tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
+                    tool_calls=self._tool_calls(message),
+                )
             )
-            for message in messages
-        ]
+        return legacy_messages
 
     def _tool_calls(self, message: dict[str, object]) -> tuple[ToolCall, ...]:
         calls = message.get("tool_calls")

@@ -103,6 +103,7 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "Plan",
         "Read",
         "Skill",
+        "Task",
         "WebFetch",
         "WebSearch",
         "Write",

@@ -58,6 +58,7 @@ def test_all_tools_registered():
         "Lint",
         "AskUserQuestion",
         "Plan",
+        "Task",
         "enter_plan_mode",
         "exit_plan_mode",
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from mycli.domain.subagents import SubAgentResult
+from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import SchemaTool, ToolParameter, ToolResult, ToolSpec
 
 
@@ -38,6 +39,10 @@ class TaskTool(SchemaTool):
     def __init__(self, service: SupportsSubAgentService | None = None) -> None:
         self._service = service
 
+    @property
+    def name(self) -> str:
+        return self.spec.name
+
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         if self._service is None:
             return ToolResult(
@@ -68,7 +73,7 @@ class TaskTool(SchemaTool):
             },
         )
 
-    def run(self, call) -> ToolResult:
+    def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
 
 
