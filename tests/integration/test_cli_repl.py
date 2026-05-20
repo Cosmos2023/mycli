@@ -20,6 +20,7 @@ def test_help_lists_approval_and_memory_controls() -> None:
     assert "/resume <session>" in output
     assert "/fork [source] <new-session> [message-index]" in output
     assert "/stats" in output
+    assert "/subagents" in output
     assert "/confirm" not in output
     assert "/reject" not in output
 
@@ -98,6 +99,22 @@ def test_run_repl_routes_non_help_slash_commands_to_command_handler() -> None:
     )
 
     assert "[plan] demo" in outputs
+
+
+def test_run_repl_routes_subagents_command_to_command_handler() -> None:
+    outputs: list[str] = []
+    scripted_inputs = iter(["/subagents", "/quit"])
+
+    run_repl(
+        turn_handler=lambda _message: "unused",
+        command_handler=lambda command: ["[subagent] explore completed"]
+        if command == "/subagents"
+        else ["[unknown]"],
+        input_func=lambda _prompt: next(scripted_inputs),
+        output_func=outputs.append,
+    )
+
+    assert "[subagent] explore completed" in outputs
 
 
 def test_main_outputs_stream_events_before_final_answer(monkeypatch, tmp_path: Path) -> None:

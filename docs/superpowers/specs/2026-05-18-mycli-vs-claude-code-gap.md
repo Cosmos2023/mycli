@@ -105,11 +105,11 @@
 
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
-| 7.1 | 5 种 agent 模式 | ⚠️ | sync / async / fork / worktree / remote | sub_agent 基础实现仍有限，未覆盖 5 种模式 |
-| 7.2 | Fork 缓存共享 | ❌ | fork agent 复用父 cache 前缀，1/10 价格 | 无 |
-| 7.3 | 权限隔离 | ❌ | 子 agent 权限最小化，不能绕过父权限 | 无 |
-| 7.4 | 工具集隔离 | ⚠️ | 子 agent 独立工具子集 | 子 agent 可持有独立工具列表，但缺完整权限/生命周期隔离 |
-| 7.5 | Context 隔离 | ⚠️ | 单通道 prompt + file handoff | 独立消息列表，骨架有 |
+| 7.1 | 5 种 agent 模式 | ⚠️ | sync / async / fork / worktree / remote | P3 覆盖 sync in-process `Task`；async/fork/worktree/remote 仍开放 |
+| 7.2 | Fork 缓存共享 | ❌ | fork agent 复用父 cache 前缀，1/10 价格 | 仍开放；P3 明确延后到 P4，因为需要字节级一致 prompt 前缀验证 |
+| 7.3 | 权限隔离 | ⚠️ | 子 agent 权限最小化，不能绕过父权限 | P3 覆盖工具 scope denylist 和无 nested approval UI；OS/process sandbox 仍开放 |
+| 7.4 | 工具集隔离 | ✅ | 子 agent 独立工具子集 | P3 通过 parent exposure / requested / profile / denylist / policy resolver 落地 |
+| 7.5 | Context 隔离 | ✅ | 单通道 prompt + file handoff | P3 父上下文只接收 final XML report；async notification 仍开放 |
 | 7.6 | Agent Teams | ❌ | 共享 task list + 依赖图 + 并行 worktree | 无 |
 | 7.7 | /batch 命令 | ❌ | 采访→扇出到数百个 worktree 隔离 agent | 无 |
 
@@ -163,7 +163,7 @@
 | 权限 & 安全 | 6 | 0 | 2 | 4 |
 | 记忆 & 持久化 | 8 | 0 | 3 | 5 |
 | Prompt 工程 | 5 | 0 | 1 | 4 |
-| Sub-agent | 7 | 0 | 3 | 4 |
+| Sub-agent | 7 | 2 | 2 | 3 |
 | MCP & 扩展 | 6 | 0 | 4 | 2 |
 | CLI 体验 | 10 | 0 | 2 | 8 |
 | 生产基础设施 | 7 | 0 | 1 | 6 |
@@ -171,7 +171,7 @@
 
 **下一步候选（MCP 与 Microcompact 暂缓后）：**
 
-1. Sub-agent capability pack：补权限隔离、工具子集、context handoff、生命周期观测。
+1. Sub-agent 后续增强：补 async mailbox、fork cache sharing、worktree/remote agent、coordinator/team 与 `/batch`。
 2. CLI experience：statusline/context%、路径补全、viewMode、交互式 diff。
 3. Agent loop recovery：OTK 升级、529 fallback、401 refresh、Ctrl+C resume/continue 点。
 4. Prompt cache 稳定性：动态边界、beta header latch、模型切换缓存隔离。

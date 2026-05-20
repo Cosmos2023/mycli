@@ -15,6 +15,7 @@ from mycli.domain.runtime import (
     TurnItemType,
     TurnResponse,
 )
+from mycli.domain.subagents import SubAgentRunSummary
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.services.file_history import FileHistoryService
@@ -23,6 +24,18 @@ from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
 from mycli.services.tracing import TraceService
+
+
+def format_subagent_summaries(summaries: tuple[SubAgentRunSummary, ...]) -> str:
+    if not summaries:
+        return "No sub-agent runs in this session."
+    return "\n".join(
+        (
+            f"{summary.agent_type} {summary.status} tools={summary.tool_calls} "
+            f"{summary.child_session_id} description={summary.description[:80]}"
+        )
+        for summary in summaries
+    )
 
 
 class TurnService:
@@ -138,6 +151,12 @@ class TurnService:
         if not plan_state.items:
             return ("no active plan",)
         return tuple(f"{item.status.value}: {item.content}" for item in plan_state.items)
+
+    def inspect_subagents(self) -> tuple[str, ...]:
+        recent = getattr(self._runtime, "recent_subagents", None)
+        if not callable(recent):
+            return ("No sub-agent runs in this session.",)
+        return tuple(format_subagent_summaries(recent()).splitlines())
 
     def inspect_skills(self) -> tuple[str, ...]:
         lines: list[str] = []

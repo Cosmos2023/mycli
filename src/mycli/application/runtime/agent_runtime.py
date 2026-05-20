@@ -32,6 +32,7 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
+from mycli.domain.subagents import SubAgentRunSummary
 from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureEntry,
@@ -642,6 +643,9 @@ class AgentRuntime:
 
     def _set_current_turn_id(self, turn_id: str) -> None:
         self._current_turn_id = turn_id
+
+    def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
+        return self._sub_agent_service.recent_runs()
 
     def _append_tool_exposure_turn_item(
         self,
