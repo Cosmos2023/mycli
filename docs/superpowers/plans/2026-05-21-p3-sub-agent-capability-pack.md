@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make sub-agents a safe in-process runtime capability exposed through a model-facing `Task` tool.
+**Goal:** Build safe synchronous `Task` sub-agents that can run bounded child loops with isolated context, restricted tools, XML reports, and observable lifecycle state.
 
-**Architecture:** Add small domain contracts, a conservative built-in profile catalog, a tool-scope resolver, and a `SubAgentService` that creates child runs with a strict tool subset and isolated child session id. Keep P3 synchronous and in-process; parent context receives only the final `Task` tool result while child lifecycle is visible through trace/activity surfaces.
+**Architecture:** P3 adds a single runtime path: `TaskTool -> SubAgentService -> SubAgentChildLoop -> scoped ToolRegistry -> XML report`. Child agents inherit the parent provider/model configuration for stability, but they receive only a narrow task prompt and a resolver-produced tool subset; parent conversation records only the final `Task` tool result. Claude Code-style async mailbox, background workers, coordinator/team mode, worktree/remote agents, and fork prompt-cache sharing are explicitly deferred.
 
-**Tech Stack:** Python 3.13, dataclasses, existing `ToolRegistry`/`ApprovalService`/`TraceService`, pytest, ruff, mypy. No new dependencies.
+**Tech Stack:** Python 3.13, dataclasses, existing `ModelTurnRequester`, `ToolRegistry`, `ToolRouter`, `ToolExecutionService`, `TraceService`, pytest, ruff, mypy. No new dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-05-21-p3-sub-agent-capability-pack.md`
 
@@ -14,29 +14,24 @@
 
 ## File Structure
 
-- `src/mycli/domain/subagents.py`: immutable sub-agent profile, invocation, result, and run summary dataclasses.
-- `src/mycli/application/runtime/subagents/__init__.py`: package exports.
+- `src/mycli/domain/subagents.py`: immutable domain contracts for profile, invocation, budget, result, and run summary.
+- `src/mycli/application/runtime/subagents/__init__.py`: runtime sub-agent package exports.
 - `src/mycli/application/runtime/subagents/profiles.py`: built-in `explore`, `review`, and `executor` profiles.
-- `src/mycli/application/runtime/subagents/tool_scope.py`: child tool subset resolver.
-- `src/mycli/application/runtime/subagents/service.py`: sub-agent orchestration, child session id generation, lifecycle trace, report normalization.
-- `src/mycli/tools/task.py`: model-facing `Task` tool that delegates to `SubAgentService`.
-- `src/mycli/tools/registry.py`: register a disabled/fallback `TaskTool` placeholder only when no runtime-bound service exists.
-- `src/mycli/cli/bootstrap.py`: construct and register runtime-bound `TaskTool`.
-- `src/mycli/application/runtime/agent_runtime.py`: construct `SubAgentService`, expose current tool scope to it, and keep parent transcript limited to `Task` result.
-- `src/mycli/application/turn_service.py`: add `inspect_subagents()`.
-- `src/mycli/cli/repl.py`: add `/subagents`.
-- `tests/unit/domain/test_subagents.py`: domain contract tests.
-- `tests/unit/application/runtime/subagents/test_profiles.py`: built-in profile tests.
-- `tests/unit/application/runtime/subagents/test_tool_scope.py`: tool scope tests.
-- `tests/unit/application/runtime/subagents/test_sub_agent_service.py`: service orchestration tests.
-- `tests/unit/tools/test_task_tool.py`: Task tool tests.
-- `tests/unit/application/test_agent_runtime.py`: runtime registration and parent transcript tests.
-- `tests/unit/cli/test_main.py`: `/subagents` command tests.
-- `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md`: final verification and real smoke report.
+- `src/mycli/application/runtime/subagents/tool_scope.py`: layered child tool resolver with global denylist, profile denylist, parent exposure, requested tools, and policy denial.
+- `src/mycli/application/runtime/subagents/loop.py`: bounded child model/tool loop with max turns, max tool calls, no-progress stop, and approval-required stop.
+- `src/mycli/application/runtime/subagents/service.py`: service orchestration, child session id generation, XML report normalization, trace events, and recent run summaries.
+- `src/mycli/tools/task.py`: model-facing `Task` tool; unavailable fallback when no service is bound.
+- `src/mycli/tools/registry.py`: register fallback `TaskTool` in default tool inventory.
+- `src/mycli/application/runtime/agent_runtime.py`: bind `SubAgentService`, replace fallback `TaskTool`, and expose recent sub-agent summaries.
+- `src/mycli/application/turn_service.py`: expose `/subagents` inspection through the existing turn/service boundary.
+- `src/mycli/cli/repl.py`: render `/subagents` command output.
+- `src/mycli/agents/sub_agent.py`: remove the legacy parallel abstraction or replace it with a compatibility stub that imports from the new path and emits no runtime behavior.
+- `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md`: mark P3-covered sub-agent rows and leave deferred rows explicit.
+- `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md`: final smoke evidence.
 
 ---
 
-### Task 1: Domain Contracts And Built-in Profiles
+### Task 1: Domain Contracts And Profiles
 
 **Files:**
 - Create: `src/mycli/domain/subagents.py`
@@ -44,6 +39,8 @@
 - Create: `src/mycli/application/runtime/subagents/profiles.py`
 - Create: `tests/unit/domain/test_subagents.py`
 - Create: `tests/unit/application/runtime/subagents/test_profiles.py`
+- Modify: `src/mycli/agents/sub_agent.py`
+- Modify: `tests/unit/agents/test_sub_agent.py`
 
 - [ ] **Step 1: Write failing domain tests**
 
@@ -55,6 +52,7 @@ from __future__ import annotations
 import pytest
 
 from mycli.domain.subagents import (
+    SubAgentBudget,
     SubAgentInvocation,
     SubAgentProfile,
     SubAgentResult,
@@ -62,60 +60,83 @@ from mycli.domain.subagents import (
 )
 
 
-def test_sub_agent_profile_requires_name_and_tools() -> None:
+def test_profile_has_budget_model_cache_and_denylists() -> None:
     profile = SubAgentProfile(
         name="explore",
-        system_prompt="Inspect only.",
-        default_tools=("Read", "Grep", "LS"),
-        max_tool_calls=8,
+        system_prompt="Read only.",
+        default_tools=("Read", "Grep", "Read"),
+        denied_tools=("Task",),
+        budget=SubAgentBudget(max_turns=4, max_tool_calls=7),
+        model=None,
+        max_prompt_tokens=None,
+        cache_strategy="inherit_provider_config",
     )
 
-    assert profile.name == "explore"
-    assert profile.default_tools == ("Read", "Grep", "LS")
-    assert profile.max_tool_calls == 8
+    assert profile.default_tools == ("Read", "Grep")
+    assert profile.denied_tools == ("Task",)
+    assert profile.budget.max_turns == 4
+    assert profile.budget.max_tool_calls == 7
+    assert profile.cache_strategy == "inherit_provider_config"
 
 
-def test_sub_agent_profile_rejects_blank_name() -> None:
-    with pytest.raises(ValueError, match="name"):
-        SubAgentProfile(name=" ", system_prompt="x", default_tools=("Read",))
+def test_budget_defaults_match_p3_spec() -> None:
+    budget = SubAgentBudget()
+
+    assert budget.max_turns == 8
+    assert budget.max_tool_calls == 20
+    assert budget.no_progress_turn_limit == 3
+    assert budget.report_char_limit == 8000
 
 
-def test_sub_agent_invocation_normalizes_allowed_tools() -> None:
+def test_invocation_normalizes_tools_and_requires_task_identity() -> None:
     invocation = SubAgentInvocation(
         agent_type="explore",
-        description="Find entrypoints",
+        description="Find entry points",
         allowed_tools=("Grep", "Read", "Read"),
         parent_session_id="demo",
         parent_turn_id="turn_1",
     )
 
     assert invocation.allowed_tools == ("Grep", "Read")
+    assert invocation.parent_session_id == "demo"
+    assert invocation.parent_turn_id == "turn_1"
 
 
-def test_sub_agent_result_and_summary_are_stable() -> None:
-    result = SubAgentResult(
-        status="completed",
-        report="Found files.",
-        child_session_id="demo:sub:turn_1:abcd",
-        tool_calls=2,
-    )
-    summary = SubAgentRunSummary.from_result(
-        invocation=SubAgentInvocation(
+def test_blank_invocation_description_is_rejected() -> None:
+    with pytest.raises(ValueError, match="description"):
+        SubAgentInvocation(
             agent_type="explore",
-            description="Find files",
+            description=" ",
             allowed_tools=("Read",),
             parent_session_id="demo",
             parent_turn_id="turn_1",
-        ),
-        result=result,
+        )
+
+
+def test_summary_preserves_result_status_and_session() -> None:
+    invocation = SubAgentInvocation(
+        agent_type="review",
+        description="Review diff",
+        allowed_tools=("Read",),
+        parent_session_id="demo",
+        parent_turn_id="turn_1",
+    )
+    result = SubAgentResult(
+        status="completed",
+        report="<sub-agent-report agent=\"review\" status=\"completed\">ok</sub-agent-report>",
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_calls=2,
     )
 
-    assert summary.agent_type == "explore"
+    summary = SubAgentRunSummary.from_result(invocation=invocation, result=result)
+
+    assert summary.agent_type == "review"
     assert summary.status == "completed"
-    assert summary.child_session_id == "demo:sub:turn_1:abcd"
+    assert summary.tool_calls == 2
+    assert summary.child_session_id == "demo:sub:turn_1:abcd1234"
 ```
 
-- [ ] **Step 2: Run domain tests to verify failure**
+- [ ] **Step 2: Run domain tests to verify they fail**
 
 Run:
 
@@ -123,7 +144,7 @@ Run:
 uv run pytest tests/unit/domain/test_subagents.py -q
 ```
 
-Expected: fails because `mycli.domain.subagents` does not exist.
+Expected: fails with `ModuleNotFoundError: No module named 'mycli.domain.subagents'`.
 
 - [ ] **Step 3: Implement domain contracts**
 
@@ -132,21 +153,42 @@ Create `src/mycli/domain/subagents.py`:
 ```python
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
-def _require_non_blank(value: str, field_name: str) -> str:
+SubAgentStatus = str
+
+
+def _non_blank(value: str, field_name: str) -> str:
     stripped = value.strip()
     if not stripped:
         raise ValueError(f"Sub-agent {field_name} cannot be blank.")
     return stripped
 
 
-def _unique_tools(tools: tuple[str, ...]) -> tuple[str, ...]:
-    unique = tuple(dict.fromkeys(tool for tool in tools if tool.strip()))
+def _unique_non_blank(values: tuple[str, ...], field_name: str) -> tuple[str, ...]:
+    unique = tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
     if not unique:
-        raise ValueError("Sub-agent requires at least one tool.")
+        raise ValueError(f"Sub-agent {field_name} cannot be empty.")
     return unique
+
+
+@dataclass(slots=True, frozen=True)
+class SubAgentBudget:
+    max_turns: int = 8
+    max_tool_calls: int = 20
+    no_progress_turn_limit: int = 3
+    report_char_limit: int = 8000
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "max_turns",
+            "max_tool_calls",
+            "no_progress_turn_limit",
+            "report_char_limit",
+        ):
+            if getattr(self, field_name) <= 0:
+                raise ValueError(f"Sub-agent {field_name} must be positive.")
 
 
 @dataclass(slots=True, frozen=True)
@@ -154,18 +196,28 @@ class SubAgentProfile:
     name: str
     system_prompt: str
     default_tools: tuple[str, ...]
-    max_tool_calls: int = 25
+    denied_tools: tuple[str, ...] = ()
+    budget: SubAgentBudget = field(default_factory=SubAgentBudget)
+    model: str | None = None
+    max_prompt_tokens: int | None = None
+    cache_strategy: str = "inherit_provider_config"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_non_blank(self.name, "name"))
+        object.__setattr__(self, "name", _non_blank(self.name, "name"))
+        object.__setattr__(self, "system_prompt", _non_blank(self.system_prompt, "system_prompt"))
         object.__setattr__(
             self,
-            "system_prompt",
-            _require_non_blank(self.system_prompt, "system_prompt"),
+            "default_tools",
+            _unique_non_blank(self.default_tools, "default_tools"),
         )
-        object.__setattr__(self, "default_tools", _unique_tools(self.default_tools))
-        if self.max_tool_calls <= 0:
-            raise ValueError("Sub-agent max_tool_calls must be positive.")
+        object.__setattr__(
+            self,
+            "denied_tools",
+            tuple(dict.fromkeys(tool.strip() for tool in self.denied_tools if tool.strip())),
+        )
+        object.__setattr__(self, "cache_strategy", _non_blank(self.cache_strategy, "cache_strategy"))
+        if self.max_prompt_tokens is not None and self.max_prompt_tokens <= 0:
+            raise ValueError("Sub-agent max_prompt_tokens must be positive when set.")
 
 
 @dataclass(slots=True, frozen=True)
@@ -177,39 +229,39 @@ class SubAgentInvocation:
     parent_turn_id: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "agent_type", _require_non_blank(self.agent_type, "agent_type"))
+        object.__setattr__(self, "agent_type", _non_blank(self.agent_type, "agent_type"))
+        object.__setattr__(self, "description", _non_blank(self.description, "description"))
         object.__setattr__(
             self,
-            "description",
-            _require_non_blank(self.description, "description"),
+            "allowed_tools",
+            _unique_non_blank(self.allowed_tools, "allowed_tools"),
         )
-        object.__setattr__(self, "allowed_tools", _unique_tools(self.allowed_tools))
         object.__setattr__(
             self,
             "parent_session_id",
-            _require_non_blank(self.parent_session_id, "parent_session_id"),
+            _non_blank(self.parent_session_id, "parent_session_id"),
         )
         object.__setattr__(
             self,
             "parent_turn_id",
-            _require_non_blank(self.parent_turn_id, "parent_turn_id"),
+            _non_blank(self.parent_turn_id, "parent_turn_id"),
         )
 
 
 @dataclass(slots=True, frozen=True)
 class SubAgentResult:
-    status: str
+    status: SubAgentStatus
     report: str
     child_session_id: str
     tool_calls: int
     error: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "status", _require_non_blank(self.status, "status"))
+        object.__setattr__(self, "status", _non_blank(self.status, "status"))
         object.__setattr__(
             self,
             "child_session_id",
-            _require_non_blank(self.child_session_id, "child_session_id"),
+            _non_blank(self.child_session_id, "child_session_id"),
         )
         if self.tool_calls < 0:
             raise ValueError("Sub-agent tool_calls cannot be negative.")
@@ -219,7 +271,7 @@ class SubAgentResult:
 class SubAgentRunSummary:
     agent_type: str
     description: str
-    status: str
+    status: SubAgentStatus
     child_session_id: str
     tool_calls: int
 
@@ -240,10 +292,12 @@ class SubAgentRunSummary:
 
 
 __all__ = [
+    "SubAgentBudget",
     "SubAgentInvocation",
     "SubAgentProfile",
     "SubAgentResult",
     "SubAgentRunSummary",
+    "SubAgentStatus",
 ]
 ```
 
@@ -252,22 +306,27 @@ __all__ = [
 Create `tests/unit/application/runtime/subagents/test_profiles.py`:
 
 ```python
-from mycli.application.runtime.subagents.profiles import get_sub_agent_profile, list_sub_agent_profiles
+from mycli.application.runtime.subagents.profiles import (
+    get_sub_agent_profile,
+    list_sub_agent_profiles,
+)
 
 
-def test_builtin_sub_agent_profiles_are_conservative() -> None:
-    names = [profile.name for profile in list_sub_agent_profiles()]
+def test_builtin_profiles_are_stable_and_conservative() -> None:
+    profiles = list_sub_agent_profiles()
 
-    assert names == ["executor", "explore", "review"]
+    assert [profile.name for profile in profiles] == ["executor", "explore", "review"]
     assert get_sub_agent_profile("explore").default_tools == ("Read", "Grep", "Glob", "LS")
-    assert "Bash" not in get_sub_agent_profile("review").default_tools
+    assert get_sub_agent_profile("review").default_tools == ("Read", "Grep", "Glob", "LS", "Lint")
+    assert "Bash" not in get_sub_agent_profile("executor").default_tools
+    assert "Task" in get_sub_agent_profile("executor").denied_tools
 
 
-def test_get_sub_agent_profile_rejects_unknown_profile() -> None:
+def test_unknown_profile_returns_none() -> None:
     assert get_sub_agent_profile("missing") is None
 ```
 
-- [ ] **Step 5: Run profile tests to verify failure**
+- [ ] **Step 5: Run profile tests to verify they fail**
 
 Run:
 
@@ -275,14 +334,14 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_profiles.py -q
 ```
 
-Expected: fails because profile module does not exist.
+Expected: fails because `mycli.application.runtime.subagents.profiles` does not exist.
 
-- [ ] **Step 6: Implement built-in profiles**
+- [ ] **Step 6: Implement profiles and mark legacy sub-agent path**
 
 Create `src/mycli/application/runtime/subagents/__init__.py`:
 
 ```python
-"""Sub-agent runtime support."""
+"""Runtime support for safe synchronous sub-agents."""
 ```
 
 Create `src/mycli/application/runtime/subagents/profiles.py`:
@@ -293,49 +352,89 @@ from __future__ import annotations
 from mycli.domain.subagents import SubAgentProfile
 
 
+GLOBAL_CHILD_DENYLIST: tuple[str, ...] = (
+    "Task",
+    "AskUserQuestion",
+    "enter_plan_mode",
+    "exit_plan_mode",
+    "EnterPlanMode",
+    "ExitPlanMode",
+)
+
 _PROFILES: dict[str, SubAgentProfile] = {
+    "executor": SubAgentProfile(
+        name="executor",
+        system_prompt=(
+            "You are a bounded execution sub-agent. Make small scoped changes only. "
+            "Return concise findings and changed paths. Do not ask the user questions."
+        ),
+        default_tools=("Read", "Grep", "Glob", "LS", "Edit", "Write"),
+        denied_tools=GLOBAL_CHILD_DENYLIST,
+    ),
     "explore": SubAgentProfile(
         name="explore",
         system_prompt=(
-            "You are a read-only exploration sub-agent. Map files, symbols, and "
-            "evidence. Do not modify files."
+            "You are a read-only exploration sub-agent. Map files, symbols, and facts. "
+            "Do not modify files or ask the user questions."
         ),
         default_tools=("Read", "Grep", "Glob", "LS"),
-        max_tool_calls=12,
+        denied_tools=GLOBAL_CHILD_DENYLIST,
     ),
     "review": SubAgentProfile(
         name="review",
         system_prompt=(
-            "You are a code review sub-agent. Prioritize correctness, security, "
-            "and test gaps. Return concrete findings with file references."
+            "You are a code review sub-agent. Prioritize correctness, regressions, "
+            "security, and missing tests. Do not modify files."
         ),
         default_tools=("Read", "Grep", "Glob", "LS", "Lint"),
-        max_tool_calls=16,
-    ),
-    "executor": SubAgentProfile(
-        name="executor",
-        system_prompt=(
-            "You are an implementation sub-agent. Keep edits scoped to the assigned "
-            "task and report changed files."
-        ),
-        default_tools=("Read", "Grep", "Glob", "LS", "Edit", "Write", "Bash"),
-        max_tool_calls=20,
+        denied_tools=GLOBAL_CHILD_DENYLIST,
     ),
 }
-
-
-def list_sub_agent_profiles() -> tuple[SubAgentProfile, ...]:
-    return tuple(_PROFILES[name] for name in sorted(_PROFILES))
 
 
 def get_sub_agent_profile(name: str) -> SubAgentProfile | None:
     return _PROFILES.get(name)
 
 
-__all__ = ["get_sub_agent_profile", "list_sub_agent_profiles"]
+def list_sub_agent_profiles() -> list[SubAgentProfile]:
+    return [_PROFILES[name] for name in sorted(_PROFILES)]
+
+
+__all__ = ["GLOBAL_CHILD_DENYLIST", "get_sub_agent_profile", "list_sub_agent_profiles"]
 ```
 
-- [ ] **Step 7: Run Task 1 tests**
+Replace `src/mycli/agents/sub_agent.py` with:
+
+```python
+from __future__ import annotations
+
+"""Legacy sub-agent module.
+
+P3 routes all sub-agent execution through
+``mycli.application.runtime.subagents``. This module is intentionally kept as
+a small compatibility marker while old direct users are migrated.
+"""
+
+from mycli.domain.subagents import SubAgentResult
+
+
+SubAgentReportFragment = SubAgentResult
+
+__all__ = ["SubAgentReportFragment"]
+```
+
+Replace `tests/unit/agents/test_sub_agent.py` with:
+
+```python
+from mycli.agents.sub_agent import SubAgentReportFragment
+from mycli.domain.subagents import SubAgentResult
+
+
+def test_legacy_sub_agent_module_exports_report_alias() -> None:
+    assert SubAgentReportFragment is SubAgentResult
+```
+
+- [ ] **Step 7: Run focused tests**
 
 Run:
 
@@ -343,76 +442,83 @@ Run:
 uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents/test_profiles.py -q
 ```
 
-Expected: pass.
+Expected: all tests pass.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/mycli/domain/subagents.py src/mycli/application/runtime/subagents/__init__.py src/mycli/application/runtime/subagents/profiles.py tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents/test_profiles.py
-git commit -m "Define sub-agent contracts and profiles" -m "Add immutable sub-agent invocation/result contracts and conservative built-in profiles for explore, review, and executor child agents." -m "Constraint: P3 supports only synchronous in-process child agents; team/worktree/remote agents remain out of scope." -m "Confidence: high" -m "Scope-risk: narrow" -m "Tested: uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents/test_profiles.py -q"
+git add src/mycli/domain/subagents.py src/mycli/application/runtime/subagents/__init__.py src/mycli/application/runtime/subagents/profiles.py src/mycli/agents/sub_agent.py tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents/test_profiles.py tests/unit/agents/test_sub_agent.py
+git commit -m "Define bounded sub-agent contracts"
+```
+
+Use Lore trailers in the commit body:
+
+```text
+Constraint: P3 keeps only one sub-agent runtime path and marks the old Fragment-based abstraction legacy.
+Confidence: high
+Scope-risk: moderate
+Tested: uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents/test_profiles.py -q
 ```
 
 ---
 
-### Task 2: Child Tool Scope Resolver
+### Task 2: Layered Child Tool Scope Resolver
 
 **Files:**
 - Create: `src/mycli/application/runtime/subagents/tool_scope.py`
 - Create: `tests/unit/application/runtime/subagents/test_tool_scope.py`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing resolver tests**
 
 Create `tests/unit/application/runtime/subagents/test_tool_scope.py`:
 
 ```python
+from __future__ import annotations
+
 from mycli.application.runtime.subagents.profiles import get_sub_agent_profile
-from mycli.application.runtime.subagents.tool_scope import resolve_sub_agent_tool_scope
+from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
 
 
-def test_tool_scope_is_intersection_of_parent_request_and_profile() -> None:
+def test_resolver_intersects_parent_request_and_profile() -> None:
     profile = get_sub_agent_profile("explore")
-    assert profile is not None
 
-    resolved = resolve_sub_agent_tool_scope(
-        parent_tool_names=("Read", "Grep", "Edit", "Bash"),
-        requested_tool_names=("Read", "Edit", "Bash"),
+    resolved = resolve_child_tool_scope(
+        parent_tools=("Read", "Grep", "Edit", "Task"),
+        requested_tools=("Read", "Edit", "Task"),
         profile=profile,
+        policy_denied_tools=(),
     )
 
-    assert resolved.allowed_tool_names == ("Read",)
-    assert resolved.denied_tool_names == ("Bash", "Edit")
+    assert resolved == ("Read",)
 
 
-def test_tool_scope_blocks_high_risk_tools_without_explicit_profile_support() -> None:
+def test_resolver_removes_global_and_policy_denied_tools() -> None:
+    profile = get_sub_agent_profile("executor")
+
+    resolved = resolve_child_tool_scope(
+        parent_tools=("Read", "Write", "Task", "AskUserQuestion"),
+        requested_tools=("Read", "Write", "Task", "AskUserQuestion"),
+        profile=profile,
+        policy_denied_tools=("Write",),
+    )
+
+    assert resolved == ("Read",)
+
+
+def test_resolver_keeps_stable_profile_order() -> None:
     profile = get_sub_agent_profile("review")
-    assert profile is not None
 
-    resolved = resolve_sub_agent_tool_scope(
-        parent_tool_names=("Read", "Bash", "Lint"),
-        requested_tool_names=("Read", "Bash", "Lint"),
+    resolved = resolve_child_tool_scope(
+        parent_tools=("Lint", "LS", "Glob", "Grep", "Read"),
+        requested_tools=("Lint", "LS", "Glob", "Grep", "Read"),
         profile=profile,
+        policy_denied_tools=(),
     )
 
-    assert resolved.allowed_tool_names == ("Read", "Lint")
-    assert resolved.denied_tool_names == ("Bash",)
-
-
-def test_tool_scope_reports_empty_result() -> None:
-    profile = get_sub_agent_profile("explore")
-    assert profile is not None
-
-    resolved = resolve_sub_agent_tool_scope(
-        parent_tool_names=("Edit",),
-        requested_tool_names=("Edit",),
-        profile=profile,
-    )
-
-    assert resolved.allowed_tool_names == ()
-    assert resolved.denied_tool_names == ("Edit",)
-    assert resolved.error == "No tools remain after applying sub-agent scope."
+    assert resolved == ("Read", "Grep", "Glob", "LS", "Lint")
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [ ] **Step 2: Run resolver tests to verify they fail**
 
 Run:
 
@@ -429,46 +535,35 @@ Create `src/mycli/application/runtime/subagents/tool_scope.py`:
 ```python
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+from mycli.application.runtime.subagents.profiles import GLOBAL_CHILD_DENYLIST
 from mycli.domain.subagents import SubAgentProfile
 
 
-@dataclass(slots=True, frozen=True)
-class SubAgentToolScope:
-    allowed_tool_names: tuple[str, ...]
-    denied_tool_names: tuple[str, ...]
-    error: str | None = None
-
-
-def resolve_sub_agent_tool_scope(
+def resolve_child_tool_scope(
     *,
-    parent_tool_names: tuple[str, ...],
-    requested_tool_names: tuple[str, ...],
-    profile: SubAgentProfile,
-) -> SubAgentToolScope:
-    parent = set(parent_tool_names)
-    requested = tuple(dict.fromkeys(requested_tool_names))
+    parent_tools: tuple[str, ...],
+    requested_tools: tuple[str, ...],
+    profile: SubAgentProfile | None,
+    policy_denied_tools: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    if profile is None:
+        return ()
+    parent = set(parent_tools)
+    requested = set(requested_tools)
     profile_tools = set(profile.default_tools)
-    allowed = tuple(
-        tool_name
-        for tool_name in requested
-        if tool_name in parent and tool_name in profile_tools
-    )
-    denied = tuple(tool_name for tool_name in requested if tool_name not in allowed)
-    if not allowed:
-        return SubAgentToolScope(
-            allowed_tool_names=(),
-            denied_tool_names=denied,
-            error="No tools remain after applying sub-agent scope.",
-        )
-    return SubAgentToolScope(allowed_tool_names=allowed, denied_tool_names=denied)
+    denied = set(GLOBAL_CHILD_DENYLIST)
+    denied.update(profile.denied_tools)
+    denied.update(policy_denied_tools)
+
+    allowed = parent & requested & profile_tools
+    allowed -= denied
+    return tuple(tool for tool in profile.default_tools if tool in allowed)
 
 
-__all__ = ["SubAgentToolScope", "resolve_sub_agent_tool_scope"]
+__all__ = ["resolve_child_tool_scope"]
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Run resolver tests**
 
 Run:
 
@@ -476,18 +571,573 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_tool_scope.py -q
 ```
 
-Expected: pass.
+Expected: all tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/mycli/application/runtime/subagents/tool_scope.py tests/unit/application/runtime/subagents/test_tool_scope.py
-git commit -m "Constrain sub-agent tool scopes" -m "Resolve child-agent tools as the intersection of parent exposure, requested tools, and built-in profile defaults." -m "Constraint: P3 prevents tool amplification but does not add OS sandboxing or nested approval UI." -m "Confidence: high" -m "Scope-risk: narrow" -m "Tested: uv run pytest tests/unit/application/runtime/subagents/test_tool_scope.py -q"
+git commit -m "Constrain child agent tool scope"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: Child tools must be a subset of parent exposure, caller request, profile defaults, and policy.
+Rejected: Simple allowlist intersection only | it would miss global no-nesting and profile denylist rules.
+Confidence: high
+Scope-risk: narrow
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_tool_scope.py -q
 ```
 
 ---
 
-### Task 3: SubAgentService Orchestration
+### Task 3: Model-Facing Task Tool
+
+**Files:**
+- Create: `src/mycli/tools/task.py`
+- Create: `tests/unit/tools/test_task_tool.py`
+- Modify: `src/mycli/tools/registry.py`
+
+- [ ] **Step 1: Write failing Task tool tests**
+
+Create `tests/unit/tools/test_task_tool.py`:
+
+```python
+from __future__ import annotations
+
+from mycli.domain.subagents import SubAgentResult
+from mycli.tools.task import TaskTool
+
+
+class FakeSubAgentService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def run_task(
+        self,
+        *,
+        description: str,
+        agent_type: str,
+        allowed_tools: tuple[str, ...],
+    ) -> SubAgentResult:
+        self.calls.append(
+            {
+                "description": description,
+                "agent_type": agent_type,
+                "allowed_tools": allowed_tools,
+            }
+        )
+        return SubAgentResult(
+            status="completed",
+            report="<sub-agent-report agent=\"explore\" status=\"completed\">ok</sub-agent-report>",
+            child_session_id="demo:sub:turn_1:abcd1234",
+            tool_calls=1,
+        )
+
+
+def test_task_tool_delegates_to_bound_service() -> None:
+    service = FakeSubAgentService()
+    tool = TaskTool(service=service)
+
+    result = tool.execute(
+        {
+            "description": "Find tests",
+            "agent_type": "explore",
+            "allowed_tools": ["Read", "Grep"],
+        }
+    )
+
+    assert result.success is True
+    assert result.summary == "Sub-agent explore completed with status completed."
+    assert result.raw_payload["child_session_id"] == "demo:sub:turn_1:abcd1234"
+    assert service.calls == [
+        {
+            "description": "Find tests",
+            "agent_type": "explore",
+            "allowed_tools": ("Read", "Grep"),
+        }
+    ]
+
+
+def test_unbound_task_tool_returns_unavailable_result() -> None:
+    result = TaskTool().execute(
+        {
+            "description": "Find tests",
+            "agent_type": "explore",
+            "allowed_tools": ["Read"],
+        }
+    )
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "task_tool_unbound"
+```
+
+- [ ] **Step 2: Run Task tool tests to verify they fail**
+
+Run:
+
+```bash
+uv run pytest tests/unit/tools/test_task_tool.py -q
+```
+
+Expected: fails because `mycli.tools.task` does not exist.
+
+- [ ] **Step 3: Implement TaskTool**
+
+Create `src/mycli/tools/task.py`:
+
+```python
+from __future__ import annotations
+
+from typing import Protocol
+
+from mycli.domain.subagents import SubAgentResult
+from mycli.tools.base import SchemaTool, ToolParameter, ToolResult, ToolSpec
+
+
+class SupportsSubAgentService(Protocol):
+    def run_task(
+        self,
+        *,
+        description: str,
+        agent_type: str,
+        allowed_tools: tuple[str, ...],
+    ) -> SubAgentResult:
+        ...
+
+
+class TaskTool(SchemaTool):
+    spec = ToolSpec(
+        name="Task",
+        description="Run a bounded child sub-agent for a specific task.",
+        parameters=(
+            ToolParameter("description", "string", True, "Specific child task."),
+            ToolParameter("agent_type", "string", True, "One of: explore, review, executor."),
+            ToolParameter(
+                "allowed_tools",
+                "array",
+                True,
+                "Candidate tool names the parent allows the child to use.",
+                items_schema={"type": "string"},
+            ),
+        ),
+        risk_level="medium",
+    )
+
+    def __init__(self, service: SupportsSubAgentService | None = None) -> None:
+        self._service = service
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if self._service is None:
+            return ToolResult(
+                success=False,
+                summary="Task tool is unavailable until runtime binding completes.",
+                error="Task tool is not bound to a SubAgentService.",
+                raw_payload={"error_kind": "task_tool_unbound"},
+            )
+        description = str(arguments["description"])
+        agent_type = str(arguments["agent_type"])
+        allowed_tools = tuple(str(tool) for tool in arguments.get("allowed_tools", ()))
+        result = self._service.run_task(
+            description=description,
+            agent_type=agent_type,
+            allowed_tools=allowed_tools,
+        )
+        return ToolResult(
+            success=result.status == "completed",
+            summary=f"Sub-agent {agent_type} completed with status {result.status}.",
+            error=result.error,
+            raw_payload={
+                "kind": "sub_agent_report",
+                "status": result.status,
+                "child_session_id": result.child_session_id,
+                "tool_calls": result.tool_calls,
+                "report": result.report,
+                "content": result.report,
+            },
+        )
+
+    def run(self, call) -> ToolResult:
+        return self.execute(call.arguments)
+
+
+__all__ = ["TaskTool"]
+```
+
+- [ ] **Step 4: Register fallback TaskTool**
+
+Modify `src/mycli/tools/registry.py`:
+
+```python
+from mycli.tools.task import TaskTool
+```
+
+Add `TaskTool()` to the list returned by `default_tools()` after plan-mode tools.
+
+- [ ] **Step 5: Run Task tool tests**
+
+Run:
+
+```bash
+uv run pytest tests/unit/tools/test_task_tool.py -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/mycli/tools/task.py src/mycli/tools/registry.py tests/unit/tools/test_task_tool.py
+git commit -m "Expose Task as a runtime-bound tool"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: Default registries need a stable Task schema before runtime binding replaces the fallback executor.
+Confidence: high
+Scope-risk: narrow
+Tested: uv run pytest tests/unit/tools/test_task_tool.py -q
+```
+
+---
+
+### Task 4: Bounded Child Loop
+
+**Files:**
+- Create: `src/mycli/application/runtime/subagents/loop.py`
+- Create: `tests/unit/application/runtime/subagents/test_child_loop.py`
+
+- [ ] **Step 1: Write failing child loop tests**
+
+Create `tests/unit/application/runtime/subagents/test_child_loop.py`:
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from mycli.application.runtime.subagents.loop import SubAgentChildLoop
+from mycli.domain.subagents import SubAgentBudget, SubAgentInvocation, SubAgentProfile
+from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.base import ToolResult
+
+
+@dataclass(slots=True)
+class FakeTurn:
+    text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+class FakeRequester:
+    def __init__(self, turns: list[FakeTurn]) -> None:
+        self.turns = turns
+        self.requests = 0
+
+    def request_child_turn(self, *, messages, tool_names, child_session_id):
+        self.requests += 1
+        return self.turns.pop(0)
+
+
+class FakeExecutor:
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+        self.tool_scopes: list[tuple[str, ...]] = []
+
+    def execute_child_tool(
+        self,
+        *,
+        call: ToolCall,
+        child_session_id: str,
+        tool_names: tuple[str, ...],
+    ) -> ToolResult:
+        del child_session_id
+        self.calls.append(call)
+        self.tool_scopes.append(tool_names)
+        return ToolResult(
+            success=True,
+            summary="read ok",
+            raw_payload={"content": "file content"},
+        )
+
+
+def _invocation() -> SubAgentInvocation:
+    return SubAgentInvocation(
+        agent_type="explore",
+        description="Find files",
+        allowed_tools=("Read",),
+        parent_session_id="demo",
+        parent_turn_id="turn_1",
+    )
+
+
+def test_child_loop_executes_tool_then_returns_final_text() -> None:
+    requester = FakeRequester(
+        [
+            FakeTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_1",
+                    ),
+                )
+            ),
+            FakeTurn(text="Found README.md."),
+        ]
+    )
+    executor = FakeExecutor()
+    loop = SubAgentChildLoop(requester=requester, executor=executor)
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=4, max_tool_calls=4),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+    )
+
+    assert result.status == "completed"
+    assert result.report == "Found README.md."
+    assert result.tool_calls == 1
+    assert executor.calls[0].name == "Read"
+
+
+def test_child_loop_stops_at_no_progress_limit() -> None:
+    requester = FakeRequester([FakeTurn(), FakeTurn(), FakeTurn()])
+    loop = SubAgentChildLoop(requester=requester, executor=FakeExecutor())
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=6, no_progress_turn_limit=2),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+    )
+
+    assert result.status == "max_no_progress"
+    assert result.tool_calls == 0
+
+
+def test_child_loop_stops_at_max_tool_calls() -> None:
+    requester = FakeRequester(
+        [
+            FakeTurn(
+                tool_calls=(
+                    ToolCall(name="Read", arguments={"path": "a"}, reason="inspect a", call_id="call_1"),
+                )
+            ),
+            FakeTurn(
+                tool_calls=(
+                    ToolCall(name="Read", arguments={"path": "b"}, reason="inspect b", call_id="call_2"),
+                )
+            ),
+        ]
+    )
+    loop = SubAgentChildLoop(requester=requester, executor=FakeExecutor())
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=4, max_tool_calls=1),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+    )
+
+    assert result.status == "max_tool_calls"
+    assert result.tool_calls == 1
+```
+
+- [ ] **Step 2: Run child loop tests to verify they fail**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py -q
+```
+
+Expected: fails because `loop.py` does not exist.
+
+- [ ] **Step 3: Implement child loop against small protocols**
+
+Create `src/mycli/application/runtime/subagents/loop.py`:
+
+```python
+from __future__ import annotations
+
+from typing import Protocol
+
+from mycli.domain.subagents import SubAgentInvocation, SubAgentProfile, SubAgentResult
+from mycli.domain.tooling.calls import ToolCall
+from mycli.services.context.tool_result_formatter import ToolResultFormatter
+from mycli.tools.base import ToolResult
+
+
+class ChildTurn(Protocol):
+    text: str
+    tool_calls: tuple[ToolCall, ...]
+
+
+class ChildTurnRequester(Protocol):
+    def request_child_turn(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        tool_names: tuple[str, ...],
+        child_session_id: str,
+    ) -> ChildTurn:
+        ...
+
+
+class ChildToolExecutor(Protocol):
+    def execute_child_tool(
+        self,
+        *,
+        call: ToolCall,
+        child_session_id: str,
+        tool_names: tuple[str, ...],
+    ) -> ToolResult:
+        ...
+
+
+class SubAgentChildLoop:
+    def __init__(self, *, requester: ChildTurnRequester, executor: ChildToolExecutor) -> None:
+        self._requester = requester
+        self._executor = executor
+        self._formatter = ToolResultFormatter()
+
+    def run(
+        self,
+        *,
+        invocation: SubAgentInvocation,
+        profile: SubAgentProfile,
+        child_session_id: str,
+        tool_names: tuple[str, ...],
+    ) -> SubAgentResult:
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": profile.system_prompt},
+            {"role": "user", "content": invocation.description},
+        ]
+        tool_calls = 0
+        no_progress_turns = 0
+
+        for _turn_index in range(profile.budget.max_turns):
+            turn = self._requester.request_child_turn(
+                messages=messages,
+                tool_names=tool_names,
+                child_session_id=child_session_id,
+            )
+            text = (turn.text or "").strip()
+            calls = tuple(turn.tool_calls)
+            if text and not calls:
+                return SubAgentResult(
+                    status="completed",
+                    report=text,
+                    child_session_id=child_session_id,
+                    tool_calls=tool_calls,
+                )
+            if not text and not calls:
+                no_progress_turns += 1
+                if no_progress_turns >= profile.budget.no_progress_turn_limit:
+                    return SubAgentResult(
+                        status="max_no_progress",
+                        report="Child sub-agent stopped after repeated no-progress turns.",
+                        child_session_id=child_session_id,
+                        tool_calls=tool_calls,
+                    )
+                continue
+            no_progress_turns = 0
+            for call in calls:
+                if tool_calls >= profile.budget.max_tool_calls:
+                    return SubAgentResult(
+                        status="max_tool_calls",
+                        report="Child sub-agent reached the max tool call limit.",
+                        child_session_id=child_session_id,
+                        tool_calls=tool_calls,
+                    )
+                result = self._executor.execute_child_tool(
+                    call=call,
+                    child_session_id=child_session_id,
+                    tool_names=tool_names,
+                )
+                tool_calls += 1
+                if result.raw_payload.get("error_kind") == "approval_required":
+                    return SubAgentResult(
+                        status="approval_required",
+                        report=f"Child sub-agent stopped because {call.name} requires approval.",
+                        child_session_id=child_session_id,
+                        tool_calls=tool_calls,
+                        error=result.error,
+                    )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": text,
+                        "tool_calls": [call],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_name": call.name,
+                        "content": self._formatter.format(call.name, result),
+                    }
+                )
+
+        return SubAgentResult(
+            status="max_turns",
+            report="Child sub-agent reached the max turn limit.",
+            child_session_id=child_session_id,
+            tool_calls=tool_calls,
+        )
+
+
+__all__ = ["ChildToolExecutor", "ChildTurnRequester", "SubAgentChildLoop"]
+```
+
+- [ ] **Step 4: Run child loop tests**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/mycli/application/runtime/subagents/loop.py tests/unit/application/runtime/subagents/test_child_loop.py
+git commit -m "Run bounded child agent loops"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: P3 child agents are synchronous and bounded; async mailbox and background execution stay out of scope.
+Confidence: medium
+Scope-risk: moderate
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py -q
+```
+
+---
+
+### Task 5: SubAgentService, XML Reports, And Run Summaries
 
 **Files:**
 - Create: `src/mycli/application/runtime/subagents/service.py`
@@ -501,90 +1151,100 @@ Create `tests/unit/application/runtime/subagents/test_sub_agent_service.py`:
 from __future__ import annotations
 
 from mycli.application.runtime.subagents.service import SubAgentService
-from mycli.domain.subagents import SubAgentInvocation, SubAgentResult
+from mycli.domain.subagents import SubAgentResult
 
 
-class FakeRunner:
-    def __init__(self) -> None:
-        self.seen: list[dict[str, object]] = []
+class FakeLoop:
+    def __init__(self, result: SubAgentResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
 
-    def run_child(self, **kwargs: object) -> SubAgentResult:
-        self.seen.append(dict(kwargs))
-        return SubAgentResult(
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+def test_service_resolves_scope_runs_loop_and_wraps_xml() -> None:
+    loop = FakeLoop(
+        SubAgentResult(
             status="completed",
-            report="Child report.",
-            child_session_id=str(kwargs["child_session_id"]),
-            tool_calls=2,
+            report="Found README.md.",
+            child_session_id="ignored",
+            tool_calls=1,
         )
-
-
-class FakeTrace:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, object]]] = []
-
-    def append(self, session_id: str, event) -> None:
-        self.events.append((session_id, dict(event.payload)))
-
-
-def test_sub_agent_service_invokes_child_with_scoped_tools() -> None:
-    runner = FakeRunner()
-    trace = FakeTrace()
+    )
     service = SubAgentService(
-        parent_session_id="demo",
-        parent_turn_id="turn_1",
-        parent_tool_names=("Read", "Grep", "Edit"),
-        trace_service=trace,  # type: ignore[arg-type]
-        child_runner=runner.run_child,
-        child_id_provider=lambda: "abcd",
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read", "Grep", "Task"),
+        child_loop=loop,
     )
 
-    result = service.invoke(
-        SubAgentInvocation(
-            agent_type="explore",
-            description="Find entrypoints",
-            allowed_tools=("Read", "Edit"),
-            parent_session_id="demo",
-            parent_turn_id="turn_1",
-        )
+    result = service.run_task(
+        description="Find docs",
+        agent_type="explore",
+        allowed_tools=("Read", "Task"),
     )
 
     assert result.status == "completed"
-    assert result.child_session_id == "demo:sub:turn_1:abcd"
-    assert runner.seen[0]["allowed_tool_names"] == ("Read",)
-    assert trace.events[0][1]["event"] == "started"
-    assert trace.events[-1][1]["event"] == "completed"
+    assert result.child_session_id.startswith("demo:sub:turn_1:")
+    assert result.report.startswith("<sub-agent-report agent=\"explore\" status=\"completed\" tools=\"1\"")
+    assert "Found README.md." in result.report
+    assert loop.calls[0]["tool_names"] == ("Read",)
+    assert service.recent_runs()[0].description == "Find docs"
 
 
-def test_sub_agent_service_rejects_unknown_profile() -> None:
+def test_service_rejects_unknown_profile_with_xml_report() -> None:
     service = SubAgentService(
-        parent_session_id="demo",
-        parent_turn_id="turn_1",
-        parent_tool_names=("Read",),
-        trace_service=FakeTrace(),  # type: ignore[arg-type]
-        child_runner=lambda **_: SubAgentResult(
-            status="completed",
-            report="unused",
-            child_session_id="unused",
-            tool_calls=0,
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="unused",
+                child_session_id="ignored",
+                tool_calls=0,
+            )
         ),
-        child_id_provider=lambda: "abcd",
     )
 
-    result = service.invoke(
-        SubAgentInvocation(
-            agent_type="missing",
-            description="Find entrypoints",
-            allowed_tools=("Read",),
-            parent_session_id="demo",
-            parent_turn_id="turn_1",
-        )
+    result = service.run_task(
+        description="Find docs",
+        agent_type="missing",
+        allowed_tools=("Read",),
     )
 
     assert result.status == "failed"
-    assert result.error == "Unknown sub-agent profile: missing"
+    assert "Unknown sub-agent profile" in result.report
+
+
+def test_service_truncates_long_report_body() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="x" * 9000,
+                child_session_id="ignored",
+                tool_calls=0,
+            )
+        ),
+    )
+
+    result = service.run_task(
+        description="Find docs",
+        agent_type="explore",
+        allowed_tools=("Read",),
+    )
+
+    assert len(result.report) < 8400
+    assert "truncated" in result.report
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [ ] **Step 2: Run service tests to verify they fail**
 
 Run:
 
@@ -592,7 +1252,7 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py -q
 ```
 
-Expected: fails because service does not exist.
+Expected: fails because `service.py` does not exist.
 
 - [ ] **Step 3: Implement service**
 
@@ -601,139 +1261,137 @@ Create `src/mycli/application/runtime/subagents/service.py`:
 ```python
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
+from html import escape
 from uuid import uuid4
 
+from mycli.application.runtime.subagents.loop import SubAgentChildLoop
 from mycli.application.runtime.subagents.profiles import get_sub_agent_profile
-from mycli.application.runtime.subagents.tool_scope import resolve_sub_agent_tool_scope
-from mycli.domain.runtime.tracing import RuntimeTraceEvent
-from mycli.domain.subagents import SubAgentInvocation, SubAgentResult, SubAgentRunSummary
-from mycli.services.tracing import TraceService
-
-
-ChildRunner = Callable[..., SubAgentResult]
+from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
+from mycli.domain.subagents import (
+    SubAgentInvocation,
+    SubAgentResult,
+    SubAgentRunSummary,
+)
 
 
 class SubAgentService:
     def __init__(
         self,
         *,
-        parent_session_id: str,
-        parent_turn_id: str,
-        parent_tool_names: tuple[str, ...],
-        trace_service: TraceService,
-        child_runner: ChildRunner,
-        child_id_provider: Callable[[], str] | None = None,
+        session_id: str,
+        turn_id_provider: Callable[[], str],
+        parent_tool_names: Callable[[], tuple[str, ...]],
+        child_loop: SubAgentChildLoop,
+        policy_denied_tools: Callable[[], tuple[str, ...]] | None = None,
+        max_recent_runs: int = 20,
     ) -> None:
-        self._parent_session_id = parent_session_id
-        self._parent_turn_id = parent_turn_id
+        self._session_id = session_id
+        self._turn_id_provider = turn_id_provider
         self._parent_tool_names = parent_tool_names
-        self._trace_service = trace_service
-        self._child_runner = child_runner
-        self._child_id_provider = child_id_provider or (lambda: uuid4().hex[:8])
-        self._runs: list[SubAgentRunSummary] = []
+        self._policy_denied_tools = policy_denied_tools or (lambda: ())
+        self._child_loop = child_loop
+        self._recent_runs: deque[SubAgentRunSummary] = deque(maxlen=max_recent_runs)
 
-    def invoke(self, invocation: SubAgentInvocation) -> SubAgentResult:
-        profile = get_sub_agent_profile(invocation.agent_type)
-        if profile is None:
-            return self._failed(invocation, f"Unknown sub-agent profile: {invocation.agent_type}")
-
-        scope = resolve_sub_agent_tool_scope(
-            parent_tool_names=self._parent_tool_names,
-            requested_tool_names=invocation.allowed_tools,
-            profile=profile,
-        )
-        child_session_id = self._child_session_id()
-        self._trace(invocation, child_session_id=child_session_id, event="started")
-        self._trace(
-            invocation,
-            child_session_id=child_session_id,
-            event="tool_scope_resolved",
-            allowed_tools=scope.allowed_tool_names,
-            denied_tools=scope.denied_tool_names,
-        )
-        if scope.error is not None:
-            return self._failed(invocation, scope.error, child_session_id=child_session_id)
-
-        try:
-            result = self._child_runner(
-                invocation=invocation,
-                profile=profile,
-                child_session_id=child_session_id,
-                allowed_tool_names=scope.allowed_tool_names,
-            )
-        except Exception as exc:  # noqa: BLE001 - child failures become Task reports.
-            return self._failed(invocation, str(exc), child_session_id=child_session_id)
-
-        self._runs.append(SubAgentRunSummary.from_result(invocation=invocation, result=result))
-        self._trace(
-            invocation,
-            child_session_id=result.child_session_id,
-            event=result.status,
-            tool_calls=result.tool_calls,
-        )
-        return result
-
-    def list_runs(self) -> tuple[SubAgentRunSummary, ...]:
-        return tuple(self._runs)
-
-    def _failed(
+    def run_task(
         self,
-        invocation: SubAgentInvocation,
-        error: str,
         *,
-        child_session_id: str | None = None,
+        description: str,
+        agent_type: str,
+        allowed_tools: tuple[str, ...],
     ) -> SubAgentResult:
+        turn_id = self._turn_id_provider()
+        invocation = SubAgentInvocation(
+            agent_type=agent_type,
+            description=description,
+            allowed_tools=allowed_tools,
+            parent_session_id=self._session_id,
+            parent_turn_id=turn_id,
+        )
+        child_session_id = self._child_session_id(turn_id)
+        profile = get_sub_agent_profile(agent_type)
+        if profile is None:
+            result = SubAgentResult(
+                status="failed",
+                report=self._xml_report(
+                    agent=agent_type,
+                    status="failed",
+                    tool_calls=0,
+                    child_session_id=child_session_id,
+                    body=f"Unknown sub-agent profile: {agent_type}",
+                    limit=8000,
+                ),
+                child_session_id=child_session_id,
+                tool_calls=0,
+                error=f"Unknown sub-agent profile: {agent_type}",
+            )
+            self._record(invocation, result)
+            return result
+        tool_names = resolve_child_tool_scope(
+            parent_tools=self._parent_tool_names(),
+            requested_tools=allowed_tools,
+            profile=profile,
+            policy_denied_tools=self._policy_denied_tools(),
+        )
+        loop_result = self._child_loop.run(
+            invocation=invocation,
+            profile=profile,
+            child_session_id=child_session_id,
+            tool_names=tool_names,
+        )
         result = SubAgentResult(
-            status="failed",
-            report=f"Sub-agent failed: {error}",
-            child_session_id=child_session_id or self._child_session_id(),
-            tool_calls=0,
-            error=error,
+            status=loop_result.status,
+            report=self._xml_report(
+                agent=agent_type,
+                status=loop_result.status,
+                tool_calls=loop_result.tool_calls,
+                child_session_id=child_session_id,
+                body=loop_result.report,
+                limit=profile.budget.report_char_limit,
+            ),
+            child_session_id=child_session_id,
+            tool_calls=loop_result.tool_calls,
+            error=loop_result.error,
         )
-        self._runs.append(SubAgentRunSummary.from_result(invocation=invocation, result=result))
-        self._trace(
-            invocation,
-            child_session_id=result.child_session_id,
-            event="failed",
-            error=error,
-        )
+        self._record(invocation, result)
         return result
 
-    def _child_session_id(self) -> str:
-        return (
-            f"{self._parent_session_id}:sub:"
-            f"{self._parent_turn_id}:{self._child_id_provider()}"
+    def recent_runs(self) -> tuple[SubAgentRunSummary, ...]:
+        return tuple(self._recent_runs)
+
+    def _record(self, invocation: SubAgentInvocation, result: SubAgentResult) -> None:
+        self._recent_runs.appendleft(
+            SubAgentRunSummary.from_result(invocation=invocation, result=result)
         )
 
-    def _trace(
+    def _child_session_id(self, turn_id: str) -> str:
+        return f"{self._session_id}:sub:{turn_id}:{uuid4().hex[:8]}"
+
+    def _xml_report(
         self,
-        invocation: SubAgentInvocation,
         *,
+        agent: str,
+        status: str,
+        tool_calls: int,
         child_session_id: str,
-        event: str,
-        **payload: object,
-    ) -> None:
-        self._trace_service.append(
-            self._parent_session_id,
-            RuntimeTraceEvent(
-                kind="sub_agent",
-                turn_id=self._parent_turn_id,
-                payload={
-                    "event": event,
-                    "agent_type": invocation.agent_type,
-                    "description": invocation.description,
-                    "child_session_id": child_session_id,
-                    **payload,
-                },
-            ),
+        body: str,
+        limit: int,
+    ) -> str:
+        report_body = body
+        if len(report_body) > limit:
+            report_body = report_body[:limit] + "\n[truncated: sub-agent report exceeded limit]"
+        return (
+            f'<sub-agent-report agent="{escape(agent)}" status="{escape(status)}" '
+            f'tools="{tool_calls}" child_session_id="{escape(child_session_id)}">'
+            f"\n{escape(report_body)}\n</sub-agent-report>"
         )
 
 
-__all__ = ["ChildRunner", "SubAgentService"]
+__all__ = ["SubAgentService"]
 ```
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 4: Run service tests**
 
 Run:
 
@@ -741,615 +1399,565 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py -q
 ```
 
-Expected: pass.
+Expected: all tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/mycli/application/runtime/subagents/service.py tests/unit/application/runtime/subagents/test_sub_agent_service.py
-git commit -m "Orchestrate scoped sub-agent runs" -m "Add SubAgentService to resolve profiles and tool scopes, emit lifecycle trace events, and normalize child results into parent-visible summaries." -m "Constraint: Child agents are synchronous in-process runs and nested approval remains deferred." -m "Confidence: medium" -m "Scope-risk: moderate" -m "Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py -q"
+git commit -m "Wrap sub-agent runs in observable XML reports"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: Parent conversations should receive one final Task tool result rather than child intermediate messages.
+Confidence: high
+Scope-risk: moderate
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py -q
 ```
 
 ---
 
-### Task 4: Model-facing `Task` Tool
-
-**Files:**
-- Create: `src/mycli/tools/task.py`
-- Create: `tests/unit/tools/test_task_tool.py`
-- Modify: `src/mycli/tools/registry.py`
-- Modify: `tests/integration/test_toolset_smoke.py`
-
-- [ ] **Step 1: Write failing TaskTool tests**
-
-Create `tests/unit/tools/test_task_tool.py`:
-
-```python
-from __future__ import annotations
-
-from mycli.domain.subagents import SubAgentResult
-from mycli.tools.task import TaskTool
-
-
-class FakeSubAgentService:
-    def __init__(self) -> None:
-        self.invocations = []
-
-    def invoke(self, invocation):
-        self.invocations.append(invocation)
-        return SubAgentResult(
-            status="completed",
-            report="Found entrypoints.",
-            child_session_id="demo:sub:turn_1:abcd",
-            tool_calls=3,
-        )
-
-
-def test_task_tool_invokes_sub_agent_service() -> None:
-    service = FakeSubAgentService()
-    tool = TaskTool(
-        sub_agent_service=service,  # type: ignore[arg-type]
-        parent_session_id="demo",
-        parent_turn_id="turn_1",
-    )
-
-    result = tool.execute(
-        {
-            "agent_type": "explore",
-            "description": "Find entrypoints",
-            "allowed_tools": ["Read", "Grep"],
-        }
-    )
-
-    assert result.success is True
-    assert result.summary == "Sub-agent explore completed"
-    assert result.raw_payload["child_session_id"] == "demo:sub:turn_1:abcd"
-    assert "Found entrypoints." in result.raw_payload["report"]
-    assert service.invocations[0].allowed_tools == ("Read", "Grep")
-
-
-def test_task_tool_requires_bound_service() -> None:
-    result = TaskTool().execute({"description": "Find entrypoints"})
-
-    assert result.success is False
-    assert result.raw_payload["error_kind"] == "sub_agent_service_unavailable"
-```
-
-- [ ] **Step 2: Run tests to verify failure**
-
-Run:
-
-```bash
-uv run pytest tests/unit/tools/test_task_tool.py -q
-```
-
-Expected: fails because `TaskTool` does not exist.
-
-- [ ] **Step 3: Implement TaskTool**
-
-Create `src/mycli/tools/task.py`:
-
-```python
-from __future__ import annotations
-
-from typing import Any
-
-from mycli.domain.subagents import SubAgentInvocation
-from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
-
-
-class TaskTool:
-    name = "Task"
-    spec = ToolSpec(
-        name="Task",
-        description="Run a bounded sub-agent task and return only the final report.",
-        parameters=(
-            ToolParameter(name="description", type="string", required=True),
-            ToolParameter(name="agent_type", type="string", required=False),
-            ToolParameter(
-                name="allowed_tools",
-                type="array",
-                required=False,
-                items_schema={"type": "string"},
-            ),
-        ),
-        risk_level="medium",
-    )
-
-    def __init__(
-        self,
-        *,
-        sub_agent_service: object | None = None,
-        parent_session_id: str = "",
-        parent_turn_id: str = "",
-    ) -> None:
-        self._sub_agent_service = sub_agent_service
-        self._parent_session_id = parent_session_id
-        self._parent_turn_id = parent_turn_id
-
-    def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        if self._sub_agent_service is None:
-            return ToolResult(
-                success=False,
-                summary="Sub-agent service unavailable",
-                error="Task tool is not bound to a runtime sub-agent service.",
-                raw_payload={"error_kind": "sub_agent_service_unavailable"},
-            )
-        description = arguments.get("description")
-        if not isinstance(description, str) or not description.strip():
-            return ToolResult(
-                success=False,
-                summary="Invalid sub-agent task",
-                error="Task requires description.",
-                raw_payload={"error_kind": "invalid_task_description"},
-            )
-        agent_type = arguments.get("agent_type")
-        raw_allowed_tools = arguments.get("allowed_tools", ["Read", "Grep", "Glob", "LS"])
-        allowed_tools = tuple(
-            item
-            for item in raw_allowed_tools
-            if isinstance(raw_allowed_tools, list) and isinstance(item, str)
-        )
-        invocation = SubAgentInvocation(
-            agent_type=agent_type if isinstance(agent_type, str) and agent_type else "explore",
-            description=description,
-            allowed_tools=allowed_tools or ("Read",),
-            parent_session_id=self._parent_session_id or "unknown",
-            parent_turn_id=self._parent_turn_id or "turn",
-        )
-        result = self._sub_agent_service.invoke(invocation)  # type: ignore[attr-defined]
-        success = result.status == "completed"
-        return ToolResult(
-            success=success,
-            summary=f"Sub-agent {invocation.agent_type} {result.status}",
-            error=result.error,
-            raw_payload={
-                "kind": "sub_agent_report",
-                "agent_type": invocation.agent_type,
-                "status": result.status,
-                "report": result.report,
-                "child_session_id": result.child_session_id,
-                "tool_calls": result.tool_calls,
-                "error": result.error,
-            },
-        )
-
-    def run(self, call: ToolCall) -> ToolResult:
-        return self.execute(call.arguments)
-```
-
-- [ ] **Step 4: Register fallback Task tool**
-
-Modify `src/mycli/tools/registry.py` inside `default_tools()` imports:
-
-```python
-    from mycli.tools.task import TaskTool
-```
-
-Add `TaskTool()` after `PlanTool()` in the default list.
-
-Modify `tests/integration/test_toolset_smoke.py`:
-
-```python
-from mycli.tools.task import TaskTool
-```
-
-Add `TaskTool` to the importable tuple and `"Task"` to the expected registered tool set.
-
-- [ ] **Step 5: Run TaskTool tests**
-
-Run:
-
-```bash
-uv run pytest tests/unit/tools/test_task_tool.py tests/integration/test_toolset_smoke.py -q
-```
-
-Expected: pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/mycli/tools/task.py src/mycli/tools/registry.py tests/unit/tools/test_task_tool.py tests/integration/test_toolset_smoke.py
-git commit -m "Expose Task tool for sub-agent calls" -m "Add a model-facing Task tool that delegates to a runtime-bound SubAgentService and returns only the final child report." -m "Constraint: The default registry exposes a safe unavailable fallback until runtime binds a real service." -m "Confidence: medium" -m "Scope-risk: moderate" -m "Tested: uv run pytest tests/unit/tools/test_task_tool.py tests/integration/test_toolset_smoke.py -q"
-```
-
----
-
-### Task 5: Runtime-bound SubAgentService And Parent Transcript Isolation
+### Task 6: Runtime Integration With Current Model And Tool Services
 
 **Files:**
 - Modify: `src/mycli/application/runtime/agent_runtime.py`
-- Modify: `src/mycli/cli/bootstrap.py`
+- Modify: `src/mycli/application/runtime/subagents/loop.py`
+- Create: `tests/unit/application/runtime/subagents/test_runtime_child_adapters.py`
 - Modify: `tests/unit/application/test_agent_runtime.py`
 
-- [ ] **Step 1: Write failing runtime registration test**
+- [ ] **Step 1: Write failing adapter tests**
 
-Append to `tests/unit/application/test_agent_runtime.py`:
-
-```python
-def test_agent_runtime_registers_bound_task_tool(tmp_path: Path) -> None:
-    runtime = build_runtime(tmp_path)
-
-    task_tool = runtime._tool_registry.executors["Task"]
-
-    assert task_tool._sub_agent_service is not None
-    assert task_tool._parent_session_id == runtime._config.session_id
-```
-
-If this test file uses a different helper than `build_runtime(tmp_path)`, use the existing runtime construction helper from nearby tests.
-
-- [ ] **Step 2: Run test to verify failure**
-
-Run:
-
-```bash
-uv run pytest tests/unit/application/test_agent_runtime.py::test_agent_runtime_registers_bound_task_tool -q
-```
-
-Expected: fails because runtime does not bind `TaskTool`.
-
-- [ ] **Step 3: Add runtime child runner boundary**
-
-In `src/mycli/application/runtime/agent_runtime.py`, add a private method:
+Create `tests/unit/application/runtime/subagents/test_runtime_child_adapters.py`:
 
 ```python
-    def _run_child_sub_agent(
-        self,
-        *,
-        invocation,
-        profile,
-        child_session_id: str,
-        allowed_tool_names: tuple[str, ...],
-    ):
-        from mycli.domain.subagents import SubAgentResult
+from __future__ import annotations
 
-        # P3 minimal runner: create a bounded report from current repository/runtime state.
-        # Later tasks can replace this with a full nested AgentRuntime turn.
-        report = (
-            f"{profile.name} sub-agent accepted task: {invocation.description}\n"
-            f"Allowed tools: {', '.join(allowed_tool_names)}"
-        )
-        return SubAgentResult(
-            status="completed",
-            report=report,
-            child_session_id=child_session_id,
-            tool_calls=0,
-        )
-```
-
-This minimal runner is intentional for Task 5. Task 6 adds real child model turn execution.
-
-- [ ] **Step 4: Bind SubAgentService and TaskTool**
-
-In `AgentRuntime.__init__`, after tool registry is available:
-
-```python
-from mycli.application.runtime.subagents.service import SubAgentService
-from mycli.tools.task import TaskTool
-
-self._sub_agent_service = SubAgentService(
-    parent_session_id=self._config.session_id,
-    parent_turn_id="runtime",
-    parent_tool_names=tuple(self._tool_registry.list_names()),
-    trace_service=self._trace_service,
-    child_runner=self._run_child_sub_agent,
+from mycli.application.runtime.subagents.loop import (
+    RuntimeChildToolExecutor,
+    RuntimeChildTurnRequester,
 )
-self._tool_registry.register(
-    TaskTool(
-        sub_agent_service=self._sub_agent_service,
-        parent_session_id=self._config.session_id,
-        parent_turn_id="runtime",
+from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem
+from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolRouteKey, ToolRouteSource
+from mycli.llms.adapters.base import ModelMessage
+from mycli.llms.adapters.base import ModelToolDefinition
+from mycli.tools.base import ToolResult, ToolSpec
+
+
+class FakeRouter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[ToolCall, ToolExposure]] = []
+
+    def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResult:
+        self.calls.append((call, exposure))
+        return ToolResult(success=True, summary="ok", raw_payload={"content": "ok"})
+
+
+def test_runtime_child_tool_executor_uses_child_exposure_only() -> None:
+    router = FakeRouter()
+    executor = RuntimeChildToolExecutor(
+        tool_router=router,
+        tool_specs={
+            "Read": ToolSpec(name="Read", description="Read a file."),
+            "Task": ToolSpec(name="Task", description="Run a child agent."),
+        },
     )
-)
-```
+    call = ToolCall(
+        name="Read",
+        arguments={"path": "README.md"},
+        reason="inspect file",
+        call_id="call_1",
+    )
 
-In `rebind_session()`, update/re-register `TaskTool` with the new session id.
-
-- [ ] **Step 5: Run runtime registration test**
-
-Run:
-
-```bash
-uv run pytest tests/unit/application/test_agent_runtime.py::test_agent_runtime_registers_bound_task_tool -q
-```
-
-Expected: pass.
-
-- [ ] **Step 6: Add parent transcript isolation test**
-
-Append to `tests/unit/application/test_agent_runtime.py`:
-
-```python
-def test_agent_runtime_task_tool_returns_only_sub_agent_report(tmp_path: Path) -> None:
-    runtime = build_runtime(tmp_path)
-    task_tool = runtime._tool_registry.executors["Task"]
-
-    result = task_tool.execute(
-        {
-            "agent_type": "explore",
-            "description": "Find source files",
-            "allowed_tools": ["Read", "Grep"],
-        }
+    result = executor.execute_child_tool(
+        call=call,
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
     )
 
     assert result.success is True
-    assert result.raw_payload["kind"] == "sub_agent_report"
-    assert "Find source files" in result.raw_payload["report"]
-    assert "tool_result" not in result.raw_payload["report"]
+    assert router.calls[0][0] == call
+    assert router.calls[0][1].callable_tool_names() == ("Read",)
+
+
+class FakeRequester:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def request_model_turn(
+        self,
+        *,
+        runtime_items: list[RuntimeItem],
+        legacy_messages: list[ModelMessage],
+        tools: list[ModelToolDefinition],
+        stream_sink=None,
+    ):
+        self.calls.append(
+            {
+                "runtime_items": runtime_items,
+                "legacy_messages": legacy_messages,
+                "tools": tools,
+                "stream_sink": stream_sink,
+            }
+        )
+        return (
+            ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(type="text", text="checking"),
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="Read",
+                                tool_arguments={"path": "README.md"},
+                                call_id="call_1",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            ),
+            (),
+        )
+
+
+def test_runtime_child_turn_requester_projects_model_result() -> None:
+    requester = FakeRequester()
+    spec = ToolSpec(name="Read", description="Read a file.")
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Read"),
+                source=ToolRouteSource.REGISTRY,
+                spec=spec,
+            ),
+        )
+    )
+    child_requester = RuntimeChildTurnRequester(
+        requester=requester,
+        tool_exposure_builder=lambda names: exposure,
+        tool_renderer=lambda exposure: [ModelToolDefinition(name="Read", description="Read a file.")],
+    )
+
+    turn = child_requester.request_child_turn(
+        messages=[
+            {"role": "system", "content": "Read only."},
+            {"role": "user", "content": "Find docs"},
+        ],
+        tool_names=("Read",),
+        child_session_id="demo:sub:turn_1:abcd1234",
+    )
+
+    assert turn.text == "checking"
+    assert turn.tool_calls == (
+        ToolCall(
+            name="Read",
+            arguments={"path": "README.md"},
+            reason="child sub-agent tool call",
+            call_id="call_1",
+        ),
+    )
 ```
 
-- [ ] **Step 7: Run runtime tests**
+- [ ] **Step 2: Run adapter test to verify it fails**
 
 Run:
 
 ```bash
-uv run pytest tests/unit/application/test_agent_runtime.py::test_agent_runtime_registers_bound_task_tool tests/unit/application/test_agent_runtime.py::test_agent_runtime_task_tool_returns_only_sub_agent_report -q
+uv run pytest tests/unit/application/runtime/subagents/test_runtime_child_adapters.py -q
 ```
 
-Expected: pass.
+Expected: fails because runtime child adapters do not exist.
+
+- [ ] **Step 3: Add runtime adapters to loop module**
+
+Extend `src/mycli/application/runtime/subagents/loop.py` with runtime adapters that translate the small child protocols to existing runtime services:
+
+```python
+from dataclasses import dataclass
+from collections.abc import Callable
+
+from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem
+from mycli.domain.tooling.exposure import (
+    ToolExposure,
+    ToolExposureEntry,
+    ToolRouteKey,
+    ToolRouteSource,
+)
+from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
+from mycli.tools.base import ToolSpec
+from mycli.tools.routing.tool_router import ToolRouter
+
+
+@dataclass(slots=True, frozen=True)
+class RuntimeChildTurn:
+    text: str
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+@dataclass(slots=True)
+class RuntimeChildTurnRequester:
+    requester: object
+    tool_exposure_builder: Callable[[tuple[str, ...]], ToolExposure]
+    tool_renderer: Callable[[ToolExposure], list[ModelToolDefinition]]
+
+    def request_child_turn(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        tool_names: tuple[str, ...],
+        child_session_id: str,
+    ) -> RuntimeChildTurn:
+        del child_session_id
+        exposure = self.tool_exposure_builder(tool_names)
+        turn_result, _streamed = self.requester.request_model_turn(
+            runtime_items=self._runtime_items(messages),
+            legacy_messages=self._legacy_messages(messages),
+            tools=self.tool_renderer(exposure),
+        )
+        return self._project_turn(turn_result)
+
+    def _runtime_items(self, messages: list[dict[str, object]]) -> list[RuntimeItem]:
+        return [
+            RuntimeItem(
+                role=str(message["role"]),
+                blocks=(RuntimeBlock(type="text", text=str(message.get("content", ""))),),
+            )
+            for message in messages
+        ]
+
+    def _legacy_messages(self, messages: list[dict[str, object]]) -> list[ModelMessage]:
+        return [
+            ModelMessage(
+                role=str(message["role"]),
+                content=str(message.get("content", "")),
+            )
+            for message in messages
+        ]
+
+    def _project_turn(self, turn_result: ModelTurnResult) -> RuntimeChildTurn:
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        for item in turn_result.items:
+            for block in item.blocks:
+                if block.type == "text" and block.text:
+                    text_parts.append(block.text)
+                if block.type == "tool_call" and block.tool_name:
+                    calls.append(
+                        ToolCall(
+                            name=block.tool_name,
+                            arguments=block.tool_arguments or {},
+                            reason="child sub-agent tool call",
+                            call_id=block.call_id,
+                        )
+                    )
+        return RuntimeChildTurn(text="\n".join(text_parts).strip(), tool_calls=tuple(calls))
+
+
+@dataclass(slots=True)
+class RuntimeChildToolExecutor:
+    tool_router: ToolRouter
+    tool_specs: dict[str, ToolSpec]
+
+    def execute_child_tool(
+        self,
+        *,
+        call: ToolCall,
+        child_session_id: str,
+        tool_names: tuple[str, ...],
+    ) -> ToolResult:
+        del child_session_id
+        exposure = ToolExposure(
+            entries=tuple(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local(name),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=self.tool_specs[name],
+                )
+                for name in tool_names
+                if name in self.tool_specs
+            )
+        )
+        return self.tool_router.execute(call, exposure=exposure)
+```
+
+- [ ] **Step 4: Run child loop and adapter tests**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py tests/unit/application/runtime/subagents/test_runtime_child_adapters.py -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 5: Write failing runtime registration test**
+
+Add to `tests/unit/application/test_agent_runtime.py`:
+
+```python
+def test_runtime_registers_bound_task_tool(tmp_path) -> None:
+    adapter = SearchThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(tmp_path, tmp_path, adapter)
+
+    assert "Task" in runtime._tool_registry.list_names()
+    task_tool = runtime._tool_registry.executors["Task"]
+    assert getattr(task_tool, "_service", None) is runtime._sub_agent_service
+```
+
+- [ ] **Step 6: Wire service into AgentRuntime**
+
+Modify `src/mycli/application/runtime/agent_runtime.py` after `_tool_orchestrator` and `_tool_execution_service` are constructed:
+
+```python
+from mycli.application.runtime.subagents.loop import (
+    RuntimeChildToolExecutor,
+    RuntimeChildTurnRequester,
+    SubAgentChildLoop,
+)
+from mycli.application.runtime.subagents.service import SubAgentService
+from mycli.tools.task import TaskTool
+```
+
+Create service:
+
+```python
+child_executor = RuntimeChildToolExecutor(
+    tool_router=ToolRouter(tool_registry=self._tool_registry),
+    tool_specs=dict(self._tool_registry.specs or {}),
+)
+child_requester = RuntimeChildTurnRequester(
+    requester=self._model_turn_requester,
+    tool_exposure_builder=self._child_tool_exposure,
+    tool_renderer=lambda exposure: self._render_model_tools(
+        tool_exposure=exposure,
+        tool_router=ToolRouter(tool_registry=self._tool_registry),
+        allow_tools=True,
+    ),
+)
+self._sub_agent_child_loop = SubAgentChildLoop(
+    requester=child_requester,
+    executor=child_executor,
+)
+self._sub_agent_service = SubAgentService(
+    session_id=config.session_id,
+    turn_id_provider=lambda: getattr(self, "_current_turn_id", "turn_unknown"),
+    parent_tool_names=lambda: tuple(self._tool_registry.list_names()),
+    child_loop=self._sub_agent_child_loop,
+)
+self._tool_registry.register(TaskTool(service=self._sub_agent_service))
+```
+
+Add a helper on `AgentRuntime` for child exposure:
+
+```python
+def _child_tool_exposure(self, tool_names: tuple[str, ...]) -> ToolExposure:
+    specs = self._tool_registry.specs or {}
+    return ToolExposure(
+        entries=tuple(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local(name),
+                source=ToolRouteSource.REGISTRY,
+                spec=specs[name],
+            )
+            for name in tool_names
+            if name in specs
+        )
+    )
+```
+
+Import `ToolExposureEntry`, `ToolRouteKey`, and `ToolRouteSource` from `mycli.domain.tooling.exposure`.
+
+Add an instance field update wherever a turn id is created at the start of a turn:
+
+```python
+self._current_turn_id = turn_id
+```
+
+If the concrete turn id variable has a different name, use that existing variable and keep the field assignment next to existing `_set_model_log_context(turn_id)` calls.
+
+- [ ] **Step 7: Run runtime registration test**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/test_agent_runtime.py::test_runtime_registers_bound_task_tool -q
+```
+
+Expected: passes.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/mycli/application/runtime/agent_runtime.py src/mycli/cli/bootstrap.py tests/unit/application/test_agent_runtime.py
-git commit -m "Bind Task tool to runtime sub-agent service" -m "Wire a runtime-owned SubAgentService into Task so parent sessions receive only final child reports with scoped tool metadata." -m "Constraint: This task uses a minimal in-process child runner; full nested model turns are added separately." -m "Confidence: medium" -m "Scope-risk: moderate" -m "Tested: targeted AgentRuntime Task tool tests"
+git add src/mycli/application/runtime/agent_runtime.py src/mycli/application/runtime/subagents/loop.py tests/unit/application/runtime/subagents/test_runtime_child_adapters.py tests/unit/application/test_agent_runtime.py
+git commit -m "Bind Task sub-agents into runtime"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: P3 reuses the parent provider and runtime registry, but child scope is still resolver-limited.
+Rejected: Separate child AgentRuntime instance | it duplicates session, approval, and provider wiring for P3.
+Confidence: medium
+Scope-risk: broad
+Tested: uv run pytest tests/unit/application/test_agent_runtime.py::test_runtime_registers_bound_task_tool -q
 ```
 
 ---
 
-### Task 6: Child Model Turn Execution
-
-**Files:**
-- Modify: `src/mycli/application/runtime/agent_runtime.py`
-- Modify: `tests/unit/application/test_agent_runtime.py`
-
-- [ ] **Step 1: Write failing child execution test**
-
-Append to `tests/unit/application/test_agent_runtime.py`:
-
-```python
-def test_agent_runtime_task_tool_runs_child_model_turn_with_scoped_tools(tmp_path: Path) -> None:
-    runtime = build_runtime(tmp_path)
-    runtime._model_adapter.queue_text_response("Child inspected files.")
-    task_tool = runtime._tool_registry.executors["Task"]
-
-    result = task_tool.execute(
-        {
-            "agent_type": "explore",
-            "description": "Inspect README only",
-            "allowed_tools": ["Read"],
-        }
-    )
-
-    assert result.success is True
-    assert result.raw_payload["status"] == "completed"
-    assert result.raw_payload["report"] == "Child inspected files."
-    child_tools = runtime._model_adapter.seen_tool_names[-1]
-    assert child_tools == ("Read",)
-```
-
-Adapt `queue_text_response` / `seen_tool_names` names to the local fake model adapter helper in `test_agent_runtime.py`. If the helper does not expose them, extend the fake in the test file only.
-
-- [ ] **Step 2: Run test to verify failure**
-
-Run:
-
-```bash
-uv run pytest tests/unit/application/test_agent_runtime.py::test_agent_runtime_task_tool_runs_child_model_turn_with_scoped_tools -q
-```
-
-Expected: fails because `_run_child_sub_agent()` returns a static report.
-
-- [ ] **Step 3: Implement child turn execution**
-
-Replace `_run_child_sub_agent()` with:
-
-```python
-    def _run_child_sub_agent(
-        self,
-        *,
-        invocation,
-        profile,
-        child_session_id: str,
-        allowed_tool_names: tuple[str, ...],
-    ):
-        from mycli.domain.runtime import RuntimeBlock, RuntimeItem
-        from mycli.domain.subagents import SubAgentResult
-
-        runtime_items = [
-            RuntimeItem(
-                role="system",
-                blocks=(RuntimeBlock(type="text", text=profile.system_prompt),),
-            ),
-            RuntimeItem(
-                role="user",
-                blocks=(RuntimeBlock(type="text", text=invocation.description),),
-            ),
-        ]
-        tools = self._tool_registry.render_for_model(allowed_tool_names)
-        turn_result, streamed_chunks = self._model_turn_requester.request_model_turn(
-            runtime_items=runtime_items,
-            legacy_messages=[],
-            tools=tools,
-        )
-        text_parts = [
-            block.text or ""
-            for item in turn_result.items
-            for block in item.blocks
-            if block.type == "text" and block.text
-        ]
-        report = "".join(text_parts).strip() or "".join(streamed_chunks).strip()
-        if not report:
-            report = "Sub-agent completed without a text report."
-        return SubAgentResult(
-            status="completed",
-            report=self._truncate_sub_agent_report(report),
-            child_session_id=child_session_id,
-            tool_calls=sum(
-                1
-                for item in turn_result.items
-                for block in item.blocks
-                if block.type == "tool_call"
-            ),
-        )
-```
-
-Add helper:
-
-```python
-    def _truncate_sub_agent_report(self, report: str, limit: int = 6000) -> str:
-        if len(report) <= limit:
-            return report
-        omitted = len(report) - limit
-        return f"{report[:limit]}\n... [{omitted} chars omitted from sub-agent report]"
-```
-
-- [ ] **Step 4: Run child execution test**
-
-Run:
-
-```bash
-uv run pytest tests/unit/application/test_agent_runtime.py::test_agent_runtime_task_tool_runs_child_model_turn_with_scoped_tools -q
-```
-
-Expected: pass.
-
-- [ ] **Step 5: Add report truncation test**
-
-Append:
-
-```python
-def test_agent_runtime_truncates_sub_agent_report(tmp_path: Path) -> None:
-    runtime = build_runtime(tmp_path)
-    report = "x" * 7000
-
-    truncated = runtime._truncate_sub_agent_report(report, limit=100)
-
-    assert len(truncated) < 200
-    assert "chars omitted from sub-agent report" in truncated
-```
-
-- [ ] **Step 6: Run runtime sub-agent tests**
-
-Run:
-
-```bash
-uv run pytest tests/unit/application/test_agent_runtime.py::test_agent_runtime_task_tool_runs_child_model_turn_with_scoped_tools tests/unit/application/test_agent_runtime.py::test_agent_runtime_truncates_sub_agent_report -q
-```
-
-Expected: pass.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/mycli/application/runtime/agent_runtime.py tests/unit/application/test_agent_runtime.py
-git commit -m "Run scoped child model turns for Task" -m "Execute Task sub-agent requests through the existing model turn requester with the resolved child tool subset and truncate final reports before returning to the parent context." -m "Constraint: Child turns are synchronous and execute one model turn; multi-turn child loops and nested approval are deferred." -m "Confidence: medium" -m "Scope-risk: moderate" -m "Tested: targeted AgentRuntime child turn tests"
-```
-
----
-
-### Task 7: `/subagents` Inspection
+### Task 7: `/subagents` Inspection And Gap Doc Update
 
 **Files:**
 - Modify: `src/mycli/application/turn_service.py`
 - Modify: `src/mycli/cli/repl.py`
-- Modify: `tests/unit/cli/test_main.py`
+- Modify: `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md`
+- Create: `tests/unit/application/test_turn_service_subagents.py`
+- Modify: existing CLI command tests under `tests/unit/cli/`
 
-- [ ] **Step 1: Write failing CLI command test**
+- [ ] **Step 1: Write failing turn service inspection test**
 
-Append to `tests/unit/cli/test_main.py`:
-
-```python
-def test_subagents_command_renders_recent_runs() -> None:
-    service = SimpleNamespace(
-        inspect_subagents=lambda: ("explore completed tools=2 demo:sub:turn_1:abcd",)
-    )
-    handler = build_command_handler(service)
-
-    assert list(handler("/subagents")) == [
-        "[subagent] explore completed tools=2 demo:sub:turn_1:abcd"
-    ]
-```
-
-- [ ] **Step 2: Run test to verify failure**
-
-Run:
-
-```bash
-uv run pytest tests/unit/cli/test_main.py::test_subagents_command_renders_recent_runs -q
-```
-
-Expected: unknown command.
-
-- [ ] **Step 3: Implement service inspection**
-
-In `src/mycli/application/turn_service.py`, add:
+Create `tests/unit/application/test_turn_service_subagents.py`:
 
 ```python
-    def inspect_subagents(self) -> tuple[str, ...]:
-        service = getattr(self._runtime, "_sub_agent_service", None)
-        if service is None:
-            return ("no sub-agent service",)
-        runs = service.list_runs()
-        if not runs:
-            return ("no sub-agent runs",)
-        return tuple(
-            f"{run.agent_type} {run.status} tools={run.tool_calls} {run.child_session_id}"
-            for run in runs[-10:]
+from __future__ import annotations
+
+from mycli.domain.subagents import SubAgentRunSummary
+
+
+class FakeRuntime:
+    def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
+        return (
+            SubAgentRunSummary(
+                agent_type="explore",
+                description="Find docs",
+                status="completed",
+                child_session_id="demo:sub:turn_1:abcd1234",
+                tool_calls=2,
+            ),
         )
+
+
+def test_turn_service_formats_subagent_summaries() -> None:
+    from mycli.application.turn_service import format_subagent_summaries
+
+    output = format_subagent_summaries(FakeRuntime().recent_subagents())
+
+    assert output == (
+        "explore completed tools=2 demo:sub:turn_1:abcd1234 "
+        "description=Find docs"
+    )
 ```
 
-- [ ] **Step 4: Add slash command**
-
-In `src/mycli/cli/repl.py`, add `/subagents` to `/help` output and in `build_command_handler()`:
-
-```python
-        if command == "/subagents":
-            return [f"[subagent] {line}" for line in service.inspect_subagents()]
-```
-
-Update `test_help_lists_sessions_command()` to assert `"/subagents" in output`.
-
-Update `test_build_command_handler_exposes_runtime_inspection_commands()` fake service with:
-
-```python
-        def inspect_subagents(self) -> tuple[str, ...]:
-            return ("no sub-agent runs",)
-```
-
-And assert:
-
-```python
-assert list(handler("/subagents")) == ["[subagent] no sub-agent runs"]
-```
-
-- [ ] **Step 5: Run CLI tests**
+- [ ] **Step 2: Run inspection test to verify it fails**
 
 Run:
 
 ```bash
-uv run pytest tests/unit/cli/test_main.py::test_subagents_command_renders_recent_runs tests/unit/cli/test_main.py::test_help_lists_sessions_command tests/unit/cli/test_main.py::test_build_command_handler_exposes_runtime_inspection_commands -q
+uv run pytest tests/unit/application/test_turn_service_subagents.py -q
 ```
 
-Expected: pass.
+Expected: fails because `format_subagent_summaries` does not exist.
+
+- [ ] **Step 3: Implement runtime and service inspection**
+
+Add to `src/mycli/application/runtime/agent_runtime.py`:
+
+```python
+def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
+    return self._sub_agent_service.recent_runs()
+```
+
+Import `SubAgentRunSummary` from `mycli.domain.subagents`.
+
+Add to `src/mycli/application/turn_service.py`:
+
+```python
+from mycli.domain.subagents import SubAgentRunSummary
+
+
+def format_subagent_summaries(summaries: tuple[SubAgentRunSummary, ...]) -> str:
+    if not summaries:
+        return "No sub-agent runs in this session."
+    return "\n".join(
+        (
+            f"{summary.agent_type} {summary.status} tools={summary.tool_calls} "
+            f"{summary.child_session_id} description={summary.description[:80]}"
+        )
+        for summary in summaries
+    )
+```
+
+Wire `/subagents` in `src/mycli/cli/repl.py` next to existing slash-command handling:
+
+```python
+if command == "/subagents":
+    console.print(format_subagent_summaries(runtime.recent_subagents()))
+    continue
+```
+
+Use the existing console/output abstraction in `repl.py`; if variable names differ, keep the command body equivalent.
+
+- [ ] **Step 4: Update gap doc**
+
+Modify `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md` so the sub-agent section records:
+
+```markdown
+- 7.1 Agent modes: P3 covers sync in-process only; async/fork/worktree/remote remain open.
+- 7.2 Fork cache sharing: still open; explicitly deferred to P4 because byte-identical prompt prefixes need separate verification.
+- 7.3 Permission isolation: partially covered by P3 tool-scope denial and no nested approval UI; OS/process sandbox remains open.
+- 7.4 Tool-set isolation: covered by P3 layered child resolver.
+- 7.5 Context isolation: covered by P3 final XML report only; async notification remains open.
+- 7.6 Agent Teams: open.
+- 7.7 `/batch`: open.
+```
+
+- [ ] **Step 5: Run inspection tests**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/test_turn_service_subagents.py -q
+```
+
+Expected: all tests pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/mycli/application/turn_service.py src/mycli/cli/repl.py tests/unit/cli/test_main.py
-git commit -m "Expose sub-agent run inspection" -m "Add /subagents to show recent child-agent runs from the runtime-owned SubAgentService." -m "Constraint: P3 exposes text inspection only; rich child-agent UI and resume remain deferred." -m "Confidence: high" -m "Scope-risk: narrow" -m "Tested: targeted CLI /subagents tests"
+git add src/mycli/application/runtime/agent_runtime.py src/mycli/application/turn_service.py src/mycli/cli/repl.py tests/unit/application/test_turn_service_subagents.py docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md
+git commit -m "Surface recent sub-agent runs"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: P3 observability should expose child lifecycle without adding child internals to parent conversation.
+Confidence: medium
+Scope-risk: moderate
+Tested: uv run pytest tests/unit/application/test_turn_service_subagents.py -q
 ```
 
 ---
 
-### Task 8: Full Verification And Smoke Report
+### Task 8: Final Verification And Smoke Report
 
 **Files:**
 - Create: `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md`
-- Modify: `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md`
 
-- [ ] **Step 1: Run full verification**
+- [ ] **Step 1: Run focused sub-agent test suite**
+
+Run:
+
+```bash
+uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents tests/unit/tools/test_task_tool.py tests/unit/application/test_turn_service_subagents.py -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 2: Run full quality gates**
 
 Run:
 
@@ -1359,116 +1967,95 @@ uv run mypy src/mycli
 uv run pytest -q
 ```
 
-Expected: all pass.
+Expected: all commands pass. If an unrelated pre-existing failure appears, capture the failing command, file, and reason in the smoke report before deciding whether to fix or defer.
 
-- [ ] **Step 2: Run real CLI smoke**
+- [ ] **Step 3: Run CLI smoke**
 
-Run:
-
-```bash
-printf 'Use Task with explore agent to inspect what top-level files exist. Keep the final answer short.\n/subagents\n/quit\n' | uv run mycli --session p3-sub-agent-smoke
-```
-
-Expected:
-
-- model can see `Task` in tool exposure.
-- if model calls `Task`, output includes a sub-agent report and `/subagents` shows a recent run.
-- if model chooses not to call `Task`, report that smoke did not exercise tool selection and run a direct tool-level smoke in Step 3.
-
-- [ ] **Step 3: Run direct Task tool smoke**
-
-Run:
+Run the repository's supported CLI entrypoint in a temp workspace and ask for a bounded exploration sub-task. Use the existing local invocation style from prior smoke reports; for example:
 
 ```bash
-uv run python - <<'PY'
-from pathlib import Path
-from mycli.cli.bootstrap import build_turn_service
-
-service = build_turn_service(
-    cli_args={"session": "p3-sub-agent-direct-smoke"},
-    cwd=Path.cwd(),
-    home=Path.home(),
-)
-tool = service._runtime._tool_registry.executors["Task"]
-result = tool.execute({
-    "agent_type": "explore",
-    "description": "List the top-level repository files.",
-    "allowed_tools": ["Read", "Grep", "Glob", "LS"],
-})
-print(result.success)
-print(result.summary)
-print(result.raw_payload)
-print(service.inspect_subagents())
-PY
+MYCLI_HOME="$(mktemp -d)" uv run mycli --help
 ```
 
-Expected: `success=True`, `kind=sub_agent_report`, and `inspect_subagents()` includes one run.
+Then run an interactive or scripted `Task(explore)` scenario if the CLI test harness supports tool-call injection. The smoke passes when the resulting transcript contains:
 
-- [ ] **Step 4: Update gap doc**
+```xml
+<sub-agent-report agent="explore" status="completed"
+```
 
-In `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md`, update:
+and `/subagents` prints:
 
-- `7.1 5 种 agent 模式`: keep ⚠️, note P3 in-process sync Task sub-agent exists; async/fork/worktree/remote still missing.
-- `7.3 权限隔离`: change ❌ to ⚠️, note child tool subset + deny not amplified; full sandbox not done.
-- `7.4 工具集隔离`: improve note to P3 resolver.
-- `7.5 Context 隔离`: improve note to parent only receives final Task report.
-- Summary counts for Sub-agent row and total row.
+```text
+explore completed tools=
+```
 
-- [ ] **Step 5: Write smoke report**
+- [ ] **Step 4: Write smoke report**
 
 Create `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md`:
 
 ```markdown
-# P3 Sub-agent Capability Pack Smoke Report
+# P3 Sub-agent Capability Pack Smoke
 
 ## Commands
 
+- `uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents tests/unit/tools/test_task_tool.py tests/unit/application/test_turn_service_subagents.py -q`
 - `uv run ruff check src tests`
 - `uv run mypy src/mycli`
 - `uv run pytest -q`
-- real CLI smoke command
-- direct Task tool smoke command
+- `MYCLI_HOME="$(mktemp -d)" uv run mycli --help`
 
-## Results
+## Evidence
 
-- Ruff:
-- Mypy:
-- Pytest:
-- Real CLI smoke:
-- Direct Task smoke:
+- `Task` is registered and runtime-bound.
+- Child tool scope excludes `Task`, `AskUserQuestion`, and plan-mode tools.
+- Child loop executes tool-call -> tool-result -> next turn.
+- Child stop statuses are covered for `max_turns`, `max_tool_calls`, `max_no_progress`, and `approval_required`.
+- Parent receives only the final XML report.
+- `/subagents` shows recent child runs.
 
-## Notes
+## Known Gaps
 
-- P3 implements synchronous in-process child runs only.
-- Parent context receives only the final Task report.
-- Worktree/remote/team child agents and nested approval remain deferred.
+- Async mailbox, backgrounding, coordinator/team, worktree/remote agents, and fork cache sharing remain outside P3.
 ```
 
-Fill the result bullets with actual observed outputs.
+Replace the evidence bullets with exact command results after running the commands.
+
+- [ ] **Step 5: Placeholder scan**
+
+Run:
+
+```bash
+rg -n "T[B]D|T[O]DO|implement[ ]later|fill[ ]in|Similar[ ]to|appropriate[ ]error[ ]handling|add[ ]validation|Write[ ]tests[ ]for[ ]the[ ]above" docs/superpowers/specs/2026-05-21-p3-sub-agent-capability-pack.md docs/superpowers/plans/2026-05-21-p3-sub-agent-capability-pack.md docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md
+```
+
+Expected: no output.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md
-git commit -m "Verify P3 sub-agent capability pack" -m "Record P3 verification evidence and update the Claude Code gap matrix for in-process Task sub-agents, tool scoping, and context isolation." -m "Constraint: Worktree, remote, team, and nested approval sub-agent modes remain deferred." -m "Confidence: high" -m "Scope-risk: narrow" -m "Tested: full ruff, mypy, pytest, CLI smoke, and direct Task smoke"
+git add docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md
+git commit -m "Record P3 sub-agent smoke evidence"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: Final acceptance requires runnable evidence, not only unit tests.
+Confidence: high
+Scope-risk: narrow
+Tested: uv run ruff check src tests; uv run mypy src/mycli; uv run pytest -q
 ```
 
 ---
 
-## Final Verification
+## Self-Review Checklist
 
-After all tasks are complete, run:
-
-```bash
-uv run ruff check src tests
-uv run mypy src/mycli
-uv run pytest -q
-git status --short
-```
-
-Expected:
-
-- Ruff passes.
-- Mypy passes.
-- Pytest passes.
-- Worktree contains only intentional committed changes or is clean.
+- P3 includes sync in-process `Task` sub-agent only.
+- P3 includes no nested sub-agent and no nested approval UI.
+- P3 includes layered tool scope, not a plain allowlist.
+- P3 includes `model`, `max_prompt_tokens`, `cache_strategy`, and child budget fields in the domain profile.
+- P3 includes no-progress and max-turn guards in addition to max tool calls.
+- P3 includes XML final reports and report length bounds.
+- P3 keeps child intermediate messages out of parent conversation.
+- P3 updates the Claude Code gap document with completed and deferred rows.
+- P4 remains the home for fork cache sharing and async/background/coordinator behavior.

@@ -2,223 +2,307 @@
 
 ## 1. 背景
 
-P0/P1/P2 已经把单 agent 的上下文稳定性、工具安全、可观测性、流式输出、Bash 后台任务、file history 和基础权限补了一轮。下一块最影响真实 coding-agent 能力的是 sub-agent：让主 agent 能把一个边界清晰的子任务交给隔离的 child agent，同时不污染父上下文、不绕过权限、不扩大工具能力。
+P0/P1/P2 已经把单 agent 的上下文稳定性、工具安全、可观测性、流式输出、Bash 后台任务、file history 和基础权限补了一轮。下一块最影响真实 coding-agent 能力的是 sub-agent：主 agent 能把边界清晰的子任务交给 child agent，同时不污染父上下文、不绕过权限、不扩大工具能力、不无限循环。
 
-当前代码已有 `src/mycli/agents/sub_agent.py` 骨架：
+本批 P3 的定位是：
 
-- `SubAgent` 有独立 `system_prompt`、`tools`、`budget`、`cache_prefix` 和最终 `SubAgentReportFragment`。
-- 但它还是抽象类，未接入 `AgentRuntime`、`ToolRegistry`、`ApprovalService`、trace、session/history 或 CLI。
-- 父 agent 目前不能通过稳定工具调用来 spawn child agent。
+> Safe synchronous Task sub-agent v1。
 
-本批 P3 目标是把 sub-agent 从“孤立骨架”变成“可被 runtime 安全调用的一等能力”。
+也就是说，P3 只做同步、进程内、单 child agent 的 `Task` 工具调用闭环。它不做 Claude Code 完整的 async mailbox、fork cache sharing、后台化、coordinator/team 或 worktree/remote agent。
 
-## 2. 目标
+## 2. 现有骨架处理
 
-### 2.1 Model-facing `Task` tool
+当前代码已有 `src/mycli/agents/sub_agent.py`：
 
-新增一个模型可调用工具 `Task`，用于把明确子任务交给 sub-agent：
+- `SubAgent(name, system_prompt, tools, model, budget, max_tool_calls, cache_prefix)`
+- `SubAgentReportFragment(Fragment)`
+- `_call_model()` / `_execute_tool()` / `_is_final()` 抽象钩子
 
-- 参数至少包括 `description`、`agent_type`、`allowed_tools`。
-- `Task` 只返回最终 report，不把 child 的完整内部对话塞回父上下文。
-- `Task` 的 tool_result 是普通 tool_result，因此可被 L4 压缩、history replay 和 activity 渲染自然处理。
+P3 不继续扩展这个抽象类。原因：
 
-`Task` 不是 team/swarm，也不是后台长期任务。P3 第一版是同步、in-process、单 child agent 一次性执行。
+- 它基于旧 Fragment/context 设计，和当前 `AgentRuntime`、`ToolRegistry`、`ApprovalService`、trace、session/history 主链没有接上。
+- 它没有 runtime 当前 tool exposure、approval policy、file history、provider usage、streaming 和 session rebind 的上下文。
+- 继续复用会产生两条 sub-agent 主链。
 
-### 2.2 权限不可放大
-
-child agent 的能力必须是父 turn 当前能力的子集：
-
-- child 只能使用父 agent 当前暴露给模型的工具子集。
-- child 请求的 `allowed_tools` 必须再经过 runtime policy 过滤。
-- high-risk 工具默认不可给 child，除非父侧明确允许且 policy 判定不 deny。
-- session allowlist 不得让 child 绕过 deny。
-- contributed tools/MCP tools 在 P3 只允许显式白名单透传，不做自动全量继承。
-
-### 2.3 Context handoff
-
-父 agent 给 child 的上下文必须是窄而稳定的 handoff，不直接复制完整父上下文：
-
-- task description
-- parent session id / turn id
-- compacted relevant context summary
-- current plan state摘要
-- optional file/context hints
-- available tool catalog for child
-
-child 完成后，父上下文只接收：
-
-- child final report
-- tool usage count
-- status: completed / failed / max_tool_calls
-- child trace id/session id
-
-### 2.4 生命周期观测
-
-sub-agent 必须进入现有 observability/trace surface：
-
-- spawn started
-- tool scope resolved
-- child turn started/completed
-- child failed/max_tool_calls
-- report returned
-
-CLI 不做复杂 TUI，只要求 activity/trace 可见。后续再做 `/subagents` richer UI。
-
-### 2.5 Session/history 隔离
-
-child agent 使用独立 thread/session id，例如：
+P3 明确将旧 `SubAgent` / `SubAgentReportFragment` 标记为 legacy，并在实现阶段删除或迁移测试。新的唯一主链是：
 
 ```text
-<parent-session>:sub:<parent-turn-id>:<short-id>
+TaskTool -> SubAgentService -> bounded child loop -> scoped ToolRegistry -> final XML report
 ```
 
-隔离规则：
+## 3. 目标
 
-- child transcript 写入 child session。
-- parent session 只写入 `Task` tool_call 和最终 tool_result。
-- child file mutations 仍走同一 file history/safety pipeline，不能绕过 workspace boundary。
-- child report 可作为 parent 的普通 tool_result 参与 compaction。
+### 3.1 Model-facing `Task` tool
 
-## 3. 非目标
+新增模型可调用工具 `Task`，用于把明确子任务交给 child agent。
 
-- 不做 team/swarm 协作。
-- 不做并行多 child 调度。
-- 不做 worktree agent。
-- 不做 remote agent。
-- 不做 long-running child resume。
-- 不做 child agent PTY。
-- 不做 MCP defer loading。
-- 不做 Microcompact。
+参数：
 
-## 4. 设计
+- `description`: 子任务说明。
+- `agent_type`: `explore` / `review` / `executor`。
+- `allowed_tools`: 父 agent 愿意给 child 的候选工具名。
 
-### 4.1 Sub-agent contract
+行为：
 
-新增 sub-agent domain contract：
+- `Task` 同步运行 child loop。
+- `Task` 只返回最终 report。
+- 父 session 只写入 `Task` tool_call 和 final tool_result。
+- child 的中间 tool calls/tool results 不进入父 conversation。
+- `Task` tool_result 是普通 tool_result，可自然进入 history replay、L4 compaction 和 activity rendering。
 
-```python
-@dataclass(slots=True, frozen=True)
-class SubAgentProfile:
-    name: str
-    system_prompt: str
-    default_tools: tuple[str, ...]
-    max_tool_calls: int = 25
+### 3.2 禁止嵌套 sub-agent
 
-@dataclass(slots=True, frozen=True)
-class SubAgentInvocation:
-    agent_type: str
-    description: str
-    allowed_tools: tuple[str, ...]
-    parent_session_id: str
-    parent_turn_id: str
+P3 明确禁止 child 再 spawn child：
 
-@dataclass(slots=True, frozen=True)
-class SubAgentResult:
-    status: str
-    report: str
-    child_session_id: str
-    tool_calls: int
-    error: str | None = None
-```
+- `Task` 永远不允许出现在 child tool scope。
+- child 工具全局 denylist 包含：
+  - `Task`
+  - `AskUserQuestion`
+  - `enter_plan_mode`
+  - `exit_plan_mode`
+- nested approval UI 不支持。child 触发 approval-needed 时直接失败并返回 report。
 
-Profiles are intentionally small. P3 should include conservative built-ins:
+### 3.3 多层工具准入
 
-- `explore`: read/search/list only.
-- `review`: read/search/list/lint only.
-- `executor`: read/search/list/edit/write/bash only when policy allows.
-
-### 4.2 Tool scope resolver
-
-Tool scope resolution happens before child runtime creation:
+child tool scope 不是简单交集。P3 使用分层 resolver：
 
 ```text
 parent exposed tools
   ∩ requested allowed_tools
   ∩ profile default_tools
-  ∩ sub-agent permission policy
+  - global child denylist
+  - profile denylist
+  - policy denied tools
   = child tool registry
 ```
 
-If the resulting set is empty, `Task` fails before creating a child runtime.
+默认 profile：
 
-### 4.3 Runtime service boundary
+| profile | 默认工具 | 说明 |
+|---|---|---|
+| `explore` | `Read`, `Grep`, `Glob`, `LS` | 只读探索 |
+| `review` | `Read`, `Grep`, `Glob`, `LS`, `Lint` | 代码审查 |
+| `executor` | `Read`, `Grep`, `Glob`, `LS`, `Edit`, `Write` | 小范围执行；`Bash` 默认不开放 |
 
-Create a `SubAgentService` under runtime/application layer. It owns:
+`Bash` 只在后续 opt-in 设计里给 executor 显式开放。P3 默认不把 Bash 给 child。
 
-- profile lookup
-- child session id generation
-- tool scope resolution
-- child runtime creation through a small factory boundary
-- lifecycle trace emission
-- final report normalization
+MCP/contributed tools 不自动继承。P3 只允许显式白名单透传，且仍要经过 resolver。
 
-`TaskTool` should be a thin shell that delegates to `SubAgentService.invoke()`.
+### 3.4 Child budget v1
 
-### 4.4 Parent-child transcript behavior
+P3 不做 Claude Code 完整 token budget，但不能只靠 `max_tool_calls`。每个 profile 拥有：
 
-Parent transcript should contain:
+- `max_turns`
+- `max_tool_calls`
+- `no_progress_turn_limit`
+- `report_char_limit`
+- `model: str | None`
+- `max_prompt_tokens: int | None`
+- `cache_strategy`
+
+默认值：
 
 ```text
-assistant tool_call: Task(...)
-tool_result: <sub_agent_report>...</sub_agent_report>
+max_turns = 8
+max_tool_calls = 20
+no_progress_turn_limit = 3
+report_char_limit = 8000
+model = None              # 继承父模型
+max_prompt_tokens = None  # 继承父预算策略
+cache_strategy = "inherit_provider_config"
 ```
 
-It must not contain:
+No-progress 判断：
 
-- child model requests
-- child intermediate tool results
-- child internal reasoning
+- 本轮没有 assistant text。
+- 本轮没有 tool_call。
+- 本轮没有新增 tool_result/evidence。
 
-Child transcript is persisted under child session id and can be inspected later by trace/session tooling.
+连续 `no_progress_turn_limit` 轮后停止，返回 `status=max_no_progress`。
 
-### 4.5 Error behavior
+### 3.5 Context field policy
 
-Failure modes:
+P3 不做“全隔离”或“全共享”，而是逐字段策略：
 
-- unknown `agent_type`: deny with readable error.
-- no allowed child tools: fail before model call.
-- child max tool calls: return report with `status=max_tool_calls`.
-- child model/provider error: return report with `status=failed` and concise error.
-- child approval needed: P3 should fail the child turn with a report instead of surfacing nested approval UI.
+| 字段/服务 | P3 策略 | 原因 |
+|---|---|---|
+| model config/provider/api key | 继承父 runtime | 保持 provider/cache 行为稳定 |
+| model adapter | 复用父 adapter 接口，但 child session id 进入 log/trace context | 避免新增 provider 栈 |
+| conversation | 不复制完整父历史 | 防父上下文污染和 token 爆炸 |
+| task context | 只传 description、profile prompt、必要 handoff summary | 保持 child 任务窄 |
+| tool registry | 子集 registry | 防工具放大 |
+| approval UI | 禁用 nested approval | 避免 CLI 交互复杂化 |
+| file history | 共享服务，child session id 独立 | child 写入仍可回滚 |
+| shell registry | 不默认暴露 Bash | 避免后台进程孤儿和权限放大 |
+| trace | parent trace + child trace 均写 | 保持可观测 |
+| stream sink/UI | child 不直接写 UI | 父只接收最终 report |
+| memory/session state | child session 独立 | 防状态串扰 |
 
-Nested approval is intentionally deferred. Child permissions are conservative enough that child should not normally reach approval-needed state.
+### 3.6 Cache 策略
+
+P3 不做 Gap 7.2 的 fork cache sharing。
+
+明确取舍：
+
+- P3 child 默认继承父 provider/model/config。
+- child prompt/tool schema 需要稳定排序。
+- child 使用独立 session id 和独立 child loop。
+- 不保证父子 API 请求前缀字节级一致。
+- 不做 `getSystemPrompt() == ""` 的 fork-agent trick。
+
+后续 P4 可单独做 `fork-agent-cache-sharing`：
+
+- 父子请求前缀字节级一致。
+- tool schema 和顺序完全继承父。
+- 从 fork point 开始分叉。
+- 专门验证 provider prompt cache hit。
+
+### 3.7 Child loop
+
+P3 必须是真实 bounded child loop，不是一轮 model call。
+
+流程：
+
+```text
+build child runtime items
+  -> request model turn with scoped tools
+  -> if final text: return report
+  -> if tool_call: execute scoped tool
+  -> append tool_result to child conversation
+  -> next child turn
+  -> stop at max_turns / max_tool_calls / no_progress / provider error
+```
+
+Child loop 的 tool execution 复用现有 `ToolExecutionService` 能力，至少要保持：
+
+- tool validation
+- safety policy
+- file history snapshot
+- trace
+- context manager tool result formatting
+
+如果 child 遇到 pending approval：
+
+- 不弹 nested approval。
+- 返回 `status=approval_required`。
+- report 说明哪个工具被拒绝继续执行。
+
+### 3.8 Report 格式
+
+P3 final report 使用稳定 XML 包装，便于模型阅读，也方便后续 async notification 复用：
+
+```xml
+<sub-agent-report agent="explore" status="completed" tools="3" child_session_id="demo:sub:turn_1:abcd">
+...report body...
+</sub-agent-report>
+```
+
+约束：
+
+- report body 上限默认 8000 字符。
+- 超限截断并在 XML 中追加省略说明。
+- XML report 是父 session 唯一接收的 child 内容。
+
+### 3.9 生命周期观测
+
+Sub-agent lifecycle 进入 trace：
+
+- `started`
+- `tool_scope_resolved`
+- `child_turn_started`
+- `tool_started`
+- `tool_completed`
+- `completed`
+- `failed`
+- `max_turns`
+- `max_tool_calls`
+- `max_no_progress`
+- `approval_required`
+
+`/subagents` 最小摘要格式：
+
+```text
+<agent_type> <status> tools=<tool_calls> <child_session_id> description=<short_description>
+```
+
+## 4. 非目标
+
+- 不做 async mailbox。
+- 不做 XML `<task-notification>` 注入父对话历史。
+- 不做超过 2 分钟自动后台化。
+- 不做 coordinator/team 模式。
+- 不做并发多 child 调度。
+- 不做 worktree agent。
+- 不做 remote agent。
+- 不做 fork cache sharing。
+- 不做 MCP defer loading。
+- 不做 Microcompact。
+- 不做 nested approval UI。
 
 ## 5. 文件变更
 
 | 操作 | 文件 | 说明 |
 |---|---|---|
-| 新建 | `src/mycli/domain/subagents.py` | Sub-agent profile/invocation/result contracts |
+| 新建 | `src/mycli/domain/subagents.py` | Profile/invocation/result/run summary contracts |
 | 新建 | `src/mycli/application/runtime/subagents/profiles.py` | Built-in profile catalog |
-| 新建 | `src/mycli/application/runtime/subagents/tool_scope.py` | Child tool subset resolver |
+| 新建 | `src/mycli/application/runtime/subagents/tool_scope.py` | Layered child tool resolver + denylist |
 | 新建 | `src/mycli/application/runtime/subagents/service.py` | SubAgentService orchestration |
+| 新建 | `src/mycli/application/runtime/subagents/loop.py` | Bounded child loop |
 | 新建 | `src/mycli/tools/task.py` | Model-facing `Task` tool |
-| 修改 | `src/mycli/application/runtime/agent_runtime.py` | 创建并绑定 SubAgentService / TaskTool |
-| 修改 | `src/mycli/tools/registry.py` | 注册 `Task` tool |
-| 修改 | `src/mycli/cli/bootstrap.py` | boot path 注册并绑定 TaskTool |
-| 修改 | `src/mycli/application/turn_service.py` | 可选 `/subagents` 检查入口 |
-| 修改 | `src/mycli/cli/repl.py` | `/subagents` 命令 |
-| 测试 | `tests/unit/domain/test_subagents.py` | domain contracts |
-| 测试 | `tests/unit/application/runtime/subagents/test_tool_scope.py` | tool scope resolver |
-| 测试 | `tests/unit/application/runtime/subagents/test_sub_agent_service.py` | service orchestration |
+| 修改 | `src/mycli/agents/sub_agent.py` | 删除或 legacy 迁移 |
+| 修改 | `src/mycli/application/runtime/agent_runtime.py` | 创建并绑定 SubAgentService/TaskTool |
+| 修改 | `src/mycli/tools/registry.py` | 注册 fallback `Task` |
+| 修改 | `src/mycli/cli/bootstrap.py` | runtime-bound TaskTool |
+| 修改 | `src/mycli/application/turn_service.py` | `/subagents` inspection |
+| 修改 | `src/mycli/cli/repl.py` | `/subagents` command |
+| 测试 | `tests/unit/domain/test_subagents.py` | Domain contracts |
+| 测试 | `tests/unit/application/runtime/subagents/test_tool_scope.py` | Resolver |
+| 测试 | `tests/unit/application/runtime/subagents/test_child_loop.py` | Child loop |
+| 测试 | `tests/unit/application/runtime/subagents/test_sub_agent_service.py` | Service |
 | 测试 | `tests/unit/tools/test_task_tool.py` | Task tool |
-| 测试 | `tests/unit/application/test_agent_runtime.py` | runtime registration / parent transcript |
-| 报告 | `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md` | smoke 结果 |
+| 测试 | `tests/unit/application/test_agent_runtime.py` | Runtime integration |
+| 报告 | `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md` | Smoke evidence |
 
 ## 6. 验收标准
 
 - `Task` tool 出现在默认 tool registry。
-- 模型可调用 `Task` 启动一个 in-process child agent。
-- child 只能看到被 resolver 允许的工具。
-- deny 类权限无法被 child 或 session allowance 绕过。
+- child 不能使用 `Task`、`AskUserQuestion`、plan mode tools。
+- child tool scope 是 parent exposure / requested / profile / denylist / policy 的结果。
+- child loop 能执行至少一轮 tool_call -> tool_result -> next model turn。
+- child 达到 max_turns/max_tool_calls/no_progress 时返回明确状态。
+- child report 是 XML，且默认不超过 8000 字符。
 - 父 session 只收到最终 `Task` report，不包含 child 内部 tool_result。
 - child lifecycle 写入 trace。
-- `/subagents` 能看到最近 child runs 的最小摘要。
+- `/subagents` 能看到最近 child runs。
+- 旧 `src/mycli/agents/sub_agent.py` 不再作为并行主链残留。
 - `uv run ruff check src tests`、`uv run mypy src/mycli`、`uv run pytest -q` 通过。
-- 真实 CLI smoke 能完成一次 repository-analysis 或 code-review 风格 child task，并返回最终 report。
+- 真实 CLI smoke 能完成一次 `Task(explore)` 风格子任务并返回 report。
 
-## 7. 风险
+## 7. 与 Claude Code 的差距
 
-- 如果直接复用父 runtime/model adapter，容易产生状态污染。实现必须通过 child session id 和 child tool registry 隔离。
-- 如果 `Task` 可用高风险工具，child 可能绕过父审批心智模型。P3 默认保守：高风险工具需要 profile + explicit allowed_tools + policy 三者同时允许。
-- 如果 child report 太长，会影响父上下文。P3 应限制 report 字符/token 长度，超限时截断并记录 metadata。
-- 如果 nested approval 被支持过早，CLI 交互会变复杂。P3 明确 deferred。
+P3 完成：
+
+- sync in-process sub-agent。
+- no nested sub-agent。
+- layered tool scope。
+- bounded child loop。
+- parent/child context isolation。
+- XML final report。
+- lifecycle trace。
+
+P3 不完成：
+
+- async mailbox + `<task-notification>`。
+- 2 分钟自动后台化。
+- coordinator/team 并发 worker。
+- fork cache sharing。
+- worktree/remote agent。
+
+对应 gap 文档：
+
+- 7.1：从无变为 ⚠️，只覆盖 sync in-process。
+- 7.2：仍 ❌，fork cache sharing 后续单独做。
+- 7.3：从 ❌ 到 ⚠️，有工具/权限隔离但无 OS sandbox。
+- 7.4：从 ⚠️ 到 ✅，工具子集隔离落地。
+- 7.5：从 ⚠️ 到 ✅，父只接收 final report。
+- 7.6/7.7：仍 ❌。
