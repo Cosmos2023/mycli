@@ -34,6 +34,9 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.tooling.exposure import (
     ToolExposure,
+    ToolExposureEntry,
+    ToolRouteKey,
+    ToolRouteSource,
 )
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
@@ -87,7 +90,14 @@ from mycli.application.runtime.request import (
 )
 from mycli.application.runtime.response_finalizer import RuntimeResponseFinalizer
 from mycli.application.runtime.runtime_error_logger import RuntimeErrorLogger
+from mycli.application.runtime.subagents.loop import (
+    RuntimeChildToolExecutor,
+    RuntimeChildTurnRequester,
+    SubAgentChildLoop,
+)
+from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
+from mycli.tools.task import TaskTool
 
 
 _L4_REHYDRATION_MAX_FILES = 3
@@ -324,6 +334,30 @@ class AgentRuntime:
             hook_manager=self._hook_manager,
             file_history=self._file_history_service,
         )
+        child_executor = RuntimeChildToolExecutor(
+            tool_router=ToolRouter(tool_registry=self._tool_registry),
+            tool_specs=dict(self._tool_registry.specs or {}),
+        )
+        child_requester = RuntimeChildTurnRequester(
+            requester=self._model_turn_requester,
+            tool_exposure_builder=self._child_tool_exposure,
+            tool_renderer=lambda exposure: self._render_model_tools(
+                tool_exposure=exposure,
+                tool_router=ToolRouter(tool_registry=self._tool_registry),
+                allow_tools=True,
+            ),
+        )
+        self._sub_agent_child_loop = SubAgentChildLoop(
+            requester=child_requester,
+            executor=child_executor,
+        )
+        self._sub_agent_service = SubAgentService(
+            session_id=config.session_id,
+            turn_id_provider=lambda: getattr(self, "_current_turn_id", "turn_unknown"),
+            parent_tool_names=lambda: tuple(self._tool_registry.list_names()),
+            child_loop=self._sub_agent_child_loop,
+        )
+        self._tool_registry.register(TaskTool(service=self._sub_agent_service))
         self._assistant_block_consumer = AssistantBlockConsumer(
             session_id=config.session_id,
             session_service=self._session_service,
@@ -591,6 +625,23 @@ class AgentRuntime:
 
     def _build_tool_router(self, planned_exposure: PlannedToolExposure) -> ToolRouter:
         return self._tool_orchestrator.build_tool_router(planned_exposure)
+
+    def _child_tool_exposure(self, tool_names: tuple[str, ...]) -> ToolExposure:
+        specs = self._tool_registry.specs or {}
+        return ToolExposure(
+            entries=tuple(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local(name),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=specs[name],
+                )
+                for name in tool_names
+                if name in specs
+            )
+        )
+
+    def _set_current_turn_id(self, turn_id: str) -> None:
+        self._current_turn_id = turn_id
 
     def _append_tool_exposure_turn_item(
         self,

@@ -124,6 +124,19 @@ def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(
     assert any(message.startswith("query=search_text") for message in messages)
 
 
+def test_runtime_registers_bound_task_tool(tmp_path: Path) -> None:
+    adapter = SearchThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    assert "Task" in runtime._tool_registry.list_names()
+    task_tool = runtime._tool_registry.executors["Task"]
+    assert getattr(task_tool, "_service", None) is runtime._sub_agent_service
+
+
 class InspectThenDoneAdapter:
     def __init__(self) -> None:
         self.calls = 0

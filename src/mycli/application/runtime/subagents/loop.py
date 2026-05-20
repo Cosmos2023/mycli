@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 
+from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
 from mycli.domain.subagents import SubAgentInvocation, SubAgentProfile, SubAgentResult
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.exposure import (
+    ToolExposure,
+    ToolExposureEntry,
+    ToolRouteKey,
+    ToolRouteSource,
+)
+from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
-from mycli.tools.base import ToolResult
+from mycli.tools.base import ToolResult, ToolSpec
+from mycli.tools.routing.tool_router import ToolRouter
 
 
 class ChildTurn(Protocol):
@@ -33,6 +44,143 @@ class ChildToolExecutor(Protocol):
         tool_names: tuple[str, ...],
     ) -> ToolResult:
         ...
+
+
+@dataclass(slots=True, frozen=True)
+class RuntimeChildTurn:
+    text: str
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+@dataclass(slots=True)
+class RuntimeChildTurnRequester:
+    requester: object
+    tool_exposure_builder: Callable[[tuple[str, ...]], ToolExposure]
+    tool_renderer: Callable[[ToolExposure], list[ModelToolDefinition]]
+
+    def request_child_turn(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        tool_names: tuple[str, ...],
+        child_session_id: str,
+    ) -> RuntimeChildTurn:
+        del child_session_id
+        exposure = self.tool_exposure_builder(tool_names)
+        turn_result, _streamed = self.requester.request_model_turn(
+            runtime_items=self._runtime_items(messages),
+            legacy_messages=self._legacy_messages(messages),
+            tools=self.tool_renderer(exposure),
+        )
+        return self._project_turn(turn_result)
+
+    def _runtime_items(self, messages: list[dict[str, object]]) -> list[RuntimeItem]:
+        items: list[RuntimeItem] = []
+        for message in messages:
+            blocks = self._runtime_blocks(message)
+            if blocks:
+                items.append(
+                    RuntimeItem(
+                        role=self._runtime_role(str(message.get("role", "user"))),
+                        blocks=blocks,
+                    )
+                )
+        return items
+
+    def _runtime_blocks(self, message: dict[str, object]) -> tuple[RuntimeBlock, ...]:
+        blocks: list[RuntimeBlock] = []
+        content = str(message.get("content", ""))
+        if content:
+            block_type = "tool_result" if message.get("role") == "tool" else "text"
+            blocks.append(
+                RuntimeBlock(
+                    type=block_type,
+                    text=content,
+                    call_id=message.get("tool_call_id")
+                    if isinstance(message.get("tool_call_id"), str)
+                    else None,
+                )
+            )
+        for call in self._tool_calls(message):
+            if call.call_id:
+                blocks.append(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name=call.name,
+                        tool_arguments=call.arguments,
+                        call_id=call.call_id,
+                    )
+                )
+        return tuple(blocks)
+
+    def _legacy_messages(self, messages: list[dict[str, object]]) -> list[ModelMessage]:
+        return [
+            ModelMessage(
+                role=str(message.get("role", "user")),
+                content=str(message.get("content", "")),
+                tool_call_id=message.get("tool_call_id")
+                if isinstance(message.get("tool_call_id"), str)
+                else None,
+                tool_calls=self._tool_calls(message),
+            )
+            for message in messages
+        ]
+
+    def _tool_calls(self, message: dict[str, object]) -> tuple[ToolCall, ...]:
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list | tuple):
+            return ()
+        return tuple(call for call in calls if isinstance(call, ToolCall))
+
+    def _project_turn(self, turn_result: ModelTurnResult) -> RuntimeChildTurn:
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        for item in turn_result.items:
+            for block in item.blocks:
+                if block.type == "text" and block.text:
+                    text_parts.append(block.text)
+                if block.type == "tool_call" and block.tool_name:
+                    calls.append(
+                        ToolCall(
+                            name=block.tool_name,
+                            arguments=block.tool_arguments or {},
+                            reason="child sub-agent tool call",
+                            call_id=block.call_id,
+                        )
+                    )
+        return RuntimeChildTurn(text="\n".join(text_parts).strip(), tool_calls=tuple(calls))
+
+    def _runtime_role(self, role: str) -> RuntimeRole:
+        if role in {"system", "developer", "user", "assistant", "tool"}:
+            return role  # type: ignore[return-value]
+        return "user"
+
+
+@dataclass(slots=True)
+class RuntimeChildToolExecutor:
+    tool_router: ToolRouter
+    tool_specs: dict[str, ToolSpec]
+
+    def execute_child_tool(
+        self,
+        *,
+        call: ToolCall,
+        child_session_id: str,
+        tool_names: tuple[str, ...],
+    ) -> ToolResult:
+        del child_session_id
+        exposure = ToolExposure(
+            entries=tuple(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local(name),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=self.tool_specs[name],
+                )
+                for name in tool_names
+                if name in self.tool_specs
+            )
+        )
+        return self.tool_router.execute(call, exposure=exposure)
 
 
 class SubAgentChildLoop:
@@ -127,4 +275,11 @@ class SubAgentChildLoop:
         )
 
 
-__all__ = ["ChildToolExecutor", "ChildTurnRequester", "SubAgentChildLoop"]
+__all__ = [
+    "ChildToolExecutor",
+    "ChildTurnRequester",
+    "RuntimeChildToolExecutor",
+    "RuntimeChildTurn",
+    "RuntimeChildTurnRequester",
+    "SubAgentChildLoop",
+]

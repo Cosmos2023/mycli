@@ -69,6 +69,7 @@ class TurnExecutor:
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
         initial_in_progress_item_id = current_plan_state.current_in_progress_item_id()
         turn_id = f"turn_{uuid4().hex}"
+        runtime._set_current_turn_id(turn_id)
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
         runtime._load_model_continuation_state(turn_id=turn_id)
@@ -97,6 +98,7 @@ class TurnExecutor:
         runtime._session_service.clear_suspended_turn(runtime._config.session_id)
         current_plan_state = suspended.plan_state
         turn_id = f"turn_{uuid4().hex}"
+        runtime._set_current_turn_id(turn_id)
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
         runtime._load_model_continuation_state(turn_id=turn_id)
@@ -170,6 +172,7 @@ class TurnExecutor:
 
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
         turn_id = f"turn_{uuid4().hex}"
+        runtime._set_current_turn_id(turn_id)
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
         runtime._append_turn_item(
