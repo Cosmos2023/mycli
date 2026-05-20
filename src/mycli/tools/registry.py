@@ -102,6 +102,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
+    from mycli.tools.task import TaskTool
     from mycli.tools.web_fetch import WebFetchTool
     from mycli.tools.web_search import WebSearchTool
     from mycli.tools.write import WriteTool
@@ -124,4 +125,5 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         PlanTool(),
         EnterPlanModeTool(workspace_root),
         ExitPlanModeTool(workspace_root),
+        TaskTool(),
     ]
