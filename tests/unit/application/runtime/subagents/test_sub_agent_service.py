@@ -12,6 +12,9 @@ class FakeLoop:
 
     def run(self, **kwargs):
         self.calls.append(kwargs)
+        transcript = kwargs.get("transcript")
+        if transcript is not None:
+            transcript.record_user_text("fake child transcript")
         return self.result
 
 
@@ -63,9 +66,13 @@ class ObservedLock:
 class FakeHistorySessionService:
     def __init__(self) -> None:
         self.items: dict[str, tuple[HistoryItem, ...]] = {}
+        self.appended: list[tuple[str, tuple[HistoryItem, ...]]] = []
 
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
         return self.items.get(session_id, ())
+
+    def append_history_items(self, session_id: str, items: tuple[HistoryItem, ...]) -> None:
+        self.appended.append((session_id, items))
 
 
 def test_service_resolves_scope_runs_loop_and_wraps_xml() -> None:
@@ -98,6 +105,35 @@ def test_service_resolves_scope_runs_loop_and_wraps_xml() -> None:
     assert "Found README.md." in result.report
     assert loop.calls[0]["tool_names"] == ("Read",)
     assert service.recent_runs()[0].description == "Find docs"
+
+
+def test_service_passes_transcript_recorder_to_child_loop() -> None:
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="Found README.md.",
+            child_session_id="ignored",
+            tool_calls=1,
+        )
+    )
+    session_service = FakeHistorySessionService()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+        session_service=session_service,
+    )
+
+    result = service.run_task(
+        description="Find docs",
+        agent_type="explore",
+        allowed_tools=("Read",),
+    )
+
+    assert result.status == "completed"
+    assert loop.calls[0]["transcript"] is not None
+    assert session_service.appended
 
 
 def test_service_rejects_unknown_profile_with_xml_report() -> None:

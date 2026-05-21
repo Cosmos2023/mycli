@@ -8,11 +8,12 @@ from datetime import UTC, datetime
 from html import escape
 from threading import Lock
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
 from mycli.application.runtime.subagents.profiles import get_sub_agent_profile
+from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
 from mycli.domain.runtime import HistoryItem, HistoryItemType
 from mycli.domain.subagents import (
@@ -22,25 +23,32 @@ from mycli.domain.subagents import (
 )
 
 
-class SupportsHistoryLoad(Protocol):
+class SupportsHistorySession(Protocol):
+    def append_history_items(self, session_id: str, items: tuple[HistoryItem, ...]) -> None: ...
+
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]: ...
 
 
+class SupportsFuture(Protocol):
+    def result(self, timeout: float | None = None) -> Any: ...
+
+
 class SupportsBackgroundExecutor(Protocol):
-    def submit(self, fn, *args, **kwargs): ...
+    def submit(self, fn: Callable[..., None], *args: object, **kwargs: object) -> SupportsFuture:
+        ...
 
 
 class SupportsLock(Protocol):
-    def __enter__(self): ...
+    def __enter__(self) -> object: ...
 
-    def __exit__(self, exc_type, exc, traceback): ...
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> object: ...
 
 
 @dataclass(slots=True)
 class _BackgroundRun:
     invocation: SubAgentInvocation
     started_at: str
-    future: object
+    future: SupportsFuture
     tool_calls: int = 0
 
 
@@ -53,7 +61,7 @@ class SubAgentService:
         parent_tool_names: Callable[[], tuple[str, ...]],
         child_loop: SubAgentChildLoop,
         policy_denied_tools: Callable[[], tuple[str, ...]] | None = None,
-        session_service: SupportsHistoryLoad | None = None,
+        session_service: SupportsHistorySession | None = None,
         max_recent_runs: int = 20,
         background_executor: SupportsBackgroundExecutor | None = None,
         max_concurrent_background_tasks: int = 2,
@@ -131,6 +139,7 @@ class SubAgentService:
             profile=profile,
             child_session_id=child_session_id,
             tool_names=tool_names,
+            transcript=self._transcript_recorder(invocation, child_session_id),
         )
         result = SubAgentResult(
             status=loop_result.status,
@@ -358,6 +367,20 @@ class SubAgentService:
 
     def _child_session_id(self, turn_id: str) -> str:
         return f"{self._session_id}:sub:{turn_id}:{uuid4().hex[:8]}"
+
+    def _transcript_recorder(
+        self,
+        invocation: SubAgentInvocation,
+        child_session_id: str,
+    ) -> SubAgentTranscriptRecorder | None:
+        if self._session_service is None:
+            return None
+        return SubAgentTranscriptRecorder(
+            session_service=self._session_service,
+            parent_session_id=invocation.parent_session_id,
+            child_session_id=child_session_id,
+            parent_turn_id=invocation.parent_turn_id,
+        )
 
     def _transcript_header(self, child_session_id: str) -> str:
         for summary in self._recent_runs:
