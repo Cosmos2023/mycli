@@ -9,10 +9,11 @@ import httpx
 import pytest
 
 from mycli.domain.logging import ModelLogContext
-from mycli.domain.runtime import ReasoningEffort
+from mycli.domain.runtime import ReasoningEffort, StopReason
 from mycli.llms.clients.anthropic_messages import (
     AnthropicMessagesClient,
     _build_anthropic_sdk_client,
+    classify_anthropic_provider_failure,
 )
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.utils.workspace_logger import WorkspaceLogService
@@ -353,3 +354,32 @@ def test_anthropic_client_accepts_sdk_payload_model_dump(tmp_path: Path) -> None
         "id": "msg_dump",
         "content": [{"type": "text", "text": "ok"}],
     }
+
+
+def test_anthropic_status_errors_use_shared_failure_taxonomy() -> None:
+    classification = classify_anthropic_provider_failure(
+        detail="overloaded",
+        status_code=529,
+        provider_error_code=None,
+    )
+
+    assert classification.stop_reason is StopReason.RATE_LIMITED
+    assert classification.failure_kind == "provider_overloaded"
+    assert classification.is_retryable is True
+
+
+def test_anthropic_status_error_sets_model_response_recovery_fields(tmp_path: Path) -> None:
+    client = AnthropicMessagesClient(
+        api_key="test",
+        base_url="https://api.anthropic.test",
+        model="test-model",
+        max_output_tokens=128,
+        log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+    exc = _status_error(status_code=529, body={"error": {"message": "overloaded"}})
+
+    error = client._status_error(exc=exc, request_path=None)
+
+    assert error.stop_reason is StopReason.RATE_LIMITED
+    assert error.failure_kind == "provider_overloaded"
+    assert error.is_retryable is True

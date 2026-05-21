@@ -10,11 +10,13 @@ from openai import APIConnectionError, BadRequestError
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
+from mycli.domain.runtime import StopReason
 from mycli.llms.clients.openai_chat import (
     DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
     ModelResponseError,
     OpenAIChatClient,
     _build_openai_sdk_client,
+    classify_chat_provider_failure,
 )
 from mycli.infrastructure.providers.deepseek import (
     DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
@@ -1189,3 +1191,32 @@ def test_openai_chat_client_maps_sdk_connection_errors(monkeypatch) -> None:
 
     with pytest.raises(ModelResponseError, match="Failed to reach model provider"):
         client.complete([{"role": "user", "content": "inspect the repo"}])
+
+
+def test_openai_chat_status_errors_use_shared_failure_taxonomy() -> None:
+    classification = classify_chat_provider_failure(
+        detail="rate limit exceeded",
+        status_code=429,
+        provider_error_code=None,
+    )
+
+    assert classification.stop_reason is StopReason.RATE_LIMITED
+    assert classification.failure_kind == "rate_limited"
+    assert classification.is_retryable is True
+
+
+def test_openai_chat_status_error_sets_model_response_recovery_fields(tmp_path: Path) -> None:
+    client = OpenAIChatClient(
+        api_key="test",
+        base_url="https://api.test/v1",
+        model="test-model",
+        max_output_tokens=128,
+        log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+    exc = _status_error(status_code=429, body={"error": {"message": "rate limit exceeded"}})
+
+    error = client._status_error(exc=exc, request_path=None)
+
+    assert error.stop_reason is StopReason.RATE_LIMITED
+    assert error.failure_kind == "rate_limited"
+    assert error.is_retryable is True

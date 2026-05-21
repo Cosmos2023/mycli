@@ -17,6 +17,83 @@ class FailureClassification:
     failure_kind: str
 
 
+def classify_provider_failure(
+    *,
+    detail: str,
+    status_code: int | None,
+    provider_error_code: str | None,
+) -> FailureClassification:
+    normalized_detail = detail.lower()
+    normalized_code = provider_error_code.lower() if isinstance(provider_error_code, str) else ""
+    context_markers = (
+        "context length",
+        "maximum context length",
+        "context window",
+        "too many tokens",
+        "input too long",
+    )
+    if normalized_code in {"context_length_exceeded", "context_window_exceeded"} or any(
+        marker in normalized_detail for marker in context_markers
+    ):
+        return FailureClassification(
+            stop_reason=StopReason.CONTEXT_WINDOW_EXCEEDED,
+            is_retryable=False,
+            failure_kind="context_window_exceeded",
+        )
+    output_markers = (
+        "max output tokens",
+        "output token",
+        "completion token",
+        "response too long",
+    )
+    if normalized_code in {
+        "output_token_limit",
+        "max_output_tokens",
+        "output_tokens_exceeded",
+    } or any(marker in normalized_detail for marker in output_markers):
+        return FailureClassification(
+            stop_reason=StopReason.MODEL_ERROR,
+            is_retryable=True,
+            failure_kind="output_token_limit",
+        )
+    auth_markers = ("api key", "authentication", "authorization", "unauthorized", "forbidden")
+    if status_code in {401, 403} or any(marker in normalized_detail for marker in auth_markers):
+        return FailureClassification(
+            stop_reason=StopReason.AUTH_FAILED,
+            is_retryable=False,
+            failure_kind="auth_error",
+        )
+    if status_code == 408:
+        return FailureClassification(
+            stop_reason=StopReason.TRANSPORT_FAILED,
+            is_retryable=True,
+            failure_kind="request_timeout",
+        )
+    if status_code == 429:
+        return FailureClassification(
+            stop_reason=StopReason.RATE_LIMITED,
+            is_retryable=True,
+            failure_kind="rate_limited",
+        )
+    if status_code == 529:
+        return FailureClassification(
+            stop_reason=StopReason.RATE_LIMITED,
+            is_retryable=True,
+            failure_kind="provider_overloaded",
+        )
+    if status_code in {500, 502, 503, 504}:
+        return FailureClassification(
+            stop_reason=StopReason.TRANSPORT_FAILED,
+            is_retryable=True,
+            failure_kind="provider_unavailable",
+        )
+    return FailureClassification(
+        stop_reason=StopReason.MODEL_ERROR,
+        is_retryable=False,
+        failure_kind="provider_error",
+    )
+
+
 class ResponsesErrorFactory:
     def __init__(self, *, logger: ResponsesClientLogger) -> None:
         self._logger = logger
@@ -247,31 +324,8 @@ class ResponsesErrorFactory:
         status_code: int | None,
         provider_error_code: str | None,
     ) -> FailureClassification:
-        normalized_detail = detail.lower()
-        normalized_code = provider_error_code.lower() if isinstance(provider_error_code, str) else ""
-        context_markers = (
-            "context length",
-            "maximum context length",
-            "context window",
-            "too many tokens",
-            "input too long",
-        )
-        if normalized_code in {"context_length_exceeded", "context_window_exceeded"} or any(
-            marker in normalized_detail for marker in context_markers
-        ):
-            return FailureClassification(
-                stop_reason=StopReason.CONTEXT_WINDOW_EXCEEDED,
-                is_retryable=False,
-                failure_kind="context_window_exceeded",
-            )
-        if status_code in {408, 409, 429, 500, 502, 503, 504}:
-            return FailureClassification(
-                stop_reason=StopReason.TRANSPORT_FAILED,
-                is_retryable=True,
-                failure_kind="http_error",
-            )
-        return FailureClassification(
-            stop_reason=StopReason.MODEL_ERROR,
-            is_retryable=False,
-            failure_kind="provider_error",
+        return classify_provider_failure(
+            detail=detail,
+            status_code=status_code,
+            provider_error_code=provider_error_code,
         )

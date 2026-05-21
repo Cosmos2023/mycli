@@ -12,6 +12,8 @@ from mycli.domain.runtime import StopReason
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
 from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.llms.clients.responses_errors import ResponsesErrorFactory
+from mycli.llms.clients.responses_logging import ResponsesClientLogger
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.schemas.responses_protocol import (
     ResponsesCapabilityProfile,
@@ -1312,3 +1314,61 @@ def test_openai_responses_client_marks_pending_continuation_ineligible_when_fail
     assert state.response_id is None
     assert state.eligible is False
     assert state.failure_reason == "provider failure"
+
+
+def test_responses_error_factory_classifies_rate_limit_and_overload(tmp_path: Path) -> None:
+    del tmp_path
+    factory = ResponsesErrorFactory(
+        logger=ResponsesClientLogger(
+            base_url="https://api.test/v1",
+            model="test-model",
+            log_service=None,
+        )
+    )
+
+    rate_limited = factory.classify_provider_failure(
+        detail="rate limit exceeded",
+        status_code=429,
+        provider_error_code=None,
+    )
+    overloaded = factory.classify_provider_failure(
+        detail="overloaded",
+        status_code=529,
+        provider_error_code=None,
+    )
+
+    assert rate_limited.stop_reason is StopReason.RATE_LIMITED
+    assert rate_limited.failure_kind == "rate_limited"
+    assert rate_limited.is_retryable is True
+    assert overloaded.stop_reason is StopReason.RATE_LIMITED
+    assert overloaded.failure_kind == "provider_overloaded"
+    assert overloaded.is_retryable is True
+
+
+def test_responses_error_factory_classifies_auth_and_output_limit(tmp_path: Path) -> None:
+    del tmp_path
+    factory = ResponsesErrorFactory(
+        logger=ResponsesClientLogger(
+            base_url="https://api.test/v1",
+            model="test-model",
+            log_service=None,
+        )
+    )
+
+    auth = factory.classify_provider_failure(
+        detail="invalid api key",
+        status_code=401,
+        provider_error_code=None,
+    )
+    output = factory.classify_provider_failure(
+        detail="max output tokens exceeded",
+        status_code=None,
+        provider_error_code="output_token_limit",
+    )
+
+    assert auth.stop_reason is StopReason.AUTH_FAILED
+    assert auth.failure_kind == "auth_error"
+    assert auth.is_retryable is False
+    assert output.stop_reason is StopReason.MODEL_ERROR
+    assert output.failure_kind == "output_token_limit"
+    assert output.is_retryable is True

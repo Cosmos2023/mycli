@@ -31,6 +31,7 @@ from mycli.llms.clients.openai_sdk import (
     api_status_error_detail as _api_status_error_detail,
     sdk_payload_to_dict as _sdk_payload_to_dict,
 )
+from mycli.llms.clients.responses_errors import FailureClassification, classify_provider_failure
 from mycli.utils.workspace_logger import WorkspaceLogService
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "OpenAIChatClient",
     "_api_status_error_detail",
     "_build_openai_sdk_client",
+    "classify_chat_provider_failure",
     "_decode_native_tool_arguments",
     "_decode_native_tool_call",
     "_load_native_tool_argument_candidate",
@@ -48,6 +50,19 @@ __all__ = [
     "_sdk_payload_to_dict",
     "_with_response_metadata",
 ]
+
+
+def classify_chat_provider_failure(
+    *,
+    detail: str,
+    status_code: int | None,
+    provider_error_code: str | None,
+) -> FailureClassification:
+    return classify_provider_failure(
+        detail=detail,
+        status_code=status_code,
+        provider_error_code=provider_error_code,
+    )
 
 
 class ModelClient(Protocol):
@@ -195,22 +210,7 @@ class OpenAIChatClient:
                 cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
             )
         except APIStatusError as exc:
-            detail = _api_status_error_detail(exc)
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                    "status_code": exc.status_code,
-                    "response_body": exc.body,
-                },
-            )
-            raise ModelResponseError(
-                f"Model provider returned HTTP {exc.status_code}: {detail}",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-            ) from exc
+            raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
             detail = str(exc)
             error_path = self._log_failure(
@@ -355,22 +355,7 @@ class OpenAIChatClient:
             stream = cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
             yield from self._events_from_chat_stream(stream)
         except APIStatusError as exc:
-            detail = _api_status_error_detail(exc)
-            error_path = self._log_failure(
-                message=detail,
-                request_path=request_path,
-                payload={
-                    "error_type": type(exc).__name__,
-                    "message": detail,
-                    "status_code": exc.status_code,
-                    "response_body": exc.body,
-                },
-            )
-            raise ModelResponseError(
-                f"Model provider returned HTTP {exc.status_code}: {detail}",
-                error_path=error_path,
-                log_path=self._default_error_log_path(),
-            ) from exc
+            raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
             detail = str(exc)
             error_path = self._log_failure(
@@ -596,6 +581,45 @@ class OpenAIChatClient:
         if isinstance(response_id, str) and response_id:
             return response_id
         return None
+
+    def _status_error(
+        self,
+        *,
+        exc: APIStatusError,
+        request_path: str | None,
+    ) -> ModelResponseError:
+        detail = _api_status_error_detail(exc)
+        provider_error_code: str | None = None
+        if isinstance(exc.body, dict):
+            error_payload = exc.body.get("error")
+            if isinstance(error_payload, dict):
+                raw_code = error_payload.get("code")
+                if isinstance(raw_code, str) and raw_code.strip():
+                    provider_error_code = raw_code
+        classification = classify_chat_provider_failure(
+            detail=detail,
+            status_code=exc.status_code,
+            provider_error_code=provider_error_code,
+        )
+        error_path = self._log_failure(
+            message=detail,
+            request_path=request_path,
+            payload={
+                "error_type": type(exc).__name__,
+                "message": detail,
+                "status_code": exc.status_code,
+                "response_body": exc.body,
+                "failure_kind": classification.failure_kind,
+            },
+        )
+        return ModelResponseError(
+            f"Model provider returned HTTP {exc.status_code}: {detail}",
+            error_path=error_path,
+            log_path=self._default_error_log_path(),
+            stop_reason=classification.stop_reason,
+            is_retryable=classification.is_retryable,
+            failure_kind=classification.failure_kind,
+        )
 
     def _log_request(
         self,

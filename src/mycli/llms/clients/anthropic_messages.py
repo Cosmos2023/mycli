@@ -15,6 +15,7 @@ from anthropic import (
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.runtime import RuntimeBlock, StopReason
 from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.llms.clients.responses_errors import FailureClassification, classify_provider_failure
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.utils.workspace_logger import WorkspaceLogService
 
@@ -64,6 +65,19 @@ def _api_status_error_detail(exc: APIStatusError) -> str:
     if isinstance(body, str) and body.strip():
         return body
     return str(exc)
+
+
+def classify_anthropic_provider_failure(
+    *,
+    detail: str,
+    status_code: int | None,
+    provider_error_code: str | None,
+) -> FailureClassification:
+    return classify_provider_failure(
+        detail=detail,
+        status_code=status_code,
+        provider_error_code=provider_error_code,
+    )
 
 
 class AnthropicMessagesClient:
@@ -373,6 +387,18 @@ class AnthropicMessagesClient:
         request_path: str | None,
     ) -> ModelResponseError:
         detail = _api_status_error_detail(exc)
+        provider_error_code: str | None = None
+        if isinstance(exc.body, dict):
+            error_payload = exc.body.get("error")
+            if isinstance(error_payload, dict):
+                raw_code = error_payload.get("type") or error_payload.get("code")
+                if isinstance(raw_code, str) and raw_code.strip():
+                    provider_error_code = raw_code
+        classification = classify_anthropic_provider_failure(
+            detail=detail,
+            status_code=exc.status_code,
+            provider_error_code=provider_error_code,
+        )
         error_path = self._log_failure(
             message=detail,
             request_path=request_path,
@@ -381,15 +407,16 @@ class AnthropicMessagesClient:
                 "message": detail,
                 "status_code": exc.status_code,
                 "response_body": exc.body,
+                "failure_kind": classification.failure_kind,
             },
         )
         return ModelResponseError(
             f"Anthropic provider returned HTTP {exc.status_code}: {detail}",
             error_path=error_path,
             log_path=self._default_error_log_path(),
-            stop_reason=StopReason.MODEL_ERROR,
-            is_retryable=exc.status_code >= 500 or exc.status_code == 429,
-            failure_kind="provider_error",
+            stop_reason=classification.stop_reason,
+            is_retryable=classification.is_retryable,
+            failure_kind=classification.failure_kind,
         )
 
     def _log_request(self, payload_body: dict[str, object]) -> str | None:
