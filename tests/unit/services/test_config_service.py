@@ -122,6 +122,44 @@ def test_resolve_config_reads_usage_price_settings(tmp_path: Path) -> None:
     assert config.usage_cache_write_cost_per_1k == 0.0002
 
 
+def test_config_service_reads_recovery_settings(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    config_path = workspace / ".mycli" / "config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "\n".join(
+            [
+                'provider = "openai"',
+                'model = "primary-model"',
+                'fallback_model = "fallback-model"',
+                "transport_retry_limit = 4",
+                "output_limit_escalation_max_tokens = 32768",
+                "output_recovery_retry_limit = 2",
+                "heartbeat_enabled = false",
+                "heartbeat_interval_seconds = 12.5",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.fallback_model == "fallback-model"
+    assert config.transport_retry_limit == 4
+    assert config.output_limit_escalation_max_tokens == 32_768
+    assert config.output_recovery_retry_limit == 2
+    assert config.heartbeat_enabled is False
+    assert config.heartbeat_interval_seconds == 12.5
+
+
 def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

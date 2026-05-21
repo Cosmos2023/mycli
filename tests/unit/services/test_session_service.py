@@ -515,6 +515,21 @@ def test_session_service_round_trips_suspended_turn(tmp_path: Path) -> None:
     assert loaded.conversation[1].tool_calls[0].call_id == "call_run_shell_1"
 
 
+def test_suspended_turn_persists_suspend_reason(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path)
+    suspended = SuspendedTurn(
+        user_message="inspect",
+        conversation=(Message(role="user", content="inspect"),),
+        suspend_reason=StopReason.INTERRUPTED,
+    )
+
+    service.save_suspended_turn("demo", suspended)
+    loaded = service.load_suspended_turn("demo")
+
+    assert loaded is not None
+    assert loaded.suspend_reason is StopReason.INTERRUPTED
+
+
 def test_session_service_round_trips_suspended_turn_conversation_blocks(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     suspended = SuspendedTurn(

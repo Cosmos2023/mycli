@@ -21,6 +21,9 @@ class StopReason(StrEnum):
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
     RETRY_EXHAUSTED = "retry_exhausted"
     TRANSPORT_FAILED = "transport_failed"
+    AUTH_FAILED = "auth_failed"
+    RATE_LIMITED = "rate_limited"
+    INTERRUPTED = "interrupted"
     RUNTIME_ERROR = "runtime_error"
     MODEL_ERROR = "model_error"
 

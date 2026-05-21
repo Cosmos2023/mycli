@@ -143,6 +143,43 @@ def resolve_config(
         or user_config.get("max_output_tokens")
         or 2048
     )
+    fallback_model_value = (
+        env.get("MYCLI_FALLBACK_MODEL")
+        or project_config.get("fallback_model")
+        or user_config.get("fallback_model")
+    )
+    transport_retry_limit_value = (
+        env.get("MYCLI_TRANSPORT_RETRY_LIMIT")
+        or project_config.get("transport_retry_limit")
+        or user_config.get("transport_retry_limit")
+        or 2
+    )
+    output_limit_escalation_max_tokens_value = (
+        env.get("MYCLI_OUTPUT_LIMIT_ESCALATION_MAX_TOKENS")
+        or project_config.get("output_limit_escalation_max_tokens")
+        or user_config.get("output_limit_escalation_max_tokens")
+        or 65_536
+    )
+    output_recovery_retry_limit_value = (
+        env.get("MYCLI_OUTPUT_RECOVERY_RETRY_LIMIT")
+        or project_config.get("output_recovery_retry_limit")
+        or user_config.get("output_recovery_retry_limit")
+        or 3
+    )
+    heartbeat_enabled_raw = env.get("MYCLI_HEARTBEAT_ENABLED")
+    if heartbeat_enabled_raw is None:
+        heartbeat_enabled_raw = (
+            project_config["heartbeat_enabled"]
+            if "heartbeat_enabled" in project_config
+            else user_config.get("heartbeat_enabled")
+        )
+    heartbeat_enabled_value = _parse_optional_bool(heartbeat_enabled_raw)
+    heartbeat_interval_seconds_value = (
+        env.get("MYCLI_HEARTBEAT_INTERVAL_SECONDS")
+        or project_config.get("heartbeat_interval_seconds")
+        or user_config.get("heartbeat_interval_seconds")
+        or 30.0
+    )
     legacy_reasoning_effort = (
         env.get("MYCLI_REASONING_EFFORT")
         or project_config.get("reasoning_effort")
@@ -268,6 +305,14 @@ def resolve_config(
         session_id=session_id,
         max_prompt_tokens=int(str(max_prompt_tokens_value)),
         max_output_tokens=int(str(max_output_tokens_value)),
+        fallback_model=str(fallback_model_value) if fallback_model_value else None,
+        transport_retry_limit=int(str(transport_retry_limit_value)),
+        output_limit_escalation_max_tokens=int(
+            str(output_limit_escalation_max_tokens_value)
+        ),
+        output_recovery_retry_limit=int(str(output_recovery_retry_limit_value)),
+        heartbeat_enabled=True if heartbeat_enabled_value is None else heartbeat_enabled_value,
+        heartbeat_interval_seconds=float(str(heartbeat_interval_seconds_value)),
         reasoning_effort=reasoning_effort,
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,

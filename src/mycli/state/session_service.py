@@ -17,6 +17,7 @@ from mycli.domain.runtime import (
     PlanStatus,
     SessionCommandAllowance,
     SessionRuntimeSnapshot,
+    StopReason,
     SuspendedTurn,
     TurnRecord,
     TurnRollout,
@@ -302,6 +303,7 @@ class SessionService:
             payload={
                 "user_message": turn.user_message,
                 "conversation": [serialize_message(message) for message in turn.conversation],
+                "suspend_reason": turn.suspend_reason.value,
                 "plan_items": [
                     {
                         "id": item.id,
@@ -364,6 +366,12 @@ class SessionService:
         conversation_payload = payload.get("conversation")
         if not isinstance(conversation_payload, list):
             conversation_payload = []
+        raw_suspend_reason = payload.get("suspend_reason")
+        suspend_reason = (
+            StopReason(str(raw_suspend_reason))
+            if isinstance(raw_suspend_reason, str) and raw_suspend_reason
+            else StopReason.INTERRUPTED
+        )
 
         return SuspendedTurn(
             user_message=str(payload["user_message"]),
@@ -374,6 +382,7 @@ class SessionService:
             ),
             plan_state=PlanState(items=plan_items),
             pending_approval=pending_approval,
+            suspend_reason=suspend_reason,
         )
 
     def reconstruct_suspended_turn(
