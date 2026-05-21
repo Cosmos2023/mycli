@@ -14,12 +14,14 @@ class FakeSubAgentService:
         description: str,
         agent_type: str,
         allowed_tools: tuple[str, ...],
+        mode: str = "sync",
     ) -> SubAgentResult:
         self.calls.append(
             {
                 "description": description,
                 "agent_type": agent_type,
                 "allowed_tools": allowed_tools,
+                "mode": mode,
             }
         )
         return SubAgentResult(
@@ -47,12 +49,13 @@ def test_task_tool_delegates_to_bound_service() -> None:
     assert result.raw_payload["child_session_id"] == "demo:sub:turn_1:abcd1234"
     assert result.raw_payload["content"] == result.raw_payload["report"]
     assert service.calls == [
-        {
-            "description": "Find tests",
-            "agent_type": "explore",
-            "allowed_tools": ("Read", "Grep"),
-        }
-    ]
+            {
+                "description": "Find tests",
+                "agent_type": "explore",
+                "allowed_tools": ("Read", "Grep"),
+                "mode": "sync",
+            }
+        ]
 
 
 def test_unbound_task_tool_returns_unavailable_result() -> None:
@@ -66,3 +69,20 @@ def test_unbound_task_tool_returns_unavailable_result() -> None:
 
     assert result.success is False
     assert result.raw_payload["error_kind"] == "task_tool_unbound"
+
+
+def test_task_tool_passes_background_mode() -> None:
+    service = FakeSubAgentService()
+    tool = TaskTool(service=service)
+
+    result = tool.execute(
+        {
+            "description": "Inspect repo",
+            "agent_type": "explore",
+            "allowed_tools": ["Read"],
+            "mode": "background",
+        }
+    )
+
+    assert result.raw_payload["kind"] == "sub_agent_report"
+    assert service.calls[0]["mode"] == "background"

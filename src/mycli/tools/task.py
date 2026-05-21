@@ -14,6 +14,7 @@ class SupportsSubAgentService(Protocol):
         description: str,
         agent_type: str,
         allowed_tools: tuple[str, ...],
+        mode: str = "sync",
     ) -> SubAgentResult:
         ...
 
@@ -31,6 +32,12 @@ class TaskTool(SchemaTool):
                 True,
                 "Candidate tool names the parent allows the child to use.",
                 items_schema={"type": "string"},
+            ),
+            ToolParameter(
+                "mode",
+                "string",
+                False,
+                "Task execution mode: sync or background.",
             ),
         ),
         risk_level="medium",
@@ -54,10 +61,12 @@ class TaskTool(SchemaTool):
         description = str(arguments["description"])
         agent_type = str(arguments["agent_type"])
         allowed_tools = tuple(str(tool) for tool in arguments.get("allowed_tools", ()))
+        mode = str(arguments.get("mode", "sync"))
         result = self._service.run_task(
             description=description,
             agent_type=agent_type,
             allowed_tools=allowed_tools,
+            mode=mode,
         )
         return ToolResult(
             success=result.status == "completed",

@@ -15,6 +15,51 @@ class FakeLoop:
         return self.result
 
 
+class InlineBackgroundExecutor:
+    def submit(self, fn, *args, **kwargs):
+        class DoneFuture:
+            def result(self, timeout=None):
+                del timeout
+                return fn(*args, **kwargs)
+
+        return DoneFuture()
+
+
+class HoldingBackgroundExecutor:
+    def __init__(self) -> None:
+        self.submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def submit(self, fn, *args, **kwargs):
+        self.submitted.append((fn, args, kwargs))
+
+        class PendingFuture:
+            def result(self, timeout=None):
+                del timeout
+                raise TimeoutError("still running")
+
+        return PendingFuture()
+
+
+class ExplodingLoop:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def run(self, **kwargs):
+        raise self.exc
+
+
+class ObservedLock:
+    def __init__(self) -> None:
+        self.enter_count = 0
+
+    def __enter__(self):
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
 class FakeHistorySessionService:
     def __init__(self) -> None:
         self.items: dict[str, tuple[HistoryItem, ...]] = {}
@@ -187,3 +232,116 @@ def test_service_reports_missing_child_transcript() -> None:
     assert service.inspect_transcript("missing-child") == (
         "sub-agent transcript not found: missing-child",
     )
+
+
+def test_background_task_returns_running_then_records_completion() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=InlineBackgroundExecutor(),
+    )
+
+    result = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    assert result.status == "running"
+    assert result.tool_calls == 0
+    summaries = service.recent_runs()
+    assert summaries[0].status == "completed"
+    assert summaries[0].mode == "background"
+
+
+def test_background_task_rejects_when_concurrency_cap_is_reached() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=HoldingBackgroundExecutor(),
+        max_concurrent_background_tasks=1,
+    )
+
+    first = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    second = service.run_task(
+        description="Inspect repo again",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    assert first.status == "running"
+    assert second.status == "failed"
+    assert second.error == "Background sub-agent concurrency limit reached."
+
+
+def test_background_task_exception_becomes_failed_summary() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=ExplodingLoop(RuntimeError("provider failed")),
+        background_executor=InlineBackgroundExecutor(),
+    )
+
+    result = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    assert result.status == "running"
+    assert service.recent_runs()[0].status == "failed"
+    assert service.recent_runs()[0].error == "provider failed"
+
+
+def test_recent_runs_are_read_through_state_lock() -> None:
+    lock = ObservedLock()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        run_state_lock=lock,
+    )
+
+    service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+    )
+    service.recent_runs()
+
+    assert lock.enter_count >= 2
