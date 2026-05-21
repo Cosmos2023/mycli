@@ -4,7 +4,7 @@
 
 **Goal:** Add child transcript sidechains and explicit background `Task` execution without polluting parent context.
 
-**Architecture:** Reuse the current sync sub-agent path and add two narrow layers around it: a `SubAgentTranscriptRecorder` that writes child-only history items via `SessionService`, and a background run path in `SubAgentService` that schedules the existing child loop in a bounded in-process executor. Parent conversation continues to receive only `Task` tool results; child internals are inspected by child session id.
+**Architecture:** Reuse the current sync sub-agent path and add two narrow layers around it: a `SubAgentTranscriptRecorder` that writes child-only history items via `SessionService`, and a background run path in `SubAgentService` that schedules the existing child loop in a bounded in-process executor. Background execution is guarded by a small concurrency cap, a shared model-request lock, a transcript-write lock, explicit failed-state handling, and shutdown cleanup. Parent conversation continues to receive only `Task` tool results; child internals are inspected by child session id.
 
 **Tech Stack:** Python 3.13, dataclasses, `ThreadPoolExecutor`, existing `SessionService`, `HistoryItem`, `SubAgentService`, `SubAgentChildLoop`, pytest, ruff, mypy. No new dependencies.
 
@@ -16,12 +16,13 @@
 
 - `src/mycli/domain/subagents.py`: extend sub-agent invocation/result/run summary with mode and lifecycle fields.
 - `src/mycli/application/runtime/subagents/transcript.py`: child transcript sidechain recorder using `SessionService.append_history_items()`.
-- `src/mycli/application/runtime/subagents/loop.py`: record child loop messages, tool calls, tool results, and final status through an optional recorder.
-- `src/mycli/application/runtime/subagents/service.py`: own sync/background orchestration, run state updates, and transcript inspection.
+- `src/mycli/application/runtime/subagents/loop.py`: record child loop messages, tool calls, tool results, and final status through an optional recorder; child model requests pass through an injected lock in the runtime requester.
+- `src/mycli/application/runtime/subagents/service.py`: own sync/background orchestration, run state updates, concurrency cap, exception-to-failed handling, shutdown, and transcript inspection.
 - `src/mycli/tools/task.py`: add optional `mode` parameter and pass it to the service.
-- `src/mycli/application/runtime/agent_runtime.py`: construct and inject transcript recorder and session service into `SubAgentService`.
+- `src/mycli/application/runtime/agent_runtime.py`: construct and inject transcript recorder, session service, model-request lock, and transcript-write lock into `SubAgentService`.
 - `src/mycli/application/turn_service.py`: add child transcript inspection formatting.
 - `src/mycli/cli/repl.py`: route `/subagents <child_session_id>`.
+- `tests/unit/application/runtime/subagents/test_background_concurrency.py`: verify lock and concurrency behavior without real provider calls.
 - `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md`: update sidechain/background rows after implementation.
 - `docs/superpowers/reports/2026-05-21-p3-sub-agent-follow-up-pack-smoke.md`: final verification evidence.
 
@@ -103,6 +104,12 @@ def test_run_summary_includes_lifecycle_fields() -> None:
     assert summary.parent_turn_id == "turn_1"
     assert summary.started_at == "2026-05-21T00:00:00+00:00"
     assert summary.completed_at is None
+
+
+def test_budget_defaults_include_background_concurrency_cap() -> None:
+    budget = SubAgentBudget()
+
+    assert budget.max_concurrent_background_tasks == 2
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -113,7 +120,7 @@ Run:
 uv run pytest tests/unit/domain/test_subagents.py -q
 ```
 
-Expected: fails because `SubAgentInvocation.mode` and new summary fields do not exist.
+Expected: fails because `SubAgentInvocation.mode`, `SubAgentBudget.max_concurrent_background_tasks`, and new summary fields do not exist.
 
 - [ ] **Step 3: Implement mode and lifecycle contracts**
 
@@ -179,6 +186,20 @@ class SubAgentRunSummary:
 
 Add `"SubAgentMode"` to `__all__`.
 
+Add `max_concurrent_background_tasks: int = 2` to `SubAgentBudget`, and include it in the positive integer validation loop:
+
+```python
+for field_name in (
+    "max_turns",
+    "max_tool_calls",
+    "no_progress_turn_limit",
+    "report_char_limit",
+    "max_concurrent_background_tasks",
+):
+    if getattr(self, field_name) <= 0:
+        raise ValueError(f"Sub-agent {field_name} must be positive.")
+```
+
 - [ ] **Step 4: Run domain tests**
 
 Run:
@@ -221,6 +242,8 @@ Create `tests/unit/application/runtime/subagents/test_transcript.py`:
 ```python
 from __future__ import annotations
 
+import threading
+
 from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.domain.runtime import HistoryItemType
 
@@ -228,9 +251,14 @@ from mycli.domain.runtime import HistoryItemType
 class FakeSessionService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.active_writes = 0
+        self.max_active_writes = 0
 
     def append_history_items(self, session_id: str, items: tuple[object, ...]) -> None:
+        self.active_writes += 1
+        self.max_active_writes = max(self.max_active_writes, self.active_writes)
         self.calls.append((session_id, items))
+        self.active_writes -= 1
 
 
 def test_recorder_writes_child_history_items_only() -> None:
@@ -269,6 +297,22 @@ def test_recorder_writes_child_history_items_only() -> None:
     assert items[3].call_id == "call_1"
     assert items[4].metadata["sub_agent_status"] == "completed"
     assert items[4].metadata["tool_calls"] == 1
+
+
+def test_recorder_uses_write_lock() -> None:
+    session_service = FakeSessionService()
+    lock = threading.Lock()
+    recorder = SubAgentTranscriptRecorder(
+        session_service=session_service,
+        parent_session_id="parent",
+        child_session_id="parent:sub:turn_1:abcd",
+        parent_turn_id="turn_1",
+        write_lock=lock,
+    )
+
+    recorder.record_user_text("explore repo")
+
+    assert session_service.max_active_writes == 1
 ```
 
 - [ ] **Step 2: Run transcript tests to verify they fail**
@@ -290,6 +334,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -307,6 +352,7 @@ class SubAgentTranscriptRecorder:
     parent_session_id: str
     child_session_id: str
     parent_turn_id: str
+    write_lock: Lock | None = None
 
     def record_system_text(self, text: str) -> None:
         self._append(HistoryItemType.USER_MESSAGE, text=text, metadata={"role": "system"})
@@ -376,7 +422,11 @@ class SubAgentTranscriptRecorder:
             call_id=call_id,
             metadata=payload,
         )
-        self.session_service.append_history_items(self.child_session_id, (item,))
+        if self.write_lock is None:
+            self.session_service.append_history_items(self.child_session_id, (item,))
+            return
+        with self.write_lock:
+            self.session_service.append_history_items(self.child_session_id, (item,))
 
 
 __all__ = ["SubAgentTranscriptRecorder", "SupportsHistoryAppend"]
@@ -650,9 +700,10 @@ def test_service_formats_child_transcript() -> None:
     lines = service.inspect_transcript("demo:sub:turn_1:abcd1234")
 
     assert lines == (
-        "user Inspect repo",
-        "tool_call Read call_1 {'path': 'pyproject.toml'}",
-        "tool_result Read call_1 name = 'mycli'",
+        "demo:sub:turn_1:abcd1234",
+        "  user Inspect repo",
+        "  tool_call Read call_1 {'path': 'pyproject.toml'}",
+        "  tool_result Read call_1 14 chars name = 'mycli'",
     )
 ```
 
@@ -676,18 +727,31 @@ In `src/mycli/application/runtime/subagents/service.py`:
 - Format:
 
 ```python
+header = child_session_id
 if item.type is HistoryItemType.TOOL_CALL:
     args = item.metadata.get("arguments", {})
-    return f"tool_call {item.tool_name or ''} {item.call_id or ''} {args}".strip()
+    return f"  tool_call {item.tool_name or ''} {item.call_id or ''} {args}".strip()
 if item.type is HistoryItemType.TOOL_RESULT:
     preview = (item.text or "").replace("\n", "\\n")[:500]
-    return f"tool_result {item.tool_name or ''} {item.call_id or ''} {preview}".strip()
+    size = len(item.text or "")
+    return f"  tool_result {item.tool_name or ''} {item.call_id or ''} {size} chars {preview}".strip()
 if item.type is HistoryItemType.ASSISTANT_MESSAGE:
-    return f"assistant {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
-return f"user {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
+    status = item.metadata.get("sub_agent_status")
+    label = "final" if isinstance(status, str) else "assistant"
+    prefix = f"{label} {status}" if label == "final" else label
+    return f"  {prefix} {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
+return f"  user {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
 ```
 
 Return `("sub-agent transcript not found: <id>",)` when no items exist.
+
+If the child id is present in recent run summaries, the first line should be:
+
+```text
+<agent_type> <status> mode=<mode> tools=<tool_calls> <child_session_id>
+```
+
+Otherwise use `child_session_id` as the first line.
 
 - [ ] **Step 4: Wire runtime and slash command inspection**
 
@@ -744,6 +808,12 @@ def test_turn_service_formats_child_transcript_request() -> None:
 
 Update `tests/integration/test_cli_repl.py` command routing test to include `/subagents demo:sub:turn_1:abcd1234` and assert the command handler receives the full command.
 
+Add an assertion in the service inspection test that the default summary format is stable after a completed run:
+
+```python
+assert service.recent_runs()[0].mode == "sync"
+```
+
 - [ ] **Step 6: Run inspection tests**
 
 Run:
@@ -773,13 +843,139 @@ Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_se
 
 ---
 
-### Task 5: Explicit Background Task Execution
+### Task 5: Model Request Lock
+
+**Files:**
+- Modify: `src/mycli/application/runtime/subagents/loop.py`
+- Modify: `src/mycli/application/runtime/agent_runtime.py`
+- Create: `tests/unit/application/runtime/subagents/test_background_concurrency.py`
+
+- [ ] **Step 1: Write failing model lock test**
+
+Create `tests/unit/application/runtime/subagents/test_background_concurrency.py`:
+
+```python
+from __future__ import annotations
+
+import threading
+
+from mycli.application.runtime.subagents.loop import RuntimeChildTurnRequester
+from mycli.domain.runtime import ModelTurnResult
+
+
+class FakeRequester:
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    def request_model_turn(self, *, runtime_items, legacy_messages, tools):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.active -= 1
+        return ModelTurnResult(items=(), done=True), ()
+
+
+def test_runtime_child_turn_requester_uses_model_request_lock() -> None:
+    requester = FakeRequester()
+    lock = threading.Lock()
+    child_requester = RuntimeChildTurnRequester(
+        requester=requester,
+        tool_exposure_builder=lambda tool_names: None,
+        tool_renderer=lambda exposure: [],
+        model_request_lock=lock,
+    )
+
+    child_requester.request_child_turn(
+        messages=[{"role": "user", "content": "hello"}],
+        tool_names=(),
+        child_session_id="demo:sub:turn_1:abcd",
+    )
+
+    assert requester.max_active == 1
+```
+
+- [ ] **Step 2: Run lock test to verify it fails**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_runtime_child_turn_requester_uses_model_request_lock -q
+```
+
+Expected: fails because `RuntimeChildTurnRequester` has no `model_request_lock` field.
+
+- [ ] **Step 3: Implement model request lock**
+
+In `src/mycli/application/runtime/subagents/loop.py`, add `model_request_lock` to `RuntimeChildTurnRequester`:
+
+```python
+from threading import Lock
+
+@dataclass(slots=True)
+class RuntimeChildTurnRequester:
+    requester: RuntimeModelTurnRequester
+    tool_exposure_builder: Callable[[tuple[str, ...]], ToolExposure]
+    tool_renderer: Callable[[ToolExposure], list[ModelToolDefinition]]
+    model_request_lock: Lock | None = None
+```
+
+Wrap the model request:
+
+```python
+if self.model_request_lock is None:
+    turn_result, _streamed = self.requester.request_model_turn(...)
+else:
+    with self.model_request_lock:
+        turn_result, _streamed = self.requester.request_model_turn(...)
+```
+
+In `src/mycli/application/runtime/agent_runtime.py`, create one lock:
+
+```python
+from threading import Lock
+
+self._sub_agent_model_request_lock = Lock()
+```
+
+Pass it to `RuntimeChildTurnRequester`.
+
+- [ ] **Step 4: Run lock test**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_runtime_child_turn_requester_uses_model_request_lock -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/mycli/application/runtime/subagents/loop.py src/mycli/application/runtime/agent_runtime.py tests/unit/application/runtime/subagents/test_background_concurrency.py
+git commit -m "Serialize child model requests"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: Provider adapters and HTTP clients are not assumed to be thread-safe.
+Rejected: Let parent and background child call the shared adapter concurrently | undefined provider/client behavior is harder to debug than bounded serialization.
+Confidence: medium
+Scope-risk: moderate
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_runtime_child_turn_requester_uses_model_request_lock -q
+```
+
+---
+
+### Task 6: Explicit Background Task Execution
 
 **Files:**
 - Modify: `src/mycli/application/runtime/subagents/service.py`
 - Modify: `src/mycli/tools/task.py`
 - Modify: `tests/unit/application/runtime/subagents/test_sub_agent_service.py`
 - Modify: `tests/unit/tools/test_task_tool.py`
+- Modify: `tests/unit/application/runtime/subagents/test_background_concurrency.py`
 
 - [ ] **Step 1: Write failing background service test**
 
@@ -792,6 +988,28 @@ class InlineBackgroundExecutor:
             def result(self):
                 return fn(*args, **kwargs)
         return DoneFuture()
+
+
+class HoldingBackgroundExecutor:
+    def __init__(self) -> None:
+        self.submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def submit(self, fn, *args, **kwargs):
+        self.submitted.append((fn, args, kwargs))
+
+        class PendingFuture:
+            def result(self, timeout=None):
+                raise TimeoutError("still running")
+
+        return PendingFuture()
+
+
+class ExplodingChildLoop:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def run(self, **kwargs):
+        raise self.exc
 
 
 def test_background_task_returns_running_then_records_completion() -> None:
@@ -822,6 +1040,55 @@ def test_background_task_returns_running_then_records_completion() -> None:
     summaries = service.recent_runs()
     assert summaries[0].status == "completed"
     assert summaries[0].mode == "background"
+
+
+def test_background_task_rejects_when_concurrency_cap_is_reached() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeChildLoop(SubAgentResult(status="completed", report="done", child_session_id="ignored", tool_calls=1)),
+        background_executor=HoldingBackgroundExecutor(),
+        max_concurrent_background_tasks=1,
+    )
+
+    first = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    second = service.run_task(
+        description="Inspect repo again",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    assert first.status == "running"
+    assert second.status == "failed"
+    assert second.error == "Background sub-agent concurrency limit reached."
+
+
+def test_background_task_exception_becomes_failed_summary() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=ExplodingChildLoop(RuntimeError("provider failed")),
+        background_executor=InlineBackgroundExecutor(),
+    )
+
+    result = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    assert result.status == "running"
+    assert service.recent_runs()[0].status == "failed"
+    assert service.recent_runs()[0].error == "provider failed"
 ```
 
 - [ ] **Step 2: Run background service test to verify it fails**
@@ -832,7 +1099,7 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion -q
 ```
 
-Expected: fails because `run_task()` has no `mode` and service has no background executor.
+Expected: fails because `run_task()` has no `mode`, service has no background executor, and helper fakes do not exist yet.
 
 - [ ] **Step 3: Implement background path**
 
@@ -842,6 +1109,7 @@ In `src/mycli/application/runtime/subagents/service.py`:
 
 ```python
 background_executor: object | None = None
+max_concurrent_background_tasks: int = 2
 ```
 
 If `None`, create:
@@ -854,6 +1122,7 @@ self._background_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix
 - Update `run_task(..., mode: str = "sync")`.
 - Create `SubAgentInvocation(..., mode=mode)`.
 - If `mode == "background"`:
+  - if current running background count is greater than or equal to `max_concurrent_background_tasks`, return failed result immediately.
   - record a running summary/result immediately.
   - submit a closure that calls the existing sync execution helper and updates recent runs with final result.
   - return running `SubAgentResult` with started XML.
@@ -874,6 +1143,32 @@ self._recent_runs = deque(
 )
 self._record(invocation, final_result, started_at=started_at, completed_at=self._timestamp())
 ```
+
+The background closure must be:
+
+```python
+try:
+    final_result = self._run_sync_invocation(invocation, child_session_id)
+except Exception as exc:
+    final_result = SubAgentResult(
+        status="failed",
+        report=self._xml_report(
+            agent=invocation.agent_type,
+            status="failed",
+            tool_calls=0,
+            child_session_id=child_session_id,
+            body=f"Background sub-agent failed: {exc}",
+            limit=8000,
+        ),
+        child_session_id=child_session_id,
+        tool_calls=0,
+        error=str(exc),
+    )
+finally:
+    self._mark_background_finished(invocation, final_result, started_at)
+```
+
+Keep a dict of running futures by `child_session_id` so concurrency and shutdown can inspect them.
 
 - [ ] **Step 4: Add Task tool mode tests**
 
@@ -928,7 +1223,7 @@ mode = str(arguments.get("mode", "sync"))
 Run:
 
 ```bash
-uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/tools/test_task_tool.py -q
+uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_rejects_when_concurrency_cap_is_reached tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_exception_becomes_failed_summary tests/unit/tools/test_task_tool.py -q
 ```
 
 Expected: all tests pass.
@@ -947,12 +1242,111 @@ Constraint: P3.2 background mode is explicit and in-process only; no cross-proce
 Rejected: Automatic backgrounding after a timer | it adds cancellation and notification semantics before sidechain inspection is mature.
 Confidence: medium
 Scope-risk: moderate
-Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/tools/test_task_tool.py -q
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_rejects_when_concurrency_cap_is_reached tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_exception_becomes_failed_summary tests/unit/tools/test_task_tool.py -q
 ```
 
 ---
 
-### Task 6: Gap Doc, Smoke Report, And Verification
+### Task 7: Background Shutdown
+
+**Files:**
+- Modify: `src/mycli/application/runtime/subagents/service.py`
+- Modify: `tests/unit/application/runtime/subagents/test_sub_agent_service.py`
+
+- [ ] **Step 1: Write failing shutdown test**
+
+Append to `tests/unit/application/runtime/subagents/test_sub_agent_service.py`:
+
+```python
+def test_shutdown_marks_unfinished_background_runs_failed() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeChildLoop(SubAgentResult(status="completed", report="done", child_session_id="ignored", tool_calls=1)),
+        background_executor=HoldingBackgroundExecutor(),
+        max_concurrent_background_tasks=1,
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    service.shutdown(timeout_seconds=0)
+
+    summary = service.recent_runs()[0]
+    assert started.status == "running"
+    assert summary.child_session_id == started.child_session_id
+    assert summary.status == "failed"
+    assert summary.error == "Background sub-agent shutdown timeout."
+```
+
+- [ ] **Step 2: Run shutdown test to verify it fails**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_shutdown_marks_unfinished_background_runs_failed -q
+```
+
+Expected: fails because `SubAgentService.shutdown()` does not exist.
+
+- [ ] **Step 3: Implement shutdown**
+
+In `src/mycli/application/runtime/subagents/service.py`, add:
+
+```python
+def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
+    deadline = monotonic() + timeout_seconds
+    for child_session_id, run in list(self._running_background.items()):
+        remaining = max(0.0, deadline - monotonic())
+        try:
+            run.future.result(timeout=remaining)
+        except TimeoutError:
+            failed = SubAgentResult(
+                status="failed",
+                report=self._xml_report(...),
+                child_session_id=child_session_id,
+                tool_calls=run.tool_calls,
+                error="Background sub-agent shutdown timeout.",
+            )
+            self._mark_background_finished(run.invocation, failed, run.started_at)
+```
+
+Also call `shutdown(wait=False)` or equivalent on internally owned `ThreadPoolExecutor` after marking runs, if available. Do not attempt cross-process recovery.
+
+- [ ] **Step 4: Run shutdown test**
+
+Run:
+
+```bash
+uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_shutdown_marks_unfinished_background_runs_failed -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/mycli/application/runtime/subagents/service.py tests/unit/application/runtime/subagents/test_sub_agent_service.py
+git commit -m "Fail unfinished background sub-agents on shutdown"
+```
+
+Use Lore trailers:
+
+```text
+Constraint: P3.2 does not support cross-process background recovery.
+Rejected: Let unfinished futures disappear on process exit | running summaries would remain misleading.
+Confidence: medium
+Scope-risk: narrow
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_shutdown_marks_unfinished_background_runs_failed -q
+```
+
+---
+
+### Task 8: Gap Doc, Smoke Report, And Verification
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md`
@@ -1011,6 +1405,7 @@ Expected:
 - Parent calls `Task` with `mode="background"` or equivalent background request.
 - Tool result returns `status=running` quickly.
 - `/subagents` shows a running or completed background child.
+- The command does not print API keys or provider secrets.
 
 Then inspect the printed child session id:
 
@@ -1021,6 +1416,7 @@ printf '/subagents <child_session_id>\\n/quit\\n' | uv run mycli --session p3-fo
 Expected:
 
 - transcript lines include child user task and at least one assistant/tool event or final report.
+- transcript lines follow the fixed two-space-indented child transcript format.
 
 - [ ] **Step 4: Write smoke report**
 
@@ -1045,6 +1441,11 @@ Create `docs/superpowers/reports/2026-05-21-p3-sub-agent-follow-up-pack-smoke.md
 - Child transcript sidechain persists under child session id.
 - `/subagents` lists recent sync/background child runs.
 - `/subagents <child_session_id>` renders child transcript summary without replaying it into parent context.
+- Background Task enforces the configured concurrency cap.
+- Child model requests use the shared model request lock.
+- Sidechain writes use the transcript write lock.
+- Background worker exceptions become failed summaries.
+- Shutdown marks unfinished background children failed.
 - `Task(mode="background")` returns `running` immediately and later updates run summary.
 - Sync Task behavior remains compatible.
 
@@ -1097,8 +1498,10 @@ Tested: Real API background Task smoke
   - Task 2 covers sidechain persistence.
   - Task 3 covers child loop event recording.
   - Task 4 covers `/subagents <child_session_id>` inspection.
-  - Task 5 covers explicit background `Task`.
-  - Task 6 covers docs and verification.
+- Task 5 covers model request serialization.
+- Task 6 covers explicit background `Task`, concurrency cap, and exception handling.
+- Task 7 covers shutdown cleanup.
+- Task 8 covers docs and verification.
 - Deferred intentionally:
   - fork cache sharing.
   - async mailbox and SendMessage.
@@ -1106,7 +1509,8 @@ Tested: Real API background Task smoke
   - cross-process recovery.
   - coordinator/team/worktree/remote agents.
 - Placeholder scan:
-  - The plan contains placeholder markers only inside the smoke-report template task; Task 6 requires replacing them before final commit.
+  - The plan avoids placeholder tokens in committed docs; Task 8 requires recording real command outputs in the smoke report.
 - Type consistency:
   - `mode` is a string literal contract accepted by `SubAgentInvocation`, `TaskTool`, and `SubAgentService.run_task()`.
   - Sidechain recorder writes `HistoryItem` objects to existing `SessionService.append_history_items()`.
+  - Background execution uses `max_concurrent_background_tasks`, `model_request_lock`, and `transcript_write_lock` consistently across runtime and service wiring.

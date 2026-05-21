@@ -43,6 +43,25 @@ child sidechain:
 - `/subagents` 仍默认只显示最小摘要，避免刷屏。
 - 新增 `/subagents <child_session_id>` 显示 child transcript 的文本摘要。
 - summary 行增加 `mode`、`status`、`tools`、`child_session_id` 和短 description。
+- sidechain 写入必须串行化，不能假设 `SessionService` 或 SQLite 写路径在多线程下天然安全。
+
+`/subagents <child_session_id>` 最小输出格式：
+
+```text
+explore completed tools=3 demo:sub:turn_1:abcd1234
+  user Inspect repo
+  assistant Need to inspect pyproject.
+  tool_call Read call_1 {"path": "pyproject.toml"}
+  tool_result Read call_1 1200 chars
+  final completed Project is mycli...
+```
+
+格式要求：
+
+- 第一行是 run header：`<agent_type> <status> mode=<mode> tools=<tool_calls> <child_session_id>`。
+- 子行缩进两个空格。
+- `tool_result` 默认显示字符数和 500 字符以内预览，避免大输出刷屏。
+- final 行显示 final status 和报告预览。
 
 ### 2.2 Async/background Task v1
 
@@ -64,6 +83,11 @@ child sidechain:
 后台约束：
 
 - 只允许当前进程内后台线程。
+- 默认 `max_concurrent_background_tasks = 2`。超过上限时 `Task(mode="background")` 返回 `status=failed`，不排队无限等待。
+- background child 与父 turn 共享 provider/model config，但模型请求必须经过同一个 `model_request_lock`，不能假设底层 model adapter/client 可重入。
+- sidechain/session 写入必须经过 `transcript_write_lock`，不能让父 turn 和 background child 并发写同一 session store。
+- background worker 必须用 `try/except` 包住完整 child loop；任意异常转 `status=failed`、`error=str(exc)`，并写入 run summary 和 sidechain final item。
+- `SubAgentService.shutdown(timeout_seconds=...)` 必须尝试等待 running futures。超时后把仍未完成的 run 标记为 `failed`，错误信息为 shutdown timeout。
 - 不做跨进程恢复。
 - 不做 mailbox/send-message。
 - 不做 2 分钟自动后台化。
@@ -85,6 +109,7 @@ child sidechain:
 - `tool_calls`
 - `description`
 - `error`
+- `max_concurrent_background_tasks`
 
 recent summaries 继续只保留内存窗口；sidechain 是持久化调试面。
 
@@ -128,13 +153,14 @@ Sub-agent started in background. Use /subagents ... to inspect it.
 | 修改 | `src/mycli/application/runtime/subagents/loop.py` | 在 child loop 边界记录 sidechain events |
 | 修改 | `src/mycli/application/runtime/subagents/service.py` | sync/background run orchestration、run state、inspection |
 | 修改 | `src/mycli/tools/task.py` | 增加 `mode` 参数 |
-| 修改 | `src/mycli/application/runtime/agent_runtime.py` | 注入 session service/transcript recorder 到 sub-agent service |
+| 修改 | `src/mycli/application/runtime/agent_runtime.py` | 注入 session service/transcript recorder、model_request_lock、transcript_write_lock 到 sub-agent service |
 | 修改 | `src/mycli/application/turn_service.py` | `/subagents <id>` inspection |
 | 修改 | `src/mycli/cli/repl.py` | slash command 参数路由 |
 | 测试 | `tests/unit/domain/test_subagents.py` | mode/run summary contract |
 | 测试 | `tests/unit/application/runtime/subagents/test_transcript.py` | sidechain recorder |
 | 测试 | `tests/unit/application/runtime/subagents/test_child_loop.py` | child loop transcript recording |
-| 测试 | `tests/unit/application/runtime/subagents/test_sub_agent_service.py` | background state and inspection |
+| 测试 | `tests/unit/application/runtime/subagents/test_sub_agent_service.py` | background state, concurrency cap, shutdown, failed exception handling, and inspection |
+| 测试 | `tests/unit/application/runtime/subagents/test_background_concurrency.py` | model request lock and transcript write lock coverage |
 | 测试 | `tests/unit/tools/test_task_tool.py` | Task mode parameter |
 | 测试 | `tests/unit/application/test_turn_service_subagents.py` | `/subagents <id>` formatting |
 | 报告 | `docs/superpowers/reports/2026-05-21-p3-sub-agent-follow-up-pack-smoke.md` | final smoke evidence |
@@ -147,6 +173,11 @@ Sub-agent started in background. Use /subagents ... to inspect it.
 - `/subagents <child_session_id>` 显示 child transcript 摘要。
 - background Task 立即返回 running，不阻塞父 agent 等最终 report。
 - background child 完成后 run summary 变成 final status。
+- background 并发上限生效，超过上限时不会提交无限后台任务。
+- background worker 异常会进入 failed summary 和 sidechain，不会永远停在 running。
+- shutdown 会处理 running futures，超时任务标 failed。
+- 父 turn 和 background child 的模型请求通过 lock 串行化。
+- sidechain/session 写入通过 lock 串行化。
 - child sidechain 包含 assistant tool_call 与匹配 tool_result `tool_call_id`。
 - 全量 `ruff`、`mypy`、`pytest` 通过。
 - 至少一条真实 API smoke 覆盖 background Task 和 `/subagents <child_session_id>`。
