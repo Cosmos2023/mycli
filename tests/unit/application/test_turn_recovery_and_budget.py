@@ -147,6 +147,35 @@ class RetryTwiceThenDoneAdapter:
         )
 
 
+class FallbackModelAdapter:
+    def __init__(self) -> None:
+        self.model = "primary-model"
+        self.models_seen: list[str] = []
+
+    def set_model(self, model: str) -> None:
+        self.model = model
+
+    def next_turn(self, *, items, tools):
+        del items, tools
+        self.models_seen.append(self.model)
+        if self.model == "primary-model":
+            raise ModelResponseError(
+                "provider overloaded",
+                stop_reason=StopReason.RATE_LIMITED,
+                is_retryable=True,
+                failure_kind="provider_overloaded",
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Recovered on fallback model"),),
+                ),
+            ),
+            done=True,
+        )
+
+
 def _runtime_reminder_text(items: list[RuntimeItem]) -> str:
     return "\n".join(
         block.text or ""
@@ -225,6 +254,34 @@ def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
     assert warnings[0].metadata["recovery_kind"] == "retry"
     assert warnings[0].metadata["failure_kind"] == "rate_limited"
     assert warnings[0].metadata["delay_seconds"] == 0.25
+
+
+def test_turn_executor_uses_fallback_model_after_retry_exhaustion(tmp_path: Path) -> None:
+    adapter = FallbackModelAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._recovery_sleep = lambda delay: None
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        model="primary-model",
+        fallback_model="fallback-model",
+        transport_retry_limit=1,
+    )
+
+    response = runtime.handle_user_turn("inspect")
+
+    assert response.assistant_message == "Recovered on fallback model"
+    assert adapter.models_seen == ["primary-model", "primary-model", "fallback-model"]
+    assert adapter.model == "primary-model"
+    assert any(
+        item.type is TurnItemType.WARNING
+        and item.metadata.get("recovery_kind") == "fallback_model"
+        and item.metadata.get("to_model") == "fallback-model"
+        for item in response.turn.items
+    )
 
 
 def test_turn_executor_context_window_recovery_adds_retry_reminder() -> None:

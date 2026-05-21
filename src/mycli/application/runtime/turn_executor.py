@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from mycli.application.runtime.recovery import (
     RetryBackoffPolicy,
+    fallback_metadata,
     is_transient_recovery_failure,
     retry_metadata,
 )
@@ -46,6 +47,7 @@ class TurnExecutor:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
+        runtime._restore_model()
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
         if decision is not None:
             return TurnResponse(
@@ -314,6 +316,7 @@ class TurnExecutor:
         no_progress_tracker = NoProgressTracker()
         loop_state = LoopState()
         carryover_runtime_reminders: tuple[str, ...] = ()
+        fallback_model_active = False
 
         while True:
             checkpoint_result = runtime._checkpoint.evaluate(
@@ -540,12 +543,17 @@ class TurnExecutor:
             runtime_items = runtime._build_runtime_items(request_shape=request_shape)
             legacy_messages = runtime._build_messages(request_shape=request_shape)
             try:
-                turn_result, turn_streamed_chunks = runtime._request_model_turn(
-                    runtime_items=runtime_items,
-                    legacy_messages=legacy_messages,
-                    tools=tools,
-                    stream_sink=stream_sink,
-                )
+                try:
+                    turn_result, turn_streamed_chunks = runtime._request_model_turn(
+                        runtime_items=runtime_items,
+                        legacy_messages=legacy_messages,
+                        tools=tools,
+                        stream_sink=stream_sink,
+                    )
+                finally:
+                    if fallback_model_active:
+                        runtime._restore_model()
+                        fallback_model_active = False
                 usage_payload = turn_result.metadata.get("usage")
                 runtime._trace_cache_shape_diagnostic(
                     turn_id=turn_id,
@@ -588,6 +596,9 @@ class TurnExecutor:
                             runtime._model_adapter,
                             recovery_action.escalated_max_output_tokens,
                         )
+                    if recovery_action.fallback_model is not None:
+                        runtime._set_model(recovery_action.fallback_model)
+                        fallback_model_active = True
                     runtime._append_turn_item(
                         turn_id=turn_id,
                         turn_items=turn_items,
@@ -905,6 +916,31 @@ class TurnExecutor:
         ):
             max_attempts = max(0, self._runtime._config.transport_retry_limit)
             if loop_state.transport_retries >= max_attempts:
+                fallback_model = self._runtime._config.fallback_model
+                if fallback_model and not loop_state.fallback_model_attempted:
+                    recovery_failure_kind = failure_kind or "transport_error"
+                    warning_text = (
+                        f"Retry budget exhausted. Trying fallback model {fallback_model}."
+                    )
+                    return TurnRecoveryAction(
+                        should_retry=True,
+                        warning_text=warning_text,
+                        runtime_reminders=runtime_reminders,
+                        next_state=LoopState(
+                            context_window_retries=loop_state.context_window_retries,
+                            transport_retries=loop_state.transport_retries,
+                            output_token_retries=loop_state.output_token_retries,
+                            context_recovery_stage=loop_state.context_recovery_stage,
+                            reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                            fallback_model_attempted=True,
+                        ),
+                        fallback_model=fallback_model,
+                        metadata=fallback_metadata(
+                            from_model=self._runtime._config.model,
+                            to_model=fallback_model,
+                            failure_kind=recovery_failure_kind,
+                        ),
+                    )
                 return TurnRecoveryAction(next_state=loop_state)
             attempt = loop_state.transport_retries + 1
             delay_seconds = RetryBackoffPolicy().delay_for_attempt(attempt)
@@ -1011,6 +1047,7 @@ class LoopState:
     output_token_retries: int = 0
     context_recovery_stage: str | None = None
     reactive_compact_attempted: bool = False
+    fallback_model_attempted: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -1021,6 +1058,7 @@ class TurnRecoveryAction:
     next_state: LoopState = LoopState()
     invoke_pre_compact_hook: bool = False
     escalated_max_output_tokens: int | None = None
+    fallback_model: str | None = None
     delay_seconds: float = 0.0
     metadata: dict[str, object] = field(default_factory=dict)
 
