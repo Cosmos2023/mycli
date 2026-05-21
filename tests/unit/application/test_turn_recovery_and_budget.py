@@ -363,13 +363,26 @@ def test_turn_executor_output_token_limit_escalates_and_recovers(
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        max_output_tokens=2048,
+        output_limit_escalation_max_tokens=32_768,
+        output_recovery_retry_limit=2,
+    )
 
     response = runtime.handle_user_turn("write a long answer")
 
     assert response.assistant_message == "Recovered with more output budget"
-    assert adapter.output_token_budgets == [65_536]
+    assert adapter.output_token_budgets == [32_768, 2048]
     assert len(adapter.seen_items) == 2
     assert "output budget" in _runtime_reminder_text(adapter.seen_items[1]).lower()
+    assert response.turn is not None
+    assert any(
+        item.type is TurnItemType.WARNING
+        and item.metadata.get("recovery_kind") == "output_token_recovery"
+        and item.metadata.get("escalated_max_output_tokens") == 32_768
+        for item in response.turn.items
+    )
 
 
 def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(

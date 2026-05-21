@@ -9,6 +9,7 @@ from mycli.application.runtime.recovery import (
     RetryBackoffPolicy,
     fallback_metadata,
     is_transient_recovery_failure,
+    output_limit_metadata,
     retry_metadata,
 )
 from mycli.domain.conversation import Conversation, Message
@@ -317,6 +318,7 @@ class TurnExecutor:
         loop_state = LoopState()
         carryover_runtime_reminders: tuple[str, ...] = ()
         fallback_model_active = False
+        output_tokens_escalated = False
 
         while True:
             checkpoint_result = runtime._checkpoint.evaluate(
@@ -551,6 +553,9 @@ class TurnExecutor:
                         stream_sink=stream_sink,
                     )
                 finally:
+                    if output_tokens_escalated:
+                        runtime._restore_model_max_output_tokens()
+                        output_tokens_escalated = False
                     if fallback_model_active:
                         runtime._restore_model()
                         fallback_model_active = False
@@ -596,6 +601,7 @@ class TurnExecutor:
                             runtime._model_adapter,
                             recovery_action.escalated_max_output_tokens,
                         )
+                        output_tokens_escalated = True
                     if recovery_action.fallback_model is not None:
                         runtime._set_model(recovery_action.fallback_model)
                         fallback_model_active = True
@@ -861,7 +867,8 @@ class TurnExecutor:
                 return TurnRecoveryAction(next_state=loop_state)
 
         if failure_kind in {"output_token_limit", "max_output_tokens", "output_tokens_exceeded"}:
-            if loop_state.output_token_retries >= 3:
+            max_attempts = max(0, self._runtime._config.output_recovery_retry_limit)
+            if loop_state.output_token_retries >= max_attempts:
                 return TurnRecoveryAction(next_state=loop_state)
             if loop_state.output_token_retries == 0:
                 warning_text = (
@@ -884,11 +891,23 @@ class TurnExecutor:
                         output_token_retries=1,
                         context_recovery_stage=loop_state.context_recovery_stage,
                         reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                        fallback_model_attempted=loop_state.fallback_model_attempted,
                     ),
-                    escalated_max_output_tokens=65_536,
+                    escalated_max_output_tokens=(
+                        self._runtime._config.output_limit_escalation_max_tokens
+                    ),
+                    metadata=output_limit_metadata(
+                        attempt=1,
+                        max_attempts=max_attempts,
+                        failure_kind=failure_kind,
+                        original_max_output_tokens=self._runtime._config.max_output_tokens,
+                        escalated_max_output_tokens=(
+                            self._runtime._config.output_limit_escalation_max_tokens
+                        ),
+                    ),
                 )
             warning_text = (
-                f"Model output hit the token limit again. Retrying recovery message ({loop_state.output_token_retries + 1}/3)."
+                f"Model output hit the token limit again. Retrying recovery message ({loop_state.output_token_retries + 1}/{max_attempts})."
             )
             return TurnRecoveryAction(
                 should_retry=True,
@@ -907,6 +926,12 @@ class TurnExecutor:
                     output_token_retries=loop_state.output_token_retries + 1,
                     context_recovery_stage=loop_state.context_recovery_stage,
                     reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                    fallback_model_attempted=loop_state.fallback_model_attempted,
+                ),
+                metadata=output_limit_metadata(
+                    attempt=loop_state.output_token_retries + 1,
+                    max_attempts=max_attempts,
+                    failure_kind=failure_kind,
                 ),
             )
 
