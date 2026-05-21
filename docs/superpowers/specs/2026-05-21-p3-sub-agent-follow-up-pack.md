@@ -109,9 +109,8 @@ explore completed tools=3 demo:sub:turn_1:abcd1234
 - `tool_calls`
 - `description`
 - `error`
-- `max_concurrent_background_tasks`
 
-recent summaries 继续只保留内存窗口；sidechain 是持久化调试面。
+recent summaries 继续只保留内存窗口；sidechain 是持久化调试面。`max_concurrent_background_tasks` 是 profile/service 级配置，不属于单次 run summary。
 
 ### 2.4 XML result
 
