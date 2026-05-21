@@ -1,6 +1,6 @@
 # P3 Sub-agent Capability Pack Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build safe synchronous `Task` sub-agents that can run bounded child loops with isolated context, restricted tools, XML reports, and observable lifecycle state.
 
@@ -42,7 +42,7 @@
 - Modify: `src/mycli/agents/sub_agent.py`
 - Modify: `tests/unit/agents/test_sub_agent.py`
 
-- [ ] **Step 1: Write failing domain tests**
+- [x] **Step 1: Write failing domain tests**
 
 Create `tests/unit/domain/test_subagents.py`:
 
@@ -136,7 +136,7 @@ def test_summary_preserves_result_status_and_session() -> None:
     assert summary.child_session_id == "demo:sub:turn_1:abcd1234"
 ```
 
-- [ ] **Step 2: Run domain tests to verify they fail**
+- [x] **Step 2: Run domain tests to verify they fail**
 
 Run:
 
@@ -146,7 +146,7 @@ uv run pytest tests/unit/domain/test_subagents.py -q
 
 Expected: fails with `ModuleNotFoundError: No module named 'mycli.domain.subagents'`.
 
-- [ ] **Step 3: Implement domain contracts**
+- [x] **Step 3: Implement domain contracts**
 
 Create `src/mycli/domain/subagents.py`:
 
@@ -301,7 +301,7 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 4: Write failing profile tests**
+- [x] **Step 4: Write failing profile tests**
 
 Create `tests/unit/application/runtime/subagents/test_profiles.py`:
 
@@ -326,7 +326,7 @@ def test_unknown_profile_returns_none() -> None:
     assert get_sub_agent_profile("missing") is None
 ```
 
-- [ ] **Step 5: Run profile tests to verify they fail**
+- [x] **Step 5: Run profile tests to verify they fail**
 
 Run:
 
@@ -336,7 +336,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_profiles.py -q
 
 Expected: fails because `mycli.application.runtime.subagents.profiles` does not exist.
 
-- [ ] **Step 6: Implement profiles and mark legacy sub-agent path**
+- [x] **Step 6: Implement profiles and mark legacy sub-agent path**
 
 Create `src/mycli/application/runtime/subagents/__init__.py`:
 
@@ -434,7 +434,7 @@ def test_legacy_sub_agent_module_exports_report_alias() -> None:
     assert SubAgentReportFragment is SubAgentResult
 ```
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 Run:
 
@@ -444,7 +444,7 @@ uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime
 
 Expected: all tests pass.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/mycli/domain/subagents.py src/mycli/application/runtime/subagents/__init__.py src/mycli/application/runtime/subagents/profiles.py src/mycli/agents/sub_agent.py tests/unit/domain/test_subagents.py tests/unit/application/runtime/subagents/test_profiles.py tests/unit/agents/test_sub_agent.py
@@ -468,7 +468,7 @@ Tested: uv run pytest tests/unit/domain/test_subagents.py tests/unit/application
 - Create: `src/mycli/application/runtime/subagents/tool_scope.py`
 - Create: `tests/unit/application/runtime/subagents/test_tool_scope.py`
 
-- [ ] **Step 1: Write failing resolver tests**
+- [x] **Step 1: Write failing resolver tests**
 
 Create `tests/unit/application/runtime/subagents/test_tool_scope.py`:
 
@@ -518,7 +518,7 @@ def test_resolver_keeps_stable_profile_order() -> None:
     assert resolved == ("Read", "Grep", "Glob", "LS", "Lint")
 ```
 
-- [ ] **Step 2: Run resolver tests to verify they fail**
+- [x] **Step 2: Run resolver tests to verify they fail**
 
 Run:
 
@@ -528,7 +528,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_tool_scope.py -q
 
 Expected: fails because `tool_scope.py` does not exist.
 
-- [ ] **Step 3: Implement resolver**
+- [x] **Step 3: Implement resolver**
 
 Create `src/mycli/application/runtime/subagents/tool_scope.py`:
 
@@ -563,7 +563,7 @@ def resolve_child_tool_scope(
 __all__ = ["resolve_child_tool_scope"]
 ```
 
-- [ ] **Step 4: Run resolver tests**
+- [x] **Step 4: Run resolver tests**
 
 Run:
 
@@ -573,7 +573,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_tool_scope.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mycli/application/runtime/subagents/tool_scope.py tests/unit/application/runtime/subagents/test_tool_scope.py
@@ -599,7 +599,7 @@ Tested: uv run pytest tests/unit/application/runtime/subagents/test_tool_scope.p
 - Create: `tests/unit/tools/test_task_tool.py`
 - Modify: `src/mycli/tools/registry.py`
 
-- [ ] **Step 1: Write failing Task tool tests**
+- [x] **Step 1: Write failing Task tool tests**
 
 Create `tests/unit/tools/test_task_tool.py`:
 
@@ -673,7 +673,7 @@ def test_unbound_task_tool_returns_unavailable_result() -> None:
     assert result.raw_payload["error_kind"] == "task_tool_unbound"
 ```
 
-- [ ] **Step 2: Run Task tool tests to verify they fail**
+- [x] **Step 2: Run Task tool tests to verify they fail**
 
 Run:
 
@@ -683,7 +683,7 @@ uv run pytest tests/unit/tools/test_task_tool.py -q
 
 Expected: fails because `mycli.tools.task` does not exist.
 
-- [ ] **Step 3: Implement TaskTool**
+- [x] **Step 3: Implement TaskTool**
 
 Create `src/mycli/tools/task.py`:
 
@@ -765,7 +765,7 @@ class TaskTool(SchemaTool):
 __all__ = ["TaskTool"]
 ```
 
-- [ ] **Step 4: Register fallback TaskTool**
+- [x] **Step 4: Register fallback TaskTool**
 
 Modify `src/mycli/tools/registry.py`:
 
@@ -775,7 +775,7 @@ from mycli.tools.task import TaskTool
 
 Add `TaskTool()` to the list returned by `default_tools()` after plan-mode tools.
 
-- [ ] **Step 5: Run Task tool tests**
+- [x] **Step 5: Run Task tool tests**
 
 Run:
 
@@ -785,7 +785,7 @@ uv run pytest tests/unit/tools/test_task_tool.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/mycli/tools/task.py src/mycli/tools/registry.py tests/unit/tools/test_task_tool.py
@@ -809,7 +809,7 @@ Tested: uv run pytest tests/unit/tools/test_task_tool.py -q
 - Create: `src/mycli/application/runtime/subagents/loop.py`
 - Create: `tests/unit/application/runtime/subagents/test_child_loop.py`
 
-- [ ] **Step 1: Write failing child loop tests**
+- [x] **Step 1: Write failing child loop tests**
 
 Create `tests/unit/application/runtime/subagents/test_child_loop.py`:
 
@@ -962,7 +962,7 @@ def test_child_loop_stops_at_max_tool_calls() -> None:
     assert result.tool_calls == 1
 ```
 
-- [ ] **Step 2: Run child loop tests to verify they fail**
+- [x] **Step 2: Run child loop tests to verify they fail**
 
 Run:
 
@@ -972,7 +972,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py -q
 
 Expected: fails because `loop.py` does not exist.
 
-- [ ] **Step 3: Implement child loop against small protocols**
+- [x] **Step 3: Implement child loop against small protocols**
 
 Create `src/mycli/application/runtime/subagents/loop.py`:
 
@@ -1109,7 +1109,7 @@ class SubAgentChildLoop:
 __all__ = ["ChildToolExecutor", "ChildTurnRequester", "SubAgentChildLoop"]
 ```
 
-- [ ] **Step 4: Run child loop tests**
+- [x] **Step 4: Run child loop tests**
 
 Run:
 
@@ -1119,7 +1119,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mycli/application/runtime/subagents/loop.py tests/unit/application/runtime/subagents/test_child_loop.py
@@ -1143,7 +1143,7 @@ Tested: uv run pytest tests/unit/application/runtime/subagents/test_child_loop.p
 - Create: `src/mycli/application/runtime/subagents/service.py`
 - Create: `tests/unit/application/runtime/subagents/test_sub_agent_service.py`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Create `tests/unit/application/runtime/subagents/test_sub_agent_service.py`:
 
@@ -1244,7 +1244,7 @@ def test_service_truncates_long_report_body() -> None:
     assert "truncated" in result.report
 ```
 
-- [ ] **Step 2: Run service tests to verify they fail**
+- [x] **Step 2: Run service tests to verify they fail**
 
 Run:
 
@@ -1254,7 +1254,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py
 
 Expected: fails because `service.py` does not exist.
 
-- [ ] **Step 3: Implement service**
+- [x] **Step 3: Implement service**
 
 Create `src/mycli/application/runtime/subagents/service.py`:
 
@@ -1391,7 +1391,7 @@ class SubAgentService:
 __all__ = ["SubAgentService"]
 ```
 
-- [ ] **Step 4: Run service tests**
+- [x] **Step 4: Run service tests**
 
 Run:
 
@@ -1401,7 +1401,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mycli/application/runtime/subagents/service.py tests/unit/application/runtime/subagents/test_sub_agent_service.py
@@ -1427,7 +1427,7 @@ Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_se
 - Create: `tests/unit/application/runtime/subagents/test_runtime_child_adapters.py`
 - Modify: `tests/unit/application/test_agent_runtime.py`
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Create `tests/unit/application/runtime/subagents/test_runtime_child_adapters.py`:
 
@@ -1562,7 +1562,7 @@ def test_runtime_child_turn_requester_projects_model_result() -> None:
     )
 ```
 
-- [ ] **Step 2: Run adapter test to verify it fails**
+- [x] **Step 2: Run adapter test to verify it fails**
 
 Run:
 
@@ -1572,7 +1572,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_runtime_child_adapte
 
 Expected: fails because runtime child adapters do not exist.
 
-- [ ] **Step 3: Add runtime adapters to loop module**
+- [x] **Step 3: Add runtime adapters to loop module**
 
 Extend `src/mycli/application/runtime/subagents/loop.py` with runtime adapters that translate the small child protocols to existing runtime services:
 
@@ -1684,7 +1684,7 @@ class RuntimeChildToolExecutor:
         return self.tool_router.execute(call, exposure=exposure)
 ```
 
-- [ ] **Step 4: Run child loop and adapter tests**
+- [x] **Step 4: Run child loop and adapter tests**
 
 Run:
 
@@ -1694,7 +1694,7 @@ uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py tests/
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Write failing runtime registration test**
+- [x] **Step 5: Write failing runtime registration test**
 
 Add to `tests/unit/application/test_agent_runtime.py`:
 
@@ -1708,7 +1708,7 @@ def test_runtime_registers_bound_task_tool(tmp_path) -> None:
     assert getattr(task_tool, "_service", None) is runtime._sub_agent_service
 ```
 
-- [ ] **Step 6: Wire service into AgentRuntime**
+- [x] **Step 6: Wire service into AgentRuntime**
 
 Modify `src/mycli/application/runtime/agent_runtime.py` after `_tool_orchestrator` and `_tool_execution_service` are constructed:
 
@@ -1779,7 +1779,7 @@ self._current_turn_id = turn_id
 
 If the concrete turn id variable has a different name, use that existing variable and keep the field assignment next to existing `_set_model_log_context(turn_id)` calls.
 
-- [ ] **Step 7: Run runtime registration test**
+- [x] **Step 7: Run runtime registration test**
 
 Run:
 
@@ -1789,7 +1789,7 @@ uv run pytest tests/unit/application/test_agent_runtime.py::test_runtime_registe
 
 Expected: passes.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/mycli/application/runtime/agent_runtime.py src/mycli/application/runtime/subagents/loop.py tests/unit/application/runtime/subagents/test_runtime_child_adapters.py tests/unit/application/test_agent_runtime.py
@@ -1817,7 +1817,7 @@ Tested: uv run pytest tests/unit/application/test_agent_runtime.py::test_runtime
 - Create: `tests/unit/application/test_turn_service_subagents.py`
 - Modify: existing CLI command tests under `tests/unit/cli/`
 
-- [ ] **Step 1: Write failing turn service inspection test**
+- [x] **Step 1: Write failing turn service inspection test**
 
 Create `tests/unit/application/test_turn_service_subagents.py`:
 
@@ -1851,7 +1851,7 @@ def test_turn_service_formats_subagent_summaries() -> None:
     )
 ```
 
-- [ ] **Step 2: Run inspection test to verify it fails**
+- [x] **Step 2: Run inspection test to verify it fails**
 
 Run:
 
@@ -1861,7 +1861,7 @@ uv run pytest tests/unit/application/test_turn_service_subagents.py -q
 
 Expected: fails because `format_subagent_summaries` does not exist.
 
-- [ ] **Step 3: Implement runtime and service inspection**
+- [x] **Step 3: Implement runtime and service inspection**
 
 Add to `src/mycli/application/runtime/agent_runtime.py`:
 
@@ -1900,7 +1900,7 @@ if command == "/subagents":
 
 Use the existing console/output abstraction in `repl.py`; if variable names differ, keep the command body equivalent.
 
-- [ ] **Step 4: Update gap doc**
+- [x] **Step 4: Update gap doc**
 
 Modify `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md` so the sub-agent section records:
 
@@ -1914,7 +1914,7 @@ Modify `docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md` so the su
 - 7.7 `/batch`: open.
 ```
 
-- [ ] **Step 5: Run inspection tests**
+- [x] **Step 5: Run inspection tests**
 
 Run:
 
@@ -1924,7 +1924,7 @@ uv run pytest tests/unit/application/test_turn_service_subagents.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/mycli/application/runtime/agent_runtime.py src/mycli/application/turn_service.py src/mycli/cli/repl.py tests/unit/application/test_turn_service_subagents.py docs/superpowers/specs/2026-05-18-mycli-vs-claude-code-gap.md
@@ -1947,7 +1947,7 @@ Tested: uv run pytest tests/unit/application/test_turn_service_subagents.py -q
 **Files:**
 - Create: `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md`
 
-- [ ] **Step 1: Run focused sub-agent test suite**
+- [x] **Step 1: Run focused sub-agent test suite**
 
 Run:
 
@@ -1957,7 +1957,7 @@ uv run pytest tests/unit/domain/test_subagents.py tests/unit/application/runtime
 
 Expected: all tests pass.
 
-- [ ] **Step 2: Run full quality gates**
+- [x] **Step 2: Run full quality gates**
 
 Run:
 
@@ -1969,7 +1969,7 @@ uv run pytest -q
 
 Expected: all commands pass. If an unrelated pre-existing failure appears, capture the failing command, file, and reason in the smoke report before deciding whether to fix or defer.
 
-- [ ] **Step 3: Run CLI smoke**
+- [x] **Step 3: Run CLI smoke**
 
 Run the repository's supported CLI entrypoint in a temp workspace and ask for a bounded exploration sub-task. Use the existing local invocation style from prior smoke reports; for example:
 
@@ -1989,7 +1989,7 @@ and `/subagents` prints:
 explore completed tools=
 ```
 
-- [ ] **Step 4: Write smoke report**
+- [x] **Step 4: Write smoke report**
 
 Create `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md`:
 
@@ -2020,7 +2020,7 @@ Create `docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.m
 
 Replace the evidence bullets with exact command results after running the commands.
 
-- [ ] **Step 5: Placeholder scan**
+- [x] **Step 5: Placeholder scan**
 
 Run:
 
@@ -2030,7 +2030,7 @@ rg -n "T[B]D|T[O]DO|implement[ ]later|fill[ ]in|Similar[ ]to|appropriate[ ]error
 
 Expected: no output.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/superpowers/reports/2026-05-21-p3-sub-agent-capability-pack-smoke.md
