@@ -49,6 +49,29 @@ class FakeExecutor:
         )
 
 
+class FakeTranscriptRecorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, object]] = []
+
+    def record_system_text(self, text: str) -> None:
+        self.events.append(("system", text))
+
+    def record_user_text(self, text: str) -> None:
+        self.events.append(("user", text))
+
+    def record_assistant_text(self, text: str) -> None:
+        self.events.append(("assistant", text))
+
+    def record_tool_call(self, *, call_id, tool_name, arguments) -> None:
+        self.events.append(("tool_call", (call_id, tool_name, arguments)))
+
+    def record_tool_result(self, *, call_id, tool_name, content) -> None:
+        self.events.append(("tool_result", (call_id, tool_name, content)))
+
+    def record_final(self, *, status: str, report: str, tool_calls: int) -> None:
+        self.events.append(("final", (status, report, tool_calls)))
+
+
 def _invocation() -> SubAgentInvocation:
     return SubAgentInvocation(
         agent_type="explore",
@@ -160,3 +183,48 @@ def test_child_loop_stops_at_max_tool_calls() -> None:
 
     assert result.status == "max_tool_calls"
     assert result.tool_calls == 1
+
+
+def test_child_loop_records_transcript_events() -> None:
+    requester = FakeRequester(
+        [
+            FakeTurn(
+                text="Need file",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_1",
+                    ),
+                ),
+            ),
+            FakeTurn(text="README says mycli."),
+        ]
+    )
+    executor = FakeExecutor()
+    recorder = FakeTranscriptRecorder()
+    loop = SubAgentChildLoop(requester=requester, executor=executor)
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=4, max_tool_calls=4),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+        transcript=recorder,
+    )
+
+    assert result.status == "completed"
+    assert [event[0] for event in recorder.events] == [
+        "system",
+        "user",
+        "assistant",
+        "tool_call",
+        "tool_result",
+        "final",
+    ]

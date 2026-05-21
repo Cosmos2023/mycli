@@ -46,6 +46,32 @@ class ChildToolExecutor(Protocol):
         ...
 
 
+class ChildTranscriptRecorder(Protocol):
+    def record_system_text(self, text: str) -> None: ...
+
+    def record_user_text(self, text: str) -> None: ...
+
+    def record_assistant_text(self, text: str) -> None: ...
+
+    def record_tool_call(
+        self,
+        *,
+        call_id: str | None,
+        tool_name: str,
+        arguments: dict[str, object],
+    ) -> None: ...
+
+    def record_tool_result(
+        self,
+        *,
+        call_id: str | None,
+        tool_name: str,
+        content: str,
+    ) -> None: ...
+
+    def record_final(self, *, status: str, report: str, tool_calls: int) -> None: ...
+
+
 class RuntimeModelTurnRequester(Protocol):
     def request_model_turn(
         self,
@@ -209,11 +235,15 @@ class SubAgentChildLoop:
         profile: SubAgentProfile,
         child_session_id: str,
         tool_names: tuple[str, ...],
+        transcript: ChildTranscriptRecorder | None = None,
     ) -> SubAgentResult:
         messages: list[dict[str, object]] = [
             {"role": "system", "content": profile.system_prompt},
             {"role": "user", "content": invocation.description},
         ]
+        if transcript is not None:
+            transcript.record_system_text(profile.system_prompt)
+            transcript.record_user_text(invocation.description)
         tool_calls = 0
         no_progress_turns = 0
 
@@ -226,6 +256,12 @@ class SubAgentChildLoop:
             text = (turn.text or "").strip()
             calls = tuple(turn.tool_calls)
             if text and not calls:
+                self._record_final(
+                    transcript,
+                    status="completed",
+                    report=text,
+                    tool_calls=tool_calls,
+                )
                 return SubAgentResult(
                     status="completed",
                     report=text,
@@ -235,21 +271,43 @@ class SubAgentChildLoop:
             if not text and not calls:
                 no_progress_turns += 1
                 if no_progress_turns >= profile.budget.no_progress_turn_limit:
+                    report = "Child sub-agent stopped after repeated no-progress turns."
+                    self._record_final(
+                        transcript,
+                        status="max_no_progress",
+                        report=report,
+                        tool_calls=tool_calls,
+                    )
                     return SubAgentResult(
                         status="max_no_progress",
-                        report="Child sub-agent stopped after repeated no-progress turns.",
+                        report=report,
                         child_session_id=child_session_id,
                         tool_calls=tool_calls,
                     )
                 continue
             no_progress_turns = 0
+            if text and transcript is not None:
+                transcript.record_assistant_text(text)
             for call in calls:
                 if tool_calls >= profile.budget.max_tool_calls:
+                    report = "Child sub-agent reached the max tool call limit."
+                    self._record_final(
+                        transcript,
+                        status="max_tool_calls",
+                        report=report,
+                        tool_calls=tool_calls,
+                    )
                     return SubAgentResult(
                         status="max_tool_calls",
-                        report="Child sub-agent reached the max tool call limit.",
+                        report=report,
                         child_session_id=child_session_id,
                         tool_calls=tool_calls,
+                    )
+                if transcript is not None:
+                    transcript.record_tool_call(
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                        arguments=call.arguments,
                     )
                 result = self._executor.execute_child_tool(
                     call=call,
@@ -257,10 +315,24 @@ class SubAgentChildLoop:
                     tool_names=tool_names,
                 )
                 tool_calls += 1
+                formatted_result = self._formatter.format(call.name, result)
+                if transcript is not None:
+                    transcript.record_tool_result(
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                        content=formatted_result,
+                    )
                 if result.raw_payload.get("error_kind") == "approval_required":
+                    report = f"Child sub-agent stopped because {call.name} requires approval."
+                    self._record_final(
+                        transcript,
+                        status="approval_required",
+                        report=report,
+                        tool_calls=tool_calls,
+                    )
                     return SubAgentResult(
                         status="approval_required",
-                        report=f"Child sub-agent stopped because {call.name} requires approval.",
+                        report=report,
                         child_session_id=child_session_id,
                         tool_calls=tool_calls,
                         error=result.error,
@@ -277,20 +349,40 @@ class SubAgentChildLoop:
                         "role": "tool",
                         "tool_name": call.name,
                         "tool_call_id": call.call_id,
-                        "content": self._formatter.format(call.name, result),
+                        "content": formatted_result,
                     }
                 )
 
+        report = "Child sub-agent reached the max turn limit."
+        self._record_final(
+            transcript,
+            status="max_turns",
+            report=report,
+            tool_calls=tool_calls,
+        )
         return SubAgentResult(
             status="max_turns",
-            report="Child sub-agent reached the max turn limit.",
+            report=report,
             child_session_id=child_session_id,
             tool_calls=tool_calls,
         )
 
+    def _record_final(
+        self,
+        transcript: ChildTranscriptRecorder | None,
+        *,
+        status: str,
+        report: str,
+        tool_calls: int,
+    ) -> None:
+        if transcript is None:
+            return
+        transcript.record_final(status=status, report=report, tool_calls=tool_calls)
+
 
 __all__ = [
     "ChildToolExecutor",
+    "ChildTranscriptRecorder",
     "ChildTurnRequester",
     "RuntimeChildToolExecutor",
     "RuntimeChildTurn",
