@@ -44,12 +44,14 @@ child sidechain:
 - 新增 `/subagents <child_session_id>` 显示 child transcript 的文本摘要。
 - summary 行增加 `mode`、`status`、`tools`、`child_session_id` 和短 description。
 - sidechain 写入必须串行化，不能假设 `SessionService` 或 SQLite 写路径在多线程下天然安全。
+- `SubAgentService` 的 recent run summary deque 必须通过同一个 `run_state_lock` 更新和读取；`_record()`、background completion、shutdown 和 `recent_runs()` 不能直接无锁读写 `_recent_runs`。
 
 `/subagents <child_session_id>` 最小输出格式：
 
 ```text
 explore completed tools=3 demo:sub:turn_1:abcd1234
   user Inspect repo
+  system You are a read-only exploration sub-agent.
   assistant Need to inspect pyproject.
   tool_call Read call_1 {"path": "pyproject.toml"}
   tool_result Read call_1 1200 chars
@@ -61,6 +63,7 @@ explore completed tools=3 demo:sub:turn_1:abcd1234
 - 第一行是 run header：`<agent_type> <status> mode=<mode> tools=<tool_calls> <child_session_id>`。
 - 子行缩进两个空格。
 - `tool_result` 默认显示字符数和 500 字符以内预览，避免大输出刷屏。
+- `HistoryItemType.USER_MESSAGE` 且 `metadata["role"] == "system"` 时显示为 `system`，不能显示成普通 user 行。
 - final 行显示 final status 和报告预览。
 
 ### 2.2 Async/background Task v1
@@ -158,7 +161,7 @@ Sub-agent started in background. Use /subagents ... to inspect it.
 | 测试 | `tests/unit/domain/test_subagents.py` | mode/run summary contract |
 | 测试 | `tests/unit/application/runtime/subagents/test_transcript.py` | sidechain recorder |
 | 测试 | `tests/unit/application/runtime/subagents/test_child_loop.py` | child loop transcript recording |
-| 测试 | `tests/unit/application/runtime/subagents/test_sub_agent_service.py` | background state, concurrency cap, shutdown, failed exception handling, and inspection |
+| 测试 | `tests/unit/application/runtime/subagents/test_sub_agent_service.py` | background state, recent-run lock discipline, concurrency cap, shutdown, failed exception handling, and inspection |
 | 测试 | `tests/unit/application/runtime/subagents/test_background_concurrency.py` | model request lock and transcript write lock coverage |
 | 测试 | `tests/unit/tools/test_task_tool.py` | Task mode parameter |
 | 测试 | `tests/unit/application/test_turn_service_subagents.py` | `/subagents <id>` formatting |
@@ -177,6 +180,7 @@ Sub-agent started in background. Use /subagents ... to inspect it.
 - shutdown 会处理 running futures，超时任务标 failed。
 - 父 turn 和 background child 的模型请求通过 lock 串行化。
 - sidechain/session 写入通过 lock 串行化。
+- recent run summary 读写通过 lock 串行化，避免 background completion 与 `/subagents` inspection 交错。
 - child sidechain 包含 assistant tool_call 与匹配 tool_result `tool_call_id`。
 - 全量 `ruff`、`mypy`、`pytest` 通过。
 - 至少一条真实 API smoke 覆盖 background Task 和 `/subagents <child_session_id>`。

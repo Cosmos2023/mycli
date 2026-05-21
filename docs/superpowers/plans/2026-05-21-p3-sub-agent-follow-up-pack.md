@@ -17,7 +17,7 @@
 - `src/mycli/domain/subagents.py`: extend sub-agent invocation/result/run summary with mode and lifecycle fields.
 - `src/mycli/application/runtime/subagents/transcript.py`: child transcript sidechain recorder using `SessionService.append_history_items()`.
 - `src/mycli/application/runtime/subagents/loop.py`: record child loop messages, tool calls, tool results, and final status through an optional recorder; child model requests pass through an injected lock in the runtime requester.
-- `src/mycli/application/runtime/subagents/service.py`: own sync/background orchestration, run state updates, concurrency cap, exception-to-failed handling, shutdown, and transcript inspection.
+- `src/mycli/application/runtime/subagents/service.py`: own sync/background orchestration, locked run state updates, concurrency cap, exception-to-failed handling, shutdown, and transcript inspection.
 - `src/mycli/tools/task.py`: add optional `mode` parameter and pass it to the service.
 - `src/mycli/application/runtime/agent_runtime.py`: construct and inject transcript recorder, session service, model-request lock, and transcript-write lock into `SubAgentService`.
 - `src/mycli/application/turn_service.py`: add child transcript inspection formatting.
@@ -668,10 +668,18 @@ def test_service_formats_child_transcript() -> None:
             thread_id="demo:sub:turn_1:abcd1234",
             turn_id="turn_1",
             type=HistoryItemType.USER_MESSAGE,
-            text="Inspect repo",
+            metadata={"role": "system"},
+            text="Read-only profile",
         ),
         HistoryItem(
             id="2",
+            thread_id="demo:sub:turn_1:abcd1234",
+            turn_id="turn_1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="Inspect repo",
+        ),
+        HistoryItem(
+            id="3",
             thread_id="demo:sub:turn_1:abcd1234",
             turn_id="turn_1",
             type=HistoryItemType.TOOL_CALL,
@@ -680,7 +688,7 @@ def test_service_formats_child_transcript() -> None:
             metadata={"arguments": {"path": "pyproject.toml"}},
         ),
         HistoryItem(
-            id="3",
+            id="4",
             thread_id="demo:sub:turn_1:abcd1234",
             turn_id="turn_1",
             type=HistoryItemType.TOOL_RESULT,
@@ -701,9 +709,24 @@ def test_service_formats_child_transcript() -> None:
 
     assert lines == (
         "demo:sub:turn_1:abcd1234",
+        "  system Read-only profile",
         "  user Inspect repo",
         "  tool_call Read call_1 {'path': 'pyproject.toml'}",
         "  tool_result Read call_1 14 chars name = 'mycli'",
+    )
+
+
+def test_service_reports_missing_child_transcript() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeChildLoop(SubAgentResult(status="completed", report="ok", child_session_id="ignored", tool_calls=0)),
+        session_service=FakeHistorySessionService(),
+    )
+
+    assert service.inspect_transcript("missing-child") == (
+        "sub-agent transcript not found: missing-child",
     )
 ```
 
@@ -715,7 +738,7 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_formats_child_transcript -q
 ```
 
-Expected: fails because `SubAgentService` has no `session_service` or `inspect_transcript`.
+Expected: fails because `SubAgentService` has no `session_service`, `inspect_transcript`, or missing-transcript behavior.
 
 - [ ] **Step 3: Implement transcript inspection**
 
@@ -740,6 +763,8 @@ if item.type is HistoryItemType.ASSISTANT_MESSAGE:
     label = "final" if isinstance(status, str) else "assistant"
     prefix = f"{label} {status}" if label == "final" else label
     return f"  {prefix} {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
+if item.type is HistoryItemType.USER_MESSAGE and item.metadata.get("role") == "system":
+    return f"  system {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
 return f"  user {(item.text or '').replace(chr(10), ' ')[:500]}".strip()
 ```
 
@@ -819,7 +844,7 @@ assert service.recent_runs()[0].mode == "sync"
 Run:
 
 ```bash
-uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_formats_child_transcript tests/unit/application/test_turn_service_subagents.py tests/integration/test_cli_repl.py -q
+uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_formats_child_transcript tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_reports_missing_child_transcript tests/unit/application/test_turn_service_subagents.py tests/integration/test_cli_repl.py -q
 ```
 
 Expected: all tests pass.
@@ -838,7 +863,7 @@ Constraint: Transcript inspection must not replay child history into parent cont
 Rejected: Show full transcript in default /subagents | it is noisy and can leak large tool results into the terminal unexpectedly.
 Confidence: high
 Scope-risk: moderate
-Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_formats_child_transcript tests/unit/application/test_turn_service_subagents.py tests/integration/test_cli_repl.py -q
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_formats_child_transcript tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_service_reports_missing_child_transcript tests/unit/application/test_turn_service_subagents.py tests/integration/test_cli_repl.py -q
 ```
 
 ---
@@ -867,15 +892,22 @@ class FakeRequester:
     def __init__(self) -> None:
         self.active = 0
         self.max_active = 0
+        self.entered = threading.Barrier(2)
+        self.release = threading.Event()
 
     def request_model_turn(self, *, runtime_items, legacy_messages, tools):
         self.active += 1
         self.max_active = max(self.max_active, self.active)
+        try:
+            self.entered.wait(timeout=1)
+        except threading.BrokenBarrierError:
+            pass
+        self.release.wait(timeout=1)
         self.active -= 1
         return ModelTurnResult(items=(), done=True), ()
 
 
-def test_runtime_child_turn_requester_uses_model_request_lock() -> None:
+def test_model_request_lock_serializes_concurrent_calls() -> None:
     requester = FakeRequester()
     lock = threading.Lock()
     child_requester = RuntimeChildTurnRequester(
@@ -885,12 +917,23 @@ def test_runtime_child_turn_requester_uses_model_request_lock() -> None:
         model_request_lock=lock,
     )
 
-    child_requester.request_child_turn(
-        messages=[{"role": "user", "content": "hello"}],
-        tool_names=(),
-        child_session_id="demo:sub:turn_1:abcd",
-    )
+    def call_child() -> None:
+        child_requester.request_child_turn(
+            messages=[{"role": "user", "content": "hello"}],
+            tool_names=(),
+            child_session_id="demo:sub:turn_1:abcd",
+        )
 
+    first = threading.Thread(target=call_child)
+    second = threading.Thread(target=call_child)
+    first.start()
+    second.start()
+    requester.release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
     assert requester.max_active == 1
 ```
 
@@ -899,7 +942,7 @@ def test_runtime_child_turn_requester_uses_model_request_lock() -> None:
 Run:
 
 ```bash
-uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_runtime_child_turn_requester_uses_model_request_lock -q
+uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_model_request_lock_serializes_concurrent_calls -q
 ```
 
 Expected: fails because `RuntimeChildTurnRequester` has no `model_request_lock` field.
@@ -944,7 +987,7 @@ Pass it to `RuntimeChildTurnRequester`.
 Run:
 
 ```bash
-uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_runtime_child_turn_requester_uses_model_request_lock -q
+uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_model_request_lock_serializes_concurrent_calls -q
 ```
 
 Expected: all tests pass.
@@ -963,7 +1006,7 @@ Constraint: Provider adapters and HTTP clients are not assumed to be thread-safe
 Rejected: Let parent and background child call the shared adapter concurrently | undefined provider/client behavior is harder to debug than bounded serialization.
 Confidence: medium
 Scope-risk: moderate
-Tested: uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_runtime_child_turn_requester_uses_model_request_lock -q
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_background_concurrency.py::test_model_request_lock_serializes_concurrent_calls -q
 ```
 
 ---
@@ -1010,6 +1053,18 @@ class ExplodingChildLoop:
 
     def run(self, **kwargs):
         raise self.exc
+
+
+class ObservedLock:
+    def __init__(self) -> None:
+        self.enter_count = 0
+
+    def __enter__(self):
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
 
 
 def test_background_task_returns_running_then_records_completion() -> None:
@@ -1089,6 +1144,26 @@ def test_background_task_exception_becomes_failed_summary() -> None:
     assert result.status == "running"
     assert service.recent_runs()[0].status == "failed"
     assert service.recent_runs()[0].error == "provider failed"
+
+
+def test_recent_runs_are_read_through_state_lock() -> None:
+    lock = ObservedLock()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeChildLoop(SubAgentResult(status="completed", report="done", child_session_id="ignored", tool_calls=1)),
+        run_state_lock=lock,
+    )
+
+    service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+    )
+    service.recent_runs()
+
+    assert lock.enter_count >= 2
 ```
 
 - [ ] **Step 2: Run background service test to verify it fails**
@@ -1099,7 +1174,7 @@ Run:
 uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion -q
 ```
 
-Expected: fails because `run_task()` has no `mode`, service has no background executor, and helper fakes do not exist yet.
+Expected: fails because `run_task()` has no `mode`, service has no background executor, helper fakes do not exist yet, and `run_state_lock` is unsupported.
 
 - [ ] **Step 3: Implement background path**
 
@@ -1110,6 +1185,7 @@ In `src/mycli/application/runtime/subagents/service.py`:
 ```python
 background_executor: object | None = None
 max_concurrent_background_tasks: int = 2
+run_state_lock: Lock | None = None
 ```
 
 If `None`, create:
@@ -1120,6 +1196,7 @@ self._background_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix
 ```
 
 - Update `run_task(..., mode: str = "sync")`.
+- Store `self._run_state_lock = run_state_lock or Lock()`.
 - Create `SubAgentInvocation(..., mode=mode)`.
 - If `mode == "background"`:
   - if current running background count is greater than or equal to `max_concurrent_background_tasks`, return failed result immediately.
@@ -1134,14 +1211,64 @@ def _run_sync_invocation(self, invocation: SubAgentInvocation, child_session_id:
     ...
 ```
 
-For background completion, remove or supersede the running summary for the same `child_session_id` before appending final summary. A simple implementation can rebuild the deque:
+Update `_record()` to accept timestamps and to hold `self._run_state_lock`:
 
 ```python
-self._recent_runs = deque(
-    (summary for summary in self._recent_runs if summary.child_session_id != child_session_id),
-    maxlen=self._recent_runs.maxlen,
-)
-self._record(invocation, final_result, started_at=started_at, completed_at=self._timestamp())
+def _record(
+    self,
+    invocation: SubAgentInvocation,
+    result: SubAgentResult,
+    *,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+) -> None:
+    with self._run_state_lock:
+        self._recent_runs.appendleft(
+            SubAgentRunSummary.from_result(
+                invocation=invocation,
+                result=result,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        )
+```
+
+Add a helper for replacement so background completion does not bypass `_record()`:
+
+```python
+def _replace_record(
+    self,
+    invocation: SubAgentInvocation,
+    result: SubAgentResult,
+    *,
+    started_at: str | None,
+    completed_at: str | None,
+) -> None:
+    with self._run_state_lock:
+        self._recent_runs = deque(
+            (
+                summary
+                for summary in self._recent_runs
+                if summary.child_session_id != result.child_session_id
+            ),
+            maxlen=self._recent_runs.maxlen,
+        )
+        self._recent_runs.appendleft(
+            SubAgentRunSummary.from_result(
+                invocation=invocation,
+                result=result,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        )
+```
+
+Update `recent_runs()` to hold the same lock:
+
+```python
+def recent_runs(self) -> tuple[SubAgentRunSummary, ...]:
+    with self._run_state_lock:
+        return tuple(self._recent_runs)
 ```
 
 The background closure must be:
@@ -1223,7 +1350,7 @@ mode = str(arguments.get("mode", "sync"))
 Run:
 
 ```bash
-uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_rejects_when_concurrency_cap_is_reached tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_exception_becomes_failed_summary tests/unit/tools/test_task_tool.py -q
+uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_rejects_when_concurrency_cap_is_reached tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_exception_becomes_failed_summary tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_recent_runs_are_read_through_state_lock tests/unit/tools/test_task_tool.py -q
 ```
 
 Expected: all tests pass.
@@ -1242,7 +1369,7 @@ Constraint: P3.2 background mode is explicit and in-process only; no cross-proce
 Rejected: Automatic backgrounding after a timer | it adds cancellation and notification semantics before sidechain inspection is mature.
 Confidence: medium
 Scope-risk: moderate
-Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_rejects_when_concurrency_cap_is_reached tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_exception_becomes_failed_summary tests/unit/tools/test_task_tool.py -q
+Tested: uv run pytest tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_returns_running_then_records_completion tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_rejects_when_concurrency_cap_is_reached tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_background_task_exception_becomes_failed_summary tests/unit/application/runtime/subagents/test_sub_agent_service.py::test_recent_runs_are_read_through_state_lock tests/unit/tools/test_task_tool.py -q
 ```
 
 ---
