@@ -152,7 +152,12 @@ class TurnService:
             return ("no active plan",)
         return tuple(f"{item.status.value}: {item.content}" for item in plan_state.items)
 
-    def inspect_subagents(self) -> tuple[str, ...]:
+    def inspect_subagents(self, child_session_id: str | None = None) -> tuple[str, ...]:
+        if child_session_id:
+            inspect = getattr(self._runtime, "inspect_subagent_transcript", None)
+            if callable(inspect):
+                return tuple(inspect(child_session_id))
+            return (f"sub-agent transcript not found: {child_session_id}",)
         recent = getattr(self._runtime, "recent_subagents", None)
         if not callable(recent):
             return ("No sub-agent runs in this session.",)

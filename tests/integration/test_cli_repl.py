@@ -103,12 +103,12 @@ def test_run_repl_routes_non_help_slash_commands_to_command_handler() -> None:
 
 def test_run_repl_routes_subagents_command_to_command_handler() -> None:
     outputs: list[str] = []
-    scripted_inputs = iter(["/subagents", "/quit"])
+    scripted_inputs = iter(["/subagents demo:sub:turn_1:abcd1234", "/quit"])
 
     run_repl(
         turn_handler=lambda _message: "unused",
         command_handler=lambda command: ["[subagent] explore completed"]
-        if command == "/subagents"
+        if command == "/subagents demo:sub:turn_1:abcd1234"
         else ["[unknown]"],
         input_func=lambda _prompt: next(scripted_inputs),
         output_func=outputs.append,

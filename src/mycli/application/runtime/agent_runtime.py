@@ -357,6 +357,7 @@ class AgentRuntime:
             turn_id_provider=lambda: getattr(self, "_current_turn_id", "turn_unknown"),
             parent_tool_names=lambda: tuple(self._tool_registry.list_names()),
             child_loop=self._sub_agent_child_loop,
+            session_service=self._session_service,
         )
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
         self._assistant_block_consumer = AssistantBlockConsumer(
@@ -646,6 +647,9 @@ class AgentRuntime:
 
     def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
         return self._sub_agent_service.recent_runs()
+
+    def inspect_subagent_transcript(self, child_session_id: str) -> tuple[str, ...]:
+        return self._sub_agent_service.inspect_transcript(child_session_id)
 
     def _append_tool_exposure_turn_item(
         self,

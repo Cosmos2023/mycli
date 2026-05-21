@@ -52,8 +52,10 @@ def build_command_handler(
             return [f"[memory] {line}" for line in service.inspect_memory()]
         if command == "/plan":
             return [f"[plan] {line}" for line in service.inspect_plan()]
-        if command == "/subagents":
-            return [f"[subagent] {line}" for line in service.inspect_subagents()]
+        if command.startswith("/subagents"):
+            parts = command.split(maxsplit=1)
+            child_session_id = parts[1] if len(parts) > 1 else None
+            return [f"[subagent] {line}" for line in service.inspect_subagents(child_session_id)]
         if command == "/session":
             return [f"[session] {line}" for line in service.inspect_session()]
         if command == "/sessions":

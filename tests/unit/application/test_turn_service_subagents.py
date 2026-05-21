@@ -15,6 +15,9 @@ class FakeRuntime:
             ),
         )
 
+    def inspect_subagent_transcript(self, child_session_id: str) -> tuple[str, ...]:
+        return (f"transcript {child_session_id}",)
+
 
 def test_turn_service_formats_subagent_summaries() -> None:
     from mycli.application.turn_service import format_subagent_summaries
@@ -24,4 +27,15 @@ def test_turn_service_formats_subagent_summaries() -> None:
     assert output == (
         "explore completed tools=2 demo:sub:turn_1:abcd1234 "
         "description=Find docs"
+    )
+
+
+def test_turn_service_formats_child_transcript_request() -> None:
+    from mycli.application.turn_service import TurnService
+
+    service = object.__new__(TurnService)
+    service._runtime = FakeRuntime()
+
+    assert service.inspect_subagents("demo:sub:turn_1:abcd1234") == (
+        "transcript demo:sub:turn_1:abcd1234",
     )
