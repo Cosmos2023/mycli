@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from threading import Lock
+from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
@@ -161,6 +162,35 @@ class SubAgentService:
         return (self._transcript_header(child_session_id),) + tuple(
             self._format_transcript_item(item) for item in items
         )
+
+    def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
+        deadline = monotonic() + timeout_seconds
+        with self._run_state_lock:
+            runs = tuple(self._running_background.items())
+        for child_session_id, run in runs:
+            remaining = max(0.0, deadline - monotonic())
+            try:
+                run.future.result(timeout=remaining)
+            except TimeoutError:
+                failed = SubAgentResult(
+                    status="failed",
+                    report=self._xml_report(
+                        agent=run.invocation.agent_type,
+                        status="failed",
+                        tool_calls=run.tool_calls,
+                        child_session_id=child_session_id,
+                        body="Background sub-agent shutdown timeout.",
+                        limit=8000,
+                    ),
+                    child_session_id=child_session_id,
+                    tool_calls=run.tool_calls,
+                    error="Background sub-agent shutdown timeout.",
+                )
+                self._mark_background_finished(run.invocation, failed, run.started_at)
+        if self._owns_background_executor:
+            shutdown = getattr(self._background_executor, "shutdown", None)
+            if callable(shutdown):
+                shutdown(wait=False)
 
     def _run_background(
         self,

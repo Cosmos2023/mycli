@@ -345,3 +345,35 @@ def test_recent_runs_are_read_through_state_lock() -> None:
     service.recent_runs()
 
     assert lock.enter_count >= 2
+
+
+def test_shutdown_marks_unfinished_background_runs_failed() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=HoldingBackgroundExecutor(),
+        max_concurrent_background_tasks=1,
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    service.shutdown(timeout_seconds=0)
+
+    summary = service.recent_runs()[0]
+    assert started.status == "running"
+    assert summary.child_session_id == started.child_session_id
+    assert summary.status == "failed"
+    assert summary.error == "Background sub-agent shutdown timeout."
