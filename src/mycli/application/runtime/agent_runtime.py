@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 
 from mycli.domain.conversation import Conversation, Message, Role
 from mycli.domain.tooling.contributed_tools import (
@@ -339,6 +340,7 @@ class AgentRuntime:
             tool_router=ToolRouter(tool_registry=self._tool_registry),
             tool_specs=dict(self._tool_registry.specs or {}),
         )
+        self._sub_agent_model_request_lock = Lock()
         child_requester = RuntimeChildTurnRequester(
             requester=self._model_turn_requester,
             tool_exposure_builder=self._child_tool_exposure,
@@ -347,6 +349,7 @@ class AgentRuntime:
                 tool_router=ToolRouter(tool_registry=self._tool_registry),
                 allow_tools=True,
             ),
+            model_request_lock=self._sub_agent_model_request_lock,
         )
         self._sub_agent_child_loop = SubAgentChildLoop(
             requester=child_requester,

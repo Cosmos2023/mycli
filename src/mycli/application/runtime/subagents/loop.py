@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import Lock
 from typing import Protocol
 
 from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
@@ -94,6 +95,7 @@ class RuntimeChildTurnRequester:
     requester: RuntimeModelTurnRequester
     tool_exposure_builder: Callable[[tuple[str, ...]], ToolExposure]
     tool_renderer: Callable[[ToolExposure], list[ModelToolDefinition]]
+    model_request_lock: Lock | None = None
 
     def request_child_turn(
         self,
@@ -104,11 +106,22 @@ class RuntimeChildTurnRequester:
     ) -> ChildTurn:
         del child_session_id
         exposure = self.tool_exposure_builder(tool_names)
-        turn_result, _streamed = self.requester.request_model_turn(
-            runtime_items=self._runtime_items(messages),
-            legacy_messages=self._legacy_messages(messages),
-            tools=self.tool_renderer(exposure),
-        )
+        runtime_items = self._runtime_items(messages)
+        legacy_messages = self._legacy_messages(messages)
+        tools = self.tool_renderer(exposure)
+        if self.model_request_lock is None:
+            turn_result, _streamed = self.requester.request_model_turn(
+                runtime_items=runtime_items,
+                legacy_messages=legacy_messages,
+                tools=tools,
+            )
+        else:
+            with self.model_request_lock:
+                turn_result, _streamed = self.requester.request_model_turn(
+                    runtime_items=runtime_items,
+                    legacy_messages=legacy_messages,
+                    tools=tools,
+                )
         return self._project_turn(turn_result)
 
     def _runtime_items(self, messages: list[dict[str, object]]) -> list[RuntimeItem]:
