@@ -9,6 +9,7 @@
 - P0 上下文稳定化：13K L4 buffer、reactive compact、L4 recent-file rehydration、L4 TEXT ONLY prompt guard、provider input token 统计与 session rebind 恢复。
 - P1 工具安全与可观测性：`/context`、`/usage`、Bash safety 第一批、专用工具 reroute、Read snapshot、Edit pre-read/stale snapshot/no-op/size/secret-like guard。
 - P2 capability pack：chat-completions/Anthropic provider stream、BashOutput + `/bashes`、session file history + `/changes`、permission precedence v1、CLI diff activity rendering。
+- P3 sub-agent follow-up：child transcript sidechain、`/subagents <child_session_id>` inspection、显式 in-process background `Task` mode、background concurrency cap、model request lock、sidechain write lock、shutdown failed-state cleanup。
 
 当前决策：
 
@@ -89,7 +90,7 @@
 | 5.5 | 三层记忆 | ⚠️ | 语义/情节/工作记忆 + embedding 检索 | 子字符串匹配 |
 | 5.6 | CLAUDE.md 逐级合并 | ❌ | 全局 → 项目 → 本地，支持 @path 导入 | 无 |
 | 5.7 | autoMemory | ❌ | /memory 自动写入， compaction 保留 | 无 |
-| 5.8 | Transcript sidechain | ❌ | 子 agent 对话独立记录 | 无 |
+| 5.8 | Transcript sidechain | ⚠️ | 子 agent 对话独立记录 | Child sub-agent history 已按 child session id 持久化并可用 `/subagents <child_session_id>` 检查；不是 Claude-style 完整 JSONL sidechain |
 
 ## 6. Prompt 工程
 
@@ -105,7 +106,7 @@
 
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
-| 7.1 | 5 种 agent 模式 | ⚠️ | sync / async / fork / worktree / remote | P3 覆盖 sync in-process `Task`；async/fork/worktree/remote 仍开放 |
+| 7.1 | 5 种 agent 模式 | ⚠️ | sync / async / fork / worktree / remote | P3 覆盖 sync in-process `Task`；P3 follow-up 增加显式 in-process background mode；fork/worktree/remote 仍开放 |
 | 7.2 | Fork 缓存共享 | ❌ | fork agent 复用父 cache 前缀，1/10 价格 | 仍开放；P3 明确延后到 P4，因为需要字节级一致 prompt 前缀验证 |
 | 7.3 | 权限隔离 | ⚠️ | 子 agent 权限最小化，不能绕过父权限 | P3 覆盖工具 scope denylist 和无 nested approval UI；OS/process sandbox 仍开放 |
 | 7.4 | 工具集隔离 | ✅ | 子 agent 独立工具子集 | P3 通过 parent exposure / requested / profile / denylist / policy resolver 落地 |
