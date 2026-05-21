@@ -18,10 +18,12 @@ class FakeRequester:
     def __init__(self, turns: list[FakeTurn]) -> None:
         self.turns = turns
         self.requests = 0
+        self.seen_messages: list[list[dict[str, object]]] = []
 
     def request_child_turn(self, *, messages, tool_names, child_session_id):
-        del messages, tool_names, child_session_id
+        del tool_names, child_session_id
         self.requests += 1
+        self.seen_messages.append([dict(message) for message in messages])
         return self.turns.pop(0)
 
 
@@ -93,6 +95,8 @@ def test_child_loop_executes_tool_then_returns_final_text() -> None:
     assert result.tool_calls == 1
     assert executor.calls[0].name == "Read"
     assert executor.tool_scopes == [("Read",)]
+    assert requester.seen_messages[1][-1]["role"] == "tool"
+    assert requester.seen_messages[1][-1]["tool_call_id"] == "call_1"
 
 
 def test_child_loop_stops_at_no_progress_limit() -> None:

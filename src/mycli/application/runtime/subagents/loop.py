@@ -276,6 +276,7 @@ class SubAgentChildLoop:
                     {
                         "role": "tool",
                         "tool_name": call.name,
+                        "tool_call_id": call.call_id,
                         "content": self._formatter.format(call.name, result),
                     }
                 )

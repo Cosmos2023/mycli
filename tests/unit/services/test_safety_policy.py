@@ -13,6 +13,21 @@ def test_safety_policy_auto_allows_workspace_reads() -> None:
     assert decision.kind is DecisionKind.AUTO_ALLOW
 
 
+def test_safety_policy_auto_allows_task_delegation() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(
+            name="Task",
+            arguments={
+                "description": "Inspect README",
+                "agent_type": "explore",
+                "allowed_tools": ["Read"],
+            },
+            reason="delegate bounded exploration",
+        )
+    )
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+
+
 def test_safety_policy_requires_choice_for_git_push() -> None:
     decision = SafetyPolicy().evaluate(
         ToolCall(name="Bash", arguments={"command": "git push origin main"}, reason="publish")
