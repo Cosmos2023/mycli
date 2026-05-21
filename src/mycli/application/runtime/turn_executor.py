@@ -545,6 +545,7 @@ class TurnExecutor:
             runtime_items = runtime._build_runtime_items(request_shape=request_shape)
             legacy_messages = runtime._build_messages(request_shape=request_shape)
             try:
+                request_started_at = runtime._monotonic()
                 try:
                     turn_result, turn_streamed_chunks = runtime._request_model_turn(
                         runtime_items=runtime_items,
@@ -559,6 +560,12 @@ class TurnExecutor:
                     if fallback_model_active:
                         runtime._restore_model()
                         fallback_model_active = False
+                self._maybe_emit_heartbeat(
+                    request_started_at=request_started_at,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    activity_events=activity_events,
+                )
                 usage_payload = turn_result.metadata.get("usage")
                 runtime._trace_cache_shape_diagnostic(
                     turn_id=turn_id,
@@ -1002,6 +1009,32 @@ class TurnExecutor:
 
         return TurnRecoveryAction(next_state=loop_state)
 
+    def _maybe_emit_heartbeat(
+        self,
+        *,
+        request_started_at: float,
+        progress_updates: list[str],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        activity_events: list[ActivityEvent],
+    ) -> None:
+        runtime = self._runtime
+        if not runtime._config.heartbeat_enabled:
+            return
+        elapsed = runtime._monotonic() - request_started_at
+        if elapsed < runtime._config.heartbeat_interval_seconds:
+            return
+        message = "[heartbeat] model request still running"
+        progress_updates.append(message)
+        activity_events.append(ActivityEvent(kind="heartbeat", message=message))
+        if stream_sink is None:
+            return
+        try:
+            stream_sink(RuntimeStreamEvent(kind="heartbeat", text=message))
+        except Exception:
+            activity_events.append(
+                ActivityEvent(kind="stream_sink_error", message="heartbeat sink failed")
+            )
+
     def _finalize_interrupted_turn(
         self,
         *,
@@ -1033,6 +1066,7 @@ class TurnExecutor:
             item=TurnItem(
                 type=TurnItemType.WARNING,
                 text=interrupt_warning,
+                metadata={"recovery_kind": "interrupted_turn_saved"},
             ),
         )
         runtime._save_runtime_state(
@@ -1045,6 +1079,7 @@ class TurnExecutor:
                 user_message=user_message,
                 conversation=tuple(conversation.messages),
                 plan_state=current_plan_state,
+                suspend_reason=StopReason.INTERRUPTED,
             ),
         )
         return runtime._finalize_response(
@@ -1059,7 +1094,7 @@ class TurnExecutor:
             user_message=user_message,
             started_at=started_at,
             status=TurnStatus.INTERRUPTED,
-            stop_reason=StopReason.MODEL_ERROR,
+            stop_reason=StopReason.INTERRUPTED,
             turn_items=turn_items,
             context_baseline=latest_context_baseline,
         )

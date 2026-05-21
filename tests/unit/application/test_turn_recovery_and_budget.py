@@ -15,6 +15,7 @@ from mycli.domain.runtime import (
     ModelTurnResult,
     RuntimeBlock,
     RuntimeItem,
+    RuntimeStreamEvent,
     StopReason,
     TurnItemType,
     TurnStatus,
@@ -170,6 +171,20 @@ class FallbackModelAdapter:
                 RuntimeItem(
                     role="assistant",
                     blocks=(RuntimeBlock(type="text", text="Recovered on fallback model"),),
+                ),
+            ),
+            done=True,
+        )
+
+
+class SlowSuccessfulAdapter:
+    def next_turn(self, *, items, tools):
+        del items, tools
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Done after silence"),),
                 ),
             ),
             done=True,
@@ -385,6 +400,35 @@ def test_turn_executor_output_token_limit_escalates_and_recovers(
     )
 
 
+def test_turn_executor_emits_heartbeat_without_model_visible_context(tmp_path: Path) -> None:
+    ticks = [0.0]
+
+    def monotonic() -> float:
+        ticks[0] += 2.0
+        return ticks[0]
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=SlowSuccessfulAdapter(),
+    )
+    runtime._monotonic = monotonic
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        heartbeat_enabled=True,
+        heartbeat_interval_seconds=1.0,
+    )
+    stream_events: list[RuntimeStreamEvent] = []
+
+    response = runtime.handle_user_turn("inspect", stream_sink=stream_events.append)
+
+    assert response.assistant_message == "Done after silence"
+    assert any(event.kind == "heartbeat" for event in stream_events)
+    assert any("[heartbeat]" in update for update in response.progress_updates)
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    assert all("[heartbeat]" not in (item.text or "") for item in history)
+
+
 def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
     tmp_path: Path,
 ) -> None:
@@ -398,9 +442,15 @@ def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
 
     assert response.turn is not None
     assert response.turn.status is TurnStatus.INTERRUPTED
-    assert response.turn.stop_reason is StopReason.MODEL_ERROR
+    assert response.turn.stop_reason is StopReason.INTERRUPTED
+    suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+    assert suspended is not None
+    assert suspended.suspend_reason is StopReason.INTERRUPTED
     assert any(
-        item.type is TurnItemType.WARNING and item.text and "interrupt" in item.text.lower()
+        item.type is TurnItemType.WARNING
+        and item.text
+        and "interrupt" in item.text.lower()
+        and item.metadata.get("recovery_kind") == "interrupted_turn_saved"
         for item in response.turn.items
     )
 

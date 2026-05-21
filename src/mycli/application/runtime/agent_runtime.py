@@ -214,6 +214,7 @@ class AgentRuntime:
         self._tool_registry = tool_registry
         self._config = config
         self._recovery_sleep = time.sleep
+        self._monotonic = time.monotonic
         self._approval_service = approval_service or ApprovalService()
         self._tool_result_formatter = ToolResultFormatter()
         self._token_counter = TokenCounter()
