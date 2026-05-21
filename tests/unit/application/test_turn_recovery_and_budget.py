@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mycli.application.runtime.recovery import RetryBackoffPolicy
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.runtime.turn_executor import (
     BudgetNudge,
@@ -10,6 +11,7 @@ from mycli.application.runtime.turn_executor import (
     _apply_l4_recent_file_hints,
 )
 from mycli.domain.runtime import (
+    AgentConfig,
     ModelTurnResult,
     RuntimeBlock,
     RuntimeItem,
@@ -120,6 +122,31 @@ class InterruptOnceThenDoneAdapter:
         )
 
 
+class RetryTwiceThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        if self.calls <= 2:
+            raise ModelResponseError(
+                "rate limited",
+                stop_reason=StopReason.RATE_LIMITED,
+                is_retryable=True,
+                failure_kind="rate_limited",
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Recovered after backoff"),),
+                ),
+            ),
+            done=True,
+        )
+
+
 def _runtime_reminder_text(items: list[RuntimeItem]) -> str:
     return "\n".join(
         block.text or ""
@@ -163,6 +190,41 @@ def test_l4_recent_file_hints_are_added_once() -> None:
     assert reminders == duplicate
     assert len(reminders) == 1
     assert "src/a.py, src/b.py" in reminders[0]
+
+
+def test_retry_backoff_policy_calculates_capped_delays() -> None:
+    policy = RetryBackoffPolicy(base_seconds=0.25, multiplier=2.0, max_seconds=1.0)
+
+    assert policy.delay_for_attempt(1) == 0.25
+    assert policy.delay_for_attempt(2) == 0.5
+    assert policy.delay_for_attempt(3) == 1.0
+    assert policy.delay_for_attempt(4) == 1.0
+
+
+def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
+    sleeps: list[float] = []
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=RetryTwiceThenDoneAdapter(),
+    )
+    runtime._recovery_sleep = sleeps.append
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        transport_retry_limit=2,
+    )
+
+    response = runtime.handle_user_turn("inspect")
+
+    assert response.assistant_message == "Recovered after backoff"
+    assert sleeps == [0.25, 0.5]
+    assert response.turn is not None
+    warnings = [
+        item for item in response.turn.items if item.type is TurnItemType.WARNING
+    ]
+    assert warnings[0].metadata["recovery_kind"] == "retry"
+    assert warnings[0].metadata["failure_kind"] == "rate_limited"
+    assert warnings[0].metadata["delay_seconds"] == 0.25
 
 
 def test_turn_executor_context_window_recovery_adds_retry_reminder() -> None:

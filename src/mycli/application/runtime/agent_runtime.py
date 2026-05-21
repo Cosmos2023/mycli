@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
+import time
 
 from mycli.domain.conversation import Conversation, Message, Role
 from mycli.domain.tooling.contributed_tools import (
@@ -212,6 +213,7 @@ class AgentRuntime:
         self._model_adapter = model_adapter
         self._tool_registry = tool_registry
         self._config = config
+        self._recovery_sleep = time.sleep
         self._approval_service = approval_service or ApprovalService()
         self._tool_result_formatter = ToolResultFormatter()
         self._token_counter = TokenCounter()

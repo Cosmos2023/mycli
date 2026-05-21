@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from mycli.application.runtime.recovery import (
+    RetryBackoffPolicy,
+    is_transient_recovery_failure,
+    retry_metadata,
+)
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     ActivityEvent,
@@ -589,11 +594,14 @@ class TurnExecutor:
                         item=TurnItem(
                             type=TurnItemType.WARNING,
                             text=recovery_action.warning_text,
+                            metadata=recovery_action.metadata,
                         ),
                     )
                     activity_events.append(
                         ActivityEvent(kind="model_error", message=recovery_action.warning_text)
                     )
+                    if recovery_action.delay_seconds > 0:
+                        runtime._recovery_sleep(recovery_action.delay_seconds)
                     if recovery_action.invoke_pre_compact_hook:
                         runtime._hook_manager.execute(
                             HookPoint.PRE_COMPACT,
@@ -891,12 +899,18 @@ class TurnExecutor:
                 ),
             )
 
-        if exc.is_retryable or stop_reason is StopReason.TRANSPORT_FAILED:
-            if loop_state.transport_retries >= 2:
+        if is_transient_recovery_failure(
+            failure_kind=failure_kind,
+            is_retryable=exc.is_retryable or stop_reason is StopReason.TRANSPORT_FAILED,
+        ):
+            max_attempts = max(0, self._runtime._config.transport_retry_limit)
+            if loop_state.transport_retries >= max_attempts:
                 return TurnRecoveryAction(next_state=loop_state)
             attempt = loop_state.transport_retries + 1
+            delay_seconds = RetryBackoffPolicy().delay_for_attempt(attempt)
+            recovery_failure_kind = failure_kind or "transport_error"
             warning_text = (
-                f"Temporary model transport failure. Retrying request ({attempt}/2) with the current turn state."
+                f"Temporary model transport failure. Retrying request ({attempt}/{max_attempts}) with the current turn state."
             )
             return TurnRecoveryAction(
                 should_retry=True,
@@ -915,6 +929,13 @@ class TurnExecutor:
                     output_token_retries=loop_state.output_token_retries,
                     context_recovery_stage=loop_state.context_recovery_stage,
                     reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                ),
+                delay_seconds=delay_seconds,
+                metadata=retry_metadata(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    delay_seconds=delay_seconds,
+                    failure_kind=recovery_failure_kind,
                 ),
             )
 
@@ -1000,6 +1021,8 @@ class TurnRecoveryAction:
     next_state: LoopState = LoopState()
     invoke_pre_compact_hook: bool = False
     escalated_max_output_tokens: int | None = None
+    delay_seconds: float = 0.0
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 def _apply_l4_recent_file_hints(
