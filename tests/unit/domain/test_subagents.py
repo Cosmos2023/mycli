@@ -85,3 +85,76 @@ def test_summary_preserves_result_status_and_session() -> None:
     assert summary.status == "completed"
     assert summary.tool_calls == 2
     assert summary.child_session_id == "demo:sub:turn_1:abcd1234"
+
+
+def test_invocation_defaults_to_sync_mode() -> None:
+    invocation = SubAgentInvocation(
+        agent_type="explore",
+        description="Find entry points",
+        allowed_tools=("Read",),
+        parent_session_id="demo",
+        parent_turn_id="turn_1",
+    )
+
+    assert invocation.mode == "sync"
+
+
+def test_invocation_accepts_background_mode() -> None:
+    invocation = SubAgentInvocation(
+        agent_type="explore",
+        description="Find entry points",
+        allowed_tools=("Read",),
+        parent_session_id="demo",
+        parent_turn_id="turn_1",
+        mode="background",
+    )
+
+    assert invocation.mode == "background"
+
+
+def test_invalid_invocation_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="mode"):
+        SubAgentInvocation(
+            agent_type="explore",
+            description="Find entry points",
+            allowed_tools=("Read",),
+            parent_session_id="demo",
+            parent_turn_id="turn_1",
+            mode="fork",
+        )
+
+
+def test_run_summary_includes_lifecycle_fields() -> None:
+    invocation = SubAgentInvocation(
+        agent_type="review",
+        description="Review diff",
+        allowed_tools=("Read",),
+        parent_session_id="demo",
+        parent_turn_id="turn_1",
+        mode="background",
+    )
+    result = SubAgentResult(
+        status="running",
+        report='<sub-agent-report agent="review" status="running">started</sub-agent-report>',
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_calls=0,
+    )
+
+    summary = SubAgentRunSummary.from_result(
+        invocation=invocation,
+        result=result,
+        started_at="2026-05-21T00:00:00+00:00",
+        completed_at=None,
+    )
+
+    assert summary.mode == "background"
+    assert summary.parent_session_id == "demo"
+    assert summary.parent_turn_id == "turn_1"
+    assert summary.started_at == "2026-05-21T00:00:00+00:00"
+    assert summary.completed_at is None
+
+
+def test_budget_defaults_include_background_concurrency_cap() -> None:
+    budget = SubAgentBudget()
+
+    assert budget.max_concurrent_background_tasks == 2

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 
 SubAgentStatus = str
+SubAgentMode = str
 
 
 def _non_blank(value: str, field_name: str) -> str:
@@ -20,12 +21,20 @@ def _unique_non_blank(values: tuple[str, ...], field_name: str) -> tuple[str, ..
     return unique
 
 
+def _mode(value: str) -> str:
+    normalized = value.strip()
+    if normalized not in {"sync", "background"}:
+        raise ValueError("Sub-agent mode must be 'sync' or 'background'.")
+    return normalized
+
+
 @dataclass(slots=True, frozen=True)
 class SubAgentBudget:
     max_turns: int = 8
     max_tool_calls: int = 20
     no_progress_turn_limit: int = 3
     report_char_limit: int = 8000
+    max_concurrent_background_tasks: int = 2
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -33,6 +42,7 @@ class SubAgentBudget:
             "max_tool_calls",
             "no_progress_turn_limit",
             "report_char_limit",
+            "max_concurrent_background_tasks",
         ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"Sub-agent {field_name} must be positive.")
@@ -82,6 +92,7 @@ class SubAgentInvocation:
     allowed_tools: tuple[str, ...]
     parent_session_id: str
     parent_turn_id: str
+    mode: SubAgentMode = "sync"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agent_type", _non_blank(self.agent_type, "agent_type"))
@@ -101,6 +112,7 @@ class SubAgentInvocation:
             "parent_turn_id",
             _non_blank(self.parent_turn_id, "parent_turn_id"),
         )
+        object.__setattr__(self, "mode", _mode(self.mode))
 
 
 @dataclass(slots=True, frozen=True)
@@ -129,6 +141,12 @@ class SubAgentRunSummary:
     status: SubAgentStatus
     child_session_id: str
     tool_calls: int
+    mode: SubAgentMode = "sync"
+    parent_session_id: str = ""
+    parent_turn_id: str = ""
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
 
     @classmethod
     def from_result(
@@ -136,6 +154,8 @@ class SubAgentRunSummary:
         *,
         invocation: SubAgentInvocation,
         result: SubAgentResult,
+        started_at: str | None = None,
+        completed_at: str | None = None,
     ) -> SubAgentRunSummary:
         return cls(
             agent_type=invocation.agent_type,
@@ -143,12 +163,19 @@ class SubAgentRunSummary:
             status=result.status,
             child_session_id=result.child_session_id,
             tool_calls=result.tool_calls,
+            mode=invocation.mode,
+            parent_session_id=invocation.parent_session_id,
+            parent_turn_id=invocation.parent_turn_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            error=result.error,
         )
 
 
 __all__ = [
     "SubAgentBudget",
     "SubAgentInvocation",
+    "SubAgentMode",
     "SubAgentProfile",
     "SubAgentResult",
     "SubAgentRunSummary",
