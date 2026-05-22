@@ -10,6 +10,7 @@
 - P1 工具安全与可观测性：`/context`、`/usage`、Bash safety 第一批、专用工具 reroute、Read snapshot、Edit pre-read/stale snapshot/no-op/size/secret-like guard。
 - P2 capability pack：chat-completions/Anthropic provider stream、BashOutput + `/bashes`、session file history + `/changes`、permission precedence v1、CLI diff activity rendering。
 - P3 sub-agent follow-up：child transcript sidechain、`/subagents <child_session_id>` inspection、显式 in-process background `Task` mode、background concurrency cap、model request lock、sidechain write lock、shutdown failed-state cleanup。
+- P4 agent loop recovery：provider failure taxonomy、retry backoff evidence、explicit fallback model、configurable output token recovery、loop-boundary heartbeat、interrupted stop reason。
 
 当前决策：
 
@@ -43,14 +44,14 @@
 
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
-| 2.1 | 7个Continue点 | ⚠️ | PTL drain / reactive compact / OTK escalate / OTK recovery×3 / model fallback / Ctrl+C / stop hook | reactive compact retry 已有；其余 continue 点缺失 |
+| 2.1 | 7个Continue点 | ⚠️ | PTL drain / reactive compact / OTK escalate / OTK recovery×3 / model fallback / Ctrl+C / stop hook | reactive compact retry、transport/rate-limit backoff evidence、configurable OTK recovery、explicit fallback model、Ctrl+C interrupted stop reason、loop-boundary heartbeat 已有；stop hook 与 Claude 式完整 continue lattice 仍缺 |
 | 2.2 | AsyncGenerator 流式 + 反压 | ❌ | generator.return() 级联关闭所有嵌套 | 同步阻塞 |
 | 2.3 | 流式工具执行 | ❌ | SSE 收到 content_block_stop 立刻派发，不等待整个响应 | 收到完整响应后执行 |
 | 2.4 | hasAttemptedReactiveCompact 防死循环 | ✅ | 单布尔值防 compact→retry→compact 死循环 | reactive compact 同 turn 最多一次 |
-| 2.5 | OTK 三层升级 | ❌ | 8K→64K 静默升级，后续 recovery message，最后才 surface error | 直接 fail |
-| 2.6 | 529 fallback 机制 | ❌ | 3 次 529 → Opus→Sonnet 降级 | 无 |
-| 2.7 | 401 OAuth token 刷新 + 重试 | ❌ | 401 → refresh → retry once | 无 |
-| 2.8 | Persistent mode heartbeat | ❌ | 30s heartbeat yield "I'm still here" 防 K8s kill | 无 |
+| 2.5 | OTK 三层升级 | ⚠️ | 8K→64K 静默升级，后续 recovery message，最后才 surface error | output token limit taxonomy + configurable escalation/retry + restore default max output tokens 已有；不是 Claude 固定三层策略 |
+| 2.6 | 529 fallback 机制 | ⚠️ | 3 次 529 → Opus→Sonnet 降级 | 529/provider overload 已分类为 retryable，retry budget exhausted 后可尝试显式 `fallback_model`；不做自动 Opus/Sonnet 选择 |
+| 2.7 | 401 OAuth token 刷新 + 重试 | ⚠️ | 401 → refresh → retry once | 401/403 已分类为 `auth_error` / `AUTH_FAILED`，便于上层 hook；尚无 OAuth refresh 实现 |
+| 2.8 | Persistent mode heartbeat | ⚠️ | 30s heartbeat yield "I'm still here" 防 K8s kill | loop-boundary heartbeat progress/stream event 已有且不进模型上下文；blocking HTTP in-flight timer 仍缺 |
 | 2.9 | cch attestation | ❌ | Bun/Zig 层客户端认证，JS 代码绕不过 | 无 |
 
 ## 3. 工具执行
@@ -174,6 +175,6 @@
 
 1. Sub-agent 后续增强：补 async mailbox、fork cache sharing、worktree/remote agent、coordinator/team 与 `/batch`。
 2. CLI experience：statusline/context%、路径补全、viewMode、交互式 diff。
-3. Agent loop recovery：OTK 升级、529 fallback、401 refresh、Ctrl+C resume/continue 点。
+3. Agent loop recovery：stop hook、OAuth refresh、blocking HTTP in-flight heartbeat、Claude 式完整 continue lattice。
 4. Prompt cache 稳定性：动态边界、beta header latch、模型切换缓存隔离。
 5. MCP resources/prompts/permission 管理：defer loading 继续暂缓，先补可观测与权限边界。
