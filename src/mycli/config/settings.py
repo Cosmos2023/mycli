@@ -166,7 +166,7 @@ def resolve_config(
         or user_config.get("output_recovery_retry_limit")
         or 3
     )
-    heartbeat_enabled_raw = env.get("MYCLI_HEARTBEAT_ENABLED")
+    heartbeat_enabled_raw: object | None = env.get("MYCLI_HEARTBEAT_ENABLED")
     if heartbeat_enabled_raw is None:
         heartbeat_enabled_raw = (
             project_config["heartbeat_enabled"]
