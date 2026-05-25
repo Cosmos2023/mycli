@@ -954,6 +954,17 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_usage(self) -> tuple[str, ...]:
             return ("session=demo", "turns=1")
 
+        def inspect_status(self) -> tuple[str, ...]:
+            return (
+                "session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no",
+            )
+
+        def inspect_view(self) -> tuple[str, ...]:
+            return ("view_mode=default",)
+
+        def set_view_mode(self, mode: str) -> tuple[str, ...]:
+            return (f"view_mode={mode}",)
+
         def resume_session(self, session_id=None) -> tuple[str, ...]:
             return (f"resumed {session_id or 'demo'}", "messages=3")
 
@@ -983,6 +994,11 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         "[context] budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider"
     ]
     assert list(handler("/usage")) == ["[usage] session=demo", "[usage] turns=1"]
+    assert list(handler("/status")) == [
+        "[status] session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no"
+    ]
+    assert list(handler("/view")) == ["[view] view_mode=default"]
+    assert list(handler("/view focus")) == ["[view] view_mode=focus"]
     assert list(handler("/resume backlog")) == [
         "[session] resumed backlog",
         "[session] messages=3",
@@ -1006,6 +1022,35 @@ def test_turn_service_inspect_context_reports_empty_metrics(tmp_path: Path) -> N
     )
 
     assert service.inspect_context() == ("no context metrics available",)
+
+
+def test_turn_service_inspect_status_reports_session_model_and_context(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "deepseek",
+            "MYCLI_PROTOCOL": "chat_completions",
+        },
+    )
+    service._observability_service.metrics.record_context_window(
+        {
+            "input_tokens": 300,
+            "max_tokens": 1200,
+            "usage_ratio": 0.25,
+            "source": "provider",
+        }
+    )
+
+    assert service.inspect_status() == (
+        "session=demo model=gpt-test provider=deepseek/chat_completions context=25.0% tokens=300/1200 pending=no suspended=no",
+    )
 
 
 def test_turn_service_inspect_context_reports_budget_and_compaction(tmp_path: Path) -> None:

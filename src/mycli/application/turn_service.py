@@ -14,6 +14,7 @@ from mycli.domain.runtime import (
     RuntimeStreamEvent,
     TurnItemType,
     TurnResponse,
+    ViewMode,
 )
 from mycli.domain.subagents import SubAgentRunSummary
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
@@ -414,6 +415,49 @@ class TurnService:
                 f"source={snapshot.l4_last_source or 'none'}"
             )
         return tuple(lines)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        snapshot = self._observability_service.snapshot()
+        context_window = snapshot.context_window
+        input_tokens = self._int_metric(context_window.get("input_tokens"))
+        total_tokens = self._int_metric(context_window.get("total_tokens"))
+        max_tokens = self._int_metric(context_window.get("max_tokens"))
+        max_tokens = max_tokens or self._config.max_prompt_tokens
+        token_count = input_tokens if input_tokens > 0 else total_tokens
+        usage_ratio = context_window.get("usage_ratio")
+        context = "unknown"
+        tokens = ""
+        if isinstance(usage_ratio, (int, float)) and not isinstance(usage_ratio, bool):
+            context = f"{float(usage_ratio):.1%}"
+        elif token_count > 0 and max_tokens > 0:
+            context = f"{(token_count / max_tokens):.1%}"
+        if token_count > 0 and max_tokens > 0:
+            tokens = f" tokens={token_count}/{max_tokens}"
+        pending = self._session_service.load_pending_decision(self._config.session_id)
+        suspended = self._session_service.load_suspended_turn(self._config.session_id)
+        return (
+            f"session={self._config.session_id} "
+            f"model={self._config.model} "
+            f"provider={self._config.provider.value}/{self._config.protocol.value} "
+            f"context={context}"
+            f"{tokens} "
+            f"pending={'yes' if pending is not None else 'no'} "
+            f"suspended={'yes' if suspended is not None else 'no'}",
+        )
+
+    def inspect_view(self) -> tuple[str, ...]:
+        return (f"view_mode={self._config.view_mode.value}",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        try:
+            view_mode = ViewMode(mode.strip().lower())
+        except ValueError:
+            allowed = ", ".join(item.value for item in ViewMode)
+            return (f"unsupported view_mode={mode}; allowed={allowed}",)
+        self._config = replace(self._config, view_mode=view_mode)
+        if self._runtime is not None:
+            self._runtime.rebind_session(self._config)
+        return (f"view_mode={view_mode.value}",)
 
     def inspect_usage(self) -> tuple[str, ...]:
         turn_count = 0

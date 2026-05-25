@@ -39,6 +39,21 @@ def test_run_repl_prints_help_and_stops_on_quit() -> None:
     assert outputs[-1] == "Bye."
 
 
+def test_run_repl_prints_statusline_before_prompt_when_provider_exists() -> None:
+    outputs: list[str] = []
+    scripted_inputs = iter(["/quit"])
+
+    run_repl(
+        turn_handler=lambda _message: "unused",
+        statusline_provider=lambda: ("session=demo context=unknown",),
+        input_func=lambda _prompt: next(scripted_inputs),
+        output_func=outputs.append,
+    )
+
+    assert outputs[0] == "[status] session=demo context=unknown"
+    assert outputs[-1] == "Bye."
+
+
 def test_run_repl_routes_numeric_decision_when_pending() -> None:
     outputs: list[str] = []
     scripted_inputs = iter(["3", "/quit"])

@@ -23,6 +23,8 @@ def handle_slash_command(command: str) -> str:
                 "/undo",
                 "/resume <session>",
                 "/fork [source] <new-session> [message-index]",
+                "/status",
+                "/view [default|verbose|focus]",
                 "/stats",
                 "/context",
                 "/usage",
@@ -60,6 +62,13 @@ def build_command_handler(
             return [f"[session] {line}" for line in service.inspect_session()]
         if command == "/sessions":
             return [f"[session] {line}" for line in service.inspect_sessions()]
+        if command == "/status":
+            return [f"[status] {line}" for line in service.inspect_status()]
+        if command.startswith("/view"):
+            parts = command.split(maxsplit=1)
+            if len(parts) == 1:
+                return [f"[view] {line}" for line in service.inspect_view()]
+            return [f"[view] {line}" for line in service.set_view_mode(parts[1])]
         if command == "/stats":
             return [f"[stats] {line}" for line in service.inspect_stats()]
         if command == "/context":
@@ -106,9 +115,13 @@ def run_repl(
     decision_handler: Callable[[str], Iterable[str]] | None = None,
     pending_decision_provider: Callable[[], bool] | None = None,
     command_handler: Callable[[str], Iterable[str]] | None = None,
+    statusline_provider: Callable[[], Iterable[str]] | None = None,
 ) -> None:
     while True:
         try:
+            if statusline_provider is not None:
+                for line in statusline_provider():
+                    output_func(f"[status] {line}")
             raw = input_func("> ").strip()
         except (EOFError, KeyboardInterrupt):
             output_func("Bye.")
