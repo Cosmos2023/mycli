@@ -16,6 +16,7 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    ViewMode,
 )
 from mycli.domain.tool_exposure import (
     ToolExposure,
@@ -43,6 +44,13 @@ def test_agent_config_exposes_recovery_defaults(tmp_path: Path) -> None:
     assert config.output_recovery_retry_limit == 3
     assert config.heartbeat_enabled is True
     assert config.heartbeat_interval_seconds == 30.0
+
+
+def test_agent_config_exposes_cli_view_defaults(tmp_path: Path) -> None:
+    config = AgentConfig(workspace_root=tmp_path)
+
+    assert config.view_mode is ViewMode.DEFAULT
+    assert config.statusline_enabled is True
 
 
 def test_risk_level_values_are_stringy() -> None:

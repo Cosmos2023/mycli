@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Mapping
 
 from mycli.domain.providers import parse_protocol, parse_provider
-from mycli.domain.runtime import AgentConfig, ReasoningEffort
+from mycli.domain.runtime import AgentConfig, ReasoningEffort, ViewMode
 from mycli.infrastructure.providers import (
     infer_provider_from_base_url,
     profile_for_provider,
@@ -41,6 +41,17 @@ def _parse_optional_bool(value: object) -> bool | None:
         if normalized in {"false", "0", "no", "off"}:
             return False
     return None
+
+
+def _parse_view_mode(value: object) -> ViewMode:
+    raw = str(value or ViewMode.DEFAULT.value).strip().lower()
+    try:
+        return ViewMode(raw)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in ViewMode)
+        raise ValueError(
+            f"Unsupported view_mode '{raw}'. Supported values: {allowed}."
+        ) from exc
 
 
 def _parse_optional_float(value: object) -> float | None:
@@ -180,6 +191,20 @@ def resolve_config(
         or user_config.get("heartbeat_interval_seconds")
         or 30.0
     )
+    view_mode_value = (
+        env.get("MYCLI_VIEW_MODE")
+        or project_config.get("view_mode")
+        or user_config.get("view_mode")
+        or ViewMode.DEFAULT.value
+    )
+    statusline_enabled_raw: object | None = env.get("MYCLI_STATUSLINE_ENABLED")
+    if statusline_enabled_raw is None:
+        statusline_enabled_raw = (
+            project_config["statusline_enabled"]
+            if "statusline_enabled" in project_config
+            else user_config.get("statusline_enabled")
+        )
+    statusline_enabled_value = _parse_optional_bool(statusline_enabled_raw)
     legacy_reasoning_effort = (
         env.get("MYCLI_REASONING_EFFORT")
         or project_config.get("reasoning_effort")
@@ -313,6 +338,10 @@ def resolve_config(
         output_recovery_retry_limit=int(str(output_recovery_retry_limit_value)),
         heartbeat_enabled=True if heartbeat_enabled_value is None else heartbeat_enabled_value,
         heartbeat_interval_seconds=float(str(heartbeat_interval_seconds_value)),
+        view_mode=_parse_view_mode(view_mode_value),
+        statusline_enabled=True
+        if statusline_enabled_value is None
+        else statusline_enabled_value,
         reasoning_effort=reasoning_effort,
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from mycli.domain.runtime import ViewMode
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.config.settings import resolve_config
 
@@ -158,6 +159,51 @@ def test_config_service_reads_recovery_settings(tmp_path: Path) -> None:
     assert config.output_recovery_retry_limit == 2
     assert config.heartbeat_enabled is False
     assert config.heartbeat_interval_seconds == 12.5
+
+
+def test_config_service_reads_cli_view_settings(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    config_path = workspace / ".mycli" / "config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "\n".join(
+            [
+                'provider = "openai"',
+                'model = "primary-model"',
+                'view_mode = "focus"',
+                "statusline_enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.view_mode is ViewMode.FOCUS
+    assert config.statusline_enabled is False
+
+
+def test_config_service_rejects_unknown_view_mode(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="Unsupported view_mode"):
+        resolve_config(
+            cli_args={"session": "demo"},
+            env={"MYCLI_VIEW_MODE": "cinema"},
+            cwd=workspace,
+            home=home_dir,
+        )
 
 
 def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_path: Path) -> None:

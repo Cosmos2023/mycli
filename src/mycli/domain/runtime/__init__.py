@@ -87,6 +87,12 @@ class ReasoningEffort(StrEnum):
     XHIGH = "xhigh"
 
 
+class ViewMode(StrEnum):
+    DEFAULT = "default"
+    VERBOSE = "verbose"
+    FOCUS = "focus"
+
+
 class DecisionKind(StrEnum):
     NEEDS_CHOICE = "needs_choice"
     AUTO_ALLOW = "auto_allow"
@@ -116,6 +122,8 @@ class AgentConfig:
     output_recovery_retry_limit: int = 3
     heartbeat_enabled: bool = True
     heartbeat_interval_seconds: float = 30.0
+    view_mode: ViewMode = ViewMode.DEFAULT
+    statusline_enabled: bool = True
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
     thinking_enabled: bool = True
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
@@ -277,6 +285,7 @@ __all__ = [
     "TurnContextSection",
     "TurnContextSectionType",
     "TurnItemType",
+    "ViewMode",
     "ToolExposure",
     "ToolExposureEntry",
     "ToolExposureKind",
