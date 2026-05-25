@@ -11,6 +11,7 @@
 - P2 capability pack：chat-completions/Anthropic provider stream、BashOutput + `/bashes`、session file history + `/changes`、permission precedence v1、CLI diff activity rendering。
 - P3 sub-agent follow-up：child transcript sidechain、`/subagents <child_session_id>` inspection、显式 in-process background `Task` mode、background concurrency cap、model request lock、sidechain write lock、shutdown failed-state cleanup。
 - P4 agent loop recovery：provider failure taxonomy、retry backoff evidence、explicit fallback model、configurable output token recovery、loop-boundary heartbeat、interrupted stop reason。
+- P5 CLI experience：line-oriented statusline/context%、view modes、workspace `@path` autocomplete、diff folding、`/status` 与 `/view`。
 
 当前决策：
 
@@ -36,7 +37,7 @@
 | 1.12 | defer_loading MCP tools | ❌ | stub 注册，完整 schema 首次使用才加载 | 工具 schema 全量注入；MCP defer 近期暂缓 |
 | 1.13 | 13K auto-compact buffer | ✅ | 压缩操作本身的预留空间 | L4 触发阈值已纳入 `compaction_l4_buffer_tokens`，默认 13K |
 | 1.14 | Compaction 断路器 | ⚠️ | 3 次连续失败停止，经 telemetry 调优（省 250K API calls/day） | 断路器在，未经调优 |
-| 1.15 | /context 实时可视化 | ⚠️ | 彩色条形图 + 分类占比 | 文本版 `/context` 已有；未做 rich/TUI 条形图 |
+| 1.15 | /context 实时可视化 | ⚠️ | 彩色条形图 + 分类占比 | 文本版 `/context` 已有；P5 statusline 增加 context%；未做 rich/TUI 条形图 |
 | 1.16 | /usage 会话费用追踪 | ✅ | 实时 token 费用 | `/usage` 已按 session 汇总 provider usage/cache tokens；价格未配置时显示 unavailable |
 | 1.17 | Microcompact 时间路径 | ❌ | 缓存过期(>60min)后本地清旧 tool_result(keep recent 5) | 近期不做，避免主动改写历史破坏 cache hit |
 
@@ -131,14 +132,14 @@
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
 | 9.1 | 流式输出 | ⚠️ | SSE token-by-token 渲染 | P2 已有 chat-completions/Anthropic provider token/event 流式输出和 `[stream]` CLI 渲染；Responses 路径和 async backpressure 仍缺 |
-| 9.2 | Diff 展示 | ⚠️ | 带行号 diff | P2 已把 Edit diff 提升到 turn item 并在 CLI activity 渲染 `[diff]` 行；缺 rich 高亮/折叠/交互 |
+| 9.2 | Diff 展示 | ⚠️ | 带行号 diff | P2 已把 Edit diff 提升到 turn item；P5 增加编号 diff、折叠省略计数和 rich syntax helper；缺交互式 diff |
 | 9.3 | 语法高亮 | ❌ | pygments/rich | 无 |
 | 9.4 | spinner 可定制 | ❌ | spinnerVerbs / spinnerTips / spinnerTipsOverride | 无 |
 | 9.5 | voice mode | ❌ | hold-to-talk 语音输入 | 无 |
-| 9.6 | statusLine 可定制 | ❌ | command 类型，可显示 context% | 无 |
-| 9.7 | viewMode | ❌ | default/verbose/focus | 无 |
+| 9.6 | statusLine 可定制 | ⚠️ | command 类型，可显示 context% | P5 有内置文本 statusline/context%；还不是 Claude 式可定制 command |
+| 9.7 | viewMode | ⚠️ | default/verbose/focus | P5 有 default/verbose/focus 渲染模式；不是 Claude Code 完整模式体系 |
 | 9.8 | editorMode | ❌ | normal/vim | 禅模式输入 |
-| 9.9 | 自动补全 | ❌ | 文件路径 @ 补全 | 无 |
+| 9.9 | 自动补全 | ⚠️ | 文件路径 @ 补全 | P5 有 workspace `@path` readline 补全；非通用补全框架 |
 | 9.10 | /rename 终端标题 | ❌ | 自动或手动更新终端 tab 标题 | 无 |
 
 ## 10. 生产基础设施

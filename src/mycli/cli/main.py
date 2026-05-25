@@ -176,10 +176,11 @@ def main(
 
     def render_options() -> RenderOptions:
         config = service._config
+        view_mode = getattr(config, "view_mode", ViewMode.DEFAULT)
         return RenderOptions(
-            view_mode=config.view_mode,
-            show_statusline=config.statusline_enabled,
-            diff_max_lines=240 if config.view_mode is ViewMode.VERBOSE else 80,
+            view_mode=view_mode,
+            show_statusline=bool(getattr(config, "statusline_enabled", True)),
+            diff_max_lines=240 if view_mode is ViewMode.VERBOSE else 80,
         )
 
     def handle_user_message(raw: str) -> list[str]:
@@ -197,17 +198,21 @@ def main(
     def resolve_pending_decision(choice: str) -> list[str]:
         response = service.resolve_pending_decision(choice)
         options = render_options()
+        progress_lines = (
+            list(response.progress_updates)
+            if options.view_mode is ViewMode.DEFAULT
+            else render_progress_lines(response, options=options)
+        )
         return [
             *render_activity_lines(response, options=options),
             *render_stream_lines(response, options=options),
             *render_error_lines(response),
-            *render_progress_lines(response, options=options),
+            *progress_lines,
             response.assistant_message,
         ]
 
-    cleanup_autocomplete = install_path_autocomplete(
-        workspace_root=service._config.workspace_root
-    )
+    workspace_root = getattr(service._config, "workspace_root", cwd or Path.cwd())
+    cleanup_autocomplete = install_path_autocomplete(workspace_root=workspace_root)
     try:
         run_repl(
             handle_user_message,
@@ -219,7 +224,9 @@ def main(
             ),
             command_handler=build_command_handler(service),
             statusline_provider=lambda: (
-                service.inspect_status() if service._config.statusline_enabled else ()
+                service.inspect_status()
+                if getattr(service._config, "statusline_enabled", True)
+                else ()
             ),
             input_func=input_func,
             output_func=output_func,
