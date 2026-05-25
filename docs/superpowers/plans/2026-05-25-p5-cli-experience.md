@@ -234,7 +234,7 @@ def test_turn_service_inspect_status_reports_session_model_and_context(tmp_path:
             "MYCLI_PROTOCOL": "chat_completions",
         },
     )
-    service._observability_service.record_context_window(
+    service._observability_service.metrics.record_context_window(
         {
             "input_tokens": 300,
             "max_tokens": 1200,
@@ -248,7 +248,7 @@ def test_turn_service_inspect_status_reports_session_model_and_context(tmp_path:
     )
 ```
 
-If `ObservabilityService` does not expose `record_context_window`, use the existing method used by context tests in the same file to populate context metrics.
+Use `service._observability_service.metrics.record_context_window(...)`; `record_context_window` belongs to the metrics registry, not to `ObservabilityService` itself.
 
 - [ ] **Step 2: Write failing command handler test**
 
@@ -397,6 +397,21 @@ At the top of the loop, before `input_func("> ")`:
 ```
 
 Keep behavior unchanged when provider is `None`.
+
+In `src/mycli/cli/main.py`, ensure `main()` accepts injectable IO parameters and passes them through to `run_repl(...)`:
+
+```python
+def main(
+    argv: list[str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    env: dict[str, str] | None = None,
+    input_func: Callable[[str], str] = input,
+    output_func: Callable[[str], Any] = print,
+) -> int:
+    ...
+    run_repl(..., input_func=input_func, output_func=output_func)
+```
 
 - [ ] **Step 8: Run focused tests**
 
@@ -623,9 +638,9 @@ Use options in `resolve_pending_decision()`.
 Pass a dynamic statusline provider. The enabled check must happen inside the closure because `/view` can update config during the REPL session:
 
 ```python
-        statusline_provider=lambda: service.inspect_status()
-        if service._config.statusline_enabled
-        else (),
+        statusline_provider=lambda: (
+            service.inspect_status() if service._config.statusline_enabled else ()
+        ),
 ```
 
 - [ ] **Step 6: Run focused tests**
