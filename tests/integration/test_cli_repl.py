@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from mycli.cli.autocomplete import path_completion_candidates
 from mycli.cli.main import build_turn_service, handle_slash_command, main, run_repl
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.domain.runtime import ActivityEvent, RuntimeStreamEvent, TurnResponse, ViewMode
@@ -37,6 +38,25 @@ def test_run_repl_prints_help_and_stops_on_quit() -> None:
 
     assert any("/memory" in line for line in outputs)
     assert outputs[-1] == "Bye."
+
+
+def test_path_completion_candidates_complete_workspace_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hi", encoding="utf-8")
+    (workspace / "src").mkdir()
+    (workspace / "src" / "main.py").write_text("print('hi')", encoding="utf-8")
+
+    assert path_completion_candidates(workspace, "@R") == ("@README.md",)
+    assert path_completion_candidates(workspace, "@src/") == ("@src/main.py",)
+
+
+def test_path_completion_candidates_reject_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "secret.txt").write_text("no", encoding="utf-8")
+
+    assert path_completion_candidates(workspace, "@../") == ()
 
 
 def test_run_repl_prints_statusline_before_prompt_when_provider_exists() -> None:
@@ -138,7 +158,16 @@ def test_main_outputs_stream_events_before_final_answer(monkeypatch, tmp_path: P
 
     class FakeService:
         def __init__(self) -> None:
-            self._config = type("Config", (), {"session_id": "demo"})()
+            self._config = type(
+                "Config",
+                (),
+                {
+                    "session_id": "demo",
+                    "workspace_root": tmp_path,
+                    "view_mode": ViewMode.DEFAULT,
+                    "statusline_enabled": False,
+                },
+            )()
             self._session_service = type(
                 "Sessions",
                 (),
@@ -185,6 +214,7 @@ def test_main_applies_focus_view_mode_to_turn_rendering(monkeypatch, tmp_path: P
                 (),
                 {
                     "session_id": "demo",
+                    "workspace_root": tmp_path,
                     "view_mode": ViewMode.FOCUS,
                     "statusline_enabled": False,
                 },

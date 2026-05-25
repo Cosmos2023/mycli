@@ -9,6 +9,7 @@ import tempfile
 from typing import Any
 from datetime import UTC, datetime
 
+from mycli.cli.autocomplete import install_path_autocomplete
 from mycli.cli.bootstrap import build_turn_service
 from mycli.cli.repl import (
     build_command_handler,
@@ -204,20 +205,27 @@ def main(
             response.assistant_message,
         ]
 
-    run_repl(
-        handle_user_message,
-        session_id=service._config.session_id,
-        decision_handler=resolve_pending_decision,
-        pending_decision_provider=lambda: (
-            service._session_service.load_pending_decision(service._config.session_id) is not None
-        ),
-        command_handler=build_command_handler(service),
-        statusline_provider=lambda: (
-            service.inspect_status() if service._config.statusline_enabled else ()
-        ),
-        input_func=input_func,
-        output_func=output_func,
+    cleanup_autocomplete = install_path_autocomplete(
+        workspace_root=service._config.workspace_root
     )
+    try:
+        run_repl(
+            handle_user_message,
+            session_id=service._config.session_id,
+            decision_handler=resolve_pending_decision,
+            pending_decision_provider=lambda: (
+                service._session_service.load_pending_decision(service._config.session_id)
+                is not None
+            ),
+            command_handler=build_command_handler(service),
+            statusline_provider=lambda: (
+                service.inspect_status() if service._config.statusline_enabled else ()
+            ),
+            input_func=input_func,
+            output_func=output_func,
+        )
+    finally:
+        cleanup_autocomplete()
     return 0
 
 
