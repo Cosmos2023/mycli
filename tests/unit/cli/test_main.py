@@ -945,6 +945,42 @@ def test_render_diff_lines_adds_line_numbers_and_markers() -> None:
     ]
 
 
+def test_render_diff_lines_reports_omitted_tail_count() -> None:
+    diff = "\n".join(f"+line {index}" for index in range(1, 6))
+
+    assert render_diff_lines(diff, max_lines=3) == [
+        "   1 [+]+line 1",
+        "   2 [+]+line 2",
+        "   3 [+]+line 3",
+        "... 2 lines omitted",
+    ]
+
+
+def test_activity_diff_lines_reports_omitted_tail_count() -> None:
+    turn = TurnRecord(
+        thread_id="demo",
+        turn_id="turn_1",
+        status=TurnStatus.COMPLETED,
+        stop_reason=StopReason.ASSISTANT_COMPLETED,
+        started_at="2026-05-25T00:00:00Z",
+        completed_at="2026-05-25T00:00:01Z",
+        items=(
+            TurnItem(
+                type=TurnItemType.TOOL_RESULT,
+                text="Edited notes.txt",
+                tool_name="Edit",
+                metadata={"diff": "\n".join(f"+line {index}" for index in range(1, 6))},
+            ),
+        ),
+    )
+    response = TurnResponse(assistant_message="done", turn=turn)
+
+    assert render_activity_lines(
+        response,
+        options=RenderOptions(diff_max_lines=2),
+    )[-1] == "[diff] ... 3 lines omitted"
+
+
 def test_changes_command_renders_file_history_lines() -> None:
     service = SimpleNamespace(
         inspect_file_changes=lambda: ("snapshot_1 turn_1 Edit notes.txt",)

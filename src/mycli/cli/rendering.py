@@ -170,7 +170,9 @@ def _render_turn_activity_lines(turn: TurnRecord, *, options: RenderOptions) -> 
         if item.type == TurnItemType.TOOL_RESULT:
             diff = item.metadata.get("diff")
             if isinstance(diff, str) and diff:
-                lines.extend(_render_activity_diff_lines(diff))
+                lines.extend(
+                    _render_activity_diff_lines(diff, max_lines=options.diff_max_lines)
+                )
 
     _flush_reasoning_activity(lines, reasoning_label, reasoning_fragments)
     return lines
@@ -659,11 +661,12 @@ def render_diff_lines(diff: str, *, max_lines: int = 80) -> list[str]:
     if not diff:
         return []
     rendered: list[str] = []
-    for number, line in enumerate(diff.splitlines(), start=1):
-        if len(rendered) >= max_lines:
-            rendered.append(f"... truncated after {max_lines} lines")
-            break
+    lines = diff.splitlines()
+    for number, line in enumerate(lines[:max_lines], start=1):
         rendered.append(f"{number:>4} {_diff_prefix(line)}{line}")
+    omitted = len(lines) - max_lines
+    if omitted > 0:
+        rendered.append(f"... {omitted} lines omitted")
     return rendered
 
 
@@ -671,11 +674,12 @@ def _render_activity_diff_lines(diff: str, *, max_lines: int = 80) -> list[str]:
     if not diff:
         return []
     rendered: list[str] = []
-    for number, line in enumerate(diff.splitlines(), start=1):
-        if len(rendered) >= max_lines:
-            rendered.append(f"[diff] ... truncated after {max_lines} lines")
-            break
+    lines = diff.splitlines()
+    for number, line in enumerate(lines[:max_lines], start=1):
         rendered.append(f"[diff] {number:04d} {line}")
+    omitted = len(lines) - max_lines
+    if omitted > 0:
+        rendered.append(f"[diff] ... {omitted} lines omitted")
     return rendered
 
 
