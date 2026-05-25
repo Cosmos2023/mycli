@@ -11,6 +11,7 @@ from mycli.domain.runtime import (
     TurnItem,
     TurnItemType,
     TurnRecord,
+    ViewMode,
 )
 
 if TYPE_CHECKING:
@@ -48,6 +49,13 @@ class StreamingRenderState:
         return "".join(self._chunks)
 
 
+@dataclass(slots=True, frozen=True)
+class RenderOptions:
+    view_mode: ViewMode = ViewMode.DEFAULT
+    diff_max_lines: int = 80
+    show_statusline: bool = True
+
+
 def render_pending_decision(decision: PendingDecision) -> list[str]:
     option_labels = {
         DecisionAction.APPROVE_ONCE: "[1] 仅本次允许",
@@ -64,10 +72,15 @@ def render_pending_decision(decision: PendingDecision) -> list[str]:
     return rendered
 
 
-def render_activity_lines(response: object) -> list[str]:
+def render_activity_lines(
+    response: object,
+    *,
+    options: RenderOptions | None = None,
+) -> list[str]:
+    options = options or RenderOptions()
     raw_turn = getattr(response, "turn", None)
     if isinstance(raw_turn, TurnRecord):
-        turn_lines = _render_turn_activity_lines(raw_turn)
+        turn_lines = _render_turn_activity_lines(raw_turn, options=options)
         if turn_lines:
             return turn_lines
 
@@ -76,6 +89,8 @@ def render_activity_lines(response: object) -> list[str]:
         return []
     lines: list[str] = []
     for event in raw_events:
+        if options.view_mode is ViewMode.FOCUS and getattr(event, "kind", None) == "tool_exposure":
+            continue
         message = getattr(event, "message", None)
         if isinstance(message, str) and message:
             rendered = _render_activity_event_message(event)
@@ -83,11 +98,16 @@ def render_activity_lines(response: object) -> list[str]:
     return lines
 
 
-def render_progress_lines(response: object) -> list[str]:
+def render_progress_lines(
+    response: object,
+    *,
+    options: RenderOptions | None = None,
+) -> list[str]:
+    options = options or RenderOptions()
     raw_updates = getattr(response, "progress_updates", ())
     if not isinstance(raw_updates, tuple):
         return []
-    has_structured_activity = bool(render_activity_lines(response)) and isinstance(
+    has_structured_activity = bool(render_activity_lines(response, options=options)) and isinstance(
         getattr(response, "turn", None),
         TurnRecord,
     )
@@ -95,13 +115,17 @@ def render_progress_lines(response: object) -> list[str]:
     for update in raw_updates:
         if not isinstance(update, str) or not update:
             continue
+        if options.view_mode is ViewMode.FOCUS and not update.startswith(
+            ("[decision]", "[heartbeat]", "[resume]")
+        ):
+            continue
         if has_structured_activity and not update.startswith("[decision]"):
             continue
         lines.append(f"[progress] {update}")
     return lines
 
 
-def _render_turn_activity_lines(turn: TurnRecord) -> list[str]:
+def _render_turn_activity_lines(turn: TurnRecord, *, options: RenderOptions) -> list[str]:
     lines: list[str] = []
     reasoning_label: str | None = None
     reasoning_fragments: list[str] = []
@@ -134,6 +158,8 @@ def _render_turn_activity_lines(turn: TurnRecord) -> list[str]:
             TurnItemType.APPROVAL_RESOLUTION,
             TurnItemType.WARNING,
         }:
+            continue
+        if options.view_mode is ViewMode.FOCUS and item.type is TurnItemType.TOOL_EXPOSURE:
             continue
         _flush_reasoning_activity(lines, reasoning_label, reasoning_fragments)
         reasoning_label = None
@@ -541,9 +567,20 @@ def render_error_lines(response: object) -> list[str]:
     return lines
 
 
-def render_stream_lines(response: object) -> list[str]:
+def render_stream_lines(
+    response: object,
+    *,
+    options: RenderOptions | None = None,
+) -> list[str]:
+    options = options or RenderOptions()
+    if options.view_mode is ViewMode.FOCUS:
+        return []
     assistant_message = getattr(response, "assistant_message", None)
-    if isinstance(assistant_message, str) and assistant_message:
+    if (
+        options.view_mode is not ViewMode.VERBOSE
+        and isinstance(assistant_message, str)
+        and assistant_message
+    ):
         return []
     raw_chunks = getattr(response, "streamed_chunks", ())
     if not isinstance(raw_chunks, tuple):

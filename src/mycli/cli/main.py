@@ -16,6 +16,7 @@ from mycli.cli.repl import (
     run_repl,
 )
 from mycli.cli.rendering import (
+    RenderOptions,
     render_activity_lines,
     render_error_lines,
     render_pending_decision,
@@ -24,7 +25,7 @@ from mycli.cli.rendering import (
     render_stream_lines,
 )
 from mycli.config.settings import resolve_config
-from mycli.domain.runtime import RuntimeStreamEvent
+from mycli.domain.runtime import RuntimeStreamEvent, ViewMode
 from mycli.evaluation.runner import (
     EvaluationRunReport,
     EvaluationScenario,
@@ -172,11 +173,20 @@ def main(
         for line in render_runtime_stream_event(event):
             output_func(line)
 
+    def render_options() -> RenderOptions:
+        config = service._config
+        return RenderOptions(
+            view_mode=config.view_mode,
+            show_statusline=config.statusline_enabled,
+            diff_max_lines=240 if config.view_mode is ViewMode.VERBOSE else 80,
+        )
+
     def handle_user_message(raw: str) -> list[str]:
         response = service.handle_user_turn(raw, stream_sink=emit_stream_event)
-        rendered: list[str] = render_activity_lines(response)
+        options = render_options()
+        rendered: list[str] = render_activity_lines(response, options=options)
         rendered.extend(render_error_lines(response))
-        rendered.extend(render_progress_lines(response))
+        rendered.extend(render_progress_lines(response, options=options))
         rendered.extend(f"[plan] {step}" for step in response.plan_steps)
         if response.pending_decision is not None:
             rendered.extend(render_pending_decision(response.pending_decision))
@@ -185,11 +195,12 @@ def main(
 
     def resolve_pending_decision(choice: str) -> list[str]:
         response = service.resolve_pending_decision(choice)
+        options = render_options()
         return [
-            *render_activity_lines(response),
-            *render_stream_lines(response),
+            *render_activity_lines(response, options=options),
+            *render_stream_lines(response, options=options),
             *render_error_lines(response),
-            *response.progress_updates,
+            *render_progress_lines(response, options=options),
             response.assistant_message,
         ]
 
@@ -201,6 +212,9 @@ def main(
             service._session_service.load_pending_decision(service._config.session_id) is not None
         ),
         command_handler=build_command_handler(service),
+        statusline_provider=lambda: (
+            service.inspect_status() if service._config.statusline_enabled else ()
+        ),
         input_func=input_func,
         output_func=output_func,
     )

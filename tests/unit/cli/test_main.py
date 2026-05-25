@@ -17,10 +17,12 @@ from mycli.cli.main import (
     render_activity_lines,
 )
 from mycli.cli.rendering import (
+    RenderOptions,
     StreamingRenderState,
     render_diff_view,
     render_diff_lines,
     render_runtime_stream_event,
+    render_stream_lines,
     render_streaming_live_output,
     render_streaming_state_lines,
     render_tool_status,
@@ -39,6 +41,7 @@ from mycli.domain.runtime import (
     TurnRolloutEvent,
     TurnResponse,
     TurnStatus,
+    ViewMode,
 )
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.tools import ToolCall
@@ -181,6 +184,44 @@ def test_render_runtime_stream_event_suppresses_completed() -> None:
     assert render_runtime_stream_event(
         RuntimeStreamEvent(kind="completed", metadata={"response_status": "completed"})
     ) == []
+
+
+def test_focus_render_options_suppress_tool_exposure_and_stream_echo() -> None:
+    response = TurnResponse(
+        assistant_message="hello world",
+        streamed_chunks=("hello ", "world"),
+        turn=TurnRecord(
+            thread_id="demo",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            started_at="2026-05-25T00:00:00Z",
+            completed_at="2026-05-25T00:00:01Z",
+            items=(
+                TurnItem(
+                    type=TurnItemType.TOOL_EXPOSURE,
+                    text="Read, Grep",
+                    metadata={"tool_names": ["Read", "Grep"]},
+                ),
+            ),
+        ),
+    )
+    options = RenderOptions(view_mode=ViewMode.FOCUS)
+
+    assert render_activity_lines(response, options=options) == []
+    assert render_stream_lines(response, options=options) == []
+
+
+def test_verbose_render_options_keep_stream_lines_with_final_answer() -> None:
+    response = TurnResponse(
+        assistant_message="hello world",
+        streamed_chunks=("hello ", "world"),
+    )
+
+    assert render_stream_lines(
+        response,
+        options=RenderOptions(view_mode=ViewMode.VERBOSE),
+    ) == ["[stream] hello ", "[stream] world"]
 
 
 def test_build_turn_service_uses_chat_completions_when_protocol_is_explicitly_set(
