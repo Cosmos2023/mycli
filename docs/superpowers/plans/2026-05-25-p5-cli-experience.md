@@ -567,6 +567,7 @@ Change signatures:
 def render_activity_lines(response: object, *, options: RenderOptions | None = None) -> list[str]:
 def render_progress_lines(response: object, *, options: RenderOptions | None = None) -> list[str]:
 def render_stream_lines(response: object, *, options: RenderOptions | None = None) -> list[str]:
+def _render_turn_activity_lines(turn: TurnRecord, *, options: RenderOptions) -> list[str]:
 ```
 
 Rules:
@@ -575,7 +576,11 @@ Rules:
     options = options or RenderOptions()
 ```
 
-In `render_activity_lines`, if `options.view_mode is ViewMode.FOCUS`, filter lines containing `"Tool exposure:"`.
+In `render_activity_lines`, pass `options` into `_render_turn_activity_lines()`. If `options.view_mode is ViewMode.FOCUS`, filter structured tool exposure before rendering:
+
+- For `TurnRecord` items, skip items where `item.type is TurnItemType.TOOL_EXPOSURE`.
+- For raw `activity_events`, skip events where `event.kind == "tool_exposure"`.
+- Do not filter by rendered text such as `"Tool exposure:"`; those labels are presentation details.
 
 In `render_stream_lines`, keep current default behavior, but:
 
@@ -615,15 +620,7 @@ Use options in `handle_user_message()`:
 
 Use options in `resolve_pending_decision()`.
 
-Pass statusline provider:
-
-```python
-        statusline_provider=(
-            service.inspect_status if service._config.statusline_enabled else None
-        ),
-```
-
-If config may change via `/view`, pass a closure:
+Pass a dynamic statusline provider. The enabled check must happen inside the closure because `/view` can update config during the REPL session:
 
 ```python
         statusline_provider=lambda: service.inspect_status()
@@ -744,7 +741,7 @@ In `_render_activity_diff_lines()`:
         rendered.append(f"[diff] ... {omitted} lines omitted")
 ```
 
-Ensure `_render_turn_activity_lines()` passes `options.diff_max_lines` into `_render_activity_diff_lines()`.
+Ensure `_render_turn_activity_lines(turn, *, options: RenderOptions)` passes `options.diff_max_lines` into `_render_activity_diff_lines()`, and ensure `render_activity_lines(response, *, options=...)` passes the same options object into `_render_turn_activity_lines()`.
 
 - [ ] **Step 4: Run diff tests**
 
