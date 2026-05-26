@@ -16,8 +16,10 @@
 | `uv run ruff check src tests` | PASS |
 | `uv run mypy src/mycli` | PASS |
 | `uv run pytest -q` | PASS |
+| `printf '请使用 Read 工具读取 pyproject.toml，然后用一句话回答项目名和 CLI 入口点。\n/usage\n/session\n/quit\n' \| HOME="$(mktemp -d)" uv run mycli --plain --session p7-real-smoke-20260527013304` | PASS |
 
 ## Notes
 
 - Existing sessions without invoked skill snapshots resume normally and simply do not restore skill bodies until a skill is invoked again.
 - `runtime_reminders` no longer carries `[Compaction rehydration]` file snapshots.
+- Real DeepSeek-backed `mycli --plain` smoke exited 0, called `Read` on `pyproject.toml`, streamed the answer, reported `/usage` for one turn, and `/session` reported no pending decision or suspended turn.
