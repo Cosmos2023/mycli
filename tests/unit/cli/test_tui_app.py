@@ -81,3 +81,36 @@ def test_tui_escape_closes_suggestions(tmp_path: Path) -> None:
             assert app.suggestion_text == ""
 
     asyncio.run(run())
+
+
+def test_tui_context_command_opens_overlay(tmp_path: Path) -> None:
+    class Service(FakeService):
+        def inspect_context(self) -> tuple[str, ...]:
+            return ("budget input_tokens=3566 max_tokens=12000 usage_ratio=29.7%",)
+
+    app = MycliTuiApp(service=Service(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/context"
+            await pilot.press("enter")
+            assert "budget input_tokens=3566" in app.current_overlay_text
+            await pilot.press("escape")
+            assert app.current_overlay_text == ""
+
+    asyncio.run(run())
+
+
+def test_tui_clear_command_clears_transcript_view(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            app._write_transcript("hello")
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/clear"
+            await pilot.press("enter")
+            assert app.rendered_transcript == []
+
+    asyncio.run(run())
