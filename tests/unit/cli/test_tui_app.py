@@ -54,3 +54,30 @@ def test_tui_input_starts_focused(tmp_path: Path) -> None:
             assert app.query_one("#prompt-input").has_focus
 
     asyncio.run(run())
+
+
+def test_tui_slash_completion_filters_and_tab_accepts(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("/", "s", "t", "a")
+            assert "/status" in app.suggestion_text
+            await pilot.press("down")
+            await pilot.press("tab")
+            assert app.query_one("#prompt-input").value == "/stats"
+
+    asyncio.run(run())
+
+
+def test_tui_escape_closes_suggestions(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("/", "s")
+            assert app.suggestion_text
+            await pilot.press("escape")
+            assert app.suggestion_text == ""
+
+    asyncio.run(run())

@@ -4,12 +4,14 @@ from collections.abc import Callable
 from typing import Any
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal
 from textual.widgets import Input, RichLog, Static
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.repl import build_command_handler
+from mycli.cli.tui.completion import CompletionState
 from mycli.cli.tui.marks import startup_mark
 from mycli.cli.tui.status import format_bottom_status
 
@@ -28,6 +30,13 @@ class MycliTuiApp(App[int]):
         height: 3;
         layout: horizontal;
         padding: 0 1;
+    }
+    #suggestions {
+        height: auto;
+        max-height: 6;
+        margin: 0 1;
+        display: none;
+        text-style: dim;
     }
     #prompt-input {
         width: 1fr;
@@ -69,9 +78,11 @@ class MycliTuiApp(App[int]):
         self.status_right_text = ""
         self.suggestion_text = ""
         self.current_overlay_text = ""
+        self.completion = CompletionState(workspace_root=service._config.workspace_root)
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True)
+        yield Static("", id="suggestions")
         with Container(id="input-row"):
             yield Input(placeholder=">", id="prompt-input")
         with Horizontal(id="bottom-status"):
@@ -112,11 +123,51 @@ class MycliTuiApp(App[int]):
         self.rendered_transcript.append(text)
         self.query_one("#transcript", RichLog).write(renderable)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "prompt-input":
+            return
+        self.completion.update(event.value)
+        self._render_suggestions()
+
+    def on_key(self, event: events.Key) -> None:
+        if not self.completion.visible:
+            return
+        if event.key == "down":
+            self.completion.move_selection(1)
+            self._render_suggestions()
+            event.stop()
+        elif event.key == "up":
+            self.completion.move_selection(-1)
+            self._render_suggestions()
+            event.stop()
+        elif event.key == "tab":
+            selected = self.completion.accept_selected()
+            if selected is not None:
+                self.query_one("#prompt-input", Input).value = selected
+            self._render_suggestions()
+            event.stop()
+
+    def _render_suggestions(self) -> None:
+        suggestions = self.query_one("#suggestions", Static)
+        if not self.completion.visible:
+            self.suggestion_text = ""
+            suggestions.display = False
+            suggestions.update("")
+            return
+        lines: list[str] = []
+        for index, candidate in enumerate(self.completion.candidates[:6]):
+            prefix = "› " if index == self.completion.selected_index else "  "
+            lines.append(f"{prefix}{candidate}")
+        suggestions.display = True
+        self.suggestion_text = "\n".join(lines)
+        suggestions.update(self.suggestion_text)
+
     def action_interrupt(self) -> None:
         self.query_one("#prompt-input", Input).value = ""
 
     def action_close_overlay(self) -> None:
-        return None
+        self.completion.close()
+        self._render_suggestions()
 
 
 def run_tui(
