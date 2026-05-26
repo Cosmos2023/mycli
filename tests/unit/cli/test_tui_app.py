@@ -216,8 +216,8 @@ def test_tui_streams_assistant_text_before_turn_completes(tmp_path: Path) -> Non
             assert started.wait(timeout=1.0) is True
 
             assert app.streamed_answer_text == "hello world"
-            assert "hello world" in app.current_stream_text
-            assert not any(item == "hello world" for item in app.rendered_transcript)
+            assert "hello world" in app.rendered_transcript
+            assert app.rendered_transcript.count("hello world") == 1
 
             release.set()
             await pilot.pause(0.1)

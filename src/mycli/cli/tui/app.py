@@ -45,13 +45,6 @@ class MycliTuiApp(App[int]):
         margin: 0 1;
         text-style: dim;
     }
-    #assistant-stream {
-        height: auto;
-        max-height: 8;
-        margin: 0 1;
-        text-style: dim;
-        display: none;
-    }
     #input-row {
         height: 3;
         layout: horizontal;
@@ -100,6 +93,7 @@ class MycliTuiApp(App[int]):
         self.output_func = output_func
         self.command_handler = build_command_handler(service)
         self.rendered_transcript: list[str] = []
+        self._transcript_renderables: list[object] = []
         self.status_left_text = ""
         self.status_right_text = ""
         self.suggestion_text = ""
@@ -112,6 +106,7 @@ class MycliTuiApp(App[int]):
         self.current_execution_status = ""
         self.current_stream_text = ""
         self.streamed_answer_text = ""
+        self._stream_transcript_index: int | None = None
         self.turn_running = False
         self.turn_interrupted = False
 
@@ -119,7 +114,6 @@ class MycliTuiApp(App[int]):
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True)
         yield Static("", id="overlay")
         yield Static("", id="execution-status")
-        yield Static("", id="assistant-stream")
         yield Static("", id="suggestions")
         with Container(id="input-row"):
             yield Input(placeholder=">", id="prompt-input")
@@ -160,7 +154,14 @@ class MycliTuiApp(App[int]):
     def _write_transcript(self, renderable: object, *, plain_text: str | None = None) -> None:
         text = plain_text if plain_text is not None else str(renderable)
         self.rendered_transcript.append(text)
+        self._transcript_renderables.append(renderable)
         self.query_one("#transcript", RichLog).write(renderable)
+
+    def _redraw_transcript(self) -> None:
+        transcript = self.query_one("#transcript", RichLog)
+        transcript.clear()
+        for renderable in self._transcript_renderables:
+            transcript.write(renderable)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "prompt-input":
@@ -220,6 +221,7 @@ class MycliTuiApp(App[int]):
         if value == "/clear":
             self.query_one("#transcript", RichLog).clear()
             self.rendered_transcript.clear()
+            self._transcript_renderables.clear()
             return
         if value == "/release-notes":
             self._show_overlay(release_notes_text())
@@ -297,8 +299,8 @@ class MycliTuiApp(App[int]):
         self.current_execution_status = ""
         self.current_stream_text = ""
         self.streamed_answer_text = ""
+        self._stream_transcript_index = None
         self.query_one("#execution-status", Static).update("")
-        self._clear_assistant_stream()
 
     def action_close_overlay(self) -> None:
         self.completion.close()
@@ -312,21 +314,16 @@ class MycliTuiApp(App[int]):
         self._execution_phase = "thinking"
         self.streamed_answer_text = ""
         self.current_stream_text = ""
-        self.call_from_thread(self._clear_assistant_stream)
+        self._stream_transcript_index = None
         self.call_from_thread(self._refresh_execution_status)
         response = self.service.handle_user_turn(message, stream_sink=self._stream_event)
         if not self.turn_interrupted:
-            self.call_from_thread(
-                lambda: self._write_transcript(
-                    final_answer_renderable(response.assistant_message),
-                    plain_text=response.assistant_message,
-                )
-            )
+            self.call_from_thread(lambda: self._write_final_answer(response.assistant_message))
         self._turn_started_at = None
         self.turn_running = False
         self.current_execution_status = ""
         self.call_from_thread(lambda: self.query_one("#execution-status", Static).update(""))
-        self.call_from_thread(self._clear_assistant_stream)
+        self.current_stream_text = ""
         self.call_from_thread(self._refresh_bottom_status)
 
     def _stream_event(self, event: object) -> None:
@@ -376,19 +373,32 @@ class MycliTuiApp(App[int]):
         widget.update(status)
 
     def _render_assistant_stream(self) -> None:
-        widget = self.query_one("#assistant-stream", Static)
         if not self.current_stream_text:
-            widget.display = False
-            widget.update("")
             return
-        widget.display = True
-        widget.update(final_answer_renderable(self.current_stream_text))
+        if self._stream_transcript_index is None:
+            self._stream_transcript_index = len(self.rendered_transcript)
+            self._write_transcript(
+                final_answer_renderable(self.current_stream_text),
+                plain_text=self.current_stream_text,
+            )
+            return
+        self.rendered_transcript[self._stream_transcript_index] = self.current_stream_text
+        self._transcript_renderables[self._stream_transcript_index] = final_answer_renderable(
+            self.current_stream_text
+        )
+        self._redraw_transcript()
 
-    def _clear_assistant_stream(self) -> None:
-        self.current_stream_text = ""
-        widget = self.query_one("#assistant-stream", Static)
-        widget.display = False
-        widget.update("")
+    def _write_final_answer(self, answer: str) -> None:
+        if not answer:
+            return
+        if self._stream_transcript_index is not None:
+            self.rendered_transcript[self._stream_transcript_index] = answer
+            self._transcript_renderables[self._stream_transcript_index] = final_answer_renderable(
+                answer
+            )
+            self._redraw_transcript()
+            return
+        self._write_transcript(final_answer_renderable(answer), plain_text=answer)
 
 
 def run_tui(
