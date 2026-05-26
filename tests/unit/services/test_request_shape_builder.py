@@ -334,28 +334,28 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     assert [message.role for message in shape.provider_messages] == [
         "system",
         "user",
+        "user",
         "assistant",
         "tool",
-        "user",
         "user",
     ]
     assert [message.content for message in shape.provider_messages] == [
         "Stable system rules.",
+        "Runtime reminders: use compact answers\nAvailable skills:\n- code-review: Review code",
         "inspect README",
         "I will read README.",
         "README contents",
         "summarize the result",
-        "Runtime reminders: use compact answers\nAvailable skills:\n- code-review: Review code",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
         "user",
+        "user",
         "assistant",
         "tool",
         "user",
-        "user",
     ]
-    assert shape.provider_runtime_items[-2].blocks == (
+    assert shape.provider_runtime_items[-1].blocks == (
         RuntimeBlock(type="text", text="summarize the result"),
     )
     assert all(message.role != "developer" for message in shape.provider_messages)
@@ -377,17 +377,82 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     assert "Runtime reminders:" in provider_payload
     assert "Workspace root:" not in provider_payload
     assert "Available skills:" in provider_payload
-    assistant_message = shape.provider_messages[2]
+    assistant_message = shape.provider_messages[3]
     assert assistant_message.metadata["tool_calls"] == (tool_call,)
     assert assistant_message.metadata["model_metadata"] == {
         "deepseek": {"reasoning_content": "Need the README before answering."}
     }
     legacy_messages = RequestShapePayloadFormatter().legacy_messages(shape)
-    assert legacy_messages[2].content == "I will read README."
-    assert legacy_messages[2].tool_calls == (tool_call,)
-    assert legacy_messages[2].metadata == {
+    assert legacy_messages[3].content == "I will read README."
+    assert legacy_messages[3].tool_calls == (tool_call,)
+    assert legacy_messages[3].metadata == {
         "deepseek": {"reasoning_content": "Need the README before answering."}
     }
+
+
+def test_request_shape_builder_keeps_chat_transcript_context_before_tool_followup(
+    tmp_path: Path,
+) -> None:
+    tool_call = ToolCall(
+        name="Write",
+        arguments={"file_path": "note.txt", "content": "done"},
+        reason="write requested file",
+        call_id="call_write_1",
+    )
+
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="skill_catalog",
+                    title="Skill catalog",
+                    content="Available skills:\n- code-review: Review code",
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="write note"),
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=(tool_call,),
+                ),
+                Message(
+                    role="tool",
+                    content="Wrote note.txt",
+                    tool_call_id="call_write_1",
+                ),
+            ),
+            current_user_request="write note",
+        ),
+        tools=(_tool("Write"),),
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert "Available skills:" in shape.provider_messages[1].content
+    assert shape.provider_messages[-1].content == "Wrote note.txt"
+    assert [item.role for item in shape.provider_runtime_items] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert shape.provider_runtime_items[-1].blocks == (
+        RuntimeBlock(type="tool_result", text="Wrote note.txt", call_id="call_write_1"),
+    )
 
 
 def test_request_shape_builder_includes_runtime_reminders_in_chat_completions_payload(

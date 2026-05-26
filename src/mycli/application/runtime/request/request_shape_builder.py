@@ -162,9 +162,12 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderMessageShape, ...]:
+        transcript_context = self._render_transcript_delta_context(contract)
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
+        if transcript_context:
+            messages.append(ProviderMessageShape(role="user", content=transcript_context))
         for message in self._chat_completions_replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
@@ -178,9 +181,6 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
-        transcript_context = self._render_transcript_delta_context(contract)
-        if transcript_context:
-            messages.append(ProviderMessageShape(role="user", content=transcript_context))
         return tuple(messages)
 
     def _provider_runtime_items(
@@ -281,12 +281,20 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
+        transcript_context = self._render_transcript_delta_context(contract)
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
                 role="system",
                 blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
             )
         ]
+        if transcript_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=transcript_context),),
+                )
+            )
         for message in self._replay_messages(contract):
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
@@ -298,14 +306,6 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
-                )
-            )
-        transcript_context = self._render_transcript_delta_context(contract)
-        if transcript_context:
-            items.append(
-                ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=transcript_context),),
                 )
             )
         return tuple(items)
