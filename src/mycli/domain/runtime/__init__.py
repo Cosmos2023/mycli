@@ -18,6 +18,14 @@ from mycli.domain.runtime.blocks import (
     RuntimeItem as RuntimeItem,
     RuntimeRole as RuntimeRole,
 )
+from mycli.domain.runtime.compaction_rehydration import (
+    CompactionRehydrationContext as CompactionRehydrationContext,
+    FileRehydrationCandidate as FileRehydrationCandidate,
+    InvokedSkillSnapshot as InvokedSkillSnapshot,
+    RehydratedFile as RehydratedFile,
+    RehydratedSkill as RehydratedSkill,
+    RehydrationBudget as RehydrationBudget,
+)
 from mycli.domain.runtime.events import (
     RuntimeEvent as RuntimeEvent,
     RuntimeEventType as RuntimeEventType,
@@ -139,6 +147,12 @@ class AgentConfig:
     compaction_l4_carry_turns: int = 1
     compaction_l4_summarizer_model: str | None = None
     compaction_l4_trigger_ratios_by_model: dict[str, float] = field(default_factory=dict)
+    compaction_rehydration_file_max_total_tokens: int = 50_000
+    compaction_rehydration_file_max_item_tokens: int = 5_000
+    compaction_rehydration_skill_max_total_tokens: int = 25_000
+    compaction_rehydration_skill_max_item_tokens: int = 5_000
+    compaction_rehydration_max_files: int = 5
+    compaction_rehydration_max_skills: int = 5
     usage_input_cost_per_1k: float = 0.0
     usage_output_cost_per_1k: float = 0.0
     usage_cache_read_cost_per_1k: float = 0.0
@@ -247,16 +261,19 @@ __all__ = [
     "ActivityEvent",
     "BlockType",
     "BaselineFragment",
+    "CompactionRehydrationContext",
     "ContextBaseline",
     "DecisionAction",
     "DecisionKind",
     "ExecutionContext",
+    "FileRehydrationCandidate",
     "FragmentStability",
     "HistoryItem",
     "HistoryItemType",
     "InstructionContract",
     "InstructionFragment",
     "InstructionFragmentKind",
+    "InvokedSkillSnapshot",
     "ModelDecision",
     "ModelTurnResult",
     "PendingApproval",
@@ -270,6 +287,9 @@ __all__ = [
     "RequestFragmentKind",
     "RequestShape",
     "RiskLevel",
+    "RehydratedFile",
+    "RehydratedSkill",
+    "RehydrationBudget",
     "RuntimeBlock",
     "RuntimeEvent",
     "RuntimeEventType",

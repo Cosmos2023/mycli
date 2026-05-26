@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -5,10 +6,15 @@ import pytest
 from mycli.domain.runtime import (
     ActivityEvent,
     AgentConfig,
+    CompactionRehydrationContext,
     DecisionAction,
     DecisionKind,
+    FileRehydrationCandidate,
     PendingDecision,
     RiskLevel,
+    RehydratedFile,
+    RehydratedSkill,
+    RehydrationBudget,
     SessionCommandAllowance,
     StopReason,
     TurnItem,
@@ -16,7 +22,10 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    InstructionFragmentKind,
+    InvokedSkillSnapshot,
     ViewMode,
+    TurnContextSectionType,
 )
 from mycli.domain.tool_exposure import (
     ToolExposure,
@@ -57,6 +66,56 @@ def test_agent_config_exposes_tui_startup_mark_default(tmp_path: Path) -> None:
     config = AgentConfig(workspace_root=tmp_path)
 
     assert config.tui_startup_mark == "default"
+
+
+def test_agent_config_has_compaction_rehydration_defaults(tmp_path: Path) -> None:
+    config = AgentConfig(workspace_root=tmp_path)
+
+    assert config.compaction_rehydration_file_max_total_tokens == 50_000
+    assert config.compaction_rehydration_file_max_item_tokens == 5_000
+    assert config.compaction_rehydration_skill_max_total_tokens == 25_000
+    assert config.compaction_rehydration_skill_max_item_tokens == 5_000
+    assert config.compaction_rehydration_max_files == 5
+    assert config.compaction_rehydration_max_skills == 5
+
+
+def test_compaction_rehydration_types_are_exported() -> None:
+    invoked = InvokedSkillSnapshot(
+        name="code-review",
+        description="Review code",
+        source_path="/skills/code-review/SKILL.md",
+        body_digest="abc123",
+        cached_body_excerpt=None,
+        invoked_at=datetime(2026, 5, 27, tzinfo=UTC),
+        last_turn_id="turn_1",
+    )
+    context = CompactionRehydrationContext(
+        files=(
+            RehydratedFile(
+                path="src/app.py",
+                content="print('ok')",
+                token_count=3,
+                truncated=False,
+            ),
+        ),
+        invoked_skills=(
+            RehydratedSkill(
+                name=invoked.name,
+                description=invoked.description,
+                source_path=invoked.source_path,
+                body="Use focused review.",
+                token_count=4,
+                truncated=False,
+            ),
+        ),
+    )
+
+    assert context.files[0].path == "src/app.py"
+    assert context.invoked_skills[0].name == "code-review"
+    assert RehydrationBudget(max_total_tokens=10, max_item_tokens=5).max_item_tokens == 5
+    assert FileRehydrationCandidate(path="src/app.py", tool_name="Edit", sequence=1).kind == "edit"
+    assert TurnContextSectionType.COMPACTION_REHYDRATION == "compaction_rehydration"
+    assert InstructionFragmentKind.COMPACTION_REHYDRATION == "compaction_rehydration"
 
 
 def test_risk_level_values_are_stringy() -> None:
