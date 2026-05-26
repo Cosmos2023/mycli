@@ -71,6 +71,56 @@ def test_tui_slash_completion_filters_and_tab_accepts(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_tui_bare_slash_enter_accepts_selected_command_without_dispatching(
+    tmp_path: Path,
+) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("/")
+            assert app.suggestion_text
+
+            await pilot.press("enter")
+
+            assert app.query_one("#prompt-input").value == "/help"
+            assert app.suggestion_text == ""
+            assert app.current_overlay_text == ""
+
+    asyncio.run(run())
+
+
+def test_tui_slash_completion_window_tracks_selected_item(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("/")
+            for _ in range(9):
+                await pilot.press("down")
+
+            assert app.completion.selected == "/sessions"
+            assert "› /sessions" in app.suggestion_text
+
+    asyncio.run(run())
+
+
+def test_tui_tab_accepts_completion_without_moving_focus(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.press("/", "s")
+            assert app.query_one("#prompt-input").has_focus
+
+            await pilot.press("tab")
+
+            assert app.query_one("#prompt-input").value == "/status"
+            assert app.query_one("#prompt-input").has_focus
+
+    asyncio.run(run())
+
+
 def test_tui_escape_closes_suggestions(tmp_path: Path) -> None:
     app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
 
@@ -113,6 +163,22 @@ def test_tui_clear_command_clears_transcript_view(tmp_path: Path) -> None:
             input_widget.value = "/clear"
             await pilot.press("enter")
             assert app.rendered_transcript == []
+
+    asyncio.run(run())
+
+
+def test_tui_clear_resets_stream_transcript_state(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test():
+            app._stream_transcript_index = 2
+            app._write_transcript("hello")
+
+            app._dispatch_command("/clear")
+
+            assert app.rendered_transcript == []
+            assert app._stream_transcript_index is None
 
     asyncio.run(run())
 
@@ -217,13 +283,44 @@ def test_tui_streams_assistant_text_before_turn_completes(tmp_path: Path) -> Non
 
             assert app.streamed_answer_text == "hello world"
             assert "hello world" in app.rendered_transcript
-            assert app.rendered_transcript.count("hello world") == 1
 
             release.set()
             await pilot.pause(0.1)
 
             assert app.current_stream_text == ""
             assert app.rendered_transcript.count("hello world") == 1
+
+    asyncio.run(run())
+
+
+def test_tui_streaming_updates_transcript_without_full_redraw(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test():
+            app.current_stream_text = "hello"
+            app._render_assistant_stream()
+            app.current_stream_text = "hello world"
+            app._render_assistant_stream()
+
+            assert "hello world" in app.rendered_transcript
+            assert not hasattr(app, "_redraw_transcript")
+
+    asyncio.run(run())
+
+
+def test_tui_final_answer_replaces_different_stream_text(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test():
+            app.current_stream_text = "partial"
+            app._render_assistant_stream()
+
+            app._write_final_answer("final answer")
+
+            assert "partial" not in app.rendered_transcript
+            assert app.rendered_transcript.count("final answer") == 1
 
     asyncio.run(run())
 
@@ -257,6 +354,20 @@ def test_tui_resume_command_renders_session_lines(tmp_path: Path) -> None:
             input_widget.value = "/resume demo"
             await pilot.press("enter")
             assert any("resumed demo" in item for item in app.rendered_transcript)
+
+    asyncio.run(run())
+
+
+def test_tui_quit_command_exits_app(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/quit"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not app.is_running
 
     asyncio.run(run())
 

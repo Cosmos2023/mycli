@@ -4,15 +4,19 @@ from collections.abc import Callable
 from time import monotonic
 from typing import Any
 
+from rich.measure import measure_renderables
+from rich.segment import Segment
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal
+from textual.geometry import Size
+from textual.strip import Strip
 from textual.widgets import Input, RichLog, Static
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.repl import build_command_handler
-from mycli.cli.tui.completion import CompletionState
+from mycli.cli.tui.completion import CompletionState, slash_command_candidates
 from mycli.cli.tui.marks import startup_mark, startup_mark_names
 from mycli.cli.tui.overlays import overlay_text, release_notes_text
 from mycli.cli.tui.status import format_bottom_status
@@ -106,7 +110,12 @@ class MycliTuiApp(App[int]):
         self.current_execution_status = ""
         self.current_stream_text = ""
         self.streamed_answer_text = ""
+        self._last_rendered_stream_text = ""
         self._stream_transcript_index: int | None = None
+        self._stream_richlog_start_line: int | None = None
+        self._stream_richlog_line_count = 0
+        self._stream_render_pending = False
+        self._suppress_next_completion = False
         self.turn_running = False
         self.turn_interrupted = False
 
@@ -157,14 +166,13 @@ class MycliTuiApp(App[int]):
         self._transcript_renderables.append(renderable)
         self.query_one("#transcript", RichLog).write(renderable)
 
-    def _redraw_transcript(self) -> None:
-        transcript = self.query_one("#transcript", RichLog)
-        transcript.clear()
-        for renderable in self._transcript_renderables:
-            transcript.write(renderable)
-
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "prompt-input":
+            return
+        if self._suppress_next_completion:
+            self._suppress_next_completion = False
+            self.completion.close()
+            self._render_suggestions()
             return
         self.completion.update(event.value)
         self._render_suggestions()
@@ -174,6 +182,19 @@ class MycliTuiApp(App[int]):
             return
         value = event.value.strip()
         self._before_send_input = value
+        if (
+            self.completion.visible
+            and value.startswith("/")
+            and value not in slash_command_candidates()
+        ):
+            selected = self.completion.accept_selected()
+            if selected is not None:
+                self._suppress_next_completion = True
+                event.input.value = selected
+            self._render_suggestions()
+            return
+        self.completion.close()
+        self._render_suggestions()
         event.input.value = ""
         if not value:
             return
@@ -198,8 +219,11 @@ class MycliTuiApp(App[int]):
         elif event.key == "tab":
             selected = self.completion.accept_selected()
             if selected is not None:
-                self.query_one("#prompt-input", Input).value = selected
+                input_widget = self.query_one("#prompt-input", Input)
+                input_widget.value = selected
+                input_widget.focus()
             self._render_suggestions()
+            event.prevent_default()
             event.stop()
 
     def _render_suggestions(self) -> None:
@@ -210,7 +234,14 @@ class MycliTuiApp(App[int]):
             suggestions.update("")
             return
         lines: list[str] = []
-        for index, candidate in enumerate(self.completion.candidates[:6]):
+        start = _suggestion_window_start(
+            selected_index=self.completion.selected_index,
+            total=len(self.completion.candidates),
+            window_size=6,
+        )
+        visible_candidates = self.completion.candidates[start : start + 6]
+        for offset, candidate in enumerate(visible_candidates):
+            index = start + offset
             prefix = "› " if index == self.completion.selected_index else "  "
             lines.append(f"{prefix}{candidate}")
         suggestions.display = True
@@ -218,10 +249,20 @@ class MycliTuiApp(App[int]):
         suggestions.update(self.suggestion_text)
 
     def _dispatch_command(self, value: str) -> None:
+        if value == "/quit":
+            self.exit(0)
+            return
         if value == "/clear":
             self.query_one("#transcript", RichLog).clear()
             self.rendered_transcript.clear()
             self._transcript_renderables.clear()
+            self.current_stream_text = ""
+            self.streamed_answer_text = ""
+            self._last_rendered_stream_text = ""
+            self._stream_transcript_index = None
+            self._stream_richlog_start_line = None
+            self._stream_richlog_line_count = 0
+            self._stream_render_pending = False
             return
         if value == "/release-notes":
             self._show_overlay(release_notes_text())
@@ -299,7 +340,11 @@ class MycliTuiApp(App[int]):
         self.current_execution_status = ""
         self.current_stream_text = ""
         self.streamed_answer_text = ""
+        self._last_rendered_stream_text = ""
         self._stream_transcript_index = None
+        self._stream_richlog_start_line = None
+        self._stream_richlog_line_count = 0
+        self._stream_render_pending = False
         self.query_one("#execution-status", Static).update("")
 
     def action_close_overlay(self) -> None:
@@ -314,7 +359,11 @@ class MycliTuiApp(App[int]):
         self._execution_phase = "thinking"
         self.streamed_answer_text = ""
         self.current_stream_text = ""
+        self._last_rendered_stream_text = ""
         self._stream_transcript_index = None
+        self._stream_richlog_start_line = None
+        self._stream_richlog_line_count = 0
+        self._stream_render_pending = False
         self.call_from_thread(self._refresh_execution_status)
         response = self.service.handle_user_turn(message, stream_sink=self._stream_event)
         if not self.turn_interrupted:
@@ -336,7 +385,9 @@ class MycliTuiApp(App[int]):
                 self.streamed_answer_text += text
                 self.current_stream_text = self.streamed_answer_text
                 self._execution_phase = "thinking"
-                self.call_from_thread(self._render_assistant_stream)
+                if not self._stream_render_pending:
+                    self._stream_render_pending = True
+                    self.call_from_thread(self._render_assistant_stream)
                 self.call_from_thread(self._refresh_execution_status)
             return
         if kind == "reasoning":
@@ -373,32 +424,74 @@ class MycliTuiApp(App[int]):
         widget.update(status)
 
     def _render_assistant_stream(self) -> None:
+        self._stream_render_pending = False
         if not self.current_stream_text:
             return
+        if self.current_stream_text == self._last_rendered_stream_text:
+            return
+        self._last_rendered_stream_text = self.current_stream_text
         if self._stream_transcript_index is None:
             self._stream_transcript_index = len(self.rendered_transcript)
-            self._write_transcript(
-                final_answer_renderable(self.current_stream_text),
-                plain_text=self.current_stream_text,
+            self.rendered_transcript.append(self.current_stream_text)
+            self._transcript_renderables.append(final_answer_renderable(self.current_stream_text))
+            transcript = self.query_one("#transcript", RichLog)
+            self._stream_richlog_start_line = len(transcript.lines)
+            transcript.write(final_answer_renderable(self.current_stream_text))
+            self._stream_richlog_line_count = len(transcript.lines) - (
+                self._stream_richlog_start_line or 0
             )
+            return
+        if self._stream_transcript_index >= len(self.rendered_transcript):
+            self._stream_transcript_index = None
+            self._stream_richlog_start_line = None
+            self._stream_richlog_line_count = 0
+            self._render_assistant_stream()
             return
         self.rendered_transcript[self._stream_transcript_index] = self.current_stream_text
         self._transcript_renderables[self._stream_transcript_index] = final_answer_renderable(
             self.current_stream_text
         )
-        self._redraw_transcript()
+        if self._stream_richlog_start_line is None:
+            self._stream_transcript_index = len(self.rendered_transcript) - 1
+            self._write_transcript(
+                final_answer_renderable(self.current_stream_text),
+                plain_text=self.current_stream_text,
+            )
+            return
+        self._replace_richlog_stream_block(final_answer_renderable(self.current_stream_text))
 
     def _write_final_answer(self, answer: str) -> None:
         if not answer:
             return
         if self._stream_transcript_index is not None:
-            self.rendered_transcript[self._stream_transcript_index] = answer
-            self._transcript_renderables[self._stream_transcript_index] = final_answer_renderable(
-                answer
-            )
-            self._redraw_transcript()
+            self.current_stream_text = ""
+            if self._stream_transcript_index < len(self.rendered_transcript):
+                self.rendered_transcript[self._stream_transcript_index] = answer
+                self._transcript_renderables[self._stream_transcript_index] = final_answer_renderable(
+                    answer
+                )
+                if self._stream_richlog_start_line is not None:
+                    self._replace_richlog_stream_block(final_answer_renderable(answer))
+                return
+            self._stream_transcript_index = None
+            self._stream_richlog_start_line = None
+            self._stream_richlog_line_count = 0
+            self._write_transcript(final_answer_renderable(answer), plain_text=answer)
             return
         self._write_transcript(final_answer_renderable(answer), plain_text=answer)
+
+    def _replace_richlog_stream_block(self, renderable: object) -> None:
+        transcript = self.query_one("#transcript", RichLog)
+        if self._stream_richlog_start_line is None:
+            return
+        new_lines, width = _render_richlog_lines(transcript, renderable)
+        start = self._stream_richlog_start_line
+        end = start + self._stream_richlog_line_count
+        transcript.lines[start:end] = new_lines
+        self._stream_richlog_line_count = len(new_lines)
+        transcript._widest_line_width = max(transcript._widest_line_width, width)
+        transcript.virtual_size = Size(transcript._widest_line_width, len(transcript.lines))
+        transcript.refresh_lines(start, max(len(new_lines), end - start))
 
 
 def run_tui(
@@ -413,3 +506,32 @@ def run_tui(
         output_func=output_func,
     ).run()
     return int(result or 0)
+
+
+def _suggestion_window_start(
+    *,
+    selected_index: int,
+    total: int,
+    window_size: int,
+) -> int:
+    if total <= window_size:
+        return 0
+    return min(max(0, selected_index - window_size + 1), total - window_size)
+
+
+def _render_richlog_lines(log: RichLog, content: object) -> tuple[list[Strip], int]:
+    renderable = log._make_renderable(content)
+    console = log.app.console
+    render_options = console.options
+    renderable_width = measure_renderables(console, render_options, [renderable]).maximum
+    render_width = min(max(renderable_width, log.min_width), log.scrollable_content_region.width)
+    render_options = render_options.update_width(render_width)
+    segments = console.render(renderable, render_options)
+    lines = list(Segment.split_lines(segments))
+    if not lines:
+        return [Strip.blank(render_width)], render_width
+    strips = Strip.from_lines(lines)
+    for strip in strips:
+        strip.adjust_cell_length(render_width)
+    widest = max(sum(segment.cell_length for segment in line) for line in lines)
+    return strips, max(render_width, widest)
