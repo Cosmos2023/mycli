@@ -40,6 +40,11 @@ class MycliTuiApp(App[int]):
         border: round $primary;
         background: $surface;
     }
+    #execution-status {
+        height: 1;
+        margin: 0 1;
+        text-style: dim;
+    }
     #input-row {
         height: 3;
         layout: horizontal;
@@ -95,12 +100,16 @@ class MycliTuiApp(App[int]):
         self.completion = CompletionState(workspace_root=service._config.workspace_root)
         self._before_send_input = ""
         self._turn_started_at: float | None = None
+        self._execution_phase = "thinking"
+        self._monotonic: Callable[[], float] = monotonic
+        self.current_execution_status = ""
         self.turn_running = False
         self.turn_interrupted = False
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True)
         yield Static("", id="overlay")
+        yield Static("", id="execution-status")
         yield Static("", id="suggestions")
         with Container(id="input-row"):
             yield Input(placeholder=">", id="prompt-input")
@@ -111,6 +120,7 @@ class MycliTuiApp(App[int]):
     def on_mount(self) -> None:
         self._render_welcome()
         self._refresh_bottom_status()
+        self.set_interval(1.0, self._refresh_execution_status)
         self.query_one("#prompt-input", Input).focus()
 
     def _render_welcome(self) -> None:
@@ -274,6 +284,8 @@ class MycliTuiApp(App[int]):
         self.turn_interrupted = self.turn_running
         self.turn_running = False
         self._turn_started_at = None
+        self.current_execution_status = ""
+        self.query_one("#execution-status", Static).update("")
 
     def action_close_overlay(self) -> None:
         self.completion.close()
@@ -283,11 +295,9 @@ class MycliTuiApp(App[int]):
 
     def _run_turn_worker(self, message: str) -> None:
         self.call_from_thread(self._write_transcript, f"› {message}")
-        self._turn_started_at = monotonic()
-        self.call_from_thread(
-            self._write_transcript,
-            execution_status_label(phase="thinking", elapsed_seconds=0),
-        )
+        self._turn_started_at = self._monotonic()
+        self._execution_phase = "thinking"
+        self.call_from_thread(self._refresh_execution_status)
         response = self.service.handle_user_turn(message, stream_sink=self._stream_event)
         if not self.turn_interrupted:
             self.call_from_thread(
@@ -298,23 +308,34 @@ class MycliTuiApp(App[int]):
             )
         self._turn_started_at = None
         self.turn_running = False
+        self.current_execution_status = ""
+        self.call_from_thread(lambda: self.query_one("#execution-status", Static).update(""))
         self.call_from_thread(self._refresh_bottom_status)
 
     def _stream_event(self, event: object) -> None:
         if self._turn_started_at is None or self.turn_interrupted:
             return
-        elapsed = monotonic() - self._turn_started_at
         if getattr(event, "kind", None) == "tool_call":
             name = getattr(event, "tool_name", None) or "tool"
             metadata = getattr(event, "metadata", {})
             path = metadata.get("path") if isinstance(metadata, dict) else None
             suffix = f" {path}" if isinstance(path, str) and path else ""
             phase = phase_for_tool(name)
+            self._execution_phase = phase
             self.call_from_thread(self._write_transcript, f"{name}{suffix}")
-            self.call_from_thread(
-                self._write_transcript,
-                execution_status_label(phase=phase, elapsed_seconds=elapsed),
-            )
+            self.call_from_thread(self._refresh_execution_status)
+
+    def _refresh_execution_status(self) -> None:
+        if not self.turn_running or self._turn_started_at is None:
+            return
+        elapsed = self._monotonic() - self._turn_started_at
+        status = execution_status_label(
+            phase=self._execution_phase,
+            elapsed_seconds=elapsed,
+        )
+        self.current_execution_status = status
+        widget = self.query_one("#execution-status", Static)
+        widget.update(status)
 
 
 def run_tui(

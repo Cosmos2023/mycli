@@ -148,7 +148,7 @@ def test_tui_enter_runs_turn_in_worker_and_renders_final_answer(tmp_path: Path) 
             assert input_widget.value == ""
             release.set()
             await pilot.pause(0.1)
-            assert any("Reading files" in item for item in app.rendered_transcript)
+            assert any("Read README.md" in item for item in app.rendered_transcript)
             assert any("**final** answer" == item for item in app.rendered_transcript)
             assert app.turn_running is False
 
@@ -184,5 +184,22 @@ def test_tui_resume_command_renders_session_lines(tmp_path: Path) -> None:
             input_widget.value = "/resume demo"
             await pilot.press("enter")
             assert any("resumed demo" in item for item in app.rendered_transcript)
+
+    asyncio.run(run())
+
+
+def test_tui_execution_status_elapsed_updates_while_turn_runs(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test():
+            app.turn_running = True
+            app._turn_started_at = 100.0
+            app._execution_phase = "thinking"
+            app._monotonic = lambda: 112.4
+
+            app._refresh_execution_status()
+
+            assert app.current_execution_status == "Thinking... (12s)"
 
     asyncio.run(run())
