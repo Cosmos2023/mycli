@@ -244,17 +244,28 @@ The first implementation should prefer the smallest persistence surface that sur
 
 ### 4.3 Runtime integration
 
-The turn flow should become:
+Rehydration is part of the compaction lifecycle, but it is not the same responsibility as compaction. The compaction pipeline decides whether to keep, trim, or summarize conversation history. The post-compaction rehydration stage restores bounded external state that the model still needs after the history has been compacted.
+
+The top-level flow should keep these stages adjacent:
 
 ```text
-TurnExecutor
-  -> L4 compaction applies
-  -> AgentRuntime builds CompactionRehydrationContext
-  -> RuntimeContextBuilder receives compaction_rehydration
-  -> TurnContextAssembler emits a dedicated section
-  -> InstructionContractAssembler emits a dedicated fragment kind
-  -> RequestShapeBuilder places the fragment before current user request
+CompactionPipeline
+  -> analyze budget
+  -> apply L1/L4 compaction
+  -> emit CompactionResult
+PostCompactionRehydration
+  -> build CompactionRehydrationContext from CompactionResult + runtime state
+RuntimeContextBuilder
+  -> receives compaction_rehydration
+TurnContextAssembler
+  -> emits a dedicated section
+InstructionContractAssembler
+  -> emits a dedicated fragment kind
+RequestShapeBuilder
+  -> places the fragment before current user request
 ```
+
+The implementation may orchestrate both stages from `TurnExecutor` or a higher-level runtime method. It should not merge rehydration filtering, skill restoration, and file reading into `LLMSummarization.apply()` because those behaviors need independent tests and budgets.
 
 `runtime_reminders` remains available for genuinely transient runtime warnings if needed, but it must no longer be the carrier for L4 file snapshots or invoked skill restoration.
 
