@@ -155,6 +155,79 @@ def test_tui_enter_runs_turn_in_worker_and_renders_final_answer(tmp_path: Path) 
     asyncio.run(run())
 
 
+def test_tui_streams_tool_activity_with_calling_wording(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    class Service(FakeService):
+        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+            assert message == "inspect"
+            assert stream_sink is not None
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_call",
+                    tool_name="Read",
+                    metadata={"path": "src/mycli/cli/tui/app.py"},
+                )
+            )
+            started.set()
+            release.wait(timeout=1.0)
+            return TurnResponse(assistant_message="done")
+
+    app = MycliTuiApp(service=Service(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "inspect"
+            await pilot.press("enter")
+            assert started.wait(timeout=1.0) is True
+
+            transcript = "\n".join(app.rendered_transcript)
+            assert "Calling Read src/mycli/cli/tui/app.py" in transcript
+
+            release.set()
+            await pilot.pause(0.1)
+
+    asyncio.run(run())
+
+
+def test_tui_streams_assistant_text_before_turn_completes(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    class Service(FakeService):
+        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+            assert message == "answer"
+            assert stream_sink is not None
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text="hello"))
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text=" world"))
+            started.set()
+            release.wait(timeout=1.0)
+            return TurnResponse(assistant_message="hello world")
+
+    app = MycliTuiApp(service=Service(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "answer"
+            await pilot.press("enter")
+            assert started.wait(timeout=1.0) is True
+
+            assert app.streamed_answer_text == "hello world"
+            assert "hello world" in app.current_stream_text
+            assert not any(item == "hello world" for item in app.rendered_transcript)
+
+            release.set()
+            await pilot.pause(0.1)
+
+            assert app.current_stream_text == ""
+            assert app.rendered_transcript.count("hello world") == 1
+
+    asyncio.run(run())
+
+
 def test_tui_ctrl_c_restores_pre_send_input(tmp_path: Path) -> None:
     app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
 

@@ -45,6 +45,13 @@ class MycliTuiApp(App[int]):
         margin: 0 1;
         text-style: dim;
     }
+    #assistant-stream {
+        height: auto;
+        max-height: 8;
+        margin: 0 1;
+        text-style: dim;
+        display: none;
+    }
     #input-row {
         height: 3;
         layout: horizontal;
@@ -103,6 +110,8 @@ class MycliTuiApp(App[int]):
         self._execution_phase = "thinking"
         self._monotonic: Callable[[], float] = monotonic
         self.current_execution_status = ""
+        self.current_stream_text = ""
+        self.streamed_answer_text = ""
         self.turn_running = False
         self.turn_interrupted = False
 
@@ -110,6 +119,7 @@ class MycliTuiApp(App[int]):
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True)
         yield Static("", id="overlay")
         yield Static("", id="execution-status")
+        yield Static("", id="assistant-stream")
         yield Static("", id="suggestions")
         with Container(id="input-row"):
             yield Input(placeholder=">", id="prompt-input")
@@ -285,7 +295,10 @@ class MycliTuiApp(App[int]):
         self.turn_running = False
         self._turn_started_at = None
         self.current_execution_status = ""
+        self.current_stream_text = ""
+        self.streamed_answer_text = ""
         self.query_one("#execution-status", Static).update("")
+        self._clear_assistant_stream()
 
     def action_close_overlay(self) -> None:
         self.completion.close()
@@ -297,6 +310,9 @@ class MycliTuiApp(App[int]):
         self.call_from_thread(self._write_transcript, f"› {message}")
         self._turn_started_at = self._monotonic()
         self._execution_phase = "thinking"
+        self.streamed_answer_text = ""
+        self.current_stream_text = ""
+        self.call_from_thread(self._clear_assistant_stream)
         self.call_from_thread(self._refresh_execution_status)
         response = self.service.handle_user_turn(message, stream_sink=self._stream_event)
         if not self.turn_interrupted:
@@ -310,19 +326,41 @@ class MycliTuiApp(App[int]):
         self.turn_running = False
         self.current_execution_status = ""
         self.call_from_thread(lambda: self.query_one("#execution-status", Static).update(""))
+        self.call_from_thread(self._clear_assistant_stream)
         self.call_from_thread(self._refresh_bottom_status)
 
     def _stream_event(self, event: object) -> None:
         if self._turn_started_at is None or self.turn_interrupted:
             return
-        if getattr(event, "kind", None) == "tool_call":
+        kind = getattr(event, "kind", None)
+        if kind == "text_delta":
+            text = getattr(event, "text", "")
+            if isinstance(text, str) and text:
+                self.streamed_answer_text += text
+                self.current_stream_text = self.streamed_answer_text
+                self._execution_phase = "thinking"
+                self.call_from_thread(self._render_assistant_stream)
+                self.call_from_thread(self._refresh_execution_status)
+            return
+        if kind == "reasoning":
+            self._execution_phase = "thinking"
+            self.call_from_thread(self._refresh_execution_status)
+            return
+        if kind == "heartbeat":
+            self._execution_phase = "thinking"
+            self.call_from_thread(self._refresh_execution_status)
+            return
+        if kind == "tool_call":
             name = getattr(event, "tool_name", None) or "tool"
             metadata = getattr(event, "metadata", {})
             path = metadata.get("path") if isinstance(metadata, dict) else None
             suffix = f" {path}" if isinstance(path, str) and path else ""
             phase = phase_for_tool(name)
             self._execution_phase = phase
-            self.call_from_thread(self._write_transcript, f"{name}{suffix}")
+            self.call_from_thread(self._write_transcript, f"Calling {name}{suffix}")
+            self.call_from_thread(self._refresh_execution_status)
+            return
+        if kind == "completed":
             self.call_from_thread(self._refresh_execution_status)
 
     def _refresh_execution_status(self) -> None:
@@ -336,6 +374,21 @@ class MycliTuiApp(App[int]):
         self.current_execution_status = status
         widget = self.query_one("#execution-status", Static)
         widget.update(status)
+
+    def _render_assistant_stream(self) -> None:
+        widget = self.query_one("#assistant-stream", Static)
+        if not self.current_stream_text:
+            widget.display = False
+            widget.update("")
+            return
+        widget.display = True
+        widget.update(final_answer_renderable(self.current_stream_text))
+
+    def _clear_assistant_stream(self) -> None:
+        self.current_stream_text = ""
+        widget = self.query_one("#assistant-stream", Static)
+        widget.display = False
+        widget.update("")
 
 
 def run_tui(
