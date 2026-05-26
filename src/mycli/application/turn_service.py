@@ -466,6 +466,7 @@ class TurnService:
         total_tokens = 0
         cache_read_tokens = 0
         cache_write_tokens = 0
+        latest_usage_metadata: dict[str, object] | None = None
 
         for rollout in self._session_service.load_turn_rollouts(self._config.session_id):
             rollout_has_usage = False
@@ -479,6 +480,7 @@ class TurnService:
                 if not isinstance(metadata, dict):
                     continue
                 rollout_has_usage = True
+                latest_usage_metadata = metadata
                 input_tokens += self._int_metric(metadata.get("input_tokens"))
                 output_tokens += self._int_metric(metadata.get("output_tokens"))
                 total_tokens += self._int_metric(metadata.get("total_tokens"))
@@ -499,10 +501,42 @@ class TurnService:
         return (
             f"session={self._config.session_id}",
             f"turns={turn_count}",
-            "input_tokens="
+            self._format_current_context_window_usage(latest_usage_metadata),
+            "cumulative_usage input_tokens="
             f"{input_tokens} output_tokens={output_tokens} total_tokens={total_tokens} "
             f"cache_read_tokens={cache_read_tokens} cache_write_tokens={cache_write_tokens}",
             f"estimated_cost={estimated_cost}",
+        )
+
+    def _format_current_context_window_usage(
+        self,
+        metadata: dict[str, object] | None,
+    ) -> str:
+        if metadata is None:
+            return "current_context_window=unavailable"
+        input_tokens = self._int_metric(metadata.get("input_tokens"))
+        budget_input_tokens = self._int_metric(metadata.get("budget_input_tokens"))
+        total_tokens = self._int_metric(metadata.get("total_tokens"))
+        current_tokens = input_tokens or budget_input_tokens or total_tokens
+        max_tokens = self._int_metric(metadata.get("max_tokens")) or self._config.max_prompt_tokens
+        usage_ratio_metric = metadata.get("usage_ratio")
+        if isinstance(usage_ratio_metric, bool):
+            usage_ratio = 0.0
+        elif isinstance(usage_ratio_metric, (int, float)):
+            usage_ratio = float(usage_ratio_metric)
+        else:
+            usage_ratio = current_tokens / max_tokens if max_tokens > 0 else 0.0
+        raw_source = metadata.get("source")
+        if isinstance(raw_source, str) and raw_source:
+            source = raw_source
+        else:
+            source = "provider" if input_tokens > 0 else "estimate"
+        return (
+            "current_context_window "
+            f"input_tokens={current_tokens} "
+            f"max_tokens={max_tokens} "
+            f"usage_ratio={usage_ratio:.1%} "
+            f"source={source}"
         )
 
     @staticmethod

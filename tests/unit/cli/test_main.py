@@ -1328,9 +1328,71 @@ def test_turn_service_inspect_usage_sums_model_usage_rollouts(tmp_path: Path) ->
     assert lines == (
         "session=demo",
         "turns=1",
-        "input_tokens=1000 output_tokens=200 total_tokens=1200 cache_read_tokens=300 cache_write_tokens=100",
+        f"current_context_window input_tokens=1000 max_tokens={service._config.max_prompt_tokens} usage_ratio=8.3% source=provider",
+        "cumulative_usage input_tokens=1000 output_tokens=200 total_tokens=1200 cache_read_tokens=300 cache_write_tokens=100",
         "estimated_cost=0.00145",
     )
+
+
+def test_turn_service_inspect_usage_reports_latest_context_window_separately(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "default", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+
+    for turn_id, input_tokens in (("turn_1", 1000), ("turn_2", 2400)):
+        usage_item = TurnItem(
+            type=TurnItemType.MODEL_USAGE,
+            metadata={
+                "input_tokens": input_tokens,
+                "budget_input_tokens": input_tokens,
+                "output_tokens": 100,
+                "total_tokens": input_tokens + 100,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "max_tokens": 10000,
+                "usage_ratio": input_tokens / 10000,
+                "source": "provider",
+            },
+        )
+        service._session_service.append_turn_rollout(
+            "default",
+            TurnRollout(
+                thread_id="default",
+                turn_id=turn_id,
+                status=TurnStatus.COMPLETED,
+                started_at="2026-05-19T00:00:00Z",
+                completed_at="2026-05-19T00:00:01Z",
+                stop_reason=StopReason.ASSISTANT_COMPLETED,
+                events=(
+                    TurnRolloutEvent(
+                        event_id=f"{turn_id}:trace:1",
+                        kind="turn_item",
+                        created_at="2026-05-19T00:00:01Z",
+                        payload=usage_item.to_dict(),
+                    ),
+                ),
+            ),
+        )
+
+    lines = service.inspect_usage()
+
+    assert (
+        "current_context_window input_tokens=2400 max_tokens=10000 "
+        "usage_ratio=24.0% source=provider"
+    ) in lines
+    assert (
+        "cumulative_usage input_tokens=3400 output_tokens=200 "
+        "total_tokens=3600 cache_read_tokens=0 cache_write_tokens=0"
+    ) in lines
 
 
 def test_turn_service_inspect_usage_reports_unavailable_cost_without_prices(tmp_path: Path) -> None:
@@ -1348,7 +1410,8 @@ def test_turn_service_inspect_usage_reports_unavailable_cost_without_prices(tmp_
     assert service.inspect_usage() == (
         "session=demo",
         "turns=0",
-        "input_tokens=0 output_tokens=0 total_tokens=0 cache_read_tokens=0 cache_write_tokens=0",
+        "current_context_window=unavailable",
+        "cumulative_usage input_tokens=0 output_tokens=0 total_tokens=0 cache_read_tokens=0 cache_write_tokens=0",
         "estimated_cost=unavailable",
     )
 
@@ -1403,7 +1466,8 @@ def test_turn_service_inspect_usage_ignores_budget_input_tokens(tmp_path: Path) 
     assert service.inspect_usage() == (
         "session=demo",
         "turns=1",
-        "input_tokens=0 output_tokens=0 total_tokens=1800 cache_read_tokens=0 cache_write_tokens=0",
+        f"current_context_window input_tokens=900 max_tokens={service._config.max_prompt_tokens} usage_ratio=7.5% source=estimate",
+        "cumulative_usage input_tokens=0 output_tokens=0 total_tokens=1800 cache_read_tokens=0 cache_write_tokens=0",
         "estimated_cost=0.00000",
     )
 
