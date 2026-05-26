@@ -10,6 +10,7 @@ from mycli.domain.runtime import (
     DecisionKind,
     HistoryItem,
     HistoryItemType,
+    InvokedSkillSnapshot,
     PendingApproval,
     PendingDecision,
     PlanItem,
@@ -39,6 +40,7 @@ class SessionService:
     _KEY_ALLOWLIST = "command_allowances"
     _KEY_CONTEXT_BASELINE = "context_baseline"
     _KEY_CONTRIBUTED_TOOL_STATE = "contributed_tool_state"
+    _KEY_INVOKED_SKILLS = "invoked_skills"
     _KEY_PENDING_DECISION = "pending_decision"
     _KEY_PLAN_STATE = "plan_state"
     _KEY_RESPONSES_CONTINUATION = "responses_continuation_state"
@@ -134,6 +136,35 @@ class SessionService:
             return None
         return ContextBaseline.from_dict(payload)
 
+    def record_invoked_skill_snapshot(
+        self,
+        session_id: str,
+        snapshot: InvokedSkillSnapshot,
+    ) -> None:
+        existing = {
+            item.name: item
+            for item in self.load_invoked_skill_snapshots(session_id)
+        }
+        existing[snapshot.name] = snapshot
+        ordered = sorted(existing.values(), key=lambda item: item.invoked_at.isoformat())
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_INVOKED_SKILLS,
+            payload=[item.to_dict() for item in ordered],
+        )
+
+    def load_invoked_skill_snapshots(
+        self,
+        session_id: str,
+    ) -> tuple[InvokedSkillSnapshot, ...]:
+        payload = self._load_state_list(session_id, self._KEY_INVOKED_SKILLS)
+        return tuple(
+            InvokedSkillSnapshot.from_dict(item)
+            for item in payload
+            if isinstance(item, dict)
+        )
+
     def append_turn_rollout(
         self,
         session_id: str,
@@ -157,11 +188,13 @@ class SessionService:
         context_baseline = self.load_context_baseline(session_id)
         turn_rollouts = self.load_turn_rollouts(session_id)
         continuation_state = self.load_responses_continuation_state(session_id)
+        invoked_skills = self.load_invoked_skill_snapshots(session_id)
         if (
             not history_items
             and context_baseline is None
             and not turn_rollouts
             and continuation_state is None
+            and not invoked_skills
         ):
             return None
         thread_id = (
@@ -180,6 +213,7 @@ class SessionService:
             context_baseline=context_baseline,
             turn_rollouts=turn_rollouts,
             continuation_state={} if continuation_state is None else continuation_state.to_dict(),
+            invoked_skills=invoked_skills,
         )
 
     def save_pending_decision(self, session_id: str, decision: PendingDecision) -> None:

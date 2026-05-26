@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
@@ -9,6 +10,7 @@ from mycli.domain.runtime import (
     DecisionKind,
     HistoryItem,
     HistoryItemType,
+    InvokedSkillSnapshot,
     PendingApproval,
     PendingDecision,
     PlanItem,
@@ -407,6 +409,54 @@ def test_session_service_persists_runtime_snapshot_without_json_sidecars(tmp_pat
     assert snapshot.history_items[0].text == "hello"
     assert not (tmp_path / "home" / ".mycli" / "sessions" / "demo.json").exists()
     assert (tmp_path / "home" / ".mycli" / "sessions.db").exists()
+
+
+def test_session_service_round_trips_invoked_skill_snapshots(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home", workspace_root=tmp_path)
+    snapshot = InvokedSkillSnapshot(
+        name="code-review",
+        description="Review code",
+        source_path=str(tmp_path / "skills" / "code-review" / "SKILL.md"),
+        body_digest="sha256:abc",
+        cached_body_excerpt="Review only changed code.",
+        invoked_at=datetime(2026, 5, 27, 8, 0, tzinfo=UTC),
+        last_turn_id="turn_1",
+    )
+
+    service.record_invoked_skill_snapshot("demo", snapshot)
+    loaded = service.load_invoked_skill_snapshots("demo")
+
+    assert loaded == (snapshot,)
+    runtime_snapshot = service.load_runtime_snapshot("demo")
+    assert runtime_snapshot is not None
+    assert runtime_snapshot.invoked_skills == (snapshot,)
+
+
+def test_session_service_replaces_invoked_skill_by_name_with_latest(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home", workspace_root=tmp_path)
+    first = InvokedSkillSnapshot(
+        name="code-review",
+        description="Old",
+        source_path=None,
+        body_digest="old",
+        cached_body_excerpt="Old body",
+        invoked_at=datetime(2026, 5, 27, 8, 0, tzinfo=UTC),
+        last_turn_id="turn_1",
+    )
+    second = InvokedSkillSnapshot(
+        name="code-review",
+        description="New",
+        source_path=None,
+        body_digest="new",
+        cached_body_excerpt="New body",
+        invoked_at=datetime(2026, 5, 27, 9, 0, tzinfo=UTC),
+        last_turn_id="turn_2",
+    )
+
+    service.record_invoked_skill_snapshot("demo", first)
+    service.record_invoked_skill_snapshot("demo", second)
+
+    assert service.load_invoked_skill_snapshots("demo") == (second,)
 
 
 def test_session_service_round_trips_pending_decision(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 from mycli.domain.runtime.protocol import StopReason, TurnStatus
+from mycli.domain.runtime.compaction_rehydration import InvokedSkillSnapshot
 
 
 class HistoryItemType(StrEnum):
@@ -216,6 +217,7 @@ class SessionRuntimeSnapshot:
     context_baseline: ContextBaseline | None = None
     turn_rollouts: tuple[TurnRollout, ...] = ()
     continuation_state: dict[str, Any] = field(default_factory=dict)
+    invoked_skills: tuple[InvokedSkillSnapshot, ...] = ()
 
 
 __all__ = [
