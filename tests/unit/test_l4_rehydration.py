@@ -150,11 +150,12 @@ def test_runtime_rehydration_rejects_paths_outside_workspace(tmp_path: Path) -> 
     )
     runtime.rebind_session(AgentConfig(workspace_root=tmp_path))
 
-    reminders = runtime._build_l4_rehydration_reminders(
-        {"recent_files": [str(outside)]}
+    context = runtime._build_compaction_rehydration_context(
+        cost_metrics={"recent_files": [str(outside)]},
+        conversation_tail=(),
     )
 
-    assert reminders == ()
+    assert context.files == ()
 
 
 def test_runtime_rehydration_truncates_large_files(tmp_path: Path) -> None:
@@ -167,9 +168,10 @@ def test_runtime_rehydration_truncates_large_files(tmp_path: Path) -> None:
     )
     runtime.rebind_session(AgentConfig(workspace_root=tmp_path))
 
-    reminders = runtime._build_l4_rehydration_reminders(
-        {"recent_files": ["large.py"]}
+    context = runtime._build_compaction_rehydration_context(
+        cost_metrics={"recent_files": ["large.py"]},
+        conversation_tail=(),
     )
 
-    assert reminders
-    assert "truncated" in reminders[0].lower()
+    assert context.files
+    assert context.files[0].truncated is True

@@ -387,7 +387,7 @@ def test_agent_runtime_l4_rehydrates_recent_file_without_persisting_snapshot(
 
     assert response.assistant_message == "done"
     main_request_text = "\n".join(message.content for message in adapter.main_requests[-1])
-    assert "[Compaction rehydration]" in main_request_text
+    assert "[Compaction file rehydration]" in main_request_text
     assert "VALUE = 'current after compaction'" in main_request_text
     persisted = runtime._session_service.load_conversation(runtime._config.session_id)
     assert not any(

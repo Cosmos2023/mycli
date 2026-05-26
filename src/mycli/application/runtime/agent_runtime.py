@@ -107,11 +107,6 @@ from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrat
 from mycli.tools.task import TaskTool
 
 
-_L4_REHYDRATION_MAX_FILES = 3
-_L4_REHYDRATION_MAX_FILE_TOKENS = 5_000
-_L4_REHYDRATION_MAX_TOTAL_TOKENS = 15_000
-
-
 class _SummarizerClientAdapter:
     """Adapt the normal model requester into the L4 summarizer protocol."""
 
@@ -1110,66 +1105,6 @@ class AgentRuntime:
                     )
                 )
         return tuple(candidates)
-
-    def _build_l4_rehydration_reminders(
-        self,
-        cost_metrics: dict[str, int | float | str | list[str]] | None,
-    ) -> tuple[str, ...]:
-        if cost_metrics is None:
-            return ()
-        raw_files = cost_metrics.get("recent_files")
-        if not isinstance(raw_files, list):
-            return ()
-        workspace_root = self._config.workspace_root.resolve()
-        remaining_total = _L4_REHYDRATION_MAX_TOTAL_TOKENS
-        blocks: list[str] = []
-        seen: set[str] = set()
-        for raw_path in raw_files:
-            if len(blocks) >= _L4_REHYDRATION_MAX_FILES:
-                break
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                continue
-            display_path = raw_path.strip()
-            if display_path in seen:
-                continue
-            seen.add(display_path)
-            path = Path(display_path)
-            candidate = path if path.is_absolute() else workspace_root / path
-            try:
-                resolved = candidate.resolve()
-                resolved.relative_to(workspace_root)
-            except (OSError, ValueError):
-                continue
-            if not resolved.is_file():
-                continue
-            try:
-                content = resolved.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            file_tokens = self._token_counter.count(content)
-            token_limit = min(_L4_REHYDRATION_MAX_FILE_TOKENS, remaining_total)
-            truncated = False
-            while file_tokens > token_limit and content:
-                truncated = True
-                content = content[: max(1, int(len(content) * 0.8))]
-                file_tokens = self._token_counter.count(content)
-            if not content or token_limit <= 0:
-                break
-            remaining_total -= min(file_tokens, token_limit)
-            suffix = "\n[truncated]" if truncated else ""
-            relative_display = str(resolved.relative_to(workspace_root))
-            blocks.append(
-                f"### {relative_display}\n"
-                f"```text\n{content}{suffix}\n```"
-            )
-        if not blocks:
-            return ()
-        return (
-            "[Compaction rehydration]\n"
-            "Recent file snapshots are current disk content. "
-            "Use them as context, and re-read files if exact content matters.\n\n"
-            + "\n\n".join(blocks),
-        )
 
     def _record_ptl_metric(self, *, triggered: bool) -> None:
         self._observability_service.metrics.record_ptl_event(triggered=triggered)

@@ -265,15 +265,15 @@ class TurnContextAssembler:
         return tuple(item for item in plan_state.items if item.status is PlanStatus.PENDING)
 
     def _render_runtime_reminders(self, context: ExecutionContext) -> str:
-        rehydration_reminders = tuple(
+        reminders = tuple(
             item
             for item in context.runtime_reminders
-            if item.startswith("[Compaction rehydration]")
+            if item.strip() and not item.startswith("[Compaction rehydration]")
         )
-        if not rehydration_reminders:
+        if not reminders:
             return ""
-        reminders = "\n".join(f"- {item}" for item in rehydration_reminders)
-        return "\n".join(("Runtime reminders:", reminders))
+        rendered = "\n".join(f"- {item}" for item in reminders)
+        return "\n".join(("Runtime reminders:", rendered))
 
     def _render_compaction_rehydration(self, context: ExecutionContext) -> str:
         files = context.compaction_rehydration.files

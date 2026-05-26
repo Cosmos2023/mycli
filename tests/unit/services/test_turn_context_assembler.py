@@ -105,6 +105,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         TurnContextSectionType.WORKSPACE_INSTRUCTIONS,
         TurnContextSectionType.ENVIRONMENT_CONTEXT,
         TurnContextSectionType.CONVERSATION_CONTEXT,
+        TurnContextSectionType.COMPACTION_REHYDRATION,
         TurnContextSectionType.MEMORY,
         TurnContextSectionType.PLAN,
         TurnContextSectionType.RUNTIME_REMINDERS,
@@ -136,6 +137,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         "conversation_context",
         "memory",
         "plan",
+        "runtime_reminders",
         "tool_exposure",
         "user_request",
     ]
@@ -222,7 +224,7 @@ def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> N
     assert tool_section.metadata["tool_names"] == ["Bash", "LS", "workspace_summary"]
 
 
-def test_turn_context_assembler_omits_non_l4_runtime_reminders() -> None:
+def test_turn_context_assembler_renders_non_compaction_runtime_reminders() -> None:
     assembler = TurnContextAssembler()
     turn_context = assembler.assemble(
         user_message="请检查这个实现是否已经接入 runtime 和 trace",
@@ -236,12 +238,12 @@ def test_turn_context_assembler_omits_non_l4_runtime_reminders() -> None:
         section for section in turn_context.sections if section.type is TurnContextSectionType.RUNTIME_REMINDERS
     )
 
-    assert runtime_section.enabled is False
+    assert runtime_section.enabled is True
     assert runtime_section.metadata == {}
-    assert "Prefer source files before logs." not in runtime_section.content
+    assert "Prefer source files before logs." in runtime_section.content
 
 
-def test_turn_context_assembler_only_renders_l4_rehydration_runtime_reminders() -> None:
+def test_turn_context_assembler_excludes_compaction_rehydration_runtime_reminders() -> None:
     assembler = TurnContextAssembler()
     turn_context = assembler.assemble(
         user_message="continue",
@@ -265,10 +267,10 @@ def test_turn_context_assembler_only_renders_l4_rehydration_runtime_reminders() 
     )
 
     assert runtime_section.enabled is True
-    assert "Compaction rehydration" in runtime_section.content
-    assert "src/app.py" in runtime_section.content
-    assert "Turn budget is above 60%" not in runtime_section.content
-    assert "transient provider error" not in runtime_section.content
+    assert "Compaction rehydration" not in runtime_section.content
+    assert "src/app.py" not in runtime_section.content
+    assert "Turn budget is above 60%" in runtime_section.content
+    assert "transient provider error" in runtime_section.content
 
 
 def test_turn_context_assembler_renders_added_tool_as_plain_tool() -> None:
@@ -571,8 +573,8 @@ def test_turn_context_assembler_renders_runtime_reminders_in_deterministic_order
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             runtime_reminders=(
-                "[Compaction rehydration]\nfirst",
-                "[Compaction rehydration]\nsecond",
+                "first",
+                "second",
             ),
         ),
     )
@@ -581,8 +583,8 @@ def test_turn_context_assembler_renders_runtime_reminders_in_deterministic_order
         context=ExecutionContext(
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             runtime_reminders=(
-                "[Compaction rehydration]\nfirst",
-                "[Compaction rehydration]\nsecond",
+                "first",
+                "second",
             ),
         ),
     )
@@ -597,10 +599,8 @@ def test_turn_context_assembler_renders_runtime_reminders_in_deterministic_order
     assert first_section.content == second_section.content
     assert first_section.content.splitlines() == [
         "Runtime reminders:",
-        "- [Compaction rehydration]",
-        "first",
-        "- [Compaction rehydration]",
-        "second",
+        "- first",
+        "- second",
     ]
 
 
@@ -684,3 +684,23 @@ def test_turn_context_assembler_renders_compaction_rehydration_section() -> None
     assert section.enabled is True
     assert "[Compaction file rehydration]" in section.content
     assert "src/app.py" in section.content
+
+
+def test_turn_context_assembler_does_not_render_compaction_rehydration_from_runtime_reminders() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            runtime_reminders=(
+                "[Compaction rehydration]\n### src/app.py\n```text\nold path\n```",
+            ),
+        ),
+    )
+
+    runtime_section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.RUNTIME_REMINDERS
+    )
+
+    assert runtime_section.enabled is False
