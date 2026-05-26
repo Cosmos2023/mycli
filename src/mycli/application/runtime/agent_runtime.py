@@ -338,6 +338,10 @@ class AgentRuntime:
             normalize_tool_call=self._normalize_tool_call,
             hook_manager=self._hook_manager,
             file_history=self._file_history_service,
+            record_invoked_skill=lambda snapshot: self._session_service.record_invoked_skill_snapshot(
+                self._config.session_id,
+                snapshot,
+            ),
         )
         child_executor = RuntimeChildToolExecutor(
             tool_router=ToolRouter(tool_registry=self._tool_registry),

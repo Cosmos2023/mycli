@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from mycli.application.runtime.tools.tool_execution_service import ToolExecutionService
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState, TurnItemType
+from mycli.domain.runtime import InvokedSkillSnapshot, PlanState, TurnItemType
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolRouteKey, ToolRouteSource
 from mycli.services.context.context_manager import ContextManager
@@ -96,6 +97,7 @@ def _service(
     hook_manager: HookManager,
     registry: ToolRegistry | None = None,
     file_history: FileHistoryService | None = None,
+    record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
 ) -> tuple[ToolExecutionService, FakeTool]:
     fake_tool = FakeTool()
     tool_registry = registry or ToolRegistry.from_tools([fake_tool])
@@ -116,6 +118,7 @@ def _service(
         normalize_tool_call=lambda call: call,
         hook_manager=hook_manager,
         file_history=file_history,
+        record_invoked_skill=record_invoked_skill,
     )
     router = ToolRouter(
         tool_registry=tool_registry,
@@ -196,6 +199,53 @@ def test_tool_execution_service_records_skill_body_only_as_tool_result(tmp_path:
     assert tool_result.metadata["transcript_content"] == "Find correctness bugs first."
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
     assert conversation.messages[-1].content == "Find correctness bugs first."
+
+
+def test_tool_execution_service_records_successful_skill_invocation(tmp_path: Path) -> None:
+    recorded: list[InvokedSkillSnapshot] = []
+    hook_manager = HookManager()
+    skill_tool = FakeSkillTool()
+    registry = ToolRegistry.from_tools([skill_tool])
+    service, _ = _service(
+        tmp_path,
+        hook_manager=hook_manager,
+        registry=registry,
+        record_invoked_skill=lambda snapshot: recorded.append(snapshot),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Skill"),
+                source=ToolRouteSource.REGISTRY,
+                spec=skill_tool.spec,
+            ),
+        )
+    )
+    conversation = Conversation(session_id="demo")
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="Skill",
+            arguments={"skill_name": "code-review"},
+            reason="Need code review instructions",
+            call_id="call_skill",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert len(recorded) == 1
+    assert recorded[0].name == "code-review"
+    assert recorded[0].description == "Review code"
+    assert recorded[0].source_path is not None
+    assert recorded[0].cached_body_excerpt == "Find correctness bugs first."
+    assert recorded[0].last_turn_id == "turn_1"
 
 
 def test_tool_execution_service_applies_modified_args(tmp_path: Path) -> None:

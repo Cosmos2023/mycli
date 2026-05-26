@@ -2,13 +2,23 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import hashlib
 from typing import Callable
 
 from mycli.domain.conversation import Conversation, Message
-from mycli.domain.runtime import ActivityEvent, PlanState, RuntimeBlock, RuntimeTraceEvent, TurnItem, TurnItemType
+from mycli.domain.runtime import (
+    ActivityEvent,
+    InvokedSkillSnapshot,
+    PlanState,
+    RuntimeBlock,
+    RuntimeTraceEvent,
+    TurnItem,
+    TurnItemType,
+)
+from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.calls import ToolEvidence
 from mycli.domain.tooling.exposure import ToolExposure
-from mycli.domain.tooling.calls import ToolCall
 from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
@@ -64,6 +74,7 @@ class ToolExecutionService:
         hook_manager: HookManager | None = None,
         file_history: FileHistoryService | None = None,
         injection_guard: InjectionGuard | None = None,
+        record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
     ) -> None:
         self._session_id = session_id
         self._context_manager = context_manager
@@ -75,6 +86,7 @@ class ToolExecutionService:
         self._hook_manager = hook_manager or HookManager()
         self._file_history = file_history
         self._injection_guard = injection_guard or InjectionGuard()
+        self._record_invoked_skill = record_invoked_skill
 
     def execute_tool_calls(
         self,
@@ -383,6 +395,11 @@ class ToolExecutionService:
             if normalized_call.name == "Skill"
             else self._injection_guard.guard_tool_output(tool_transcript_content)
         )
+        self._record_skill_invocation(
+            tool_name=normalized_call.name,
+            result=result,
+            turn_id=turn_id,
+        )
         self._record_tool_message(
             conversation,
             tool_name=normalized_call.name,
@@ -457,6 +474,36 @@ class ToolExecutionService:
             ),
         )
         return next_plan_state
+
+    def _record_skill_invocation(
+        self,
+        *,
+        tool_name: str,
+        result: ToolResult,
+        turn_id: str,
+    ) -> None:
+        if self._record_invoked_skill is None:
+            return
+        if tool_name != "Skill" or not result.success:
+            return
+        skill_name = result.raw_payload.get("skill_name")
+        content = result.raw_payload.get("content")
+        if not isinstance(skill_name, str) or not skill_name.strip():
+            return
+        body = content.strip() if isinstance(content, str) else ""
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest() if body else None
+        source_path = result.raw_payload.get("source_path")
+        self._record_invoked_skill(
+            InvokedSkillSnapshot(
+                name=skill_name.strip(),
+                description=str(result.raw_payload.get("description") or ""),
+                source_path=source_path if isinstance(source_path, str) else None,
+                body_digest=digest,
+                cached_body_excerpt=body[:20_000] if body else None,
+                invoked_at=datetime.now(UTC),
+                last_turn_id=turn_id,
+            )
+        )
 
     def _snapshot_before_file_mutation(
         self,
