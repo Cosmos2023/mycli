@@ -142,15 +142,23 @@ If the current plan path already satisfies this, P7 should add focused regressio
 
 Compaction rehydration is contextual material, not the user's latest request.
 
-For Chat Completions / transcript-only messages, request ordering should keep rehydration before the current user request:
+For Chat Completions / transcript-only messages, request ordering should keep stable replay before volatile rehydration, while still keeping rehydration before the current user request:
 
 ```text
 system
 stable contextual sections
+compacted replay summary + tail messages
 compaction_rehydration
-replay / compacted replay
 current user request
 ```
+
+This preserves the longest useful DeepSeek cache prefix:
+
+```text
+system + stable contextual sections + compacted replay summary + tail messages
+```
+
+`compaction_rehydration` is intentionally placed after replay because file snapshots and invoked skill bodies are post-compaction volatile context. The model sees conversation history first, then the current restored state, then the user's latest request.
 
 For Responses API, rehydration may continue to use provider-supported contextual or delta input, but it must preserve its own fragment kind and not be flattened into generic reminders.
 
@@ -235,10 +243,13 @@ class InvokedSkillSnapshot:
     name: str
     description: str
     source_path: str | None
-    body: str
+    body_digest: str | None
+    cached_body_excerpt: str | None
     invoked_at: datetime
     last_turn_id: str
 ```
+
+The snapshot should prefer `source_path` and a digest over storing a full skill body. Rehydration should read the current skill body from disk and then apply the skill budget. `cached_body_excerpt` is an optional fallback for sessions where the source file is missing or has moved; if used, it must already be capped to the configured per-skill item budget.
 
 The first implementation should prefer the smallest persistence surface that survives session resume. A session runtime snapshot field is acceptable if it fits the existing session model.
 
@@ -262,7 +273,7 @@ TurnContextAssembler
 InstructionContractAssembler
   -> emits a dedicated fragment kind
 RequestShapeBuilder
-  -> places the fragment before current user request
+  -> places compacted replay before rehydration and current user request after both
 ```
 
 The implementation may orchestrate both stages from `TurnExecutor` or a higher-level runtime method. It should not merge rehydration filtering, skill restoration, and file reading into `LLMSummarization.apply()` because those behaviors need independent tests and budgets.
@@ -285,22 +296,22 @@ It must not be included in durable memory.
 
 Add conservative defaults to `AgentConfig`:
 
-```text
-compaction_rehydration_file_max_total_tokens
-compaction_rehydration_file_max_item_tokens
-compaction_rehydration_skill_max_total_tokens
-compaction_rehydration_skill_max_item_tokens
-compaction_rehydration_max_files
-compaction_rehydration_max_skills
-```
+| Config | Initial default | Notes |
+| --- | ---: | --- |
+| `compaction_rehydration_file_max_total_tokens` | `50_000` | Dedicated file snapshot budget. Large enough for DeepSeek 1M while still bounded. |
+| `compaction_rehydration_file_max_item_tokens` | `5_000` | Per-file head-truncation cap. |
+| `compaction_rehydration_skill_max_total_tokens` | `25_000` | Dedicated invoked-skill budget. |
+| `compaction_rehydration_skill_max_item_tokens` | `5_000` | Per-skill head-truncation cap. |
+| `compaction_rehydration_max_files` | `5` | Recency-sorted cap. |
+| `compaction_rehydration_max_skills` | `5` | Recently invoked cap. |
 
-Initial defaults should be smaller than Claude Code's published budgets unless existing benchmarks justify larger values. DeepSeek 1M windows can use larger values later through config.
+These values match the intended first implementation for DeepSeek-sized windows. Smaller-context providers can lower the same knobs later through model-specific configuration.
 
 ## 6. Acceptance Criteria
 
 - L4 file snapshots are no longer rendered through `runtime_reminders`.
 - A dedicated `compaction_rehydration` section/fragment exists.
-- Chat Completions request ordering keeps compaction rehydration before the current user request.
+- Chat Completions request ordering is `system -> stable contextual sections -> compacted replay summary + tail messages -> compaction_rehydration -> current user request`.
 - Responses request shape keeps compaction rehydration model-visible with its own fragment kind.
 - Successful `Skill` tool calls are recorded as invoked skill snapshots.
 - After L4 compaction, invoked skill bodies are restored from the invoked skill channel.
@@ -336,7 +347,7 @@ Application/runtime coverage:
 
 Request-shape coverage:
 
-- Chat Completions ordering is `system -> contextual/rehydration -> replay -> current user`.
+- Chat Completions ordering is `system -> stable contextual sections -> compacted replay summary + tail messages -> compaction_rehydration -> current user request`.
 - Responses payload includes `compaction_rehydration`.
 - `compaction_rehydration` is not included in memory fragments.
 
