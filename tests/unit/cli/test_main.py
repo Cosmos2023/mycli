@@ -1395,6 +1395,67 @@ def test_turn_service_inspect_usage_reports_latest_context_window_separately(
     ) in lines
 
 
+def test_turn_service_current_context_window_metrics_prefers_latest_usage_rollout(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "default", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._observability_service.metrics.record_context_window(
+        {
+            "input_tokens": 4997,
+            "max_tokens": 100000,
+            "usage_ratio": 0.04997,
+            "source": "estimate",
+        }
+    )
+    usage_item = TurnItem(
+        type=TurnItemType.MODEL_USAGE,
+        metadata={
+            "input_tokens": 8818,
+            "budget_input_tokens": 8818,
+            "output_tokens": 120,
+            "total_tokens": 8938,
+            "max_tokens": 100000,
+            "usage_ratio": 0.08818,
+            "source": "provider",
+        },
+    )
+    service._session_service.append_turn_rollout(
+        "default",
+        TurnRollout(
+            thread_id="default",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            started_at="2026-05-19T00:00:00Z",
+            completed_at="2026-05-19T00:00:01Z",
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            events=(
+                TurnRolloutEvent(
+                    event_id="turn_1:trace:1",
+                    kind="turn_item",
+                    created_at="2026-05-19T00:00:01Z",
+                    payload=usage_item.to_dict(),
+                ),
+            ),
+        ),
+    )
+
+    assert service.current_context_window_metrics() == {
+        "input_tokens": 8818,
+        "max_tokens": 100000,
+        "usage_ratio": 0.08818,
+        "source": "provider",
+    }
+
+
 def test_turn_service_inspect_usage_reports_unavailable_cost_without_prices(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

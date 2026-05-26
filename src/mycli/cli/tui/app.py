@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 
 from rich.measure import measure_renderables
@@ -153,7 +154,7 @@ class MycliTuiApp(App[int]):
         self._write_transcript(welcome)
 
     def _refresh_bottom_status(self) -> None:
-        snapshot = self.service._observability_service.snapshot()
+        snapshot = SimpleNamespace(context_window=self.service.current_context_window_metrics())
         left, right = format_bottom_status(config=self.service._config, snapshot=snapshot)
         self.status_left_text = left
         self.status_right_text = right

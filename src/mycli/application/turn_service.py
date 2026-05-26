@@ -508,12 +508,29 @@ class TurnService:
             f"estimated_cost={estimated_cost}",
         )
 
-    def _format_current_context_window_usage(
+    def current_context_window_metrics(self) -> dict[str, object]:
+        latest_usage_metadata = self._latest_model_usage_metadata()
+        if latest_usage_metadata is not None:
+            return self._context_window_metrics_from_usage_metadata(latest_usage_metadata)
+        return dict(self._observability_service.snapshot().context_window)
+
+    def _latest_model_usage_metadata(self) -> dict[str, object] | None:
+        for rollout in reversed(self._session_service.load_turn_rollouts(self._config.session_id)):
+            for event in reversed(rollout.events):
+                if event.kind != "turn_item":
+                    continue
+                payload = event.payload
+                if payload.get("type") != TurnItemType.MODEL_USAGE.value:
+                    continue
+                metadata = payload.get("metadata")
+                if isinstance(metadata, dict):
+                    return metadata
+        return None
+
+    def _context_window_metrics_from_usage_metadata(
         self,
-        metadata: dict[str, object] | None,
-    ) -> str:
-        if metadata is None:
-            return "current_context_window=unavailable"
+        metadata: dict[str, object],
+    ) -> dict[str, object]:
         input_tokens = self._int_metric(metadata.get("input_tokens"))
         budget_input_tokens = self._int_metric(metadata.get("budget_input_tokens"))
         total_tokens = self._int_metric(metadata.get("total_tokens"))
@@ -531,10 +548,32 @@ class TurnService:
             source = raw_source
         else:
             source = "provider" if input_tokens > 0 else "estimate"
+        return {
+            "input_tokens": current_tokens,
+            "max_tokens": max_tokens,
+            "usage_ratio": usage_ratio,
+            "source": source,
+        }
+
+    def _format_current_context_window_usage(
+        self,
+        metadata: dict[str, object] | None,
+    ) -> str:
+        if metadata is None:
+            return "current_context_window=unavailable"
+        metrics = self._context_window_metrics_from_usage_metadata(metadata)
+        usage_ratio_metric = metrics.get("usage_ratio")
+        usage_ratio = (
+            float(usage_ratio_metric)
+            if isinstance(usage_ratio_metric, (int, float)) and not isinstance(usage_ratio_metric, bool)
+            else 0.0
+        )
+        raw_source = metrics.get("source")
+        source = raw_source if isinstance(raw_source, str) and raw_source else "estimate"
         return (
             "current_context_window "
-            f"input_tokens={current_tokens} "
-            f"max_tokens={max_tokens} "
+            f"input_tokens={self._int_metric(metrics.get('input_tokens'))} "
+            f"max_tokens={self._int_metric(metrics.get('max_tokens'))} "
             f"usage_ratio={usage_ratio:.1%} "
             f"source={source}"
         )

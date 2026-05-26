@@ -33,6 +33,30 @@ class FakeService:
     def inspect_status(self) -> tuple[str, ...]:
         return ("session=demo model=deepseek-v4-flash context=29.7%",)
 
+    def current_context_window_metrics(self) -> dict[str, object]:
+        snapshot = self._observability_service.snapshot()
+        return dict(snapshot.context_window)
+
+
+def test_tui_bottom_status_prefers_latest_context_window_metrics(tmp_path: Path) -> None:
+    class Service(FakeService):
+        def current_context_window_metrics(self) -> dict[str, object]:
+            return {
+                "input_tokens": 8818,
+                "max_tokens": 100000,
+                "usage_ratio": 0.08818,
+                "source": "provider",
+            }
+
+    app = MycliTuiApp(service=Service(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert "context 8,818 / 100,000 tokens" in app.status_right_text
+
+    asyncio.run(run())
+
 
 def test_tui_startup_renders_welcome_and_bottom_status(tmp_path: Path) -> None:
     app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
