@@ -11,11 +11,15 @@ from mycli.services.context.compaction.pipeline import (
     LLMSummarization,
     ToolResultBudget,
 )
+from mycli.services.context.compaction.rehydration import (
+    CompactionRehydrationService,
+)
 
 __all__ = [
     "CacheZones",
     "CompactionCostProfile",
     "CompactionPipeline",
+    "CompactionRehydrationService",
     "ContextBudget",
     "ContextWindowAnalyzer",
     "ContextWindowMetrics",
