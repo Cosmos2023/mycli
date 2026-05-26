@@ -878,14 +878,7 @@ class TurnExecutor:
                 return TurnRecoveryAction(
                     should_retry=True,
                     warning_text=warning_text,
-                    runtime_reminders=tuple(
-                        dict.fromkeys(
-                            (
-                                *runtime_reminders,
-                                "The previous response hit the output budget. Continue directly with a concise complete answer.",
-                            )
-                        )
-                    ),
+                    runtime_reminders=runtime_reminders,
                     next_state=LoopState(
                         context_window_retries=loop_state.context_window_retries,
                         transport_retries=loop_state.transport_retries,
@@ -913,14 +906,7 @@ class TurnExecutor:
             return TurnRecoveryAction(
                 should_retry=True,
                 warning_text=warning_text,
-                runtime_reminders=tuple(
-                    dict.fromkeys(
-                        (
-                            *runtime_reminders,
-                            "Continue directly from the current answer. Do not apologize. Finish the response in compact form.",
-                        )
-                    )
-                ),
+                runtime_reminders=runtime_reminders,
                 next_state=LoopState(
                     context_window_retries=loop_state.context_window_retries,
                     transport_retries=loop_state.transport_retries,

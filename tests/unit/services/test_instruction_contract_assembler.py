@@ -67,11 +67,18 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
     assert [fragment.kind for fragment in contract.contextual_user_sections] == [
         "workspace_instructions",
         "environment_context",
+        "runtime_reminders",
         "skill_catalog",
     ]
     assert contract.current_user_request == "inspect this repo with $repository-analysis"
     assert contract.contextual_user_sections[0].include_in_memory is False
     assert "这是本轮的工作区/项目说明。" in contract.contextual_user_sections[0].content
+    reminder_fragment = next(
+        fragment
+        for fragment in contract.contextual_user_sections
+        if fragment.kind == "runtime_reminders"
+    )
+    assert "Prefer source files before logs." in reminder_fragment.content
     skill_catalog_fragment = next(
         fragment
         for fragment in contract.contextual_user_sections
