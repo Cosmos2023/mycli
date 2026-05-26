@@ -390,7 +390,7 @@ def test_turn_executor_output_token_limit_escalates_and_recovers(
     assert response.assistant_message == "Recovered with more output budget"
     assert adapter.output_token_budgets == [32_768, 2048]
     assert len(adapter.seen_items) == 2
-    assert "output budget" in _runtime_reminder_text(adapter.seen_items[1]).lower()
+    assert "output budget" not in _runtime_reminder_text(adapter.seen_items[1]).lower()
     assert response.turn is not None
     assert any(
         item.type is TurnItemType.WARNING

@@ -25,6 +25,7 @@ class TurnContextAssembler:
         workspace_content = self._workspace_instructions(context, workspace_instructions)
         memory_records = self._deduplicated_memory_records(context)
         memory_content = self._render_memory(memory_records)
+        runtime_reminders_content = self._render_runtime_reminders(context)
         sections = (
             TurnContextSection(
                 type=TurnContextSectionType.BASE_INSTRUCTIONS,
@@ -81,8 +82,8 @@ class TurnContextAssembler:
             TurnContextSection(
                 type=TurnContextSectionType.RUNTIME_REMINDERS,
                 title="Runtime reminders",
-                content=self._render_runtime_reminders(context),
-                enabled=bool(context.runtime_reminders),
+                content=runtime_reminders_content,
+                enabled=bool(runtime_reminders_content),
                 source="runtime",
             ),
             TurnContextSection(
@@ -256,7 +257,14 @@ class TurnContextAssembler:
         return tuple(item for item in plan_state.items if item.status is PlanStatus.PENDING)
 
     def _render_runtime_reminders(self, context: ExecutionContext) -> str:
-        reminders = "\n".join(f"- {item}" for item in context.runtime_reminders) or "none"
+        rehydration_reminders = tuple(
+            item
+            for item in context.runtime_reminders
+            if item.startswith("[Compaction rehydration]")
+        )
+        if not rehydration_reminders:
+            return ""
+        reminders = "\n".join(f"- {item}" for item in rehydration_reminders)
         return "\n".join(("Runtime reminders:", reminders))
 
     def _render_tool_exposure(self, context: ExecutionContext) -> str:
