@@ -205,6 +205,12 @@ def resolve_config(
             else user_config.get("statusline_enabled")
         )
     statusline_enabled_value = _parse_optional_bool(statusline_enabled_raw)
+    tui_startup_mark_value = (
+        env.get("MYCLI_TUI_STARTUP_MARK")
+        or project_config.get("tui_startup_mark")
+        or user_config.get("tui_startup_mark")
+        or "default"
+    )
     legacy_reasoning_effort = (
         env.get("MYCLI_REASONING_EFFORT")
         or project_config.get("reasoning_effort")
@@ -342,6 +348,7 @@ def resolve_config(
         statusline_enabled=True
         if statusline_enabled_value is None
         else statusline_enabled_value,
+        tui_startup_mark=str(tui_startup_mark_value).strip().lower() or "default",
         reasoning_effort=reasoning_effort,
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,

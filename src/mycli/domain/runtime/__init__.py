@@ -124,6 +124,7 @@ class AgentConfig:
     heartbeat_interval_seconds: float = 30.0
     view_mode: ViewMode = ViewMode.DEFAULT
     statusline_enabled: bool = True
+    tui_startup_mark: str = "default"
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
     thinking_enabled: bool = True
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM

@@ -53,6 +53,12 @@ def test_agent_config_exposes_cli_view_defaults(tmp_path: Path) -> None:
     assert config.statusline_enabled is True
 
 
+def test_agent_config_exposes_tui_startup_mark_default(tmp_path: Path) -> None:
+    config = AgentConfig(workspace_root=tmp_path)
+
+    assert config.tui_startup_mark == "default"
+
+
 def test_risk_level_values_are_stringy() -> None:
     assert RiskLevel.LOW.value == "low"
     assert RiskLevel.HIGH.value == "high"

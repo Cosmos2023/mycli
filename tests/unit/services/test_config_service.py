@@ -191,6 +191,25 @@ def test_config_service_reads_cli_view_settings(tmp_path: Path) -> None:
     assert config.statusline_enabled is False
 
 
+def test_config_service_reads_tui_startup_mark(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    config_path = workspace / ".mycli" / "config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text('tui_startup_mark = "rabbit"\n', encoding="utf-8")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.tui_startup_mark == "rabbit"
+
+
 def test_config_service_rejects_unknown_view_mode(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
