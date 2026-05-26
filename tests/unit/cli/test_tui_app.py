@@ -5,6 +5,8 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+from rich.text import Text
+
 from mycli.cli.tui.app import MycliTuiApp
 from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse, ViewMode
 
@@ -307,6 +309,44 @@ def test_tui_streaming_updates_transcript_without_full_redraw(tmp_path: Path) ->
             assert not hasattr(app, "_redraw_transcript")
 
     asyncio.run(run())
+
+
+def test_tui_streaming_uses_plain_text_before_final_markdown(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test():
+            app.current_stream_text = "**partial**"
+            app._render_assistant_stream()
+
+            assert isinstance(app._transcript_renderables[-1], Text)
+
+            app._write_final_answer("**final**")
+
+            assert not isinstance(app._transcript_renderables[-1], Text)
+            assert app.rendered_transcript[-1] == "**final**"
+
+    asyncio.run(run())
+
+
+def test_tui_stream_events_coalesce_pending_render_callbacks(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+    callbacks = 0
+
+    def call_from_thread(callback):
+        nonlocal callbacks
+        callbacks += 1
+
+    app.call_from_thread = call_from_thread  # type: ignore[method-assign]
+    app._turn_started_at = 1.0
+    app.turn_running = True
+
+    app._stream_event(RuntimeStreamEvent(kind="text_delta", text="a"))
+    app._stream_event(RuntimeStreamEvent(kind="text_delta", text="b"))
+    app._stream_event(RuntimeStreamEvent(kind="text_delta", text="c"))
+
+    assert app.streamed_answer_text == "abc"
+    assert callbacks == 1
 
 
 def test_tui_final_answer_replaces_different_stream_text(tmp_path: Path) -> None:

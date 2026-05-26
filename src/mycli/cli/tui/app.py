@@ -388,7 +388,6 @@ class MycliTuiApp(App[int]):
                 if not self._stream_render_pending:
                     self._stream_render_pending = True
                     self.call_from_thread(self._render_assistant_stream)
-                self.call_from_thread(self._refresh_execution_status)
             return
         if kind == "reasoning":
             self._execution_phase = "thinking"
@@ -433,13 +432,15 @@ class MycliTuiApp(App[int]):
         if self._stream_transcript_index is None:
             self._stream_transcript_index = len(self.rendered_transcript)
             self.rendered_transcript.append(self.current_stream_text)
-            self._transcript_renderables.append(final_answer_renderable(self.current_stream_text))
+            stream_renderable = Text(self.current_stream_text)
+            self._transcript_renderables.append(stream_renderable)
             transcript = self.query_one("#transcript", RichLog)
             self._stream_richlog_start_line = len(transcript.lines)
-            transcript.write(final_answer_renderable(self.current_stream_text))
+            transcript.write(stream_renderable)
             self._stream_richlog_line_count = len(transcript.lines) - (
                 self._stream_richlog_start_line or 0
             )
+            self._refresh_execution_status()
             return
         if self._stream_transcript_index >= len(self.rendered_transcript):
             self._stream_transcript_index = None
@@ -448,17 +449,18 @@ class MycliTuiApp(App[int]):
             self._render_assistant_stream()
             return
         self.rendered_transcript[self._stream_transcript_index] = self.current_stream_text
-        self._transcript_renderables[self._stream_transcript_index] = final_answer_renderable(
-            self.current_stream_text
-        )
+        stream_renderable = Text(self.current_stream_text)
+        self._transcript_renderables[self._stream_transcript_index] = stream_renderable
         if self._stream_richlog_start_line is None:
             self._stream_transcript_index = len(self.rendered_transcript) - 1
             self._write_transcript(
-                final_answer_renderable(self.current_stream_text),
+                stream_renderable,
                 plain_text=self.current_stream_text,
             )
+            self._refresh_execution_status()
             return
-        self._replace_richlog_stream_block(final_answer_renderable(self.current_stream_text))
+        self._replace_richlog_stream_block(stream_renderable)
+        self._refresh_execution_status()
 
     def _write_final_answer(self, answer: str) -> None:
         if not answer:
