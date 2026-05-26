@@ -12,6 +12,7 @@
 - P3 sub-agent follow-up：child transcript sidechain、`/subagents <child_session_id>` inspection、显式 in-process background `Task` mode、background concurrency cap、model request lock、sidechain write lock、shutdown failed-state cleanup。
 - P4 agent loop recovery：provider failure taxonomy、retry backoff evidence、explicit fallback model、configurable output token recovery、loop-boundary heartbeat、interrupted stop reason。
 - P5 CLI experience：line-oriented statusline/context%、view modes、workspace `@path` autocomplete、diff folding、`/status` 与 `/view`。
+- P6 TUI shell：Textual full-screen shell、Claude-like transcript、bottom workspace/model/context status、slash/@path suggestions、temporary overlays、plain-mode fallback。
 
 当前决策：
 
@@ -132,14 +133,14 @@
 | 序号 | 特性 | 状态 | Claude Code 细节 | mycli 现状 |
 |---|---|---|---|---|
 | 9.1 | 流式输出 | ⚠️ | SSE token-by-token 渲染 | P2 已有 chat-completions/Anthropic provider token/event 流式输出和 `[stream]` CLI 渲染；Responses 路径和 async backpressure 仍缺 |
-| 9.2 | Diff 展示 | ⚠️ | 带行号 diff | P2 已把 Edit diff 提升到 turn item；P5 增加编号 diff、折叠省略计数和 rich syntax helper；缺交互式 diff |
-| 9.3 | 语法高亮 | ❌ | pygments/rich | 无 |
+| 9.2 | Diff 展示 | ⚠️ | 带行号 diff | P2 已把 Edit diff 提升到 turn item；P5 增加编号 diff、折叠省略计数和 rich syntax helper；P6 TUI transcript 复用折叠摘要，缺交互式 `/diff` overlay |
+| 9.3 | 语法高亮 | ⚠️ | pygments/rich | P6 final answer 使用 Rich Markdown 渲染并支持 fenced code；仍不是完整 editor-grade highlighting |
 | 9.4 | spinner 可定制 | ❌ | spinnerVerbs / spinnerTips / spinnerTipsOverride | 无 |
 | 9.5 | voice mode | ❌ | hold-to-talk 语音输入 | 无 |
-| 9.6 | statusLine 可定制 | ⚠️ | command 类型，可显示 context% | P5 有内置文本 statusline/context%；还不是 Claude 式可定制 command |
-| 9.7 | viewMode | ⚠️ | default/verbose/focus | P5 有 default/verbose/focus 渲染模式；不是 Claude Code 完整模式体系 |
+| 9.6 | statusLine 可定制 | ⚠️ | command 类型，可显示 context% | P5 有内置文本 statusline/context%；P6 TUI bottom status 显示 workspace/model/context used-total tokens；还不是 Claude 式可定制 command |
+| 9.7 | viewMode | ⚠️ | default/verbose/focus | P5 有 default/verbose/focus 渲染模式；P6 TUI 消费现有 view state；不是 Claude Code 完整模式体系 |
 | 9.8 | editorMode | ❌ | normal/vim | 禅模式输入 |
-| 9.9 | 自动补全 | ⚠️ | 文件路径 @ 补全 | P5 有 workspace `@path` readline 补全；非通用补全框架 |
+| 9.9 | 自动补全 | ⚠️ | 文件路径 @ 补全 | P5 有 workspace `@path` readline 补全；P6 TUI 增加 slash prefix popup、arrow selection、Tab accept 与 `@path` popup；仍非通用补全框架 |
 | 9.10 | /rename 终端标题 | ❌ | 自动或手动更新终端 tab 标题 | 无 |
 
 ## 10. 生产基础设施
