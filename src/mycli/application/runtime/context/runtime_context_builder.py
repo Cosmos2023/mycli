@@ -4,6 +4,7 @@ from mycli.domain.conversation import Conversation
 from mycli.domain.logging import LogLevel
 from mycli.domain.runtime import (
     AgentConfig,
+    CompactionRehydrationContext,
     ExecutionContext,
     PlanState,
     TurnContext,
@@ -51,6 +52,7 @@ class RuntimeContextBuilder:
         conversation: Conversation,
         plan_state: PlanState,
         runtime_reminders: tuple[str, ...] = (),
+        compaction_rehydration: CompactionRehydrationContext | None = None,
         tool_exposure: ToolExposure | None = None,
     ) -> ExecutionContext:
         runtime_snapshot = self._session_service.load_runtime_snapshot(
@@ -87,6 +89,9 @@ class RuntimeContextBuilder:
             history_items=history_items,
             context_baseline=context_baseline,
             runtime_reminders=runtime_reminders,
+            compaction_rehydration=(
+                compaction_rehydration or CompactionRehydrationContext()
+            ),
         )
 
     def assemble_turn_context(
@@ -96,6 +101,7 @@ class RuntimeContextBuilder:
         conversation: Conversation,
         plan_state: PlanState,
         runtime_reminders: tuple[str, ...] = (),
+        compaction_rehydration: CompactionRehydrationContext | None = None,
         tool_exposure: ToolExposure | None = None,
     ) -> tuple[ExecutionContext, TurnContext]:
         context = self.build_context(
@@ -103,6 +109,7 @@ class RuntimeContextBuilder:
             conversation=conversation,
             plan_state=plan_state,
             runtime_reminders=runtime_reminders,
+            compaction_rehydration=compaction_rehydration,
             tool_exposure=tool_exposure,
         )
         turn_context = self._turn_context_assembler.assemble(

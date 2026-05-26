@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.domain.conversation import Conversation, Message
-from mycli.domain.runtime import AgentConfig, RuntimeBlock
+from mycli.domain.runtime import AgentConfig, InvokedSkillSnapshot, RuntimeBlock
 from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.compaction.pipeline import LLMSummarization, _collect_recent_files
@@ -88,7 +89,7 @@ class TestRehydration:
         assert summarizer.last_cost_metrics["recent_files"] == ["a.py"]
 
 
-def test_runtime_builds_recent_file_rehydration_block(tmp_path: Path) -> None:
+def test_runtime_builds_compaction_rehydration_context_from_recent_files(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     target = tmp_path / "src" / "app.py"
     target.write_text("def answer():\n    return 42\n", encoding="utf-8")
@@ -99,14 +100,44 @@ def test_runtime_builds_recent_file_rehydration_block(tmp_path: Path) -> None:
     )
     runtime.rebind_session(AgentConfig(workspace_root=tmp_path))
 
-    reminders = runtime._build_l4_rehydration_reminders(
-        {"recent_files": ["src/app.py"]}
+    context = runtime._build_compaction_rehydration_context(
+        cost_metrics={"recent_files": ["src/app.py"]},
+        conversation_tail=(),
     )
 
-    assert len(reminders) == 1
-    assert "src/app.py" in reminders[0]
-    assert "def answer()" in reminders[0]
-    assert "Compaction rehydration" in reminders[0]
+    assert context.files[0].path == "src/app.py"
+    assert "def answer()" in context.files[0].content
+
+
+def test_runtime_compaction_rehydration_includes_invoked_skills(tmp_path: Path) -> None:
+    skill_file = tmp_path / "skill.md"
+    skill_file.write_text("Follow the skill body.\n", encoding="utf-8")
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=object(),
+    )
+    runtime.rebind_session(AgentConfig(workspace_root=tmp_path, session_id="demo"))
+    runtime._session_service.record_invoked_skill_snapshot(
+        "demo",
+        InvokedSkillSnapshot(
+            name="demo-skill",
+            description="Demo skill",
+            source_path=str(skill_file),
+            body_digest=None,
+            cached_body_excerpt=None,
+            invoked_at=datetime(2026, 5, 27, tzinfo=UTC),
+            last_turn_id="turn_1",
+        ),
+    )
+
+    context = runtime._build_compaction_rehydration_context(
+        cost_metrics={"recent_files": []},
+        conversation_tail=(),
+    )
+
+    assert context.invoked_skills[0].name == "demo-skill"
+    assert "Follow the skill body" in context.invoked_skills[0].body
 
 
 def test_runtime_rehydration_rejects_paths_outside_workspace(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from mycli.application.runtime.recovery import (
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     ActivityEvent,
+    CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
     PlanState,
@@ -438,17 +439,16 @@ class TurnExecutor:
                 runtime._compaction_pipeline.llm_summarization.last_cost_metrics
             )
             budget = runtime._estimate_window_budget(conversation_for_model)
+            compaction_rehydration = (
+                runtime._build_compaction_rehydration_context(
+                    cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
+                    conversation_tail=tuple(conversation_for_model.messages),
+                )
+                if l4_applied_before_request
+                else CompactionRehydrationContext()
+            )
             runtime_reminders = _apply_l4_recent_file_hints(
-                tuple(
-                    dict.fromkeys(
-                        (
-                            *runtime_reminders,
-                            *runtime._build_l4_rehydration_reminders(
-                                runtime._compaction_pipeline.llm_summarization.last_cost_metrics
-                            ),
-                        )
-                    )
-                ),
+                runtime_reminders,
                 runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
             )
             context, turn_context = runtime._assemble_turn_context(
@@ -456,6 +456,7 @@ class TurnExecutor:
                 conversation=conversation_for_model,
                 plan_state=current_plan_state,
                 runtime_reminders=runtime_reminders,
+                compaction_rehydration=compaction_rehydration,
                 tool_exposure=planned_exposure.exposure,
             )
             contract = runtime._assemble_instruction_contract(
@@ -508,17 +509,12 @@ class TurnExecutor:
                     runtime._compaction_pipeline.llm_summarization.last_cost_metrics
                 )
                 conversation = conversation_for_model
+                compaction_rehydration = runtime._build_compaction_rehydration_context(
+                    cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
+                    conversation_tail=tuple(conversation_for_model.messages),
+                )
                 runtime_reminders = _apply_l4_recent_file_hints(
-                    tuple(
-                        dict.fromkeys(
-                            (
-                                *runtime_reminders,
-                                *runtime._build_l4_rehydration_reminders(
-                                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics
-                                ),
-                            )
-                        )
-                    ),
+                    runtime_reminders,
                     runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
                 )
                 context, turn_context = runtime._assemble_turn_context(
@@ -526,6 +522,7 @@ class TurnExecutor:
                     conversation=conversation_for_model,
                     plan_state=current_plan_state,
                     runtime_reminders=runtime_reminders,
+                    compaction_rehydration=compaction_rehydration,
                     tool_exposure=planned_exposure.exposure,
                 )
                 contract = runtime._assemble_instruction_contract(
@@ -678,9 +675,6 @@ class TurnExecutor:
                                     dict.fromkeys(
                                         (
                                             *carryover_runtime_reminders,
-                                            *runtime._build_l4_rehydration_reminders(
-                                                runtime._compaction_pipeline.llm_summarization.last_cost_metrics
-                                            ),
                                             *_apply_l4_recent_file_hints(
                                                 (),
                                                 runtime._compaction_pipeline.llm_summarization.last_cost_metrics,

@@ -12,9 +12,11 @@ from mycli.domain.tooling.contributed_tools import (
 from mycli.domain.runtime import (
     ActivityEvent,
     AgentConfig,
+    CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
     ExecutionContext,
+    FileRehydrationCandidate,
     InstructionContract,
     ModelTurnResult,
     PendingApproval,
@@ -26,6 +28,7 @@ from mycli.domain.runtime import (
     RuntimeStreamEvent,
     RequestShape,
     ReasoningEffort,
+    RehydrationBudget,
     StopReason,
     TurnContext,
     TurnItem,
@@ -47,6 +50,7 @@ from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.compaction import (
+    CompactionRehydrationService,
     CompactionCostProfile,
     ContextBudget,
     CompactionPipeline,
@@ -547,6 +551,7 @@ class AgentRuntime:
         conversation: Conversation,
         plan_state: PlanState,
         runtime_reminders: tuple[str, ...] = (),
+        compaction_rehydration: CompactionRehydrationContext | None = None,
         tool_exposure: ToolExposure | None = None,
     ) -> ExecutionContext:
         self._runtime_context_builder.set_config(self._config)
@@ -555,6 +560,7 @@ class AgentRuntime:
             conversation=conversation,
             plan_state=plan_state,
             runtime_reminders=runtime_reminders,
+            compaction_rehydration=compaction_rehydration,
             tool_exposure=tool_exposure,
         )
 
@@ -592,6 +598,7 @@ class AgentRuntime:
         conversation: Conversation,
         plan_state: PlanState,
         runtime_reminders: tuple[str, ...] = (),
+        compaction_rehydration: CompactionRehydrationContext | None = None,
         tool_exposure: ToolExposure | None = None,
     ) -> tuple[ExecutionContext, TurnContext]:
         self._runtime_context_builder.set_config(self._config)
@@ -600,6 +607,7 @@ class AgentRuntime:
             conversation=conversation,
             plan_state=plan_state,
             runtime_reminders=runtime_reminders,
+            compaction_rehydration=compaction_rehydration,
             tool_exposure=tool_exposure,
         )
 
@@ -1055,6 +1063,53 @@ class AgentRuntime:
             decision=decision,
             source=source if isinstance(source, str) else None,
         )
+
+    def _build_compaction_rehydration_context(
+        self,
+        *,
+        cost_metrics: dict[str, int | float | str | list[str]] | None,
+        conversation_tail: tuple[Message, ...],
+    ) -> CompactionRehydrationContext:
+        raw_files = [] if cost_metrics is None else cost_metrics.get("recent_files")
+        service = CompactionRehydrationService(
+            workspace_root=self._config.workspace_root,
+            token_counter=self._token_counter,
+            file_budget=RehydrationBudget(
+                max_total_tokens=self._config.compaction_rehydration_file_max_total_tokens,
+                max_item_tokens=self._config.compaction_rehydration_file_max_item_tokens,
+            ),
+            skill_budget=RehydrationBudget(
+                max_total_tokens=self._config.compaction_rehydration_skill_max_total_tokens,
+                max_item_tokens=self._config.compaction_rehydration_skill_max_item_tokens,
+            ),
+            max_files=self._config.compaction_rehydration_max_files,
+            max_skills=self._config.compaction_rehydration_max_skills,
+        )
+        return service.build(
+            file_candidates=self._file_rehydration_candidates(raw_files),
+            invoked_skills=self._session_service.load_invoked_skill_snapshots(
+                self._config.session_id
+            ),
+            tail_messages=conversation_tail,
+        )
+
+    def _file_rehydration_candidates(
+        self,
+        raw_files: object,
+    ) -> tuple[FileRehydrationCandidate, ...]:
+        if not isinstance(raw_files, list):
+            return ()
+        candidates: list[FileRehydrationCandidate] = []
+        for index, raw_path in enumerate(raw_files):
+            if isinstance(raw_path, str) and raw_path.strip():
+                candidates.append(
+                    FileRehydrationCandidate(
+                        path=raw_path.strip(),
+                        tool_name="Read",
+                        sequence=index,
+                    )
+                )
+        return tuple(candidates)
 
     def _build_l4_rehydration_reminders(
         self,
