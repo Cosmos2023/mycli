@@ -5,6 +5,7 @@ from collections.abc import Callable
 import os
 from pathlib import Path
 import shutil
+from sys import stdin, stdout
 import tempfile
 from typing import Any
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from mycli.cli.repl import (
     handle_slash_command,
     run_repl,
 )
+from mycli.cli.tui import run_tui
 from mycli.cli.rendering import (
     RenderOptions,
     render_activity_lines,
@@ -52,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mycli")
     parser.add_argument("--session", default="default", help="Session identifier")
     parser.add_argument("--model", default=None, help="Model override")
+    parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="Use the line-oriented REPL instead of the full-screen TUI",
+    )
     parser.add_argument("--eval-list", action="store_true", help="List evaluation scenarios")
     parser.add_argument("--eval-scenario", default=None, help="Run a single evaluation scenario")
     parser.add_argument(
@@ -60,6 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluation scenario root directory",
     )
     return parser
+
+
+def should_use_tui(cli_args: dict[str, object]) -> bool:
+    if bool(cli_args.get("plain")):
+        return False
+    return stdin.isatty() and stdout.isatty()
+
 
 def _prepare_evaluation_scenario(
     *,
@@ -169,6 +183,8 @@ def main(
     if eval_exit_code is not None:
         return eval_exit_code
     service = build_turn_service(args, cwd=cwd, home=home, env=env)
+    if should_use_tui(args):
+        return run_tui(service, input_func=input_func, output_func=output_func)
 
     def emit_stream_event(event: RuntimeStreamEvent) -> None:
         for line in render_runtime_stream_event(event):

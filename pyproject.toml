@@ -11,6 +11,7 @@ dependencies = [
     "pygments>=2.20.0",
     "rich>=15.0.0",
     "structlog>=25.5.0",
+    "textual>=8.2,<9",
     "tiktoken>=0.12.0",
 ]
 
