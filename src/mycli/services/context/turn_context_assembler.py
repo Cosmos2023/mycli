@@ -26,6 +26,7 @@ class TurnContextAssembler:
         memory_records = self._deduplicated_memory_records(context)
         memory_content = self._render_memory(memory_records)
         runtime_reminders_content = self._render_runtime_reminders(context)
+        compaction_rehydration_content = self._render_compaction_rehydration(context)
         sections = (
             TurnContextSection(
                 type=TurnContextSectionType.BASE_INSTRUCTIONS,
@@ -64,6 +65,13 @@ class TurnContextAssembler:
                     or context.history_items
                 ),
                 source="conversation",
+            ),
+            TurnContextSection(
+                type=TurnContextSectionType.COMPACTION_REHYDRATION,
+                title="Compaction rehydration",
+                content=compaction_rehydration_content,
+                enabled=bool(compaction_rehydration_content),
+                source="compaction",
             ),
             TurnContextSection(
                 type=TurnContextSectionType.MEMORY,
@@ -266,6 +274,24 @@ class TurnContextAssembler:
             return ""
         reminders = "\n".join(f"- {item}" for item in rehydration_reminders)
         return "\n".join(("Runtime reminders:", reminders))
+
+    def _render_compaction_rehydration(self, context: ExecutionContext) -> str:
+        files = context.compaction_rehydration.files
+        skills = context.compaction_rehydration.invoked_skills
+        parts: list[str] = []
+        if skills:
+            parts.append("[Invoked skills after compaction]")
+            parts.append("Continue to follow these skill instructions.")
+            for skill in skills:
+                parts.append(f"## {skill.name}\n{skill.body}")
+        if files:
+            parts.append("[Compaction file rehydration]")
+            parts.append(
+                "Recent file snapshots are current disk content. Re-read files if exact content matters."
+            )
+            for item in files:
+                parts.append(f"### {item.path}\n```text\n{item.content}\n```")
+        return "\n\n".join(parts)
 
     def _render_tool_exposure(self, context: ExecutionContext) -> str:
         if context.tool_exposure is not None:

@@ -70,6 +70,19 @@ class InstructionContractAssembler:
                     )
                 )
                 continue
+            if section.type is TurnContextSectionType.COMPACTION_REHYDRATION:
+                contextual_user_sections.append(
+                    self._directed_fragment(
+                        section=section,
+                        kind=InstructionFragmentKind.COMPACTION_REHYDRATION,
+                        include_in_memory=False,
+                        prefix=(
+                            "这是压缩后的复水上下文。"
+                            "它补充当前文件快照和已调用 skill 指令，不是用户的新请求。"
+                        ),
+                    )
+                )
+                continue
             if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT:
                 contextual_user_sections.append(
                     self._directed_fragment(

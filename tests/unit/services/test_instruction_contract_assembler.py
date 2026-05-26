@@ -10,7 +10,12 @@ from mycli.domain.contributed_tools import (
 )
 from mycli.domain.runtime import (
     AgentConfig,
+    CompactionRehydrationContext,
     ExecutionContext,
+    PlanItem,
+    PlanState,
+    PlanStatus,
+    RehydratedFile,
 )
 from mycli.domain.tool_exposure import (
     ToolExposure,
@@ -122,3 +127,81 @@ def test_instruction_contract_assembler_keeps_added_tools_inside_plain_toolset()
     )
     assert "Available tools: daily_brief" in tool_fragment.content
     assert "动态工具" not in tool_fragment.content
+
+
+def test_instruction_contract_assembler_emits_compaction_rehydration_fragment() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            compaction_rehydration=CompactionRehydrationContext(
+                files=(
+                    RehydratedFile(
+                        path="src/app.py",
+                        content="print('ok')",
+                        token_count=3,
+                        truncated=False,
+                    ),
+                )
+            ),
+        ),
+    )
+
+    contract = InstructionContractAssembler().assemble(
+        turn_context=turn_context,
+        base_instructions="Base",
+        conversation_messages=(),
+    )
+
+    fragment = next(
+        item
+        for item in contract.contextual_user_sections
+        if item.kind == "compaction_rehydration"
+    )
+    assert fragment.include_in_memory is False
+    assert "[Compaction file rehydration]" in fragment.content
+
+
+def test_instruction_contract_keeps_plan_separate_from_compaction_rehydration() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            plan_state=PlanState(
+                items=(
+                    PlanItem(
+                        id="plan_1",
+                        content="Finish the implementation",
+                        status=PlanStatus.IN_PROGRESS,
+                    ),
+                )
+            ),
+            compaction_rehydration=CompactionRehydrationContext(
+                files=(
+                    RehydratedFile(
+                        path="src/app.py",
+                        content="print('ok')",
+                        token_count=3,
+                        truncated=False,
+                    ),
+                )
+            ),
+        ),
+    )
+
+    contract = InstructionContractAssembler().assemble(
+        turn_context=turn_context,
+        base_instructions="Base",
+        conversation_messages=(),
+    )
+
+    plan_fragment = next(item for item in contract.contextual_user_sections if item.kind == "plan")
+    rehydration_fragment = next(
+        item
+        for item in contract.contextual_user_sections
+        if item.kind == "compaction_rehydration"
+    )
+
+    assert "Finish the implementation" in plan_fragment.content
+    assert "Finish the implementation" not in rehydration_fragment.content
+    assert "src/app.py" in rehydration_fragment.content

@@ -866,3 +866,75 @@ def test_request_shape_builder_includes_skill_catalog_in_responses_delta_context
     ]
 
     assert any("Available skills" in str(content) for content in user_messages)
+
+
+def test_request_shape_builder_places_chat_rehydration_after_replay_before_current_user(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="skill_catalog",
+                    title="Skill catalog",
+                    content="Available skills:\n- code-review: Review code",
+                ),
+                InstructionFragment(
+                    kind="compaction_rehydration",
+                    title="Compaction rehydration",
+                    content="[Compaction file rehydration]\n### src/app.py",
+                ),
+            ),
+            conversation_messages=(
+                Message(role="assistant", content="Compacted summary"),
+                Message(role="assistant", content="Tail answer"),
+            ),
+            current_user_request="continue now",
+        ),
+        tools=(_tool("Skill"),),
+    )
+
+    contents = [message.content for message in shape.provider_messages]
+    joined = "\n".join(contents)
+
+    assert joined.index("Available skills") < joined.index("Compacted summary")
+    assert joined.index("Compacted summary") < joined.index("[Compaction file rehydration]")
+    assert joined.index("[Compaction file rehydration]") < joined.index("continue now")
+
+
+def test_request_shape_builder_includes_compaction_rehydration_in_responses_delta(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path, protocol=ProtocolId.RESPONSES),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="compaction_rehydration",
+                    title="Compaction rehydration",
+                    content="[Invoked skills after compaction]\n## code-review",
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("Skill"),),
+    )
+
+    assert any(
+        "[Invoked skills after compaction]" in message.content
+        for message in shape.provider_messages
+        if message.role == "user"
+    )
+    assert any(
+        fragment.id == "volatile:compaction_rehydration"
+        and fragment.metadata["instruction_fragment_kind"] == "compaction_rehydration"
+        for fragment in shape.fragments
+    )

@@ -13,6 +13,7 @@ from mycli.domain.memory import MemoryKind, MemoryRecord
 from mycli.domain.runtime import (
     AgentConfig,
     BaselineFragment,
+    CompactionRehydrationContext,
     ContextBaseline,
     ExecutionContext,
     HistoryItem,
@@ -20,6 +21,7 @@ from mycli.domain.runtime import (
     PlanItem,
     PlanState,
     PlanStatus,
+    RehydratedFile,
     TurnContextSectionType,
 )
 from mycli.domain.tool_exposure import (
@@ -655,3 +657,30 @@ def test_turn_context_assembler_renders_added_tools_in_deterministic_order() -> 
 
     assert tool_section.content.index("a_tool") < tool_section.content.index("z_tool")
     assert tool_section.metadata == {"tool_names": ["a_tool", "z_tool"]}
+
+
+def test_turn_context_assembler_renders_compaction_rehydration_section() -> None:
+    context = ExecutionContext(
+        config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+        compaction_rehydration=CompactionRehydrationContext(
+            files=(
+                RehydratedFile(
+                    path="src/app.py",
+                    content="def answer():\n    return 42",
+                    token_count=6,
+                    truncated=False,
+                ),
+            )
+        ),
+    )
+
+    turn_context = TurnContextAssembler().assemble(user_message="continue", context=context)
+    section = next(
+        item
+        for item in turn_context.sections
+        if item.type is TurnContextSectionType.COMPACTION_REHYDRATION
+    )
+
+    assert section.enabled is True
+    assert "[Compaction file rehydration]" in section.content
+    assert "src/app.py" in section.content

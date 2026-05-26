@@ -162,16 +162,25 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderMessageShape, ...]:
-        transcript_context = self._render_transcript_delta_context(contract)
+        stable_context = self._render_transcript_delta_context(
+            contract,
+            include_kinds={"runtime_reminders", "skill_catalog"},
+        )
+        rehydration_context = self._render_transcript_delta_context(
+            contract,
+            include_kinds={"compaction_rehydration"},
+        )
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
-        if transcript_context:
-            messages.append(ProviderMessageShape(role="user", content=transcript_context))
+        if stable_context:
+            messages.append(ProviderMessageShape(role="user", content=stable_context))
         for message in self._chat_completions_replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
+        if rehydration_context:
+            messages.append(ProviderMessageShape(role="user", content=rehydration_context))
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -281,24 +290,38 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
-        transcript_context = self._render_transcript_delta_context(contract)
+        stable_context = self._render_transcript_delta_context(
+            contract,
+            include_kinds={"runtime_reminders", "skill_catalog"},
+        )
+        rehydration_context = self._render_transcript_delta_context(
+            contract,
+            include_kinds={"compaction_rehydration"},
+        )
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
                 role="system",
                 blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
             )
         ]
-        if transcript_context:
+        if stable_context:
             items.append(
                 ProviderRuntimeItemShape(
                     role="user",
-                    blocks=(RuntimeBlock(type="text", text=transcript_context),),
+                    blocks=(RuntimeBlock(type="text", text=stable_context),),
                 )
             )
         for message in self._replay_messages(contract):
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        if rehydration_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=rehydration_context),),
+                )
+            )
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -367,11 +390,17 @@ class RequestShapeBuilder:
             if self._responses_contextual_section_is_model_visible(section)
         )
 
-    def _render_transcript_delta_context(self, contract: InstructionContract) -> str:
+    def _render_transcript_delta_context(
+        self,
+        contract: InstructionContract,
+        *,
+        include_kinds: set[str] | None = None,
+    ) -> str:
         return self._join_content(
             self._contextual_section_content(section, contract)
             for section in contract.contextual_user_sections
             if self._transcript_contextual_section_is_model_visible(section)
+            and (include_kinds is None or str(section.kind) in include_kinds)
         )
 
     def _transcript_contextual_section_is_model_visible(
@@ -379,6 +408,7 @@ class RequestShapeBuilder:
         section: InstructionFragment,
     ) -> bool:
         return str(section.kind) in {
+            "compaction_rehydration",
             "runtime_reminders",
             "skill_catalog",
         }
@@ -388,6 +418,7 @@ class RequestShapeBuilder:
         section: InstructionFragment,
     ) -> bool:
         return str(section.kind) in {
+            "compaction_rehydration",
             "memory",
             "runtime_reminders",
             "skill_catalog",

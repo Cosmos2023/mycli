@@ -215,6 +215,9 @@ class ExecutionContext:
     history_items: tuple[HistoryItem, ...] = ()
     context_baseline: ContextBaseline | None = None
     runtime_reminders: tuple[str, ...] = ()
+    compaction_rehydration: CompactionRehydrationContext = field(
+        default_factory=CompactionRehydrationContext
+    )
 
 
 @dataclass(slots=True, frozen=True)
