@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from time import monotonic
 from typing import Any
 
 from rich.text import Text
@@ -15,6 +16,11 @@ from mycli.cli.tui.completion import CompletionState
 from mycli.cli.tui.marks import startup_mark, startup_mark_names
 from mycli.cli.tui.overlays import overlay_text, release_notes_text
 from mycli.cli.tui.status import format_bottom_status
+from mycli.cli.tui.transcript import (
+    execution_status_label,
+    final_answer_renderable,
+    phase_for_tool,
+)
 
 
 class MycliTuiApp(App[int]):
@@ -87,6 +93,10 @@ class MycliTuiApp(App[int]):
         self.suggestion_text = ""
         self.current_overlay_text = ""
         self.completion = CompletionState(workspace_root=service._config.workspace_root)
+        self._before_send_input = ""
+        self._turn_started_at: float | None = None
+        self.turn_running = False
+        self.turn_interrupted = False
 
     def compose(self) -> ComposeResult:
         yield RichLog(id="transcript", wrap=True, markup=True, highlight=True)
@@ -142,11 +152,16 @@ class MycliTuiApp(App[int]):
         if event.input.id != "prompt-input":
             return
         value = event.value.strip()
+        self._before_send_input = value
         event.input.value = ""
         if not value:
             return
         if value.startswith("/"):
             self._dispatch_command(value)
+            return
+        self.turn_running = True
+        self.turn_interrupted = False
+        self.run_worker(lambda: self._run_turn_worker(value), thread=True, exclusive=True)
 
     def on_key(self, event: events.Key) -> None:
         if not self.completion.visible:
@@ -195,6 +210,13 @@ class MycliTuiApp(App[int]):
         if value.startswith("/mark"):
             names = ", ".join(startup_mark_names())
             self._show_overlay(overlay_text(title="Startup marks", lines=(names,)))
+            return
+        if value.startswith("/resume"):
+            parts = value.split(maxsplit=1)
+            session_id = parts[1] if len(parts) > 1 else None
+            for line in self.command_handler(f"/resume {session_id}" if session_id else "/resume"):
+                self._write_transcript(line)
+            self._refresh_bottom_status()
             return
         if value == "/help":
             self._show_overlay(overlay_text(title="Help", lines=self.service_help_lines()))
@@ -248,13 +270,51 @@ class MycliTuiApp(App[int]):
         overlay.display = True
 
     def action_interrupt(self) -> None:
-        self.query_one("#prompt-input", Input).value = ""
+        self.query_one("#prompt-input", Input).value = self._before_send_input
+        self.turn_interrupted = self.turn_running
+        self.turn_running = False
+        self._turn_started_at = None
 
     def action_close_overlay(self) -> None:
         self.completion.close()
         self._render_suggestions()
         self.current_overlay_text = ""
         self.query_one("#overlay", Static).display = False
+
+    def _run_turn_worker(self, message: str) -> None:
+        self.call_from_thread(self._write_transcript, f"› {message}")
+        self._turn_started_at = monotonic()
+        self.call_from_thread(
+            self._write_transcript,
+            execution_status_label(phase="thinking", elapsed_seconds=0),
+        )
+        response = self.service.handle_user_turn(message, stream_sink=self._stream_event)
+        if not self.turn_interrupted:
+            self.call_from_thread(
+                lambda: self._write_transcript(
+                    final_answer_renderable(response.assistant_message),
+                    plain_text=response.assistant_message,
+                )
+            )
+        self._turn_started_at = None
+        self.turn_running = False
+        self.call_from_thread(self._refresh_bottom_status)
+
+    def _stream_event(self, event: object) -> None:
+        if self._turn_started_at is None or self.turn_interrupted:
+            return
+        elapsed = monotonic() - self._turn_started_at
+        if getattr(event, "kind", None) == "tool_call":
+            name = getattr(event, "tool_name", None) or "tool"
+            metadata = getattr(event, "metadata", {})
+            path = metadata.get("path") if isinstance(metadata, dict) else None
+            suffix = f" {path}" if isinstance(path, str) and path else ""
+            phase = phase_for_tool(name)
+            self.call_from_thread(self._write_transcript, f"{name}{suffix}")
+            self.call_from_thread(
+                self._write_transcript,
+                execution_status_label(phase=phase, elapsed_seconds=elapsed),
+            )
 
 
 def run_tui(

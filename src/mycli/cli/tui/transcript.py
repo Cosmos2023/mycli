@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Mapping
 
+from rich.markdown import Markdown
+
 from mycli.cli.rendering import RenderOptions, render_activity_lines
 from mycli.domain.runtime import (
     RuntimeStreamEvent,
@@ -120,6 +122,10 @@ def append_final_answer(
 ) -> tuple[TuiTranscriptItem, ...]:
     answer = final_answer if final_answer != existing_stream else existing_stream
     return (TuiTranscriptItem(TuiTranscriptKind.ASSISTANT, answer),) if answer else ()
+
+
+def final_answer_renderable(answer: str) -> Markdown:
+    return Markdown(answer)
 
 
 def _items_from_turn(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from rich.markdown import Markdown
+
 from mycli.cli.tui.transcript import (
     TuiTranscriptKind,
     append_final_answer,
     execution_status_label,
+    final_answer_renderable,
     items_from_response,
     phase_for_tool,
     summarize_tool_activity,
@@ -107,3 +110,9 @@ def test_append_final_answer_replaces_stream_buffer_when_different() -> None:
     assert len(items) == 1
     assert items[0].kind is TuiTranscriptKind.ASSISTANT
     assert items[0].text == "final answer"
+
+
+def test_final_answer_renderable_uses_markdown() -> None:
+    renderable = final_answer_renderable("**bold**\n\n```python\nprint('hi')\n```")
+
+    assert isinstance(renderable, Markdown)

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 from mycli.cli.tui.app import MycliTuiApp
-from mycli.domain.runtime import ViewMode
+from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse, ViewMode
 
 
 class FakeObservability:
@@ -112,5 +113,76 @@ def test_tui_clear_command_clears_transcript_view(tmp_path: Path) -> None:
             input_widget.value = "/clear"
             await pilot.press("enter")
             assert app.rendered_transcript == []
+
+    asyncio.run(run())
+
+
+def test_tui_enter_runs_turn_in_worker_and_renders_final_answer(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    class Service(FakeService):
+        def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+            assert message == "hello"
+            started.set()
+            if stream_sink is not None:
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_call",
+                        tool_name="Read",
+                        metadata={"path": "README.md"},
+                        )
+                    )
+            release.wait(timeout=1.0)
+            return TurnResponse(assistant_message="**final** answer")
+
+    app = MycliTuiApp(service=Service(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "hello"
+            await pilot.press("enter")
+            assert started.wait(timeout=1.0) is True
+            assert app.turn_running is True
+            assert input_widget.value == ""
+            release.set()
+            await pilot.pause(0.1)
+            assert any("Reading files" in item for item in app.rendered_transcript)
+            assert any("**final** answer" == item for item in app.rendered_transcript)
+            assert app.turn_running is False
+
+    asyncio.run(run())
+
+
+def test_tui_ctrl_c_restores_pre_send_input(tmp_path: Path) -> None:
+    app = MycliTuiApp(service=FakeService(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "inspect repo"
+            app._before_send_input = "inspect repo"
+            app.turn_running = True
+            await pilot.press("ctrl+c")
+            assert input_widget.value == "inspect repo"
+            assert app.turn_interrupted is True
+
+    asyncio.run(run())
+
+
+def test_tui_resume_command_renders_session_lines(tmp_path: Path) -> None:
+    class Service(FakeService):
+        def resume_session(self, session_id=None) -> tuple[str, ...]:
+            return (f"resumed {session_id}", "messages=3")
+
+    app = MycliTuiApp(service=Service(tmp_path / "workspace"))
+
+    async def run() -> None:
+        async with app.run_test() as pilot:
+            input_widget = app.query_one("#prompt-input")
+            input_widget.value = "/resume demo"
+            await pilot.press("enter")
+            assert any("resumed demo" in item for item in app.rendered_transcript)
 
     asyncio.run(run())
