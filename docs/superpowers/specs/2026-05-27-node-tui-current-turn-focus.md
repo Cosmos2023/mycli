@@ -10,7 +10,8 @@ This slice moves the Node TUI toward a Claude-Code-like console structure:
 - current turn as the main visual object
 - previous turns collapsed by default
 - tool activity displayed before the final assistant answer
-- stable bottom command bar
+- stable minimal input row and bottom statusline
+- Claude-Code-like visual tokens: `❯` for user turns, `●` for tool calls, `⎿` for expanded tool results, and `▍` for active streaming text
 
 Python remains the only runtime authority. The Node process only changes display grouping and rendering.
 
@@ -28,17 +29,17 @@ mycli  workspace
 
 Earlier turns collapsed · 3 turns · /view verbose for full transcript
 
-› 你的系统提示词是什么
-• Read AGENTS.md
-• Search system prompt · 4 matches
-• Thinking 12s
+❯ 你的系统提示词是什么
+● Read AGENTS.md
+● Search system prompt · 4 matches
+● Thinking 12s
 
-  我的系统提示词是当前对话开头设置的完整指令集，核心包括：
-  • 身份定位：mycli，本地优先的个人编程助手
-  • 核心准则：持续推进、证据优先、安全可回退
+│ 我的系统提示词是当前对话开头设置的完整指令集，核心包括：
+│ • 身份定位：mycli，本地优先的个人编程助手
+│ • 核心准则：持续推进、证据优先、安全可回退
 
 ────────────────────────────────────────────────────────────────────
-›
+>
 default · model · theme · context
 ```
 
@@ -108,6 +109,7 @@ type DisplayTurn = {
   id: string;
   user: TranscriptItem | null;
   tools: TranscriptItem[];
+  toolDetails: TranscriptItem[];
   statuses: TranscriptItem[];
   approvals: TranscriptItem[];
   assistantStream: TranscriptItem | null;
@@ -165,13 +167,14 @@ Do not add a new slash command in this slice. Continue using existing `/view` be
 Required shape:
 
 ```text
-› 你的系统提示词是什么
+❯ 你的系统提示词是什么
 ```
 
 Rules:
 
 - no role label
-- accent marker from theme
+- bright/bold user text
+- `❯` user marker in transcript rows, using the active accent color when color is enabled
 - wrap inside the same content width as the assistant answer
 - leave a small visual gap before tool rows
 
@@ -182,9 +185,9 @@ Tool/activity rows are placed immediately after the user prompt and before assis
 Required shape:
 
 ```text
-• Read AGENTS.md
-• Search system prompt · 4 matches
-• Bash pytest -q · exit 0
+● Read AGENTS.md
+● Search system prompt · 4 matches
+● Bash pytest -q · exit 0
 ```
 
 Rules:
@@ -192,18 +195,46 @@ Rules:
 - use existing `formatToolSummary()` for verb/target/status/detail
 - render default tool rows as short sentence-like traces, not a table
 - keep one tool/action per line
+- prefix tool calls with `●`
+- render tool call markers and tool names in teal/cyan accent
 - avoid trailing tool telemetry after the assistant answer
 - running status uses warning/accent color
 - failed status uses error color
 - default mode shows summaries only
 - verbose mode may show tool details under the summary
 
-### 5.3 Running Activity
+### 5.3 Tool Result Detail
+
+Expanded tool results should use the Claude-Code-like `⎿` continuation marker.
+
+Default mode:
+
+- show only the `● Tool(args)` style summary line
+- hide raw tool output unless the output is the primary answer artifact
+
+Verbose or expanded mode:
+
+```text
+● Read pyproject.toml
+⎿ [project]
+  name = "mycli"
+  requires-python = ">=3.13"
+```
+
+Rules:
+
+- use `⎿` for tool result blocks
+- render result content dim/gray
+- preserve monospace formatting
+- use a subtle gray surface only when Ink can do so without making the UI look boxed
+- keep expanded results under the matching tool call, before the assistant answer
+
+### 5.4 Running Activity
 
 While a turn is running, show a live activity row before the assistant stream:
 
 ```text
-• Thinking 12s · read → grep → bash
+● Thinking 12s · read → grep → bash
 ```
 
 Rules:
@@ -213,26 +244,36 @@ Rules:
 - hide it after `turn.completed`
 - do not block input or interrupt handling
 
-### 5.4 Assistant Answer
+### 5.5 Assistant Answer
 
 Assistant text appears after tools/activity.
 
 Required shape:
 
 ```text
-  我的系统提示词是当前对话开头设置的完整指令集，核心包括：
-  • 身份定位：mycli，本地优先的个人编程助手
+│ 我的系统提示词是当前对话开头设置的完整指令集，核心包括：
+│ • 身份定位：mycli，本地优先的个人编程助手
 ```
 
 Rules:
 
 - no `ASSISTANT` label
-- no permanent left rail if it makes the screen look like raw logs
+- use a subtle assistant left rail, but keep it quiet enough that it does not look like raw logs
 - no bordered answer card in default mode
 - use indentation and bounded width for hierarchy
-- streaming answer is plain text
+- streaming answer is plain text with a trailing `▍` cursor while active
 - final answer may use existing markdown renderer
 - final markdown replaces the stream without duplication
+
+### 5.6 Turn Separator
+
+Turn boundaries should be visible without turning the screen into a dashboard.
+
+Rules:
+
+- use a subtle dim horizontal separator between completed turns in verbose mode
+- in default mode, collapse older turns instead of drawing repeated separators
+- do not draw heavy borders around each turn
 
 ## 6. Header And Bottom Bar
 
@@ -259,7 +300,7 @@ Rules:
 The bottom area should use two compact rows in default mode:
 
 ```text
-›
+>
 default · deepseek-v4-flash · graphite · 9% 9,302/100k
 ```
 
@@ -274,6 +315,7 @@ Rules:
 - show shortcut help in `?` / `/help` overlays instead of the main screen
 - do not render placeholder text such as `Type a message or /command` in the input row
 - keep the input row visually minimal: prompt marker plus the current draft only
+- use `>` as the default input prompt, with `❯`, `➤`, `►`, or `»` reserved for future theme/config variants
 - put session/model/theme/context below the input box, not in the header
 - keep runtime metadata muted
 - elide metadata from the left if needed before wrapping
@@ -296,10 +338,14 @@ Required Node tests:
 - `groupTranscriptIntoTurns()` starts a new display turn at each user item.
 - Default mode collapses older turns and expands only the current turn.
 - Tool rows render before assistant final even when the flat transcript order differs.
+- Tool calls use `●` summaries in default mode.
+- Verbose tool details render under the matching call with `⎿`.
 - Running activity renders inside the active turn before assistant stream.
+- Active assistant stream renders a trailing `▍` cursor.
 - Verbose mode still renders full transcript rows.
 - Focus mode hides collapsed history and shows only the current turn.
 - User/assistant rows do not render `USER` or `ASSISTANT` labels.
+- Verbose completed turns have subtle separators.
 - The screenshot-like scenario with four Chinese prompts does not render four full assistant answers in default mode.
 - Existing `/theme`, `/usage`, `/sessions`, `/clear`, and `/quit` smoke paths still pass.
 
@@ -334,6 +380,7 @@ Checklist:
 - The default screen no longer looks like a raw transcript log.
 - Older assistant answers do not consume the viewport in default mode.
 - Tool/activity rows appear before the final assistant answer.
+- Tool calls, expanded tool results, user turns, and active streams use `●`, `⎿`, `❯`, and `▍` respectively.
 - The current turn is visually dominant.
 - Claude-Code-like restraint is preserved: no large role cards or sidebars.
 - Node remains a disposable UI process and does not own runtime state.
