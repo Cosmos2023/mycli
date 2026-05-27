@@ -5,21 +5,15 @@ import { render } from "ink-testing-library";
 import { InputBox } from "../src/app/InputBox.tsx";
 import { initialState } from "../src/state/reducer.ts";
 
-test("command bar renders divider prompt placeholder and compact metadata", () => {
-  const state = {
-    ...initialState({ rawThemeName: "graphite" }),
-    workspace: "/repo/project",
-    model: "deepseek-v4-flash",
-    status: { context_window: { used_tokens: 3983, max_tokens: 100000 } },
-  };
-
+test("input box renders minimal prompt and metadata below input", () => {
+  const state = initialState({ rawThemeName: "graphite" });
   const { lastFrame } = render(
     <InputBox
       draft=""
       turnRunning={false}
       completionVisible={false}
       theme={state.theme}
-      metadata="default · graphite · 3,983/100k"
+      metadata="default · deepseek-v4-flash · graphite · 9% 9,302/100k"
       width={80}
       onDraftChange={() => undefined}
       onSubmit={() => undefined}
@@ -28,26 +22,28 @@ test("command bar renders divider prompt placeholder and compact metadata", () =
   );
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /─/);
-  assert.match(frame, /› Type a message or \/command/);
-  assert.match(frame, /default · graphite/);
+  assert.match(frame, />/);
+  assert.match(frame, /default · deepseek-v4-flash/);
+  assert.doesNotMatch(frame, /Type a message or \/command/);
 });
 
-test("command bar shows command hint for slash drafts", () => {
-  const state = initialState({ rawThemeName: "mono" });
+test("input box renders current draft next to prompt", () => {
+  const state = initialState({ rawThemeName: "deep-teal" });
   const { lastFrame } = render(
     <InputBox
-      draft="/theme"
+      draft="/usage"
       turnRunning={false}
       completionVisible={false}
       theme={state.theme}
-      metadata="default · mono"
+      metadata="default · model"
       width={80}
       onDraftChange={() => undefined}
       onSubmit={() => undefined}
       onInterrupt={() => undefined}
     />,
   );
+  const frame = lastFrame() ?? "";
 
-  assert.match(lastFrame() ?? "", /local UI command or Python slash command/);
+  assert.match(frame, /> \/usage/);
+  assert.doesNotMatch(frame, /local UI command or Python slash command/);
 });

@@ -6,7 +6,7 @@ import { Header } from "../src/app/Header.tsx";
 import { WelcomePanel, hasConversationContent } from "../src/app/WelcomePanel.tsx";
 import { initialState, reduceShellState } from "../src/state/reducer.ts";
 
-test("header band keeps core metadata inside compact width", () => {
+test("header band keeps brand and workspace inside compact width", () => {
   const state = {
     ...initialState({ rawThemeName: "graphite" }),
     sessionId: "default",
@@ -20,8 +20,8 @@ test("header band keeps core metadata inside compact width", () => {
 
   assert.match(frame, /mycli/);
   assert.match(frame, /fix-de/);
-  assert.match(frame, /deepseek-v4-flash|deepseek/);
-  assert.match(frame, /4% 3,983\/100k/);
+  assert.doesNotMatch(frame, /deepseek-v4-flash/);
+  assert.doesNotMatch(frame, /3,983\/100k/);
   assert.doesNotMatch(frame, /\.worktrees\/fix-deepseek-cache-hit-rate/);
 });
 

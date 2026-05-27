@@ -70,36 +70,30 @@ export function InputBox({
       return;
     }
     if (key.backspace || key.delete) {
-      const next = valueRef.current.slice(0, -1);
-      updateValue(next);
+      updateValue(valueRef.current.slice(0, -1));
       return;
     }
     if (!key.ctrl && input) {
       const normalized = input.replaceAll("\r", "\n");
       const newlineIndex = normalized.indexOf("\n");
       const text = newlineIndex >= 0 ? normalized.slice(0, newlineIndex) : normalized;
-      const next = `${valueRef.current}${text}`;
-      updateValue(next);
+      updateValue(`${valueRef.current}${text}`);
       if (newlineIndex >= 0) {
         submitCurrentValue();
       }
     }
   });
-  const isCommand = value.startsWith("/");
+
   const dividerWidth = Math.max(24, Math.min(width, DEFAULT_TERMINAL_WIDTH));
-  const metadataWidth = Math.max(16, Math.floor(dividerWidth * 0.45));
-  const visibleMetadata = truncateMiddle(metadata, metadataWidth);
+  const visibleMetadata = truncateMiddle(metadata, dividerWidth);
   return (
     <Box flexDirection="column">
       <Text color={theme.border}>{"─".repeat(dividerWidth)}</Text>
-      <Box justifyContent="space-between" width={dividerWidth}>
-        <Text>
-          <Text color={turnRunning ? theme.warning : theme.accent}>› </Text>
-          <Text color={value ? theme.text : theme.subtle}>{value || "Type a message or /command"}</Text>
-        </Text>
-        <Text color={theme.subtle}>{visibleMetadata}</Text>
-      </Box>
-      {isCommand ? <Text color={theme.subtle}>local UI command or Python slash command</Text> : null}
+      <Text>
+        <Text color={turnRunning ? theme.warning : theme.accent}>{">"}</Text>
+        {value ? <Text color={theme.text}> {value}</Text> : null}
+      </Text>
+      <Text color={theme.subtle}>{visibleMetadata}</Text>
     </Box>
   );
 }
