@@ -2,6 +2,7 @@ import React from "react";
 import { Box } from "ink";
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx";
 import { CompletionPopup } from "./CompletionPopup.tsx";
+import { Header } from "./Header.tsx";
 import { InputBox } from "./InputBox.tsx";
 import { Overlay } from "./Overlay.tsx";
 import { StatusLine } from "./StatusLine.tsx";
@@ -29,6 +30,7 @@ export function App({
 }) {
   return (
     <Box flexDirection="column" minHeight={10}>
+      <Header state={state} />
       <Transcript state={state} />
       <Overlay overlay={state.overlay} />
       <ApprovalPrompt
@@ -44,6 +46,7 @@ export function App({
         draft={state.inputDraft}
         turnRunning={state.turnRunning}
         completionVisible={state.completion.visible}
+        theme={state.theme}
         onDraftChange={onDraftChange ?? (() => undefined)}
         onSubmit={(value) => {
           if (value.startsWith("/") && isLocalCommand(value)) {

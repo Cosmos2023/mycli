@@ -1,10 +1,12 @@
 import React, { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import type { ThemeTokens } from "../theme/types.ts";
 
 export function InputBox({
   draft,
   turnRunning,
   completionVisible,
+  theme,
   onDraftChange,
   onSubmit,
   onInterrupt,
@@ -15,6 +17,7 @@ export function InputBox({
   draft: string;
   turnRunning: boolean;
   completionVisible: boolean;
+  theme: ThemeTokens;
   onDraftChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onInterrupt: () => void;
@@ -77,10 +80,14 @@ export function InputBox({
       }
     }
   });
+  const isCommand = value.startsWith("/");
   return (
-    <Box>
-      <Text color={turnRunning ? "yellow" : "green"}>{"> "}</Text>
-      <Text>{value}</Text>
+    <Box flexDirection="column">
+      <Box>
+        <Text color={turnRunning ? theme.warning : theme.accent}>{"> "}</Text>
+        <Text>{value || "Type a message or /command"}</Text>
+      </Box>
+      {isCommand ? <Text color={theme.subtle}>local UI command or Python slash command</Text> : null}
     </Box>
   );
 }
