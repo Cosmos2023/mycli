@@ -7,16 +7,16 @@ import { Transcript } from "../src/app/Transcript.tsx";
 import { UserPromptRow } from "../src/app/UserPromptRow.tsx";
 import { initialState } from "../src/state/reducer.ts";
 
-test("user prompt row uses an accent prompt marker without role label", () => {
+test("user prompt row uses Claude-style marker without role label", () => {
   const state = initialState({ rawThemeName: "deep-teal" });
   const { lastFrame } = render(<UserPromptRow text="你是谁" theme={state.theme} width={80} />);
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /› 你是谁/);
+  assert.match(frame, /❯ 你是谁/);
   assert.doesNotMatch(frame, /USER/);
 });
 
-test("assistant block renders bounded text with a left rail", () => {
+test("assistant block renders bounded text without a left rail", () => {
   const state = initialState({ rawThemeName: "graphite" });
   const text =
     "我是 mycli，一个运行在你本地机器上的编程助手。我可以读写文件、执行命令、搜索代码、管理任务计划。";
@@ -25,12 +25,22 @@ test("assistant block renders bounded text with a left rail", () => {
   );
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /│/);
   assert.match(frame, /我是 mycli/);
+  assert.doesNotMatch(frame, /│/);
   assert.doesNotMatch(frame, /ASSISTANT/);
 });
 
-test("transcript routes user and assistant rows through structured components", () => {
+test("assistant stream shows active cursor", () => {
+  const state = initialState({ rawThemeName: "deep-teal" });
+  const { lastFrame } = render(
+    <AssistantBlock text="正在回答" final={false} theme={state.theme} width={80} />,
+  );
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /正在回答▍/);
+});
+
+test("transcript routes user and assistant rows through Claude-style components", () => {
   const state = {
     ...initialState({ rawThemeName: "mono" }),
     transcript: [
@@ -48,8 +58,8 @@ test("transcript routes user and assistant rows through structured components", 
   const { lastFrame } = render(<Transcript state={state} width={80} />);
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /› 你是谁/);
-  assert.match(frame, /│/);
+  assert.match(frame, /❯ 你是谁/);
   assert.match(frame, /mycli\.cli\.main:main/);
+  assert.doesNotMatch(frame, /│/);
   assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
 });

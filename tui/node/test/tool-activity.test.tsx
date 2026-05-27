@@ -3,10 +3,11 @@ import test from "node:test";
 import React from "react";
 import { render } from "ink-testing-library";
 import { RunningActivity, activityPath } from "../src/app/RunningActivity.tsx";
+import { ToolResultRow } from "../src/app/ToolResultRow.tsx";
 import { ToolRow } from "../src/app/ToolRow.tsx";
 import { initialState } from "../src/state/reducer.ts";
 
-test("tool row renders timeline columns with status detail", () => {
+test("tool row renders Claude-style tool call summary", () => {
   const state = initialState({ rawThemeName: "deep-teal" });
   const { lastFrame } = render(
     <ToolRow
@@ -17,9 +18,19 @@ test("tool row renders timeline columns with status detail", () => {
   );
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /read/);
-  assert.match(frame, /pyproject\.toml/);
-  assert.match(frame, /done 82ms/);
+  assert.match(frame, /● Read pyproject\.toml · 82ms/);
+  assert.doesNotMatch(frame, /done 82ms/);
+});
+
+test("tool result row renders continuation marker", () => {
+  const state = initialState({ rawThemeName: "graphite" });
+  const { lastFrame } = render(
+    <ToolResultRow text={"[project]\nname = \"mycli\""} theme={state.theme} />,
+  );
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /⎿ \[project\]/);
+  assert.match(frame, /name = "mycli"/);
 });
 
 test("activity path derives compact recent tool path", () => {
@@ -46,7 +57,7 @@ test("activity path derives compact recent tool path", () => {
   assert.equal(activityPath(state.transcript), "read → grep");
 });
 
-test("running activity line renders elapsed time and path", () => {
+test("running activity line renders Claude-style thinking row", () => {
   const state = {
     ...initialState({ rawThemeName: "graphite" }),
     turnRunning: true,
@@ -64,6 +75,5 @@ test("running activity line renders elapsed time and path", () => {
   const { lastFrame } = render(<RunningActivity state={state} elapsedSeconds={12} />);
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /thinking 12s/);
-  assert.match(frame, /read/);
+  assert.match(frame, /● Thinking 12s · read/);
 });

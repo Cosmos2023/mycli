@@ -4,6 +4,10 @@ import { DEFAULT_TERMINAL_WIDTH, truncateMiddle } from "./layout.ts";
 import type { ToolSummary } from "../state/toolSummary.ts";
 import type { ThemeTokens } from "../theme/types.ts";
 
+function titleCase(value: string): string {
+  return value.length === 0 ? value : `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
 export function ToolRow({
   summary,
   theme,
@@ -13,27 +17,25 @@ export function ToolRow({
   theme: ThemeTokens;
   width?: number;
 }) {
-  const statusColor =
+  const markerColor =
     summary.status === "failed"
       ? theme.error
       : summary.status === "running"
         ? theme.warning
-        : summary.status === "done"
-          ? theme.success
-          : theme.muted;
-  const targetWidth = width < 90 ? 28 : 44;
+        : theme.accent;
+  const targetWidth = width < 90 ? 42 : 64;
   const target = truncateMiddle(summary.target, targetWidth);
-  const status = summary.detail ? `${summary.status} ${summary.detail}` : summary.status;
+  const detail = summary.detail ? ` · ${summary.detail}` : "";
 
   return (
-    <Box marginLeft={2}>
-      <Box width={8}>
-        <Text color={statusColor}>{truncateMiddle(summary.verb, 7)}</Text>
-      </Box>
-      <Box width={targetWidth + 2}>
-        <Text color={theme.muted}>{target}</Text>
-      </Box>
-      <Text color={statusColor}>{status}</Text>
+    <Box marginLeft={0}>
+      <Text color={markerColor}>● </Text>
+      <Text color={markerColor}>{titleCase(summary.verb)}</Text>
+      <Text color={theme.muted}>
+        {" "}
+        {target}
+        {detail}
+      </Text>
     </Box>
   );
 }

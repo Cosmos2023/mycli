@@ -17,15 +17,15 @@ export function AssistantBlock({
 }) {
   const columnWidth = contentWidth(width);
   return (
-    <Box marginLeft={1}>
-      <Text color={theme.border}>│ </Text>
-      <Box width={columnWidth} flexDirection="column">
-        {final ? (
-          <MarkdownText text={text} theme={theme} width={columnWidth} />
-        ) : (
-          <Text color={theme.text}>{text}</Text>
-        )}
-      </Box>
+    <Box marginLeft={1} width={columnWidth} flexDirection="column">
+      {final ? (
+        <MarkdownText text={text} theme={theme} width={columnWidth} />
+      ) : (
+        <Text color={theme.text}>
+          {text}
+          <Text color={theme.accent}>▍</Text>
+        </Text>
+      )}
     </Box>
   );
 }

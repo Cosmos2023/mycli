@@ -31,9 +31,9 @@ export function RunningActivity({
   }
   const path = activityPath(state.transcript);
   return (
-    <Box marginLeft={2}>
+    <Box marginLeft={0}>
       <Text color={state.theme.warning}>
-        thinking {elapsedSeconds}s{path ? ` · ${path}` : ""}
+        ● Thinking {elapsedSeconds}s{path ? ` · ${path}` : ""}
       </Text>
     </Box>
   );

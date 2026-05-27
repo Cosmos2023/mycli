@@ -14,9 +14,13 @@ export function UserPromptRow({
 }) {
   return (
     <Box width={contentWidth(width) + 4}>
-      <Text color={theme.accent}>› </Text>
+      <Text color={theme.accent} bold>
+        ❯{" "}
+      </Text>
       <Box width={contentWidth(width)}>
-        <Text color={theme.text}>{text}</Text>
+        <Text color={theme.text} bold>
+          {text}
+        </Text>
       </Box>
     </Box>
   );
