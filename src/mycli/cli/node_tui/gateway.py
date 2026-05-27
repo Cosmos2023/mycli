@@ -7,9 +7,13 @@ from threading import Lock, Thread
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
 from mycli.cli.node_tui.protocol import (
+    JsonRpcError,
     RpcRequest,
     RpcResponse,
+    decode_message,
+    encode_message,
     error_response,
+    notification,
     result_response,
 )
 from mycli.cli.repl import build_command_handler, handle_slash_command
@@ -17,6 +21,40 @@ from mycli.cli.tui.completion import slash_command_candidates
 from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
 
 PROTOCOL_VERSION = 1
+
+
+def run_node_tui_gateway(*, service: TurnService, process: object) -> int:
+    process.start()
+
+    def emit(method: str, params: dict[str, object]) -> None:
+        process.write_line(encode_message(notification(method, params)))
+
+    gateway = NodeTuiGateway(service=service, emit=emit)
+    emit("runtime.ready", gateway._status_payload())
+    try:
+        while True:
+            line = process.read_line()
+            if not line:
+                gateway.wait_for_current_turn(timeout=None)
+                return process.wait()
+            try:
+                message = decode_message(line)
+            except JsonRpcError as exc:
+                emit("gateway.error", {"code": exc.code, "message": exc.message})
+                continue
+            if not isinstance(message, RpcRequest):
+                emit(
+                    "gateway.error",
+                    {"code": "invalid_request", "message": "Expected request."},
+                )
+                continue
+            response = gateway.handle_request(message)
+            process.write_line(encode_message(response))
+            if message.method == "shutdown":
+                gateway.wait_for_current_turn(timeout=None)
+                return process.wait()
+    finally:
+        process.terminate()
 
 
 class NodeTuiGateway:
