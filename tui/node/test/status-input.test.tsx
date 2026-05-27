@@ -23,7 +23,7 @@ test("header renders mycli brand, workspace, session, and theme", () => {
     },
   });
 
-  const { lastFrame } = render(<Header state={state} />);
+  const { lastFrame } = render(<Header state={state} width={100} />);
 
   const frame = lastFrame() ?? "";
   assert.match(frame, /mycli/);

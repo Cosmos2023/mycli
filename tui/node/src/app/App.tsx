@@ -7,12 +7,14 @@ import { InputBox } from "./InputBox.tsx";
 import { Overlay } from "./Overlay.tsx";
 import { StatusLine } from "./StatusLine.tsx";
 import { Transcript } from "./Transcript.tsx";
+import { WelcomePanel } from "./WelcomePanel.tsx";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
 import type { ShellAction } from "../state/reducer.ts";
 import type { ShellState } from "../state/types.ts";
 
 export function App({
   state,
+  width = 100,
   onSubmit,
   onCommand,
   onLocalAction,
@@ -21,6 +23,7 @@ export function App({
   onDecision,
 }: {
   state: ShellState;
+  width?: number;
   onSubmit?: (value: string) => void;
   onCommand?: (command: string) => void;
   onLocalAction?: (action: ShellAction) => void;
@@ -30,7 +33,8 @@ export function App({
 }) {
   return (
     <Box flexDirection="column" minHeight={10}>
-      <Header state={state} />
+      <Header state={state} width={width} />
+      <WelcomePanel state={state} width={width} />
       <Transcript state={state} />
       <Overlay overlay={state.overlay} theme={state.theme} />
       <ApprovalPrompt

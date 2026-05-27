@@ -20,6 +20,9 @@ const TranscriptRow = memo(function TranscriptRow({
   if (item.type === "tool_detail" && viewMode !== "verbose") {
     return null;
   }
+  if (item.type === "system_notice" && typeof item.metadata.startup_mark === "object") {
+    return null;
+  }
   if (item.type === "tool_summary") {
     return (
       <ToolRow
