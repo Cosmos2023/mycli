@@ -562,6 +562,74 @@ The gateway should prefer structured fields over preformatted lines:
 
 The first implementation may include formatted fallback lines if some fields are not yet structured.
 
+### 5.6 `session.list`
+
+Returns sessions visible to the current Python `TurnService`.
+
+Request:
+
+```json
+{
+  "method": "session.list",
+  "params": {}
+}
+```
+
+Response:
+
+```json
+{
+  "result": {
+    "sessions": [
+      {
+        "id": "default",
+        "last_active": "2026-05-27T01:33:04Z",
+        "message_count": 4,
+        "current": true
+      }
+    ]
+  }
+}
+```
+
+The first implementation may derive this from the existing `/sessions` inspection path if structured session metadata is not available yet. If it uses rendered fallback lines, the response should still keep a `sessions` array, with unknown fields omitted rather than guessed.
+
+### 5.7 `session.resume`
+
+Loads an existing session through the same Python-owned behavior as `/resume`.
+
+Request:
+
+```json
+{
+  "method": "session.resume",
+  "params": {
+    "session_id": "demo"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "result": {
+    "session_id": "demo",
+    "lines": [
+      "[session] resumed demo",
+      "[session] messages=3"
+    ]
+  }
+}
+```
+
+Behavior:
+
+- Reject an empty `session_id` unless the implementation intentionally supports resuming the configured default session.
+- Delegate to `TurnService.resume_session()`.
+- Emit `session.changed` after a successful resume.
+- Do not let Node mutate session state directly.
+
 ## 6. Error Handling
 
 ### 6.1 Protocol errors
@@ -632,7 +700,7 @@ Required:
 
 ### 7.2 Node tests
 
-Required if a Node package is introduced:
+Required:
 
 - protocol parser handles request/response/notification
 - client can send requests and receive events over mocked streams
