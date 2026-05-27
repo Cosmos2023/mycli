@@ -35,7 +35,7 @@ export function App({
     <Box flexDirection="column" minHeight={10}>
       <Header state={state} width={width} />
       <WelcomePanel state={state} width={width} />
-      <Transcript state={state} />
+      <Transcript state={state} width={width} />
       <Overlay overlay={state.overlay} theme={state.theme} />
       <ApprovalPrompt
         pendingApproval={state.pendingApproval}

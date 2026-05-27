@@ -36,11 +36,19 @@ function renderLine(line: string): { codeBlock: boolean; text: string; segments:
   return { codeBlock: false, text: "", segments: inlineSegments(line) };
 }
 
-export function MarkdownText({ text, theme }: { text: string; theme: ThemeTokens }) {
+export function MarkdownText({
+  text,
+  theme,
+  width,
+}: {
+  text: string;
+  theme: ThemeTokens;
+  width?: number;
+}) {
   const lines = text.split("\n");
   let inCode = false;
   return (
-    <Box flexDirection="column" marginLeft={2}>
+    <Box flexDirection="column" width={width}>
       {lines.map((line, index) => {
         if (line.startsWith("```")) {
           inCode = !inCode;
