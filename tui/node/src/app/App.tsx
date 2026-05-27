@@ -5,6 +5,7 @@ import { CompletionPopup } from "./CompletionPopup.tsx";
 import { Header } from "./Header.tsx";
 import { InputBox } from "./InputBox.tsx";
 import { Overlay } from "./Overlay.tsx";
+import { RunningActivity } from "./RunningActivity.tsx";
 import { StatusLine } from "./StatusLine.tsx";
 import { Transcript } from "./Transcript.tsx";
 import { WelcomePanel } from "./WelcomePanel.tsx";
@@ -36,6 +37,7 @@ export function App({
       <Header state={state} width={width} />
       <WelcomePanel state={state} width={width} />
       <Transcript state={state} width={width} />
+      <RunningActivity state={state} />
       <Overlay overlay={state.overlay} theme={state.theme} />
       <ApprovalPrompt
         pendingApproval={state.pendingApproval}

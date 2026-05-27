@@ -37,6 +37,7 @@ const TranscriptRow = memo(function TranscriptRow({
           metadata: item.metadata,
         })}
         theme={theme}
+        width={width}
       />
     );
   }
@@ -82,7 +83,6 @@ export function Transcript({
           width={width}
         />
       ))}
-      {state.turnRunning ? <Text dimColor>Thinking...</Text> : null}
     </Box>
   );
 }

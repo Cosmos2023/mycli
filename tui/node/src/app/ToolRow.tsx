@@ -1,9 +1,18 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { DEFAULT_TERMINAL_WIDTH, truncateMiddle } from "./layout.ts";
 import type { ToolSummary } from "../state/toolSummary.ts";
 import type { ThemeTokens } from "../theme/types.ts";
 
-export function ToolRow({ summary, theme }: { summary: ToolSummary; theme: ThemeTokens }) {
+export function ToolRow({
+  summary,
+  theme,
+  width = DEFAULT_TERMINAL_WIDTH,
+}: {
+  summary: ToolSummary;
+  theme: ThemeTokens;
+  width?: number;
+}) {
   const statusColor =
     summary.status === "failed"
       ? theme.error
@@ -12,17 +21,19 @@ export function ToolRow({ summary, theme }: { summary: ToolSummary; theme: Theme
         : summary.status === "done"
           ? theme.success
           : theme.muted;
+  const targetWidth = width < 90 ? 28 : 44;
+  const target = truncateMiddle(summary.target, targetWidth);
+  const status = summary.detail ? `${summary.status} ${summary.detail}` : summary.status;
+
   return (
     <Box marginLeft={2}>
-      <Text color={statusColor}>{summary.verb}</Text>
-      <Text color={theme.subtle}> - </Text>
-      <Text color={theme.muted}>{summary.target}</Text>
-      {summary.detail ? (
-        <>
-          <Text color={theme.subtle}> - </Text>
-          <Text color={theme.subtle}>{summary.detail}</Text>
-        </>
-      ) : null}
+      <Box width={8}>
+        <Text color={statusColor}>{truncateMiddle(summary.verb, 7)}</Text>
+      </Box>
+      <Box width={targetWidth + 2}>
+        <Text color={theme.muted}>{target}</Text>
+      </Box>
+      <Text color={statusColor}>{status}</Text>
     </Box>
   );
 }
