@@ -1,6 +1,7 @@
 import React from "react";
 import { Box } from "ink";
 import { ApprovalPrompt } from "./ApprovalPrompt.tsx";
+import { CompletionPopup } from "./CompletionPopup.tsx";
 import { InputBox } from "./InputBox.tsx";
 import { Overlay } from "./Overlay.tsx";
 import { StatusLine } from "./StatusLine.tsx";
@@ -23,6 +24,11 @@ export function App({
       <Transcript state={state} />
       <Overlay overlay={state.overlay} />
       <ApprovalPrompt pendingApproval={state.pendingApproval} />
+      <CompletionPopup
+        visible={state.completion.visible}
+        items={state.completion.items}
+        selectedIndex={state.completion.selectedIndex}
+      />
       <InputBox
         draft={state.inputDraft}
         turnRunning={state.turnRunning}

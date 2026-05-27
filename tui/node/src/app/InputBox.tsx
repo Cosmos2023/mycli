@@ -8,6 +8,9 @@ export function InputBox({
   onDraftChange,
   onSubmit,
   onInterrupt,
+  onCompletionMove,
+  onCompletionAccept,
+  onCompletionClose,
 }: {
   draft: string;
   turnRunning: boolean;
@@ -15,6 +18,9 @@ export function InputBox({
   onDraftChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onInterrupt: () => void;
+  onCompletionMove?: (delta: number) => void;
+  onCompletionAccept?: () => void;
+  onCompletionClose?: () => void;
 }) {
   const [value, setValue] = useState(draft);
   const valueRef = useRef(draft);
@@ -26,6 +32,22 @@ export function InputBox({
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       onInterrupt();
+      return;
+    }
+    if (completionVisible && key.downArrow) {
+      onCompletionMove?.(1);
+      return;
+    }
+    if (completionVisible && key.upArrow) {
+      onCompletionMove?.(-1);
+      return;
+    }
+    if (completionVisible && key.tab) {
+      onCompletionAccept?.();
+      return;
+    }
+    if (completionVisible && key.escape) {
+      onCompletionClose?.();
       return;
     }
     if (key.return) {
