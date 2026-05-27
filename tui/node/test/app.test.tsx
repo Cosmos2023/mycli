@@ -19,7 +19,13 @@ const state: ShellState = {
   themeNotice: null,
   transcript: [
     { id: "u1", type: "user", text: "read pyproject", folded: false, metadata: {} },
-    { id: "t1", type: "tool_summary", text: "Read pyproject.toml", folded: true, metadata: {} },
+    {
+      id: "t1",
+      type: "tool_summary",
+      text: "Read pyproject.toml",
+      folded: true,
+      metadata: { tool_name: "Read", path: "pyproject.toml" },
+    },
     { id: "a1", type: "assistant_final", text: "Project is mycli.", folded: false, metadata: {} },
   ],
   inputDraft: "",
@@ -35,18 +41,20 @@ const state: ShellState = {
 test("transcript renders user, folded tool summary, and answer without role cards", () => {
   const { lastFrame } = render(<Transcript state={state} />);
   const frame = lastFrame() ?? "";
-  assert.match(frame, /read pyproject/);
-  assert.match(frame, /Read pyproject\.toml/);
+  assert.match(frame, /❯ read pyproject/);
+  assert.match(frame, /● Read pyproject\.toml/);
   assert.match(frame, /Project is mycli/);
   assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
+  assert.doesNotMatch(frame, /│/);
 });
 
 test("status line renders compact metadata and context usage", () => {
   const { lastFrame } = render(<StatusLine state={state} />);
-  assert.match(lastFrame() ?? "", /repo/);
-  assert.match(lastFrame() ?? "", /default/);
-  assert.match(lastFrame() ?? "", /deep-teal/);
-  assert.match(lastFrame() ?? "", /4% 3,983\/100k/);
+  const frame = lastFrame() ?? "";
+  assert.match(frame, /demo/);
+  assert.match(frame, /deepseek-v4/);
+  assert.match(frame, /deep-teal/);
+  assert.match(frame, /4% 3,983\/100k/);
 });
 
 test("overlay renders command lines", () => {

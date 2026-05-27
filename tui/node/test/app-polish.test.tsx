@@ -44,10 +44,13 @@ test("app renders branded console anatomy", () => {
   const frame = lastFrame() ?? "";
 
   assert.match(frame, /mycli/);
-  assert.match(frame, /deep-teal/);
-  assert.match(frame, /read pyproject/);
-  assert.match(frame, /read/);
-  assert.match(frame, /pyproject\.toml/);
+  assert.match(frame, /project/);
+  assert.match(frame, /deepseek-v4/);
+  assert.match(frame, /❯ read pyproject/);
+  assert.match(frame, /● Read pyproject\.toml · 82ms/);
   assert.match(frame, /mycli\.cli\.main:main/);
+  assert.match(frame, />/);
+  assert.doesNotMatch(frame, /Type a message or \/command/);
   assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
+  assert.doesNotMatch(frame, /│/);
 });
