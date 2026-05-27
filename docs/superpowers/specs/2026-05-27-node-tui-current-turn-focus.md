@@ -28,7 +28,7 @@ mycli  workspace
 ────────────────────────────────────────────────────────────────────
 
 ❯ 你是谁
-│ 我是 mycli，一个运行在你本地机器上的编程助手。
+我是 mycli，一个运行在你本地机器上的编程助手。
 
 ────────────────────────────────────────────────────────────────────
 
@@ -37,9 +37,9 @@ mycli  workspace
 ● Search system prompt · 4 matches
 ● Thinking 12s
 
-│ 我的系统提示词是当前对话开头设置的完整指令集，核心包括：
-│ • 身份定位：mycli，本地优先的个人编程助手
-│ • 核心准则：持续推进、证据优先、安全可回退
+我的系统提示词是当前对话开头设置的完整指令集，核心包括：
+• 身份定位：mycli，本地优先的个人编程助手
+• 核心准则：持续推进、证据优先、安全可回退
 
 ────────────────────────────────────────────────────────────────────
 >
@@ -265,14 +265,14 @@ Assistant text appears after tools/activity.
 Required shape:
 
 ```text
-│ 我的系统提示词是当前对话开头设置的完整指令集，核心包括：
-│ • 身份定位：mycli，本地优先的个人编程助手
+我的系统提示词是当前对话开头设置的完整指令集，核心包括：
+• 身份定位：mycli，本地优先的个人编程助手
 ```
 
 Rules:
 
 - no `ASSISTANT` label
-- use a subtle assistant left rail, but keep it quiet enough that it does not look like raw logs
+- no assistant left rail in default mode
 - no bordered answer card in default mode
 - use indentation and bounded width for hierarchy
 - streaming answer is plain text with a trailing `▍` cursor while active
