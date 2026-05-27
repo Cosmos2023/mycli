@@ -1,5 +1,7 @@
 import React, { memo } from "react";
 import { Box, Text } from "ink";
+import { CommandOutput } from "./CommandOutput.tsx";
+import { SystemNotice } from "./SystemNotice.tsx";
 import { ToolRow } from "./ToolRow.tsx";
 import { formatToolSummary } from "../state/toolSummary.ts";
 import type { ThemeTokens } from "../theme/types.ts";
@@ -30,13 +32,17 @@ const TranscriptRow = memo(function TranscriptRow({
       />
     );
   }
+  if (item.type === "command_output") {
+    return <CommandOutput text={item.text} theme={theme} />;
+  }
+  if (item.type === "system_notice" || item.type === "warning" || item.type === "error") {
+    return <SystemNotice text={item.text} type={item.type} theme={theme} />;
+  }
   const marker = item.type === "user" ? ">" : " ";
   const text = item.folded && viewMode === "default" ? `${item.text}` : item.text;
   return (
     <Box>
-      <Text dimColor={item.type === "command_output" || item.type === "system_notice"}>
-        {marker} {text}
-      </Text>
+      <Text dimColor={item.type === "execution_status"}>{marker} {text}</Text>
     </Box>
   );
 });

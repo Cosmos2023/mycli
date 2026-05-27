@@ -32,7 +32,7 @@ export function App({
     <Box flexDirection="column" minHeight={10}>
       <Header state={state} />
       <Transcript state={state} />
-      <Overlay overlay={state.overlay} />
+      <Overlay overlay={state.overlay} theme={state.theme} />
       <ApprovalPrompt
         pendingApproval={state.pendingApproval}
         onDecision={onDecision ?? (() => undefined)}

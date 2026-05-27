@@ -48,7 +48,7 @@ test("status line renders model and context usage", () => {
 });
 
 test("overlay renders command lines", () => {
-  const { lastFrame } = render(<Overlay overlay={state.overlay} />);
+  const { lastFrame } = render(<Overlay overlay={state.overlay} theme={state.theme} />);
   assert.match(lastFrame() ?? "", /\/usage/);
   assert.match(lastFrame() ?? "", /turns=1/);
 });
