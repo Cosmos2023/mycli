@@ -8,6 +8,7 @@ import pytest
 from mycli.cli.node_tui.process import (
     NodeTuiProcessError,
     build_node_command,
+    node_tui_child_env,
     check_node_version,
     resolve_node_entrypoint,
 )
@@ -72,3 +73,34 @@ def test_build_node_command_keeps_scripted_client_entrypoint(tmp_path: Path) -> 
     command = build_node_command(repo_root=tmp_path, env={"MYCLI_NODE_TUI_SCRIPT": "[]"})
 
     assert command == ["node", str(scripted)]
+
+
+def test_node_tui_child_env_respects_auto_color_environment() -> None:
+    env = node_tui_child_env(
+        base_env={"TERM": "dumb", "NO_COLOR": "1"},
+        requested_env={},
+    )
+
+    assert env["TERM"] == "dumb"
+    assert env["NO_COLOR"] == "1"
+    assert "FORCE_COLOR" not in env
+
+
+def test_node_tui_child_env_can_force_color_for_node_ink() -> None:
+    env = node_tui_child_env(
+        base_env={"TERM": "dumb", "NO_COLOR": "1"},
+        requested_env={"MYCLI_TUI_COLOR": "always"},
+    )
+
+    assert env["FORCE_COLOR"] == "3"
+    assert "NO_COLOR" not in env
+
+
+def test_node_tui_child_env_can_force_no_color() -> None:
+    env = node_tui_child_env(
+        base_env={"TERM": "xterm-256color", "FORCE_COLOR": "3"},
+        requested_env={"MYCLI_TUI_COLOR": "never"},
+    )
+
+    assert env["NO_COLOR"] == "1"
+    assert "FORCE_COLOR" not in env

@@ -123,13 +123,29 @@ def build_node_tui_process(
     env: Mapping[str, str],
 ) -> NodeTuiProcess:
     check_node_version()
-    child_env = dict(os.environ)
-    child_env.update(env)
+    child_env = node_tui_child_env(base_env=os.environ, requested_env=env)
     return NodeTuiProcess(
         args=build_node_command(repo_root=repo_root, env=env),
         env=child_env,
         cwd=repo_root,
     )
+
+
+def node_tui_child_env(
+    *,
+    base_env: Mapping[str, str],
+    requested_env: Mapping[str, str],
+) -> dict[str, str]:
+    child_env = dict(base_env)
+    child_env.update(requested_env)
+    color_mode = child_env.get("MYCLI_TUI_COLOR", "auto").strip().lower()
+    if color_mode in {"always", "force", "true", "1", "yes"}:
+        child_env.pop("NO_COLOR", None)
+        child_env["FORCE_COLOR"] = "3"
+    elif color_mode in {"never", "none", "false", "0", "no"}:
+        child_env.pop("FORCE_COLOR", None)
+        child_env["NO_COLOR"] = "1"
+    return child_env
 
 
 def _run_node_version(command: list[str]) -> subprocess.CompletedProcess[str]:
