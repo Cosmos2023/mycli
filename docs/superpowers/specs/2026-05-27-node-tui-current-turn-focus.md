@@ -29,15 +29,15 @@ mycli  workspace
 Earlier turns collapsed · 3 turns · /view verbose for full transcript
 
 › 你的系统提示词是什么
-  read   AGENTS.md                         done 18ms
-  grep   system prompt                     4 matches
+• Read AGENTS.md
+• Search system prompt · 4 matches
+• Thinking 12s
 
   我的系统提示词是当前对话开头设置的完整指令集，核心包括：
   • 身份定位：mycli，本地优先的个人编程助手
   • 核心准则：持续推进、证据优先、安全可回退
 
 ────────────────────────────────────────────────────────────────────
-? help   Ctrl+C stop   Esc close
 ›
 default · model · theme · context
 ```
@@ -182,16 +182,17 @@ Tool/activity rows are placed immediately after the user prompt and before assis
 Required shape:
 
 ```text
-  read   AGENTS.md                         done 18ms
-  grep   system prompt                     4 matches
-  bash   pytest -q                         exit 0
+• Read AGENTS.md
+• Search system prompt · 4 matches
+• Bash pytest -q · exit 0
 ```
 
 Rules:
 
 - use existing `formatToolSummary()` for verb/target/status/detail
-- align columns when enough width exists
-- use compact single-line fallback on narrow widths
+- render default tool rows as short sentence-like traces, not a table
+- keep one tool/action per line
+- avoid trailing tool telemetry after the assistant answer
 - running status uses warning/accent color
 - failed status uses error color
 - default mode shows summaries only
@@ -202,7 +203,7 @@ Rules:
 While a turn is running, show a live activity row before the assistant stream:
 
 ```text
-  thinking 12s · read → grep → bash
+• Thinking 12s · read → grep → bash
 ```
 
 Rules:
@@ -227,6 +228,7 @@ Rules:
 
 - no `ASSISTANT` label
 - no permanent left rail if it makes the screen look like raw logs
+- no bordered answer card in default mode
 - use indentation and bounded width for hierarchy
 - streaming answer is plain text
 - final answer may use existing markdown renderer
@@ -254,22 +256,22 @@ Rules:
 - keep runtime metadata out of the header so the current turn remains visually dominant
 - elide workspace before wrapping
 
-The bottom area should use three compact rows:
+The bottom area should use two compact rows in default mode:
 
 ```text
-? help   Ctrl+C stop   Esc close
 ›
 default · deepseek-v4-flash · graphite · 9% 9,302/100k
 ```
 
 Bottom area priority:
 
-1. footer hint bar with 2-3 high-value shortcuts
-2. prompt marker and current draft
-3. runtime metadata below the input: session, model, theme, and context usage
+1. prompt marker and current draft
+2. runtime metadata below the input: session, model, theme, and context usage
 
 Rules:
 
+- do not render a persistent footer hint bar in default mode
+- show shortcut help in `?` / `/help` overlays instead of the main screen
 - do not render placeholder text such as `Type a message or /command` in the input row
 - keep the input row visually minimal: prompt marker plus the current draft only
 - put session/model/theme/context below the input box, not in the header
