@@ -68,13 +68,12 @@ Add these tests to `tests/unit/cli/node_tui/test_gateway.py`:
 
 ```python
 from mycli.domain.runtime import (
-    ActivityEvent,
     DecisionAction,
     DecisionKind,
     PendingDecision,
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
-from mycli.domain.tools import ToolCall
+from mycli.domain.tooling.calls import ToolCall
 
 
 def test_gateway_bootstrap_includes_welcome_payload(tmp_path: Path) -> None:
@@ -2106,6 +2105,27 @@ test("approval prompt renders choices", () => {
   assert.match(frame, /git push/);
   assert.match(frame, /Allow once/);
 });
+
+test("approval prompt maps numeric key to option choice", () => {
+  const resolved: Array<[string, string]> = [];
+  const { stdin } = render(
+    <ApprovalPrompt
+      pendingApproval={{
+        decision_id: "decision_current",
+        preview: "git push",
+        options: [
+          { choice: "approve_once", label: "Allow once" },
+          { choice: "reject", label: "Reject" },
+        ],
+      }}
+      onDecision={(decisionId, choice) => resolved.push([decisionId, choice])}
+    />,
+  );
+
+  stdin.write("1");
+
+  assert.deepEqual(resolved, [["decision_current", "approve_once"]]);
+});
 ```
 
 - [ ] **Step 2: Run failing approval tests**
@@ -2153,13 +2173,31 @@ Modify `tui/node/src/state/reducer.ts` inside `gateway.event` handling:
 Modify `tui/node/src/app/ApprovalPrompt.tsx`:
 
 ```tsx
+import { useInput } from "ink";
+
 type ApprovalOption = { choice: string; label: string };
 
-export function ApprovalPrompt({ pendingApproval }: { pendingApproval: Record<string, unknown> | null }) {
+export function ApprovalPrompt({
+  pendingApproval,
+  onDecision = () => undefined,
+}: {
+  pendingApproval: Record<string, unknown> | null;
+  onDecision?: (decisionId: string, choice: string) => void;
+}) {
+  const options = (pendingApproval?.options as ApprovalOption[] | undefined) ?? [];
+  useInput((input) => {
+    if (!pendingApproval) {
+      return;
+    }
+    const index = Number.parseInt(input, 10) - 1;
+    const option = options[index];
+    if (option) {
+      onDecision(String(pendingApproval.decision_id), option.choice);
+    }
+  }, { isActive: pendingApproval !== null });
   if (!pendingApproval) {
     return null;
   }
-  const options = (pendingApproval.options as ApprovalOption[] | undefined) ?? [];
   return (
     <Box borderStyle="round" flexDirection="column" paddingX={1}>
       <Text color="yellow">Approval required</Text>
@@ -2190,7 +2228,11 @@ Modify `tui/node/src/index.tsx` callbacks:
       }}
 ```
 
-Add matching optional props to `App` and pass them to `InputBox` / `ApprovalPrompt`.
+Add matching optional props to `App` and pass `onDecision` to `ApprovalPrompt`:
+
+```tsx
+<ApprovalPrompt pendingApproval={state.pendingApproval} onDecision={onDecision} />
+```
 
 - [ ] **Step 6: Run tests and typecheck**
 
@@ -2298,22 +2340,29 @@ def _node_tui_fallback(env: dict[str, str] | None) -> str:
     return env_vars.get("MYCLI_TUI_FALLBACK", "").strip().lower()
 ```
 
-Update `main()` Node error handling:
+Update `main()` Node error handling. The `plain` fallback must skip both Node and Textual paths, then continue to the existing line-oriented REPL code below:
 
 ```python
+    force_plain_after_node_failure = False
+    if should_use_node_tui(args, env):
+        try:
+            return run_node_tui(service, cwd=cwd or Path.cwd(), env=env or dict(os.environ))
         except NodeTuiProcessError as exc:
             fallback = _node_tui_fallback(env)
             if fallback == "plain":
                 output_func(str(exc))
+                force_plain_after_node_failure = True
             elif fallback == "textual" and should_use_tui(args):
                 output_func(str(exc))
                 return run_tui(service, input_func=input_func, output_func=output_func)
             else:
                 output_func(str(exc))
                 return 2
+    if should_use_tui(args) and not force_plain_after_node_failure:
+        return run_tui(service, input_func=input_func, output_func=output_func)
 ```
 
-Ensure the plain fallback falls through to the existing REPL path instead of returning.
+Do not use `return 2` for `MYCLI_TUI_FALLBACK=plain`; that setting explicitly requests the existing REPL path after reporting the Node startup failure.
 
 - [ ] **Step 4: Load transcript after bootstrap in Node**
 
