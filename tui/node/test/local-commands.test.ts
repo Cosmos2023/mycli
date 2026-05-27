@@ -39,7 +39,7 @@ test("invalid theme command keeps current theme and records failure", () => {
 
   assert.equal(action.type, "theme.failed");
   assert.equal(next.themeName, "amber");
-  assert.match(next.transcript.at(-1)?.text ?? "", /Unknown theme: missing/);
+  assert.equal(next.transcript.at(-1)?.text, "Unknown theme: missing. Keeping amber.");
 });
 
 test("clear command clears visible transcript only", () => {

@@ -34,7 +34,10 @@ export function handleLocalCommand(raw: string, state: ShellState): ShellAction 
     }
     const resolved = resolveTheme(requested);
     if (!resolved.ok) {
-      return { type: "theme.failed", message: resolved.message };
+      return {
+        type: "theme.failed",
+        message: `Unknown theme: ${requested}. Keeping ${state.themeName}.`,
+      };
     }
     return {
       type: "theme.changed",
