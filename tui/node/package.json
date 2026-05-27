@@ -1,12 +1,24 @@
 {
   "name": "mycli-node-tui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --import tsx --test \"test/**/*.test.ts\" \"test/**/*.test.tsx\" \"test/**/*.test.js\"",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "ink": "^6.5.0",
+    "react": "^19.2.0",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^5.9.0"
   }
 }

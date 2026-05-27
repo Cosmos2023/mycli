@@ -99,16 +99,37 @@ def resolve_node_entrypoint(*, repo_root: Path, env: Mapping[str, str]) -> Path:
     return candidate
 
 
+def build_node_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
+    if env.get("MYCLI_NODE_TUI_SCRIPT"):
+        return ["node", str(resolve_node_entrypoint(repo_root=repo_root, env=env))]
+    override = env.get("MYCLI_NODE_TUI_ENTRYPOINT")
+    if override:
+        return ["node", str(Path(override).expanduser())]
+    node_root = repo_root / "tui" / "node"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    entrypoint = node_root / "src" / "index.tsx"
+    if not tsx_bin.is_file():
+        raise NodeTuiProcessError(
+            "Node TUI dependencies are not installed. Run: npm --prefix tui/node install"
+        )
+    if not entrypoint.is_file():
+        raise NodeTuiProcessError(f"Node TUI entrypoint not found: {entrypoint}")
+    return [str(tsx_bin), str(entrypoint)]
+
+
 def build_node_tui_process(
     *,
     repo_root: Path,
     env: Mapping[str, str],
 ) -> NodeTuiProcess:
     check_node_version()
-    entrypoint = resolve_node_entrypoint(repo_root=repo_root, env=env)
     child_env = dict(os.environ)
     child_env.update(env)
-    return NodeTuiProcess(args=["node", str(entrypoint)], env=child_env, cwd=repo_root)
+    return NodeTuiProcess(
+        args=build_node_command(repo_root=repo_root, env=env),
+        env=child_env,
+        cwd=repo_root,
+    )
 
 
 def _run_node_version(command: list[str]) -> subprocess.CompletedProcess[str]:
