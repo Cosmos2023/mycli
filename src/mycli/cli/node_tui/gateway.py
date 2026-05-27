@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock, Thread
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
@@ -13,6 +14,7 @@ from mycli.cli.node_tui.protocol import (
 )
 from mycli.cli.repl import build_command_handler, handle_slash_command
 from mycli.cli.tui.completion import slash_command_candidates
+from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
 
 PROTOCOL_VERSION = 1
 
@@ -27,11 +29,19 @@ class NodeTuiGateway:
         self.service = service
         self._emit = emit
         self._command_handler = build_command_handler(service)
+        self._turn_lock = Lock()
+        self._turn_thread: Thread | None = None
+        self._turn_running = False
+        self._interrupt_requested = False
 
     def handle_request(self, request: RpcRequest) -> RpcResponse:
         try:
             if request.method == "session.bootstrap":
                 return result_response(request.id, self._handle_bootstrap(request.params))
+            if request.method == "turn.submit":
+                return self._handle_turn_submit(request)
+            if request.method == "turn.interrupt":
+                return result_response(request.id, self._handle_turn_interrupt())
             if request.method == "command.run":
                 return result_response(request.id, self._handle_command_run(request.params))
             if request.method == "completion.slash":
@@ -56,6 +66,11 @@ class NodeTuiGateway:
         except ValueError as exc:
             return error_response(request.id, code="invalid_params", message=str(exc))
 
+    def wait_for_current_turn(self, timeout: float | None = None) -> None:
+        thread = self._turn_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+
     def _handle_bootstrap(self, params: dict[str, object]) -> dict[str, object]:
         version = params.get("protocol_version")
         if version != PROTOCOL_VERSION:
@@ -74,6 +89,102 @@ class NodeTuiGateway:
             ),
             "status": self._status_payload(),
         }
+
+    def _handle_turn_submit(self, request: RpcRequest) -> RpcResponse:
+        message = _required_str(request.params, "message").strip()
+        if not message:
+            return error_response(request.id, code="invalid_params", message="message is required.")
+        client_turn_id = _optional_str(request.params.get("client_turn_id")) or str(request.id)
+        with self._turn_lock:
+            if self._turn_running:
+                return error_response(
+                    request.id,
+                    code="turn_in_progress",
+                    message="A turn is already running.",
+                )
+            self._turn_running = True
+            self._interrupt_requested = False
+            self._turn_thread = Thread(
+                target=self._run_turn_worker,
+                kwargs={"message": message, "client_turn_id": client_turn_id},
+                daemon=True,
+            )
+            self._turn_thread.start()
+        return result_response(request.id, {"accepted": True, "client_turn_id": client_turn_id})
+
+    def _handle_turn_interrupt(self) -> dict[str, object]:
+        with self._turn_lock:
+            running = self._turn_running
+            if running:
+                self._interrupt_requested = True
+        if running and self._emit is not None:
+            self._emit("turn.interrupted", {"requested": True})
+        return {"interrupted": running}
+
+    def _run_turn_worker(self, *, message: str, client_turn_id: str) -> None:
+        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        try:
+            response = self.service.handle_user_turn(
+                message,
+                stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
+            )
+        except Exception as exc:
+            self._emit_event(
+                "turn.failed",
+                {"client_turn_id": client_turn_id, "message": str(exc)},
+            )
+        else:
+            self._emit_event(
+                "turn.completed",
+                self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+            )
+        finally:
+            with self._turn_lock:
+                self._turn_running = False
+            self._emit_event("status.changed", self._status_payload())
+
+    def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:
+        self._emit_event(
+            "turn.event",
+            {
+                "client_turn_id": client_turn_id,
+                "phase": _phase_for_stream_event(event),
+                "kind": event.kind,
+                "text": event.text,
+                "tool_name": event.tool_name,
+                "metadata": event.metadata,
+            },
+        )
+
+    def _turn_completed_payload(
+        self,
+        *,
+        client_turn_id: str,
+        response: TurnResponse,
+    ) -> dict[str, object]:
+        return {
+            "client_turn_id": client_turn_id,
+            "assistant_message": response.assistant_message,
+            "activity_events": [
+                {
+                    "kind": item.kind,
+                    "message": item.message,
+                    "tool_name": item.tool_name,
+                    "path": item.path,
+                    "query": item.query,
+                    "preview": item.preview,
+                }
+                for item in response.activity_events
+            ],
+            "progress_updates": list(response.progress_updates),
+            "plan_steps": list(response.plan_steps),
+            "pending_decision": response.pending_decision is not None,
+            "usage": {},
+        }
+
+    def _emit_event(self, method: str, params: dict[str, object]) -> None:
+        if self._emit is not None:
+            self._emit(method, params)
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
@@ -196,3 +307,17 @@ def _slash_description(command: str) -> str:
         "/quit": "Exit mycli",
     }
     return descriptions.get(command, "")
+
+
+def _phase_for_stream_event(event: RuntimeStreamEvent) -> str:
+    if event.kind == "reasoning":
+        return "reasoning"
+    if event.kind == "text_delta":
+        return "assistant_delta"
+    if event.kind == "tool_call":
+        return "tool_call"
+    if event.kind == "heartbeat":
+        return "heartbeat"
+    if event.kind == "completed":
+        return "model_completed"
+    return event.kind

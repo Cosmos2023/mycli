@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from mycli.cli.node_tui.gateway import NodeTuiGateway
 from mycli.cli.node_tui.protocol import RpcRequest
+from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
 
 
 class FakeSessionService:
@@ -166,3 +167,88 @@ def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:
         "code": "method_not_found",
         "message": "Unknown method: missing.method",
     }
+
+
+class FakeTurnService(FakeService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.turn_calls: list[str] = []
+
+    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+        self.turn_calls.append(message)
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="reasoning", text="thinking"))
+            stream_sink(RuntimeStreamEvent(kind="tool_call", tool_name="Read"))
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text="hello"))
+            stream_sink(RuntimeStreamEvent(kind="completed", metadata={"response_status": "completed"}))
+        return TurnResponse(
+            assistant_message="hello world",
+            streamed_chunks=("hello", " world"),
+            progress_updates=("[progress] done",),
+            plan_steps=("completed: smoke",),
+        )
+
+
+def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert [method for method, _params in events] == [
+        "turn.started",
+        "turn.event",
+        "turn.event",
+        "turn.event",
+        "turn.event",
+        "turn.completed",
+        "status.changed",
+    ]
+    completed = events[-2][1]
+    assert completed["assistant_message"] == "hello world"
+    assert completed["progress_updates"] == ["[progress] done"]
+    assert completed["plan_steps"] == ["completed: smoke"]
+
+
+def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+
+    empty = gateway.handle_request(
+        RpcRequest(id="req_1", method="turn.submit", params={"message": "   "})
+    )
+    accepted = gateway.handle_request(
+        RpcRequest(id="req_2", method="turn.submit", params={"message": "hello"})
+    )
+    concurrent = gateway.handle_request(
+        RpcRequest(id="req_3", method="turn.submit", params={"message": "again"})
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert empty.error == {"code": "invalid_params", "message": "message is required."}
+    assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
+    assert concurrent.error == {"code": "turn_in_progress", "message": "A turn is already running."}
+
+
+def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+    idle = gateway.handle_request(RpcRequest(id="req_1", method="turn.interrupt", params={}))
+    accepted = gateway.handle_request(
+        RpcRequest(id="req_2", method="turn.submit", params={"message": "hello"})
+    )
+    running = gateway.handle_request(RpcRequest(id="req_3", method="turn.interrupt", params={}))
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert idle.result == {"interrupted": False}
+    assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
+    assert running.result == {"interrupted": True}
