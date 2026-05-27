@@ -19,9 +19,17 @@ from mycli.cli.node_tui.protocol import (
 )
 from mycli.cli.repl import build_command_handler, handle_slash_command
 from mycli.cli.tui.completion import slash_command_candidates
+from mycli.cli.tui.marks import startup_mark
 from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
+from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
+COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
+DECISION_CHOICE_MAP = {
+    "approve_once": "1",
+    "reject": "2",
+    "allow_session": "3",
+}
 
 
 class NodeTuiProcessLike(Protocol):
@@ -95,6 +103,10 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_turn_interrupt())
             if request.method == "command.run":
                 return result_response(request.id, self._handle_command_run(request.params))
+            if request.method == "transcript.load":
+                return result_response(request.id, self._handle_transcript_load(request.params))
+            if request.method == "decision.resolve":
+                return self._handle_decision_resolve(request)
             if request.method == "completion.slash":
                 return result_response(request.id, self._handle_completion_slash(request.params))
             if request.method == "completion.path":
@@ -139,6 +151,24 @@ class NodeTuiGateway:
                 f"{self.service._config.protocol.value}"
             ),
             "status": self._status_payload(),
+            "welcome": self._welcome_payload(),
+        }
+
+    def _welcome_payload(self) -> dict[str, object]:
+        mark_name = str(getattr(self.service._config, "tui_startup_mark", "default") or "default")
+        return {
+            "version": "0.1.0",
+            "session_id": self.service._config.session_id,
+            "workspace": str(self.service._config.workspace_root),
+            "model": self.service._config.model,
+            "provider": (
+                f"{self.service._config.provider.value}/"
+                f"{self.service._config.protocol.value}"
+            ),
+            "context_window": self._status_payload()["context_window"],
+            "startup_mark": {"name": mark_name, "text": startup_mark(mark_name)},
+            "tips": ["/help", "/context", "/usage", "/sessions"],
+            "release_notes_hint": "Run /release-notes",
         }
 
     def _handle_turn_submit(self, request: RpcRequest) -> RpcResponse:
@@ -241,6 +271,7 @@ class NodeTuiGateway:
         command = _required_str(params, "command").strip()
         if not command.startswith("/"):
             raise ValueError("command must start with '/'.")
+        command_name = command.split(maxsplit=1)[0]
         builtin = handle_slash_command(command)
         if builtin == "quit":
             lines = ["Bye."]
@@ -251,7 +282,94 @@ class NodeTuiGateway:
         mutated_session = command.startswith(("/resume", "/fork"))
         if mutated_session and self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
-        return {"lines": lines, "mutated_session": mutated_session}
+        result: dict[str, object] = {
+            "lines": lines,
+            "mutated_session": mutated_session,
+            "presentation": "overlay" if command_name in COMMAND_OVERLAYS else "transcript",
+            "exit_requested": builtin == "quit",
+        }
+        view_mode = _view_mode_from_command(command)
+        if view_mode is not None:
+            result["view_mode"] = view_mode
+        return result
+
+    def _handle_transcript_load(self, params: dict[str, object]) -> dict[str, object]:
+        session_id = _optional_str(params.get("session_id")) or self.service._config.session_id
+        limit = _positive_int(params.get("limit"), default=200)
+        before = _optional_str(params.get("before"))
+        items = list(self.service._session_service.load_history_items(session_id))
+        if before is not None:
+            before_index = next(
+                (index for index, item in enumerate(items) if item.id == before),
+                len(items),
+            )
+            items = items[:before_index]
+        selected = items[-limit:]
+        projected = [_project_history_item(item) for item in selected]
+        next_before = selected[0].id if len(items) > len(selected) and selected else None
+        return {"session_id": session_id, "items": projected, "next_before": next_before}
+
+    def _handle_decision_resolve(self, request: RpcRequest) -> RpcResponse:
+        decision_id = _required_str(request.params, "decision_id")
+        if decision_id != "decision_current":
+            return error_response(
+                request.id,
+                code="decision_not_pending",
+                message="No pending decision matches the provided decision_id.",
+            )
+        choice = _required_str(request.params, "choice")
+        mapped = DECISION_CHOICE_MAP.get(choice)
+        if mapped is None:
+            return error_response(
+                request.id,
+                code="invalid_params",
+                message="Unsupported decision choice.",
+            )
+        pending = self.service._session_service.load_pending_decision(self.service._config.session_id)
+        if pending is None:
+            return error_response(
+                request.id,
+                code="decision_not_pending",
+                message="No pending decision is available.",
+            )
+        client_turn_id = f"approval_{request.id}"
+        with self._turn_lock:
+            if self._turn_running:
+                return error_response(
+                    request.id,
+                    code="turn_in_progress",
+                    message="A turn is already running.",
+                )
+            self._turn_running = True
+            self._turn_thread = Thread(
+                target=self._run_decision_worker,
+                kwargs={"choice": mapped, "client_turn_id": client_turn_id},
+                daemon=True,
+            )
+            self._turn_thread.start()
+        return result_response(
+            request.id,
+            {"accepted": True, "decision_id": decision_id, "client_turn_id": client_turn_id},
+        )
+
+    def _run_decision_worker(self, *, choice: str, client_turn_id: str) -> None:
+        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        try:
+            response = self.service.resolve_pending_decision(choice)
+        except Exception as exc:
+            self._emit_event(
+                "turn.failed",
+                {"client_turn_id": client_turn_id, "message": str(exc)},
+            )
+        else:
+            self._emit_event(
+                "turn.completed",
+                self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+            )
+        finally:
+            with self._turn_lock:
+                self._turn_running = False
+            self._emit_event("status.changed", self._status_payload())
 
     def _handle_completion_slash(self, params: dict[str, object]) -> dict[str, object]:
         prefix = _optional_str(params.get("prefix")) or "/"
@@ -345,6 +463,42 @@ def _int_metric(value: object) -> int:
     if isinstance(value, float):
         return int(value)
     return 0
+
+
+def _positive_int(value: object, *, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return default
+    return value
+
+
+def _view_mode_from_command(command: str) -> str | None:
+    parts = command.split(maxsplit=1)
+    if len(parts) == 2 and parts[0] == "/view" and parts[1] in {"default", "verbose", "focus"}:
+        return parts[1]
+    return None
+
+
+def _project_history_item(item: HistoryItem) -> dict[str, object]:
+    item_type = {
+        HistoryItemType.USER_MESSAGE: "user",
+        HistoryItemType.ASSISTANT_MESSAGE: "assistant_final",
+        HistoryItemType.TOOL_CALL: "tool_summary",
+        HistoryItemType.TOOL_RESULT: "tool_detail",
+        HistoryItemType.APPROVAL_REQUEST: "approval",
+        HistoryItemType.APPROVAL_RESOLUTION: "system_notice",
+        HistoryItemType.WARNING: "warning",
+        HistoryItemType.COMPACTION: "system_notice",
+    }.get(item.type, "system_notice")
+    metadata = dict(item.metadata)
+    created_at = str(metadata.pop("created_at", "") or "")
+    return {
+        "id": item.id,
+        "type": item_type,
+        "text": item.text or "",
+        "created_at": created_at,
+        "folded": item_type == "tool_detail",
+        "metadata": metadata,
+    }
 
 
 def _slash_description(command: str) -> str:
