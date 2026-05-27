@@ -1704,7 +1704,9 @@ def test_turn_service_inspect_trace_prefers_high_signal_events_over_turn_items(t
     )
 
 
-def test_main_routes_interactive_terminal_to_tui(monkeypatch, tmp_path: Path) -> None:
+def test_main_routes_interactive_terminal_to_textual_when_requested(
+    monkeypatch, tmp_path: Path
+) -> None:
     events: dict[str, object] = {}
 
     class FakeStdout:
@@ -1738,7 +1740,15 @@ def test_main_routes_interactive_terminal_to_tui(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr("mycli.cli.main.stdout", FakeStdout())
     monkeypatch.setattr("mycli.cli.main.run_tui", fake_run_tui)
 
-    assert main(["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
+    assert (
+        main(
+            ["--session", "demo"],
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            env={"MYCLI_TUI_BACKEND": "textual"},
+        )
+        == 0
+    )
     assert events["service"]._config.session_id == "demo"
 
 

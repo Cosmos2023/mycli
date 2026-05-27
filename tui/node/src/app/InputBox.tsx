@@ -29,6 +29,13 @@ export function InputBox({
     setValue(next);
     onDraftChange(next);
   };
+  const submitCurrentValue = (): void => {
+    const submitted = valueRef.current.trim();
+    if (submitted && !completionVisible) {
+      onSubmit(submitted);
+      updateValue("");
+    }
+  };
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       onInterrupt();
@@ -50,12 +57,8 @@ export function InputBox({
       onCompletionClose?.();
       return;
     }
-    if (key.return) {
-      const submitted = valueRef.current.trim();
-      if (submitted && !completionVisible) {
-        onSubmit(submitted);
-        updateValue("");
-      }
+    if (key.return || input === "\r" || input === "\n") {
+      submitCurrentValue();
       return;
     }
     if (key.backspace || key.delete) {
@@ -64,8 +67,14 @@ export function InputBox({
       return;
     }
     if (!key.ctrl && input) {
-      const next = `${valueRef.current}${input}`;
+      const normalized = input.replaceAll("\r", "\n");
+      const newlineIndex = normalized.indexOf("\n");
+      const text = newlineIndex >= 0 ? normalized.slice(0, newlineIndex) : normalized;
+      const next = `${valueRef.current}${text}`;
       updateValue(next);
+      if (newlineIndex >= 0) {
+        submitCurrentValue();
+      }
     }
   });
   return (
