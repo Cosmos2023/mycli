@@ -37,8 +37,8 @@ Earlier turns collapsed · 3 turns · /view verbose for full transcript
   • 核心准则：持续推进、证据优先、安全可回退
 
 ────────────────────────────────────────────────────────────────────
-? help   Esc cancel   Ctrl+C interrupt   / commands   /view verbose
-› Type a message or /command
+? help   Ctrl+C stop   Esc close
+›
 default · model · theme · context
 ```
 
@@ -257,19 +257,21 @@ Rules:
 The bottom area should use three compact rows:
 
 ```text
-? help   Esc cancel   Ctrl+C interrupt   / commands   /view verbose
-› Type a message or /command
+? help   Ctrl+C stop   Esc close
+›
 default · deepseek-v4-flash · graphite · 9% 9,302/100k
 ```
 
 Bottom area priority:
 
-1. footer hint bar with 3-5 high-value shortcuts
-2. prompt marker and placeholder/draft
+1. footer hint bar with 2-3 high-value shortcuts
+2. prompt marker and current draft
 3. runtime metadata below the input: session, model, theme, and context usage
 
 Rules:
 
+- do not render placeholder text such as `Type a message or /command` in the input row
+- keep the input row visually minimal: prompt marker plus the current draft only
 - put session/model/theme/context below the input box, not in the header
 - keep runtime metadata muted
 - elide metadata from the left if needed before wrapping
