@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import React from "react";
+import { render } from "ink-testing-library";
+import { Overlay } from "../src/app/Overlay.tsx";
+import { StatusLine } from "../src/app/StatusLine.tsx";
+import { Transcript } from "../src/app/Transcript.tsx";
+import type { ShellState } from "../src/state/types.ts";
+
+const state: ShellState = {
+  sessionId: "demo",
+  workspace: "/repo",
+  model: "deepseek-v4",
+  provider: "deepseek/chat_completions",
+  status: { context_window: { used_tokens: 3983, max_tokens: 100000 } },
+  transcript: [
+    { id: "u1", type: "user", text: "read pyproject", folded: false, metadata: {} },
+    { id: "t1", type: "tool_summary", text: "Read pyproject.toml", folded: true, metadata: {} },
+    { id: "a1", type: "assistant_final", text: "Project is mycli.", folded: false, metadata: {} },
+  ],
+  inputDraft: "",
+  restoredDraft: "",
+  turnRunning: false,
+  currentTurnId: null,
+  viewMode: "default",
+  completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
+  overlay: { visible: true, title: "/usage", lines: ["turns=1"] },
+  pendingApproval: null,
+};
+
+test("transcript renders user, folded tool summary, and answer without role cards", () => {
+  const { lastFrame } = render(<Transcript state={state} />);
+  const frame = lastFrame() ?? "";
+  assert.match(frame, /read pyproject/);
+  assert.match(frame, /Read pyproject\.toml/);
+  assert.match(frame, /Project is mycli/);
+  assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
+});
+
+test("status line renders model and context usage", () => {
+  const { lastFrame } = render(<StatusLine state={state} />);
+  assert.match(lastFrame() ?? "", /deepseek-v4/);
+  assert.match(lastFrame() ?? "", /3,983 \/ 100,000/);
+});
+
+test("overlay renders command lines", () => {
+  const { lastFrame } = render(<Overlay overlay={state.overlay} />);
+  assert.match(lastFrame() ?? "", /\/usage/);
+  assert.match(lastFrame() ?? "", /turns=1/);
+});
