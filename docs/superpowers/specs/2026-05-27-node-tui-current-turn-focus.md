@@ -23,7 +23,8 @@ The default screen should treat the terminal as a viewport, not an infinite tran
 Required default shape:
 
 ```text
-mycli  workspace                  session           model · context
+mycli  workspace
+session · model · context
 ────────────────────────────────────────────────────────────────────
 
 Earlier turns collapsed · 3 turns · /view verbose for full transcript
@@ -234,13 +235,28 @@ Rules:
 
 The existing compact header and bottom command bar stay, but they must not dominate the screen.
 
-Header priority at 80 columns:
+The header should use two compact rows at 80 columns:
+
+```text
+mycli  fix-de...hit-rate
+default · deepseek-v4-flash · 9% 9,302/100k
+────────────────────────────────────────────────────────────────────
+```
+
+Header priority:
 
 1. `mycli`
 2. workspace basename
 3. session id, elided
 4. model name, elided
 5. context usage
+
+Rules:
+
+- put brand and workspace on the first row
+- put session, model, and context on the second row
+- keep the second row muted so the current turn remains visually dominant
+- elide second-row values before wrapping
 
 Bottom bar priority:
 
