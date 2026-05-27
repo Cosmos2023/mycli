@@ -7,8 +7,8 @@ The `node-tui-visual-structure-v2` slice improved individual rows, but real term
 This slice moves the Node TUI toward a Claude-Code-like console structure:
 
 - compact header
-- current turn as the main visual object
-- previous turns collapsed by default
+- continuous transcript with completed turns still visible
+- noisy per-turn internals collapsed by default
 - tool activity displayed before the final assistant answer
 - stable minimal input row and bottom statusline
 - Claude-Code-like visual tokens: `❯` for user turns, `●` for tool calls, `⎿` for expanded tool results, and `▍` for active streaming text
@@ -17,9 +17,9 @@ Python remains the only runtime authority. The Node process only changes display
 
 ## 2. Goals
 
-### 2.1 Make the Current Turn the Primary View
+### 2.1 Keep a Continuous Transcript Without Log Noise
 
-The default screen should treat the terminal as a viewport, not an infinite transcript dump. The current or most recent turn should occupy the readable area. Older turns should be summarized into compact one-line rows unless the user explicitly asks for more detail through an existing view mode.
+The default screen should remain a continuous Claude-Code-like transcript. Older turns should stay visible with their user prompt and assistant answer, so follow-up questions keep conversational context on screen. What collapses by default is noise inside each turn: raw tool results, repeated read/search groups, and reasoning/thinking detail.
 
 Required default shape:
 
@@ -27,7 +27,10 @@ Required default shape:
 mycli  workspace
 ────────────────────────────────────────────────────────────────────
 
-Earlier turns collapsed · 3 turns · /view verbose for full transcript
+❯ 你是谁
+│ 我是 mycli，一个运行在你本地机器上的编程助手。
+
+────────────────────────────────────────────────────────────────────
 
 ❯ 你的系统提示词是什么
 ● Read AGENTS.md
@@ -42,6 +45,8 @@ Earlier turns collapsed · 3 turns · /view verbose for full transcript
 >
 default · model · theme · context
 ```
+
+The current turn remains visually active because it is closest to the input and may include running `● Thinking ...` and `▍` stream cursor state. Older completed turns are not replaced by a single "collapsed history" line in default mode.
 
 ### 2.2 Show Tool Activity Before the Final Answer
 
@@ -119,22 +124,35 @@ type DisplayTurn = {
 };
 ```
 
+The helper should be pure and deterministic:
+
+```ts
+type GroupedTranscript = {
+  prelude: TranscriptItem[];
+  turns: DisplayTurn[];
+};
+
+function groupTranscriptIntoTurns(items: TranscriptItem[]): GroupedTranscript;
+```
+
 First implementation rule:
 
 - start a new `DisplayTurn` at every `TranscriptItem` with `type === "user"`
 - attach following items to that turn until the next user item
 - attach bootstrap/welcome notices to a prelude bucket
+- attach non-startup command/system notices before the first user to the prelude bucket
 - if the transcript has no user item, show existing welcome behavior
 
 This is intentionally display-only. Do not add `turn_id` to protocol payloads unless a future bug proves user-boundary grouping is insufficient.
 
-### 4.2 Current Turn Selection
+### 4.2 Default Turn Rendering
 
 Default view mode should render:
 
 - prelude/welcome only if there is no conversation content
-- a compact collapsed-history row when there are older turns
-- the current turn expanded
+- all completed turns in order, including user prompt and assistant answer
+- collapsed tool summaries for older turns
+- the current turn with live tool/running/stream state
 - local command notices only when they are recent and relevant
 
 The current turn is:
@@ -142,21 +160,15 @@ The current turn is:
 - the last turn when no turn is running
 - the turn containing the submitted user prompt while `state.turnRunning` is true
 
-Older turns are represented as a single summary line:
-
-```text
-Earlier turns collapsed · 3 turns · /view verbose for full transcript
-```
-
-Do not render every old assistant answer in default mode.
+Do not replace older turns with a single collapsed-history row in default mode.
 
 ### 4.3 View Modes
 
 Use existing `ViewMode` values:
 
-- `default`: current turn focused, older turns collapsed
-- `verbose`: full transcript, preserving existing row detail
-- `focus`: only current turn and running activity, hiding history summary if needed
+- `default`: continuous transcript, with raw tool results and noisy internals collapsed
+- `verbose`: continuous transcript with expanded tool details and subtle turn separators
+- `focus`: only current turn and running activity, for users who explicitly want current-turn-only display
 
 Do not add a new slash command in this slice. Continue using existing `/view` behavior.
 
@@ -212,7 +224,7 @@ Default mode:
 - show only the `● Tool(args)` style summary line
 - hide raw tool output unless the output is the primary answer artifact
 
-Verbose or expanded mode:
+Verbose mode:
 
 ```text
 ● Read pyproject.toml
@@ -228,6 +240,8 @@ Rules:
 - preserve monospace formatting
 - use a subtle gray surface only when Ink can do so without making the UI look boxed
 - keep expanded results under the matching tool call, before the assistant answer
+- do not add per-tool interactive expansion in this slice
+- reserve item-level expand/collapse for a later keyboard navigation slice
 
 ### 5.4 Running Activity
 
@@ -271,8 +285,8 @@ Turn boundaries should be visible without turning the screen into a dashboard.
 
 Rules:
 
-- use a subtle dim horizontal separator between completed turns in verbose mode
-- in default mode, collapse older turns instead of drawing repeated separators
+- use a subtle dim horizontal separator between completed turns in default and verbose modes
+- omit or reduce separators in focus mode because only one turn is visible
 - do not draw heavy borders around each turn
 
 ## 6. Header And Bottom Bar
@@ -335,18 +349,19 @@ No header or bottom bar content should wrap into a broken second line at normal 
 
 Required Node tests:
 
-- `groupTranscriptIntoTurns()` starts a new display turn at each user item.
-- Default mode collapses older turns and expands only the current turn.
+- `groupTranscriptIntoTurns()` returns `{prelude, turns}` and starts a new display turn at each user item.
+- Default mode keeps older user prompts and assistant answers visible.
+- Default mode collapses raw tool result details while keeping `●` tool summaries visible.
 - Tool rows render before assistant final even when the flat transcript order differs.
 - Tool calls use `●` summaries in default mode.
-- Verbose tool details render under the matching call with `⎿`.
+- Verbose mode renders tool details under the matching call with `⎿`.
 - Running activity renders inside the active turn before assistant stream.
 - Active assistant stream renders a trailing `▍` cursor.
 - Verbose mode still renders full transcript rows.
-- Focus mode hides collapsed history and shows only the current turn.
+- Focus mode hides prior turns and shows only the current turn.
 - User/assistant rows do not render `USER` or `ASSISTANT` labels.
-- Verbose completed turns have subtle separators.
-- The screenshot-like scenario with four Chinese prompts does not render four full assistant answers in default mode.
+- Default and verbose completed turns have subtle separators.
+- The screenshot-like scenario with four Chinese prompts keeps prior prompt/answer context visible without rendering raw tool result blocks.
 - Existing `/theme`, `/usage`, `/sessions`, `/clear`, and `/quit` smoke paths still pass.
 
 Required verification:
@@ -369,8 +384,8 @@ MYCLI_TUI_THEME=graphite uv run mycli --session node-tui-current-turn-focus-smok
 Checklist:
 
 1. Ask several short Chinese questions.
-2. Confirm older turns collapse in default mode.
-3. Confirm current turn remains expanded.
+2. Confirm older user prompts and assistant answers remain visible in default mode.
+3. Confirm raw tool result details remain collapsed in default mode.
 4. Trigger a tool-using prompt and confirm tool rows appear before the final answer.
 5. Run `/view verbose` and confirm full transcript access still works.
 6. Run `/theme deep-teal`, `/usage`, `/sessions`, `/clear`, and `/quit`.
@@ -378,9 +393,10 @@ Checklist:
 ## 9. Acceptance Criteria
 
 - The default screen no longer looks like a raw transcript log.
-- Older assistant answers do not consume the viewport in default mode.
+- Older turns remain visible enough for conversational continuity.
+- Raw tool results, repeated read/search groups, and reasoning detail do not consume the viewport in default mode.
 - Tool/activity rows appear before the final assistant answer.
 - Tool calls, expanded tool results, user turns, and active streams use `●`, `⎿`, `❯`, and `▍` respectively.
-- The current turn is visually dominant.
+- The current turn remains easy to find because it is nearest the input and carries live activity state.
 - Claude-Code-like restraint is preserved: no large role cards or sidebars.
 - Node remains a disposable UI process and does not own runtime state.
