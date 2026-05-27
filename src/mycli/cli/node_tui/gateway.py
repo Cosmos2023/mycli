@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock, Thread
+from typing import Protocol
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
@@ -23,7 +24,19 @@ from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
 PROTOCOL_VERSION = 1
 
 
-def run_node_tui_gateway(*, service: TurnService, process: object) -> int:
+class NodeTuiProcessLike(Protocol):
+    def start(self) -> None: ...
+
+    def write_line(self, line: str) -> None: ...
+
+    def read_line(self) -> str: ...
+
+    def wait(self) -> int: ...
+
+    def terminate(self) -> None: ...
+
+
+def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
     process.start()
 
     def emit(method: str, params: dict[str, object]) -> None:

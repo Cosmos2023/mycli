@@ -10,11 +10,19 @@ export class GatewayClient {
     this.pending = new Map();
     this.eventWaiters = [];
     this.events = [];
+    this.readline = null;
   }
 
   start() {
-    const rl = createInterface({ input: this.input, crlfDelay: Infinity });
-    rl.on("line", (line) => this.handleLine(line));
+    this.readline = createInterface({ input: this.input, crlfDelay: Infinity });
+    this.readline.on("line", (line) => this.handleLine(line));
+  }
+
+  stop() {
+    if (this.readline) {
+      this.readline.close();
+      this.readline = null;
+    }
   }
 
   send(method, params = {}) {

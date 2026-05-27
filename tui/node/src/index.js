@@ -11,30 +11,34 @@ const client = new GatewayClient({
 client.start();
 
 async function main() {
-  await client.send("session.bootstrap", {
-    protocol_version: 1,
-    client: { name: "mycli-node-tui", version: "0.1.0" },
-  });
-  const script = JSON.parse(process.env.MYCLI_NODE_TUI_SCRIPT || "[]");
-  for (const item of script) {
-    if (typeof item !== "string" || !item.trim()) {
-      continue;
-    }
-    if (item.startsWith("/")) {
-      const result = await client.send("command.run", { command: item });
-      for (const line of result.lines ?? []) {
-        process.stderr.write(`[node-tui] ${line}\n`);
+  try {
+    await client.send("session.bootstrap", {
+      protocol_version: 1,
+      client: { name: "mycli-node-tui", version: "0.1.0" },
+    });
+    const script = JSON.parse(process.env.MYCLI_NODE_TUI_SCRIPT || "[]");
+    for (const item of script) {
+      if (typeof item !== "string" || !item.trim()) {
+        continue;
       }
-      continue;
+      if (item.startsWith("/")) {
+        const result = await client.send("command.run", { command: item });
+        for (const line of result.lines ?? []) {
+          process.stderr.write(`[node-tui] ${line}\n`);
+        }
+        continue;
+      }
+      const clientTurnId = `script_${Date.now()}`;
+      await client.send("turn.submit", { message: item, client_turn_id: clientTurnId });
+      await client.waitForEvent(
+        "turn.completed",
+        (event) => event.params?.client_turn_id === clientTurnId,
+      );
     }
-    const clientTurnId = `script_${Date.now()}`;
-    await client.send("turn.submit", { message: item, client_turn_id: clientTurnId });
-    await client.waitForEvent(
-      "turn.completed",
-      (event) => event.params?.client_turn_id === clientTurnId,
-    );
+    await client.send("shutdown", {});
+  } finally {
+    client.stop();
   }
-  await client.send("shutdown", {});
 }
 
 main().catch((error) => {

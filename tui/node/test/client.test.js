@@ -36,3 +36,16 @@ test("client waits for a matching event", async () => {
 
   assert.equal((await promise).method, "turn.completed");
 });
+
+test("client stops reading gateway input", () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const client = new GatewayClient({ input, output });
+  client.start();
+
+  assert.ok(input.listenerCount("data") > 0);
+
+  client.stop();
+
+  assert.equal(input.listenerCount("data"), 0);
+});
