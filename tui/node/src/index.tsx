@@ -6,7 +6,15 @@ import { initialState, reduceShellState } from "./state/reducer.ts";
 import { openTtyStreams } from "./terminal/tty.ts";
 
 function RuntimeApp() {
-  const [state, dispatch] = useReducer(reduceShellState, undefined, initialState);
+  const themeInit =
+    process.env.MYCLI_TUI_THEME === undefined
+      ? {}
+      : { rawThemeName: process.env.MYCLI_TUI_THEME };
+  const [state, dispatch] = useReducer(
+    reduceShellState,
+    themeInit,
+    initialState,
+  );
   const client = useMemo(
     () =>
       new GatewayClient({
@@ -55,6 +63,7 @@ function RuntimeApp() {
       onInterrupt={() => {
         void client.send("turn.interrupt", {});
       }}
+      onLocalAction={dispatch}
       onDraftChange={() => undefined}
       onDecision={(decisionId, choice) => {
         void client.send("decision.resolve", { decision_id: decisionId, choice });

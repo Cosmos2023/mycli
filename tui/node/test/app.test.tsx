@@ -5,6 +5,7 @@ import { render } from "ink-testing-library";
 import { Overlay } from "../src/app/Overlay.tsx";
 import { StatusLine } from "../src/app/StatusLine.tsx";
 import { Transcript } from "../src/app/Transcript.tsx";
+import { THEMES } from "../src/theme/themes.ts";
 import type { ShellState } from "../src/state/types.ts";
 
 const state: ShellState = {
@@ -13,6 +14,9 @@ const state: ShellState = {
   model: "deepseek-v4",
   provider: "deepseek/chat_completions",
   status: { context_window: { used_tokens: 3983, max_tokens: 100000 } },
+  themeName: "deep-teal",
+  theme: THEMES["deep-teal"],
+  themeNotice: null,
   transcript: [
     { id: "u1", type: "user", text: "read pyproject", folded: false, metadata: {} },
     { id: "t1", type: "tool_summary", text: "Read pyproject.toml", folded: true, metadata: {} },

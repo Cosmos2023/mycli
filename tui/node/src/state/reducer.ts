@@ -1,3 +1,5 @@
+import { resolveTheme } from "../theme/resolveTheme.ts";
+import type { ThemeName, ThemeTokens } from "../theme/types.ts";
 import { applyTextDelta, applyToolEvent, itemId, reconcileFinalAnswer } from "./transcript.ts";
 import type { ShellState, TranscriptItem, ViewMode } from "./types.ts";
 
@@ -5,17 +7,38 @@ export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
   | { type: "transcript.loaded"; payload: Record<string, unknown> }
   | { type: "user.submit"; message: string }
+  | { type: "theme.changed"; themeName: ThemeName; theme: ThemeTokens; message: string }
+  | { type: "theme.failed"; message: string }
+  | { type: "local.command_output"; command: string; lines: string[] }
+  | { type: "transcript.cleared"; message: string }
   | { type: "gateway.event"; method: string; params: Record<string, unknown> }
   | { type: "command.result"; command: string; result: Record<string, unknown> };
 
-export function initialState(): ShellState {
+export function initialState({
+  rawThemeName,
+}: { rawThemeName?: string } = {}): ShellState {
+  const resolved = resolveTheme(rawThemeName);
+  const themeName = resolved.ok ? resolved.name : resolved.fallbackName;
   return {
     sessionId: null,
     workspace: "",
     model: "",
     provider: "",
     status: {},
-    transcript: [],
+    transcript: resolved.ok
+      ? []
+      : [
+          {
+            id: itemId("theme"),
+            type: "system_notice",
+            text: resolved.message,
+            folded: false,
+            metadata: {},
+          },
+        ],
+    themeName,
+    theme: resolved.theme,
+    themeNotice: resolved.ok ? null : resolved.message,
     inputDraft: "",
     restoredDraft: "",
     turnRunning: false,
@@ -68,6 +91,70 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       ? (action.payload.items as TranscriptItem[])
       : [];
     return { ...state, transcript: [...state.transcript, ...items] };
+  }
+  if (action.type === "theme.changed") {
+    return {
+      ...state,
+      themeName: action.themeName,
+      theme: action.theme,
+      themeNotice: action.message,
+      transcript: [
+        ...state.transcript,
+        {
+          id: itemId("command"),
+          type: "command_output",
+          text: action.message,
+          folded: false,
+          metadata: { command: "/theme", theme: action.themeName },
+        },
+      ],
+    };
+  }
+  if (action.type === "theme.failed") {
+    return {
+      ...state,
+      themeNotice: action.message,
+      transcript: [
+        ...state.transcript,
+        {
+          id: itemId("warning"),
+          type: "warning",
+          text: action.message,
+          folded: false,
+          metadata: { command: "/theme" },
+        },
+      ],
+    };
+  }
+  if (action.type === "local.command_output") {
+    return {
+      ...state,
+      transcript: [
+        ...state.transcript,
+        {
+          id: itemId("command"),
+          type: "command_output",
+          text: action.lines.join("\n"),
+          folded: false,
+          metadata: { command: action.command },
+        },
+      ],
+    };
+  }
+  if (action.type === "transcript.cleared") {
+    return {
+      ...state,
+      transcript: [
+        {
+          id: itemId("system"),
+          type: "system_notice",
+          text: action.message,
+          folded: false,
+          metadata: { local: true },
+        },
+      ],
+      overlay: { visible: false, title: "", lines: [] },
+    };
   }
   if (action.type === "gateway.event") {
     if (action.method === "turn.started") {

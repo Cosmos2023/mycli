@@ -1,3 +1,5 @@
+import type { ThemeName, ThemeTokens } from "../theme/types.ts";
+
 export type ViewMode = "default" | "verbose" | "focus";
 
 export type TranscriptItemType =
@@ -42,6 +44,9 @@ export type ShellState = {
   provider: string;
   status: Record<string, unknown>;
   transcript: TranscriptItem[];
+  themeName: ThemeName;
+  theme: ThemeTokens;
+  themeNotice: string | null;
   inputDraft: string;
   restoredDraft: string;
   turnRunning: boolean;

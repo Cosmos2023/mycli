@@ -6,12 +6,15 @@ import { InputBox } from "./InputBox.tsx";
 import { Overlay } from "./Overlay.tsx";
 import { StatusLine } from "./StatusLine.tsx";
 import { Transcript } from "./Transcript.tsx";
+import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
+import type { ShellAction } from "../state/reducer.ts";
 import type { ShellState } from "../state/types.ts";
 
 export function App({
   state,
   onSubmit,
   onCommand,
+  onLocalAction,
   onInterrupt,
   onDraftChange,
   onDecision,
@@ -19,6 +22,7 @@ export function App({
   state: ShellState;
   onSubmit?: (value: string) => void;
   onCommand?: (command: string) => void;
+  onLocalAction?: (action: ShellAction) => void;
   onInterrupt?: () => void;
   onDraftChange?: (value: string) => void;
   onDecision?: (decisionId: string, choice: string) => void;
@@ -42,6 +46,10 @@ export function App({
         completionVisible={state.completion.visible}
         onDraftChange={onDraftChange ?? (() => undefined)}
         onSubmit={(value) => {
+          if (value.startsWith("/") && isLocalCommand(value)) {
+            onLocalAction?.(handleLocalCommand(value, state));
+            return;
+          }
           if (value.startsWith("/")) {
             onCommand?.(value);
             return;
