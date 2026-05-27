@@ -1760,3 +1760,90 @@ def test_main_non_interactive_stdout_uses_plain_mode(monkeypatch, tmp_path: Path
 
     assert main(["--session", "demo"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
     assert events["turn_output"] == ["plain"]
+
+
+def test_main_routes_node_tui_flag_to_gateway(monkeypatch, tmp_path: Path) -> None:
+    events: dict[str, object] = {}
+
+    class FakeService:
+        pass
+
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
+
+    def fake_run_node_tui(service, *, cwd, env):
+        events["service"] = service
+        events["cwd"] = cwd
+        events["env"] = env
+        return 0
+
+    monkeypatch.setattr("mycli.cli.main.run_node_tui", fake_run_node_tui)
+
+    assert main(
+        ["--node-tui", "--session", "demo"],
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        env={"MYCLI_API_KEY": "x"},
+    ) == 0
+    assert isinstance(events["service"], FakeService)
+    assert events["cwd"] == tmp_path
+
+
+def test_main_routes_node_tui_env_backend(monkeypatch, tmp_path: Path) -> None:
+    events: dict[str, object] = {}
+
+    class FakeService:
+        pass
+
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
+    monkeypatch.setattr(
+        "mycli.cli.main.run_node_tui",
+        lambda service, *, cwd, env: events.setdefault("called", True) and 0,
+    )
+
+    assert main(
+        ["--session", "demo"],
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        env={"MYCLI_API_KEY": "x", "MYCLI_TUI_BACKEND": "node"},
+    ) == 0
+    assert events["called"] is True
+
+
+def test_main_plain_overrides_node_tui_backend(monkeypatch, tmp_path: Path) -> None:
+    outputs: list[str] = []
+    scripted_inputs = iter(["/quit"])
+
+    class FakeService:
+        def __init__(self) -> None:
+            self._config = type(
+                "Config",
+                (),
+                {
+                    "session_id": "demo",
+                    "workspace_root": tmp_path,
+                    "view_mode": ViewMode.DEFAULT,
+                    "statusline_enabled": False,
+                },
+            )()
+            self._session_service = type(
+                "Sessions",
+                (),
+                {"load_pending_decision": lambda _self, _session_id: None},
+            )()
+
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
+
+    def fail_node_tui(*args, **kwargs):
+        raise AssertionError("node tui should not run")
+
+    monkeypatch.setattr("mycli.cli.main.run_node_tui", fail_node_tui)
+
+    assert main(
+        ["--plain", "--session", "demo"],
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        env={"MYCLI_API_KEY": "x", "MYCLI_TUI_BACKEND": "node"},
+        input_func=lambda _prompt: next(scripted_inputs),
+        output_func=outputs.append,
+    ) == 0
+    assert outputs[-1] == "Bye."

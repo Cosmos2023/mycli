@@ -17,6 +17,7 @@ from mycli.cli.repl import (
     handle_slash_command,
     run_repl,
 )
+from mycli.cli.node_tui import NodeTuiProcessError, run_node_tui
 from mycli.cli.tui import run_tui
 from mycli.cli.rendering import (
     RenderOptions,
@@ -59,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the line-oriented REPL instead of the full-screen TUI",
     )
+    parser.add_argument(
+        "--node-tui",
+        action="store_true",
+        help="Run the experimental Node.js TUI gateway",
+    )
     parser.add_argument("--eval-list", action="store_true", help="List evaluation scenarios")
     parser.add_argument("--eval-scenario", default=None, help="Run a single evaluation scenario")
     parser.add_argument(
@@ -73,6 +79,15 @@ def should_use_tui(cli_args: dict[str, object]) -> bool:
     if bool(cli_args.get("plain")):
         return False
     return stdin.isatty() and stdout.isatty()
+
+
+def should_use_node_tui(cli_args: dict[str, object], env: dict[str, str] | None) -> bool:
+    if bool(cli_args.get("plain")):
+        return False
+    if bool(cli_args.get("node_tui")):
+        return True
+    env_vars = env or os.environ
+    return env_vars.get("MYCLI_TUI_BACKEND", "").strip().lower() == "node"
 
 
 def _prepare_evaluation_scenario(
@@ -183,6 +198,12 @@ def main(
     if eval_exit_code is not None:
         return eval_exit_code
     service = build_turn_service(args, cwd=cwd, home=home, env=env)
+    if should_use_node_tui(args, env):
+        try:
+            return run_node_tui(service, cwd=cwd or Path.cwd(), env=env or dict(os.environ))
+        except NodeTuiProcessError as exc:
+            output_func(str(exc))
+            return 2
     if should_use_tui(args):
         return run_tui(service, input_func=input_func, output_func=output_func)
 
