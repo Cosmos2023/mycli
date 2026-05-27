@@ -15,7 +15,7 @@ import type { ShellState } from "../state/types.ts";
 
 export function App({
   state,
-  width = 100,
+  width = 80,
   onSubmit,
   onCommand,
   onLocalAction,

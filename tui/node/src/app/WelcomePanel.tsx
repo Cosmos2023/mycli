@@ -34,7 +34,7 @@ export function WelcomePanel({
   if (!item) {
     return null;
   }
-  const workspace = truncateMiddle(state.workspace || "workspace pending", Math.max(24, width - 12));
+  const workspace = truncateMiddle(state.workspace || "workspace pending", Math.max(24, width - 32));
   return (
     <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
       <Text color={state.theme.accent}>{item.text}</Text>
