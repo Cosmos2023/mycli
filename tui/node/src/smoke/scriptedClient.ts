@@ -1,8 +1,15 @@
 import { GatewayClient } from "../protocol/client.ts";
+import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
+import { initialState, reduceShellState } from "../state/reducer.ts";
 
 export async function runScriptedClient(
   scriptRaw = process.env.MYCLI_NODE_TUI_SCRIPT || "[]",
 ): Promise<void> {
+  const themeInit =
+    process.env.MYCLI_TUI_THEME === undefined
+      ? {}
+      : { rawThemeName: process.env.MYCLI_TUI_THEME };
+  let state = initialState(themeInit);
   const client = new GatewayClient({
     input: process.stdin,
     output: process.stdout,
@@ -12,16 +19,25 @@ export async function runScriptedClient(
   });
   client.start();
   try {
-    await client.send("session.bootstrap", {
+    const bootstrap = await client.send("session.bootstrap", {
       protocol_version: 1,
       client: { name: "mycli-node-tui", version: "0.2.0" },
     });
+    state = reduceShellState(state, { type: "bootstrap.result", payload: bootstrap });
     const script = JSON.parse(scriptRaw) as unknown[];
     for (const item of script) {
       if (typeof item !== "string" || !item.trim()) {
         continue;
       }
       if (item.startsWith("/")) {
+        if (isLocalCommand(item)) {
+          state = reduceShellState(state, handleLocalCommand(item, state));
+          const last = state.transcript.at(-1);
+          if (last?.text) {
+            process.stderr.write(`[node-tui] ${last.text}\n`);
+          }
+          continue;
+        }
         const result = await client.send("command.run", { command: item });
         for (const line of (result.lines as string[] | undefined) ?? []) {
           process.stderr.write(`[node-tui] ${line}\n`);
