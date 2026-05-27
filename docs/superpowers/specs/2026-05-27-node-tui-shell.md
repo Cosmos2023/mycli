@@ -161,12 +161,13 @@ First-slice overlays:
 - `/usage`
 - `/context`
 - `/sessions`
+- `/release-notes`
 
 Overlay rules:
 
 - `Esc` closes the overlay.
 - Overlays do not enter model-visible history.
-- Overlay content comes from Python `command.run`, `status.inspect`, `session.list`, or `transcript.load`.
+- Overlay content comes from Python `command.run`, `status.inspect`, or `session.list`.
 - Command output that changes session state should also emit `session.changed` or `status.changed` from Python.
 
 Simple commands:
@@ -213,6 +214,33 @@ Status updates:
 - `/usage` and `/context` overlays show the detailed Python-provided values.
 
 Node must not calculate context-window usage from transcript text. It displays Python-provided metrics.
+
+### 2.10 Restore the startup welcome screen
+
+The Node TUI should preserve the P6 welcome experience, but render it as Node UI state rather than Python Textual markup.
+
+Required welcome content:
+
+- `mycli` version.
+- Current session id.
+- Workspace path.
+- Current model and provider/protocol.
+- Context window usage when known.
+- Startup mark name and terminal-safe ASCII mark.
+- Tips such as `/help`, `/context`, `/usage`, and `/sessions`.
+- Release-notes hint when Python exposes one.
+
+Data source:
+
+- `session.bootstrap` returns a `welcome` object with the fields above.
+- Node renders the welcome as a non-history transcript item of type `system_notice`.
+- The welcome is not appended to Python session history and never becomes model-visible context.
+
+Startup marks:
+
+- Default mark remains neutral `mycli`.
+- Optional configured marks, including zodiac marks, are resolved by Python and returned as ASCII text.
+- Node does not duplicate mark selection logic.
 
 ## 3. Non-goals
 
@@ -315,7 +343,7 @@ The existing gateway already supports:
 This slice should extend or harden the gateway for the full shell:
 
 - `decision.resolve` for approval prompts.
-- A transcript bootstrap path so Node can render existing session history after launch or resume.
+- `transcript.load` so Node can render existing session history after launch or resume.
 - Structured command output metadata so Node can decide overlay vs transcript row from explicit fields; legacy plain-text command lines render as `command_output`.
 - View-mode command metadata for `/view`.
 - Stable event ids for transcript items that can be folded or expanded.
@@ -323,7 +351,185 @@ This slice should extend or harden the gateway for the full shell:
 
 Any new protocol method must be covered by Python protocol/gateway tests and Node protocol tests.
 
-### 4.4 State flow
+### 4.4 Protocol extensions
+
+The following shapes extend the gateway contract for the full shell.
+
+#### `session.bootstrap`
+
+Request:
+
+```json
+{
+  "method": "session.bootstrap",
+  "params": {
+    "protocol_version": 1,
+    "client": { "name": "mycli-node-tui", "version": "0.2.0" }
+  }
+}
+```
+
+Result:
+
+```json
+{
+  "protocol_version": 1,
+  "session_id": "default",
+  "workspace": "/repo",
+  "model": "deepseek-v4",
+  "provider": "deepseek/chat_completions",
+  "status": {},
+  "welcome": {
+    "version": "0.1.0",
+    "session_id": "default",
+    "workspace": "/repo",
+    "model": "deepseek-v4",
+    "provider": "deepseek/chat_completions",
+    "context_window": { "used_tokens": 3983, "max_tokens": 100000, "source": "provider" },
+    "startup_mark": { "name": "default", "text": "mycli" },
+    "tips": ["/help", "/context", "/usage", "/sessions"],
+    "release_notes_hint": "Run /release-notes"
+  }
+}
+```
+
+`session.bootstrap` returns welcome and status data. Historical transcript content is loaded through `transcript.load`.
+
+#### `transcript.load`
+
+Request:
+
+```json
+{
+  "method": "transcript.load",
+  "params": {
+    "session_id": "default",
+    "limit": 200,
+    "before": null
+  }
+}
+```
+
+Result:
+
+```json
+{
+  "session_id": "default",
+  "items": [
+    {
+      "id": "hist_42",
+      "type": "user",
+      "text": "Read pyproject.toml",
+      "created_at": "2026-05-27T08:00:00Z",
+      "folded": false,
+      "metadata": {}
+    },
+    {
+      "id": "hist_43",
+      "type": "assistant_final",
+      "text": "The project is mycli.",
+      "created_at": "2026-05-27T08:00:01Z",
+      "folded": false,
+      "metadata": {}
+    }
+  ],
+  "next_before": "hist_42"
+}
+```
+
+Rules:
+
+- Items are UI transcript projections derived from Python-owned session history.
+- `transcript.load` does not mutate session state.
+- Node may use `next_before` for older-history pagination.
+- Tool detail bodies may be omitted or folded when Python does not have safe detail text.
+
+#### `decision.resolve`
+
+Python emits `approval.pending` before Node can resolve a decision.
+
+Notification:
+
+```json
+{
+  "method": "approval.pending",
+  "params": {
+    "decision_id": "decision_current",
+    "tool_name": "Bash",
+    "reason": "git push requires confirmation.",
+    "preview": "git push origin main",
+    "options": [
+      { "choice": "approve_once", "label": "Allow once" },
+      { "choice": "reject", "label": "Reject" },
+      { "choice": "allow_session", "label": "Allow similar commands this session" }
+    ]
+  }
+}
+```
+
+Request:
+
+```json
+{
+  "method": "decision.resolve",
+  "params": {
+    "decision_id": "decision_current",
+    "choice": "approve_once"
+  }
+}
+```
+
+Immediate result:
+
+```json
+{
+  "accepted": true,
+  "decision_id": "decision_current",
+  "client_turn_id": "approval_1"
+}
+```
+
+Rules:
+
+- Gateway maps `approve_once`, `reject`, and `allow_session` to the current Python approval choices.
+- Resolving a decision resumes work through the same event channel as a normal turn: `turn.started`, zero or more `turn.event`, then `turn.completed` or `turn.failed`.
+- If the decision id is stale or no pending decision exists, return a JSON-RPC error with code `decision_not_pending`.
+- Rejection may complete immediately with a final assistant/system notice; it still clears the pending decision in Python.
+
+#### `command.run`
+
+The existing result shape is extended from plain lines to structured command metadata.
+
+Request:
+
+```json
+{
+  "method": "command.run",
+  "params": { "command": "/view verbose" }
+}
+```
+
+Result:
+
+```json
+{
+  "lines": ["[view] mode=verbose"],
+  "mutated_session": false,
+  "presentation": "transcript",
+  "view_mode": "verbose",
+  "exit_requested": false
+}
+```
+
+Rules:
+
+- `presentation` is one of `transcript`, `overlay`, or `none`.
+- `/help`, `/status`, `/usage`, `/context`, `/sessions`, and `/release-notes` return `presentation: "overlay"`.
+- `/view default`, `/view verbose`, and `/view focus` return `view_mode`.
+- `/quit` returns `exit_requested: true`; Node then sends `shutdown`.
+- Legacy command handlers that only return lines are wrapped as `presentation: "transcript"`.
+
+### 4.5 State flow
 
 Turn flow:
 
@@ -400,7 +606,18 @@ Assistant output should support:
 - markdown tables rendered as aligned plain terminal text when the parser recognizes them; otherwise preserve the source table text
 - links as plain terminal text
 
-Markdown parsing can happen in Node, but final answer content comes from Python. Markdown rendering must be incremental enough not to recreate the Textual full-redraw problem.
+Markdown parsing happens in Node, but final answer content comes from Python.
+
+Streaming strategy:
+
+- During `text_delta`, render the active assistant item through a lightweight `StreamingText` component that appends plain text to the current item state.
+- Do not re-parse completed transcript items when a new delta arrives.
+- Keep stable React keys for every transcript item so completed user messages, tool summaries, and assistant finals are not remounted during streaming.
+- Use `React.memo` around transcript rows whose props did not change.
+- Parse Markdown for the active assistant item on a throttled cadence, or render plain text while streaming and parse once when the answer is finalized.
+- On `turn.completed`, replace the active stream item with the authoritative `assistant_message` through `React.startTransition` when available; this is the only required full Markdown parse for that answer.
+
+This avoids the Textual full-redraw failure mode without requiring Markdown AST-level incremental parsing in the first Node shell.
 
 ## 6. Error Handling
 
@@ -429,8 +646,8 @@ Required tests:
 
 - Node reducer tests for turn lifecycle, streaming final answer, tool folding, command output, view modes, stale completion responses, and interrupt markers.
 - Node component or snapshot tests for transcript, input, completion popup, status line, overlays, and approval prompt.
-- Node protocol tests for all gateway requests and notifications used by the shell.
-- Python gateway tests for new methods and event payloads.
+- Node protocol tests for all gateway requests and notifications used by the shell, including `transcript.load`, `decision.resolve`, `command.run.view_mode`, and `session.bootstrap.welcome`.
+- Python gateway tests for new methods and event payloads, including stale decision rejection and transcript-load pagination.
 - CLI routing tests proving interactive default selects Node and `--plain` overrides it.
 - Integration test with fake Python gateway and real Node shell entrypoint.
 - Real smoke:
@@ -468,7 +685,7 @@ Recommended implementation slices:
 3. Implement transcript, status line, input box, and basic turn submission.
 4. Add slash/path completion with keyboard behavior.
 5. Add tool folding, view modes, overlays, and approval prompt.
-6. Add transcript bootstrap/resume support.
+6. Add `transcript.load` and resume-history rendering support.
 7. Switch interactive default routing to Node TUI with `--plain` override and fallback errors.
 8. Run full verification and real smoke.
 
@@ -485,7 +702,7 @@ Do not remove the Python Textual TUI in this slice. Keep it as a temporary fallb
 - Slash completion does not submit bare `/`.
 - Arrow-key selection scrolls the suggestion window.
 - `Tab` accepts suggestions without moving focus away from input.
-- `/help`, `/status`, `/usage`, `/context`, `/sessions`, `/view`, `/clear`, and `/quit` work.
+- `/help`, `/status`, `/usage`, `/context`, `/sessions`, `/release-notes`, `/view`, `/clear`, and `/quit` work.
 - `Ctrl+C` interrupts a running turn through the gateway and restores the draft.
 - A real provider-backed smoke completes with no pending decision or suspended turn left behind.
 - Full Python and Node verification suites pass.
