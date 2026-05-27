@@ -24,7 +24,6 @@ Required default shape:
 
 ```text
 mycli  workspace
-session · model · context
 ────────────────────────────────────────────────────────────────────
 
 Earlier turns collapsed · 3 turns · /view verbose for full transcript
@@ -38,7 +37,9 @@ Earlier turns collapsed · 3 turns · /view verbose for full transcript
   • 核心准则：持续推进、证据优先、安全可回退
 
 ────────────────────────────────────────────────────────────────────
-› Type a message or /command                         graphite · 9%
+? help   Esc cancel   Ctrl+C interrupt   / commands   /view verbose
+› Type a message or /command
+default · model · theme · context
 ```
 
 ### 2.2 Show Tool Activity Before the Final Answer
@@ -235,11 +236,10 @@ Rules:
 
 The existing compact header and bottom command bar stay, but they must not dominate the screen.
 
-The header should use two compact rows at 80 columns:
+The header should use one compact row at 80 columns:
 
 ```text
 mycli  fix-de...hit-rate
-default · deepseek-v4-flash · 9% 9,302/100k
 ────────────────────────────────────────────────────────────────────
 ```
 
@@ -247,22 +247,33 @@ Header priority:
 
 1. `mycli`
 2. workspace basename
-3. session id, elided
-4. model name, elided
-5. context usage
 
 Rules:
 
-- put brand and workspace on the first row
-- put session, model, and context on the second row
-- keep the second row muted so the current turn remains visually dominant
-- elide second-row values before wrapping
+- put only brand and workspace in the header
+- keep runtime metadata out of the header so the current turn remains visually dominant
+- elide workspace before wrapping
 
-Bottom bar priority:
+The bottom area should use three compact rows:
 
-1. prompt marker and placeholder/draft
-2. active command hint
-3. compact metadata, elided from the left if needed
+```text
+? help   Esc cancel   Ctrl+C interrupt   / commands   /view verbose
+› Type a message or /command
+default · deepseek-v4-flash · graphite · 9% 9,302/100k
+```
+
+Bottom area priority:
+
+1. footer hint bar with 3-5 high-value shortcuts
+2. prompt marker and placeholder/draft
+3. runtime metadata below the input: session, model, theme, and context usage
+
+Rules:
+
+- put session/model/theme/context below the input box, not in the header
+- keep runtime metadata muted
+- elide metadata from the left if needed before wrapping
+- keep the prompt row visually stronger than metadata
 
 No header or bottom bar content should wrap into a broken second line at normal 80-column width.
 
