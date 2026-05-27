@@ -62,9 +62,9 @@ export class GatewayClient {
 
   send(method: string, params: JsonObject = {}): Promise<JsonObject> {
     const id = String(this.nextId++);
-    this.output.write(encodeMessage(request(id, method, params)));
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
+      this.output.write(encodeMessage(request(id, method, params)));
     });
   }
 

@@ -26,6 +26,10 @@ export async function runScriptedClient(
         for (const line of (result.lines as string[] | undefined) ?? []) {
           process.stderr.write(`[node-tui] ${line}\n`);
         }
+        if (result.exit_requested === true) {
+          await client.send("shutdown", {});
+          return;
+        }
         continue;
       }
       const clientTurnId = `script_${Date.now()}`;
