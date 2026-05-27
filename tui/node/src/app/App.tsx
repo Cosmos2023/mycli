@@ -6,7 +6,7 @@ import { Header } from "./Header.tsx";
 import { InputBox } from "./InputBox.tsx";
 import { Overlay } from "./Overlay.tsx";
 import { RunningActivity } from "./RunningActivity.tsx";
-import { StatusLine } from "./StatusLine.tsx";
+import { statusMetadata } from "./StatusLine.tsx";
 import { Transcript } from "./Transcript.tsx";
 import { WelcomePanel } from "./WelcomePanel.tsx";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
@@ -53,6 +53,8 @@ export function App({
         turnRunning={state.turnRunning}
         completionVisible={state.completion.visible}
         theme={state.theme}
+        metadata={statusMetadata(state)}
+        width={width}
         onDraftChange={onDraftChange ?? (() => undefined)}
         onSubmit={(value) => {
           if (value.startsWith("/") && isLocalCommand(value)) {
@@ -67,7 +69,6 @@ export function App({
         }}
         onInterrupt={onInterrupt ?? (() => undefined)}
       />
-      <StatusLine state={state} />
     </Box>
   );
 }

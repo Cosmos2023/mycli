@@ -41,10 +41,12 @@ test("transcript renders user, folded tool summary, and answer without role card
   assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
 });
 
-test("status line renders model and context usage", () => {
+test("status line renders compact metadata and context usage", () => {
   const { lastFrame } = render(<StatusLine state={state} />);
-  assert.match(lastFrame() ?? "", /deepseek-v4/);
-  assert.match(lastFrame() ?? "", /3,983 \/ 100,000/);
+  assert.match(lastFrame() ?? "", /repo/);
+  assert.match(lastFrame() ?? "", /default/);
+  assert.match(lastFrame() ?? "", /deep-teal/);
+  assert.match(lastFrame() ?? "", /4% 3,983\/100k/);
 });
 
 test("overlay renders command lines", () => {

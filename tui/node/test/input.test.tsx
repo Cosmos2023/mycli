@@ -13,6 +13,8 @@ test("input submits non-empty message and clears draft", () => {
       turnRunning={false}
       completionVisible={false}
       theme={initialState().theme}
+      metadata="default · deep-teal"
+      width={80}
       onDraftChange={() => undefined}
       onSubmit={(value) => submitted.push(value)}
       onInterrupt={() => undefined}

@@ -47,8 +47,7 @@ test("status line renders compact workspace, view, theme, model, and context", (
   assert.match(frame, /project/);
   assert.match(frame, /verbose/);
   assert.match(frame, /mono/);
-  assert.match(frame, /deepseek-v4/);
-  assert.match(frame, /3,983 \/ 100,000/);
+  assert.match(frame, /4% 3,983\/100k/);
 });
 
 test("input shows placeholder and command hint", () => {
@@ -58,6 +57,8 @@ test("input shows placeholder and command hint", () => {
       turnRunning={false}
       completionVisible={false}
       theme={initialState().theme}
+      metadata="default · deep-teal"
+      width={80}
       onDraftChange={() => undefined}
       onSubmit={() => undefined}
       onInterrupt={() => undefined}
@@ -71,6 +72,8 @@ test("input shows placeholder and command hint", () => {
       turnRunning={false}
       completionVisible={false}
       theme={initialState().theme}
+      metadata="default · deep-teal"
+      width={80}
       onDraftChange={() => undefined}
       onSubmit={() => undefined}
       onInterrupt={() => undefined}
