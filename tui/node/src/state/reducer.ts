@@ -3,6 +3,7 @@ import type { ShellState, TranscriptItem, ViewMode } from "./types.ts";
 
 export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
+  | { type: "transcript.loaded"; payload: Record<string, unknown> }
   | { type: "user.submit"; message: string }
   | { type: "gateway.event"; method: string; params: Record<string, unknown> }
   | { type: "command.result"; command: string; result: Record<string, unknown> };
@@ -61,6 +62,12 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         { id: itemId("user"), type: "user", text: action.message, folded: false, metadata: {} },
       ],
     };
+  }
+  if (action.type === "transcript.loaded") {
+    const items = Array.isArray(action.payload.items)
+      ? (action.payload.items as TranscriptItem[])
+      : [];
+    return { ...state, transcript: [...state.transcript, ...items] };
   }
   if (action.type === "gateway.event") {
     if (action.method === "turn.started") {

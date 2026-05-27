@@ -25,7 +25,15 @@ function RuntimeApp() {
         protocol_version: 1,
         client: { name: "mycli-node-tui", version: "0.2.0" },
       })
-      .then((payload) => dispatch({ type: "bootstrap.result", payload }));
+      .then(async (payload) => {
+        dispatch({ type: "bootstrap.result", payload });
+        const transcript = await client.send("transcript.load", {
+          session_id: payload.session_id,
+          limit: 200,
+          before: null,
+        });
+        dispatch({ type: "transcript.loaded", payload: transcript });
+      });
     return () => client.stop();
   }, [client]);
 

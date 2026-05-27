@@ -84,10 +84,18 @@ def should_use_tui(cli_args: dict[str, object]) -> bool:
 def should_use_node_tui(cli_args: dict[str, object], env: dict[str, str] | None) -> bool:
     if bool(cli_args.get("plain")):
         return False
-    if bool(cli_args.get("node_tui")):
+    env_vars = env if env is not None else os.environ
+    backend = env_vars.get("MYCLI_TUI_BACKEND", "").strip().lower()
+    if backend == "textual":
+        return False
+    if bool(cli_args.get("node_tui")) or backend == "node":
         return True
-    env_vars = env or os.environ
-    return env_vars.get("MYCLI_TUI_BACKEND", "").strip().lower() == "node"
+    return stdin.isatty() and stdout.isatty()
+
+
+def _node_tui_fallback(env: dict[str, str] | None) -> str:
+    env_vars = env if env is not None else os.environ
+    return env_vars.get("MYCLI_TUI_FALLBACK", "").strip().lower()
 
 
 def _prepare_evaluation_scenario(
@@ -198,13 +206,22 @@ def main(
     if eval_exit_code is not None:
         return eval_exit_code
     service = build_turn_service(args, cwd=cwd, home=home, env=env)
+    force_plain_after_node_failure = False
     if should_use_node_tui(args, env):
         try:
             return run_node_tui(service, cwd=cwd or Path.cwd(), env=env or dict(os.environ))
         except NodeTuiProcessError as exc:
-            output_func(str(exc))
-            return 2
-    if should_use_tui(args):
+            fallback = _node_tui_fallback(env)
+            if fallback == "plain":
+                output_func(str(exc))
+                force_plain_after_node_failure = True
+            elif fallback == "textual" and should_use_tui(args):
+                output_func(str(exc))
+                return run_tui(service, input_func=input_func, output_func=output_func)
+            else:
+                output_func(str(exc))
+                return 2
+    if should_use_tui(args) and not force_plain_after_node_failure:
         return run_tui(service, input_func=input_func, output_func=output_func)
 
     def emit_stream_event(event: RuntimeStreamEvent) -> None:

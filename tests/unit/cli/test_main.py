@@ -16,6 +16,7 @@ from mycli.cli.main import (
     main,
     render_activity_lines,
 )
+from mycli.cli.node_tui import NodeTuiProcessError
 from mycli.cli.rendering import (
     RenderOptions,
     StreamingRenderState,
@@ -396,6 +397,68 @@ def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path:
         "final answer",
     ]
     assert events["decision_output"] == ["[decision] approved", "resolved 3"]
+
+
+def test_main_interactive_defaults_to_node_tui(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "mycli.cli.main.run_node_tui",
+        lambda *args, **kwargs: calls.append("node") or 0,
+    )
+
+    assert main([], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
+    assert calls == ["node"]
+
+
+def test_main_plain_still_overrides_default_node_tui(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    service = SimpleNamespace(
+        _config=SimpleNamespace(
+            session_id="demo",
+            workspace_root=tmp_path,
+            statusline_enabled=False,
+        ),
+        _session_service=SimpleNamespace(load_pending_decision=lambda _session_id: None),
+    )
+
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: service)
+    monkeypatch.setattr("mycli.cli.main.run_repl", lambda *args, **kwargs: calls.append("plain"))
+
+    assert main(["--plain"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
+    assert calls == ["plain"]
+
+
+def test_main_node_startup_fallback_to_plain(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    service = SimpleNamespace(
+        _config=SimpleNamespace(
+            session_id="demo",
+            workspace_root=tmp_path,
+            statusline_enabled=False,
+        ),
+        _session_service=SimpleNamespace(load_pending_decision=lambda _session_id: None),
+    )
+
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: service)
+    monkeypatch.setattr(
+        "mycli.cli.main.run_node_tui",
+        lambda *args, **kwargs: (_ for _ in ()).throw(NodeTuiProcessError("node failed")),
+    )
+    monkeypatch.setattr("mycli.cli.main.run_repl", lambda *args, **kwargs: calls.append("plain"))
+
+    assert (
+        main([], cwd=tmp_path, home=tmp_path / "home", env={"MYCLI_TUI_FALLBACK": "plain"})
+        == 0
+    )
+    assert calls == ["plain"]
 
 
 def test_main_keeps_existing_output_when_no_activity_events_are_present(
