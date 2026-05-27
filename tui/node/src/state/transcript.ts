@@ -42,6 +42,7 @@ export function applyToolEvent(
       ? (event.metadata as Record<string, unknown>)
       : {};
   const path = typeof metadata.path === "string" ? ` ${metadata.path}` : "";
+  const summaryMetadata = { ...metadata, tool_name: name };
   return [
     ...items,
     {
@@ -49,7 +50,7 @@ export function applyToolEvent(
       type: "tool_summary",
       text: `${name}${path}`,
       folded: true,
-      metadata,
+      metadata: summaryMetadata,
     },
   ];
 }

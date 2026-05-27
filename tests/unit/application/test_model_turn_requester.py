@@ -60,6 +60,7 @@ def test_model_turn_requester_notifies_stream_sink_in_order() -> None:
     assert events[0].text == "thinking"
     assert events[1].text == "hello "
     assert events[2].tool_name == "Read"
+    assert events[2].metadata == {"arguments": {"file_path": "README.md"}}
     assert events[3].metadata == {"usage": {"input_tokens": 10}}
 
 

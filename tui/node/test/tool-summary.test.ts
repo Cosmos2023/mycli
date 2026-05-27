@@ -12,6 +12,16 @@ test("formats Read tool path from metadata", () => {
   );
 });
 
+test("formats Read tool path from streamed arguments metadata", () => {
+  assert.deepEqual(
+    formatToolSummary({
+      tool_name: "Read",
+      metadata: { arguments: { file_path: "pyproject.toml" } },
+    }),
+    { verb: "read", target: "pyproject.toml", status: "done" },
+  );
+});
+
 test("formats Edit diff counts from metadata", () => {
   assert.deepEqual(
     formatToolSummary({

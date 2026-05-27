@@ -21,6 +21,12 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function recordValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -47,6 +53,7 @@ function summaryWithDetail(
 
 export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
   const metadata = metadataOf(input);
+  const args = recordValue(metadata.arguments);
   const name = stringValue(input.tool_name) ?? "Tool";
   const normalized = name.toLowerCase();
   const status = statusFrom(metadata);
@@ -57,7 +64,12 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
     return summaryWithDetail(
       {
         verb: "read",
-        target: stringValue(metadata.path) ?? stringValue(input.text) ?? "file",
+        target:
+          stringValue(metadata.path) ??
+          stringValue(args.path) ??
+          stringValue(args.file_path) ??
+          stringValue(input.text) ??
+          "file",
         status: status === "unknown" ? "done" : status,
       },
       durationDetail,
@@ -73,7 +85,12 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
     return summaryWithDetail(
       {
         verb: normalized,
-        target: stringValue(metadata.path) ?? stringValue(input.text) ?? "file",
+        target:
+          stringValue(metadata.path) ??
+          stringValue(args.path) ??
+          stringValue(args.file_path) ??
+          stringValue(input.text) ??
+          "file",
         status: status === "unknown" ? "done" : status,
       },
       detail,
@@ -84,7 +101,11 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
     return summaryWithDetail(
       {
         verb: "bash",
-        target: stringValue(metadata.command) ?? stringValue(input.text) ?? "command",
+        target:
+          stringValue(metadata.command) ??
+          stringValue(args.command) ??
+          stringValue(input.text) ??
+          "command",
         status: exitCode === null ? status : exitCode === 0 ? "done" : "failed",
       },
       exitCode === null ? durationDetail : `exit ${exitCode}`,
@@ -95,7 +116,12 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
     return summaryWithDetail(
       {
         verb: "grep",
-        target: stringValue(metadata.query) ?? stringValue(input.text) ?? "pattern",
+        target:
+          stringValue(metadata.query) ??
+          stringValue(args.query) ??
+          stringValue(args.pattern) ??
+          stringValue(input.text) ??
+          "pattern",
         status: status === "unknown" ? "done" : status,
       },
       matches === null ? durationDetail : `${matches} matches`,
@@ -104,7 +130,12 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
   return summaryWithDetail(
     {
       verb: normalized,
-      target: stringValue(metadata.path) ?? stringValue(input.text) ?? "tool call",
+      target:
+        stringValue(metadata.path) ??
+        stringValue(args.path) ??
+        stringValue(args.file_path) ??
+        stringValue(input.text) ??
+        "tool call",
       status,
     },
     durationDetail,

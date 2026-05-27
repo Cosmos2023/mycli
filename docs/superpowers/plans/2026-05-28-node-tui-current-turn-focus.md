@@ -14,7 +14,8 @@
 
 ## Implementation Decisions
 
-- This is a Node UI slice. Do not modify Python gateway/protocol/session/tool/model/prompt code.
+- This is a Node UI slice. Do not change Python runtime/session/tool/model authority or prompts.
+- Manual smoke exposed that streamed tool calls need presentation metadata before the answer; allow the model turn requester to forward existing tool arguments in `RuntimeStreamEvent.metadata` without changing execution semantics.
 - Do not add dependencies.
 - Do not add per-tool keyboard selection/expansion in this slice. `default` collapses raw tool detail; `verbose` expands detail globally.
 - Keep existing local `/theme` and `/clear` behavior.
@@ -46,6 +47,8 @@
   - `tui/node/test/command-bar.test.tsx`
   - `tui/node/test/header-welcome.test.tsx`
   - `tui/node/test/app-visual-structure.test.tsx`
+- Modify `src/mycli/application/runtime/model/model_turn_requester.py`: forward existing streamed tool arguments for Node presentation.
+- Modify `tests/unit/application/test_model_turn_requester.py`: cover streamed tool argument metadata.
 - Create `docs/superpowers/reports/2026-05-28-node-tui-current-turn-focus-smoke.md`: final verification report.
 
 ---

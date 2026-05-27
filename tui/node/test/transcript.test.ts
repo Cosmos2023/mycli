@@ -18,6 +18,20 @@ test("tool call creates folded summary in default view", () => {
   assert.match(next[0]?.text ?? "", /Read/);
 });
 
+test("tool call preserves top-level name and streamed arguments metadata", () => {
+  const items: TranscriptItem[] = [];
+  const next = applyToolEvent(items, {
+    client_turn_id: "c1",
+    phase: "tool_call",
+    kind: "tool_call",
+    tool_name: "Read",
+    metadata: { arguments: { file_path: "pyproject.toml" } },
+  });
+
+  assert.equal(next[0]?.metadata.tool_name, "Read");
+  assert.deepEqual(next[0]?.metadata.arguments, { file_path: "pyproject.toml" });
+});
+
 test("final answer replaces active stream without duplication", () => {
   const items: TranscriptItem[] = [
     { id: "a1", type: "assistant_stream", text: "hello", folded: false, metadata: {} },

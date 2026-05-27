@@ -97,9 +97,16 @@ class ModelTurnRequester:
                     )
                 blocks.append(block)
                 has_tool_call = True
+                event_metadata = dict(block.metadata)
+                if block.tool_arguments is not None:
+                    event_metadata["arguments"] = dict(block.tool_arguments)
                 self._notify_stream_sink(
                     stream_sink,
-                    RuntimeStreamEvent(kind="tool_call", tool_name=block.tool_name or ""),
+                    RuntimeStreamEvent(
+                        kind="tool_call",
+                        tool_name=block.tool_name or "",
+                        metadata=event_metadata,
+                    ),
                 )
                 continue
             if event_type == "completed":
