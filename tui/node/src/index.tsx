@@ -36,10 +36,21 @@ function RuntimeApp() {
         dispatch({ type: "user.submit", message });
         void client.send("turn.submit", { message, client_turn_id: `ui_${Date.now()}` });
       }}
+      onCommand={(command) => {
+        void client.send("command.run", { command }).then((result) => {
+          dispatch({ type: "command.result", command, result });
+          if (result.exit_requested === true) {
+            void client.send("shutdown", {}).then(() => process.exit(0));
+          }
+        });
+      }}
       onInterrupt={() => {
         void client.send("turn.interrupt", {});
       }}
       onDraftChange={() => undefined}
+      onDecision={(decisionId, choice) => {
+        void client.send("decision.resolve", { decision_id: decisionId, choice });
+      }}
     />
   );
 }

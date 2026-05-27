@@ -87,3 +87,29 @@ test("command view mode updates local UI state", () => {
 
   assert.equal(state.viewMode, "verbose");
 });
+
+test("approval pending event stores prompt state", () => {
+  const state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "approval.pending",
+    params: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "approve_once", label: "Allow once" }],
+    },
+  });
+
+  assert.equal(state.pendingApproval?.decision_id, "decision_current");
+});
+
+test("overlay command result opens overlay instead of transcript row", () => {
+  const state = reduceShellState(initialState(), {
+    type: "command.result",
+    command: "/usage",
+    result: { lines: ["turns=1"], presentation: "overlay" },
+  });
+
+  assert.equal(state.overlay.visible, true);
+  assert.equal(state.overlay.lines[0], "turns=1");
+  assert.equal(state.transcript.length, 0);
+});

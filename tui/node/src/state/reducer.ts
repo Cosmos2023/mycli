@@ -90,6 +90,41 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ),
       };
     }
+    if (action.method === "approval.pending") {
+      return {
+        ...state,
+        pendingApproval: action.params,
+        transcript: [
+          ...state.transcript,
+          {
+            id: itemId("approval"),
+            type: "approval",
+            text: String(action.params.preview ?? "Approval required"),
+            folded: false,
+            metadata: action.params,
+          },
+        ],
+      };
+    }
+    if (action.method === "status.changed") {
+      return { ...state, status: action.params };
+    }
+    if (action.method === "turn.failed") {
+      return {
+        ...state,
+        turnRunning: false,
+        transcript: [
+          ...state.transcript,
+          {
+            id: itemId("error"),
+            type: "error",
+            text: String(action.params.message ?? "Turn failed"),
+            folded: false,
+            metadata: action.params,
+          },
+        ],
+      };
+    }
   }
   if (action.type === "command.result") {
     const viewMode = isViewMode(action.result.view_mode) ? action.result.view_mode : undefined;
