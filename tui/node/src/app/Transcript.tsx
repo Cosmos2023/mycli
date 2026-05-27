@@ -1,6 +1,7 @@
 import React, { memo } from "react";
 import { Box, Text } from "ink";
 import { CommandOutput } from "./CommandOutput.tsx";
+import { MarkdownText } from "./MarkdownText.tsx";
 import { SystemNotice } from "./SystemNotice.tsx";
 import { ToolRow } from "./ToolRow.tsx";
 import { formatToolSummary } from "../state/toolSummary.ts";
@@ -37,6 +38,9 @@ const TranscriptRow = memo(function TranscriptRow({
   }
   if (item.type === "system_notice" || item.type === "warning" || item.type === "error") {
     return <SystemNotice text={item.text} type={item.type} theme={theme} />;
+  }
+  if (item.type === "assistant_final") {
+    return <MarkdownText text={item.text} theme={theme} />;
   }
   const marker = item.type === "user" ? ">" : " ";
   const text = item.folded && viewMode === "default" ? `${item.text}` : item.text;
