@@ -38,6 +38,77 @@ Questions to answer:
 
 ## Testing Requirements
 
+### Scenario: Read-only Doctor Diagnostics
+
+#### 1. Scope / Trigger
+- Trigger: Any change to `mycli doctor`, local runtime diagnostics, or health
+  checks for config, storage, logs, FileHistory, TUI, or MCP setup.
+- The command crosses CLI, services, config, storage layout, and integration
+  boundaries, but must stay outside model/runtime execution.
+
+#### 2. Signatures
+- CLI command: `mycli doctor`
+- Service API:
+  `DoctorService(workspace_root: Path, home_dir: Path, env: Mapping[str, str], ...).run() -> DoctorReport`
+- Rendering API: `render_doctor_report(report: DoctorReport) -> tuple[str, ...]`
+- Result fields: `DoctorCheck.name`, `DoctorCheck.status`,
+  `DoctorCheck.message`, optional `DoctorCheck.detail`; status values are
+  `ok`, `warning`, and `failed`.
+
+#### 3. Contracts
+- Doctor is read-only. It must not create config files, sessions DBs, log
+  files, file-history indexes, or MCP server processes.
+- Default doctor must not perform a real provider/model request.
+- Output is human-readable text headed by `mycli doctor` and ending with a
+  summary count.
+- API keys, bearer tokens, and secret-like values must never be printed; report
+  presence only, for example `api_key: present`.
+- Warnings return exit code `0`; one or more failed checks return exit code `1`.
+
+#### 4. Validation & Error Matrix
+- Config resolves -> report provider, protocol, model, and base URL.
+- Config parse/validation fails -> `config=failed`; keep checking other areas.
+- API key missing -> `api_key=warning`.
+- `~/.mycli/sessions.db` missing -> `sessions_db=warning`.
+- Sessions DB exists but is not openable or lacks required tables -> failed.
+- Logs or FileHistory missing -> warning, not failure.
+- FileHistory `index.json` exists but cannot parse -> failed.
+- MCP config load fails -> failed; do not start servers.
+- Node/npm or Python TUI unavailable -> warning unless a stricter command is
+  explicitly introduced later.
+
+#### 5. Good/Base/Bad Cases
+- Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
+  `0` with only warnings.
+- Base: A fresh machine with no prior sessions gets missing-storage warnings but
+  no model request.
+- Bad: Calling `build_turn_service()` for doctor, because that can require an
+  API key and initialize runtime dependencies unrelated to diagnostics.
+- Bad: Printing `sk-...` or MCP environment secret values in remediation text.
+
+#### 6. Tests Required
+- Unit test service success with config/storage/logs/history/MCP fixtures.
+- Unit test warning-only conditions such as missing sessions DB and history.
+- Unit test failed MCP or storage parse/open behavior.
+- CLI test for `mycli doctor` command parsing and no secret leakage.
+- Full lint, type-check, and pytest must pass because doctor touches CLI
+  startup paths.
+
+#### 7. Wrong vs Correct
+
+Wrong:
+```python
+service = build_turn_service(args, cwd=cwd, home=home, env=env)
+service.handle_user_turn("diagnose my setup")
+```
+
+Correct:
+```python
+report = DoctorService(workspace_root=cwd, home_dir=home, env=env).run()
+for line in render_doctor_report(report):
+    output_func(line)
+```
+
 ### Scenario: Cache-aware Runtime Diagnostics
 
 #### 1. Scope / Trigger

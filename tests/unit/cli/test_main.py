@@ -61,6 +61,50 @@ def test_build_parser_reads_session_argument() -> None:
     assert args.session == "demo-session"
 
 
+def test_build_parser_accepts_doctor_command() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["doctor"])
+
+    assert args.command == "doctor"
+
+
+def test_main_runs_doctor_without_leaking_api_key(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    config_dir = workspace / ".mycli"
+    config_dir.mkdir()
+    config_dir.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                'api_key = "sk-doctor-secret"',
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'model = "deepseek-v4-flash"',
+                'api_base_url = "https://api.deepseek.com"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output: list[str] = []
+
+    exit_code = main(
+        argv=["doctor"],
+        cwd=workspace,
+        home=home,
+        env={},
+        output_func=output.append,
+    )
+
+    rendered = "\n".join(output)
+    assert exit_code == 0
+    assert "mycli doctor" in rendered
+    assert "provider=deepseek" in rendered
+    assert "api_key: present" in rendered
+    assert "sk-doctor-secret" not in rendered
+
+
 def test_help_lists_sessions_command() -> None:
     output = handle_slash_command("/help")
     assert "/session" in output

@@ -39,11 +39,13 @@ from mycli.evaluation.runner import (
     run_evaluation_scenario,
     write_evaluation_report,
 )
+from mycli.services.diagnostics.doctor import DoctorService, render_doctor_report
 
 __all__ = [
     "build_command_handler",
     "build_parser",
     "build_turn_service",
+    "handle_doctor_command",
     "handle_evaluation_command",
     "handle_slash_command",
     "main",
@@ -72,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="evaluation/scenarios",
         help="Evaluation scenario root directory",
     )
+    parser.add_argument("command", nargs="?", choices=["doctor"], help="Run a utility command")
     return parser
 
 
@@ -122,6 +125,26 @@ def _prepare_evaluation_scenario(
         turn_paths=scenario.turn_paths,
         expected_payload=scenario.expected_payload,
     )
+
+
+def handle_doctor_command(
+    cli_args: dict[str, object],
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    env: dict[str, str] | None = None,
+    output_func: Callable[[str], Any] = print,
+) -> int | None:
+    if cli_args.get("command") != "doctor":
+        return None
+    report = DoctorService(
+        workspace_root=cwd or Path.cwd(),
+        home_dir=home or Path.home(),
+        env=dict(env or os.environ),
+    ).run()
+    for line in render_doctor_report(report):
+        output_func(line)
+    return 1 if report.failed_count else 0
 
 
 def handle_evaluation_command(
@@ -202,6 +225,15 @@ def main(
     output_func: Callable[[str], Any] = print,
 ) -> int:
     args = vars(build_parser().parse_args(argv))
+    doctor_exit_code = handle_doctor_command(
+        args,
+        cwd=cwd,
+        home=home,
+        env=env,
+        output_func=output_func,
+    )
+    if doctor_exit_code is not None:
+        return doctor_exit_code
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
     if eval_exit_code is not None:
         return eval_exit_code

@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend layering and implementation constraints for CLI/services work."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Testing and cache/local diagnostics requirements."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Doctor inspects log paths and must preserve local-diagnostics boundaries."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing config/storage/MCP helpers instead of duplicating logic."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Doctor spans CLI, services, config, storage, and filesystem diagnostics."}
