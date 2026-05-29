@@ -26,7 +26,8 @@
     "05-29-trace-command-effect-diagnostics",
     "05-29-write-time-diagnostics",
     "05-29-tool-failure-guardrail-diagnostics",
-    "05-29-session-storage-layout-hardening"
+    "05-29-session-storage-layout-hardening",
+    "05-29-logging-hardening"
   ],
   "parent": null,
   "relatedFiles": [],

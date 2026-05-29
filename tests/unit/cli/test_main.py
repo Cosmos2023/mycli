@@ -68,6 +68,7 @@ def test_help_lists_sessions_command() -> None:
     assert "/context" in output
     assert "/bashes" in output
     assert "/changes" in output
+    assert "/logs" in output
 
 
 def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> None:
@@ -92,7 +93,7 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
     assert service._config.api_base_url == "https://example.invalid/v1"
     assert (
         service._runtime._workspace_log_service.error_log_path()
-        == home_dir / ".mycli" / "logs" / "demo" / "error.log"
+        == home_dir / ".mycli" / "logs" / "errors.log"
     )
     assert service._tool_registry.list_names() == [
         "AskUserQuestion",
@@ -890,8 +891,8 @@ def test_main_renders_error_details_when_present(monkeypatch, tmp_path: Path) ->
             return TurnResponse(
                 assistant_message="Model request failed: boom",
                 error_details=(
-                    "Details logged to log/error.log",
-                    "Raw error saved to log/model-raw/demo-turn_1-error.json",
+                    "Details logged to log/errors.log",
+                    "Raw error saved to log/model-raw/demo/demo-turn_1-error.json",
                 ),
             )
 
@@ -909,8 +910,8 @@ def test_main_renders_error_details_when_present(monkeypatch, tmp_path: Path) ->
 
     assert exit_code == 0
     assert events["turn_output"] == [
-        "[error] Details logged to log/error.log",
-        "[error] Raw error saved to log/model-raw/demo-turn_1-error.json",
+        "[error] Details logged to log/errors.log",
+        "[error] Raw error saved to log/model-raw/demo/demo-turn_1-error.json",
         "Model request failed: boom",
     ]
 
@@ -1079,6 +1080,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_trace(self) -> tuple[str, ...]:
             return ("tool_execution search_text",)
 
+        def inspect_logs(self) -> tuple[str, ...]:
+            return ("agent_log=/tmp/mycli/logs/agent.log", "tail: INFO [demo] turn_started")
+
         def inspect_session(self) -> tuple[str, ...]:
             return ("session=demo", "messages=3")
 
@@ -1126,6 +1130,10 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
     assert list(handler("/trace")) == ["[trace] tool_execution search_text"]
+    assert list(handler("/logs")) == [
+        "[log] agent_log=/tmp/mycli/logs/agent.log",
+        "[log] tail: INFO [demo] turn_started",
+    ]
     assert list(handler("/session")) == ["[session] session=demo", "[session] messages=3"]
     assert list(handler("/sessions")) == [
         "[session] * demo active messages=3",

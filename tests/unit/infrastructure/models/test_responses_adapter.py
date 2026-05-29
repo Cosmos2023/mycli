@@ -995,6 +995,6 @@ def test_responses_adapter_logs_ignored_item_to_workspace_log(tmp_path: Path) ->
     )
 
     assert result.items == ()
-    app_log = (tmp_path / "log" / "app.log").read_text(encoding="utf-8")
+    app_log = (tmp_path / "log" / "agent.log").read_text(encoding="utf-8")
     assert "responses_item_ignored" in app_log
     assert "output_image" in app_log

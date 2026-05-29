@@ -23,6 +23,7 @@ def test_help_lists_approval_and_memory_controls() -> None:
     assert "/fork [source] <new-session> [message-index]" in output
     assert "/stats" in output
     assert "/subagents" in output
+    assert "/logs" in output
     assert "/confirm" not in output
     assert "/reject" not in output
 

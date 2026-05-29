@@ -13,6 +13,7 @@ from mycli.domain.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.memory import MemoryKind, MemoryRecord
+from mycli.domain.logging import LogLevel
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
@@ -1694,9 +1695,9 @@ def test_agent_runtime_logs_unexpected_runtime_exceptions(tmp_path: Path) -> Non
     response = runtime.handle_user_turn("search for anything")
 
     assert response.assistant_message == "Internal runtime error: runtime exploded"
-    assert "Details logged to log/error.log" in response.error_details
+    assert "Details logged to log/errors.log" in response.error_details
     assert any(detail.endswith("-error.json") for detail in response.error_details)
-    error_files = sorted((tmp_path / "log" / "model-raw").glob("*-error.json"))
+    error_files = sorted((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
     assert len(error_files) == 1
     payload = json.loads(error_files[0].read_text(encoding="utf-8"))
     assert payload["error_type"] == "ValueError"
@@ -1902,9 +1903,9 @@ def test_agent_runtime_logs_assembled_turn_context_summary(tmp_path: Path) -> No
 
     runtime.handle_user_turn("inspect the repo")
 
-    app_log = (tmp_path / "log" / "app.log").read_text(encoding="utf-8")
+    app_log = (tmp_path / "log" / "agent.log").read_text(encoding="utf-8")
 
-    assert "INFO turn_context_assembled Assembled turn context" in app_log
+    assert "INFO [demo] turn_context_assembled Assembled turn context" in app_log
     assert '"session_id": "demo"' in app_log
     assert '"enabled_sections"' in app_log
     assert '"tool_exposure"' in app_log
@@ -2632,6 +2633,38 @@ def test_agent_runtime_rebind_session_clears_stale_context_compaction_metrics(
     assert snapshot.compaction_after_tokens == 0
     assert snapshot.l4_last_decision is None
     assert snapshot.l4_last_source is None
+
+
+def test_agent_runtime_rebind_session_updates_workspace_log_context(
+    tmp_path: Path,
+) -> None:
+    log_service = WorkspaceLogService(workspace_root=tmp_path, session_id="first")
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PromptCompletionUsageAdapter(),
+        workspace_log_service=log_service,
+    )
+
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            session_id="second",
+        )
+    )
+
+    path = log_service.write_raw_model_payload(
+        kind="request",
+        payload={"message": "after rebind"},
+        session_id="second",
+        turn_id="turn_1",
+    )
+    log_service.log(level=LogLevel.INFO, event="turn_started", message="Turn started")
+
+    assert path.parent == tmp_path / "log" / "model-raw" / "second"
+    assert "INFO [second] turn_started Turn started" in log_service.agent_log_path().read_text(
+        encoding="utf-8"
+    )
 
 
 class RepeatMissingReadAdapter:

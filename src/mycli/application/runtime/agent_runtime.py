@@ -291,6 +291,7 @@ class AgentRuntime:
         self._workspace_log_service = workspace_log_service or WorkspaceLogService(
             workspace_root=config.workspace_root
         )
+        self._workspace_log_service.set_session_id(config.session_id)
         self._event_ledger = RuntimeEventLedger(
             session_id=config.session_id,
             session_service=self._session_service,
@@ -415,6 +416,7 @@ class AgentRuntime:
         workspace_root: Path,
         home_dir: Path,
         model_adapter: ModelAdapter,
+        workspace_log_service: WorkspaceLogService | None = None,
     ) -> AgentRuntime:
         from mycli.tools.bash import BashTool
         from mycli.tools.edit import EditTool
@@ -443,6 +445,7 @@ class AgentRuntime:
             tool_registry=tool_registry,
             config=AgentConfig(workspace_root=workspace_root),
             home_dir=home_dir,
+            workspace_log_service=workspace_log_service,
         )
 
     def _set_model_log_context(self, turn_id: str) -> None:
@@ -1349,6 +1352,7 @@ class AgentRuntime:
     def rebind_session(self, config: AgentConfig) -> None:
         self._config = config
         session_id = config.session_id
+        self._workspace_log_service.set_session_id(session_id)
         self._model_state.set_config(config)
         self._runtime_context_builder.set_config(config)
         self._request_pipeline.set_config(config)

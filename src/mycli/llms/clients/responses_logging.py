@@ -36,7 +36,7 @@ class ResponsesClientLogger:
 
     def default_error_log_path(self) -> str:
         if self._log_service is None:
-            return "log/error.log"
+            return "log/errors.log"
         return self._log_service.error_log_display_path()
 
     def log_request(

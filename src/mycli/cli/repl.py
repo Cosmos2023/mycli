@@ -17,6 +17,7 @@ def handle_slash_command(command: str) -> str:
                 "/plan",
                 "/subagents",
                 "/trace",
+                "/logs",
                 "/tools",
                 "/bashes",
                 "/changes",
@@ -105,6 +106,8 @@ def build_command_handler(
             ]
         if command == "/trace":
             return [f"[trace] {line}" for line in service.inspect_trace()]
+        if command == "/logs":
+            return [f"[log] {line}" for line in service.inspect_logs()]
         if command == "/undo":
             return [f"[undo] {service.undo_last_file_change()}"]
         return [f"Unknown command: {command}"]

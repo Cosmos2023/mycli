@@ -150,8 +150,8 @@ def test_anthropic_client_builds_messages_request_with_thinking(
         "type": "enabled",
         "budget_tokens": 1536,
     }
-    assert list((tmp_path / "log" / "model-raw").glob("*-request.json"))
-    assert list((tmp_path / "log" / "model-raw").glob("*-response.json"))
+    assert list((tmp_path / "log" / "model-raw").glob("*/*-request.json"))
+    assert list((tmp_path / "log" / "model-raw").glob("*/*-response.json"))
 
 
 def test_anthropic_client_stream_message_normalizes_events(tmp_path: Path) -> None:
@@ -313,7 +313,7 @@ def test_anthropic_client_maps_status_errors(tmp_path: Path) -> None:
     assert "invalid request" in str(exc_info.value)
     assert exc_info.value.failure_kind == "provider_error"
     assert exc_info.value.is_retryable is False
-    assert list((tmp_path / "log" / "model-raw").glob("*-error.json"))
+    assert list((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
 
 
 def test_build_anthropic_sdk_client_uses_configured_base_url() -> None:

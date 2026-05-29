@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 from typing import cast
 
 from mycli.application.runtime import AgentRuntime
@@ -17,6 +16,7 @@ from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.llms.clients.anthropic_messages import AnthropicMessagesClient
 from mycli.llms.clients.openai_chat import OpenAIChatClient
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
+from mycli.services.storage_layout import MycliStorageLayout
 from mycli.services.mcp import (
     McpClient,
     McpToolAdapter,
@@ -57,7 +57,8 @@ def build_turn_service(
         raise RuntimeError("MYCLI_API_KEY is required")
     workspace_log_service = WorkspaceLogService(
         workspace_root=workspace_root,
-        logs_root=_build_runtime_logs_root(home_dir=home_dir, session_id=config.session_id),
+        logs_root=_build_runtime_logs_root(home_dir=home_dir),
+        session_id=config.session_id,
     )
 
     model_adapter: ModelAdapter
@@ -145,9 +146,8 @@ def build_turn_service(
     )
 
 
-def _build_runtime_logs_root(*, home_dir: Path, session_id: str) -> Path:
-    safe_session_id = re.sub(r"[^A-Za-z0-9._-]+", "-", session_id).strip("-") or "default"
-    return home_dir / ".mycli" / "logs" / safe_session_id
+def _build_runtime_logs_root(*, home_dir: Path) -> Path:
+    return MycliStorageLayout.from_home_dir(home_dir).logs_dir
 
 
 def _build_mcp_tool_providers(

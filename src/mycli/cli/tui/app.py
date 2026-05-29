@@ -318,6 +318,7 @@ class MycliTuiApp(App[int]):
             "/subagents <child_session_id>",
             "/memory",
             "/trace",
+            "/logs",
             "/fork [source] <new-session> [message-index]",
             "/stats",
             "/clear",

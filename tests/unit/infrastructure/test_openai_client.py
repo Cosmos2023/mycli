@@ -799,8 +799,8 @@ def test_openai_chat_client_logs_request_and_response_payloads(
     client.complete([{"role": "user", "content": "你好"}])
 
     raw_dir = tmp_path / "log" / "model-raw"
-    request_files = sorted(raw_dir.glob("*-request.json"))
-    response_files = sorted(raw_dir.glob("*-response.json"))
+    request_files = sorted(raw_dir.glob("*/*-request.json"))
+    response_files = sorted(raw_dir.glob("*/*-response.json"))
     assert len(request_files) == 1
     assert len(response_files) == 1
     request_payload = json.loads(request_files[0].read_text(encoding="utf-8"))
@@ -893,7 +893,7 @@ def test_openai_chat_client_logs_http_errors(
     with pytest.raises(ModelResponseError, match="unsupported model"):
         client.complete([{"role": "user", "content": "inspect the repo"}])
 
-    error_files = sorted((tmp_path / "log" / "model-raw").glob("*-error.json"))
+    error_files = sorted((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
     assert len(error_files) == 1
     error_payload = json.loads(error_files[0].read_text(encoding="utf-8"))
     assert error_payload["error_type"] == "BadRequestError"

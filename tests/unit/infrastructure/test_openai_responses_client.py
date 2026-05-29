@@ -588,8 +588,8 @@ def test_openai_responses_client_logs_request_and_response_payloads(
     )
 
     raw_dir = tmp_path / "log" / "model-raw"
-    request_files = sorted(raw_dir.glob("*-request.json"))
-    response_files = sorted(raw_dir.glob("*-response.json"))
+    request_files = sorted(raw_dir.glob("*/*-request.json"))
+    response_files = sorted(raw_dir.glob("*/*-response.json"))
     assert len(request_files) == 1
     assert len(response_files) == 1
     request_payload = json.loads(request_files[0].read_text(encoding="utf-8"))
@@ -681,7 +681,7 @@ def test_openai_responses_client_logs_transport_errors(
             tools=[],
         )
 
-    error_files = sorted((tmp_path / "log" / "model-raw").glob("*-error.json"))
+    error_files = sorted((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
     assert len(error_files) == 1
     error_payload = json.loads(error_files[0].read_text(encoding="utf-8"))
     assert error_payload["error_type"] == "APIConnectionError"
@@ -716,7 +716,7 @@ def test_openai_responses_client_logs_invalid_json_errors(
             tools=[],
         )
 
-    error_files = sorted((tmp_path / "log" / "model-raw").glob("*-error.json"))
+    error_files = sorted((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
     assert len(error_files) == 1
     error_payload = json.loads(error_files[0].read_text(encoding="utf-8"))
     assert error_payload["error_type"] == "TypeError"
@@ -780,7 +780,7 @@ def test_openai_responses_client_streams_provider_events(
     assert sdk_client.responses_api.create_calls[-1]["stream"] is True
     assert events[0]["type"] == "response.reasoning_summary_text.delta"
     assert events[-1]["type"] == "response.completed"
-    app_log = (tmp_path / "log" / "app.log").read_text(encoding="utf-8")
+    app_log = (tmp_path / "log" / "agent.log").read_text(encoding="utf-8")
     assert "model_stream_started" in app_log
 
 
@@ -810,7 +810,7 @@ def test_openai_responses_client_logs_stream_parse_errors(
             )
         )
 
-    error_files = sorted((tmp_path / "log" / "model-raw").glob("*-error.json"))
+    error_files = sorted((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
     assert len(error_files) == 1
     error_payload = json.loads(error_files[0].read_text(encoding="utf-8"))
     assert error_payload["error_type"] == "JSONDecodeError"

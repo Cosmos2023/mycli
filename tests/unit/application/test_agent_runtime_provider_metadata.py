@@ -158,7 +158,7 @@ def test_agent_runtime_exposes_deepseek_reasoning_content_for_tool_call(
         "deepseek": {"reasoning_content": reasoning_content},
     }
 
-    app_log = (tmp_path / "log" / "app.log").read_text(encoding="utf-8")
+    app_log = (tmp_path / "log" / "agent.log").read_text(encoding="utf-8")
     assert "provider_reasoning_content" in app_log
     assert reasoning_content in app_log
 
