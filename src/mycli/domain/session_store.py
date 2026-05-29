@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 
 JsonObject: TypeAlias = dict[str, Any]
@@ -23,6 +22,14 @@ class SessionOverview:
     summary_count: int
 
 
+@dataclass(slots=True, frozen=True)
+class SessionSearchResult:
+    session_id: str
+    message_index: int
+    role: str
+    snippet: str
+
+
 class SessionStore(Protocol):
     def replace_conversation(
         self,
@@ -34,6 +41,18 @@ class SessionStore(Protocol):
     ) -> None: ...
 
     def load_conversation(self, session_id: str) -> list[JsonObject] | None: ...
+
+    def resolve_resume_session_id(self, session_id: str) -> str: ...
+
+    def load_conversation_lineage(self, session_id: str) -> list[JsonObject]: ...
+
+    def search_messages(
+        self,
+        query: str,
+        *,
+        workspace_root: Path | None = None,
+        limit: int = 20,
+    ) -> tuple[SessionSearchResult, ...]: ...
 
     def save_conversation_tree(
         self,

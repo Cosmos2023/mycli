@@ -19,6 +19,7 @@ def test_help_lists_approval_and_memory_controls() -> None:
     assert "/memory" in output
     assert "/undo" in output
     assert "/resume <session>" in output
+    assert "/search <query>" in output
     assert "/fork [source] <new-session> [message-index]" in output
     assert "/stats" in output
     assert "/subagents" in output

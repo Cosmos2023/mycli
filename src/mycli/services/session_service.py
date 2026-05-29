@@ -3,6 +3,7 @@
 from mycli.domain.conversation import Conversation
 from mycli.services.conversation_tree import ConversationTree
 from mycli.state.session_service import SessionService as StateSessionService
+from mycli.state.session_serialization import deserialize_message
 
 
 class SessionService(StateSessionService):
@@ -20,7 +21,16 @@ class SessionService(StateSessionService):
         return conversation
 
     def resume_conversation(self, session_id: str) -> Conversation:
-        return ConversationTree((self.load_conversation(session_id),)).resume(session_id)
+        resolved_session_id = self._store.resolve_resume_session_id(session_id)
+        conversation = Conversation(session_id=resolved_session_id)
+        for item in self._store.load_conversation_lineage(session_id):
+            conversation.append(deserialize_message(item))
+        metadata = self._load_conversation_tree_metadata(resolved_session_id)
+        if metadata is None:
+            return conversation
+        conversation.parent_id = _optional_str(metadata.get("parent_id"))
+        conversation.fork_point = _optional_int(metadata.get("fork_point"))
+        return conversation
 
     def rewind_conversation(self, session_id: str, fork_point: int) -> Conversation:
         tree = ConversationTree((self.load_conversation(session_id),))

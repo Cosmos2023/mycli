@@ -319,6 +319,9 @@ class TurnService:
             )
         return tuple(lines)
 
+    def search_sessions(self, query: str) -> tuple[str, ...]:
+        return self._session_service.search_sessions(query)
+
     def inspect_stats(self) -> tuple[str, ...]:
         payload = self._observability_service.stats_payload()
         metrics = payload.get("metrics")

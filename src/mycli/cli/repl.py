@@ -30,6 +30,7 @@ def handle_slash_command(command: str) -> str:
                 "/usage",
                 "/session",
                 "/sessions",
+                "/search <query>",
                 "/quit",
             ]
         )
@@ -62,6 +63,10 @@ def build_command_handler(
             return [f"[session] {line}" for line in service.inspect_session()]
         if command == "/sessions":
             return [f"[session] {line}" for line in service.inspect_sessions()]
+        if command.startswith("/search"):
+            parts = command.split(maxsplit=1)
+            query = parts[1] if len(parts) > 1 else ""
+            return [f"[search] {line}" for line in service.search_sessions(query)]
         if command == "/status":
             return [f"[status] {line}" for line in service.inspect_status()]
         if command.startswith("/view"):

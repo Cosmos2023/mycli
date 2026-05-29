@@ -131,6 +131,60 @@ def test_session_service_rewinds_conversation_in_place(tmp_path: Path) -> None:
     assert [message.content for message in loaded.messages] == ["one"]
 
 
+def test_session_service_resumes_ancestor_as_current_tip_lineage(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    root = Conversation(
+        session_id="root",
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="root-only"),
+        ],
+    )
+    branch = Conversation(
+        session_id="branch",
+        parent_id="root",
+        fork_point=2,
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="branch-only"),
+        ],
+    )
+    service.save_conversation(root)
+    service.save_conversation(branch)
+
+    resumed = service.resume_conversation("root")
+
+    assert resumed.session_id == "branch"
+    assert resumed.parent_id == "root"
+    assert resumed.fork_point == 2
+    assert [message.content for message in resumed.messages] == [
+        "one",
+        "two",
+        "branch-only",
+    ]
+
+
+def test_session_service_searches_sessions_with_bounded_output(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home", workspace_root=tmp_path / "workspace")
+    conversation = Conversation(
+        session_id="demo",
+        messages=[Message(role="assistant", content="WAL checkpoint configured")],
+    )
+    service.save_conversation(conversation)
+
+    assert service.search_sessions("checkpoint") == (
+        "demo#0 assistant: WAL checkpoint configured",
+    )
+
+
+def test_session_service_search_reports_empty_query(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+
+    assert service.search_sessions("  ") == ("usage: /search <query>",)
+
+
 def test_session_service_round_trips_message_metadata(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     conversation = Conversation(session_id="demo")

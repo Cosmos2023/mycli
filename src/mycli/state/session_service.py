@@ -516,6 +516,22 @@ class SessionService:
     def list_sessions(self, limit: int = 20) -> tuple[SessionOverview, ...]:
         return self._store.list_sessions(workspace_root=self._workspace_root, limit=limit)
 
+    def search_sessions(self, query: str, limit: int = 10) -> tuple[str, ...]:
+        normalized = query.strip()
+        if not normalized:
+            return ("usage: /search <query>",)
+        matches = self._store.search_messages(
+            normalized,
+            workspace_root=self._workspace_root,
+            limit=limit,
+        )
+        if not matches:
+            return ("no matches",)
+        return tuple(
+            f"{match.session_id}#{match.message_index} {match.role}: {match.snippet}"
+            for match in matches
+        )
+
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
         return list(ContextManager().messages_from_history(self.load_history_items(session_id)))
 
