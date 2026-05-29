@@ -274,6 +274,48 @@ thinking_effort = "medium"
 
 如果没有显式配置 `provider`，`mycli` 会从 `anthropic.com` 自动推断为 `anthropic`。开启 thinking 时，`mycli` 会把 `thinking_effort` 映射为 Anthropic `budget_tokens`，并要求该预算小于 `max_output_tokens`。当前映射为 `low=1024`、`medium=1536`、`high=3072`、`xhigh=6144`；`high` 建议 `max_output_tokens >= 4096`，`xhigh` 建议 `max_output_tokens >= 8192`。
 
+### MCP servers
+
+`mycli` 可以从项目级 `.mycli/mcp_servers.toml` 读取 MCP server 配置，并把 server 暴露的 tools 作为 contributed tools 接入 runtime。默认不会从主配置文件 `.mycli/config.toml` 读取 MCP server。
+
+stdio server 示例：
+
+```toml
+[servers.filesystem]
+enabled = true
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+timeout_seconds = 30
+```
+
+HTTP server 示例：
+
+```toml
+[servers.search]
+enabled = true
+transport = "http"
+url = "http://127.0.0.1:8765/mcp"
+timeout_seconds = 30
+```
+
+环境变量可以用 `${NAME}` 引用进 server env，避免把 token 写进仓库：
+
+```toml
+[servers.github]
+enabled = true
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+```
+
+工具路由会带上 server namespace，例如 `mcp.filesystem.<tool_name>`。当前 doctor 命令只检查 MCP 配置是否能加载和 enabled 数量，不会启动 server：
+
+```bash
+uv run mycli doctor
+```
+
 ## 直接上手示例
 
 启动后会进入交互模式：
