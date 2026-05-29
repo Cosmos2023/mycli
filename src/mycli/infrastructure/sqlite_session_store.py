@@ -1,39 +1,119 @@
 from __future__ import annotations
 
 import json
+import random
+import re
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator, cast
+from typing import Callable, Iterator, TypeVar, cast
 
-from mycli.domain.session_store import JsonArray, JsonObject, SessionOverview
+from mycli.domain.session_store import (
+    JsonArray,
+    JsonObject,
+    SessionOverview,
+    SessionSearchResult,
+)
+
+T = TypeVar("T")
 
 
 class SQLiteSessionStore:
+    SCHEMA_VERSION = 2
+    _SEARCH_SNIPPET_MAX_CHARS = 160
+    _WAL_INCOMPATIBLE_MARKERS = (
+        "locking protocol",
+        "not authorized",
+    )
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_SECONDS = 0.020
+    _WRITE_RETRY_MAX_SECONDS = 0.150
+    _CHECKPOINT_EVERY_N_WRITES = 50
+
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._write_count = 0
         self._initialize()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._db_path)
+        connection = sqlite3.connect(
+            self._db_path,
+            timeout=1.0,
+            isolation_level=None,
+        )
         connection.row_factory = sqlite3.Row
+        self._apply_wal_with_fallback(connection)
         connection.execute("PRAGMA foreign_keys = ON")
         try:
             yield connection
-            connection.commit()
         finally:
             connection.close()
+
+    def _apply_wal_with_fallback(self, connection: sqlite3.Connection) -> None:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if not any(marker in message for marker in self._WAL_INCOMPATIBLE_MARKERS):
+                raise
+            connection.execute("PRAGMA journal_mode=DELETE")
+
+    def _execute_write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
+        with self._lock:
+            for attempt in range(self._WRITE_MAX_RETRIES):
+                with self._connect() as connection:
+                    try:
+                        connection.execute("BEGIN IMMEDIATE")
+                        result = operation(connection)
+                        connection.commit()
+                    except sqlite3.OperationalError as exc:
+                        connection.rollback()
+                        if self._is_locked_error(exc) and attempt < self._WRITE_MAX_RETRIES - 1:
+                            time.sleep(
+                                random.uniform(
+                                    self._WRITE_RETRY_MIN_SECONDS,
+                                    self._WRITE_RETRY_MAX_SECONDS,
+                                )
+                            )
+                            continue
+                        raise
+                    except Exception:
+                        connection.rollback()
+                        raise
+                    self._write_count += 1
+                    if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                        self._try_passive_checkpoint(connection)
+                    return result
+        raise sqlite3.OperationalError("database is locked")
+
+    @staticmethod
+    def _is_locked_error(exc: sqlite3.OperationalError) -> bool:
+        message = str(exc).lower()
+        return "locked" in message or "busy" in message
+
+    def _try_passive_checkpoint(self, connection: sqlite3.Connection) -> None:
+        try:
+            connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.DatabaseError:
+            pass
 
     def _timestamp(self) -> str:
         return datetime.now(UTC).isoformat()
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
                     workspace_root TEXT NOT NULL,
@@ -51,6 +131,50 @@ class SQLiteSessionStore:
                     PRIMARY KEY (session_id, message_index),
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(
+                    session_id UNINDEXED,
+                    message_index UNINDEXED,
+                    content
+                );
+
+                CREATE TRIGGER IF NOT EXISTS conversation_messages_fts_insert
+                AFTER INSERT ON conversation_messages BEGIN
+                    INSERT INTO conversation_messages_fts(
+                        rowid,
+                        session_id,
+                        message_index,
+                        content
+                    )
+                    VALUES (
+                        new.rowid,
+                        new.session_id,
+                        new.message_index,
+                        new.payload_json
+                    );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS conversation_messages_fts_delete
+                AFTER DELETE ON conversation_messages BEGIN
+                    DELETE FROM conversation_messages_fts WHERE rowid = old.rowid;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS conversation_messages_fts_update
+                AFTER UPDATE ON conversation_messages BEGIN
+                    DELETE FROM conversation_messages_fts WHERE rowid = old.rowid;
+                    INSERT INTO conversation_messages_fts(
+                        rowid,
+                        session_id,
+                        message_index,
+                        content
+                    )
+                    VALUES (
+                        new.rowid,
+                        new.session_id,
+                        new.message_index,
+                        new.payload_json
+                    );
+                END;
 
                 CREATE TABLE IF NOT EXISTS conversation_trees (
                     session_id TEXT PRIMARY KEY,
@@ -97,6 +221,33 @@ class SQLiteSessionStore:
                 );
                 """
             )
+            self._backfill_search_index(connection)
+            self._record_schema_version(connection)
+
+        self._execute_write(write)
+
+    def _record_schema_version(self, connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM schema_version")
+        connection.execute(
+            "INSERT INTO schema_version (version) VALUES (?)",
+            (self.SCHEMA_VERSION,),
+        )
+
+    def _backfill_search_index(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            INSERT INTO conversation_messages_fts(rowid, session_id, message_index, content)
+            SELECT
+                conversation_messages.rowid,
+                conversation_messages.session_id,
+                conversation_messages.message_index,
+                conversation_messages.payload_json
+            FROM conversation_messages
+            LEFT JOIN conversation_messages_fts
+                ON conversation_messages_fts.rowid = conversation_messages.rowid
+            WHERE conversation_messages_fts.rowid IS NULL
+            """
+        )
 
     def _touch_session(
         self,
@@ -147,7 +298,7 @@ class SQLiteSessionStore:
         thread_id: str,
         messages: list[JsonObject],
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -169,22 +320,281 @@ class SQLiteSessionStore:
                 ],
             )
 
+        self._execute_write(write)
+
     def load_conversation(self, session_id: str) -> list[JsonObject] | None:
         with self._connect() as connection:
-            rows = list(
-                connection.execute(
-                    """
-                    SELECT payload_json
-                    FROM conversation_messages
-                    WHERE session_id = ?
-                    ORDER BY message_index
-                    """,
-                    (session_id,),
-                ).fetchall()
-            )
+            rows = self._load_conversation_rows(connection, session_id)
         if not rows:
             return None
         return self._load_object_rows(rows)
+
+    def resolve_resume_session_id(self, session_id: str) -> str:
+        with self._connect() as connection:
+            return self._resolve_resume_session_id(connection, session_id)
+
+    def load_conversation_lineage(self, session_id: str) -> list[JsonObject]:
+        with self._connect() as connection:
+            chain = self._conversation_lineage_root_to_tip(connection, session_id)
+        return self._compose_lineage_messages(chain)
+
+    def search_messages(
+        self,
+        query: str,
+        *,
+        workspace_root: Path | None = None,
+        limit: int = 20,
+    ) -> tuple[SessionSearchResult, ...]:
+        match_query = self._search_match_query(query)
+        if not match_query:
+            return ()
+        parameters: list[object] = [match_query]
+        workspace_filter = ""
+        if workspace_root is not None:
+            workspace_filter = "AND sessions.workspace_root = ?"
+            parameters.append(str(workspace_root))
+        parameters.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    conversation_messages.session_id,
+                    conversation_messages.message_index,
+                    conversation_messages.payload_json
+                FROM conversation_messages_fts
+                JOIN conversation_messages
+                    ON conversation_messages.rowid = conversation_messages_fts.rowid
+                JOIN sessions
+                    ON sessions.session_id = conversation_messages.session_id
+                WHERE conversation_messages_fts MATCH ?
+                {workspace_filter}
+                ORDER BY rank, sessions.last_active_at DESC, conversation_messages.message_index ASC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return tuple(
+            result
+            for row in rows
+            if (result := self._search_result_from_row(row, query)) is not None
+        )
+
+    def _search_result_from_row(
+        self,
+        row: sqlite3.Row,
+        query: str,
+    ) -> SessionSearchResult | None:
+        payload = json.loads(str(row["payload_json"]))
+        if not isinstance(payload, dict):
+            return None
+        role = payload.get("role")
+        content = self._message_search_content(cast(JsonObject, payload))
+        return SessionSearchResult(
+            session_id=str(row["session_id"]),
+            message_index=int(row["message_index"]),
+            role=str(role) if isinstance(role, str) else "unknown",
+            snippet=self._search_snippet(content, query),
+        )
+
+    @classmethod
+    def _search_match_query(cls, query: str) -> str:
+        tokens = re.findall(r"\S+", query.strip())
+        return " ".join(cls._quote_search_token(token) for token in tokens)
+
+    @staticmethod
+    def _quote_search_token(token: str) -> str:
+        escaped = token.replace('"', '""')
+        return f'"{escaped}"'
+
+    @staticmethod
+    def _message_search_content(payload: JsonObject) -> str:
+        content = payload.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = [
+                str(part.get("text"))
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            return " ".join(text_parts)
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _search_snippet(self, content: str, query: str) -> str:
+        text = " ".join(content.split())
+        if len(text) <= self._SEARCH_SNIPPET_MAX_CHARS:
+            return text
+        first_token = query.strip().split()[0] if query.strip() else ""
+        index = text.lower().find(first_token.lower()) if first_token else -1
+        if index < 0:
+            return text[: self._SEARCH_SNIPPET_MAX_CHARS].rstrip()
+        half_window = self._SEARCH_SNIPPET_MAX_CHARS // 2
+        start = max(index - half_window, 0)
+        end = min(start + self._SEARCH_SNIPPET_MAX_CHARS, len(text))
+        return text[start:end].strip()
+
+    def _resolve_resume_session_id(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> str:
+        current = session_id
+        seen: set[str] = set()
+        for _ in range(100):
+            if current in seen:
+                raise ValueError(f"Conversation lineage contains a cycle at {current}.")
+            seen.add(current)
+            child = self._latest_child_session_id(connection, current)
+            if child is None:
+                return current
+            current = child
+        raise ValueError("Conversation lineage exceeds the maximum depth.")
+
+    def _latest_child_session_id(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> str | None:
+        row = connection.execute(
+            """
+            SELECT conversation_trees.session_id
+            FROM conversation_trees
+            JOIN sessions
+                ON sessions.session_id = conversation_trees.session_id
+            WHERE conversation_trees.parent_id = ?
+            ORDER BY
+                sessions.last_active_at DESC,
+                sessions.updated_at DESC,
+                conversation_trees.session_id DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["session_id"])
+
+    def _conversation_lineage_root_to_tip(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> list[JsonObject]:
+        current = self._resolve_resume_session_id(connection, session_id)
+        chain: list[JsonObject] = []
+        seen: set[str] = set()
+        for _ in range(100):
+            if current in seen:
+                raise ValueError(f"Conversation lineage contains a cycle at {current}.")
+            seen.add(current)
+            metadata = self._load_conversation_tree_row(connection, current)
+            rows = self._load_conversation_rows(connection, current)
+            if metadata is None and not rows and chain:
+                return list(reversed(chain))
+            chain.append(
+                {
+                    "session_id": current,
+                    "parent_id": metadata.get("parent_id") if metadata else None,
+                    "fork_point": metadata.get("fork_point") if metadata else None,
+                    "messages": self._load_object_rows(rows),
+                }
+            )
+            parent_id = metadata.get("parent_id") if metadata else None
+            if not isinstance(parent_id, str) or not parent_id:
+                return list(reversed(chain))
+            current = parent_id
+        raise ValueError("Conversation lineage exceeds the maximum depth.")
+
+    def _load_conversation_rows(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> list[sqlite3.Row]:
+        return list(
+            connection.execute(
+                """
+                SELECT payload_json
+                FROM conversation_messages
+                WHERE session_id = ?
+                ORDER BY message_index
+                """,
+                (session_id,),
+            ).fetchall()
+        )
+
+    def _load_conversation_tree_row(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> JsonObject | None:
+        row = connection.execute(
+            """
+            SELECT session_id, parent_id, fork_point
+            FROM conversation_trees
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._conversation_tree_payload(row)
+
+    def _compose_lineage_messages(self, chain: list[JsonObject]) -> list[JsonObject]:
+        messages: list[JsonObject] = []
+        for index, node in enumerate(chain):
+            node_messages = node.get("messages")
+            if not isinstance(node_messages, list):
+                continue
+            start = self._lineage_segment_start(node, index)
+            end = self._lineage_segment_end(chain, index, len(node_messages))
+            if start < 0 or end < start or end > len(node_messages):
+                raise ValueError("Conversation lineage contains an invalid fork point.")
+            self._append_lineage_segment(messages, node_messages[start:end])
+        return messages
+
+    @staticmethod
+    def _lineage_segment_start(node: JsonObject, index: int) -> int:
+        if index == 0:
+            return 0
+        fork_point = node.get("fork_point")
+        return fork_point if isinstance(fork_point, int) else 0
+
+    @staticmethod
+    def _lineage_segment_end(
+        chain: list[JsonObject],
+        index: int,
+        message_count: int,
+    ) -> int:
+        if index >= len(chain) - 1:
+            return message_count
+        next_fork_point = chain[index + 1].get("fork_point")
+        return next_fork_point if isinstance(next_fork_point, int) else message_count
+
+    def _append_lineage_segment(
+        self,
+        messages: list[JsonObject],
+        segment: list[object],
+    ) -> None:
+        for item in segment:
+            if not isinstance(item, dict):
+                continue
+            message = cast(JsonObject, item)
+            if self._is_repeated_boundary_user_message(messages, message):
+                continue
+            messages.append(message)
+
+    @staticmethod
+    def _is_repeated_boundary_user_message(
+        messages: list[JsonObject],
+        message: JsonObject,
+    ) -> bool:
+        if not messages:
+            return False
+        previous = messages[-1]
+        return (
+            previous.get("role") == "user"
+            and message.get("role") == "user"
+            and previous.get("content") == message.get("content")
+        )
 
     def save_conversation_tree(
         self,
@@ -195,7 +605,7 @@ class SQLiteSessionStore:
         parent_id: str | None,
         fork_point: int | None,
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -219,18 +629,17 @@ class SQLiteSessionStore:
                 (session_id, parent_id, fork_point, self._timestamp()),
             )
 
+        self._execute_write(write)
+
     def load_conversation_tree(self, session_id: str) -> JsonObject | None:
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT session_id, parent_id, fork_point
-                FROM conversation_trees
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
+            row = self._load_conversation_tree_row(connection, session_id)
         if row is None:
             return None
+        return row
+
+    @staticmethod
+    def _conversation_tree_payload(row: sqlite3.Row) -> JsonObject:
         fork_point = row["fork_point"]
         return {
             "session_id": str(row["session_id"]),
@@ -246,7 +655,7 @@ class SQLiteSessionStore:
         thread_id: str,
         items: list[JsonObject],
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -264,6 +673,8 @@ class SQLiteSessionStore:
                 ],
             )
 
+        self._execute_write(write)
+
     def replace_history_items(
         self,
         *,
@@ -272,7 +683,7 @@ class SQLiteSessionStore:
         thread_id: str,
         items: list[JsonObject],
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -293,6 +704,8 @@ class SQLiteSessionStore:
                     for item in items
                 ],
             )
+
+        self._execute_write(write)
 
     def load_history_items(self, session_id: str) -> list[JsonObject]:
         with self._connect() as connection:
@@ -317,7 +730,7 @@ class SQLiteSessionStore:
         thread_id: str,
         rollout: JsonObject,
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -331,6 +744,8 @@ class SQLiteSessionStore:
                 """,
                 (session_id, str(rollout["turn_id"]), self._dump_payload(rollout)),
             )
+
+        self._execute_write(write)
 
     def load_turn_rollouts(self, session_id: str) -> list[JsonObject]:
         with self._connect() as connection:
@@ -356,7 +771,7 @@ class SQLiteSessionStore:
         state_key: str,
         payload: JsonObject | JsonArray,
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -379,6 +794,8 @@ class SQLiteSessionStore:
                 ),
             )
 
+        self._execute_write(write)
+
     def load_state(self, session_id: str, state_key: str) -> JsonObject | JsonArray | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -399,11 +816,13 @@ class SQLiteSessionStore:
         raise ValueError("Session state payload must deserialize to an object or list.")
 
     def delete_state(self, session_id: str, state_key: str) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "DELETE FROM session_state WHERE session_id = ? AND state_key = ?",
                 (session_id, state_key),
             )
+
+        self._execute_write(write)
 
     def append_session_summary(
         self,
@@ -413,7 +832,7 @@ class SQLiteSessionStore:
         thread_id: str,
         summary: str,
     ) -> None:
-        with self._connect() as connection:
+        def write(connection: sqlite3.Connection) -> None:
             self._touch_session(
                 connection,
                 session_id=session_id,
@@ -427,6 +846,8 @@ class SQLiteSessionStore:
                 """,
                 (session_id, summary, self._timestamp()),
             )
+
+        self._execute_write(write)
 
     def load_session_summaries(self, session_id: str) -> list[str]:
         with self._connect() as connection:

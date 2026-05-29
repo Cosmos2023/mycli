@@ -11,6 +11,7 @@ def test_slash_command_candidates_include_required_and_tui_only_commands() -> No
     assert "/status" in candidates
     assert "/view focus" in candidates
     assert "/resume <session>" in candidates
+    assert "/search <query>" in candidates
     assert "/clear" in candidates
     assert "/theme" in candidates
     assert "/mark <name>" in candidates

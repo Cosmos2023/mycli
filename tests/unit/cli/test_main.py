@@ -1085,6 +1085,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_sessions(self) -> tuple[str, ...]:
             return ("* demo active messages=3", "  backlog active messages=1")
 
+        def search_sessions(self, query: str) -> tuple[str, ...]:
+            return (f"demo#1 assistant: {query}",)
+
         def inspect_stats(self) -> tuple[str, ...]:
             return ("cache_hit_rate=0.5", "alerts=none")
 
@@ -1128,6 +1131,7 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         "[session] * demo active messages=3",
         "[session]   backlog active messages=1",
     ]
+    assert list(handler("/search checkpoint")) == ["[search] demo#1 assistant: checkpoint"]
     assert list(handler("/undo")) == ["[undo] Restored notes.txt"]
     assert list(handler("/stats")) == ["[stats] cache_hit_rate=0.5", "[stats] alerts=none"]
     assert list(handler("/context")) == [
