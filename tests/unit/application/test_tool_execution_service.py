@@ -14,8 +14,10 @@ from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.bash import BashTool
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_router import ToolRouter
+from mycli.tools.write import WriteTool
 
 
 class FakeTool:
@@ -59,6 +61,30 @@ class FakeEditTool:
         )
 
 
+class FakeContractMutationTool:
+    spec = ToolSpec(
+        name="ReplaceFile",
+        description="Replace a file through the mutation contract",
+        parameters=(ToolParameter("target", "string"), ToolParameter("content", "string")),
+    )
+
+    def __init__(self, workspace_root: Path) -> None:
+        self._workspace_root = workspace_root
+
+    def mutation_targets(self, arguments: dict[str, object]) -> tuple[str, ...]:
+        return (str(arguments["target"]),)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        path = str(arguments["target"])
+        target = self._workspace_root / path
+        target.write_text(str(arguments["content"]), encoding="utf-8")
+        return ToolResult(
+            success=True,
+            summary=f"Replaced {path}",
+            raw_payload={"path": path},
+        )
+
+
 class FakeSkillTool:
     spec = ToolSpec(
         name="Skill",
@@ -98,6 +124,7 @@ def _service(
     registry: ToolRegistry | None = None,
     file_history: FileHistoryService | None = None,
     record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
+    write_diagnostics_runner: Callable[[tuple[str, ...]], dict[str, object]] | None = None,
 ) -> tuple[ToolExecutionService, FakeTool]:
     fake_tool = FakeTool()
     tool_registry = registry or ToolRegistry.from_tools([fake_tool])
@@ -119,6 +146,7 @@ def _service(
         hook_manager=hook_manager,
         file_history=file_history,
         record_invoked_skill=record_invoked_skill,
+        write_diagnostics_runner=write_diagnostics_runner,
     )
     router = ToolRouter(
         tool_registry=tool_registry,
@@ -345,6 +373,351 @@ def test_tool_execution_service_emits_post_tool_hook(tmp_path: Path) -> None:
     assert seen[0].metadata["success"] is True
 
 
+def test_tool_execution_service_records_standard_tool_trace_payload(tmp_path: Path) -> None:
+    hook_manager = HookManager()
+    service, _fake_tool = _service(tmp_path, hook_manager=hook_manager)
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((10.0, 10.125)).__next__  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["tool_name"] == "read_file"
+    assert trace.payload["tool_call_id"] == "call_read_1"
+    assert trace.payload["status"] == "succeeded"
+    assert trace.payload["success"] is True
+    assert trace.payload["duration_ms"] == 125
+    assert trace.payload["path"] == "README.md"
+    assert trace.payload["error_kind"] is None
+
+
+def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    write_tool = WriteTool(workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((3.0, 3.002)).__next__  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["tool_name"] == "Write"
+    assert trace.payload["status"] == "failed"
+    assert trace.payload["success"] is False
+    assert trace.payload["duration_ms"] == 2
+    assert trace.payload["path"] == "notes.txt"
+    assert trace.payload["error_kind"] == "tool_validation_error"
+    assert trace.payload["filesystem_effect"] == "write"
+    assert trace.payload["network_effect"] is False
+    assert trace.payload["process_effect"] is False
+
+
+def test_tool_execution_service_records_bash_effect_profile_in_trace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bash_tool = BashTool(workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([bash_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((5.0, 5.01)).__next__  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "pwd"},
+            reason="inspect",
+            call_id="call_bash_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Bash"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=bash_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["tool_name"] == "Bash"
+    assert trace.payload["status"] == "succeeded"
+    assert trace.payload["filesystem_effect"] == "unknown"
+    assert trace.payload["network_effect"] is False
+    assert trace.payload["process_effect"] is True
+
+
+def test_tool_execution_service_records_write_diagnostics_after_successful_write(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    write_tool = WriteTool(workspace)
+    seen_paths: list[tuple[str, ...]] = []
+
+    def run_diagnostics(paths: tuple[str, ...]) -> dict[str, object]:
+        seen_paths.append(paths)
+        return {
+            "diagnostics": [
+                {
+                    "file": "notes.txt",
+                    "line": 1,
+                    "column": 1,
+                    "message": "example diagnostic",
+                    "rule": "EX001",
+                }
+            ],
+            "count": 1,
+            "truncated": False,
+        }
+
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        write_diagnostics_runner=run_diagnostics,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "after\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert seen_paths == [("notes.txt",)]
+    result_item = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    diagnostics = result_item.metadata["write_diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["count"] == 1
+    assert result_item.metadata["raw_payload"]["write_diagnostics"] == diagnostics
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["write_diagnostics_count"] == 1
+    assert trace.payload["write_diagnostics_error"] is None
+
+
+def test_tool_execution_service_skips_write_diagnostics_after_failed_validation(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    write_tool = WriteTool(workspace)
+    seen_paths: list[tuple[str, ...]] = []
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        write_diagnostics_runner=lambda paths: seen_paths.append(paths) or {"count": 0},
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert seen_paths == []
+    result_item = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert "write_diagnostics" not in result_item.metadata
+
+
+def test_tool_execution_service_skips_write_diagnostics_for_unchanged_write(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("same\n", encoding="utf-8")
+    write_tool = WriteTool(workspace)
+    seen_paths: list[tuple[str, ...]] = []
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        write_diagnostics_runner=lambda paths: seen_paths.append(paths) or {"count": 0},
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "same\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert seen_paths == []
+    result_item = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert "write_diagnostics" not in result_item.metadata
+
+
+def test_tool_execution_service_records_write_diagnostics_errors_without_failing_write(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    write_tool = WriteTool(workspace)
+
+    def run_diagnostics(_paths: tuple[str, ...]) -> dict[str, object]:
+        raise RuntimeError("diagnostic backend unavailable")
+
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        write_diagnostics_runner=run_diagnostics,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "after\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "after\n"
+    result_item = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert result_item.metadata["success"] is True
+    diagnostics = result_item.metadata["write_diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["count"] == 0
+    assert diagnostics["error"] == "diagnostic backend unavailable"
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["write_diagnostics_count"] == 0
+    assert trace.payload["write_diagnostics_error"] == "diagnostic backend unavailable"
+
+
 def test_tool_execution_service_snapshots_file_before_mutating_tool(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -389,6 +762,183 @@ def test_tool_execution_service_snapshots_file_before_mutating_tool(tmp_path: Pa
     assert rewind.error is None
     assert rewind.restored_paths == ("notes.txt",)
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "before\n"
+
+
+def test_tool_execution_service_snapshots_file_via_mutation_contract(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("before\n", encoding="utf-8")
+    mutation_tool = FakeContractMutationTool(workspace)
+    file_history = FileHistoryService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([mutation_tool]),
+        file_history=file_history,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="ReplaceFile",
+            arguments={"target": "notes.txt", "content": "after\n"},
+            reason="replace",
+            call_id="call_replace_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("ReplaceFile"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=mutation_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "after\n"
+    rewind = file_history.rewind_latest(session_id="demo")
+    assert rewind.error is None
+    assert rewind.restored_paths == ("notes.txt",)
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "before\n"
+
+
+def test_tool_execution_service_does_not_keep_snapshot_for_write_noop(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("same\n", encoding="utf-8")
+    write_tool = WriteTool(workspace)
+    file_history = FileHistoryService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        file_history=file_history,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "same\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert file_history.list_snapshots(session_id="demo") == ()
+
+
+def test_tool_execution_service_does_not_snapshot_failed_validation(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("before\n", encoding="utf-8")
+    write_tool = WriteTool(workspace)
+    file_history = FileHistoryService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        file_history=file_history,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert file_history.list_snapshots(session_id="demo") == ()
+
+
+def test_file_history_rewind_refuses_to_overwrite_later_modification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = workspace / "notes.txt"
+    path.write_text("before\n", encoding="utf-8")
+    write_tool = WriteTool(workspace)
+    file_history = FileHistoryService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+        file_history=file_history,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "after\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+    path.write_text("manual\n", encoding="utf-8")
+
+    rewind = file_history.rewind_latest(session_id="demo")
+
+    assert rewind.error is not None
+    assert "notes.txt" in rewind.error
+    assert "changed after snapshot" in rewind.error
+    assert path.read_text(encoding="utf-8") == "manual\n"
 
 
 def test_tool_execution_records_edit_diff_in_turn_item(tmp_path: Path) -> None:

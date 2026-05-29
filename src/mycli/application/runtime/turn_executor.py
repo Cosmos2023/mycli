@@ -20,6 +20,7 @@ from mycli.domain.runtime import (
     DecisionAction,
     PlanState,
     RuntimeStreamEvent,
+    RuntimeTraceEvent,
     SessionCommandAllowance,
     StopReason,
     SuspendedTurn,
@@ -339,7 +340,31 @@ class TurnExecutor:
                     item=TurnItem(
                         type=TurnItemType.WARNING,
                         text=assistant_message,
-                        metadata={"exit_reason": checkpoint_result.exit_reason.value},
+                        metadata={
+                            "exit_reason": checkpoint_result.exit_reason.value,
+                            **(
+                                {"guardrail": checkpoint_result.diagnostics}
+                                if checkpoint_result.diagnostics
+                                else {}
+                            ),
+                        },
+                    ),
+                )
+                runtime._trace_service.append(
+                    runtime._config.session_id,
+                    RuntimeTraceEvent(
+                        kind="guardrail",
+                        turn_id=turn_id,
+                        payload={
+                            "exit_reason": checkpoint_result.exit_reason.value,
+                            "stop_reason": (
+                                checkpoint_result.stop_reason.value
+                                if checkpoint_result.stop_reason is not None
+                                else None
+                            ),
+                            "summary": assistant_message,
+                            **checkpoint_result.diagnostics,
+                        },
                     ),
                 )
                 runtime._save_runtime_state(

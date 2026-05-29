@@ -20,6 +20,8 @@ from mycli.llms.adapters.base import (
 )
 from mycli.application.runtime.request import RequestShapeBuilder, RequestShapePayloadFormatter
 from mycli.domain.tools import ToolCall
+from mycli.tools.base import ToolEffectProfile, tool_effects_for_tool
+from mycli.tools.write import WriteTool
 
 
 def _tool(
@@ -138,6 +140,127 @@ def test_request_shape_builder_changes_tool_schema_hash_for_parameter_changes(
 
     assert first.tool_order_hash == second.tool_order_hash
     assert first.tool_schema_hash != second.tool_schema_hash
+
+
+def test_request_shape_builder_ignores_tool_mutation_metadata_for_stable_hashes(
+    tmp_path: Path,
+) -> None:
+    builder = RequestShapeBuilder()
+    config = AgentConfig(workspace_root=tmp_path)
+    contract = _contract(
+        current_user_request="update notes",
+        contextual_content="Runtime reminders: keep cache stable",
+    )
+    write_tool = WriteTool(tmp_path)
+    rendered_tool = _tool(
+        write_tool.spec.name,
+        parameters=(
+            ModelToolParameter(
+                name=parameter.name,
+                type=parameter.type,
+                required=parameter.required,
+                description=parameter.description,
+                items_schema=parameter.items_schema,
+            )
+            for parameter in write_tool.spec.parameters
+        ),
+    )
+
+    first = builder.build(config=config, contract=contract, tools=(rendered_tool,))
+    assert write_tool.mutation_targets(
+        {"file_path": "notes.txt", "content": "after\n"}
+    ) == ("notes.txt",)
+    second = builder.build(config=config, contract=contract, tools=(rendered_tool,))
+
+    assert first.system_hash == second.system_hash
+    assert first.tool_schema_hash == second.tool_schema_hash
+    assert first.tool_order_hash == second.tool_order_hash
+
+
+def test_request_shape_builder_ignores_tool_effect_metadata_for_stable_hashes(
+    tmp_path: Path,
+) -> None:
+    builder = RequestShapeBuilder()
+    config = AgentConfig(workspace_root=tmp_path)
+    contract = _contract(
+        current_user_request="inspect tool effects",
+        contextual_content="Runtime reminders: keep cache stable",
+    )
+    write_tool = WriteTool(tmp_path)
+    rendered_tool = _tool(
+        write_tool.spec.name,
+        parameters=tuple(
+            ModelToolParameter(
+                name=parameter.name,
+                type=parameter.type,
+                required=parameter.required,
+                description=parameter.description,
+                items_schema=parameter.items_schema,
+            )
+            for parameter in write_tool.spec.parameters
+        ),
+    )
+
+    first = builder.build(config=config, contract=contract, tools=(rendered_tool,))
+    assert tool_effects_for_tool(write_tool) == ToolEffectProfile(filesystem="write")
+    second = builder.build(config=config, contract=contract, tools=(rendered_tool,))
+
+    assert first.system_hash == second.system_hash
+    assert first.tool_schema_hash == second.tool_schema_hash
+    assert first.tool_order_hash == second.tool_order_hash
+
+
+def test_request_shape_builder_ignores_write_diagnostics_metadata_for_stable_hashes(
+    tmp_path: Path,
+) -> None:
+    builder = RequestShapeBuilder()
+    config = AgentConfig(workspace_root=tmp_path)
+    tool_message = Message(
+        role="tool",
+        content="Wrote notes.txt",
+        tool_call_id="call_write_1",
+        metadata={
+            "write_diagnostics": {
+                "diagnostics": [{"file": "notes.txt", "message": "later local metadata"}],
+                "count": 1,
+                "truncated": False,
+            }
+        },
+    )
+    base_contract = _contract(
+        current_user_request="continue",
+        contextual_content="Runtime reminders: keep cache stable",
+    )
+    diagnostics_contract = InstructionContract(
+        base_instructions=base_contract.base_instructions,
+        developer_sections=base_contract.developer_sections,
+        contextual_user_sections=base_contract.contextual_user_sections,
+        conversation_messages=(*base_contract.conversation_messages, tool_message),
+        current_user_request=base_contract.current_user_request,
+    )
+    no_diagnostics_contract = InstructionContract(
+        base_instructions=base_contract.base_instructions,
+        developer_sections=base_contract.developer_sections,
+        contextual_user_sections=base_contract.contextual_user_sections,
+        conversation_messages=(
+            *base_contract.conversation_messages,
+            Message(
+                role="tool",
+                content="Wrote notes.txt",
+                tool_call_id="call_write_1",
+            ),
+        ),
+        current_user_request=base_contract.current_user_request,
+    )
+    rendered_tool = _tool("Write")
+
+    first = builder.build(config=config, contract=diagnostics_contract, tools=(rendered_tool,))
+    second = builder.build(config=config, contract=no_diagnostics_contract, tools=(rendered_tool,))
+
+    assert first.system_hash == second.system_hash
+    assert first.tool_schema_hash == second.tool_schema_hash
+    assert first.tool_order_hash == second.tool_order_hash
+    assert first.replay_hash == second.replay_hash
 
 
 def test_request_shape_builder_orders_intent_before_volatile_context(

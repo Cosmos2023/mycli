@@ -10,7 +10,13 @@ from mycli.domain.tooling.tool_set import ToolSet
 from mycli.domain.tooling.calls import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
-from mycli.tools.base import ToolResult
+from mycli.tools.base import (
+    ToolEffectProfile,
+    ToolResult,
+    mutation_targets_for_tool,
+    tool_effects_for_tool,
+    tool_has_mutation_contract,
+)
 from mycli.tools.registry import ToolRegistry
 
 
@@ -74,6 +80,43 @@ class ToolRouter:
             )
             return result
         return self._tool_registry.execute(call)
+
+    def mutation_targets(
+        self,
+        call: ToolCall,
+        *,
+        exposure: ToolExposure,
+    ) -> tuple[str, ...] | None:
+        allowed_names = set(exposure.callable_tool_names())
+        if call.name not in allowed_names:
+            rendered = ", ".join(sorted(allowed_names)) or "none"
+            raise ValueError(
+                f"Tool '{call.name}' is not exposed for this turn. Callable tools: {rendered}."
+            )
+        contributed_tool = self._contributed_tools.get(call.name)
+        if contributed_tool is not None:
+            tool = contributed_tool.tool
+            if not tool_has_mutation_contract(tool):
+                return None
+            return mutation_targets_for_tool(tool, call.arguments)
+        return self._tool_registry.mutation_targets(call)
+
+    def effect_profile(
+        self,
+        call: ToolCall,
+        *,
+        exposure: ToolExposure,
+    ) -> ToolEffectProfile:
+        allowed_names = set(exposure.callable_tool_names())
+        if call.name not in allowed_names:
+            rendered = ", ".join(sorted(allowed_names)) or "none"
+            raise ValueError(
+                f"Tool '{call.name}' is not exposed for this turn. Callable tools: {rendered}."
+            )
+        contributed_tool = self._contributed_tools.get(call.name)
+        if contributed_tool is not None:
+            return tool_effects_for_tool(contributed_tool.tool)
+        return self._tool_registry.effect_profile(call)
 
     def pop_lifecycle_events(self) -> tuple[ToolContributionLifecycleEvent, ...]:
         events = tuple(self._lifecycle_events)

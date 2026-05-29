@@ -6,7 +6,7 @@ import subprocess
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import resolve_workspace_path
 
 
@@ -87,6 +87,9 @@ class GrepTool:
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="read")
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         pattern = str(arguments.get("pattern") or arguments.get("query") or "")

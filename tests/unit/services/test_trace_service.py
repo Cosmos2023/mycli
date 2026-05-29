@@ -1,8 +1,13 @@
+import json
+from pathlib import Path
+
+import pytest
+
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.services.trace_service import TraceService
 
 
-def test_trace_service_round_trips_tool_event(tmp_path) -> None:
+def test_trace_service_round_trips_tool_event(tmp_path: Path) -> None:
     service = TraceService(home_dir=tmp_path)
     event = RuntimeTraceEvent(
         kind="tool_execution",
@@ -15,9 +20,11 @@ def test_trace_service_round_trips_tool_event(tmp_path) -> None:
 
     assert loaded[0].payload["tool_name"] == "search_text"
     assert loaded[0].turn_id == "turn_1"
+    assert (tmp_path / ".mycli" / "traces" / "demo-trace.jsonl").exists()
+    assert not (tmp_path / ".mycli" / "sessions" / "demo-trace.jsonl").exists()
 
 
-def test_trace_service_loads_events_for_specific_turn(tmp_path) -> None:
+def test_trace_service_loads_events_for_specific_turn(tmp_path: Path) -> None:
     service = TraceService(home_dir=tmp_path)
     service.append(
         "demo",
@@ -34,13 +41,13 @@ def test_trace_service_loads_events_for_specific_turn(tmp_path) -> None:
     assert loaded[0].payload["tool_name"] == "edit_file"
 
 
-def test_trace_service_skips_corrupt_jsonl_rows(tmp_path) -> None:
+def test_trace_service_skips_corrupt_jsonl_rows(tmp_path: Path) -> None:
     service = TraceService(home_dir=tmp_path)
     service.append(
         "demo",
         RuntimeTraceEvent(kind="tool_execution", turn_id="turn_1", payload={"tool_name": "Read"}),
     )
-    path = tmp_path / ".mycli" / "sessions" / "demo-trace.jsonl"
+    path = tmp_path / ".mycli" / "traces" / "demo-trace.jsonl"
     path.write_text(
         f"{path.read_text(encoding='utf-8').rstrip()}\n"
         '{"kind":"broken"}{"kind":"also-broken"}\n',
@@ -51,3 +58,77 @@ def test_trace_service_skips_corrupt_jsonl_rows(tmp_path) -> None:
 
     assert len(loaded) == 1
     assert loaded[0].payload["tool_name"] == "Read"
+
+
+def test_trace_service_loads_legacy_session_trace(tmp_path: Path) -> None:
+    legacy_path = tmp_path / ".mycli" / "sessions" / "demo-trace.jsonl"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "kind": "tool_execution",
+                "turn_id": "turn_1",
+                "payload": {"tool_name": "legacy_read"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = TraceService(home_dir=tmp_path).load("demo")
+
+    assert len(loaded) == 1
+    assert loaded[0].payload["tool_name"] == "legacy_read"
+
+
+def test_trace_service_rejects_placeholder_session_id(tmp_path: Path) -> None:
+    service = TraceService(home_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="invalid trace session id"):
+        service.append(
+            "<session>",
+            RuntimeTraceEvent(kind="tool_execution", turn_id="turn_1", payload={}),
+        )
+
+    assert not (tmp_path / ".mycli" / "traces" / "<session>-trace.jsonl").exists()
+    assert not (tmp_path / ".mycli" / "sessions" / "<session>-trace.jsonl").exists()
+
+
+def test_trace_service_sanitizes_full_content_from_trace_payload(tmp_path: Path) -> None:
+    service = TraceService(home_dir=tmp_path)
+    file_content = "secret-file-content-" * 80
+    transcript_content = "provider-transcript-content-" * 80
+
+    service.append(
+        "demo",
+        RuntimeTraceEvent(
+            kind="turn_item",
+            turn_id="turn_1",
+            payload={
+                "type": "tool_result",
+                "text": "Read big.py",
+                "metadata": {
+                    "raw_payload": {
+                        "path": "big.py",
+                        "content": file_content,
+                        "stdout": "ok",
+                    },
+                    "transcript_content": transcript_content,
+                },
+            },
+        ),
+    )
+
+    trace_path = tmp_path / ".mycli" / "traces" / "demo-trace.jsonl"
+    persisted = trace_path.read_text(encoding="utf-8")
+    loaded = service.load("demo")
+    metadata = loaded[0].payload["metadata"]
+    raw_payload = metadata["raw_payload"]
+
+    assert file_content not in persisted
+    assert transcript_content not in persisted
+    assert raw_payload["content_chars"] == len(file_content)
+    assert raw_payload["content_preview"] != file_content
+    assert "content" not in raw_payload
+    assert metadata["transcript_content_chars"] == len(transcript_content)
+    assert "transcript_content" not in metadata

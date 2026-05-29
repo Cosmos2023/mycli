@@ -103,6 +103,21 @@ def _write_empty_old_string(path: Path, new_string: str) -> dict[str, str]:
     return {"status": "written", "file": str(path)}
 
 
+def _write_full_content(path: Path, content: str) -> dict[str, str]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(content)
+        return {"status": "created", "file": str(path)}
+    if path.is_dir():
+        raise EditError(f"Path is a directory: {path}")
+    existing = path.read_text()
+    if existing == content:
+        return {"status": "unchanged", "file": str(path)}
+    _backup(path, existing)
+    path.write_text(content)
+    return {"status": "overwritten", "file": str(path)}
+
+
 def _preprocess(text: str, path: Path) -> str:
     text = LINE_NUMBER_PATTERN.sub("", text)
     if path.suffix.lower() not in {".md", ".mdx"}:
@@ -136,6 +151,35 @@ class EditTool:
     ) -> None:
         self._workspace_root = workspace_root
         self._snapshot_store = snapshot_store or FileSnapshotStore()
+
+    def mutation_targets(self, arguments: dict[str, Any]) -> tuple[str, ...]:
+        raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
+        if not raw_path:
+            raise ValueError("Edit requires file_path.")
+        legacy_content = arguments.get("new_content")
+        if legacy_content is not None:
+            if not isinstance(legacy_content, str):
+                raise ValueError("Edit requires string new_content.")
+            target = resolve_workspace_path(self._workspace_root, raw_path)
+            try:
+                if target.exists():
+                    if target.is_dir():
+                        raise ValueError(f"Path is a directory: {raw_path}")
+                    if target.read_text() == legacy_content:
+                        return ()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ValueError(str(exc)) from exc
+            return (raw_path,)
+        old_string = arguments.get("old_string", arguments.get("old_text"))
+        new_string = arguments.get("new_string", arguments.get("new_text"))
+        if (
+            old_string is not None
+            and new_string is not None
+            and str(old_string) == str(new_string)
+        ):
+            return ()
+        resolve_workspace_path(self._workspace_root, raw_path)
+        return (raw_path,)
 
     def _validate_size(self, target: Path) -> tuple[bool, str | None]:
         size = target.stat().st_size
@@ -174,6 +218,14 @@ class EditTool:
             if not raw_path:
                 raise ValueError("Edit requires file_path.")
             target = resolve_workspace_path(self._workspace_root, raw_path)
+            legacy_content = arguments.get("new_content")
+            if isinstance(legacy_content, str):
+                payload = _write_full_content(target, legacy_content)
+                return ToolResult(
+                    success=True,
+                    summary=f"Edited {raw_path}",
+                    raw_payload={"path": raw_path, **payload},
+                )
             ok, error_kind, error_message = self._validate_snapshot(target)
             if not ok:
                 return ToolResult(

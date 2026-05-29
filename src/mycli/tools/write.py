@@ -47,6 +47,24 @@ class WriteTool:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
+    def mutation_targets(self, arguments: dict[str, Any]) -> tuple[str, ...]:
+        raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
+        if not raw_path:
+            raise ValueError("Write requires file_path.")
+        content = arguments.get("content", arguments.get("new_content"))
+        if not isinstance(content, str):
+            raise ValueError("Write requires string content.")
+        target = resolve_workspace_path(self._workspace_root, raw_path)
+        try:
+            if target.exists():
+                if target.is_dir():
+                    raise ValueError(f"Path is a directory: {raw_path}")
+                if target.read_text() == content:
+                    return ()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(str(exc)) from exc
+        return (raw_path,)
+
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
         try:

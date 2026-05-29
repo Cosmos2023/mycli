@@ -635,10 +635,38 @@ class TurnService:
                 if isinstance(args, list) and args and all(isinstance(item, str) for item in args):
                     parts.append(f"args={' '.join(args)}")
 
-            for key in ("scope", "state", "source"):
+            for key in ("scope", "state", "source", "exit_reason", "stop_reason", "trigger"):
                 value = event.payload.get(key)
                 if isinstance(value, str) and value:
                     parts.append(f"{key}={value}")
+
+            count = event.payload.get("count")
+            if isinstance(count, int):
+                parts.append(f"count={count}")
+
+            path = event.payload.get("path")
+            if isinstance(path, str) and path:
+                parts.append(f"path={path}")
+
+            error_kind = event.payload.get("error_kind")
+            if isinstance(error_kind, str) and error_kind:
+                parts.append(f"error_kind={error_kind}")
+
+            status = event.payload.get("status")
+            if isinstance(status, str) and status:
+                parts.append(f"status={status}")
+
+            duration_ms = event.payload.get("duration_ms")
+            if isinstance(duration_ms, int | float):
+                parts.append(f"duration_ms={int(duration_ms)}")
+
+            filesystem_effect = event.payload.get("filesystem_effect")
+            if isinstance(filesystem_effect, str) and filesystem_effect:
+                parts.append(f"filesystem={filesystem_effect}")
+
+            process_effect = event.payload.get("process_effect")
+            if isinstance(process_effect, bool):
+                parts.append(f"process={str(process_effect).lower()}")
 
             summary = event.payload.get("summary")
             if isinstance(summary, str) and summary:

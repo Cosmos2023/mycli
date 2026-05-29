@@ -123,6 +123,9 @@ def _normalize_tool_arguments(
         if tool_name == "Edit":
             _copy_alias(normalized, "old_text", "old_string")
             _copy_alias(normalized, "new_text", "new_string")
+            _copy_alias(normalized, "new_content", "new_string")
+            if "new_content" in normalized and "old_string" not in normalized:
+                normalized["old_string"] = ""
         else:
             _copy_alias(normalized, "new_content", "content")
     return normalized

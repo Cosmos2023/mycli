@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 import subprocess
 from typing import Any
 
@@ -23,8 +23,9 @@ PROJECT_LINTERS = {
 MAX_DIAGNOSTICS = 30
 
 
-def lint(paths: str | None = None) -> dict[str, Any]:
-    commands = _detect_linters()
+def lint(paths: str | None = None, *, cwd: Path | str | None = None) -> dict[str, Any]:
+    root = Path.cwd() if cwd is None else Path(cwd)
+    commands = _detect_linters(cwd=root)
     if not commands:
         return {"error": "[No linter detected for this project]"}
 
@@ -38,7 +39,7 @@ def lint(paths: str | None = None) -> dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=60,
-                cwd=os.getcwd(),
+                cwd=root,
                 check=False,
             )
         except subprocess.TimeoutExpired:
@@ -57,10 +58,10 @@ def lint(paths: str | None = None) -> dict[str, Any]:
     }
 
 
-def _detect_linters() -> list[str]:
-    root = os.getcwd()
+def _detect_linters(cwd: Path | str | None = None) -> list[str]:
+    root = Path.cwd() if cwd is None else Path(cwd)
     for config_file, commands in PROJECT_LINTERS.items():
-        if os.path.exists(os.path.join(root, config_file)):
+        if (root / config_file).exists():
             return commands
     return []
 

@@ -6,7 +6,15 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
-from mycli.tools.base import SchemaTool, ToolSpec, ToolResult
+from mycli.tools.base import (
+    SchemaTool,
+    ToolEffectProfile,
+    ToolSpec,
+    ToolResult,
+    mutation_targets_for_tool,
+    tool_effects_for_tool,
+    tool_has_mutation_contract,
+)
 
 
 @dataclass(slots=True)
@@ -86,6 +94,23 @@ class ToolRegistry:
         if executor is None:
             raise ValueError(f"Unsupported tool: {call.name}")
         return executor.execute(call.arguments)
+
+    def mutation_targets(self, call: ToolCall) -> tuple[str, ...] | None:
+        assert self.executors is not None
+        executor = self.executors.get(call.name)
+        if executor is None:
+            raise ValueError(f"Unsupported tool: {call.name}")
+        if not tool_has_mutation_contract(executor):
+            return None
+        self.validate(call.name, call.arguments)
+        return mutation_targets_for_tool(executor, call.arguments)
+
+    def effect_profile(self, call: ToolCall) -> ToolEffectProfile:
+        assert self.executors is not None
+        executor = self.executors.get(call.name)
+        if executor is None:
+            raise ValueError(f"Unsupported tool: {call.name}")
+        return tool_effects_for_tool(executor)
 
 
 def default_tools(workspace_root: Path) -> list[SchemaTool]:

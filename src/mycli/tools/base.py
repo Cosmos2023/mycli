@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from mycli.domain.tooling.calls import ToolCall, ToolResult
 
-__all__ = ["SchemaTool", "ToolParameter", "ToolResult", "ToolSpec"]
+__all__ = [
+    "MutationAwareTool",
+    "SchemaTool",
+    "ToolEffectProfile",
+    "ToolParameter",
+    "ToolResult",
+    "ToolSpec",
+    "mutation_targets_for_tool",
+    "tool_effects_for_tool",
+    "tool_has_mutation_contract",
+]
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,6 +35,16 @@ class ToolSpec:
     risk_level: str = "low"
 
 
+FilesystemEffect = Literal["none", "read", "write", "unknown"]
+
+
+@dataclass(slots=True, frozen=True)
+class ToolEffectProfile:
+    filesystem: FilesystemEffect = "unknown"
+    network: bool = False
+    process: bool = False
+
+
 class SchemaTool(Protocol):
     spec: ToolSpec
 
@@ -33,3 +53,43 @@ class SchemaTool(Protocol):
 
     def run(self, call: ToolCall) -> ToolResult:
         ...
+
+
+class MutationAwareTool(Protocol):
+    spec: ToolSpec
+
+    def mutation_targets(self, arguments: dict[str, Any]) -> tuple[str, ...]:
+        ...
+
+
+class EffectAwareTool(Protocol):
+    spec: ToolSpec
+
+    def effect_profile(self) -> ToolEffectProfile:
+        ...
+
+
+def tool_has_mutation_contract(tool: object) -> bool:
+    return callable(getattr(tool, "mutation_targets", None))
+
+
+def tool_effects_for_tool(tool: object) -> ToolEffectProfile:
+    method = getattr(tool, "effect_profile", None)
+    if callable(method):
+        profile = method()
+        if isinstance(profile, ToolEffectProfile):
+            return profile
+    if tool_has_mutation_contract(tool):
+        return ToolEffectProfile(filesystem="write")
+    return ToolEffectProfile()
+
+
+def mutation_targets_for_tool(
+    tool: object,
+    arguments: dict[str, Any],
+) -> tuple[str, ...]:
+    method = getattr(tool, "mutation_targets", None)
+    if not callable(method):
+        return ()
+    targets = method(arguments)
+    return tuple(path for path in targets if isinstance(path, str) and path)

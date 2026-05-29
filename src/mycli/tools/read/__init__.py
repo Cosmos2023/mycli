@@ -6,7 +6,7 @@ from types import ModuleType
 from typing import Any, Callable, cast
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.file_snapshot import (
     FileSnapshot,
     FileSnapshotStore,
@@ -166,6 +166,9 @@ class ReadTool:
     ) -> None:
         self._workspace_root = workspace_root
         self._snapshot_store = snapshot_store or FileSnapshotStore()
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="read")
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")

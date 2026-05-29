@@ -36,6 +36,30 @@ def _tool_message(
     )
 
 
+def _failed_tool_message(
+    *,
+    tool_name: str,
+    path: str,
+    error_kind: str,
+) -> Message:
+    return Message(
+        role="tool",
+        content=f"Failed to run {tool_name}",
+        blocks=(
+            RuntimeBlock(
+                type="tool_result",
+                text=f"Failed to run {tool_name}",
+                metadata={
+                    "tool_name": tool_name,
+                    "success": False,
+                    "path": path,
+                    "error_kind": error_kind,
+                },
+            ),
+        ),
+    )
+
+
 def _assistant_tool_call(
     *,
     name: str,
@@ -146,6 +170,30 @@ def test_loop_detected_when_same_tool_call_repeated_4_times() -> None:
 
     assert result.exit_reason == ExitReason.LOOP_DETECTED
     assert result.stop_reason == StopReason.LOOP_DETECTED
+
+
+def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:
+    checkpoint = TurnCheckpoint(repeated_failed_tool_threshold=3)
+    failed_read = _failed_tool_message(
+        tool_name="Read",
+        path="missing.py",
+        error_kind="not_found",
+    )
+
+    result = checkpoint.evaluate(
+        step_index=3,
+        conversation=_conversation(failed_read, failed_read, failed_read),
+    )
+
+    assert result.exit_reason == ExitReason.REPEATED_TOOL_FAILURE
+    assert result.stop_reason == StopReason.LOOP_DETECTED
+    assert result.diagnostics == {
+        "trigger": "repeated_failed_tool_result",
+        "count": 3,
+        "tool_name": "Read",
+        "path": "missing.py",
+        "error_kind": "not_found",
+    }
 
 
 def test_loop_detector_is_current_turn_scoped() -> None:

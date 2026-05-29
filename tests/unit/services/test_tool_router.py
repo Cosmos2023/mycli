@@ -16,8 +16,9 @@ from mycli.domain.tool_exposure import (
 from mycli.domain.tools import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.tools.routing.tool_router import ToolRouter
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.read import ReadTool
 
 
 class FakeTool:
@@ -281,3 +282,30 @@ def test_tool_router_executes_exposed_tool_calls() -> None:
     )
 
     assert result.summary == "ran"
+
+
+def test_tool_router_returns_effect_profile_without_executing_tool(tmp_path) -> None:
+    read_tool = ReadTool(tmp_path)
+    registry = ToolRegistry.from_tools([read_tool])
+    router = ToolRouter(tool_registry=registry)
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Read"),
+                source=ToolRouteSource.REGISTRY,
+                spec=read_tool.spec,
+            ),
+        )
+    )
+
+    profile = router.effect_profile(
+        ToolCall(
+            name="Read",
+            arguments={"file_path": "missing.txt"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        exposure=exposure,
+    )
+
+    assert profile == ToolEffectProfile(filesystem="read")

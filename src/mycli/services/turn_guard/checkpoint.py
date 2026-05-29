@@ -12,6 +12,7 @@ class ExitReason(StrEnum):
     TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
     TOOL_COUNT_EXCEEDED = "tool_count_exceeded"
     LOOP_DETECTED = "loop_detected"
+    REPEATED_TOOL_FAILURE = "repeated_tool_failure"
     REPEATED_REPLANNING = "repeated_replanning"
     NO_PROGRESS = "no_progress"
 
@@ -31,6 +32,7 @@ class CheckpointResult:
     stop_reason: StopReason | None = None
     assistant_message: str | None = None
     reminders: tuple[str, ...] = field(default_factory=tuple)
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 class NoProgressTracker:
@@ -72,6 +74,7 @@ class TurnCheckpoint:
         force_answer_threshold: int = 12,
         reroute_threshold: int = 3,
         repeated_replanning_threshold: int = 2,
+        repeated_failed_tool_threshold: int = 3,
     ) -> None:
         self._max_tool_calls = max_tool_calls_per_turn
         self._max_tokens = max_tokens_per_turn
@@ -80,6 +83,7 @@ class TurnCheckpoint:
         self._force_answer_threshold = force_answer_threshold
         self._reroute_threshold = reroute_threshold
         self._repeated_replanning_threshold = repeated_replanning_threshold
+        self._repeated_failed_tool_threshold = repeated_failed_tool_threshold
 
     def evaluate(
         self,
@@ -99,6 +103,18 @@ class TurnCheckpoint:
                     "I stopped due to repeated exploration of the same path without new evidence. "
                     "Please narrow the request or inspect a confirmed path."
                 ),
+            )
+
+        repeated_failure = self._repeated_failed_tool_result(conversation)
+        if repeated_failure is not None:
+            return CheckpointResult(
+                exit_reason=ExitReason.REPEATED_TOOL_FAILURE,
+                stop_reason=StopReason.LOOP_DETECTED,
+                assistant_message=(
+                    "I stopped due to repeated exploration: repeated failed tool calls with the same target. "
+                    "Check the path or adjust the approach before retrying."
+                ),
+                diagnostics=repeated_failure,
             )
 
         plan_state_obj = plan_state or PlanState()
@@ -204,6 +220,52 @@ class TurnCheckpoint:
                 if _is_truncated_tool_result(block):
                     return True
         return False
+
+    def _repeated_failed_tool_result(
+        self,
+        conversation: Conversation,
+    ) -> dict[str, object] | None:
+        signatures: dict[str, dict[str, object]] = {}
+        for message in _messages_in_current_turn(conversation):
+            if message.role != "tool":
+                continue
+            for block in message.blocks:
+                if block.type != "tool_result":
+                    continue
+                metadata = block.metadata
+                if metadata.get("success") is not False:
+                    continue
+                tool_name = metadata.get("tool_name")
+                if not isinstance(tool_name, str) or not tool_name:
+                    continue
+                path = metadata.get("path")
+                error_kind = metadata.get("error_kind")
+                signature = _tool_call_signature(
+                    tool_name,
+                    {
+                        "path": path if isinstance(path, str) else "",
+                        "error_kind": error_kind if isinstance(error_kind, str) else "",
+                    },
+                )
+                diagnostic = signatures.setdefault(
+                    signature,
+                    {
+                        "trigger": "repeated_failed_tool_result",
+                        "count": 0,
+                        "tool_name": tool_name,
+                    },
+                )
+                raw_count = diagnostic.get("count")
+                count = raw_count if isinstance(raw_count, int) else 0
+                count += 1
+                diagnostic["count"] = count
+                if isinstance(path, str) and path:
+                    diagnostic["path"] = path
+                if isinstance(error_kind, str) and error_kind:
+                    diagnostic["error_kind"] = error_kind
+                if count >= self._repeated_failed_tool_threshold:
+                    return diagnostic
+        return None
 
 
 def _messages_in_current_turn(conversation: Conversation) -> tuple[Message, ...]:

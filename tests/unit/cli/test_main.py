@@ -1633,6 +1633,81 @@ def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path
     )
 
 
+def test_turn_service_inspect_trace_includes_tool_effect_diagnostics(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._trace_service.append(
+        "demo",
+        RuntimeTraceEvent(
+            kind="tool_execution",
+            turn_id="turn_1",
+            payload={
+                "tool_name": "Bash",
+                "status": "succeeded",
+                "duration_ms": 12,
+                "filesystem_effect": "unknown",
+                "process_effect": True,
+                "summary": "Command exited with 0",
+            },
+        ),
+    )
+
+    rendered = service.inspect_trace()
+
+    assert rendered == (
+        "tool_execution Bash status=succeeded duration_ms=12 filesystem=unknown process=true summary=Command exited with 0",
+    )
+
+
+def test_turn_service_inspect_trace_renders_guardrail_diagnostics(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._trace_service.append(
+        "demo",
+        RuntimeTraceEvent(
+            kind="guardrail",
+            turn_id="turn_1",
+            payload={
+                "exit_reason": "repeated_tool_failure",
+                "stop_reason": "loop_detected",
+                "trigger": "repeated_failed_tool_result",
+                "count": 3,
+                "tool_name": "Read",
+                "path": "missing.py",
+                "error_kind": "not_found",
+            },
+        ),
+    )
+
+    rendered = service.inspect_trace()
+
+    assert rendered == (
+        "guardrail Read exit_reason=repeated_tool_failure stop_reason=loop_detected trigger=repeated_failed_tool_result count=3 path=missing.py error_kind=not_found",
+    )
+
+
 def test_turn_service_inspect_trace_renders_tool_lifecycle_events(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

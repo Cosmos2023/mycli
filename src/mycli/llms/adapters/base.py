@@ -45,6 +45,9 @@ class ModelToolDefinition:
     description: str
     parameters: tuple[ModelToolParameter, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", tuple(self.parameters))
+
 
 @dataclass(slots=True, frozen=True)
 class ModelAction:

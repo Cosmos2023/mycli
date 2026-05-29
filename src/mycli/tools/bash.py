@@ -7,7 +7,7 @@ import subprocess
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.shell_safety import (
     ShellRiskLevel,
     analyze_shell_command,
@@ -134,6 +134,9 @@ class BashTool:
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="unknown", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         command_value = arguments.get("command")

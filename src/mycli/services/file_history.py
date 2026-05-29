@@ -15,6 +15,7 @@ class FileSnapshotResult:
     snapshot_id: str
     paths: tuple[str, ...] = ()
     error: str | None = None
+    retained: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -95,6 +96,25 @@ class FileHistoryService:
                     continue
                 relative_path = str(entry["path"])
                 target = resolve_workspace_path(self._workspace_root, relative_path)
+                post_change_detection = entry.get("post_change_detection")
+                if isinstance(post_change_detection, dict):
+                    current = self._change_detection_metadata(target)
+                    if not self._change_detection_matches(
+                        current,
+                        post_change_detection,
+                    ):
+                        return FileRewindResult(
+                            snapshot_id=snapshot_id,
+                            error=(
+                                f"Cannot rewind {relative_path}: "
+                                "changed after snapshot."
+                            ),
+                        )
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                relative_path = str(entry["path"])
+                target = resolve_workspace_path(self._workspace_root, relative_path)
                 existed = bool(entry.get("existed"))
                 backup = entry.get("backup")
                 if existed and isinstance(backup, str):
@@ -112,6 +132,64 @@ class FileHistoryService:
             restored_paths=tuple(restored),
             deleted_paths=tuple(deleted),
         )
+
+    def finalize_snapshot(self, *, session_id: str, snapshot_id: str) -> FileSnapshotResult:
+        manifest_path = self._snapshot_dir(session_id, snapshot_id) / "manifest.json"
+        if not manifest_path.exists():
+            return FileSnapshotResult(snapshot_id=snapshot_id, error="Snapshot not found.")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = manifest.get("entries")
+            if not isinstance(entries, list):
+                raise ValueError("Snapshot manifest entries must be a list.")
+            retained_paths: list[str] = []
+            changed = False
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                relative_path = str(entry["path"])
+                target = resolve_workspace_path(self._workspace_root, relative_path)
+                before_change_detection = entry.get("change_detection")
+                after_change_detection = self._change_detection_metadata(target)
+                entry["post_change_detection"] = after_change_detection
+                retained_paths.append(relative_path)
+                if not isinstance(before_change_detection, dict):
+                    changed = True
+                    continue
+                if not self._change_detection_matches(
+                    before_change_detection,
+                    after_change_detection,
+                ):
+                    changed = True
+            if not changed:
+                self.discard_snapshot(session_id=session_id, snapshot_id=snapshot_id)
+                return FileSnapshotResult(
+                    snapshot_id=snapshot_id,
+                    paths=(),
+                    retained=False,
+                )
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except (OSError, ValueError, json.JSONDecodeError, KeyError) as exc:
+            return FileSnapshotResult(snapshot_id=snapshot_id, error=str(exc))
+        return FileSnapshotResult(
+            snapshot_id=snapshot_id,
+            paths=tuple(retained_paths),
+            retained=True,
+        )
+
+    def discard_snapshot(self, *, session_id: str, snapshot_id: str) -> None:
+        snapshot_dir = self._snapshot_dir(session_id, snapshot_id)
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
+        index = [
+            item
+            for item in self._load_index(session_id)
+            if item.get("snapshot_id") != snapshot_id
+        ]
+        self._write_index(session_id, index)
 
     def list_snapshots(
         self,
@@ -240,6 +318,18 @@ class FileHistoryService:
             for chunk in iter(lambda: file.read(1024 * 1024), b""):
                 hasher.update(chunk)
         return hasher.hexdigest()
+
+    def _change_detection_matches(
+        self,
+        left: dict[str, object],
+        right: dict[str, object],
+    ) -> bool:
+        return (
+            left.get("exists") == right.get("exists")
+            and left.get("sha256") == right.get("sha256")
+            and left.get("size") == right.get("size")
+            and left.get("mtime_ns") == right.get("mtime_ns")
+        )
 
 
 __all__ = ["FileHistoryService", "FileRewindResult", "FileSnapshotResult"]

@@ -76,6 +76,7 @@ from mycli.services.skills import SkillRegistry
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
+from mycli.services.write_diagnostics import WriteDiagnosticsService
 from mycli.services.turn_guard import TurnCheckpoint
 from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.tools.registry import ToolRegistry
@@ -341,6 +342,9 @@ class AgentRuntime:
                 self._config.session_id,
                 snapshot,
             ),
+            write_diagnostics_runner=WriteDiagnosticsService(
+                workspace_root=config.workspace_root,
+            ).run,
         )
         child_executor = RuntimeChildToolExecutor(
             tool_router=ToolRouter(tool_registry=self._tool_registry),
