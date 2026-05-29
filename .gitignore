@@ -11,6 +11,7 @@ __pycache__/
 .DS_Store
 .vscode/
 .worktrees/
+hermes-agent/
 node_modules/
 log/
 evaluation/runs/
