@@ -237,9 +237,10 @@ class TurnService:
         except KeyError:
             return (f"session not found: {target_session_id}",)
         self._backfill_history_from_conversation(conversation)
-        self._activate_session(target_session_id)
+        resolved_session_id = conversation.session_id
+        self._activate_session(resolved_session_id)
         return (
-            f"resumed {target_session_id}",
+            f"resumed {resolved_session_id}",
             f"messages={len(conversation.messages)}",
         )
 

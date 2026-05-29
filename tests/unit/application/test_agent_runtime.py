@@ -1070,6 +1070,64 @@ def test_turn_service_resume_switches_runtime_session_for_follow_up_turn(
     assert default.messages == []
 
 
+def test_turn_service_resume_ancestor_switches_runtime_session_to_resolved_tip(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    service = TurnService(
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    root = Conversation(
+        session_id="root",
+        messages=[
+            Message(role="user", content="root question"),
+            Message(role="assistant", content="root answer"),
+            Message(role="user", content="root-only"),
+        ],
+    )
+    branch = Conversation(
+        session_id="branch",
+        parent_id="root",
+        fork_point=2,
+        messages=[
+            Message(role="user", content="root question"),
+            Message(role="assistant", content="root answer"),
+            Message(role="user", content="branch-only"),
+        ],
+    )
+    runtime._session_service.save_conversation(root)
+    runtime._session_service.save_conversation(branch)
+
+    rendered = service.resume_session("root")
+    response = service.handle_user_turn("continue on the tip")
+
+    assert rendered == ("resumed branch", "messages=3")
+    assert response.assistant_message == "Repository summary complete."
+    assert service._config.session_id == "branch"
+    assert runtime._config.session_id == "branch"
+    assert runtime._event_ledger._session_id == "branch"
+    assert runtime._sub_agent_service._session_id == "branch"
+    resumed = runtime._session_service.load_conversation("branch")
+    stale_root = runtime._session_service.load_conversation("root")
+    assert [message.content for message in resumed.messages if message.role == "user"] == [
+        "root question",
+        "branch-only",
+        "continue on the tip",
+    ]
+    assert [message.content for message in stale_root.messages if message.role == "user"] == [
+        "root question",
+        "root-only",
+    ]
+
+
 def test_turn_service_fork_switches_active_session_to_branch(
     tmp_path: Path,
 ) -> None:

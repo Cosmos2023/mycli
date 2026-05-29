@@ -1361,6 +1361,7 @@ class AgentRuntime:
         self._tool_execution_service._session_id = session_id
         self._tool_orchestrator._session_id = session_id
         self._event_ledger._session_id = session_id
+        self._sub_agent_service._session_id = session_id
         self._assistant_block_consumer.set_session_id(session_id)
         self._planning_effects.set_session_id(session_id)
         self._observability_service.metrics.reset_context_metrics()
