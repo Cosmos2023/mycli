@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/05-29-cache-aware-filehistory-rollback-hardening/prd.md", "reason": "Task-specific requirements, scope, acceptance criteria, and verification plan."}
+{"file": ".trellis/tasks/05-29-cache-aware-filehistory-rollback-hardening/research/context.md", "reason": "Local codebase context for existing FileHistory, tool execution, and cache constraints."}
+{"file": ".trellis/tasks/05-29-mycli-hermes-agent-gap-analysis/prd.md", "reason": "Parent roadmap decisions and explicit out-of-scope boundaries."}
