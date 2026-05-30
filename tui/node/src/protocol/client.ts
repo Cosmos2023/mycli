@@ -2,6 +2,7 @@ import { createInterface, type Interface } from "node:readline";
 import type {
   GatewayClientOptions,
   GatewayEvent,
+  GatewayEventForMethod,
   JsonObject,
   RpcMessage,
   RpcRequest,
@@ -68,15 +69,23 @@ export class GatewayClient {
     });
   }
 
-  waitForEvent(
-    method: string,
-    predicate: (event: GatewayEvent) => boolean = () => true,
-  ): Promise<GatewayEvent> {
-    const existing = this.events.find((event) => event.method === method && predicate(event));
+  waitForEvent<Method extends string>(
+    method: Method,
+    predicate: (event: GatewayEventForMethod<Method>) => boolean = () => true,
+  ): Promise<GatewayEventForMethod<Method>> {
+    const matches = (event: GatewayEvent): event is GatewayEventForMethod<Method> =>
+      event.method === method && predicate(event as GatewayEventForMethod<Method>);
+    const existing = this.events.find(matches);
     if (existing) {
       return Promise.resolve(existing);
     }
-    return new Promise((resolve) => this.eventWaiters.push({ method, predicate, resolve }));
+    return new Promise((resolve) =>
+      this.eventWaiters.push({
+        method,
+        predicate: (event) => predicate(event as GatewayEventForMethod<Method>),
+        resolve: (event) => resolve(event as GatewayEventForMethod<Method>),
+      }),
+    );
   }
 
   private handleLine(line: string): void {
