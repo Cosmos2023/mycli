@@ -113,6 +113,7 @@ def test_help_lists_sessions_command() -> None:
     assert "/context" in output
     assert "/bashes" in output
     assert "/changes" in output
+    assert "/extensions" in output
     assert "/trace-jsonl" in output
     assert "/logs" in output
 
@@ -1123,6 +1124,16 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_memory(self) -> tuple[str, ...]:
             return ("preference tone=concise",)
 
+        def inspect_extensions(self) -> tuple[str, ...]:
+            return (
+                "agent=mycli schema=1 rpc_methods=9 event_streams=7",
+                "rpc extension.manifest",
+                "rpc trace.export",
+                "runtime.trace.export available",
+                "extensions.lifecycle not_available",
+                "acp.server not_available",
+            )
+
         def inspect_trace(self) -> tuple[str, ...]:
             return ("tool_execution search_text",)
 
@@ -1178,6 +1189,14 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/bashes")) == ["[bash] no background shells"]
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
+    assert list(handler("/extensions")) == [
+        "[extension] agent=mycli schema=1 rpc_methods=9 event_streams=7",
+        "[extension] rpc extension.manifest",
+        "[extension] rpc trace.export",
+        "[extension] runtime.trace.export available",
+        "[extension] extensions.lifecycle not_available",
+        "[extension] acp.server not_available",
+    ]
     assert list(handler("/trace")) == ["[trace] tool_execution search_text"]
     assert list(handler("/trace-jsonl")) == [
         '[trace-jsonl] {"kind":"tool_execution","turn_id":"turn_1","payload":{"tool_name":"search_text"}}',
@@ -1722,6 +1741,29 @@ def test_turn_service_exports_trace_jsonl_for_external_consumers(tmp_path: Path)
         "turn_id": "turn_1",
         "payload": {"tool_name": "Read"},
     }
+
+
+def test_turn_service_inspect_extensions_summarizes_manifest(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+
+    rendered = service.inspect_extensions()
+
+    assert rendered[0].startswith("agent=mycli schema=1 ")
+    assert "rpc extension.manifest" in rendered
+    assert "rpc trace.export" in rendered
+    assert "runtime.trace.export available" in rendered
+    assert "extensions.lifecycle not_available" in rendered
+    assert "acp.server not_available" in rendered
 
 
 def test_turn_service_inspect_trace_includes_tool_effect_diagnostics(

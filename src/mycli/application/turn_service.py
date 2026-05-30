@@ -705,6 +705,38 @@ class TurnService:
     def extension_manifest(self) -> dict[str, object]:
         return self._extension_manifest_service.manifest()
 
+    def inspect_extensions(self) -> tuple[str, ...]:
+        manifest = self.extension_manifest()
+        agent = _mapping_value(manifest, "agent")
+        agent_name = _string_value(agent, "name", default="unknown")
+        schema_version = manifest.get("schema_version", "unknown")
+        rpc_methods = _list_value(manifest, "rpc_methods")
+        event_streams = _list_value(manifest, "event_streams")
+        capabilities = _list_value(manifest, "capabilities")
+
+        lines = [
+            (
+                f"agent={agent_name} schema={schema_version} "
+                f"rpc_methods={len(rpc_methods)} event_streams={len(event_streams)}"
+            )
+        ]
+        rpc_names = _named_entries(rpc_methods, key="name")
+        for rpc_name in ("extension.manifest", "trace.export"):
+            if rpc_name in rpc_names:
+                lines.append(f"rpc {rpc_name}")
+
+        capability_statuses = _capability_statuses(capabilities)
+        for capability_id in (
+            "runtime.trace.export",
+            "extensions.lifecycle",
+            "acp.server",
+        ):
+            status = capability_statuses.get(capability_id)
+            if status is not None:
+                lines.append(f"{capability_id} {status}")
+
+        return tuple(lines)
+
     def undo_last_file_change(self) -> str:
         result = self._file_history_service.rewind_latest(
             session_id=self._config.session_id,
@@ -735,3 +767,47 @@ def _tool_name_for_message(message: Message) -> str | None:
             value = block.metadata.get("tool_name")
             return value if isinstance(value, str) else None
     return None
+
+
+def _mapping_value(source: dict[str, object], key: str) -> dict[str, object]:
+    value = source.get(key)
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _string_value(source: dict[str, object], key: str, *, default: str = "") -> str:
+    value = source.get(key)
+    if isinstance(value, str):
+        return value
+    return default
+
+
+def _list_value(source: dict[str, object], key: str) -> list[object]:
+    value = source.get(key)
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _named_entries(entries: list[object], *, key: str) -> set[str]:
+    names: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get(key)
+        if isinstance(value, str):
+            names.add(value)
+    return names
+
+
+def _capability_statuses(capabilities: list[object]) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for capability in capabilities:
+        if not isinstance(capability, dict):
+            continue
+        capability_id = capability.get("id")
+        status = capability.get("status")
+        if isinstance(capability_id, str) and isinstance(status, str):
+            statuses[capability_id] = status
+    return statuses

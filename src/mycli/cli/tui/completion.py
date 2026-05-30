@@ -22,6 +22,7 @@ _SLASH_COMMANDS: tuple[str, ...] = (
     "/bashes",
     "/changes",
     "/undo",
+    "/extensions",
     "/plan",
     "/subagents",
     "/subagents <child_session_id>",
