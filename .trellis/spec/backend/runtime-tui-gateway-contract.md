@@ -215,6 +215,10 @@
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
   - `gateway.error` appends an `error` transcript row without mutating turn
     status unless a separate `turn.failed` or `status.update` also arrives.
+  - `error` and `warning` transcript rows may render a secondary diagnostic line
+    from allowlisted metadata (`source`, `method`, `code`). They must not dump
+    raw payloads, nested objects, request bodies, headers, or secret-like
+    values.
   - JSON-RPC response errors from `GatewayClient.send(...)` reject with a
     request error carrying the original request method and error code. The
     RuntimeApp dispatches those as local `request.failed` actions so request
@@ -322,6 +326,8 @@
   inventing a failed turn.
 - Good: A rejected `approval.respond` request is visible as one error row even
   if a matching `gateway.error` event also arrives.
+- Good: Error rows show compact `source`, `method`, and `code` diagnostics
+  when those fields are available.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -403,6 +409,8 @@
   code.
 - Reducer tests proving local `request.failed` appends one error row and
   deduplicates a matching `gateway.error`.
+- Rendering tests proving error diagnostics show only bounded allowlisted
+  metadata fields.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

@@ -54,6 +54,49 @@ test("transcript renders user, folded tool summary, and answer without role card
   assert.doesNotMatch(frame, /│/);
 });
 
+test("transcript renders compact diagnostics for request and gateway errors", () => {
+  const { lastFrame } = render(
+    <Transcript
+      state={{
+        ...state,
+        transcript: [
+          { id: "sys1", type: "system_notice", text: "mycli ready", folded: false, metadata: {} },
+          { id: "u1", type: "user", text: "approve", folded: false, metadata: {} },
+          {
+            id: "e1",
+            type: "error",
+            text: "No pending decision.",
+            folded: false,
+            metadata: {
+              source: "request",
+              method: "approval.respond",
+              code: "decision_not_pending",
+            },
+          },
+          {
+            id: "e2",
+            type: "error",
+            text: "Internal gateway error.",
+            folded: false,
+            metadata: {
+              method: "command.run",
+              code: "internal_error",
+            },
+          },
+        ],
+      }}
+    />,
+  );
+
+  const frame = lastFrame() ?? "";
+  assert.match(frame, /mycli ready/);
+  assert.doesNotMatch(frame, /source=system/);
+  assert.match(frame, /No pending decision/);
+  assert.match(frame, /source=request · method=approval\.respond · code=decision_not_pending/);
+  assert.match(frame, /Internal gateway error/);
+  assert.match(frame, /method=command\.run · code=internal_error/);
+});
+
 test("status line renders compact metadata and context usage", () => {
   const { lastFrame } = render(<StatusLine state={state} />);
   const frame = lastFrame() ?? "";

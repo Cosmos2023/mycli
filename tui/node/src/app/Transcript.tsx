@@ -41,7 +41,9 @@ const PreludeRow = memo(function PreludeRow({
     return <CommandOutput text={item.text} theme={theme} />;
   }
   if (item.type === "system_notice" || item.type === "warning" || item.type === "error") {
-    return <SystemNotice text={item.text} type={item.type} theme={theme} />;
+    return (
+      <SystemNotice text={item.text} type={item.type} theme={theme} metadata={item.metadata} />
+    );
   }
   return (
     <Box>
@@ -100,7 +102,13 @@ const TurnView = memo(function TurnView({
         ),
       )}
       {turn.errors.map((item) => (
-        <SystemNotice key={item.id} text={item.text} type={item.type} theme={theme} />
+        <SystemNotice
+          key={item.id}
+          text={item.text}
+          type={item.type}
+          theme={theme}
+          metadata={item.metadata}
+        />
       ))}
     </Box>
   );

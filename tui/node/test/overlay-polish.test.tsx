@@ -4,7 +4,7 @@ import React from "react";
 import { render } from "ink-testing-library";
 import { CommandOutput } from "../src/app/CommandOutput.tsx";
 import { Overlay } from "../src/app/Overlay.tsx";
-import { SystemNotice } from "../src/app/SystemNotice.tsx";
+import { noticeDiagnostics, SystemNotice } from "../src/app/SystemNotice.tsx";
 import { THEMES } from "../src/theme/themes.ts";
 
 test("overlay renders title content footer and truncation marker", () => {
@@ -34,4 +34,26 @@ test("command output and system notice render compact text", () => {
 
   const notice = render(<SystemNotice text="Visible transcript cleared." theme={THEMES.mono} />);
   assert.match(notice.lastFrame() ?? "", /Visible transcript cleared/);
+});
+
+test("system notice diagnostics stay allowlisted and bounded", () => {
+  assert.equal(
+    noticeDiagnostics("error", {
+      source: "request",
+      method: "approval.respond",
+      code: "decision_not_pending",
+      message: "No pending decision.",
+      secret: "sk-should-not-render",
+      detail: { nested: true },
+    }),
+    "source=request · method=approval.respond · code=decision_not_pending",
+  );
+
+  assert.equal(noticeDiagnostics("system_notice", { code: "ignored" }), "");
+  assert.match(
+    noticeDiagnostics("warning", {
+      method: "x".repeat(80),
+    }),
+    /^method=x{61}\.\.\.$/,
+  );
 });
