@@ -74,6 +74,9 @@
   - `type`: original event method, for example `message.delta`
   - `payload`: original event params object
   - `timestamp`: UNIX timestamp seconds from the gateway process
+  - Python code should construct this payload through the runtime domain
+    contract `RuntimeEventEnvelope` and `RUNTIME_EVENT_ENVELOPE_VERSION` rather
+    than duplicating gateway-local dict literals.
   - Existing method-name notifications remain the primary compatibility path.
     The gateway emits them unchanged and then emits the envelope mirror.
   - `runtime.event` must not recursively wrap another `runtime.event`.

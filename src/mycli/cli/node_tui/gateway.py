@@ -21,11 +21,16 @@ from mycli.cli.node_tui.protocol import (
 from mycli.cli.repl import build_command_handler, handle_slash_command
 from mycli.cli.tui.completion import slash_command_candidates
 from mycli.cli.tui.marks import startup_mark
-from mycli.domain.runtime import DecisionAction, PendingDecision, RuntimeStreamEvent, TurnResponse
+from mycli.domain.runtime import (
+    DecisionAction,
+    PendingDecision,
+    RuntimeEventEnvelope,
+    RuntimeStreamEvent,
+    TurnResponse,
+)
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
-RUNTIME_EVENT_ENVELOPE_VERSION = 1
 COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
@@ -337,13 +342,12 @@ class NodeTuiGateway:
 
     def _runtime_event_envelope(self, method: str, params: dict[str, object]) -> dict[str, object]:
         self._event_sequence += 1
-        return {
-            "version": RUNTIME_EVENT_ENVELOPE_VERSION,
-            "sequence": self._event_sequence,
-            "type": method,
-            "payload": params,
-            "timestamp": time.time(),
-        }
+        return RuntimeEventEnvelope(
+            sequence=self._event_sequence,
+            event_type=method,
+            payload=params,
+            timestamp=time.time(),
+        ).to_dict()
 
     def _emit_status_update(
         self,
