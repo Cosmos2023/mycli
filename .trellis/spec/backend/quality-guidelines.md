@@ -72,6 +72,8 @@ Questions to answer:
 - `~/.mycli/sessions.db` missing -> `sessions_db=warning`.
 - Sessions DB exists but is not openable or lacks required tables -> failed.
 - Logs or FileHistory missing -> warning, not failure.
+- `errors.log` missing by itself -> OK when `agent.log`, `model-events.jsonl`,
+  and `model-raw/` exist; `errors.log` is created on first warning/error.
 - FileHistory `index.json` exists but cannot parse -> failed.
 - MCP config load fails -> failed; do not start servers.
 - Node/npm or Python TUI unavailable -> warning unless a stricter command is
