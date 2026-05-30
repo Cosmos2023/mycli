@@ -39,3 +39,36 @@ Ran a real mycli runtime smoke, recorded session/log/trace evidence, adjusted do
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Session lifecycle smoke
+
+**Date**: 2026-05-30
+**Task**: Session lifecycle smoke
+**Branch**: `main`
+
+### Summary
+
+Ran a real root/fork/resume mycli smoke, found fork lineage metadata was erased by follow-up turns, fixed SessionService/compaction preservation, added regression coverage, and documented the DB gotcha.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bd5d79e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
