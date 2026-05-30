@@ -3,7 +3,7 @@ import test from "node:test";
 import React from "react";
 import { render } from "ink-testing-library";
 import { Overlay } from "../src/app/Overlay.tsx";
-import { App } from "../src/app/App.tsx";
+import { App, inputHint } from "../src/app/App.tsx";
 import { ClarificationRow } from "../src/app/ClarificationRow.tsx";
 import { StatusLine } from "../src/app/StatusLine.tsx";
 import { Transcript } from "../src/app/Transcript.tsx";
@@ -212,6 +212,43 @@ test("app keeps slash commands routed as commands while clarification is pending
 
   assert.deepEqual(commands, ["/resume"]);
   assert.deepEqual(clarifications, []);
+});
+
+test("app input hint follows the current interaction mode", () => {
+  assert.equal(inputHint(state), "Enter send · / commands · Ctrl-C interrupt");
+  assert.equal(
+    inputHint({ ...state, turnRunning: true }),
+    "Running · Ctrl-C interrupt",
+  );
+  assert.equal(
+    inputHint({
+      ...state,
+      pendingClarification: {
+        request_id: "call_question_1",
+        question: "Which slice should come next?",
+      },
+    }),
+    "Type a reply · Enter send · / for commands",
+  );
+  assert.equal(
+    inputHint({
+      ...state,
+      pendingApproval: {
+        decision_id: "decision_current",
+        preview: "git push",
+        options: [{ choice: "approve_once", label: "Allow once" }],
+      },
+    }),
+    "Press 1-9 to respond · Ctrl-C interrupt",
+  );
+  assert.equal(
+    inputHint({
+      ...state,
+      turnRunning: true,
+      completion: { visible: true, requestId: 1, prefix: "/", items: [], selectedIndex: 0 },
+    }),
+    "↑/↓ move · Tab accept · Esc cancel",
+  );
 });
 
 test("clarification row renders numbered option hint", () => {

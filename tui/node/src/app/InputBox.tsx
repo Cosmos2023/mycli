@@ -9,6 +9,7 @@ export function InputBox({
   completionVisible,
   theme,
   metadata = "",
+  hint = "",
   width = DEFAULT_TERMINAL_WIDTH,
   onDraftChange,
   onSubmit,
@@ -22,6 +23,7 @@ export function InputBox({
   completionVisible: boolean;
   theme: ThemeTokens;
   metadata?: string;
+  hint?: string;
   width?: number;
   onDraftChange: (value: string) => void;
   onSubmit: (value: string) => void;
@@ -86,6 +88,7 @@ export function InputBox({
 
   const dividerWidth = Math.max(24, Math.min(width, DEFAULT_TERMINAL_WIDTH));
   const visibleMetadata = truncateMiddle(metadata, dividerWidth);
+  const visibleHint = truncateMiddle(hint, dividerWidth);
   return (
     <Box flexDirection="column">
       <Text color={theme.border}>{"─".repeat(dividerWidth)}</Text>
@@ -93,6 +96,7 @@ export function InputBox({
         <Text color={turnRunning ? theme.warning : theme.accent}>{">"}</Text>
         {value ? <Text color={theme.text}> {value}</Text> : null}
       </Text>
+      {visibleHint ? <Text color={theme.subtle}>{visibleHint}</Text> : null}
       <Text color={theme.subtle}>{visibleMetadata}</Text>
     </Box>
   );

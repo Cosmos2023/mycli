@@ -57,6 +57,7 @@ export function App({
         completionVisible={state.completion.visible}
         theme={state.theme}
         metadata={statusMetadata(state)}
+        hint={inputHint(state)}
         width={width}
         onDraftChange={onDraftChange ?? (() => undefined)}
         onSubmit={(value) => {
@@ -88,6 +89,22 @@ function clarificationRequestId(payload: Record<string, unknown> | null): string
   }
   const requestId = payload.request_id;
   return typeof requestId === "string" && requestId.trim() ? requestId : null;
+}
+
+export function inputHint(state: ShellState): string {
+  if (state.completion.visible) {
+    return "↑/↓ move · Tab accept · Esc cancel";
+  }
+  if (state.pendingApproval) {
+    return "Press 1-9 to respond · Ctrl-C interrupt";
+  }
+  if (state.pendingClarification) {
+    return "Type a reply · Enter send · / for commands";
+  }
+  if (state.turnRunning) {
+    return "Running · Ctrl-C interrupt";
+  }
+  return "Enter send · / commands · Ctrl-C interrupt";
 }
 
 function clarificationResponseFromInput(payload: Record<string, unknown>, value: string): string {

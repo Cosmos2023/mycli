@@ -228,6 +228,10 @@
   - If a local `request.failed` action and a `gateway.error` notification carry
     the same `code`, `method`, and `message` close together, the reducer keeps
     one visible error row to avoid double-reporting the same request failure.
+  - The input area should render a compact context-sensitive hint derived from
+    local TUI state. Completion popup, approval, clarification, running turn,
+    and normal input modes should each expose the most relevant keyboard action
+    without changing runtime or gateway semantics.
 - The scripted Node client is allowed to write a final reducer state snapshot
   only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
   a production persistence mechanism.
@@ -328,6 +332,9 @@
   if a matching `gateway.error` event also arrives.
 - Good: Error rows show compact `source`, `method`, and `code` diagnostics
   when those fields are available.
+- Good: The input footer shows `Ctrl-C interrupt` while running, numeric
+  response guidance while approval is pending, and reply guidance while
+  clarification is pending.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -411,6 +418,8 @@
   deduplicates a matching `gateway.error`.
 - Rendering tests proving error diagnostics show only bounded allowlisted
   metadata fields.
+- Rendering tests proving contextual input hints change with completion,
+  approval, clarification, running, and normal modes.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,
