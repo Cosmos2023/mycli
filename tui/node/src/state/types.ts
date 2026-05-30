@@ -52,6 +52,12 @@ export type LiveStatus = {
   severity?: string;
 };
 
+export type LiveReasoning = {
+  client_turn_id?: string;
+  kind: "reasoning" | "thinking";
+  text: string;
+};
+
 export type ShellState = {
   sessionId: string | null;
   workspace: string;
@@ -67,6 +73,8 @@ export type ShellState = {
   turnRunning: boolean;
   currentTurnId: string | null;
   liveStatus: LiveStatus | null;
+  liveReasoning: LiveReasoning | null;
+  typedMessageTurnId: string | null;
   viewMode: ViewMode;
   completion: CompletionState;
   overlay: OverlayState;

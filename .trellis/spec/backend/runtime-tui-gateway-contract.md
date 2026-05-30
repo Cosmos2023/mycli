@@ -106,6 +106,16 @@
   - `tool.complete` maps the matching row to `status: "done"` and
     `tool.failed` maps it to `status: "failed"`. If completion arrives without
     a prior start, the reducer creates a compact fallback row.
+  - `message.delta` is consumed as assistant stream text.
+  - After a `message.delta` has been seen for a `client_turn_id`, the reducer
+    ignores compatibility `turn.event` assistant deltas for that same
+    `client_turn_id` to prevent duplicate visible answer text.
+  - If no typed `message.delta` has been seen for the turn, legacy
+    `turn.event` assistant deltas remain a valid fallback for older runtimes.
+  - `reasoning.delta` and `thinking.delta` update compact live reasoning state
+    for running-turn display. They must not append text to assistant answer
+    transcript items.
+  - Terminal turn events clear live reasoning and typed-message bookkeeping.
 
 ### 4. Validation & Error Matrix
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
@@ -128,6 +138,10 @@
   compatibility `turn.event` with phase `reasoning`.
 - Model assistant text chunk -> emit `message.delta` and the compatibility
   `turn.event` with phase `assistant_delta`.
+- Node TUI receives both typed and compatibility assistant chunks for a typed
+  runtime -> render only the typed `message.delta` content.
+- Node TUI receives only legacy assistant chunks -> render
+  `turn.event phase=assistant_delta` content.
 - Model stream completion metadata -> emit `message.complete` and the
   compatibility `turn.event` with phase `model_completed`.
 - Turn completes without a pending decision -> emit `turn.completed` with
@@ -145,6 +159,8 @@
   done or failed.
 - Good: New clients consume `message.delta` and `reasoning.delta` while older
   clients keep rendering from `turn.event`.
+- Good: TUI shows a compact running reasoning preview without mixing reasoning
+  text into the final assistant answer.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Base: Older clients still send `decision.resolve` and receive compatible
@@ -182,6 +198,11 @@
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,
   and failed summaries with bounded details.
+- Reducer tests proving Node TUI consumes `message.delta`, suppresses duplicate
+  compatibility assistant deltas for the same turn, and preserves legacy
+  `turn.event` fallback when typed deltas are absent.
+- Reducer/rendering tests proving `reasoning.delta` and `thinking.delta` update
+  compact live reasoning state without mutating assistant answer text.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
   `message.delta` and still emits compatibility `turn.event`.
 - Gateway unit test proving `RuntimeStreamEvent(kind="reasoning")` emits

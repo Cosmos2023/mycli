@@ -7,7 +7,14 @@ import {
   itemId,
   reconcileFinalAnswer,
 } from "./transcript.ts";
-import type { LiveStatus, ShellState, TranscriptItem, TurnLiveState, ViewMode } from "./types.ts";
+import type {
+  LiveReasoning,
+  LiveStatus,
+  ShellState,
+  TranscriptItem,
+  TurnLiveState,
+  ViewMode,
+} from "./types.ts";
 
 export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
@@ -50,6 +57,8 @@ export function initialState({
     turnRunning: false,
     currentTurnId: null,
     liveStatus: null,
+    liveReasoning: null,
+    typedMessageTurnId: null,
     viewMode: "default",
     completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
     overlay: { visible: false, title: "", lines: [] },
@@ -169,6 +178,8 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         turnRunning: true,
         currentTurnId: String(action.params.client_turn_id ?? ""),
+        liveReasoning: null,
+        typedMessageTurnId: null,
         liveStatus: {
           client_turn_id: String(action.params.client_turn_id ?? ""),
           state: "running",
@@ -194,15 +205,40 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
               ? false
               : state.turnRunning,
         currentTurnId: liveStatus.client_turn_id ?? state.currentTurnId,
+        liveReasoning: isTerminalTurnState(liveStatus.state) ? null : state.liveReasoning,
+        typedMessageTurnId: isTerminalTurnState(liveStatus.state) ? null : state.typedMessageTurnId,
         pendingApproval:
-          liveStatus.state === "completed" ||
-          liveStatus.state === "failed" ||
-          liveStatus.state === "interrupted"
+          isTerminalTurnState(liveStatus.state)
             ? null
             : state.pendingApproval,
       };
     }
+    if (action.method === "message.delta") {
+      const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
+      return {
+        ...state,
+        typedMessageTurnId: clientTurnId,
+        transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
+      };
+    }
+    if (action.method === "reasoning.delta" || action.method === "thinking.delta") {
+      return {
+        ...state,
+        liveReasoning: liveReasoningFromParams(
+          action.method === "thinking.delta" ? "thinking" : "reasoning",
+          action.params,
+        ),
+      };
+    }
     if (action.method === "turn.event" && action.params.phase === "assistant_delta") {
+      const clientTurnId = clientTurnIdFromParams(action.params);
+      if (
+        state.typedMessageTurnId &&
+        clientTurnId &&
+        clientTurnId === state.typedMessageTurnId
+      ) {
+        return state;
+      }
       return {
         ...state,
         transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
@@ -226,6 +262,8 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         turnRunning: false,
         currentTurnId: null,
+        liveReasoning: null,
+        typedMessageTurnId: null,
         liveStatus: stateFromTurnCompleted(action.params),
         pendingApproval:
           action.params.pending_decision === true || action.params.turn_state === "waiting_approval"
@@ -276,6 +314,8 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         turnRunning: false,
         currentTurnId: null,
+        liveReasoning: null,
+        typedMessageTurnId: null,
         liveStatus: failedStatus,
         pendingApproval: null,
         transcript: [
@@ -319,6 +359,36 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     };
   }
   return state;
+}
+
+function clientTurnIdFromParams(params: Record<string, unknown>): string | null {
+  return typeof params.client_turn_id === "string" && params.client_turn_id
+    ? params.client_turn_id
+    : null;
+}
+
+function liveReasoningFromParams(
+  kind: LiveReasoning["kind"],
+  params: Record<string, unknown>,
+): LiveReasoning {
+  const reasoning: LiveReasoning = {
+    kind,
+    text: truncatePreview(String(params.text ?? "")),
+  };
+  const clientTurnId = clientTurnIdFromParams(params);
+  if (clientTurnId) {
+    reasoning.client_turn_id = clientTurnId;
+  }
+  return reasoning;
+}
+
+function truncatePreview(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function isTerminalTurnState(state: TurnLiveState): boolean {
+  return state === "completed" || state === "failed" || state === "interrupted";
 }
 
 function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | null {

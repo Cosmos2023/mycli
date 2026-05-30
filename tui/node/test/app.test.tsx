@@ -33,6 +33,8 @@ const state: ShellState = {
   turnRunning: false,
   currentTurnId: null,
   liveStatus: null,
+  liveReasoning: null,
+  typedMessageTurnId: null,
   viewMode: "default",
   completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
   overlay: { visible: true, title: "/usage", lines: ["turns=1"] },

@@ -78,6 +78,87 @@ test("turn events stream into one assistant item and finalize authoritatively", 
   assert.equal(state.transcript.at(-1)?.text, "hello final");
 });
 
+test("typed message deltas stream assistant text and suppress duplicate legacy deltas", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "hello" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "hel" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.event",
+    params: {
+      client_turn_id: "c1",
+      phase: "assistant_delta",
+      kind: "text_delta",
+      text: "hel",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "lo" },
+  });
+
+  const assistant = state.transcript.find((item) => item.type === "assistant_stream");
+  assert.equal(assistant?.text, "hello");
+});
+
+test("legacy assistant turn events still stream when typed deltas are absent", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "hello" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "legacy_1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.event",
+    params: {
+      client_turn_id: "legacy_1",
+      phase: "assistant_delta",
+      kind: "text_delta",
+      text: "legacy",
+    },
+  });
+
+  assert.equal(state.transcript.at(-1)?.type, "assistant_stream");
+  assert.equal(state.transcript.at(-1)?.text, "legacy");
+});
+
+test("reasoning and thinking deltas update live reasoning without changing answer text", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "hello" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "answer" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "reasoning.delta",
+    params: { client_turn_id: "c1", text: "checking files" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "thinking.delta",
+    params: { client_turn_id: "c1", text: "reading tests" },
+  });
+
+  assert.equal(state.transcript.at(-1)?.type, "assistant_stream");
+  assert.equal(state.transcript.at(-1)?.text, "answer");
+  assert.equal(state.liveReasoning?.text, "reading tests");
+  assert.equal(state.liveReasoning?.kind, "thinking");
+});
+
 test("command view mode updates local UI state", () => {
   const state = reduceShellState(initialState(), {
     type: "command.result",

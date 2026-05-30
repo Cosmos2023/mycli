@@ -126,6 +126,24 @@ test("running activity prefers live status update text", () => {
   assert.match(frame, /! Waiting approval 12s · read/);
 });
 
+test("running activity renders compact live reasoning preview", () => {
+  const state = {
+    ...initialState({ rawThemeName: "graphite" }),
+    turnRunning: true,
+    liveReasoning: {
+      client_turn_id: "c1",
+      kind: "reasoning" as const,
+      text: "checking project structure",
+    },
+    transcript: [],
+  };
+
+  const { lastFrame } = render(<RunningActivity state={state} elapsedSeconds={3} />);
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /● Thinking 3s · reasoning: checking project structure/);
+});
+
 test("running activity maps live states to semantic styles", () => {
   const state = initialState({ rawThemeName: "deep-teal" });
 
