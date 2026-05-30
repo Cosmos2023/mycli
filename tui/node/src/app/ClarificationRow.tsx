@@ -56,6 +56,11 @@ export function ClarificationRow({
           {option.description ? <Text color={theme.muted}> · {option.description}</Text> : null}
         </Text>
       ))}
+      {options.length > 0 ? (
+        <Text color={theme.subtle}>
+          Type 1-{options.length}, an option label, or a custom answer.
+        </Text>
+      ) : null}
     </Box>
   );
 }

@@ -68,9 +68,10 @@ export function App({
             onCommand?.(value);
             return;
           }
-          const requestId = clarificationRequestId(state.pendingClarification);
-          if (requestId) {
-            onClarification?.(requestId, value);
+          const pendingClarification = state.pendingClarification;
+          const requestId = clarificationRequestId(pendingClarification);
+          if (pendingClarification && requestId) {
+            onClarification?.(requestId, clarificationResponseFromInput(pendingClarification, value));
             return;
           }
           onSubmit?.(value);
@@ -87,4 +88,32 @@ function clarificationRequestId(payload: Record<string, unknown> | null): string
   }
   const requestId = payload.request_id;
   return typeof requestId === "string" && requestId.trim() ? requestId : null;
+}
+
+function clarificationResponseFromInput(payload: Record<string, unknown>, value: string): string {
+  const options = clarificationOptions(payload);
+  if (options.length === 0 || payload.multi_select === true) {
+    return value;
+  }
+  const trimmed = value.trim();
+  const numericChoice = Number.parseInt(trimmed, 10);
+  if (String(numericChoice) === trimmed && numericChoice >= 1 && numericChoice <= options.length) {
+    return options[numericChoice - 1] ?? value;
+  }
+  const matchingOption = options.find((option) => option.toLowerCase() === trimmed.toLowerCase());
+  return matchingOption ?? value;
+}
+
+function clarificationOptions(payload: Record<string, unknown>): string[] {
+  const options = payload.options;
+  if (!Array.isArray(options)) {
+    return [];
+  }
+  return options.flatMap((option) => {
+    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+      return [];
+    }
+    const label = (option as Record<string, unknown>).label;
+    return typeof label === "string" && label.trim() ? [label.trim()] : [];
+  });
 }

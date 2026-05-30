@@ -4,6 +4,7 @@ import React from "react";
 import { render } from "ink-testing-library";
 import { Overlay } from "../src/app/Overlay.tsx";
 import { App } from "../src/app/App.tsx";
+import { ClarificationRow } from "../src/app/ClarificationRow.tsx";
 import { StatusLine } from "../src/app/StatusLine.tsx";
 import { Transcript } from "../src/app/Transcript.tsx";
 import { THEMES } from "../src/theme/themes.ts";
@@ -91,4 +92,104 @@ test("app routes normal submit to clarification response while clarification is 
 
   assert.deepEqual(submitted, []);
   assert.deepEqual(clarifications, [["call_question_1", "Runtime"]]);
+});
+
+test("app maps numeric clarification input to option labels", () => {
+  const clarifications: Array<[string, string]> = [];
+  const { stdin } = render(
+    <App
+      state={{
+        ...state,
+        pendingClarification: {
+          request_id: "call_question_1",
+          question: "Which slice should come next?",
+          options: [{ label: "Runtime" }, { label: "TUI" }],
+          multi_select: false,
+        },
+      }}
+      onClarification={(requestId, response) => clarifications.push([requestId, response])}
+    />,
+  );
+
+  stdin.write("2");
+  stdin.write("\r");
+
+  assert.deepEqual(clarifications, [["call_question_1", "TUI"]]);
+});
+
+test("app maps case-insensitive clarification labels and preserves free-form answers", () => {
+  const clarifications: Array<[string, string]> = [];
+  const renderResult = render(
+    <App
+      state={{
+        ...state,
+        pendingClarification: {
+          request_id: "call_question_1",
+          question: "Which slice should come next?",
+          options: [{ label: "Runtime" }, { label: "TUI" }],
+          multi_select: false,
+        },
+      }}
+      onClarification={(requestId, response) => clarifications.push([requestId, response])}
+    />,
+  );
+
+  renderResult.stdin.write("tui");
+  renderResult.stdin.write("\r");
+  renderResult.stdin.write("ship both");
+  renderResult.stdin.write("\r");
+
+  assert.deepEqual(clarifications, [
+    ["call_question_1", "TUI"],
+    ["call_question_1", "ship both"],
+  ]);
+});
+
+test("app keeps slash commands routed as commands while clarification is pending", () => {
+  const commands: string[] = [];
+  const clarifications: Array<[string, string]> = [];
+  const { stdin } = render(
+    <App
+      state={{
+        ...state,
+        pendingClarification: {
+          request_id: "call_question_1",
+          question: "Which slice should come next?",
+          options: [{ label: "Runtime" }, { label: "TUI" }],
+          multi_select: false,
+        },
+      }}
+      onCommand={(command) => commands.push(command)}
+      onClarification={(requestId, response) => clarifications.push([requestId, response])}
+    />,
+  );
+
+  stdin.write("/resume");
+  stdin.write("\r");
+
+  assert.deepEqual(commands, ["/resume"]);
+  assert.deepEqual(clarifications, []);
+});
+
+test("clarification row renders numbered option hint", () => {
+  const { lastFrame } = render(
+    <ClarificationRow
+      item={{
+        id: "clarify_1",
+        type: "clarification",
+        text: "Which slice should come next?",
+        folded: false,
+        metadata: {
+          header: "Scope",
+          options: [{ label: "Runtime" }, { label: "TUI" }],
+        },
+      }}
+      theme={state.theme}
+    />,
+  );
+
+  const frame = lastFrame() ?? "";
+  assert.match(frame, /1\. Runtime/);
+  assert.match(frame, /2\. TUI/);
+  assert.match(frame, /Type 1-2, an option label, or a custom answer\./);
 });

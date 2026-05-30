@@ -86,7 +86,7 @@
 - `clarify.respond` request payload:
   - `request_id`: must match the active pending clarification.
   - `response`: non-empty user answer text. The TUI may send an option label or
-    free-form text; option-picker semantics are a future polish layer.
+    free-form text.
 - `clarify.respond` notification payload:
   - `client_turn_id`: string for the clarification-resolution turn.
   - `request_id`: the resolved clarification request id.
@@ -172,6 +172,11 @@
   - While `pendingClarification` exists, plain TUI input submit sends
     `clarify.respond` with `{request_id, response}` instead of `turn.submit`.
     Slash commands remain slash commands.
+  - For single-select clarification options, Node TUI input may normalize a
+    numeric option index or case-insensitive option label to the exact option
+    label before sending `clarify.respond`. Non-matching text remains a
+    free-form response. Multi-select clarification remains free-form until a
+    dedicated selector exists.
   - `tool.start`, `tool.complete`, and `tool.failed` are consumed by the Node
     TUI reducer as `tool_summary` transcript rows. The reducer matches existing
     rows by `tool_id` first and `call_id` second, so completion updates the
@@ -263,6 +268,8 @@
 - Good: TUI sends a plain text `clarify.respond` while clarification is
   pending, and the runtime resumes the suspended turn with the answer as the
   original `AskUserQuestion` tool result.
+- Good: TUI lets a user type `1` or `TUI` for a single-select clarification
+  option and sends the canonical option label in `clarify.respond`.
 - Good: TUI renders active tool rows from `tool.start` and final summaries from
   `tool.complete` / `tool.failed` without waiting for `turn.completed`.
 - Good: TUI keeps a single row for the same tool id as it moves from running to
@@ -302,8 +309,8 @@
   reference for channel separation.
 - Bad: Treating `clarify.request` as `approval.request`; clarification is a
   user-input UX channel, while approval is a safety gate.
-- Bad: Showing clarification response keybindings before `clarify.respond` and
-  runtime resume exist.
+- Bad: Reusing approval keybindings or approval state for clarification
+  options.
 - Bad: Emitting `clarify.request` but allowing the model loop to continue
   without a user answer.
 
@@ -340,6 +347,9 @@
 - Node tests proving plain input routes to `clarify.respond` while
   `pendingClarification` exists and reducer clears pending state when
   `clarify.respond` is observed.
+- Node tests proving single-select clarification input maps numeric indices
+  and case-insensitive labels to canonical labels while preserving free-form
+  answers and slash-command routing.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,
