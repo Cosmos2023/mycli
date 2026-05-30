@@ -81,6 +81,9 @@ Questions to answer:
 - Node TUI source exists but `tui/node/node_modules/.bin/tsx` is missing ->
   `node_tui_dependencies=warning` with remediation text
   `npm --prefix tui/node install`; do not create `node_modules` or run npm.
+- Node-side TUI verification should run a dependency-free preflight before
+  commands that import `tsx`, and should print missing markers plus the
+  remediation `npm --prefix tui/node ci`.
 - Node TUI source is missing -> report the existing `node_tui` warning and skip
   dependency-marker checks, because missing source is the actionable root cause.
 

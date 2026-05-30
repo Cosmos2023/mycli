@@ -259,6 +259,9 @@
   running label when present.
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node
   `typecheck`, and Node tests for protocol/reducer/rendering changes.
+- Node TUI `test` and `typecheck` commands must run `npm run verify:deps`
+  first, so missing or partially installed `tui/node/node_modules` produces an
+  actionable dependency message before `tsx` is imported.
 
 ### 7. Wrong vs Correct
 
