@@ -388,6 +388,19 @@ test("tool lifecycle events update the active tool row without duplication", () 
   });
   state = reduceShellState(state, {
     type: "gateway.event",
+    method: "tool.progress",
+    params: {
+      client_turn_id: "c1",
+      tool_id: "call_read_1",
+      call_id: "call_read_1",
+      name: "Read",
+      stage: "executing",
+      message: "Executing Read",
+      args_preview: "file_path=pyproject.toml",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
     method: "tool.complete",
     params: {
       client_turn_id: "c1",
@@ -403,8 +416,50 @@ test("tool lifecycle events update the active tool row without duplication", () 
   const tools = state.transcript.filter((item) => item.type === "tool_summary");
   assert.equal(tools.length, 1);
   assert.equal(tools[0]?.metadata.status, "done");
+  assert.equal(tools[0]?.metadata.stage, "executing");
   assert.equal(tools[0]?.metadata.duration_s, 0.125);
   assert.equal(tools[0]?.metadata.tool_name, "Read");
+});
+
+test("runtime event envelope can carry tool progress into reducer state", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "tool.start",
+    params: {
+      client_turn_id: "c1",
+      tool_id: "call_read_1",
+      call_id: "call_read_1",
+      name: "Read",
+      context: "pyproject.toml",
+      args_preview: "file_path=pyproject.toml",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "runtime.event",
+    params: {
+      version: 1,
+      sequence: 7,
+      type: "tool.progress",
+      timestamp: 1770000001,
+      payload: {
+        client_turn_id: "c1",
+        tool_id: "call_read_1",
+        call_id: "call_read_1",
+        name: "Read",
+        stage: "executing",
+        message: "Executing Read",
+        args_preview: "file_path=pyproject.toml",
+      },
+    },
+  });
+
+  const tools = state.transcript.filter((item) => item.type === "tool_summary");
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0]?.metadata.status, "running");
+  assert.equal(tools[0]?.metadata.stage, "executing");
+  assert.equal(tools[0]?.metadata.message, "Executing Read");
 });
 
 test("tool failed event marks a matching tool row as failed", () => {

@@ -249,6 +249,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     }
     if (
       action.method === "tool.start" ||
+      action.method === "tool.progress" ||
       action.method === "tool.complete" ||
       action.method === "tool.failed"
     ) {

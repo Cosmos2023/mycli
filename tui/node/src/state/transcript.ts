@@ -57,7 +57,7 @@ export function applyToolEvent(
 
 export function applyToolLifecycleEvent(
   items: TranscriptItem[],
-  method: "tool.start" | "tool.complete" | "tool.failed",
+  method: "tool.start" | "tool.progress" | "tool.complete" | "tool.failed",
   params: Record<string, unknown>,
 ): TranscriptItem[] {
   const metadata = lifecycleMetadata(method, params);
@@ -79,11 +79,16 @@ export function applyToolLifecycleEvent(
 }
 
 function lifecycleMetadata(
-  method: "tool.start" | "tool.complete" | "tool.failed",
+  method: "tool.start" | "tool.progress" | "tool.complete" | "tool.failed",
   params: Record<string, unknown>,
 ): Record<string, unknown> {
   const name = stringParam(params.name) ?? stringParam(params.tool_name) ?? "Tool";
-  const status = method === "tool.start" ? "running" : method === "tool.failed" ? "failed" : "done";
+  const status =
+    method === "tool.start" || method === "tool.progress"
+      ? "running"
+      : method === "tool.failed"
+        ? "failed"
+        : "done";
   return {
     ...params,
     tool_name: name,

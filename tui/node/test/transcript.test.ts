@@ -66,6 +66,53 @@ test("tool lifecycle start creates running summary and complete updates it in pl
   assert.equal(items[0]?.metadata.summary, "Read pyproject.toml");
 });
 
+test("tool lifecycle progress updates a running row in place", () => {
+  let items: TranscriptItem[] = [];
+
+  items = applyToolLifecycleEvent(items, "tool.start", {
+    client_turn_id: "c1",
+    tool_id: "call_read_1",
+    call_id: "call_read_1",
+    name: "Read",
+    context: "pyproject.toml",
+    args_preview: "file_path=pyproject.toml",
+  });
+  items = applyToolLifecycleEvent(items, "tool.progress", {
+    client_turn_id: "c1",
+    tool_id: "call_read_1",
+    call_id: "call_read_1",
+    name: "Read",
+    stage: "executing",
+    message: "Executing Read",
+    args_preview: "file_path=pyproject.toml",
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.type, "tool_summary");
+  assert.equal(items[0]?.metadata.status, "running");
+  assert.equal(items[0]?.metadata.stage, "executing");
+  assert.equal(items[0]?.metadata.message, "Executing Read");
+  assert.equal(items[0]?.metadata.context, "pyproject.toml");
+});
+
+test("tool lifecycle progress creates a running fallback row", () => {
+  const items = applyToolLifecycleEvent([], "tool.progress", {
+    client_turn_id: "c1",
+    tool_id: "call_read_1",
+    call_id: "call_read_1",
+    name: "Read",
+    stage: "executing",
+    message: "Executing Read",
+    args_preview: "file_path=pyproject.toml",
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.type, "tool_summary");
+  assert.equal(items[0]?.metadata.status, "running");
+  assert.equal(items[0]?.metadata.stage, "executing");
+  assert.equal(items[0]?.text, "Read file_path=pyproject.toml");
+});
+
 test("tool lifecycle failed completion creates fallback failed summary", () => {
   const items = applyToolLifecycleEvent([], "tool.failed", {
     client_turn_id: "c1",
