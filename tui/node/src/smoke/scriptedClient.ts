@@ -2,6 +2,15 @@ import { GatewayClient } from "../protocol/client.ts";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
 import { initialState, reduceShellState } from "../state/reducer.ts";
 
+async function dumpStateIfRequested(state: ReturnType<typeof initialState>): Promise<void> {
+  const dumpPath = process.env.MYCLI_NODE_TUI_STATE_DUMP;
+  if (!dumpPath) {
+    return;
+  }
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(dumpPath, `${JSON.stringify(state)}\n`, "utf8");
+}
+
 export async function runScriptedClient(
   scriptRaw = process.env.MYCLI_NODE_TUI_SCRIPT || "[]",
 ): Promise<void> {
@@ -14,6 +23,11 @@ export async function runScriptedClient(
     input: process.stdin,
     output: process.stdout,
     log: (event) => {
+      state = reduceShellState(state, {
+        type: "gateway.event",
+        method: event.method,
+        params: event.params,
+      });
       process.stderr.write(`[node-tui] ${event.method}\n`);
     },
   });
@@ -44,6 +58,7 @@ export async function runScriptedClient(
         }
         if (result.exit_requested === true) {
           await client.send("shutdown", {});
+          await dumpStateIfRequested(state);
           return;
         }
         continue;
@@ -56,6 +71,7 @@ export async function runScriptedClient(
       );
     }
     await client.send("shutdown", {});
+    await dumpStateIfRequested(state);
   } finally {
     client.stop();
   }

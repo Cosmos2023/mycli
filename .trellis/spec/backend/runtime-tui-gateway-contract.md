@@ -38,6 +38,8 @@
   - `status.changed`
 - TypeScript reducer entry point:
   `reduceShellState(state: ShellState, action: ShellAction) -> ShellState`
+- Scripted smoke state dump:
+  `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/node/src/index.js`
 
 ### 3. Contracts
 - `status.update` payload:
@@ -116,6 +118,9 @@
     for running-turn display. They must not append text to assistant answer
     transcript items.
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
+- The scripted Node client is allowed to write a final reducer state snapshot
+  only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
+  a production persistence mechanism.
 
 ### 4. Validation & Error Matrix
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
@@ -142,6 +147,9 @@
   runtime -> render only the typed `message.delta` content.
 - Node TUI receives only legacy assistant chunks -> render
   `turn.event phase=assistant_delta` content.
+- Scripted smoke with `MYCLI_NODE_TUI_STATE_DUMP` set -> write a bounded JSON
+  reducer snapshot after shutdown so cross-process tests can assert final
+  transcript state without scraping terminal frames.
 - Model stream completion metadata -> emit `message.complete` and the
   compatibility `turn.event` with phase `model_completed`.
 - Turn completes without a pending decision -> emit `turn.completed` with
@@ -203,6 +211,9 @@
   `turn.event` fallback when typed deltas are absent.
 - Reducer/rendering tests proving `reasoning.delta` and `thinking.delta` update
   compact live reasoning state without mutating assistant answer text.
+- Integration smoke proving `run_node_tui_gateway(...)` can drive the real Node
+  scripted client over stdio, typed stream notifications reach the reducer, and
+  final assistant state is not duplicated by compatibility `turn.event`.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
   `message.delta` and still emits compatibility `turn.event`.
 - Gateway unit test proving `RuntimeStreamEvent(kind="reasoning")` emits
