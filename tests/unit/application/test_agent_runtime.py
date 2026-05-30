@@ -1166,6 +1166,39 @@ def test_turn_service_fork_switches_active_session_to_branch(
     ]
 
 
+def test_turn_service_fork_keeps_lineage_after_follow_up_turn(
+    tmp_path: Path,
+) -> None:
+    from mycli.application.turn_service import TurnService
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    service = TurnService(
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+    root = Conversation(session_id="default")
+    root.append(Message(role="user", content="original request"))
+    root.append(Message(role="assistant", content="original answer"))
+    runtime._session_service.save_conversation(root)
+
+    assert service.fork_session(None, "branch", None) == (
+        "forked default -> branch",
+        "fork_point=2",
+        "messages=2",
+    )
+    service.handle_user_turn("continue on branch")
+
+    branch = runtime._session_service.load_conversation("branch")
+    assert branch.parent_id == "default"
+    assert branch.fork_point == 2
+    assert runtime._session_service.resume_conversation("default").session_id == "branch"
+
+
 def test_agent_runtime_keeps_reasoning_and_tool_call_in_same_turn(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
     runtime = AgentRuntime.for_tests(

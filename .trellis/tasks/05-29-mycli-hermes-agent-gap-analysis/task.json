@@ -29,7 +29,8 @@
     "05-29-session-storage-layout-hardening",
     "05-29-logging-hardening",
     "05-29-doctor-diagnostics",
-    "05-30-runtime-smoke-and-diagnostics-verification"
+    "05-30-runtime-smoke-and-diagnostics-verification",
+    "05-30-session-resume-compaction-lifecycle-smoke"
   ],
   "parent": null,
   "relatedFiles": [],

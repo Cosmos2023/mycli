@@ -75,6 +75,11 @@ Questions to answer:
 - Treating `conversation_trees.parent_id` as enough to replay history. For forked
   conversations, use `fork_point` to include only the ancestor segment that the
   child actually forked from.
+- Treating a runtime `Conversation` without `parent_id` and `fork_point` as a
+  request to clear persisted lineage. Ordinary turn execution, compaction, and
+  transcript rebuilds may save plain conversation objects; `SessionService` must
+  preserve existing `conversation_trees` metadata unless a fork/rewind path
+  explicitly supplies new lineage values.
 - Adding diagnostic/search/recall data directly to provider transcript replay.
   Session DB enhancements must stay local unless a caller explicitly asks to load
   or replay that data.

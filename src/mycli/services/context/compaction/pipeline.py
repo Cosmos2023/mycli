@@ -601,6 +601,8 @@ class CompactionPipeline:
 def _copy_conversation(conversation: Conversation) -> Conversation:
     return Conversation(
         session_id=conversation.session_id,
+        parent_id=conversation.parent_id,
+        fork_point=conversation.fork_point,
         messages=list(conversation.messages),
     )
 
