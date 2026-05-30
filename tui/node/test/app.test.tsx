@@ -3,6 +3,7 @@ import test from "node:test";
 import React from "react";
 import { render } from "ink-testing-library";
 import { Overlay } from "../src/app/Overlay.tsx";
+import { App } from "../src/app/App.tsx";
 import { StatusLine } from "../src/app/StatusLine.tsx";
 import { Transcript } from "../src/app/Transcript.tsx";
 import { THEMES } from "../src/theme/themes.ts";
@@ -65,4 +66,29 @@ test("overlay renders command lines", () => {
   const { lastFrame } = render(<Overlay overlay={state.overlay} theme={state.theme} />);
   assert.match(lastFrame() ?? "", /\/usage/);
   assert.match(lastFrame() ?? "", /turns=1/);
+});
+
+test("app routes normal submit to clarification response while clarification is pending", () => {
+  const submitted: string[] = [];
+  const clarifications: Array<[string, string]> = [];
+  const { stdin } = render(
+    <App
+      state={{
+        ...state,
+        pendingClarification: {
+          request_id: "call_question_1",
+          question: "Which slice should come next?",
+          options: [{ label: "Runtime" }, { label: "TUI" }],
+        },
+      }}
+      onSubmit={(value) => submitted.push(value)}
+      onClarification={(requestId, response) => clarifications.push([requestId, response])}
+    />,
+  );
+
+  stdin.write("Runtime");
+  stdin.write("\r");
+
+  assert.deepEqual(submitted, []);
+  assert.deepEqual(clarifications, [["call_question_1", "Runtime"]]);
 });

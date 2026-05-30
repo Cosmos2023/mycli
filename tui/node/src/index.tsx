@@ -72,6 +72,9 @@ function RuntimeApp() {
       onDecision={(decisionId, choice) => {
         void client.send("approval.respond", { decision_id: decisionId, choice });
       }}
+      onClarification={(requestId, response) => {
+        void client.send("clarify.respond", { request_id: requestId, response });
+      }}
     />
   );
 }

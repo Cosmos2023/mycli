@@ -261,6 +261,31 @@ test("runtime event envelope can carry clarify request into reducer state", () =
   assert.equal(state.transcript.at(-1)?.text, "Pick a path");
 });
 
+test("clarify response clears pending clarification", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "clarify.request",
+    params: {
+      request_id: "call_question_1",
+      tool_id: "call_question_1",
+      call_id: "call_question_1",
+      tool_name: "AskUserQuestion",
+      question: "Pick a path",
+      options: [{ label: "Runtime" }, { label: "TUI" }],
+      multi_select: false,
+    },
+  });
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "clarify.respond",
+    params: { request_id: "call_question_1", response: "Runtime" },
+  });
+
+  assert.equal(state.pendingClarification, null);
+});
+
 test("status update tracks live turn state and clears resolved approval", () => {
   let state = initialState();
   state = reduceShellState(state, {

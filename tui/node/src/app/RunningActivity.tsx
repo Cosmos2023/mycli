@@ -54,6 +54,9 @@ export function activityStyle(
   if (state === "waiting_approval") {
     return { color: theme.warning, glyph: "!" };
   }
+  if (state === "waiting_clarification") {
+    return { color: theme.warning, glyph: "?" };
+  }
   if (state === "failed" || state === "interrupted") {
     return { color: theme.error, glyph: "x" };
   }

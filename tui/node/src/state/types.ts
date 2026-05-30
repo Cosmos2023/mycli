@@ -41,6 +41,7 @@ export type OverlayState = {
 export type TurnLiveState =
   | "running"
   | "waiting_approval"
+  | "waiting_clarification"
   | "completed"
   | "failed"
   | "interrupted";

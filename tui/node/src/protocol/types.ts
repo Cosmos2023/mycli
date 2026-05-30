@@ -3,6 +3,7 @@ export type JsonObject = Record<string, unknown>;
 export type TurnState =
   | "running"
   | "waiting_approval"
+  | "waiting_clarification"
   | "completed"
   | "failed"
   | "interrupted";
@@ -31,6 +32,12 @@ export type ApprovalRespondPayload = {
   client_turn_id?: string;
   decision_id: string;
   choice: string;
+};
+
+export type ClarifyRespondPayload = {
+  client_turn_id?: string;
+  request_id: string;
+  response: string;
 };
 
 export type ClarifyOptionPayload = {
@@ -172,6 +179,7 @@ export type KnownGatewayEvent =
   | Notification<"approval.request", ApprovalRequestPayload>
   | Notification<"approval.respond", ApprovalRespondPayload>
   | Notification<"clarify.request", ClarifyRequestPayload>
+  | Notification<"clarify.respond", ClarifyRespondPayload>
   | Notification<"tool.start", ToolStartPayload>
   | Notification<"tool.progress", ToolProgressPayload>
   | Notification<"tool.complete", ToolCompletePayload>

@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
     HistoryItemType,
     InvokedSkillSnapshot,
     PendingApproval,
+    PendingClarification,
     PendingDecision,
     PlanItem,
     PlanState,
@@ -739,6 +740,43 @@ def test_session_service_round_trips_suspended_pending_approval_call_id(tmp_path
     assert loaded is not None
     assert loaded.pending_approval is not None
     assert loaded.pending_approval.tool_call.call_id == "call_run_shell_2"
+
+
+def test_session_service_round_trips_suspended_pending_clarification(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    suspended = SuspendedTurn(
+        user_message="choose next slice",
+        conversation=(Message(role="user", content="choose next slice"),),
+        pending_clarification=PendingClarification(
+            request_id="call_question_1",
+            tool_call=ToolCall(
+                name="AskUserQuestion",
+                arguments={
+                    "question": "Which slice should come next?",
+                    "options": [{"label": "Runtime"}, {"label": "TUI"}],
+                },
+                reason="clarify scope",
+                call_id="call_question_1",
+            ),
+            question="Which slice should come next?",
+            options=(
+                {"label": "Runtime", "description": "Only runtime contract"},
+                {"label": "TUI", "description": "Render the request"},
+            ),
+            header="Scope",
+            multi_select=False,
+        ),
+    )
+
+    service.save_suspended_turn("demo", suspended)
+    loaded = service.load_suspended_turn("demo")
+
+    assert loaded is not None
+    assert loaded.pending_clarification is not None
+    assert loaded.pending_clarification.request_id == "call_question_1"
+    assert loaded.pending_clarification.tool_call.call_id == "call_question_1"
+    assert loaded.pending_clarification.question == "Which slice should come next?"
+    assert loaded.pending_clarification.options[0]["label"] == "Runtime"
 
 
 def test_session_service_round_trips_plan_state(tmp_path: Path) -> None:

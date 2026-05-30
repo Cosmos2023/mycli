@@ -46,9 +46,9 @@
   `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/node/src/index.js`
 
 ### 3. Contracts
-- `status.update` payload:
-  - `state`: one of `running`, `waiting_approval`, `completed`, `failed`,
-    `interrupted`
+  - `status.update` payload:
+  - `state`: one of `running`, `waiting_approval`,
+    `waiting_clarification`, `completed`, `failed`, `interrupted`
   - `kind`: renderable status kind, normally the same as `state`
   - `text`: human-readable short status
   - `client_turn_id`: optional string linking the status to the submitted turn
@@ -79,23 +79,33 @@
   - `options`: bounded array of `{label, description?}` rows
   - `header`: optional short label
   - `multi_select`: boolean
-  - In the initial contract slice, `clarify.request` is emitted from
-    `AskUserQuestion` tool results with
-    `status == "awaiting_user_response"`. It is a notification contract only;
-    `clarify.respond`, runtime suspension/resume, and TUI rendering are future
-    slices.
+  - `clarify.request` is emitted from `AskUserQuestion` tool results with
+    `status == "awaiting_user_response"`. The runtime must pause the active
+    turn with a persisted pending clarification instead of continuing as if the
+    tool had completed normally.
+- `clarify.respond` request payload:
+  - `request_id`: must match the active pending clarification.
+  - `response`: non-empty user answer text. The TUI may send an option label or
+    free-form text; option-picker semantics are a future polish layer.
+- `clarify.respond` notification payload:
+  - `client_turn_id`: string for the clarification-resolution turn.
+  - `request_id`: the resolved clarification request id.
+  - `response`: bounded response preview for UI/diagnostics. Do not include
+    secrets or unbounded text.
 - `turn.completed` must include `turn_state`. A response with
-  `pending_decision` maps to `waiting_approval`; otherwise it maps to
-  `completed`.
+  `pending_decision` maps to `waiting_approval`; a turn record with
+  `WAITING_CLARIFICATION` maps to `waiting_clarification`; otherwise it maps
+  to `completed`.
 - `turn.status` is the normalized turn outcome/status event for clients that
   want one small routing payload instead of deriving outcomes from
   `turn.completed`, `turn.failed`, `turn.interrupted`, and `status.update`:
   - `client_turn_id`: optional string when known
-  - `state`: one of `waiting_approval`, `completed`, `failed`, `interrupted`
+  - `state`: one of `waiting_approval`, `waiting_clarification`,
+    `completed`, `failed`, `interrupted`
   - `kind`: renderable status kind, normally same as `state`
   - `text`: human-readable short status
   - `terminal`: boolean; true for `completed`, `failed`, and `interrupted`;
-    false for `waiting_approval`
+    false for `waiting_approval` and `waiting_clarification`
   - `message`: optional failure or interruption detail
   - Existing terminal method-name events remain the compatibility path. The
     gateway emits the existing event first, then `turn.status`, then
@@ -158,9 +168,10 @@
   - `pendingClarification` is driven by `clarify.request` and displayed as a
     distinct `clarification` transcript row. It must not reuse approval state or
     approval response keybindings.
-  - `pendingClarification` is cleared by terminal status. A future
-    `clarify.respond` event may also clear it, but this contract slice does not
-    require the client to send a clarification response.
+  - `pendingClarification` is cleared by `clarify.respond` or terminal status.
+  - While `pendingClarification` exists, plain TUI input submit sends
+    `clarify.respond` with `{request_id, response}` instead of `turn.submit`.
+    Slash commands remain slash commands.
   - `tool.start`, `tool.complete`, and `tool.failed` are consumed by the Node
     TUI reducer as `tool_summary` transcript rows. The reducer matches existing
     rows by `tool_id` first and `call_id` second, so completion updates the
@@ -213,7 +224,15 @@
   emit `tool.complete` for the same failed result.
 - `AskUserQuestion` returns a successful tool result with
   `status=awaiting_user_response` -> emit `clarify.request` after the normal
-  successful tool lifecycle events and mirror it through `runtime.event`.
+  successful tool lifecycle events, mirror it through `runtime.event`, persist
+  a suspended turn with pending clarification, and finish the current turn as
+  `waiting_clarification`.
+- `clarify.respond` request with blank `response` -> JSON-RPC `invalid_params`.
+- `clarify.respond` request with a non-matching `request_id` -> runtime returns
+  a non-resuming response; clients must keep diagnostics visible.
+- Accepted `clarify.respond` -> emit `turn.started`, `status.update(running)`,
+  `clarify.respond`, `turn.completed`, `turn.status`, `status.update`, and
+  `status.changed`; mirror `clarify.respond` through `runtime.event`.
 - Model reasoning chunk -> emit `reasoning.delta`, `thinking.delta`, and the
   compatibility `turn.event` with phase `reasoning`.
 - Model assistant text chunk -> emit `message.delta` and the compatibility
@@ -241,6 +260,9 @@
   inferring details from transcript text.
 - Good: TUI renders a concrete clarification request from `clarify.request`
   without conflating it with approval.
+- Good: TUI sends a plain text `clarify.respond` while clarification is
+  pending, and the runtime resumes the suspended turn with the answer as the
+  original `AskUserQuestion` tool result.
 - Good: TUI renders active tool rows from `tool.start` and final summaries from
   `tool.complete` / `tool.failed` without waiting for `turn.completed`.
 - Good: TUI keeps a single row for the same tool id as it moves from running to
@@ -282,6 +304,8 @@
   user-input UX channel, while approval is a safety gate.
 - Bad: Showing clarification response keybindings before `clarify.respond` and
   runtime resume exist.
+- Bad: Emitting `clarify.request` but allowing the model loop to continue
+  without a user answer.
 
 ### 6. Tests Required
 - Gateway unit test for `approval.request` payload fields and option mapping.
@@ -305,6 +329,17 @@
 - Reducer/rendering/status tests proving Node TUI consumes `clarify.request`,
   stores `pendingClarification`, renders a distinct clarification row, supports
   `runtime.event` envelope unwrap, and shows `clarification pending` metadata.
+- Session-service test proving `SuspendedTurn` persists and reloads pending
+  clarification state.
+- Runtime test proving `AskUserQuestion` pauses with
+  `waiting_clarification`, and `resolve_pending_clarification(...)` resumes by
+  injecting the answer as the original tool result.
+- Gateway tests proving `clarify.respond` validates payloads, starts a
+  clarification-resolution turn, emits `clarify.respond`, and mirrors it
+  through `runtime.event`.
+- Node tests proving plain input routes to `clarify.respond` while
+  `pendingClarification` exists and reducer clears pending state when
+  `clarify.respond` is observed.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

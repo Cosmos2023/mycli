@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from mycli.domain.conversation import Message
 from mycli.domain.runtime.approvals import PendingApproval
+from mycli.domain.runtime.clarifications import PendingClarification
 from mycli.domain.runtime.planning import PlanState
 from mycli.domain.runtime.protocol import StopReason
 
@@ -16,4 +17,5 @@ class SuspendedTurn:
     conversation: tuple[Message, ...]
     plan_state: PlanState = field(default_factory=PlanState)
     pending_approval: PendingApproval | None = None
+    pending_clarification: PendingClarification | None = None
     suspend_reason: StopReason = StopReason.INTERRUPTED

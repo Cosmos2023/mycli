@@ -271,7 +271,10 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
           action.params.pending_decision === true || action.params.turn_state === "waiting_approval"
             ? state.pendingApproval
             : null,
-        pendingClarification: null,
+        pendingClarification:
+          action.params.turn_state === "waiting_clarification"
+            ? state.pendingClarification
+            : null,
         transcript: reconcileFinalAnswer(
           state.transcript,
           String(action.params.assistant_message ?? ""),
@@ -419,7 +422,9 @@ function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState 
     ...state,
     liveStatus,
     turnRunning:
-      liveStatus.state === "running" || liveStatus.state === "waiting_approval"
+      liveStatus.state === "running" ||
+      liveStatus.state === "waiting_approval" ||
+      liveStatus.state === "waiting_clarification"
         ? true
         : liveStatus.state === "completed" ||
             liveStatus.state === "failed" ||
@@ -462,7 +467,12 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
   const liveStatus: LiveStatus = {
     state,
     kind: state,
-    text: state === "waiting_approval" ? "Waiting approval" : "Completed",
+    text:
+      state === "waiting_approval"
+        ? "Waiting approval"
+        : state === "waiting_clarification"
+          ? "Waiting clarification"
+          : "Completed",
   };
   if (typeof params.client_turn_id === "string") {
     liveStatus.client_turn_id = params.client_turn_id;
@@ -479,6 +489,7 @@ function isTurnLiveState(value: unknown): value is TurnLiveState {
   return (
     value === "running" ||
     value === "waiting_approval" ||
+    value === "waiting_clarification" ||
     value === "completed" ||
     value === "failed" ||
     value === "interrupted"

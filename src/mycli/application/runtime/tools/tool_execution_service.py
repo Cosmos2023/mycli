@@ -11,6 +11,7 @@ from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     ActivityEvent,
     InvokedSkillSnapshot,
+    PendingClarification,
     PlanState,
     RuntimeBlock,
     RuntimeStreamEvent,
@@ -317,6 +318,125 @@ class ToolExecutionService:
                     activity_events=activity_events,
                     lifecycle_events=lifecycle_events,
                 )
+
+    def execute_tool_call_for_clarification(
+        self,
+        *,
+        conversation: Conversation,
+        call: ToolCall,
+        tool_router: ToolRouter,
+        tool_exposure: ToolExposure,
+        plan_state: PlanState,
+        turn_id: str,
+        activity_events: list[ActivityEvent],
+        turn_items: list[TurnItem],
+        provider_id: str | None = None,
+        response_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+        lifecycle_sink: ToolLifecycleSink | None = None,
+    ) -> tuple[PlanState, PendingClarification | None]:
+        normalized_call = self._normalize_tool_call(call)
+        execution_started_at = self._monotonic()
+        effect_profile = self._effect_profile_for_call(
+            call=normalized_call,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+        )
+        turn_metadata = dict(metadata or {})
+        turn_metadata["arguments"] = normalized_call.arguments
+        turn_metadata["provider_id"] = provider_id
+        start_event = self._tool_activity_event(normalized_call, phase="start")
+        activity_events.append(start_event)
+        self._notify_lifecycle_sink(
+            lifecycle_sink,
+            self._tool_lifecycle_start_event(call=normalized_call, context=start_event.message),
+        )
+        self._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.TOOL_CALL,
+                text=start_event.message,
+                tool_name=normalized_call.name,
+                call_id=normalized_call.call_id,
+                metadata=turn_metadata,
+            ),
+        )
+        try:
+            result = tool_router.execute(normalized_call, exposure=tool_exposure)
+        except ValueError as exc:
+            result = ToolResult(
+                success=False,
+                summary=f"Tool {normalized_call.name} could not run because its arguments were invalid.",
+                error=str(exc),
+                raw_payload={
+                    "tool_name": normalized_call.name,
+                    "arguments": dict(normalized_call.arguments),
+                    "error_kind": "tool_validation_error",
+                },
+            )
+        pending_clarification = self.pending_clarification_from_result(
+            call=normalized_call,
+            result=result,
+        )
+        if pending_clarification is None:
+            next_plan_state = self._record_tool_outcome(
+                conversation=conversation,
+                normalized_call=normalized_call,
+                result=result,
+                plan_state=plan_state,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                response_id=response_id,
+                record_assistant_call=False,
+                execution_started_at=execution_started_at,
+                effect_profile=effect_profile,
+                lifecycle_sink=lifecycle_sink,
+            )
+            return next_plan_state, None
+        self._notify_lifecycle_sink(
+            lifecycle_sink,
+            self._tool_lifecycle_progress_event(call=normalized_call),
+        )
+        activity_events.append(
+            self._tool_activity_event(
+                normalized_call,
+                phase="finish",
+                result_summary=result.summary,
+            )
+        )
+        self._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.CLARIFICATION_REQUEST,
+                text=pending_clarification.question,
+                tool_name=normalized_call.name,
+                call_id=normalized_call.call_id,
+                metadata={
+                    "request_id": pending_clarification.request_id,
+                    "question": pending_clarification.question,
+                    "options": list(pending_clarification.options),
+                    "header": pending_clarification.header,
+                    "multi_select": pending_clarification.multi_select,
+                },
+            ),
+        )
+        self._notify_lifecycle_sink(
+            lifecycle_sink,
+            self._tool_lifecycle_finish_event(
+                call=normalized_call,
+                result=result,
+                duration_seconds=max(0.0, self._monotonic() - execution_started_at),
+            ),
+        )
+        clarify_event = self._clarify_request_event(call=normalized_call, result=result)
+        if clarify_event is not None:
+            self._notify_lifecycle_sink(lifecycle_sink, clarify_event)
+        return plan_state, pending_clarification
 
     def _execute_parallel_batch(
         self,
@@ -638,6 +758,51 @@ class ToolExecutionService:
         if isinstance(header, str) and header.strip():
             metadata["header"] = self._lifecycle_preview(header)
         return RuntimeStreamEvent(kind="clarify_request", tool_name=call.name, metadata=metadata)
+
+    def pending_clarification_from_result(
+        self,
+        *,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> PendingClarification | None:
+        event = self._clarify_request_event(call=call, result=result)
+        if event is None:
+            return None
+        raw_options = event.metadata.get("options")
+        return PendingClarification(
+            request_id=str(event.metadata["request_id"]),
+            tool_call=self._normalize_tool_call(call),
+            question=str(event.metadata["question"]),
+            options=tuple(
+                dict(item)
+                for item in raw_options
+                if isinstance(item, dict)
+            ) if isinstance(raw_options, list) else (),
+            header=str(event.metadata.get("header") or ""),
+            multi_select=bool(event.metadata.get("multi_select", False)),
+        )
+
+    def record_clarification_response(
+        self,
+        conversation: Conversation,
+        *,
+        call: ToolCall,
+        response: str,
+    ) -> None:
+        content = f"User answered clarification: {self._lifecycle_preview(response)}"
+        self._record_tool_message(
+            conversation,
+            tool_name=call.name,
+            content=content,
+            success=True,
+            summary="User answered clarification",
+            error=None,
+            raw_payload={
+                "status": "answered",
+                "response": response,
+            },
+            tool_call_id=call.call_id,
+        )
 
     def _clarify_options(self, raw_options: object) -> list[dict[str, object]]:
         if not isinstance(raw_options, list):

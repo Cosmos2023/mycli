@@ -296,6 +296,7 @@ class FakeTurnService(FakeService):
         super().__init__(workspace_root)
         self.turn_calls: list[str] = []
         self.resolved_choices: list[str] = []
+        self.clarification_responses: list[tuple[str, str]] = []
 
     def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
         self.turn_calls.append(message)
@@ -315,6 +316,10 @@ class FakeTurnService(FakeService):
         self.resolved_choices.append(choice)
         self._session_service.pending_decision = None
         return TurnResponse(assistant_message=f"resolved {choice}")
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        self.clarification_responses.append((request_id, response))
+        return TurnResponse(assistant_message=f"clarified {response}")
 
 
 class FakeToolLifecycleTurnService(FakeService):
@@ -856,6 +861,71 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["2"]
+
+
+def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="clarify.respond",
+            params={"request_id": "call_question_1", "response": "Runtime"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "request_id": "call_question_1",
+        "client_turn_id": "clarify_req_1",
+    }
+    assert service.clarification_responses == [("call_question_1", "Runtime")]
+    assert [method for method, _params in events if method != "runtime.event"] == [
+        "turn.started",
+        "status.update",
+        "clarify.respond",
+        "turn.completed",
+        "turn.status",
+        "status.update",
+        "status.changed",
+    ]
+    clarify = next(params for method, params in events if method == "clarify.respond")
+    assert clarify == {
+        "client_turn_id": "clarify_req_1",
+        "request_id": "call_question_1",
+        "response": "Runtime",
+    }
+    assert {
+        "type": "clarify.respond",
+        "payload": clarify,
+    }.items() <= next(
+        params
+        for method, params in events
+        if method == "runtime.event" and params["type"] == "clarify.respond"
+    ).items()
+
+
+def test_gateway_clarify_respond_rejects_blank_response(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="clarify.respond",
+            params={"request_id": "call_question_1", "response": "   "},
+        )
+    )
+
+    assert response.error == {
+        "code": "invalid_params",
+        "message": "response is required.",
+    }
 
 
 def test_gateway_decision_resolve_emits_turn_status_for_failures(tmp_path: Path) -> None:

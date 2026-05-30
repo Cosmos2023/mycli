@@ -22,6 +22,7 @@ export function App({
   onInterrupt,
   onDraftChange,
   onDecision,
+  onClarification,
 }: {
   state: ShellState;
   width?: number;
@@ -31,6 +32,7 @@ export function App({
   onInterrupt?: () => void;
   onDraftChange?: (value: string) => void;
   onDecision?: (decisionId: string, choice: string) => void;
+  onClarification?: (requestId: string, response: string) => void;
 }) {
   return (
     <Box flexDirection="column" minHeight={10}>
@@ -66,10 +68,23 @@ export function App({
             onCommand?.(value);
             return;
           }
+          const requestId = clarificationRequestId(state.pendingClarification);
+          if (requestId) {
+            onClarification?.(requestId, value);
+            return;
+          }
           onSubmit?.(value);
         }}
         onInterrupt={onInterrupt ?? (() => undefined)}
       />
     </Box>
   );
+}
+
+function clarificationRequestId(payload: Record<string, unknown> | null): string | null {
+  if (!payload) {
+    return null;
+  }
+  const requestId = payload.request_id;
+  return typeof requestId === "string" && requestId.trim() ? requestId : null;
 }

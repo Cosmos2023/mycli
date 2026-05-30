@@ -11,6 +11,9 @@ from mycli.domain.runtime.approvals import (
     ApprovalStatus as ApprovalStatus,
     PendingApproval as PendingApproval,
 )
+from mycli.domain.runtime.clarifications import (
+    PendingClarification as PendingClarification,
+)
 from mycli.domain.runtime.blocks import (
     BlockType as BlockType,
     ModelTurnResult as ModelTurnResult,
@@ -282,6 +285,7 @@ __all__ = [
     "ModelDecision",
     "ModelTurnResult",
     "PendingApproval",
+    "PendingClarification",
     "PendingDecision",
     "PlanItem",
     "PlanState",

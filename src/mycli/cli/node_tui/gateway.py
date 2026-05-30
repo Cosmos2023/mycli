@@ -27,6 +27,7 @@ from mycli.domain.runtime import (
     RuntimeEventEnvelope,
     RuntimeStreamEvent,
     TurnResponse,
+    TurnStatus,
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
@@ -122,6 +123,8 @@ class NodeTuiGateway:
                 return self._handle_decision_resolve(request)
             if request.method == "approval.respond":
                 return self._handle_approval_response(request)
+            if request.method == "clarify.respond":
+                return self._handle_clarification_response(request)
             if request.method == "completion.slash":
                 return result_response(request.id, self._handle_completion_slash(request.params))
             if request.method == "completion.path":
@@ -536,6 +539,95 @@ class NodeTuiGateway:
                 self._turn_running = False
             self._emit_event("status.changed", self._status_payload())
 
+    def _handle_clarification_response(self, request: RpcRequest) -> RpcResponse:
+        request_id = _required_str(request.params, "request_id").strip()
+        if not request_id:
+            return error_response(request.id, code="invalid_params", message="request_id is required.")
+        response = _required_str(request.params, "response").strip()
+        if not response:
+            return error_response(request.id, code="invalid_params", message="response is required.")
+        client_turn_id = f"clarify_{request.id}"
+        with self._turn_lock:
+            if self._turn_running:
+                return error_response(
+                    request.id,
+                    code="turn_in_progress",
+                    message="A turn is already running.",
+                )
+            self._turn_running = True
+            self._turn_thread = Thread(
+                target=self._run_clarification_worker,
+                kwargs={
+                    "request_id": request_id,
+                    "response": response,
+                    "client_turn_id": client_turn_id,
+                },
+                daemon=True,
+            )
+            self._turn_thread.start()
+        return result_response(
+            request.id,
+            {"accepted": True, "request_id": request_id, "client_turn_id": client_turn_id},
+        )
+
+    def _run_clarification_worker(
+        self,
+        *,
+        request_id: str,
+        response: str,
+        client_turn_id: str,
+    ) -> None:
+        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_status_update(
+            client_turn_id=client_turn_id,
+            state="running",
+            kind="running",
+            text="Resolving clarification",
+        )
+        try:
+            turn_response = self.service.resolve_pending_clarification(request_id, response)
+        except Exception as exc:
+            self._emit_event(
+                "turn.failed",
+                {"client_turn_id": client_turn_id, "message": str(exc)},
+            )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="failed",
+                message=str(exc),
+            )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="failed",
+                kind="failed",
+                text="Failed",
+            )
+        else:
+            self._emit_event(
+                "clarify.respond",
+                {
+                    "client_turn_id": client_turn_id,
+                    "request_id": request_id,
+                    "response": _bounded_text(response),
+                },
+            )
+            self._emit_event(
+                "turn.completed",
+                self._turn_completed_payload(client_turn_id=client_turn_id, response=turn_response),
+            )
+            turn_state = _turn_state_for_response(turn_response)
+            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state=turn_state,
+                kind=turn_state,
+                text=_status_text_for_state(turn_state),
+            )
+        finally:
+            with self._turn_lock:
+                self._turn_running = False
+            self._emit_event("status.changed", self._status_payload())
+
     def _handle_completion_slash(self, params: dict[str, object]) -> dict[str, object]:
         prefix = _optional_str(params.get("prefix")) or "/"
         return {
@@ -636,6 +728,13 @@ def _positive_int(value: object, *, default: int) -> int:
     return value
 
 
+def _bounded_text(value: str, *, max_chars: int = 500) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3] + "..."
+
+
 def _view_mode_from_command(command: str) -> str | None:
     parts = command.split(maxsplit=1)
     if len(parts) == 2 and parts[0] == "/view" and parts[1] in {"default", "verbose", "focus"}:
@@ -666,6 +765,8 @@ def _approval_request_payload(
 def _turn_state_for_response(response: TurnResponse) -> str:
     if response.pending_decision is not None:
         return "waiting_approval"
+    if response.turn is not None and response.turn.status is TurnStatus.WAITING_CLARIFICATION:
+        return "waiting_clarification"
     return "completed"
 
 
@@ -673,6 +774,7 @@ def _status_text_for_state(state: str) -> str:
     return {
         "running": "Running",
         "waiting_approval": "Waiting approval",
+        "waiting_clarification": "Waiting clarification",
         "completed": "Completed",
         "failed": "Failed",
         "interrupted": "Interrupted",
