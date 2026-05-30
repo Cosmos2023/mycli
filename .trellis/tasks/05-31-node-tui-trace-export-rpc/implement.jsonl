@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guidelines for gateway/service changes."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Authoritative Node gateway contract for JSON-RPC methods and events."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Trace/log export contract and sanitization constraints."}
+{"file": ".trellis/tasks/05-31-node-tui-trace-export-rpc/research/node-gateway-trace-export-rpc.md", "reason": "Task-specific RPC design notes."}

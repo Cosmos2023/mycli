@@ -17,6 +17,7 @@
 - Python event emitter:
   `NodeTuiGateway._emit_event(method: str, params: dict[str, object]) -> None`
 - Turn submit request method: `turn.submit`
+- Trace export request method: `trace.export`
 - Approval response request methods:
   - Preferred: `approval.respond`
   - Compatibility: `decision.resolve`
@@ -58,6 +59,14 @@
 - `turn.completed` must include `turn_state`. A response with
   `pending_decision` maps to `waiting_approval`; otherwise it maps to
   `completed`.
+- `trace.export` is a read-only pull RPC for machine-readable runtime trace
+  rows:
+  - Request payload accepts optional `tail`; invalid or non-positive values use
+    the gateway default.
+  - Response payload includes `session_id`, `format: "jsonl"`, and `rows`.
+  - `rows` contains unprefixed JSONL row strings from the active session trace.
+  - The slash command `/trace-jsonl` may prefix these rows for human command
+    output, but RPC consumers must receive raw row strings.
 - Reducer state:
   - `liveStatus` is driven by `status.update` and terminal turn events.
   - `pendingApproval` is driven by `approval.request`.
@@ -71,6 +80,8 @@
 - Invalid `status.update.state` in the reducer -> ignore the event and preserve
   existing state.
 - Turn starts -> emit `turn.started` and live `status.update` with `running`.
+- `trace.export` -> return bounded sanitized JSONL rows without mutating trace
+  files or session state.
 - Turn returns `pending_decision` -> emit `approval.request`, then
   `turn.completed` with `turn_state=waiting_approval`, then `status.update`
   with `waiting_approval`.
@@ -85,12 +96,16 @@
   inferring details from transcript text.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
+- Good: External/extension clients call `trace.export` instead of scraping
+  human `/trace` or prefixed `/trace-jsonl` command output.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
   UI a gate exists but not how to render or resolve it.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
   payload types and reducer tests.
+- Bad: Returning `[trace-jsonl]` prefixes from `trace.export`; those are only
+  for slash command transcript output.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
   reference for channel separation.
 
@@ -100,6 +115,8 @@
   compatibility.
 - Gateway tests for `status.update` on running, waiting approval, completed,
   failed, and interrupted paths when those paths are changed.
+- Gateway unit test proving `trace.export` returns unprefixed JSONL rows and
+  honors bounded `tail` behavior.
 - Reducer unit test for `approval.request`, `approval.respond`,
   `status.update`, and terminal clearing behavior.
 - Rendering test proving live status text is displayed instead of a hardcoded

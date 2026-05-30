@@ -120,6 +120,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_completion_path(request.params))
             if request.method == "status.inspect":
                 return result_response(request.id, self._status_payload())
+            if request.method == "trace.export":
+                return result_response(request.id, self._handle_trace_export(request.params))
             if request.method == "session.list":
                 return result_response(request.id, self._handle_session_list())
             if request.method == "session.resume":
@@ -495,6 +497,14 @@ class NodeTuiGateway:
         if self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
         return {"session_id": self.service._config.session_id, "lines": lines}
+
+    def _handle_trace_export(self, params: dict[str, object]) -> dict[str, object]:
+        tail = _positive_int(params.get("tail"), default=50)
+        return {
+            "session_id": self.service._config.session_id,
+            "format": "jsonl",
+            "rows": list(self.service.export_trace_jsonl(tail=tail)),
+        }
 
     def _status_payload(self) -> dict[str, object]:
         context_window = self.service.current_context_window_metrics()

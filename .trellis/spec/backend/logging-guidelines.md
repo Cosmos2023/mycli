@@ -29,6 +29,8 @@ the local log root and must never become provider transcript inputs.
 - Slash command: `/logs` renders `TurnService.inspect_logs()` with `[log]` prefixes.
 - Slash command: `/trace-jsonl` renders `TurnService.export_trace_jsonl()` with
   `[trace-jsonl]` prefixes for machine-readable runtime trace rows.
+- Node gateway RPC: `trace.export` renders the same rows without slash-command
+  prefixes for external/extension clients.
 
 ### 3. Contracts
 - CLI/runtime injection uses `MycliStorageLayout.from_home_dir(home_dir).logs_dir`,
@@ -62,6 +64,8 @@ the local log root and must never become provider transcript inputs.
 - Secret-like text in message/context/raw payload -> redact before persistence.
 - `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
   session trace without mutating trace files.
+- `trace.export` -> return the same bounded sanitized JSONL rows as raw row
+  strings, not prefixed command output.
 
 ### 5. Good/Base/Bad Cases
 - Good: `build_turn_service(..., home=home)` creates a log service rooted at
@@ -75,6 +79,8 @@ the local log root and must never become provider transcript inputs.
 - Bad: Adding log summaries to system prompts or provider transcript replay.
 - Bad: Building external integrations by scraping human `/trace` prose when a
   JSONL export is available.
+- Bad: Building extension/ACP integrations by stripping `[trace-jsonl]`
+  prefixes when the gateway `trace.export` RPC is available.
 
 ### 6. Tests Required
 - Unit test global and compatibility log roots.
@@ -86,6 +92,7 @@ the local log root and must never become provider transcript inputs.
 - CLI/REPL tests for `/logs` help, completion, and command routing.
 - CLI/REPL tests for `/trace-jsonl` completion, command routing, and JSONL
   export sanitization.
+- Gateway tests for `trace.export` raw rows and tail bounding.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct
