@@ -383,24 +383,21 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert response.result == {"accepted": True, "client_turn_id": "client_1"}
-    assert [method for method, _params in events] == [
-        "turn.started",
-        "status.update",
-        "turn.event",
-        "turn.event",
-        "turn.event",
-        "turn.event",
-        "turn.completed",
-        "status.update",
-        "status.changed",
-    ]
+    methods = [method for method, _params in events]
+    assert methods[:2] == ["turn.started", "status.update"]
+    assert methods.count("turn.event") == 4
+    assert "reasoning.delta" in methods
+    assert "thinking.delta" in methods
+    assert "message.delta" in methods
+    assert "message.complete" in methods
+    assert methods[-3:] == ["turn.completed", "status.update", "status.changed"]
     assert events[1][1] == {
         "client_turn_id": "client_1",
         "state": "running",
         "kind": "running",
         "text": "Running",
     }
-    completed = events[-3][1]
+    completed = next(params for method, params in events if method == "turn.completed")
     assert completed["assistant_message"] == "hello world"
     assert completed["progress_updates"] == ["[progress] done"]
     assert completed["plan_steps"] == ["completed: smoke"]
@@ -410,6 +407,47 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
         "state": "completed",
         "kind": "completed",
         "text": "Completed",
+    }
+
+
+def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    methods = [method for method, _params in events]
+    assert "reasoning.delta" in methods
+    assert "thinking.delta" in methods
+    assert "message.delta" in methods
+    assert "message.complete" in methods
+    assert methods.count("turn.event") == 4
+    assert next(params for method, params in events if method == "reasoning.delta") == {
+        "client_turn_id": "client_1",
+        "text": "thinking",
+    }
+    assert next(params for method, params in events if method == "thinking.delta") == {
+        "client_turn_id": "client_1",
+        "text": "thinking",
+    }
+    assert next(params for method, params in events if method == "message.delta") == {
+        "client_turn_id": "client_1",
+        "text": "hello",
+    }
+    assert next(params for method, params in events if method == "message.complete") == {
+        "client_turn_id": "client_1",
+        "response_status": "completed",
     }
 
 

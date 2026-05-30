@@ -273,6 +273,20 @@ class NodeTuiGateway:
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
             return
+        if event.kind == "reasoning":
+            payload: dict[str, object] = {"client_turn_id": client_turn_id, "text": event.text}
+            self._emit_event("reasoning.delta", payload)
+            self._emit_event("thinking.delta", payload)
+        elif event.kind == "text_delta":
+            self._emit_event(
+                "message.delta",
+                {"client_turn_id": client_turn_id, "text": event.text},
+            )
+        elif event.kind == "completed":
+            self._emit_event(
+                "message.complete",
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
         self._emit_event(
             "turn.event",
             {

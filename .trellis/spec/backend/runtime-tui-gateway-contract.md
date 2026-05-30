@@ -28,6 +28,10 @@
   - `tool.start`
   - `tool.complete`
   - `tool.failed`
+  - `message.delta`
+  - `message.complete`
+  - `reasoning.delta`
+  - `thinking.delta`
   - `turn.completed`
   - `turn.failed`
   - `turn.interrupted`
@@ -73,6 +77,23 @@
     a deterministic local fallback when a call id is absent.
   - Lifecycle payloads are UI/diagnostic signals only. They must not be written
     into provider transcript content or stable request-shape inputs.
+- Message and reasoning stream notifications are typed gateway projections of
+  runtime model stream events:
+  - `message.delta` is emitted for assistant text deltas and includes
+    `client_turn_id` and bounded raw `text`.
+  - `reasoning.delta` is emitted for reasoning chunks and includes
+    `client_turn_id` and bounded raw `text`.
+  - `thinking.delta` is emitted as a compatibility alias for the same current
+    reasoning chunks. It must not invent separate model semantics while mycli
+    only has one reasoning stream.
+  - `message.complete` is emitted for model stream completion metadata and
+    includes `client_turn_id` plus bounded metadata from the runtime stream
+    event.
+  - For this slice, `message.complete` is not the authoritative final assistant
+    message. Final assistant text remains in `turn.completed.assistant_message`.
+  - Existing generic `turn.event` notifications must continue to be emitted
+    alongside these typed message/reasoning notifications until Node TUI
+    clients have migrated.
 - Reducer state:
   - `liveStatus` is driven by `status.update` and terminal turn events.
   - `pendingApproval` is driven by `approval.request`.
@@ -96,6 +117,12 @@
 - Tool execution returns an unsuccessful `ToolResult` -> emit `tool.failed`
   during the running turn after the local `ToolResult` is known. Do not also
   emit `tool.complete` for the same failed result.
+- Model reasoning chunk -> emit `reasoning.delta`, `thinking.delta`, and the
+  compatibility `turn.event` with phase `reasoning`.
+- Model assistant text chunk -> emit `message.delta` and the compatibility
+  `turn.event` with phase `assistant_delta`.
+- Model stream completion metadata -> emit `message.complete` and the
+  compatibility `turn.event` with phase `model_completed`.
 - Turn completes without a pending decision -> emit `turn.completed` with
   `turn_state=completed`, then `status.update` with `completed`.
 - Turn raises -> emit `turn.failed`, then `status.update` with `failed`.
@@ -107,6 +134,8 @@
   inferring details from transcript text.
 - Good: TUI renders active tool rows from `tool.start` and final summaries from
   `tool.complete` / `tool.failed` without waiting for `turn.completed`.
+- Good: New clients consume `message.delta` and `reasoning.delta` while older
+  clients keep rendering from `turn.event`.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Base: Older clients still send `decision.resolve` and receive compatible
@@ -115,6 +144,10 @@
   UI a gate exists but not how to render or resolve it.
 - Bad: Treating model-side `RuntimeStreamEvent(kind="tool_call")` as execution
   start. That event only means the model requested a tool.
+- Bad: Rendering both typed `message.delta` and compatibility `turn.event`
+  assistant deltas in the same TUI path, causing duplicate text.
+- Bad: Treating `message.complete` as final assistant content before the
+  runtime emits `turn.completed`.
 - Bad: Sending full file contents, raw tool JSON, or provider transcript
   messages through lifecycle notification payloads.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
@@ -134,6 +167,13 @@
 - Gateway unit test proving `RuntimeStreamEvent(kind="tool_start" |
   "tool_complete" | "tool_failed")` emits `tool.start` / `tool.complete` /
   `tool.failed`, not generic `turn.event`.
+- Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
+  `message.delta` and still emits compatibility `turn.event`.
+- Gateway unit test proving `RuntimeStreamEvent(kind="reasoning")` emits
+  `reasoning.delta`, `thinking.delta`, and still emits compatibility
+  `turn.event`.
+- Gateway unit test proving `RuntimeStreamEvent(kind="completed")` emits
+  `message.complete` and still emits compatibility `turn.event`.
 - Gateway tests for `status.update` on running, waiting approval, completed,
   failed, and interrupted paths when those paths are changed.
 - Reducer unit test for `approval.request`, `approval.respond`,
