@@ -202,6 +202,26 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
       };
     }
+    if (action.method === "reasoning.delta" || action.method === "thinking.delta") {
+      const clientTurnId =
+        typeof action.params.client_turn_id === "string"
+          ? action.params.client_turn_id
+          : state.currentTurnId;
+      const liveStatus: LiveStatus = {
+        state: "running",
+        kind: action.method === "reasoning.delta" ? "reasoning" : "thinking",
+        text: reasoningStatusText(action.params.text),
+      };
+      if (clientTurnId) {
+        liveStatus.client_turn_id = clientTurnId;
+      }
+      return {
+        ...state,
+        turnRunning: true,
+        currentTurnId: clientTurnId,
+        liveStatus,
+      };
+    }
     if (action.method === "turn.event" && action.params.phase === "tool_call") {
       return { ...state, transcript: applyToolEvent(state.transcript, action.params) };
     }
@@ -339,6 +359,15 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
     liveStatus.client_turn_id = params.client_turn_id;
   }
   return liveStatus;
+}
+
+function reasoningStatusText(value: unknown): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "Thinking";
+  }
+  const preview = text.length > 80 ? `${text.slice(0, 77)}...` : text;
+  return `Thinking: ${preview}`;
 }
 
 function isTurnLiveState(value: unknown): value is TurnLiveState {

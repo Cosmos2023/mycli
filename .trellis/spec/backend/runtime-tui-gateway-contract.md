@@ -110,6 +110,12 @@
     notifications. Compatibility `turn.event` `assistant_delta` notifications
     must not append assistant text in the Node TUI, because the gateway emits
     both event families during migration.
+  - Reasoning/thinking display status is driven by typed `reasoning.delta` and
+    `thinking.delta` notifications. These update `liveStatus` with a bounded
+    `Thinking: ...` preview while the turn is running.
+  - Reasoning/thinking deltas must not append transcript rows. Compatibility
+    `turn.event` `reasoning` notifications must not drive transcript text or
+    duplicate the typed live-status path.
   - Assistant finalization is driven by final `message.complete` events where
     `final === true`; stream-metadata `message.complete` events without
     `final: true` must not finalize transcript text.
@@ -160,7 +166,7 @@
 - Good: New clients consume `message.delta` and `reasoning.delta` while older
   clients keep rendering from `turn.event`.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
-  `Waiting approval`, `Resolving approval`, or `Failed`.
+  reasoning previews, `Waiting approval`, `Resolving approval`, or `Failed`.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -171,6 +177,9 @@
   assistant deltas in the same TUI path, causing duplicate text.
 - Bad: Re-enabling compatibility `turn.event` assistant-delta rendering after
   typed `message.delta` consumption has landed.
+- Bad: Rendering typed `reasoning.delta` or `thinking.delta` as assistant
+  transcript content. Reasoning is a running-status signal until the TUI grows
+  a dedicated reasoning view.
 - Bad: Treating `message.complete` as final assistant content before the
   runtime emits the final form with `final: true`.
 - Bad: Finalizing from both final `message.complete` and
@@ -216,6 +225,10 @@
   `turn.completed` alone does not append blank final assistant rows.
 - Reducer unit test proving typed `message.delta` appends assistant stream text
   and compatibility `turn.event` assistant deltas are ignored.
+- Reducer unit test proving typed `reasoning.delta` and `thinking.delta`
+  update live status without appending transcript text.
+- Reducer unit test proving compatibility `turn.event` reasoning messages do
+  not append transcript text.
 - Rendering test proving live status text is displayed instead of a hardcoded
   running label when present.
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node

@@ -100,6 +100,62 @@ test("compat assistant turn events do not append duplicate assistant text", () =
   assert.equal(state.transcript.length, 0);
 });
 
+test("reasoning delta updates live status without appending transcript text", () => {
+  let state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "reasoning.delta",
+    params: {
+      client_turn_id: "c1",
+      text: "checking repository context",
+    },
+  });
+
+  assert.equal(state.turnRunning, true);
+  assert.equal(state.currentTurnId, "c1");
+  assert.equal(state.liveStatus?.state, "running");
+  assert.equal(state.liveStatus?.kind, "reasoning");
+  assert.equal(state.liveStatus?.text, "Thinking: checking repository context");
+  assert.equal(state.transcript.length, 0);
+});
+
+test("thinking delta alias updates live status and bounds long preview", () => {
+  const state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "thinking.delta",
+    params: {
+      client_turn_id: "c2",
+      text: "x".repeat(100),
+    },
+  });
+
+  assert.equal(state.turnRunning, true);
+  assert.equal(state.currentTurnId, "c2");
+  assert.equal(state.liveStatus?.kind, "thinking");
+  assert.equal(state.liveStatus?.text, `Thinking: ${"x".repeat(77)}...`);
+  assert.equal(state.transcript.length, 0);
+});
+
+test("compat reasoning turn event does not append transcript text", () => {
+  const state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "turn.event",
+    params: {
+      client_turn_id: "c1",
+      phase: "reasoning",
+      kind: "reasoning",
+      text: "legacy reasoning",
+    },
+  });
+
+  assert.equal(state.liveStatus, null);
+  assert.equal(state.transcript.length, 0);
+});
+
 test("stream metadata message complete does not finalize assistant text", () => {
   let state = initialState();
   state = reduceShellState(state, {
