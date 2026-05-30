@@ -2,6 +2,12 @@ import { GatewayClient } from "../protocol/client.ts";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
 import { initialState, reduceShellState } from "../state/reducer.ts";
 
+type ScriptedState = ReturnType<typeof initialState>;
+
+type ScriptedAction =
+  | { type: "approval.respond"; choice: string }
+  | { type: "clarify.respond"; response: string };
+
 async function dumpStateIfRequested(state: ReturnType<typeof initialState>): Promise<void> {
   const dumpPath = process.env.MYCLI_NODE_TUI_STATE_DUMP;
   if (!dumpPath) {
@@ -43,6 +49,10 @@ export async function runScriptedClient(
     state = reduceShellState(state, { type: "bootstrap.result", payload: bootstrap });
     const script = JSON.parse(scriptRaw) as unknown[];
     for (const item of script) {
+      if (isScriptedAction(item)) {
+        await runScriptedAction(client, () => state, item);
+        continue;
+      }
       if (typeof item !== "string" || !item.trim()) {
         continue;
       }
@@ -78,4 +88,69 @@ export async function runScriptedClient(
   } finally {
     client.stop();
   }
+}
+
+function isScriptedAction(item: unknown): item is ScriptedAction {
+  if (typeof item !== "object" || item === null || Array.isArray(item)) {
+    return false;
+  }
+  const type = (item as Record<string, unknown>).type;
+  if (type === "approval.respond") {
+    return typeof (item as Record<string, unknown>).choice === "string";
+  }
+  if (type === "clarify.respond") {
+    return typeof (item as Record<string, unknown>).response === "string";
+  }
+  return false;
+}
+
+async function runScriptedAction(
+  client: GatewayClient,
+  getState: () => ScriptedState,
+  action: ScriptedAction,
+): Promise<void> {
+  const state = getState();
+  if (action.type === "approval.respond") {
+    const decisionId = pendingId(state.pendingApproval, "decision_id", "approval.respond");
+    const result = await client.send("approval.respond", {
+      decision_id: decisionId,
+      choice: action.choice,
+    });
+    const clientTurnId = stringField(result, "client_turn_id", "approval.respond");
+    await client.waitForEvent(
+      "turn.completed",
+      (event) => event.params?.client_turn_id === clientTurnId,
+    );
+    return;
+  }
+  const requestId = pendingId(state.pendingClarification, "request_id", "clarify.respond");
+  const result = await client.send("clarify.respond", {
+    request_id: requestId,
+    response: action.response,
+  });
+  const clientTurnId = stringField(result, "client_turn_id", "clarify.respond");
+  await client.waitForEvent(
+    "turn.completed",
+    (event) => event.params?.client_turn_id === clientTurnId,
+  );
+}
+
+function pendingId(
+  pending: Record<string, unknown> | null,
+  key: string,
+  actionName: string,
+): string {
+  const value = pending?.[key];
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  throw new Error(`${actionName} requires pending ${key}.`);
+}
+
+function stringField(payload: Record<string, unknown>, key: string, actionName: string): string {
+  const value = payload[key];
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  throw new Error(`${actionName} response missing ${key}.`);
 }

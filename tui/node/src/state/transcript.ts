@@ -39,6 +39,9 @@ export function applyMessageComplete(
 
 export function reconcileFinalAnswer(items: TranscriptItem[], answer: string): TranscriptItem[] {
   const last = items.at(-1);
+  if (!answer.trim()) {
+    return last?.type === "assistant_stream" ? items.slice(0, -1) : items;
+  }
   const finalItem: TranscriptItem = {
     id: last?.type === "assistant_stream" ? last.id : itemId("assistant"),
     type: "assistant_final",

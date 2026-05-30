@@ -10,7 +10,17 @@ from typing import cast
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.process import NodeTuiProcess
 from mycli.cli.node_tui.gateway import run_node_tui_gateway
-from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
+from mycli.domain.runtime import (
+    DecisionAction,
+    DecisionKind,
+    PendingDecision,
+    RuntimeStreamEvent,
+    StopReason,
+    TurnRecord,
+    TurnResponse,
+    TurnStatus,
+)
+from mycli.domain.tooling.calls import ToolCall
 
 
 class FakeNodeProcess:
@@ -189,3 +199,162 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
     assert [item["text"] for item in assistant_items] == ["hello final"]
     assert "checking files" not in assistant_items[0]["text"]
     assert "hellohello" not in assistant_items[0]["text"]
+
+
+class E2EWaitingSessionService:
+    def __init__(self) -> None:
+        self.pending_decision: PendingDecision | None = None
+        self.suspended_turn: TurnRecord | None = None
+
+    def load_pending_decision(self, _session_id: str) -> object | None:
+        return self.pending_decision
+
+    def load_suspended_turn(self, _session_id: str) -> object | None:
+        return self.suspended_turn
+
+    def load_history_items(self, _session_id: str) -> tuple[object, ...]:
+        return ()
+
+    def list_sessions(self, limit: int = 20) -> tuple[object, ...]:
+        del limit
+        return ()
+
+
+class E2EWaitingStateService:
+    def __init__(self, workspace_root: Path) -> None:
+        self._config = SimpleNamespace(
+            session_id="waiting-smoke",
+            workspace_root=workspace_root,
+            model="gpt-smoke",
+            provider=SimpleNamespace(value="test"),
+            protocol=SimpleNamespace(value="chat_completions"),
+            max_prompt_tokens=12000,
+            tui_startup_mark="default",
+        )
+        self._session_service = E2EWaitingSessionService()
+        self.messages: list[str] = []
+        self.resolved_choices: list[str] = []
+        self.clarification_responses: list[tuple[str, str]] = []
+
+    def current_context_window_metrics(self) -> dict[str, object]:
+        return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        self.messages.append(message)
+        if message == "needs approval":
+            decision = PendingDecision(
+                tool_call=ToolCall(
+                    name="Bash",
+                    arguments={"command": "git push"},
+                    reason="approval smoke",
+                    call_id="call_approval_1",
+                ),
+                kind=DecisionKind.NEEDS_CHOICE,
+                reason="git push requires confirmation.",
+                preview="git push",
+                options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+            )
+            self._session_service.pending_decision = decision
+            return TurnResponse(assistant_message="", pending_decision=decision)
+        if message == "needs clarification":
+            turn = TurnRecord(
+                thread_id="waiting-smoke",
+                turn_id="turn_clarify_1",
+                status=TurnStatus.WAITING_CLARIFICATION,
+                started_at="2026-05-31T00:00:00Z",
+                stop_reason=StopReason.CLARIFICATION_REQUIRED,
+                user_message=message,
+            )
+            self._session_service.suspended_turn = turn
+            if stream_sink is not None:
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="clarify_request",
+                        metadata={
+                            "request_id": "call_question_1",
+                            "tool_id": "call_question_1",
+                            "call_id": "call_question_1",
+                            "tool_name": "AskUserQuestion",
+                            "question": "Which slice should come next?",
+                            "options": [{"label": "Runtime"}, {"label": "TUI"}],
+                            "header": "Scope",
+                            "multi_select": False,
+                        },
+                    )
+                )
+            return TurnResponse(assistant_message="", turn=turn)
+        raise AssertionError(f"unexpected message: {message}")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        self.resolved_choices.append(choice)
+        self._session_service.pending_decision = None
+        return TurnResponse(assistant_message="approval resolved")
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        self.clarification_responses.append((request_id, response))
+        self._session_service.suspended_turn = None
+        return TurnResponse(assistant_message="clarification resolved")
+
+    def inspect_usage(self) -> tuple[str, ...]:
+        return ("session=waiting-smoke",)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        return ("session=waiting-smoke context=test",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        return (f"mode={mode}",)
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        return (f"resumed {session_id or 'waiting-smoke'}",)
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_waiting_state_routes(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-waiting-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    "needs approval",
+                    {"type": "approval.respond", "choice": "approve_once"},
+                    "needs clarification",
+                    {"type": "clarify.respond", "response": "Runtime"},
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EWaitingStateService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["needs approval", "needs clarification"]
+    assert service.resolved_choices == ["1"]
+    assert service.clarification_responses == [("call_question_1", "Runtime")]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["pendingApproval"] is None
+    assert state["pendingClarification"] is None
+    assert state["liveStatus"]["state"] == "completed"
+    approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
+    clarification_items = [item for item in state["transcript"] if item["type"] == "clarification"]
+    assert len(approval_items) == 1
+    assert approval_items[0]["metadata"]["decision_id"] == "decision_current"
+    assert len(clarification_items) == 1
+    assert clarification_items[0]["metadata"]["request_id"] == "call_question_1"
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == [
+        "approval resolved",
+        "clarification resolved",
+    ]

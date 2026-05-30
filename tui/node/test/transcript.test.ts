@@ -143,3 +143,16 @@ test("final answer replaces active stream without duplication", () => {
   assert.equal(next[0]?.type, "assistant_final");
   assert.equal(next[0]?.text, "hello final");
 });
+
+test("blank final answer does not create visible assistant rows", () => {
+  const prelude: TranscriptItem[] = [
+    { id: "u1", type: "user", text: "needs approval", folded: false, metadata: {} },
+  ];
+  const streamed: TranscriptItem[] = [
+    ...prelude,
+    { id: "a1", type: "assistant_stream", text: "draft", folded: false, metadata: {} },
+  ];
+
+  assert.deepEqual(reconcileFinalAnswer(prelude, ""), prelude);
+  assert.deepEqual(reconcileFinalAnswer(streamed, "   "), prelude);
+});

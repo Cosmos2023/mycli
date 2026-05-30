@@ -207,6 +207,11 @@
     annotate the active streamed assistant row with bounded metadata and clear
     matching live reasoning, but it must not append a visible row, mark the turn
     terminal, or replace the final assistant answer.
+  - `turn.completed.assistant_message` is authoritative for final assistant
+    text only when it contains non-blank content. Waiting-state turns commonly
+    complete with an empty assistant message; the reducer must not create a
+    visible blank `assistant_final` row for those turns, and must remove a
+    transient empty stream row if one exists.
   - `runtime.event` can be unwrapped into `{method: type, params: payload}` and
     then processed by the same reducer paths as direct method-name events.
     Production Node TUI clients should avoid feeding both direct and envelope
@@ -285,6 +290,10 @@
 - Scripted smoke with `MYCLI_NODE_TUI_STATE_DUMP` set -> write a bounded JSON
   reducer snapshot after shutdown so cross-process tests can assert final
   transcript state without scraping terminal frames.
+- Scripted smoke waiting-state actions -> read the active `decision_id` or
+  `request_id` from reducer `pendingApproval` / `pendingClarification`, send
+  `approval.respond` / `clarify.respond`, and wait for `turn.completed` with
+  the response `client_turn_id` before continuing.
 - Model stream completion metadata -> emit `message.complete` and the
   compatibility `turn.event` with phase `model_completed`.
 - Turn completes without a pending decision -> emit `turn.completed` with
@@ -327,6 +336,9 @@
   text into the final assistant answer.
 - Good: TUI records `message.complete` metadata on the active assistant stream
   while leaving final answer reconciliation to `turn.completed`.
+- Good: TUI does not render a blank assistant answer for approval or
+  clarification waiting turns whose `turn.completed.assistant_message` is
+  empty.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Good: A request-level gateway failure is visible as `gateway.error` without
@@ -350,6 +362,8 @@
   assistant deltas in the same TUI path, causing duplicate text.
 - Bad: Treating `message.complete` as final assistant content before the
   runtime emits `turn.completed`.
+- Bad: Rendering an empty `assistant_final` row for a waiting approval or
+  waiting clarification turn.
 - Bad: Sending full file contents, raw tool JSON, or provider transcript
   messages through lifecycle notification payloads.
 - Bad: Appending a new visible row on both `tool.start` and `tool.complete` for
@@ -442,6 +456,12 @@
 - Integration smoke proving `run_node_tui_gateway(...)` can drive the real Node
   scripted client over stdio, typed stream notifications reach the reducer, and
   final assistant state is not duplicated by compatibility `turn.event`.
+- Integration smoke proving the real Node scripted client can resolve
+  `approval.request` and `clarify.request` by deriving ids from reducer state,
+  sending the matching gateway request, waiting for the resolution turn, and
+  clearing pending state.
+- Transcript reducer test proving blank final answers do not create visible
+  assistant rows.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
   `message.delta` and still emits compatibility `turn.event`.
 - Gateway unit test proving runtime notifications emit `runtime.event` mirrors
