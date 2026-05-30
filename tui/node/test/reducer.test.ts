@@ -42,21 +42,17 @@ test("turn events stream into one assistant item and finalize from message compl
   });
   state = reduceShellState(state, {
     type: "gateway.event",
-    method: "turn.event",
+    method: "message.delta",
     params: {
       client_turn_id: "c1",
-      phase: "assistant_delta",
-      kind: "text_delta",
       text: "hel",
     },
   });
   state = reduceShellState(state, {
     type: "gateway.event",
-    method: "turn.event",
+    method: "message.delta",
     params: {
       client_turn_id: "c1",
-      phase: "assistant_delta",
-      kind: "text_delta",
       text: "lo",
     },
   });
@@ -89,15 +85,28 @@ test("turn events stream into one assistant item and finalize from message compl
   assert.equal(state.transcript.at(-1)?.text, "hello final");
 });
 
-test("stream metadata message complete does not finalize assistant text", () => {
-  let state = initialState();
-  state = reduceShellState(state, {
+test("compat assistant turn events do not append duplicate assistant text", () => {
+  const state = reduceShellState(initialState(), {
     type: "gateway.event",
     method: "turn.event",
     params: {
       client_turn_id: "c1",
       phase: "assistant_delta",
       kind: "text_delta",
+      text: "legacy",
+    },
+  });
+
+  assert.equal(state.transcript.length, 0);
+});
+
+test("stream metadata message complete does not finalize assistant text", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: {
+      client_turn_id: "c1",
       text: "draft",
     },
   });

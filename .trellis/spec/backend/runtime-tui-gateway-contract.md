@@ -106,9 +106,10 @@
   - `pendingApproval` is driven by `approval.request`.
   - `pendingApproval` is cleared by `approval.respond`, terminal status, or a
     `status.changed` snapshot with `pending_decision === false`.
-  - Assistant stream text is accumulated from compatibility `turn.event`
-    `assistant_delta` notifications until the Node TUI fully migrates to
-    `message.delta`.
+  - Assistant stream text is accumulated from typed `message.delta`
+    notifications. Compatibility `turn.event` `assistant_delta` notifications
+    must not append assistant text in the Node TUI, because the gateway emits
+    both event families during migration.
   - Assistant finalization is driven by final `message.complete` events where
     `final === true`; stream-metadata `message.complete` events without
     `final: true` must not finalize transcript text.
@@ -168,6 +169,8 @@
   start. That event only means the model requested a tool.
 - Bad: Rendering both typed `message.delta` and compatibility `turn.event`
   assistant deltas in the same TUI path, causing duplicate text.
+- Bad: Re-enabling compatibility `turn.event` assistant-delta rendering after
+  typed `message.delta` consumption has landed.
 - Bad: Treating `message.complete` as final assistant content before the
   runtime emits the final form with `final: true`.
 - Bad: Finalizing from both final `message.complete` and
@@ -211,6 +214,8 @@
 - Reducer unit test proving final `message.complete` reconciles the assistant
   transcript, stream-metadata `message.complete` is ignored, and
   `turn.completed` alone does not append blank final assistant rows.
+- Reducer unit test proving typed `message.delta` appends assistant stream text
+  and compatibility `turn.event` assistant deltas are ignored.
 - Rendering test proving live status text is displayed instead of a hardcoded
   running label when present.
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node

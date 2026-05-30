@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend/TUI gateway spec index"}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime-to-Node-TUI message channel contract"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared cross-layer thinking guidance"}
+{"file": ".trellis/tasks/05-31-node-tui-message-delta-consumption/research/node-tui-message-delta-consumption.md", "reason": "Task-specific reducer migration notes"}

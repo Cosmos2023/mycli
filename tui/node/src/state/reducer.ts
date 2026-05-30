@@ -196,7 +196,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
             : state.pendingApproval,
       };
     }
-    if (action.method === "turn.event" && action.params.phase === "assistant_delta") {
+    if (action.method === "message.delta") {
       return {
         ...state,
         transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
