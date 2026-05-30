@@ -39,6 +39,7 @@ const state: ShellState = {
   completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
   overlay: { visible: true, title: "/usage", lines: ["turns=1"] },
   pendingApproval: null,
+  pendingClarification: null,
 };
 
 test("transcript renders user, folded tool summary, and answer without role cards", () => {

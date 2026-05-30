@@ -155,6 +155,12 @@
   - `pendingApproval` is driven by `approval.request`.
   - `pendingApproval` is cleared by `approval.respond`, terminal status, or a
     `status.changed` snapshot with `pending_decision === false`.
+  - `pendingClarification` is driven by `clarify.request` and displayed as a
+    distinct `clarification` transcript row. It must not reuse approval state or
+    approval response keybindings.
+  - `pendingClarification` is cleared by terminal status. A future
+    `clarify.respond` event may also clear it, but this contract slice does not
+    require the client to send a clarification response.
   - `tool.start`, `tool.complete`, and `tool.failed` are consumed by the Node
     TUI reducer as `tool_summary` transcript rows. The reducer matches existing
     rows by `tool_id` first and `call_id` second, so completion updates the
@@ -233,6 +239,8 @@
 ### 5. Good/Base/Bad Cases
 - Good: TUI renders a concrete approval prompt from `approval.request` without
   inferring details from transcript text.
+- Good: TUI renders a concrete clarification request from `clarify.request`
+  without conflating it with approval.
 - Good: TUI renders active tool rows from `tool.start` and final summaries from
   `tool.complete` / `tool.failed` without waiting for `turn.completed`.
 - Good: TUI keeps a single row for the same tool id as it moves from running to
@@ -272,6 +280,8 @@
   reference for channel separation.
 - Bad: Treating `clarify.request` as `approval.request`; clarification is a
   user-input UX channel, while approval is a safety gate.
+- Bad: Showing clarification response keybindings before `clarify.respond` and
+  runtime resume exist.
 
 ### 6. Tests Required
 - Gateway unit test for `approval.request` payload fields and option mapping.
@@ -292,6 +302,9 @@
   `clarify.request` and a `runtime.event` mirror.
 - Node protocol typecheck/client test proving `clarify.request` payloads narrow
   in `GatewayClient.waitForEvent(...)`.
+- Reducer/rendering/status tests proving Node TUI consumes `clarify.request`,
+  stores `pendingClarification`, renders a distinct clarification row, supports
+  `runtime.event` envelope unwrap, and shows `clarification pending` metadata.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

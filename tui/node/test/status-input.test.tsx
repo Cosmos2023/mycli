@@ -47,6 +47,22 @@ test("status metadata includes live status and approval marker", () => {
   assert.match(metadata, /approval pending/);
 });
 
+test("status metadata includes clarification marker", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    model: "deepseek-v4",
+    pendingClarification: {
+      request_id: "call_question_1",
+      question: "Which slice should come next?",
+      options: [{ label: "Runtime" }, { label: "TUI" }],
+    },
+  };
+
+  const metadata = statusMetadata(state);
+  assert.match(metadata, /clarification pending/);
+});
+
 test("status metadata includes bounded live status detail", () => {
   const state = {
     ...initialState({ rawThemeName: "deep-teal" }),

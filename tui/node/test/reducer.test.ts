@@ -203,6 +203,64 @@ test("approval pending event stores prompt state", () => {
   assert.equal(state.pendingApproval?.decision_id, "decision_current");
 });
 
+test("clarify request stores pending state and appends transcript row", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "choose scope" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "clarify.request",
+    params: {
+      client_turn_id: "c1",
+      request_id: "call_question_1",
+      tool_id: "call_question_1",
+      call_id: "call_question_1",
+      tool_name: "AskUserQuestion",
+      question: "Which slice should come next?",
+      options: [
+        { label: "Runtime", description: "Only runtime contract" },
+        { label: "TUI", description: "Render the request" },
+      ],
+      header: "Scope",
+      multi_select: false,
+    },
+  });
+
+  assert.equal(state.pendingClarification?.request_id, "call_question_1");
+  const clarification = state.transcript.at(-1);
+  assert.equal(clarification?.type, "clarification");
+  assert.equal(clarification?.text, "Which slice should come next?");
+  assert.equal(clarification?.metadata.header, "Scope");
+});
+
+test("runtime event envelope can carry clarify request into reducer state", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "choose scope" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "runtime.event",
+    params: {
+      version: 1,
+      sequence: 4,
+      type: "clarify.request",
+      timestamp: 1770000001,
+      payload: {
+        client_turn_id: "c1",
+        request_id: "call_question_1",
+        tool_id: "call_question_1",
+        call_id: "call_question_1",
+        tool_name: "AskUserQuestion",
+        question: "Pick a path",
+        options: [{ label: "Runtime" }, { label: "TUI" }],
+        multi_select: false,
+      },
+    },
+  });
+
+  assert.equal(state.pendingClarification?.request_id, "call_question_1");
+  assert.equal(state.transcript.at(-1)?.type, "clarification");
+  assert.equal(state.transcript.at(-1)?.text, "Pick a path");
+});
+
 test("status update tracks live turn state and clears resolved approval", () => {
   let state = initialState();
   state = reduceShellState(state, {
@@ -246,6 +304,7 @@ test("status update tracks live turn state and clears resolved approval", () => 
   });
 
   assert.equal(state.pendingApproval, null);
+  assert.equal(state.pendingClarification, null);
   assert.equal(state.liveStatus?.state, "completed");
   assert.equal(state.turnRunning, false);
 });
@@ -321,6 +380,7 @@ test("terminal turn status clears live turn bookkeeping without transcript outpu
   assert.equal(state.liveReasoning, null);
   assert.equal(state.typedMessageTurnId, null);
   assert.equal(state.pendingApproval, null);
+  assert.equal(state.pendingClarification, null);
   assert.equal(state.transcript.length, transcriptLength);
 });
 

@@ -13,6 +13,7 @@ export type TranscriptItemType =
   | "warning"
   | "error"
   | "approval"
+  | "clarification"
   | "system_notice";
 
 export type TranscriptItem = {
@@ -80,4 +81,5 @@ export type ShellState = {
   completion: CompletionState;
   overlay: OverlayState;
   pendingApproval: Record<string, unknown> | null;
+  pendingClarification: Record<string, unknown> | null;
 };

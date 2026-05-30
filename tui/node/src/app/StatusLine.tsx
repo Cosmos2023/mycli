@@ -15,6 +15,9 @@ export function statusMetadata(state: ShellState): string {
   if (state.pendingApproval) {
     parts.push("approval pending");
   }
+  if (state.pendingClarification) {
+    parts.push("clarification pending");
+  }
   return parts.join(" · ");
 }
 

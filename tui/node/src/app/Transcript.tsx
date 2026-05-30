@@ -1,6 +1,7 @@
 import React, { memo } from "react";
 import { Box, Text } from "ink";
 import { AssistantBlock } from "./AssistantBlock.tsx";
+import { ClarificationRow } from "./ClarificationRow.tsx";
 import { CommandOutput } from "./CommandOutput.tsx";
 import {
   groupTranscriptIntoTurns,
@@ -66,6 +67,9 @@ const TurnView = memo(function TurnView({
       {turn.user ? <UserPromptRow text={turn.user.text} theme={theme} width={width} /> : null}
       {turn.approvals.map((item) => (
         <SystemNotice key={item.id} text={item.text} type="system_notice" theme={theme} />
+      ))}
+      {turn.clarifications.map((item) => (
+        <ClarificationRow key={item.id} item={item} theme={theme} />
       ))}
       {turn.tools.map((item) => (
         <ToolRow key={item.id} summary={toolSummaryFor(item)} theme={theme} width={width} />

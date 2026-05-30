@@ -63,6 +63,7 @@ export function initialState({
     completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
     overlay: { visible: false, title: "", lines: [] },
     pendingApproval: null,
+    pendingClarification: null,
   };
 }
 
@@ -270,6 +271,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
           action.params.pending_decision === true || action.params.turn_state === "waiting_approval"
             ? state.pendingApproval
             : null,
+        pendingClarification: null,
         transcript: reconcileFinalAnswer(
           state.transcript,
           String(action.params.assistant_message ?? ""),
@@ -295,6 +297,25 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     if (action.method === "approval.respond") {
       return { ...state, pendingApproval: null };
     }
+    if (action.method === "clarify.request") {
+      return {
+        ...state,
+        pendingClarification: action.params,
+        transcript: [
+          ...state.transcript,
+          {
+            id: itemId("clarification"),
+            type: "clarification",
+            text: clarifyTextFromParams(action.params),
+            folded: false,
+            metadata: action.params,
+          },
+        ],
+      };
+    }
+    if (action.method === "clarify.respond") {
+      return { ...state, pendingClarification: null };
+    }
     if (action.method === "status.changed") {
       return {
         ...state,
@@ -319,6 +340,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         typedMessageTurnId: null,
         liveStatus: failedStatus,
         pendingApproval: null,
+        pendingClarification: null,
         transcript: [
           ...state.transcript,
           {
@@ -410,6 +432,7 @@ function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState 
     liveReasoning: isTerminalTurnState(liveStatus.state) ? null : state.liveReasoning,
     typedMessageTurnId: isTerminalTurnState(liveStatus.state) ? null : state.typedMessageTurnId,
     pendingApproval: isTerminalTurnState(liveStatus.state) ? null : state.pendingApproval,
+    pendingClarification: isTerminalTurnState(liveStatus.state) ? null : state.pendingClarification,
   };
 }
 
@@ -445,6 +468,11 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
     liveStatus.client_turn_id = params.client_turn_id;
   }
   return liveStatus;
+}
+
+function clarifyTextFromParams(params: Record<string, unknown>): string {
+  const question = String(params.question ?? "Clarification requested").trim();
+  return question || "Clarification requested";
 }
 
 function isTurnLiveState(value: unknown): value is TurnLiveState {
