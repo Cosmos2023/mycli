@@ -1278,15 +1278,20 @@ def test_agent_runtime_forwards_execution_tool_lifecycle_events_to_sink(tmp_path
         "tool_call",
         "completed",
         "tool_start",
+        "tool_progress",
         "tool_complete",
         "text_delta",
         "completed",
     ]
     tool_start = next(event for event in events if event.kind == "tool_start")
+    tool_progress = next(event for event in events if event.kind == "tool_progress")
     tool_complete = next(event for event in events if event.kind == "tool_complete")
     assert tool_start.tool_name == "Read"
     assert tool_start.metadata["tool_id"] == "call_stream_read_1"
     assert tool_start.metadata["args_preview"] == "file_path=pyproject.toml"
+    assert tool_progress.tool_name == "Read"
+    assert tool_progress.metadata["tool_id"] == "call_stream_read_1"
+    assert tool_progress.metadata["stage"] == "executing"
     assert tool_complete.tool_name == "Read"
     assert tool_complete.metadata["tool_id"] == "call_stream_read_1"
     assert tool_complete.metadata["summary"] == "Read pyproject.toml"

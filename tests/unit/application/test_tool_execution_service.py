@@ -431,7 +431,7 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         lifecycle_sink=events.append,
     )
 
-    assert [event.kind for event in events] == ["tool_start", "tool_complete"]
+    assert [event.kind for event in events] == ["tool_start", "tool_progress", "tool_complete"]
     assert events[0].tool_name == "read_file"
     assert events[0].metadata == {
         "tool_id": "call_read_1",
@@ -442,6 +442,15 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
     }
     assert events[1].tool_name == "read_file"
     assert events[1].metadata == {
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "read_file",
+        "stage": "executing",
+        "message": "Executing read_file",
+        "args_preview": "path=README.md",
+    }
+    assert events[2].tool_name == "read_file"
+    assert events[2].metadata == {
         "tool_id": "call_read_1",
         "call_id": "call_read_1",
         "name": "read_file",
@@ -539,8 +548,13 @@ def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) 
         lifecycle_sink=events.append,
     )
 
-    assert [event.kind for event in events] == ["tool_start", "tool_failed"]
-    failed = events[1]
+    assert [event.kind for event in events] == ["tool_start", "tool_progress", "tool_failed"]
+    progress = events[1]
+    assert progress.tool_name == "Write"
+    assert progress.metadata["tool_id"] == "call_write_1"
+    assert progress.metadata["stage"] == "executing"
+    assert progress.metadata["message"] == "Executing Write"
+    failed = events[2]
     assert failed.tool_name == "Write"
     assert failed.metadata["tool_id"] == "call_write_1"
     assert failed.metadata["call_id"] == "call_write_1"

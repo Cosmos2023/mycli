@@ -27,6 +27,7 @@
   - `approval.request`
   - `approval.respond`
   - `tool.start`
+  - `tool.progress`
   - `tool.complete`
   - `tool.failed`
   - `message.delta`
@@ -103,6 +104,10 @@
   tool-call request streaming:
   - `tool.start` payload includes `client_turn_id`, `tool_id`, `call_id`,
     `name`, compact `context`, and optional bounded `args_preview`.
+  - `tool.progress` payload includes `client_turn_id`, `tool_id`, `call_id`,
+    `name`, `stage`, bounded `message`, and optional bounded `args_preview`.
+    The first implemented progress stage is `executing`, emitted after
+    `tool.start` and before `tool.complete` / `tool.failed`.
   - `tool.complete` payload includes `client_turn_id`, `tool_id`, `call_id`,
     `name`, `duration_s`, bounded `summary`, and `success: true`.
   - `tool.failed` payload includes the same completion fields with
@@ -175,6 +180,9 @@
   `waiting_approval`.
 - Tool execution starts -> emit `tool.start` during the running turn before the
   local tool is executed.
+- Tool execution enters the local execution phase -> emit `tool.progress` with
+  `stage=executing` during the running turn after `tool.start` and before a
+  terminal tool lifecycle event.
 - Tool execution succeeds -> emit `tool.complete` during the running turn after
   the local `ToolResult` is known.
 - Tool execution returns an unsuccessful `ToolResult` -> emit `tool.failed`
@@ -253,8 +261,9 @@
 - Agent runtime test proving lifecycle events flow through
   `handle_user_turn(..., stream_sink=...)` from real execution.
 - Gateway unit test proving `RuntimeStreamEvent(kind="tool_start" |
-  "tool_complete" | "tool_failed")` emits `tool.start` / `tool.complete` /
-  `tool.failed`, not generic `turn.event`.
+  "tool_progress" | "tool_complete" | "tool_failed")` emits `tool.start` /
+  `tool.progress` / `tool.complete` / `tool.failed`, not generic
+  `turn.event`.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

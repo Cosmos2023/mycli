@@ -422,6 +422,10 @@ class ToolExecutionService:
         effect_profile: ToolEffectProfile,
         lifecycle_sink: ToolLifecycleSink | None = None,
     ) -> PlanState:
+        self._notify_lifecycle_sink(
+            lifecycle_sink,
+            self._tool_lifecycle_progress_event(call=normalized_call),
+        )
         if record_assistant_call:
             self._record_assistant_tool_call(
                 conversation,
@@ -562,6 +566,23 @@ class ToolExecutionService:
         if args_preview:
             metadata["args_preview"] = args_preview
         return RuntimeStreamEvent(kind="tool_start", tool_name=call.name, metadata=metadata)
+
+    def _tool_lifecycle_progress_event(
+        self,
+        *,
+        call: ToolCall,
+    ) -> RuntimeStreamEvent:
+        metadata: dict[str, object] = {
+            "tool_id": self._tool_lifecycle_id(call),
+            "call_id": call.call_id or "",
+            "name": call.name,
+            "stage": "executing",
+            "message": self._lifecycle_preview(f"Executing {call.name}"),
+        }
+        args_preview = self._tool_args_preview(call)
+        if args_preview:
+            metadata["args_preview"] = args_preview
+        return RuntimeStreamEvent(kind="tool_progress", tool_name=call.name, metadata=metadata)
 
     def _tool_lifecycle_finish_event(
         self,

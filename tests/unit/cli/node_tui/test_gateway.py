@@ -336,6 +336,20 @@ class FakeToolLifecycleTurnService(FakeService):
             )
             stream_sink(
                 RuntimeStreamEvent(
+                    kind="tool_progress",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "stage": "executing",
+                        "message": "Executing Read",
+                        "args_preview": "path=README.md",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
                     kind="tool_complete",
                     tool_name="Read",
                     metadata={
@@ -530,6 +544,7 @@ def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: 
     assert response.result == {"accepted": True, "client_turn_id": "client_1"}
     methods = [method for method, _params in events]
     assert "tool.start" in methods
+    assert "tool.progress" in methods
     assert "tool.complete" in methods
     assert "tool.failed" in methods
     assert "turn.event" not in methods
@@ -539,6 +554,15 @@ def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: 
         "call_id": "call_read_1",
         "name": "Read",
         "context": "README.md",
+        "args_preview": "path=README.md",
+    }
+    assert next(params for method, params in events if method == "tool.progress") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "Read",
+        "stage": "executing",
+        "message": "Executing Read",
         "args_preview": "path=README.md",
     }
     assert next(params for method, params in events if method == "tool.complete") == {

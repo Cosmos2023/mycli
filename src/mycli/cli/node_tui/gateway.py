@@ -281,9 +281,10 @@ class NodeTuiGateway:
             self._emit_event("status.changed", self._status_payload())
 
     def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:
-        if event.kind in {"tool_start", "tool_complete", "tool_failed"}:
+        if event.kind in {"tool_start", "tool_progress", "tool_complete", "tool_failed"}:
             method = {
                 "tool_start": "tool.start",
+                "tool_progress": "tool.progress",
                 "tool_complete": "tool.complete",
                 "tool_failed": "tool.failed",
             }[event.kind]

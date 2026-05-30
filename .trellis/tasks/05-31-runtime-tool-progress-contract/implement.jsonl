@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index and active guideline map"}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Authoritative runtime/TUI event contract"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime contract quality and test expectations"}
+{"file": ".trellis/tasks/05-31-runtime-tool-progress-contract/research/runtime-tool-progress-contract.md", "reason": "Research for tool.progress payload and sequencing"}
