@@ -4,11 +4,28 @@ import { initialState, reduceShellState } from "../src/state/reducer.ts";
 import { handleLocalCommand, isLocalCommand } from "../src/state/localCommands.ts";
 
 test("recognizes only Node-local slash commands", () => {
+  assert.equal(isLocalCommand("/help"), true);
+  assert.equal(isLocalCommand("/help anything"), true);
   assert.equal(isLocalCommand("/theme"), true);
   assert.equal(isLocalCommand("/theme mono"), true);
   assert.equal(isLocalCommand("/clear"), true);
+  assert.equal(isLocalCommand("/view"), false);
   assert.equal(isLocalCommand("/usage"), false);
   assert.equal(isLocalCommand("/sessions"), false);
+});
+
+test("help command opens local overlay with key actions", () => {
+  const state = initialState({ rawThemeName: "deep-teal" });
+  const action = handleLocalCommand("/help", state);
+  const next = reduceShellState(state, action);
+
+  assert.equal(action.type, "command.result");
+  assert.equal(next.overlay.visible, true);
+  assert.equal(next.overlay.title, "/help");
+  assert.match(next.overlay.lines.join("\n"), /Enter send message/);
+  assert.match(next.overlay.lines.join("\n"), /Approval: press 1-9/);
+  assert.match(next.overlay.lines.join("\n"), /\/theme \[name\]/);
+  assert.equal(next.transcript.length, 0);
 });
 
 test("theme command changes reducer theme without gateway command.run", () => {

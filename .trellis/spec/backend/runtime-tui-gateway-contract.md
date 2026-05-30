@@ -232,6 +232,9 @@
     local TUI state. Completion popup, approval, clarification, running turn,
     and normal input modes should each expose the most relevant keyboard action
     without changing runtime or gateway semantics.
+  - `/help` should be handled as a Node-local command that opens the existing
+    overlay surface with static TUI key/action guidance. Non-local slash
+    commands should continue to route to the gateway.
 - The scripted Node client is allowed to write a final reducer state snapshot
   only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
   a production persistence mechanism.
@@ -335,6 +338,8 @@
 - Good: The input footer shows `Ctrl-C interrupt` while running, numeric
   response guidance while approval is pending, and reply guidance while
   clarification is pending.
+- Good: `/help` is available without a gateway round trip and documents local
+  TUI commands plus modal key actions.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -420,6 +425,8 @@
   metadata fields.
 - Rendering tests proving contextual input hints change with completion,
   approval, clarification, running, and normal modes.
+- Local-command tests proving `/help` opens an overlay while non-local commands
+  still route to the gateway.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

@@ -214,6 +214,24 @@ test("app keeps slash commands routed as commands while clarification is pending
   assert.deepEqual(clarifications, []);
 });
 
+test("app handles help locally without command.run", () => {
+  const commands: string[] = [];
+  const localActions: string[] = [];
+  const { stdin } = render(
+    <App
+      state={state}
+      onCommand={(command) => commands.push(command)}
+      onLocalAction={(action) => localActions.push(action.type)}
+    />,
+  );
+
+  stdin.write("/help");
+  stdin.write("\r");
+
+  assert.deepEqual(commands, []);
+  assert.deepEqual(localActions, ["command.result"]);
+});
+
 test("app input hint follows the current interaction mode", () => {
   assert.equal(inputHint(state), "Enter send · / commands · Ctrl-C interrupt");
   assert.equal(
