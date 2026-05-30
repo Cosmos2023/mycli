@@ -21,6 +21,7 @@
   - Preferred: `approval.respond`
   - Compatibility: `decision.resolve`
 - P1 server notification methods:
+  - `runtime.event`
   - `turn.started`
   - `status.update`
   - `approval.request`
@@ -67,6 +68,17 @@
 - `turn.completed` must include `turn_state`. A response with
   `pending_decision` maps to `waiting_approval`; otherwise it maps to
   `completed`.
+- `runtime.event` is the versioned envelope mirror for runtime notifications:
+  - `version`: integer envelope contract version, currently `1`
+  - `sequence`: monotonically increasing integer per gateway instance
+  - `type`: original event method, for example `message.delta`
+  - `payload`: original event params object
+  - `timestamp`: UNIX timestamp seconds from the gateway process
+  - Existing method-name notifications remain the primary compatibility path.
+    The gateway emits them unchanged and then emits the envelope mirror.
+  - `runtime.event` must not recursively wrap another `runtime.event`.
+  - `runtime.ready` is not mirrored in this slice because it is emitted outside
+    the runtime event boundary during process bootstrap.
 - Tool lifecycle notifications come from real tool execution, not model-side
   tool-call request streaming:
   - `tool.start` payload includes `client_turn_id`, `tool_id`, `call_id`,
@@ -117,6 +129,11 @@
   - `reasoning.delta` and `thinking.delta` update compact live reasoning state
     for running-turn display. They must not append text to assistant answer
     transcript items.
+  - `runtime.event` can be unwrapped into `{method: type, params: payload}` and
+    then processed by the same reducer paths as direct method-name events.
+    Production Node TUI clients should avoid feeding both direct and envelope
+    mirrors into visible state until a transport preference/dedup strategy is
+    introduced.
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
 - The scripted Node client is allowed to write a final reducer state snapshot
   only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
@@ -129,6 +146,9 @@
 - Invalid `status.update.state` in the reducer -> ignore the event and preserve
   existing state.
 - Turn starts -> emit `turn.started` and live `status.update` with `running`.
+- Any runtime event emitted through the gateway event boundary -> preserve the
+  existing method-name notification and emit a `runtime.event` mirror with the
+  next sequence number.
 - Turn returns `pending_decision` -> emit `approval.request`, then
   `turn.completed` with `turn_state=waiting_approval`, then `status.update`
   with `waiting_approval`.
@@ -167,6 +187,8 @@
   done or failed.
 - Good: New clients consume `message.delta` and `reasoning.delta` while older
   clients keep rendering from `turn.event`.
+- Good: Future extension/ACP clients can subscribe to `runtime.event` and route
+  by `type` without knowing every JSON-RPC method name ahead of time.
 - Good: TUI shows a compact running reasoning preview without mixing reasoning
   text into the final assistant answer.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
@@ -187,6 +209,8 @@
   the same `tool_id`; that creates duplicated tool activity.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
   payload types and reducer tests.
+- Bad: Feeding both direct method-name notifications and their `runtime.event`
+  mirrors into the same visible reducer path without deduplication.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
   reference for channel separation.
 
@@ -216,6 +240,12 @@
   final assistant state is not duplicated by compatibility `turn.event`.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits
   `message.delta` and still emits compatibility `turn.event`.
+- Gateway unit test proving runtime notifications emit `runtime.event` mirrors
+  with version, monotonic sequence, original type, original payload, and
+  timestamp.
+- Gateway unit test proving `runtime.event` does not recursively wrap itself.
+- Reducer unit test proving `runtime.event` can unwrap and reuse the existing
+  direct-event reducer handling.
 - Gateway unit test proving `RuntimeStreamEvent(kind="reasoning")` emits
   `reasoning.delta`, `thinking.delta`, and still emits compatibility
   `turn.event`.

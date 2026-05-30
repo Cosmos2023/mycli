@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock, Thread
+import time
 from typing import Protocol
 
 from mycli.application.turn_service import TurnService
@@ -24,6 +25,7 @@ from mycli.domain.runtime import DecisionAction, PendingDecision, RuntimeStreamE
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
+RUNTIME_EVENT_ENVELOPE_VERSION = 1
 COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
@@ -97,6 +99,7 @@ class NodeTuiGateway:
         self._turn_thread: Thread | None = None
         self._turn_running = False
         self._interrupt_requested = False
+        self._event_sequence = 0
 
     def handle_request(self, request: RpcRequest) -> RpcResponse:
         try:
@@ -329,6 +332,18 @@ class NodeTuiGateway:
     def _emit_event(self, method: str, params: dict[str, object]) -> None:
         if self._emit is not None:
             self._emit(method, params)
+            if method != "runtime.event":
+                self._emit("runtime.event", self._runtime_event_envelope(method, params))
+
+    def _runtime_event_envelope(self, method: str, params: dict[str, object]) -> dict[str, object]:
+        self._event_sequence += 1
+        return {
+            "version": RUNTIME_EVENT_ENVELOPE_VERSION,
+            "sequence": self._event_sequence,
+            "type": method,
+            "payload": params,
+            "timestamp": time.time(),
+        }
 
     def _emit_status_update(
         self,

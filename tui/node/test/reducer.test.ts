@@ -111,6 +111,26 @@ test("typed message deltas stream assistant text and suppress duplicate legacy d
   assert.equal(assistant?.text, "hello");
 });
 
+test("runtime event envelope unwraps into existing reducer event handling", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "hello" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "runtime.event",
+    params: {
+      version: 1,
+      sequence: 1,
+      type: "message.delta",
+      timestamp: 1770000000,
+      payload: { client_turn_id: "c1", text: "hello" },
+    },
+  });
+
+  const assistant = state.transcript.find((item) => item.type === "assistant_stream");
+  assert.equal(assistant?.text, "hello");
+  assert.equal(state.typedMessageTurnId, "c1");
+});
+
 test("legacy assistant turn events still stream when typed deltas are absent", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "hello" });

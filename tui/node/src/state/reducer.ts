@@ -173,6 +173,17 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     };
   }
   if (action.type === "gateway.event") {
+    if (action.method === "runtime.event") {
+      const unwrapped = runtimeEventFromParams(action.params);
+      if (!unwrapped) {
+        return state;
+      }
+      return reduceShellState(state, {
+        type: "gateway.event",
+        method: unwrapped.method,
+        params: unwrapped.params,
+      });
+    }
     if (action.method === "turn.started") {
       return {
         ...state,
@@ -441,4 +452,17 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 
 function isViewMode(value: unknown): value is ViewMode {
   return value === "default" || value === "verbose" || value === "focus";
+}
+
+function runtimeEventFromParams(
+  params: Record<string, unknown>,
+): { method: string; params: Record<string, unknown> } | null {
+  if (params.version !== 1 || typeof params.type !== "string" || params.type === "runtime.event") {
+    return null;
+  }
+  const payload = recordOrNull(params.payload);
+  if (!payload) {
+    return null;
+  }
+  return { method: params.type, params: payload };
 }

@@ -20,8 +20,12 @@ function RuntimeApp() {
       new GatewayClient({
         input: process.stdin,
         output: process.stdout,
-        log: (event) =>
-          dispatch({ type: "gateway.event", method: event.method, params: event.params }),
+        log: (event) => {
+          if (event.method === "runtime.event") {
+            return;
+          }
+          dispatch({ type: "gateway.event", method: event.method, params: event.params });
+        },
       }),
     [],
   );

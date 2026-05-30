@@ -23,6 +23,9 @@ export async function runScriptedClient(
     input: process.stdin,
     output: process.stdout,
     log: (event) => {
+      if (event.method === "runtime.event") {
+        return;
+      }
       state = reduceShellState(state, {
         type: "gateway.event",
         method: event.method,

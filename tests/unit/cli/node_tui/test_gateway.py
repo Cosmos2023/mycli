@@ -383,7 +383,8 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert response.result == {"accepted": True, "client_turn_id": "client_1"}
-    methods = [method for method, _params in events]
+    direct_events = [(method, params) for method, params in events if method != "runtime.event"]
+    methods = [method for method, _params in direct_events]
     assert methods[:2] == ["turn.started", "status.update"]
     assert methods.count("turn.event") == 4
     assert "reasoning.delta" in methods
@@ -391,7 +392,7 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     assert "message.delta" in methods
     assert "message.complete" in methods
     assert methods[-3:] == ["turn.completed", "status.update", "status.changed"]
-    assert events[1][1] == {
+    assert direct_events[1][1] == {
         "client_turn_id": "client_1",
         "state": "running",
         "kind": "running",
@@ -402,7 +403,7 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     assert completed["progress_updates"] == ["[progress] done"]
     assert completed["plan_steps"] == ["completed: smoke"]
     assert completed["turn_state"] == "completed"
-    assert events[-2][1] == {
+    assert direct_events[-2][1] == {
         "client_turn_id": "client_1",
         "state": "completed",
         "kind": "completed",
@@ -449,6 +450,48 @@ def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Pa
         "client_turn_id": "client_1",
         "response_status": "completed",
     }
+
+
+def test_gateway_mirrors_runtime_notifications_with_versioned_envelopes(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    envelopes = [params for method, params in events if method == "runtime.event"]
+    direct_events = [(method, params) for method, params in events if method != "runtime.event"]
+    assert envelopes
+    assert len(envelopes) == len(direct_events)
+    assert [envelope["sequence"] for envelope in envelopes] == list(range(1, len(envelopes) + 1))
+    for envelope, (method, params) in zip(envelopes, direct_events, strict=True):
+        assert envelope["version"] == 1
+        assert envelope["type"] == method
+        assert envelope["payload"] == params
+        assert isinstance(envelope["timestamp"], float)
+    assert all(envelope["type"] != "runtime.event" for envelope in envelopes)
+
+
+def test_gateway_runtime_event_envelope_does_not_recurse(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._emit_event("runtime.event", {"type": "status.update", "payload": {}})
+
+    assert events == [("runtime.event", {"type": "status.update", "payload": {}})]
 
 
 def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: Path) -> None:
@@ -620,7 +663,7 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["1"]
-    assert [method for method, _params in events] == [
+    assert [method for method, _params in events if method != "runtime.event"] == [
         "turn.started",
         "status.update",
         "approval.respond",

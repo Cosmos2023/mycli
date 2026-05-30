@@ -13,6 +13,7 @@ __pycache__/
 .worktrees/
 hermes-agent/
 node_modules/
+tui/node/node_modules/
 log/
 evaluation/runs/
 evaluation/**/fixtures/log/
