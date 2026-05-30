@@ -23,3 +23,26 @@ test("status line renders compact session model theme and context", () => {
   const { lastFrame } = render(<StatusLine state={state} />);
   assert.match(lastFrame() ?? "", /deepseek-v4-flash/);
 });
+
+test("status metadata includes live status and approval marker", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    model: "deepseek-v4",
+    liveStatus: {
+      client_turn_id: "c1",
+      state: "waiting_approval" as const,
+      kind: "waiting_approval",
+      text: "Waiting approval",
+    },
+    pendingApproval: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "approve_once", label: "Allow once" }],
+    },
+  };
+
+  const metadata = statusMetadata(state);
+  assert.match(metadata, /Waiting approval/);
+  assert.match(metadata, /approval pending/);
+});

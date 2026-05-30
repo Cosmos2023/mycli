@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { render } from "ink-testing-library";
-import { RunningActivity, activityPath } from "../src/app/RunningActivity.tsx";
+import { RunningActivity, activityPath, activityStyle } from "../src/app/RunningActivity.tsx";
 import { ToolResultRow } from "../src/app/ToolResultRow.tsx";
 import { ToolRow } from "../src/app/ToolRow.tsx";
 import { initialState } from "../src/state/reducer.ts";
@@ -102,5 +102,22 @@ test("running activity prefers live status update text", () => {
   const { lastFrame } = render(<RunningActivity state={state} elapsedSeconds={12} />);
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /● Waiting approval 12s · read/);
+  assert.match(frame, /! Waiting approval 12s · read/);
+});
+
+test("running activity maps live states to semantic styles", () => {
+  const state = initialState({ rawThemeName: "deep-teal" });
+
+  assert.deepEqual(activityStyle("running", state.theme), {
+    color: state.theme.accent,
+    glyph: "●",
+  });
+  assert.deepEqual(activityStyle("waiting_approval", state.theme), {
+    color: state.theme.warning,
+    glyph: "!",
+  });
+  assert.deepEqual(activityStyle("failed", state.theme), {
+    color: state.theme.error,
+    glyph: "x",
+  });
 });

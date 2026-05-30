@@ -7,6 +7,9 @@ export function statusMetadata(state: ShellState): string {
   const session = state.sessionId ? truncateMiddle(state.sessionId, 18) : "pending";
   const model = modelLabel(state.model, 24);
   const parts = [session, model, state.themeName, formatContextUsage(state.status)];
+  if (state.liveStatus && state.liveStatus.state !== "completed") {
+    parts.push(state.liveStatus.text);
+  }
   if (state.pendingApproval) {
     parts.push("approval pending");
   }

@@ -41,6 +41,7 @@ export function App({
       <Overlay overlay={state.overlay} theme={state.theme} />
       <ApprovalPrompt
         pendingApproval={state.pendingApproval}
+        theme={state.theme}
         onDecision={onDecision ?? (() => undefined)}
       />
       <CompletionPopup
