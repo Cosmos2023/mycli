@@ -427,6 +427,9 @@ function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | nul
   if (typeof params.severity === "string") {
     status.severity = params.severity;
   }
+  if (typeof params.message === "string") {
+    status.message = params.message;
+  }
   return status;
 }
 

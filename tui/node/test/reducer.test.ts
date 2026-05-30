@@ -317,6 +317,7 @@ test("terminal turn status clears live turn bookkeeping without transcript outpu
   assert.equal(state.turnRunning, false);
   assert.equal(state.currentTurnId, null);
   assert.equal(state.liveStatus?.state, "interrupted");
+  assert.equal(state.liveStatus?.message, "Interrupt requested");
   assert.equal(state.liveReasoning, null);
   assert.equal(state.typedMessageTurnId, null);
   assert.equal(state.pendingApproval, null);

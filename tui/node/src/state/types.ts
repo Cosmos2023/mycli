@@ -49,6 +49,7 @@ export type LiveStatus = {
   state: TurnLiveState;
   kind: string;
   text: string;
+  message?: string;
   severity?: string;
 };
 
