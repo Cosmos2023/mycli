@@ -205,6 +205,15 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     if (action.method === "turn.event" && action.params.phase === "tool_call") {
       return { ...state, transcript: applyToolEvent(state.transcript, action.params) };
     }
+    if (action.method === "message.complete") {
+      if (action.params.final !== true) {
+        return state;
+      }
+      return {
+        ...state,
+        transcript: reconcileFinalAnswer(state.transcript, String(action.params.text ?? "")),
+      };
+    }
     if (action.method === "turn.completed") {
       return {
         ...state,
@@ -215,10 +224,6 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
           action.params.pending_decision === true || action.params.turn_state === "waiting_approval"
             ? state.pendingApproval
             : null,
-        transcript: reconcileFinalAnswer(
-          state.transcript,
-          String(action.params.assistant_message ?? ""),
-        ),
       };
     }
     if (action.method === "approval.request" || action.method === "approval.pending") {

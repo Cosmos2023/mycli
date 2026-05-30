@@ -106,6 +106,15 @@
   - `pendingApproval` is driven by `approval.request`.
   - `pendingApproval` is cleared by `approval.respond`, terminal status, or a
     `status.changed` snapshot with `pending_decision === false`.
+  - Assistant stream text is accumulated from compatibility `turn.event`
+    `assistant_delta` notifications until the Node TUI fully migrates to
+    `message.delta`.
+  - Assistant finalization is driven by final `message.complete` events where
+    `final === true`; stream-metadata `message.complete` events without
+    `final: true` must not finalize transcript text.
+  - `turn.completed` remains responsible for terminal turn status and pending
+    approval cleanup, but the Node TUI must not append or overwrite assistant
+    transcript text from `turn.completed.assistant_message`.
 
 ### 4. Validation & Error Matrix
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
@@ -161,6 +170,9 @@
   assistant deltas in the same TUI path, causing duplicate text.
 - Bad: Treating `message.complete` as final assistant content before the
   runtime emits the final form with `final: true`.
+- Bad: Finalizing from both final `message.complete` and
+  `turn.completed.assistant_message`, causing duplicate or stale assistant
+  rows.
 - Bad: Sending full file contents, raw tool JSON, or provider transcript
   messages through lifecycle notification payloads.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
@@ -196,6 +208,9 @@
   failed, and interrupted paths when those paths are changed.
 - Reducer unit test for `approval.request`, `approval.respond`,
   `status.update`, and terminal clearing behavior.
+- Reducer unit test proving final `message.complete` reconciles the assistant
+  transcript, stream-metadata `message.complete` is ignored, and
+  `turn.completed` alone does not append blank final assistant rows.
 - Rendering test proving live status text is displayed instead of a hardcoded
   running label when present.
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node

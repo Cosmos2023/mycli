@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend/TUI gateway spec index"}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime-to-Node-TUI event contract for final message.complete"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared cross-layer thinking guidance"}
+{"file": ".trellis/tasks/05-31-node-tui-final-message-complete-consumption/research/node-tui-final-message-complete-consumption.md", "reason": "Task-specific reducer consumption design"}
