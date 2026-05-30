@@ -9,6 +9,7 @@ import type {
 } from "./types.ts";
 
 type PendingRequest = {
+  method: string;
   resolve: (value: JsonObject) => void;
   reject: (error: Error) => void;
 };
@@ -33,6 +34,18 @@ export function decodeMessage(line: string): RpcMessage {
     throw new Error("Unsupported JSON-RPC version");
   }
   return message;
+}
+
+export class GatewayRequestError extends Error {
+  readonly code: string;
+  readonly method: string;
+
+  constructor({ code, message, method }: { code: string; message: string; method: string }) {
+    super(message);
+    this.name = "GatewayRequestError";
+    this.code = code;
+    this.method = method;
+  }
 }
 
 export class GatewayClient {
@@ -64,7 +77,7 @@ export class GatewayClient {
   send(method: string, params: JsonObject = {}): Promise<JsonObject> {
     const id = String(this.nextId++);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { method, resolve, reject });
       this.output.write(encodeMessage(request(id, method, params)));
     });
   }
@@ -97,7 +110,13 @@ export class GatewayClient {
         return;
       }
       if ("error" in message && message.error) {
-        pending.reject(new Error(message.error.message));
+        pending.reject(
+          new GatewayRequestError({
+            code: message.error.code,
+            message: message.error.message,
+            method: pending.method,
+          }),
+        );
       } else {
         pending.resolve(("result" in message && message.result) || {});
       }

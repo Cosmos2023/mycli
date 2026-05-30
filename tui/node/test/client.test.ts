@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
-import { GatewayClient } from "../src/protocol/client.ts";
+import { GatewayClient, GatewayRequestError } from "../src/protocol/client.ts";
 
 test("typed client sends requests and receives matching responses", async () => {
   const input = new PassThrough();
@@ -32,6 +32,31 @@ test("typed client waits for matching events", async () => {
   input.write('{"jsonrpc":"2.0","method":"turn.completed","params":{"client_turn_id":"c1"}}\n');
 
   assert.equal((await promise).method, "turn.completed");
+  client.stop();
+});
+
+test("typed client rejects JSON-RPC errors with request code and method", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const client = new GatewayClient({ input, output });
+  client.start();
+
+  const promise = client.send("approval.respond", { decision_id: "bad", choice: "reject" });
+  input.write(
+    [
+      '{"jsonrpc":"2.0","id":"1","error":',
+      '{"code":"decision_not_pending","message":"No pending decision."}}\n',
+    ].join(""),
+  );
+
+  await assert.rejects(
+    promise,
+    (error) =>
+      error instanceof GatewayRequestError &&
+      error.code === "decision_not_pending" &&
+      error.method === "approval.respond" &&
+      error.message === "No pending decision.",
+  );
   client.stop();
 });
 

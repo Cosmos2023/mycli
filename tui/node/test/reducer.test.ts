@@ -474,6 +474,35 @@ test("gateway error event appends an error transcript row", () => {
   });
 });
 
+test("request failure appends one error row and deduplicates matching gateway error", () => {
+  let state = reduceShellState(initialState(), {
+    type: "request.failed",
+    method: "approval.respond",
+    code: "decision_not_pending",
+    message: "No pending decision.",
+  });
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "gateway.error",
+    params: {
+      code: "decision_not_pending",
+      message: "No pending decision.",
+      method: "approval.respond",
+    },
+  });
+
+  const errors = state.transcript.filter((item) => item.type === "error");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.text, "No pending decision.");
+  assert.deepEqual(errors[0]?.metadata, {
+    code: "decision_not_pending",
+    message: "No pending decision.",
+    method: "approval.respond",
+    source: "request",
+  });
+});
+
 test("tool lifecycle events update the active tool row without duplication", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "read config" });

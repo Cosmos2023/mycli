@@ -211,6 +211,15 @@
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
   - `gateway.error` appends an `error` transcript row without mutating turn
     status unless a separate `turn.failed` or `status.update` also arrives.
+  - JSON-RPC response errors from `GatewayClient.send(...)` reject with a
+    request error carrying the original request method and error code. The
+    RuntimeApp dispatches those as local `request.failed` actions so request
+    failures such as rejected `approval.respond`, `clarify.respond`, or
+    `command.run` calls become visible error transcript rows even when no
+    separate `gateway.error` notification is emitted.
+  - If a local `request.failed` action and a `gateway.error` notification carry
+    the same `code`, `method`, and `message` close together, the reducer keeps
+    one visible error row to avoid double-reporting the same request failure.
 - The scripted Node client is allowed to write a final reducer state snapshot
   only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
   a production persistence mechanism.
@@ -271,6 +280,9 @@
 - Unexpected request-handler exception outside a turn worker -> return
   JSON-RPC `internal_error`, emit `gateway.error`, and mirror it through
   `runtime.event`.
+- JSON-RPC error response for a TUI-originated request -> reject
+  `GatewayClient.send(...)` with code, message, and method; RuntimeApp renders
+  the failure as a local error row.
 - User interrupt while a turn is running -> emit `turn.interrupted`, then
   `turn.status` with `state=interrupted`, `terminal=true`, and a bounded
   `message`, then `status.update` with `interrupted`.
@@ -302,6 +314,8 @@
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Good: A request-level gateway failure is visible as `gateway.error` without
   inventing a failed turn.
+- Good: A rejected `approval.respond` request is visible as one error row even
+  if a matching `gateway.error` event also arrives.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -335,6 +349,9 @@
   and the TUI cannot render diagnostics.
 - Bad: Reporting request-handler exceptions as `turn.failed` when no turn was
   started.
+- Bad: Calling `void client.send(...)` without a rejection path in RuntimeApp;
+  that turns recoverable JSON-RPC errors into invisible or unhandled Promise
+  rejections.
 
 ### 6. Tests Required
 - Gateway unit test for `approval.request` payload fields and option mapping.
@@ -376,6 +393,10 @@
   `internal_error`, emit `gateway.error`, and mirror it through
   `runtime.event`.
 - Reducer tests proving `gateway.error` appends an error transcript row.
+- Client tests proving JSON-RPC errors reject with request method and error
+  code.
+- Reducer tests proving local `request.failed` appends one error row and
+  deduplicates a matching `gateway.error`.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

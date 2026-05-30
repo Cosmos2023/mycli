@@ -20,6 +20,7 @@ export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
   | { type: "transcript.loaded"; payload: Record<string, unknown> }
   | { type: "user.submit"; message: string }
+  | { type: "request.failed"; method: string; code: string; message: string }
   | { type: "theme.changed"; themeName: ThemeName; theme: ThemeTokens; message: string }
   | { type: "theme.failed"; message: string }
   | { type: "local.command_output"; command: string; lines: string[] }
@@ -102,6 +103,14 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         { id: itemId("user"), type: "user", text: action.message, folded: false, metadata: {} },
       ],
     };
+  }
+  if (action.type === "request.failed") {
+    return appendErrorItem(state, {
+      code: action.code,
+      message: action.message,
+      method: action.method,
+      source: "request",
+    });
   }
   if (action.type === "transcript.loaded") {
     const items = Array.isArray(action.payload.items)
@@ -215,19 +224,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       return applyLiveStatus(state, liveStatus);
     }
     if (action.method === "gateway.error") {
-      return {
-        ...state,
-        transcript: [
-          ...state.transcript,
-          {
-            id: itemId("error"),
-            type: "error",
-            text: String(action.params.message ?? "Gateway error"),
-            folded: false,
-            metadata: action.params,
-          },
-        ],
-      };
+      return appendErrorItem(state, action.params, "Gateway error");
     }
     if (action.method === "message.delta") {
       const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
@@ -400,6 +397,43 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     };
   }
   return state;
+}
+
+function appendErrorItem(
+  state: ShellState,
+  metadata: Record<string, unknown>,
+  fallbackMessage = "Request failed",
+): ShellState {
+  if (matchesRecentError(state.transcript, metadata)) {
+    return state;
+  }
+  return {
+    ...state,
+    transcript: [
+      ...state.transcript,
+      {
+        id: itemId("error"),
+        type: "error",
+        text: String(metadata.message ?? fallbackMessage),
+        folded: false,
+        metadata,
+      },
+    ],
+  };
+}
+
+function matchesRecentError(
+  transcript: TranscriptItem[],
+  metadata: Record<string, unknown>,
+): boolean {
+  const recent = transcript.slice(-3);
+  return recent.some(
+    (item) =>
+      item.type === "error" &&
+      item.metadata.code === metadata.code &&
+      item.metadata.method === metadata.method &&
+      item.metadata.message === metadata.message,
+  );
 }
 
 function clientTurnIdFromParams(params: Record<string, unknown>): string | null {
