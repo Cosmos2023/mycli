@@ -22,6 +22,27 @@ test("tool row renders Claude-style tool call summary", () => {
   assert.doesNotMatch(frame, /done 82ms/);
 });
 
+test("tool row renders running and failed lifecycle summaries", () => {
+  const state = initialState({ rawThemeName: "deep-teal" });
+  const running = render(
+    <ToolRow
+      summary={{ verb: "read", target: "pyproject.toml", status: "running" }}
+      theme={state.theme}
+      width={80}
+    />,
+  ).lastFrame();
+  const failed = render(
+    <ToolRow
+      summary={{ verb: "write", target: "notes.txt", status: "failed", detail: "2ms" }}
+      theme={state.theme}
+      width={80}
+    />,
+  ).lastFrame();
+
+  assert.match(running ?? "", /● Read pyproject\.toml/);
+  assert.match(failed ?? "", /● Write notes\.txt · 2ms/);
+});
+
 test("tool result row renders continuation marker", () => {
   const state = initialState({ rawThemeName: "graphite" });
   const { lastFrame } = render(

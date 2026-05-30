@@ -149,6 +149,80 @@ test("status update tracks live turn state and clears resolved approval", () => 
   assert.equal(state.turnRunning, false);
 });
 
+test("tool lifecycle events update the active tool row without duplication", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "read config" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "tool.start",
+    params: {
+      client_turn_id: "c1",
+      tool_id: "call_read_1",
+      call_id: "call_read_1",
+      name: "Read",
+      context: "pyproject.toml",
+      args_preview: "file_path=pyproject.toml",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "tool.complete",
+    params: {
+      client_turn_id: "c1",
+      tool_id: "call_read_1",
+      call_id: "call_read_1",
+      name: "Read",
+      duration_s: 0.125,
+      summary: "Read pyproject.toml",
+      success: true,
+    },
+  });
+
+  const tools = state.transcript.filter((item) => item.type === "tool_summary");
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0]?.metadata.status, "done");
+  assert.equal(tools[0]?.metadata.duration_s, 0.125);
+  assert.equal(tools[0]?.metadata.tool_name, "Read");
+});
+
+test("tool failed event marks a matching tool row as failed", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "tool.start",
+    params: {
+      client_turn_id: "c1",
+      tool_id: "call_write_1",
+      call_id: "call_write_1",
+      name: "Write",
+      context: "notes.txt",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "tool.failed",
+    params: {
+      client_turn_id: "c1",
+      tool_id: "call_write_1",
+      call_id: "call_write_1",
+      name: "Write",
+      duration_s: 0.002,
+      summary: "Tool Write could not run.",
+      success: false,
+      error: "Missing required arguments: content",
+    },
+  });
+
+  const tool = state.transcript.find((item) => item.type === "tool_summary");
+  assert.equal(tool?.metadata.status, "failed");
+  assert.equal(tool?.metadata.error, "Missing required arguments: content");
+});
+
 test("overlay command result opens overlay instead of transcript row", () => {
   const state = reduceShellState(initialState(), {
     type: "command.result",

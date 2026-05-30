@@ -78,6 +78,13 @@
   - `pendingApproval` is driven by `approval.request`.
   - `pendingApproval` is cleared by `approval.respond`, terminal status, or a
     `status.changed` snapshot with `pending_decision === false`.
+  - `tool.start`, `tool.complete`, and `tool.failed` are consumed by the Node
+    TUI reducer as `tool_summary` transcript rows. The reducer matches existing
+    rows by `tool_id` first and `call_id` second, so completion updates the
+    running row instead of appending duplicates.
+  - `tool.complete` maps the matching row to `status: "done"` and
+    `tool.failed` maps it to `status: "failed"`. If completion arrives without
+    a prior start, the reducer creates a compact fallback row.
 
 ### 4. Validation & Error Matrix
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
@@ -107,6 +114,8 @@
   inferring details from transcript text.
 - Good: TUI renders active tool rows from `tool.start` and final summaries from
   `tool.complete` / `tool.failed` without waiting for `turn.completed`.
+- Good: TUI keeps a single row for the same tool id as it moves from running to
+  done or failed.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Base: Older clients still send `decision.resolve` and receive compatible
@@ -117,6 +126,8 @@
   start. That event only means the model requested a tool.
 - Bad: Sending full file contents, raw tool JSON, or provider transcript
   messages through lifecycle notification payloads.
+- Bad: Appending a new visible row on both `tool.start` and `tool.complete` for
+  the same `tool_id`; that creates duplicated tool activity.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
   payload types and reducer tests.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
@@ -134,6 +145,10 @@
 - Gateway unit test proving `RuntimeStreamEvent(kind="tool_start" |
   "tool_complete" | "tool_failed")` emits `tool.start` / `tool.complete` /
   `tool.failed`, not generic `turn.event`.
+- Reducer/transcript tests proving Node TUI consumes `tool.start`,
+  `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
+- Rendering/formatter tests proving lifecycle rows show readable running, done,
+  and failed summaries with bounded details.
 - Gateway tests for `status.update` on running, waiting approval, completed,
   failed, and interrupted paths when those paths are changed.
 - Reducer unit test for `approval.request`, `approval.respond`,

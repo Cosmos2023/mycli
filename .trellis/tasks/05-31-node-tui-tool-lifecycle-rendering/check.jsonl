@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify TUI behavior matches documented tool lifecycle contract"}
+{"file": ".trellis/tasks/05-31-node-tui-tool-lifecycle-rendering/research/node-tui-tool-lifecycle-rendering.md", "reason": "Acceptance context and risks for lifecycle rendering"}
+{"timestamp":"2026-05-31T00:00:00+08:00","step":"red","result":"Added failing reducer/transcript/tool-summary/render tests for tool.start/tool.complete/tool.failed consumption; failures proved missing lifecycle reducer handling and formatter support."}
+{"timestamp":"2026-05-31T00:00:00+08:00","step":"green","result":"Implemented applyToolLifecycleEvent, reducer handling for tool.start/tool.complete/tool.failed, and lifecycle-aware ToolSummary formatting using existing ToolRow rendering."}
+{"timestamp":"2026-05-31T00:00:00+08:00","step":"verify","result":"npm test passed 81 tests; npm run typecheck passed; Python gateway lifecycle forwarding smoke passed."}

@@ -1,6 +1,12 @@
 import { resolveTheme } from "../theme/resolveTheme.ts";
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
-import { applyTextDelta, applyToolEvent, itemId, reconcileFinalAnswer } from "./transcript.ts";
+import {
+  applyTextDelta,
+  applyToolEvent,
+  applyToolLifecycleEvent,
+  itemId,
+  reconcileFinalAnswer,
+} from "./transcript.ts";
 import type { LiveStatus, ShellState, TranscriptItem, TurnLiveState, ViewMode } from "./types.ts";
 
 export type ShellAction =
@@ -204,6 +210,16 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     }
     if (action.method === "turn.event" && action.params.phase === "tool_call") {
       return { ...state, transcript: applyToolEvent(state.transcript, action.params) };
+    }
+    if (
+      action.method === "tool.start" ||
+      action.method === "tool.complete" ||
+      action.method === "tool.failed"
+    ) {
+      return {
+        ...state,
+        transcript: applyToolLifecycleEvent(state.transcript, action.method, action.params),
+      };
     }
     if (action.method === "turn.completed") {
       return {
