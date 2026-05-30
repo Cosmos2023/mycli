@@ -142,6 +142,13 @@ export type TurnInterruptedPayload = {
 
 export type StatusChangedPayload = JsonObject;
 
+export type GatewayErrorPayload = {
+  code: string;
+  message: string;
+  detail?: string;
+  method?: string;
+};
+
 export type RuntimeEventEnvelopePayload = {
   version: 1;
   sequence: number;
@@ -192,6 +199,7 @@ export type KnownGatewayEvent =
   | Notification<"turn.failed", TurnFailedPayload>
   | Notification<"turn.interrupted", TurnInterruptedPayload>
   | Notification<"turn.status", TurnStatusPayload>
+  | Notification<"gateway.error", GatewayErrorPayload>
   | Notification<"status.changed", StatusChangedPayload>;
 
 export type KnownGatewayEventMethod = KnownGatewayEvent["method"];

@@ -39,6 +39,7 @@
   - `turn.failed`
   - `turn.interrupted`
   - `turn.status`
+  - `gateway.error`
   - `status.changed`
 - TypeScript reducer entry point:
   `reduceShellState(state: ShellState, action: ShellAction) -> ShellState`
@@ -113,6 +114,15 @@
   - `turn.status(state=interrupted)` currently reports that an interrupt was
     requested; it does not guarantee that the running worker stopped before a
     later terminal event.
+- `gateway.error` payload:
+  - `code`: stable short error code, for example `internal_error`
+  - `message`: bounded user-facing error text
+  - `detail`: optional bounded diagnostic detail
+  - `method`: optional JSON-RPC request method that triggered the error
+  - Unexpected request-handler exceptions must return a JSON-RPC error
+    response and emit `gateway.error`; they must not escape the gateway loop.
+  - Turn-worker failures still use `turn.failed` / `turn.status` /
+    `status.update`, not `gateway.error`.
 - `runtime.event` is the versioned envelope mirror for runtime notifications:
   - `version`: integer envelope contract version, currently `1`
   - `sequence`: monotonically increasing integer per gateway instance
@@ -199,6 +209,8 @@
     mirrors into visible state until a transport preference/dedup strategy is
     introduced.
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
+  - `gateway.error` appends an `error` transcript row without mutating turn
+    status unless a separate `turn.failed` or `status.update` also arrives.
 - The scripted Node client is allowed to write a final reducer state snapshot
   only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
   a production persistence mechanism.
@@ -256,6 +268,9 @@
   `terminal=true`, then `status.update` with `completed`.
 - Turn raises -> emit `turn.failed`, then `turn.status` with `state=failed`,
   `terminal=true`, and a bounded `message`, then `status.update` with `failed`.
+- Unexpected request-handler exception outside a turn worker -> return
+  JSON-RPC `internal_error`, emit `gateway.error`, and mirror it through
+  `runtime.event`.
 - User interrupt while a turn is running -> emit `turn.interrupted`, then
   `turn.status` with `state=interrupted`, `terminal=true`, and a bounded
   `message`, then `status.update` with `interrupted`.
@@ -285,6 +300,8 @@
   text into the final assistant answer.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
+- Good: A request-level gateway failure is visible as `gateway.error` without
+  inventing a failed turn.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -313,6 +330,11 @@
   options.
 - Bad: Emitting `clarify.request` but allowing the model loop to continue
   without a user answer.
+- Bad: Letting unexpected request-handler exceptions escape
+  `NodeTuiGateway.handle_request`; the Node process loses a structured error
+  and the TUI cannot render diagnostics.
+- Bad: Reporting request-handler exceptions as `turn.failed` when no turn was
+  started.
 
 ### 6. Tests Required
 - Gateway unit test for `approval.request` payload fields and option mapping.
@@ -350,6 +372,10 @@
 - Node tests proving single-select clarification input maps numeric indices
   and case-insensitive labels to canonical labels while preserving free-form
   answers and slash-command routing.
+- Gateway tests proving unexpected request-handler exceptions return
+  `internal_error`, emit `gateway.error`, and mirror it through
+  `runtime.event`.
+- Reducer tests proving `gateway.error` appends an error transcript row.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

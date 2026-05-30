@@ -451,6 +451,29 @@ test("runtime event envelope can carry turn status into reducer state", () => {
   assert.equal(state.currentTurnId, null);
 });
 
+test("gateway error event appends an error transcript row", () => {
+  const state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "gateway.error",
+    params: {
+      code: "internal_error",
+      message: "Internal gateway error.",
+      detail: "status exploded",
+      method: "status.inspect",
+    },
+  });
+
+  const error = state.transcript.at(-1);
+  assert.equal(error?.type, "error");
+  assert.equal(error?.text, "Internal gateway error.");
+  assert.deepEqual(error?.metadata, {
+    code: "internal_error",
+    message: "Internal gateway error.",
+    detail: "status exploded",
+    method: "status.inspect",
+  });
+});
+
 test("tool lifecycle events update the active tool row without duplication", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "read config" });

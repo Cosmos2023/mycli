@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from threading import Lock, Thread
 import time
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
@@ -57,13 +57,32 @@ class NodeTuiProcessLike(Protocol):
     def terminate(self) -> None: ...
 
 
+class NodeTuiServiceLike(Protocol):
+    _config: Any
+    _session_service: Any
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse: ...
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse: ...
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse: ...
+
+    def current_context_window_metrics(self) -> dict[str, object]: ...
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]: ...
+
+
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
     process.start()
 
     def emit(method: str, params: dict[str, object]) -> None:
         process.write_line(encode_message(notification(method, params)))
 
-    gateway = NodeTuiGateway(service=service, emit=emit)
+    gateway = NodeTuiGateway(service=cast(NodeTuiServiceLike, service), emit=emit)
     emit("runtime.ready", gateway._status_payload())
     try:
         while True:
@@ -95,12 +114,12 @@ class NodeTuiGateway:
     def __init__(
         self,
         *,
-        service: TurnService,
+        service: NodeTuiServiceLike,
         emit: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self.service = service
         self._emit = emit
-        self._command_handler = build_command_handler(service)
+        self._command_handler = build_command_handler(cast(TurnService, service))
         self._turn_lock = Lock()
         self._turn_thread: Thread | None = None
         self._turn_running = False
@@ -146,6 +165,18 @@ class NodeTuiGateway:
             return error_response(request.id, code=exc.code, message=exc.message)
         except ValueError as exc:
             return error_response(request.id, code="invalid_params", message=str(exc))
+        except Exception as exc:
+            self._emit_gateway_error(
+                code="internal_error",
+                message="Internal gateway error.",
+                detail=str(exc),
+                method=request.method,
+            )
+            return error_response(
+                request.id,
+                code="internal_error",
+                message="Internal gateway error.",
+            )
 
     def wait_for_current_turn(self, timeout: float | None = None) -> None:
         thread = self._turn_thread
@@ -398,6 +429,21 @@ class NodeTuiGateway:
             "turn.status",
             _turn_status_payload(client_turn_id=client_turn_id, state=state, message=message),
         )
+
+    def _emit_gateway_error(
+        self,
+        *,
+        code: str,
+        message: str,
+        detail: str | None = None,
+        method: str | None = None,
+    ) -> None:
+        payload: dict[str, object] = {"code": code, "message": message}
+        if detail:
+            payload["detail"] = _bounded_text(detail)
+        if method:
+            payload["method"] = method
+        self._emit_event("gateway.error", payload)
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()

@@ -214,6 +214,21 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       }
       return applyLiveStatus(state, liveStatus);
     }
+    if (action.method === "gateway.error") {
+      return {
+        ...state,
+        transcript: [
+          ...state.transcript,
+          {
+            id: itemId("error"),
+            type: "error",
+            text: String(action.params.message ?? "Gateway error"),
+            folded: false,
+            metadata: action.params,
+          },
+        ],
+      };
+    }
     if (action.method === "message.delta") {
       const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
       return {

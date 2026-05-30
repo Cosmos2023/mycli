@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,9 @@ from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 from mycli.domain.tooling.calls import ToolCall
 
 
+StreamSink = Callable[[RuntimeStreamEvent], None]
+
+
 class FakeSessionService:
     def __init__(self) -> None:
         self.history_items: tuple[HistoryItem, ...] = ()
@@ -30,7 +34,7 @@ class FakeSessionService:
     def load_history_items(self, _session_id: str) -> tuple[HistoryItem, ...]:
         return self.history_items
 
-    def list_sessions(self, limit: int = 20):
+    def list_sessions(self, limit: int = 20) -> tuple[SimpleNamespace, ...]:
         del limit
         return (
             SimpleNamespace(
@@ -70,6 +74,22 @@ class FakeService:
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
         return (f"resumed {session_id or 'demo'}", "messages=4")
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        return TurnResponse(assistant_message="")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        del choice
+        return TurnResponse(assistant_message="")
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        del request_id, response
+        return TurnResponse(assistant_message="")
 
 
 def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> None:
@@ -291,6 +311,50 @@ def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:
     }
 
 
+class ExplodingStatusService(FakeService):
+    def current_context_window_metrics(self) -> dict[str, object]:
+        raise RuntimeError("status exploded")
+
+
+def test_gateway_unexpected_request_error_returns_json_rpc_error_and_event(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=ExplodingStatusService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(RpcRequest(id="req_1", method="status.inspect", params={}))
+
+    assert response.error == {
+        "code": "internal_error",
+        "message": "Internal gateway error.",
+    }
+    assert (
+        "gateway.error",
+        {
+            "code": "internal_error",
+            "message": "Internal gateway error.",
+            "detail": "status exploded",
+            "method": "status.inspect",
+        },
+    ) in events
+    assert {
+        "type": "gateway.error",
+        "payload": {
+            "code": "internal_error",
+            "message": "Internal gateway error.",
+            "detail": "status exploded",
+            "method": "status.inspect",
+        },
+    }.items() <= next(
+        params
+        for method, params in events
+        if method == "runtime.event" and params["type"] == "gateway.error"
+    ).items()
+
+
 class FakeTurnService(FakeService):
     def __init__(self, workspace_root: Path) -> None:
         super().__init__(workspace_root)
@@ -298,7 +362,11 @@ class FakeTurnService(FakeService):
         self.resolved_choices: list[str] = []
         self.clarification_responses: list[tuple[str, str]] = []
 
-    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
         self.turn_calls.append(message)
         if stream_sink is not None:
             stream_sink(RuntimeStreamEvent(kind="reasoning", text="thinking"))
@@ -323,7 +391,11 @@ class FakeTurnService(FakeService):
 
 
 class FakeToolLifecycleTurnService(FakeService):
-    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
         del message
         if stream_sink is not None:
             stream_sink(
@@ -386,7 +458,11 @@ class FakeToolLifecycleTurnService(FakeService):
 
 
 class FakeClarifyTurnService(FakeService):
-    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
         del message
         if stream_sink is not None:
             stream_sink(
@@ -412,7 +488,11 @@ class FakeClarifyTurnService(FakeService):
 
 
 class FailingTurnService(FakeService):
-    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
         del message, stream_sink
         raise RuntimeError("model unavailable")
 
@@ -663,7 +743,7 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
     events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
 
-    def pending_turn(_message: str, stream_sink=None) -> TurnResponse:
+    def pending_turn(_message: str, stream_sink: StreamSink | None = None) -> TurnResponse:
         del stream_sink
         decision = PendingDecision(
             tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
@@ -675,7 +755,7 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         service._session_service.pending_decision = decision
         return TurnResponse(assistant_message="", pending_decision=decision)
 
-    service.handle_user_turn = pending_turn  # type: ignore[method-assign]
+    service.handle_user_turn = pending_turn  # type: ignore[method-assign, assignment]
     gateway = NodeTuiGateway(
         service=service,
         emit=lambda method, params: events.append((method, params)),
