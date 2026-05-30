@@ -35,6 +35,15 @@ export type StatusUpdatePayload = {
   severity?: string;
 };
 
+export type TurnStatusPayload = {
+  client_turn_id?: string;
+  state: Exclude<TurnState, "running">;
+  kind: string;
+  text: string;
+  terminal: boolean;
+  message?: string;
+};
+
 export type RpcRequest = {
   jsonrpc: "2.0";
   id: string;

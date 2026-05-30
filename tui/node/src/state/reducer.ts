@@ -204,25 +204,14 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       if (!liveStatus) {
         return state;
       }
-      return {
-        ...state,
-        liveStatus,
-        turnRunning:
-          liveStatus.state === "running" || liveStatus.state === "waiting_approval"
-            ? true
-            : liveStatus.state === "completed" ||
-                liveStatus.state === "failed" ||
-                liveStatus.state === "interrupted"
-              ? false
-              : state.turnRunning,
-        currentTurnId: liveStatus.client_turn_id ?? state.currentTurnId,
-        liveReasoning: isTerminalTurnState(liveStatus.state) ? null : state.liveReasoning,
-        typedMessageTurnId: isTerminalTurnState(liveStatus.state) ? null : state.typedMessageTurnId,
-        pendingApproval:
-          isTerminalTurnState(liveStatus.state)
-            ? null
-            : state.pendingApproval,
-      };
+      return applyLiveStatus(state, liveStatus);
+    }
+    if (action.method === "turn.status") {
+      const liveStatus = liveStatusFromParams(action.params);
+      if (!liveStatus) {
+        return state;
+      }
+      return applyLiveStatus(state, liveStatus);
     }
     if (action.method === "message.delta") {
       const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
@@ -400,6 +389,27 @@ function truncatePreview(text: string): string {
 
 function isTerminalTurnState(state: TurnLiveState): boolean {
   return state === "completed" || state === "failed" || state === "interrupted";
+}
+
+function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState {
+  return {
+    ...state,
+    liveStatus,
+    turnRunning:
+      liveStatus.state === "running" || liveStatus.state === "waiting_approval"
+        ? true
+        : liveStatus.state === "completed" ||
+            liveStatus.state === "failed" ||
+            liveStatus.state === "interrupted"
+          ? false
+          : state.turnRunning,
+    currentTurnId: isTerminalTurnState(liveStatus.state)
+      ? null
+      : liveStatus.client_turn_id ?? state.currentTurnId,
+    liveReasoning: isTerminalTurnState(liveStatus.state) ? null : state.liveReasoning,
+    typedMessageTurnId: isTerminalTurnState(liveStatus.state) ? null : state.typedMessageTurnId,
+    pendingApproval: isTerminalTurnState(liveStatus.state) ? null : state.pendingApproval,
+  };
 }
 
 function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | null {

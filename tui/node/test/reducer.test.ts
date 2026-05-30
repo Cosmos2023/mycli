@@ -250,6 +250,121 @@ test("status update tracks live turn state and clears resolved approval", () => 
   assert.equal(state.turnRunning, false);
 });
 
+test("turn status tracks waiting approval without appending transcript rows", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.request",
+    params: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "approve_once", label: "Allow once" }],
+    },
+  });
+  const transcriptLength = state.transcript.length;
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      client_turn_id: "c1",
+      state: "waiting_approval",
+      kind: "waiting_approval",
+      text: "Waiting approval",
+      terminal: false,
+    },
+  });
+
+  assert.equal(state.pendingApproval?.decision_id, "decision_current");
+  assert.equal(state.liveStatus?.state, "waiting_approval");
+  assert.equal(state.turnRunning, true);
+  assert.equal(state.currentTurnId, "c1");
+  assert.equal(state.transcript.length, transcriptLength);
+});
+
+test("terminal turn status clears live turn bookkeeping without transcript output", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "draft" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "reasoning.delta",
+    params: { client_turn_id: "c1", text: "thinking" },
+  });
+  const transcriptLength = state.transcript.length;
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      client_turn_id: "c1",
+      state: "interrupted",
+      kind: "interrupted",
+      text: "Interrupted",
+      terminal: true,
+      message: "Interrupt requested",
+    },
+  });
+
+  assert.equal(state.turnRunning, false);
+  assert.equal(state.currentTurnId, null);
+  assert.equal(state.liveStatus?.state, "interrupted");
+  assert.equal(state.liveReasoning, null);
+  assert.equal(state.typedMessageTurnId, null);
+  assert.equal(state.pendingApproval, null);
+  assert.equal(state.transcript.length, transcriptLength);
+});
+
+test("invalid turn status payload is ignored", () => {
+  const state = initialState();
+
+  const next = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      state: "not_a_state",
+      kind: "not_a_state",
+      text: "Nope",
+      terminal: true,
+    },
+  });
+
+  assert.equal(next, state);
+});
+
+test("runtime event envelope can carry turn status into reducer state", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "runtime.event",
+    params: {
+      version: 1,
+      sequence: 3,
+      type: "turn.status",
+      timestamp: 1770000001,
+      payload: {
+        client_turn_id: "c1",
+        state: "completed",
+        kind: "completed",
+        text: "Completed",
+        terminal: true,
+      },
+    },
+  });
+
+  assert.equal(state.liveStatus?.state, "completed");
+  assert.equal(state.turnRunning, false);
+  assert.equal(state.currentTurnId, null);
+});
+
 test("tool lifecycle events update the active tool row without duplication", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "read config" });
