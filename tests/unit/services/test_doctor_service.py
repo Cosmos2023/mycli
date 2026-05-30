@@ -181,6 +181,121 @@ def test_doctor_service_reports_storage_layout_missing_reserved_dirs_as_ok(
     assert not (home / ".mycli" / "artifacts").exists()
 
 
+def test_doctor_service_reports_missing_trace_directory_as_ok_without_creating_it(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "traces")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "trace directory not created yet"
+    assert not (home / ".mycli" / "traces").exists()
+
+
+def test_doctor_service_reports_valid_trace_files_as_ok(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {"state": "running"}}),
+                "",
+                json.dumps({"kind": "tool_execution", "turn_id": "turn-1", "payload": {}}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "traces")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "1 trace file(s), 2 valid row(s)"
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_warns_for_invalid_trace_rows(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}}),
+                "{bad json",
+                json.dumps(["not", "an", "object"]),
+                json.dumps({"kind": "missing turn"}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "traces")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == "3 invalid trace row(s); 1 valid row(s)"
+    assert check.detail == "demo-trace.jsonl:2, demo-trace.jsonl:3, demo-trace.jsonl:4"
+
+
+def test_doctor_service_bounds_trace_file_scan(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    payload = json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}})
+    for index in range(55):
+        (traces / f"{index:02d}-trace.jsonl").write_text(payload, encoding="utf-8")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "traces")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "50 trace file(s), 50 valid row(s); scanned first 50 of 55 files"
+
+
 def test_doctor_service_reports_storage_layout_reserved_dirs_as_ok(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

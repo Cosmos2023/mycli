@@ -10,8 +10,12 @@ import shutil
 import sqlite3
 
 from mycli.config.settings import resolve_config
+from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.services.mcp.client import load_mcp_server_configs
 from mycli.services.storage_layout import MycliStorageLayout
+
+_TRACE_SCAN_LIMIT = 50
+_TRACE_DETAIL_LIMIT = 3
 
 
 class DoctorStatus(StrEnum):
@@ -76,6 +80,7 @@ class DoctorService:
             self._check_sessions_db,
             self._check_logs,
             self._check_storage_layout,
+            self._check_traces,
             self._check_file_history,
             self._check_tui,
             self._check_mcp,
@@ -213,6 +218,65 @@ class DoctorService:
             message = "reserved paths available"
         return (DoctorCheck("storage_layout", DoctorStatus.OK, message, detail=str(self._layout.root)),)
 
+    def _check_traces(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (DoctorCheck("traces", DoctorStatus.OK, "trace directory not created yet"),)
+        if not traces_dir.is_dir():
+            return (DoctorCheck("traces", DoctorStatus.FAILED, f"not a directory {traces_dir}"),)
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (DoctorCheck("traces", DoctorStatus.OK, "no trace files found", detail=str(traces_dir)),)
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        total_valid_rows = 0
+        invalid_rows: list[str] = []
+        unreadable: list[str] = []
+        for path in inspected_paths:
+            try:
+                valid_count, invalid_lines = _inspect_trace_file(path)
+            except OSError as exc:
+                unreadable.append(f"{path.name}: {exc}")
+                continue
+            total_valid_rows += valid_count
+            invalid_rows.extend(f"{path.name}:{line_no}" for line_no in invalid_lines)
+
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if unreadable:
+            detail = "; ".join(unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "traces",
+                    DoctorStatus.FAILED,
+                    f"{len(unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if invalid_rows:
+            detail = ", ".join(invalid_rows[:_TRACE_DETAIL_LIMIT])
+            if len(invalid_rows) > _TRACE_DETAIL_LIMIT:
+                detail = f"{detail}, ..."
+            return (
+                DoctorCheck(
+                    "traces",
+                    DoctorStatus.WARNING,
+                    f"{len(invalid_rows)} invalid trace row(s); {total_valid_rows} valid row(s){suffix}",
+                    detail=detail,
+                ),
+            )
+        return (
+            DoctorCheck(
+                "traces",
+                DoctorStatus.OK,
+                f"{len(inspected_paths)} trace file(s), {total_valid_rows} valid row(s){suffix}",
+                detail=str(traces_dir),
+            ),
+        )
+
     def _check_file_history(self) -> Iterable[DoctorCheck]:
         history_root = self._layout.root / "file-history"
         if not history_root.exists():
@@ -342,6 +406,30 @@ def _node_tui_source_root() -> Path:
 
 def _node_tui_dependency_marker(node_tui_root: Path) -> Path:
     return node_tui_root / "node_modules" / ".bin" / "tsx"
+
+
+def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:
+    valid_count = 0
+    invalid_lines: list[int] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                invalid_lines.append(line_number)
+                continue
+            if not isinstance(payload, dict):
+                invalid_lines.append(line_number)
+                continue
+            try:
+                RuntimeTraceEvent.from_dict(payload)
+            except (KeyError, TypeError, ValueError):
+                invalid_lines.append(line_number)
+                continue
+            valid_count += 1
+    return valid_count, tuple(invalid_lines)
 
 
 def _is_writable(path: Path) -> bool:

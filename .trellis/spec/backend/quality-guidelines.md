@@ -77,6 +77,17 @@ Questions to answer:
 - Reserved trace/artifact path exists as a non-directory -> `storage_layout=failed`.
 - Reserved trace/artifact directory exists without write bits ->
   `storage_layout=failed`.
+- Trace diagnostics check:
+  - Missing `~/.mycli/traces/` -> `traces=ok`; doctor must not create it.
+  - Existing empty `traces/` -> `traces=ok`.
+  - Existing readable `*.jsonl` trace files with valid runtime trace rows ->
+    `traces=ok` with bounded file/row counts.
+  - Existing trace files with invalid JSONL rows, non-object rows, or rows that
+    cannot decode as runtime trace events -> `traces=warning`; runtime loading
+    skips bad rows, but doctor must surface degraded diagnostics.
+  - Existing trace files that cannot be opened/read -> `traces=failed`.
+  - Trace doctor output must report counts and bounded file/line references, not
+    raw trace payload content.
 - `errors.log` missing by itself -> OK when `agent.log`, `model-events.jsonl`,
   and `model-raw/` exist; `errors.log` is created on first warning/error.
 - FileHistory `index.json` exists but cannot parse -> failed.
@@ -110,6 +121,8 @@ Questions to answer:
 - Unit test failed MCP or storage parse/open behavior.
 - Unit test storage layout reserved directories missing, present, path-conflict,
   and non-writable cases.
+- Unit test trace doctor cases for missing directory, valid trace files, invalid
+  rows, and bounded scan reporting.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
