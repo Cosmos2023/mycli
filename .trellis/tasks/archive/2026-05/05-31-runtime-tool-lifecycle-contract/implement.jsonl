@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Existing runtime-to-TUI contract to extend with tool lifecycle events"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime diagnostics/cache safety and testing expectations"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer and reuse thinking guide for runtime gateway changes"}
+{"file": ".trellis/tasks/05-31-runtime-tool-lifecycle-contract/research/runtime-tool-lifecycle-contract.md", "reason": "Research notes comparing current mycli and Hermes tool lifecycle patterns"}

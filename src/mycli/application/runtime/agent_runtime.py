@@ -750,6 +750,7 @@ class AgentRuntime:
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
+        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_call(
             conversation=conversation,
@@ -764,6 +765,7 @@ class AgentRuntime:
             response_id=response_id,
             metadata=metadata,
             record_assistant_call=record_assistant_call,
+            lifecycle_sink=lifecycle_sink,
         )
 
     def _execute_tool_calls(
@@ -781,6 +783,7 @@ class AgentRuntime:
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
+        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_calls(
             conversation=conversation,
@@ -795,6 +798,7 @@ class AgentRuntime:
             response_id=response_id,
             metadata=metadata,
             record_assistant_call=record_assistant_call,
+            lifecycle_sink=lifecycle_sink,
         )
 
     def _render_model_tools(
@@ -1194,6 +1198,7 @@ class AgentRuntime:
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> tuple[
         PlanState,
         bool,
@@ -1212,6 +1217,7 @@ class AgentRuntime:
             activity_events=activity_events,
             streamed_chunks=streamed_chunks,
             turn_items=turn_items,
+            stream_sink=stream_sink,
         )
 
     def _append_turn_item(

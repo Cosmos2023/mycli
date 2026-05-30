@@ -11,6 +11,7 @@ from mycli.domain.runtime import (
     PendingDecision,
     PlanState,
     RuntimeBlock,
+    RuntimeStreamEvent,
     StopReason,
     SuspendedTurn,
     TurnItem,
@@ -74,6 +75,7 @@ class AssistantBlockConsumer:
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> tuple[
         PlanState,
         bool,
@@ -170,6 +172,7 @@ class AssistantBlockConsumer:
                     response_id=turn_result.response_id,
                     metadata=metadata,
                     record_assistant_call=False,
+                    lifecycle_sink=stream_sink,
                 )
                 pending_safe_tool_calls.clear()
 
@@ -279,6 +282,7 @@ class AssistantBlockConsumer:
                         response_id=turn_result.response_id,
                         metadata=dict(block.metadata),
                         record_assistant_call=False,
+                        lifecycle_sink=stream_sink,
                     )
                     continue
 
@@ -301,6 +305,7 @@ class AssistantBlockConsumer:
                         response_id=turn_result.response_id,
                         metadata=dict(block.metadata),
                         record_assistant_call=False,
+                        lifecycle_sink=stream_sink,
                     )
                     continue
 
@@ -410,6 +415,7 @@ class AssistantBlockConsumer:
                     response_id=turn_result.response_id,
                     metadata=dict(block.metadata),
                     record_assistant_call=False,
+                    lifecycle_sink=stream_sink,
                 )
 
             flush_pending_safe_tool_calls()

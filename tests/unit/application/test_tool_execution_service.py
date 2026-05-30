@@ -6,7 +6,7 @@ from typing import Callable
 from mycli.application.runtime.tools.tool_execution_service import ToolExecutionService
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import InvokedSkillSnapshot, PlanState, TurnItemType
+from mycli.domain.runtime import InvokedSkillSnapshot, PlanState, RuntimeStreamEvent, TurnItemType
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolRouteKey, ToolRouteSource
 from mycli.services.context.context_manager import ContextManager
@@ -406,6 +406,52 @@ def test_tool_execution_service_records_standard_tool_trace_payload(tmp_path: Pa
     assert trace.payload["error_kind"] is None
 
 
+def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) -> None:
+    hook_manager = HookManager()
+    service, _fake_tool = _service(tmp_path, hook_manager=hook_manager)
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((10.0, 10.125)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+        lifecycle_sink=events.append,
+    )
+
+    assert [event.kind for event in events] == ["tool_start", "tool_complete"]
+    assert events[0].tool_name == "read_file"
+    assert events[0].metadata == {
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "read_file",
+        "context": "read_file",
+        "args_preview": "path=README.md",
+    }
+    assert events[1].tool_name == "read_file"
+    assert events[1].metadata == {
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "read_file",
+        "duration_s": 0.125,
+        "summary": "Read README.md",
+        "success": True,
+    }
+    assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
+
+
 def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -453,6 +499,57 @@ def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path
     assert trace.payload["filesystem_effect"] == "write"
     assert trace.payload["network_effect"] is False
     assert trace.payload["process_effect"] is False
+
+
+def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    write_tool = WriteTool(workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([write_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((3.0, 3.002)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+        lifecycle_sink=events.append,
+    )
+
+    assert [event.kind for event in events] == ["tool_start", "tool_failed"]
+    failed = events[1]
+    assert failed.tool_name == "Write"
+    assert failed.metadata["tool_id"] == "call_write_1"
+    assert failed.metadata["call_id"] == "call_write_1"
+    assert failed.metadata["name"] == "Write"
+    assert failed.metadata["duration_s"] == 0.002
+    assert failed.metadata["summary"] == "Tool Write could not run because its arguments were invalid."
+    assert failed.metadata["success"] is False
+    assert isinstance(failed.metadata["error"], str)
+    assert "Missing required arguments: content" in failed.metadata["error"]
 
 
 def test_tool_execution_service_records_bash_effect_profile_in_trace(
