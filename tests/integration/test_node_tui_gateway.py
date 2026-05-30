@@ -358,3 +358,156 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_waiting_state_route
         "approval resolved",
         "clarification resolved",
     ]
+
+
+class E2EToolLifecycleService:
+    def __init__(self, workspace_root: Path) -> None:
+        self._config = SimpleNamespace(
+            session_id="tool-lifecycle-smoke",
+            workspace_root=workspace_root,
+            model="gpt-smoke",
+            provider=SimpleNamespace(value="test"),
+            protocol=SimpleNamespace(value="chat_completions"),
+            max_prompt_tokens=12000,
+            tui_startup_mark="default",
+        )
+        self._session_service = E2ESessionService()
+        self.messages: list[str] = []
+
+    def current_context_window_metrics(self) -> dict[str, object]:
+        return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        self.messages.append(message)
+        if message != "tool lifecycle":
+            raise AssertionError(f"unexpected message: {message}")
+        if stream_sink is not None:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_start",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "context": "README.md",
+                        "args_preview": "path=README.md",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_progress",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "stage": "executing",
+                        "message": "Executing Read",
+                        "args_preview": "path=README.md",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_complete",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "duration_s": 0.125,
+                        "summary": "Read README.md",
+                        "success": True,
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_start",
+                    tool_name="Write",
+                    metadata={
+                        "tool_id": "call_write_1",
+                        "call_id": "call_write_1",
+                        "name": "Write",
+                        "context": "notes.txt",
+                        "args_preview": "path=notes.txt",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_failed",
+                    tool_name="Write",
+                    metadata={
+                        "tool_id": "call_write_1",
+                        "call_id": "call_write_1",
+                        "name": "Write",
+                        "duration_s": 0.002,
+                        "summary": "Tool Write could not run.",
+                        "success": False,
+                        "error": "Missing required parameter: content",
+                    },
+                )
+            )
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text="tools done"))
+        return TurnResponse(assistant_message="tools done final")
+
+    def inspect_usage(self) -> tuple[str, ...]:
+        return ("session=tool-lifecycle-smoke",)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        return ("session=tool-lifecycle-smoke context=test",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        return (f"mode={mode}",)
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        return (f"resumed {session_id or 'tool-lifecycle-smoke'}",)
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_tool_lifecycle(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-tool-lifecycle.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(["tool lifecycle"]),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EToolLifecycleService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["tool lifecycle"]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    tool_items = [item for item in state["transcript"] if item["type"] == "tool_summary"]
+    assert len(tool_items) == 2
+    read_item = next(item for item in tool_items if item["metadata"]["tool_id"] == "call_read_1")
+    assert read_item["metadata"]["status"] == "done"
+    assert read_item["metadata"]["stage"] == "executing"
+    assert read_item["metadata"]["duration_s"] == 0.125
+    assert read_item["metadata"]["summary"] == "Read README.md"
+    assert read_item["metadata"]["success"] is True
+    write_item = next(item for item in tool_items if item["metadata"]["tool_id"] == "call_write_1")
+    assert write_item["metadata"]["status"] == "failed"
+    assert write_item["metadata"]["duration_s"] == 0.002
+    assert write_item["metadata"]["summary"] == "Tool Write could not run."
+    assert write_item["metadata"]["success"] is False
+    assert write_item["metadata"]["error"] == "Missing required parameter: content"
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == ["tools done final"]
+    assert "tools donetools done" not in assistant_items[0]["text"]

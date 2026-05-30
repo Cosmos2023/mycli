@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for runtime/TUI contract work"}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Tool lifecycle runtime-to-TUI contract"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verification expectations and Node dependency caveat"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer and reuse thinking guide index"}
+{"file": ".trellis/tasks/05-31-node-tui-tool-lifecycle-scripted-smoke/research/tool-lifecycle-current-state.md", "reason": "Current lifecycle implementation and smoke assertions"}

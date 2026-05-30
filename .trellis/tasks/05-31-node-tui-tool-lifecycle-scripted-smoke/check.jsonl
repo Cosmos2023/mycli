@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify lifecycle smoke matches contract"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify quality and dependency handling"}
+{"file": ".trellis/tasks/05-31-node-tui-tool-lifecycle-scripted-smoke/research/tool-lifecycle-current-state.md", "reason": "Verify implementation covers researched scenario"}
