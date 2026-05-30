@@ -217,6 +217,24 @@ class DoctorService:
         node_tui_root = _node_tui_source_root()
         if node_tui_root.exists():
             checks.append(DoctorCheck("node_tui", DoctorStatus.OK, f"source present {node_tui_root}"))
+            dependency_marker = _node_tui_dependency_marker(node_tui_root)
+            if dependency_marker.is_file():
+                checks.append(
+                    DoctorCheck(
+                        "node_tui_dependencies",
+                        DoctorStatus.OK,
+                        f"tsx present {dependency_marker}",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        "node_tui_dependencies",
+                        DoctorStatus.WARNING,
+                        "missing Node TUI dependencies; run: npm --prefix tui/node install",
+                        detail=str(dependency_marker),
+                    )
+                )
         else:
             checks.append(
                 DoctorCheck(
@@ -279,6 +297,10 @@ def _can_import(module: str) -> bool:
 
 def _node_tui_source_root() -> Path:
     return Path(__file__).resolve().parents[4] / "tui" / "node"
+
+
+def _node_tui_dependency_marker(node_tui_root: Path) -> Path:
+    return node_tui_root / "node_modules" / ".bin" / "tsx"
 
 
 def _is_writable(path: Path) -> bool:

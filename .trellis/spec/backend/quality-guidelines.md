@@ -78,6 +78,11 @@ Questions to answer:
 - MCP config load fails -> failed; do not start servers.
 - Node/npm or Python TUI unavailable -> warning unless a stricter command is
   explicitly introduced later.
+- Node TUI source exists but `tui/node/node_modules/.bin/tsx` is missing ->
+  `node_tui_dependencies=warning` with remediation text
+  `npm --prefix tui/node install`; do not create `node_modules` or run npm.
+- Node TUI source is missing -> report the existing `node_tui` warning and skip
+  dependency-marker checks, because missing source is the actionable root cause.
 
 #### 5. Good/Base/Bad Cases
 - Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
@@ -92,6 +97,8 @@ Questions to answer:
 - Unit test service success with config/storage/logs/history/MCP fixtures.
 - Unit test warning-only conditions such as missing sessions DB and history.
 - Unit test failed MCP or storage parse/open behavior.
+- Unit test Node TUI dependency marker OK and missing-warning cases without
+  creating `node_modules`.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
 - Full lint, type-check, and pytest must pass because doctor touches CLI
   startup paths.

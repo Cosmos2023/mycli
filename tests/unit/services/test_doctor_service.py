@@ -4,6 +4,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import mycli.services.diagnostics.doctor as doctor_module
 from mycli.services.diagnostics.doctor import (
     DoctorService,
     DoctorStatus,
@@ -51,6 +54,7 @@ def _create_sessions_db(path: Path) -> None:
 
 def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
@@ -71,6 +75,11 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
         "[servers.demo]\ncommand = \"python\"\n",
         encoding="utf-8",
     )
+    node_tui = tmp_path / "repo" / "tui" / "node"
+    tsx = node_tui / "node_modules" / ".bin" / "tsx"
+    tsx.parent.mkdir(parents=True)
+    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
 
     report = DoctorService(
         workspace_root=workspace,
@@ -145,3 +154,58 @@ def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
     logs_check = next(check for check in report.checks if check.name == "logs")
     assert logs_check.status is DoctorStatus.OK
     assert "errors.log" not in logs_check.message
+
+
+def test_doctor_service_reports_node_tui_dependency_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    node_tui = tmp_path / "repo" / "tui" / "node"
+    tsx = node_tui / "node_modules" / ".bin" / "tsx"
+    tsx.parent.mkdir(parents=True)
+    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
+    assert dependency_check.status is DoctorStatus.OK
+    assert "tsx" in dependency_check.message
+
+
+def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    node_tui = tmp_path / "repo" / "tui" / "node"
+    node_tui.mkdir(parents=True)
+    monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
+    assert dependency_check.status is DoctorStatus.WARNING
+    assert "npm --prefix tui/node install" in dependency_check.message
+    assert not (node_tui / "node_modules").exists()
