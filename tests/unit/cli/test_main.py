@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -112,6 +113,7 @@ def test_help_lists_sessions_command() -> None:
     assert "/context" in output
     assert "/bashes" in output
     assert "/changes" in output
+    assert "/trace-jsonl" in output
     assert "/logs" in output
 
 
@@ -1124,6 +1126,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_trace(self) -> tuple[str, ...]:
             return ("tool_execution search_text",)
 
+        def export_trace_jsonl(self) -> tuple[str, ...]:
+            return ('{"kind":"tool_execution","turn_id":"turn_1","payload":{"tool_name":"search_text"}}',)
+
         def inspect_logs(self) -> tuple[str, ...]:
             return ("agent_log=/tmp/mycli/logs/agent.log", "tail: INFO [demo] turn_started")
 
@@ -1174,6 +1179,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
     assert list(handler("/trace")) == ["[trace] tool_execution search_text"]
+    assert list(handler("/trace-jsonl")) == [
+        '[trace-jsonl] {"kind":"tool_execution","turn_id":"turn_1","payload":{"tool_name":"search_text"}}',
+    ]
     assert list(handler("/logs")) == [
         "[log] agent_log=/tmp/mycli/logs/agent.log",
         "[log] tail: INFO [demo] turn_started",
@@ -1683,6 +1691,37 @@ def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path
     assert rendered == (
         "tool_execution run_shell args=pwd summary=Command exited with 0 stdout=/Users/cosmos/Desktop/mycli",
     )
+
+
+def test_turn_service_exports_trace_jsonl_for_external_consumers(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._trace_service.append(
+        "demo",
+        RuntimeTraceEvent(
+            kind="tool_execution",
+            turn_id="turn_1",
+            payload={"tool_name": "Read"},
+        ),
+    )
+
+    exported = service.export_trace_jsonl()
+
+    assert len(exported) == 1
+    assert json.loads(exported[0]) == {
+        "kind": "tool_execution",
+        "turn_id": "turn_1",
+        "payload": {"tool_name": "Read"},
+    }
 
 
 def test_turn_service_inspect_trace_includes_tool_effect_diagnostics(

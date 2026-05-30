@@ -24,6 +24,7 @@ def test_slash_command_candidates_include_required_and_tui_only_commands() -> No
     assert "/subagents" in candidates
     assert "/memory" in candidates
     assert "/trace" in candidates
+    assert "/trace-jsonl" in candidates
     assert "/logs" in candidates
     assert "/fork [source] <new-session> [message-index]" in candidates
     assert "/model" not in candidates

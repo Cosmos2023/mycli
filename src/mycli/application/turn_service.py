@@ -690,6 +690,12 @@ class TurnService:
             lines.append(" ".join(parts))
         return tuple(lines)
 
+    def export_trace_jsonl(self, *, tail: int = 50) -> tuple[str, ...]:
+        rows = self._trace_service.export_jsonl(self._config.session_id, tail=tail)
+        if not rows:
+            return ("",)
+        return rows
+
     def undo_last_file_change(self) -> str:
         result = self._file_history_service.rewind_latest(
             session_id=self._config.session_id,

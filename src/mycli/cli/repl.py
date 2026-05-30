@@ -17,6 +17,7 @@ def handle_slash_command(command: str) -> str:
                 "/plan",
                 "/subagents",
                 "/trace",
+                "/trace-jsonl",
                 "/logs",
                 "/tools",
                 "/bashes",
@@ -106,6 +107,8 @@ def build_command_handler(
             ]
         if command == "/trace":
             return [f"[trace] {line}" for line in service.inspect_trace()]
+        if command == "/trace-jsonl":
+            return [f"[trace-jsonl] {line}" for line in service.export_trace_jsonl() if line]
         if command == "/logs":
             return [f"[log] {line}" for line in service.inspect_logs()]
         if command == "/undo":

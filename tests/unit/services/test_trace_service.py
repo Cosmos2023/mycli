@@ -41,6 +41,28 @@ def test_trace_service_loads_events_for_specific_turn(tmp_path: Path) -> None:
     assert loaded[0].payload["tool_name"] == "edit_file"
 
 
+def test_trace_service_exports_recent_events_as_jsonl(tmp_path: Path) -> None:
+    service = TraceService(home_dir=tmp_path)
+    service.append(
+        "demo",
+        RuntimeTraceEvent(kind="turn_item", turn_id="turn_1", payload={"index": 1}),
+    )
+    service.append(
+        "demo",
+        RuntimeTraceEvent(kind="tool_execution", turn_id="turn_2", payload={"tool_name": "Read"}),
+    )
+
+    rows = service.export_jsonl("demo", tail=1)
+
+    assert len(rows) == 1
+    exported = json.loads(rows[0])
+    assert exported == {
+        "kind": "tool_execution",
+        "turn_id": "turn_2",
+        "payload": {"tool_name": "Read"},
+    }
+
+
 def test_trace_service_skips_corrupt_jsonl_rows(tmp_path: Path) -> None:
     service = TraceService(home_dir=tmp_path)
     service.append(
@@ -132,3 +154,22 @@ def test_trace_service_sanitizes_full_content_from_trace_payload(tmp_path: Path)
     assert "content" not in raw_payload
     assert metadata["transcript_content_chars"] == len(transcript_content)
     assert "transcript_content" not in metadata
+
+
+def test_trace_service_export_jsonl_keeps_content_redacted(tmp_path: Path) -> None:
+    service = TraceService(home_dir=tmp_path)
+    file_content = "secret-file-content-" * 80
+    service.append(
+        "demo",
+        RuntimeTraceEvent(
+            kind="turn_item",
+            turn_id="turn_1",
+            payload={"metadata": {"raw_payload": {"content": file_content}}},
+        ),
+    )
+
+    exported = "\n".join(service.export_jsonl("demo"))
+
+    assert file_content not in exported
+    assert "content_chars" in exported
+    assert '"content"' not in exported

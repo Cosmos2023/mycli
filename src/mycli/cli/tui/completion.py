@@ -27,6 +27,7 @@ _SLASH_COMMANDS: tuple[str, ...] = (
     "/subagents <child_session_id>",
     "/memory",
     "/trace",
+    "/trace-jsonl",
     "/logs",
     "/fork [source] <new-session> [message-index]",
     "/clear",

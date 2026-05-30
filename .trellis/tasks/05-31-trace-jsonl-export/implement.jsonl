@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guidelines for service and CLI command changes."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime event contract context for future external consumers."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer thinking guide for service-to-command export behavior."}
+{"file": ".trellis/tasks/05-31-trace-jsonl-export/research/trace-jsonl-export-notes.md", "reason": "Task research and scoped export design."}
