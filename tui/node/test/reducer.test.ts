@@ -179,6 +179,84 @@ test("reasoning and thinking deltas update live reasoning without changing answe
   assert.equal(state.liveReasoning?.kind, "thinking");
 });
 
+test("message complete annotates active stream metadata without finalizing the answer", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "hello" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "draft" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "thinking.delta",
+    params: { client_turn_id: "c1", text: "finishing" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.complete",
+    params: {
+      client_turn_id: "c1",
+      response_status: "completed",
+      request_id: "req_1",
+      nested: { ignored: true },
+    },
+  });
+
+  const assistant = state.transcript.at(-1);
+  assert.equal(state.turnRunning, true);
+  assert.equal(state.liveReasoning, null);
+  assert.equal(assistant?.type, "assistant_stream");
+  assert.equal(assistant?.text, "draft");
+  assert.deepEqual(assistant?.metadata.message_complete, {
+    client_turn_id: "c1",
+    response_status: "completed",
+    request_id: "req_1",
+  });
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.completed",
+    params: { client_turn_id: "c1", assistant_message: "final answer" },
+  });
+
+  assert.equal(state.turnRunning, false);
+  assert.equal(state.transcript.at(-1)?.type, "assistant_final");
+  assert.equal(state.transcript.at(-1)?.text, "final answer");
+  assert.deepEqual(state.transcript.at(-1)?.metadata, {});
+});
+
+test("runtime event envelope can carry message complete into reducer state", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "hello" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "answer" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "runtime.event",
+    params: {
+      version: 1,
+      sequence: 2,
+      type: "message.complete",
+      timestamp: 1770000001,
+      payload: { client_turn_id: "c1", response_status: "completed" },
+    },
+  });
+
+  assert.deepEqual(state.transcript.at(-1)?.metadata.message_complete, {
+    client_turn_id: "c1",
+    response_status: "completed",
+  });
+});
+
 test("command view mode updates local UI state", () => {
   const state = reduceShellState(initialState(), {
     type: "command.result",

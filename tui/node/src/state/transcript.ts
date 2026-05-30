@@ -17,6 +17,26 @@ export function applyTextDelta(items: TranscriptItem[], text: string): Transcrip
   ];
 }
 
+export function applyMessageComplete(
+  items: TranscriptItem[],
+  metadata: Record<string, unknown>,
+): TranscriptItem[] {
+  const last = items.at(-1);
+  if (last?.type !== "assistant_stream") {
+    return items;
+  }
+  return [
+    ...items.slice(0, -1),
+    {
+      ...last,
+      metadata: {
+        ...last.metadata,
+        message_complete: metadata,
+      },
+    },
+  ];
+}
+
 export function reconcileFinalAnswer(items: TranscriptItem[], answer: string): TranscriptItem[] {
   const last = items.at(-1);
   const finalItem: TranscriptItem = {

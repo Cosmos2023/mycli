@@ -203,6 +203,10 @@
   - `reasoning.delta` and `thinking.delta` update compact live reasoning state
     for running-turn display. They must not append text to assistant answer
     transcript items.
+  - `message.complete` is consumed as stream-completion metadata only. It may
+    annotate the active streamed assistant row with bounded metadata and clear
+    matching live reasoning, but it must not append a visible row, mark the turn
+    terminal, or replace the final assistant answer.
   - `runtime.event` can be unwrapped into `{method: type, params: payload}` and
     then processed by the same reducer paths as direct method-name events.
     Production Node TUI clients should avoid feeding both direct and envelope
@@ -310,6 +314,8 @@
   existing terminal events and `status.update`.
 - Good: TUI shows a compact running reasoning preview without mixing reasoning
   text into the final assistant answer.
+- Good: TUI records `message.complete` metadata on the active assistant stream
+  while leaving final answer reconciliation to `turn.completed`.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Good: A request-level gateway failure is visible as `gateway.error` without
@@ -406,6 +412,9 @@
   `turn.event` fallback when typed deltas are absent.
 - Reducer/rendering tests proving `reasoning.delta` and `thinking.delta` update
   compact live reasoning state without mutating assistant answer text.
+- Reducer tests proving direct and enveloped `message.complete` annotate the
+  active assistant stream with bounded metadata, clear matching live reasoning,
+  and keep `turn.completed` authoritative.
 - Integration smoke proving `run_node_tui_gateway(...)` can drive the real Node
   scripted client over stdio, typed stream notifications reach the reducer, and
   final assistant state is not duplicated by compatibility `turn.event`.

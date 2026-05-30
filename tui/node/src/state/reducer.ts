@@ -1,6 +1,7 @@
 import { resolveTheme } from "../theme/resolveTheme.ts";
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
 import {
+  applyMessageComplete,
   applyTextDelta,
   applyToolEvent,
   applyToolLifecycleEvent,
@@ -234,6 +235,20 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
       };
     }
+    if (action.method === "message.complete") {
+      const clientTurnId = clientTurnIdFromParams(action.params);
+      return {
+        ...state,
+        liveReasoning:
+          clientTurnId && state.liveReasoning?.client_turn_id === clientTurnId
+            ? null
+            : state.liveReasoning,
+        transcript: applyMessageComplete(
+          state.transcript,
+          boundedMessageCompleteMetadata(action.params),
+        ),
+      };
+    }
     if (action.method === "reasoning.delta" || action.method === "thinking.delta") {
       return {
         ...state,
@@ -460,6 +475,20 @@ function liveReasoningFromParams(
 function truncatePreview(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function boundedMessageCompleteMetadata(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string") {
+      metadata[key] = truncatePreview(value);
+    } else if (typeof value === "number" || typeof value === "boolean" || value === null) {
+      metadata[key] = value;
+    }
+  }
+  return metadata;
 }
 
 function isTerminalTurnState(state: TurnLiveState): boolean {
