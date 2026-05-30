@@ -75,6 +75,7 @@ class DoctorService:
             self._check_config,
             self._check_sessions_db,
             self._check_logs,
+            self._check_storage_layout,
             self._check_file_history,
             self._check_tui,
             self._check_mcp,
@@ -171,6 +172,46 @@ class DoctorService:
                 ),
             )
         return (DoctorCheck("logs", status, message, detail=str(logs_dir)),)
+
+    def _check_storage_layout(self) -> Iterable[DoctorCheck]:
+        reserved_dirs = {
+            "traces": self._layout.traces_dir,
+            "artifacts": self._layout.artifacts_dir,
+        }
+        conflicts = [
+            f"{name} is not a directory: {path}"
+            for name, path in reserved_dirs.items()
+            if path.exists() and not path.is_dir()
+        ]
+        if conflicts:
+            return (
+                DoctorCheck(
+                    "storage_layout",
+                    DoctorStatus.FAILED,
+                    "; ".join(conflicts),
+                    detail=str(self._layout.root),
+                ),
+            )
+        not_writable = [
+            f"{name} is not writable: {path}"
+            for name, path in reserved_dirs.items()
+            if path.exists() and not _is_writable(path)
+        ]
+        if not_writable:
+            return (
+                DoctorCheck(
+                    "storage_layout",
+                    DoctorStatus.FAILED,
+                    "; ".join(not_writable),
+                    detail=str(self._layout.root),
+                ),
+            )
+        existing = [name for name, path in reserved_dirs.items() if path.exists()]
+        if existing:
+            message = f"reserved paths usable: {', '.join(existing)}"
+        else:
+            message = "reserved paths available"
+        return (DoctorCheck("storage_layout", DoctorStatus.OK, message, detail=str(self._layout.root)),)
 
     def _check_file_history(self) -> Iterable[DoctorCheck]:
         history_root = self._layout.root / "file-history"

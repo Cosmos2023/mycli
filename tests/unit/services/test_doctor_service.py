@@ -96,6 +96,7 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "provider=deepseek" in rendered
     assert "api_key: present" in rendered
     assert "mcp: 1 configured, 1 enabled" in rendered
+    assert "storage_layout" in rendered
     assert "Summary:" in rendered
 
 
@@ -154,6 +155,107 @@ def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
     logs_check = next(check for check in report.checks if check.name == "logs")
     assert logs_check.status is DoctorStatus.OK
     assert "errors.log" not in logs_check.message
+
+
+def test_doctor_service_reports_storage_layout_missing_reserved_dirs_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "storage_layout")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "reserved paths available"
+    assert not (home / ".mycli" / "traces").exists()
+    assert not (home / ".mycli" / "artifacts").exists()
+
+
+def test_doctor_service_reports_storage_layout_reserved_dirs_as_ok(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    layout_root = home / ".mycli"
+    (layout_root / "traces").mkdir(parents=True)
+    (layout_root / "artifacts").mkdir()
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "storage_layout")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "reserved paths usable: traces, artifacts"
+    assert check.detail == str(layout_root)
+
+
+def test_doctor_service_fails_storage_layout_when_reserved_path_is_file(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    layout_root = home / ".mycli"
+    layout_root.mkdir()
+    (layout_root / "traces").write_text("not a directory", encoding="utf-8")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "storage_layout")
+    assert check.status is DoctorStatus.FAILED
+    assert "traces is not a directory" in check.message
+
+
+def test_doctor_service_fails_storage_layout_when_reserved_dir_is_not_writable(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    traces.chmod(0o555)
+
+    try:
+        report = DoctorService(
+            workspace_root=workspace,
+            home_dir=home,
+            env={},
+            which=lambda command: f"/usr/bin/{command}",
+            import_checker=lambda module: module == "mycli.cli.tui",
+        ).run()
+    finally:
+        traces.chmod(0o755)
+
+    check = next(check for check in report.checks if check.name == "storage_layout")
+    assert check.status is DoctorStatus.FAILED
+    assert "traces is not writable" in check.message
 
 
 def test_doctor_service_reports_node_tui_dependency_status(

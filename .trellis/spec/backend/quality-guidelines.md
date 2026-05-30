@@ -72,6 +72,11 @@ Questions to answer:
 - `~/.mycli/sessions.db` missing -> `sessions_db=warning`.
 - Sessions DB exists but is not openable or lacks required tables -> failed.
 - Logs or FileHistory missing -> warning, not failure.
+- Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
+  must not create them because runtime writers create parents lazily.
+- Reserved trace/artifact path exists as a non-directory -> `storage_layout=failed`.
+- Reserved trace/artifact directory exists without write bits ->
+  `storage_layout=failed`.
 - `errors.log` missing by itself -> OK when `agent.log`, `model-events.jsonl`,
   and `model-raw/` exist; `errors.log` is created on first warning/error.
 - FileHistory `index.json` exists but cannot parse -> failed.
@@ -90,8 +95,11 @@ Questions to answer:
 #### 5. Good/Base/Bad Cases
 - Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
   `0` with only warnings.
+- Good: A fresh machine without `~/.mycli/traces` or `~/.mycli/artifacts`
+  reports `storage_layout=ok` without creating those directories.
 - Base: A fresh machine with no prior sessions gets missing-storage warnings but
   no model request.
+- Bad: Creating `traces/` or `artifacts/` just to check doctor health.
 - Bad: Calling `build_turn_service()` for doctor, because that can require an
   API key and initialize runtime dependencies unrelated to diagnostics.
 - Bad: Printing `sk-...` or MCP environment secret values in remediation text.
@@ -100,6 +108,8 @@ Questions to answer:
 - Unit test service success with config/storage/logs/history/MCP fixtures.
 - Unit test warning-only conditions such as missing sessions DB and history.
 - Unit test failed MCP or storage parse/open behavior.
+- Unit test storage layout reserved directories missing, present, path-conflict,
+  and non-writable cases.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
