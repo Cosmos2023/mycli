@@ -16,6 +16,7 @@
 ### 2. Signatures
 - Python event emitter:
   `NodeTuiGateway._emit_event(method: str, params: dict[str, object]) -> None`
+- Extension discovery request method: `extension.manifest`
 - Turn submit request method: `turn.submit`
 - Trace export request method: `trace.export`
 - Approval response request methods:
@@ -59,6 +60,12 @@
 - `turn.completed` must include `turn_state`. A response with
   `pending_decision` maps to `waiting_approval`; otherwise it maps to
   `completed`.
+- `extension.manifest` is a read-only discovery RPC for external clients:
+  - Response payload includes `schema_version`, `agent`, `rpc_methods`,
+    `event_streams`, and `capabilities`.
+  - It must list machine-readable integration methods such as `trace.export`.
+  - It must not claim dynamic extension lifecycle or ACP server support until
+    those capabilities exist.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use
@@ -79,6 +86,8 @@
   table; reject invalid choices at the runtime decision boundary.
 - Invalid `status.update.state` in the reducer -> ignore the event and preserve
   existing state.
+- `extension.manifest` -> return static capability discovery data without
+  mutating runtime, session, or extension state.
 - Turn starts -> emit `turn.started` and live `status.update` with `running`.
 - `trace.export` -> return bounded sanitized JSONL rows without mutating trace
   files or session state.
@@ -98,6 +107,8 @@
   `Waiting approval`, `Resolving approval`, or `Failed`.
 - Good: External/extension clients call `trace.export` instead of scraping
   human `/trace` or prefixed `/trace-jsonl` command output.
+- Good: External/extension clients call `extension.manifest` before assuming
+  which RPC methods, event streams, and capability families are available.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -106,6 +117,8 @@
   payload types and reducer tests.
 - Bad: Returning `[trace-jsonl]` prefixes from `trace.export`; those are only
   for slash command transcript output.
+- Bad: Advertising extension lifecycle or ACP server support before those
+  transports are actually implemented.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
   reference for channel separation.
 
@@ -117,6 +130,7 @@
   failed, and interrupted paths when those paths are changed.
 - Gateway unit test proving `trace.export` returns unprefixed JSONL rows and
   honors bounded `tail` behavior.
+- Gateway unit test proving `extension.manifest` returns the service manifest.
 - Reducer unit test for `approval.request`, `approval.respond`,
   `status.update`, and terminal clearing behavior.
 - Rendering test proving live status text is displayed instead of a hardcoded

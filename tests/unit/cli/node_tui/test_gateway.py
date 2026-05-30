@@ -74,6 +74,15 @@ class FakeService:
     def export_trace_jsonl(self, *, tail: int = 50) -> tuple[str, ...]:
         return tuple(f'{{"kind":"tool_execution","turn_id":"turn_{index}","payload":{{}}}}' for index in range(tail))
 
+    def extension_manifest(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "agent": {"name": "mycli"},
+            "rpc_methods": [{"name": "extension.manifest"}],
+            "event_streams": [],
+            "capabilities": [],
+        }
+
 
 def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> None:
     gateway = NodeTuiGateway(service=FakeService(tmp_path))
@@ -309,6 +318,22 @@ def test_gateway_trace_export_uses_default_tail_for_invalid_values(tmp_path: Pat
 
     assert response.result is not None
     assert len(response.result["rows"]) == 50
+
+
+def test_gateway_extension_manifest_returns_service_manifest(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="extension.manifest", params={})
+    )
+
+    assert response.result == {
+        "schema_version": 1,
+        "agent": {"name": "mycli"},
+        "rpc_methods": [{"name": "extension.manifest"}],
+        "event_streams": [],
+        "capabilities": [],
+    }
 
 
 def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:

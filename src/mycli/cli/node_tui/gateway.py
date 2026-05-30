@@ -120,6 +120,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_completion_path(request.params))
             if request.method == "status.inspect":
                 return result_response(request.id, self._status_payload())
+            if request.method == "extension.manifest":
+                return result_response(request.id, self.service.extension_manifest())
             if request.method == "trace.export":
                 return result_response(request.id, self._handle_trace_export(request.params))
             if request.method == "session.list":

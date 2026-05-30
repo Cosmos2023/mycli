@@ -23,6 +23,7 @@ from mycli.services.file_history import FileHistoryService
 from mycli.memory.service import MemoryService
 from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
+from mycli.services.extensions import ExtensionManifestService
 from mycli.services.skills import SkillRegistry
 from mycli.services.tracing import TraceService
 
@@ -81,6 +82,11 @@ class TurnService:
             runtime,
             "_trace_service",
             TraceService(home_dir=home_dir),
+        )
+        self._extension_manifest_service = getattr(
+            runtime,
+            "_extension_manifest_service",
+            ExtensionManifestService(),
         )
         self._observability_service = getattr(
             runtime,
@@ -695,6 +701,9 @@ class TurnService:
         if not rows:
             return ("",)
         return rows
+
+    def extension_manifest(self) -> dict[str, object]:
+        return self._extension_manifest_service.manifest()
 
     def undo_last_file_change(self) -> str:
         result = self._file_history_service.rewind_latest(
