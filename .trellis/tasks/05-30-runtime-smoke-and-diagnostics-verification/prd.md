@@ -68,9 +68,9 @@ hardening.
 Completed with a passing real runtime smoke. Evidence is recorded in
 `research/runtime-smoke-report.md`.
 
-Follow-up recommendation: decide whether `mycli doctor` should warn when
-`~/.mycli/logs/errors.log` is absent after otherwise healthy no-error runtime
-activity.
+Follow-up completed: `mycli doctor` now treats missing `~/.mycli/logs/errors.log`
+as healthy when the core log paths exist, because `errors.log` is only created
+after the first warning/error.
 
 ## Out of Scope
 

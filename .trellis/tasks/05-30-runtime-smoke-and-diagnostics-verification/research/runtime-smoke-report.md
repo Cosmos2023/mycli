@@ -146,7 +146,7 @@ current contract: real CLI runtime writes to `~/.mycli/logs`, while workspace
 
 ## Post-smoke Doctor
 
-Post-smoke doctor output still reported:
+Original post-smoke doctor output reported:
 
 - `9 ok`
 - `1 warning`
@@ -158,6 +158,9 @@ The remaining warning is still:
 logs: logs missing: errors.log (/Users/cosmos/.mycli/logs)
 ```
 
+Follow-up fix applied afterward: doctor now reports this no-error state as
+healthy when `agent.log`, `model-events.jsonl`, and `model-raw/` exist.
+
 ## Findings
 
 1. The core runtime smoke passed.
@@ -165,14 +168,12 @@ logs: logs missing: errors.log (/Users/cosmos/.mycli/logs)
    raw request payloads, and trace output all matched the expected layout.
 3. Workspace-local `log/*` was not touched by the real CLI smoke.
 4. Raw request payload redaction looked correct for the checked secret patterns.
-5. `mycli doctor` currently warns when `errors.log` is missing even after a
-   successful run with no warnings/errors. This is reasonable for strict path
-   presence checking, but noisy for a healthy no-error installation.
+5. `mycli doctor` originally warned when `errors.log` was missing even after a
+   successful run with no warnings/errors. This was converted into an OK state
+   because `errors.log` is warning/error-driven.
 
 ## Recommendation
 
-Create a follow-up task to decide whether doctor should treat missing
-`errors.log` as OK when `agent.log`, `model-events.jsonl`, and `model-raw/` are
-present and no warning/error has ever been emitted. The alternative is to have
-runtime initialize empty expected log files, but that would make doctor less
-strictly read-only if done there and would add startup writes in normal runtime.
+No further runtime smoke follow-up is required from this finding. If future
+doctor checks need stricter log semantics, keep doctor read-only and prefer
+interpreting optional files over creating them.

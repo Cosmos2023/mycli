@@ -155,11 +155,8 @@ class DoctorService:
             return (DoctorCheck("logs", DoctorStatus.WARNING, f"missing {logs_dir}"),)
         if not logs_dir.is_dir():
             return (DoctorCheck("logs", DoctorStatus.FAILED, f"not a directory {logs_dir}"),)
-        missing = [
-            name
-            for name in ("agent.log", "errors.log", "model-events.jsonl", "model-raw")
-            if not (logs_dir / name).exists()
-        ]
+        required_paths = ("agent.log", "model-events.jsonl", "model-raw")
+        missing = [name for name in required_paths if not (logs_dir / name).exists()]
         status = DoctorStatus.WARNING if missing else DoctorStatus.OK
         message = "logs present"
         if missing:

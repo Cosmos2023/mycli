@@ -113,3 +113,35 @@ def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) 
     assert any(check.name == "file_history" and check.status is DoctorStatus.WARNING for check in report.checks)
     assert any(check.name == "mcp" and check.status is DoctorStatus.FAILED for check in report.checks)
     assert report.failed_count == 1
+
+
+def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    layout_root = home / ".mycli"
+    _create_sessions_db(layout_root / "sessions.db")
+    logs = layout_root / "logs"
+    logs.mkdir(parents=True)
+    (logs / "agent.log").write_text("", encoding="utf-8")
+    (logs / "model-events.jsonl").write_text("", encoding="utf-8")
+    (logs / "model-raw").mkdir()
+    history = layout_root / "file-history" / "default"
+    history.mkdir(parents=True)
+    (history / "index.json").write_text(json.dumps({"snapshots": []}), encoding="utf-8")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    logs_check = next(check for check in report.checks if check.name == "logs")
+    assert logs_check.status is DoctorStatus.OK
+    assert "errors.log" not in logs_check.message
