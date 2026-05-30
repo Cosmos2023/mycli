@@ -1261,6 +1261,38 @@ def test_agent_runtime_forwards_stream_events_to_sink(tmp_path: Path) -> None:
     )
 
 
+def test_agent_runtime_forwards_execution_tool_lifecycle_events_to_sink(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=StreamReasoningToolThenDoneAdapter(),
+    )
+    events = []
+
+    response = runtime.handle_user_turn("inspect the repo", stream_sink=events.append)
+
+    assert response.assistant_message == "Repository summary complete."
+    assert [event.kind for event in events] == [
+        "reasoning",
+        "tool_call",
+        "completed",
+        "tool_start",
+        "tool_complete",
+        "text_delta",
+        "completed",
+    ]
+    tool_start = next(event for event in events if event.kind == "tool_start")
+    tool_complete = next(event for event in events if event.kind == "tool_complete")
+    assert tool_start.tool_name == "Read"
+    assert tool_start.metadata["tool_id"] == "call_stream_read_1"
+    assert tool_start.metadata["args_preview"] == "file_path=pyproject.toml"
+    assert tool_complete.tool_name == "Read"
+    assert tool_complete.metadata["tool_id"] == "call_stream_read_1"
+    assert tool_complete.metadata["summary"] == "Read pyproject.toml"
+    assert tool_complete.metadata["success"] is True
+
+
 def test_agent_runtime_uses_configured_reasoning_effort_across_overview_turns(
     tmp_path: Path,
 ) -> None:

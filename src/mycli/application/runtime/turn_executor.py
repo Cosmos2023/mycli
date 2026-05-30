@@ -765,6 +765,7 @@ class TurnExecutor:
                 activity_events=activity_events,
                 streamed_chunks=streamed_chunks,
                 turn_items=turn_items,
+                stream_sink=stream_sink,
             )
             if early_response is not None:
                 response, status, stop_reason = early_response

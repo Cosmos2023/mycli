@@ -317,6 +317,55 @@ class FakeTurnService(FakeService):
         return TurnResponse(assistant_message=f"resolved {choice}")
 
 
+class FakeToolLifecycleTurnService(FakeService):
+    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+        del message
+        if stream_sink is not None:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_start",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "context": "README.md",
+                        "args_preview": "path=README.md",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_complete",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "duration_s": 0.125,
+                        "summary": "Read README.md",
+                        "success": True,
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_failed",
+                    tool_name="Write",
+                    metadata={
+                        "tool_id": "call_write_1",
+                        "call_id": "call_write_1",
+                        "name": "Write",
+                        "duration_s": 0.002,
+                        "summary": "Tool Write could not run.",
+                        "success": False,
+                        "error": "Missing required parameter: content",
+                    },
+                )
+            )
+        return TurnResponse(assistant_message="done")
+
+
 def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     gateway = NodeTuiGateway(
@@ -361,6 +410,57 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
         "state": "completed",
         "kind": "completed",
         "text": "Completed",
+    }
+
+
+def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeToolLifecycleTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    methods = [method for method, _params in events]
+    assert "tool.start" in methods
+    assert "tool.complete" in methods
+    assert "tool.failed" in methods
+    assert "turn.event" not in methods
+    assert next(params for method, params in events if method == "tool.start") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "Read",
+        "context": "README.md",
+        "args_preview": "path=README.md",
+    }
+    assert next(params for method, params in events if method == "tool.complete") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "Read",
+        "duration_s": 0.125,
+        "summary": "Read README.md",
+        "success": True,
+    }
+    assert next(params for method, params in events if method == "tool.failed") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_write_1",
+        "call_id": "call_write_1",
+        "name": "Write",
+        "duration_s": 0.002,
+        "summary": "Tool Write could not run.",
+        "success": False,
+        "error": "Missing required parameter: content",
     }
 
 

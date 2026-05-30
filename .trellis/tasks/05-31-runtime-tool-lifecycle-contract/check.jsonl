@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify emitted payloads match documented runtime-to-TUI contract"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify runtime diagnostics/cache safety and test scope"}
+{"file": ".trellis/tasks/05-31-runtime-tool-lifecycle-contract/research/runtime-tool-lifecycle-contract.md", "reason": "Acceptance context and risks for lifecycle implementation"}
+{"timestamp":"2026-05-31T00:00:00+08:00","step":"red","result":"Added failing ToolExecutionService lifecycle tests and gateway forwarding test; failures proved missing lifecycle_sink and generic turn.event forwarding."}
+{"timestamp":"2026-05-31T00:00:00+08:00","step":"green","result":"Implemented RuntimeStreamEvent-based tool_start/tool_complete/tool_failed path from ToolExecutionService through AgentRuntime stream_sink to NodeTuiGateway tool.start/tool.complete/tool.failed."}
+{"timestamp":"2026-05-31T00:00:00+08:00","step":"verify","result":"Focused tests passed: tool execution lifecycle, gateway lifecycle forwarding, agent runtime lifecycle stream sink. Related 42-test runtime/gateway set passed; ruff and mypy passed on changed files."}
