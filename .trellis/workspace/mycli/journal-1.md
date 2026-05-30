@@ -72,3 +72,36 @@ Ran a real root/fork/resume mycli smoke, found fork lineage metadata was erased 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Logging and doctor closeout
+
+**Date**: 2026-05-30
+**Task**: Logging and doctor closeout
+**Branch**: `main`
+
+### Summary
+
+Closed out logging hardening and doctor diagnostics by recording acceptance evidence, verifying doctor 10/0/0, focused logging/doctor tests, full ruff, and full mypy, then archiving both tasks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `adb2b69` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
