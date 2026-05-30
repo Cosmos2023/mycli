@@ -380,6 +380,32 @@ class FakeToolLifecycleTurnService(FakeService):
         return TurnResponse(assistant_message="done")
 
 
+class FakeClarifyTurnService(FakeService):
+    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+        del message
+        if stream_sink is not None:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="clarify_request",
+                    tool_name="AskUserQuestion",
+                    metadata={
+                        "request_id": "call_question_1",
+                        "tool_id": "call_question_1",
+                        "call_id": "call_question_1",
+                        "tool_name": "AskUserQuestion",
+                        "question": "Which slice should come next?",
+                        "options": [
+                            {"label": "Runtime", "description": "Only runtime contract"},
+                            {"label": "TUI", "description": "Render the request"},
+                        ],
+                        "header": "Scope",
+                        "multi_select": False,
+                    },
+                )
+            )
+        return TurnResponse(assistant_message="waiting")
+
+
 class FailingTurnService(FakeService):
     def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
         del message, stream_sink
@@ -584,6 +610,48 @@ def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: 
         "success": False,
         "error": "Missing required parameter: content",
     }
+
+
+def test_gateway_forwards_clarify_request_and_runtime_event_mirror(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeClarifyTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "ask", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    clarify = next(params for method, params in events if method == "clarify.request")
+    assert clarify == {
+        "client_turn_id": "client_1",
+        "request_id": "call_question_1",
+        "tool_id": "call_question_1",
+        "call_id": "call_question_1",
+        "tool_name": "AskUserQuestion",
+        "question": "Which slice should come next?",
+        "options": [
+            {"label": "Runtime", "description": "Only runtime contract"},
+            {"label": "TUI", "description": "Render the request"},
+        ],
+        "header": "Scope",
+        "multi_select": False,
+    }
+    assert {
+        "type": "clarify.request",
+        "payload": clarify,
+    }.items() <= next(
+        params
+        for method, params in events
+        if method == "runtime.event" and params["type"] == "clarify.request"
+    ).items()
 
 
 def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path) -> None:

@@ -33,6 +33,23 @@ export type ApprovalRespondPayload = {
   choice: string;
 };
 
+export type ClarifyOptionPayload = {
+  label: string;
+  description?: string;
+};
+
+export type ClarifyRequestPayload = {
+  client_turn_id?: string;
+  request_id: string;
+  tool_id: string;
+  call_id: string;
+  tool_name: string;
+  question: string;
+  options: ClarifyOptionPayload[];
+  header?: string;
+  multi_select: boolean;
+};
+
 export type StatusUpdatePayload = {
   client_turn_id?: string;
   state: TurnState;
@@ -154,6 +171,7 @@ export type KnownGatewayEvent =
   | Notification<"status.update", StatusUpdatePayload>
   | Notification<"approval.request", ApprovalRequestPayload>
   | Notification<"approval.respond", ApprovalRespondPayload>
+  | Notification<"clarify.request", ClarifyRequestPayload>
   | Notification<"tool.start", ToolStartPayload>
   | Notification<"tool.progress", ToolProgressPayload>
   | Notification<"tool.complete", ToolCompletePayload>

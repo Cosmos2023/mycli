@@ -58,6 +58,25 @@ test("typed client narrows known event payloads and keeps unknown events", async
   assert.equal(progressEvent.params.tool_id, "call_1");
   assert.equal(progressEvent.params.stage, "executing");
 
+  const clarifyPromise = client.waitForEvent(
+    "clarify.request",
+    (event) => event.params.request_id === "question_1",
+  );
+  input.write(
+    [
+      '{"jsonrpc":"2.0","method":"clarify.request","params":',
+      '{"client_turn_id":"c1","request_id":"question_1","tool_id":"question_1",',
+      '"call_id":"question_1","tool_name":"AskUserQuestion",',
+      '"question":"Pick one","options":[{"label":"A","description":"First"}],',
+      '"header":"Choice","multi_select":false}}\n',
+    ].join(""),
+  );
+  const clarifyEvent = await clarifyPromise;
+  assert.equal(clarifyEvent.method, "clarify.request");
+  assert.equal(clarifyEvent.params.question, "Pick one");
+  assert.equal(clarifyEvent.params.options[0]?.label, "A");
+  assert.equal(clarifyEvent.params.multi_select, false);
+
   const unknownPromise = client.waitForEvent("custom.event");
   input.write('{"jsonrpc":"2.0","method":"custom.event","params":{"ok":true}}\n');
   const unknownEvent = await unknownPromise;

@@ -55,6 +55,7 @@ WriteDiagnosticsRunner = Callable[[tuple[str, ...]], dict[str, object]]
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_WRITE_DIAGNOSTICS = 30
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
+MAX_CLARIFY_OPTIONS = 5
 
 
 @dataclass(slots=True, frozen=True)
@@ -523,6 +524,9 @@ class ToolExecutionService:
                 duration_seconds=duration_seconds,
             ),
         )
+        clarify_event = self._clarify_request_event(call=normalized_call, result=result)
+        if clarify_event is not None:
+            self._notify_lifecycle_sink(lifecycle_sink, clarify_event)
         self._trace_service.append(
             self._session_id,
             RuntimeTraceEvent(
@@ -606,6 +610,51 @@ class ToolExecutionService:
             tool_name=call.name,
             metadata=metadata,
         )
+
+    def _clarify_request_event(
+        self,
+        *,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> RuntimeStreamEvent | None:
+        if not result.success or call.name != "AskUserQuestion":
+            return None
+        if result.raw_payload.get("status") != "awaiting_user_response":
+            return None
+        question = result.raw_payload.get("question")
+        if not isinstance(question, str) or not question.strip():
+            return None
+        request_id = call.call_id or self._tool_lifecycle_id(call)
+        metadata: dict[str, object] = {
+            "request_id": request_id,
+            "tool_id": self._tool_lifecycle_id(call),
+            "call_id": call.call_id or "",
+            "tool_name": call.name,
+            "question": self._lifecycle_preview(question),
+            "options": self._clarify_options(result.raw_payload.get("options")),
+            "multi_select": bool(result.raw_payload.get("multi_select", False)),
+        }
+        header = result.raw_payload.get("header")
+        if isinstance(header, str) and header.strip():
+            metadata["header"] = self._lifecycle_preview(header)
+        return RuntimeStreamEvent(kind="clarify_request", tool_name=call.name, metadata=metadata)
+
+    def _clarify_options(self, raw_options: object) -> list[dict[str, object]]:
+        if not isinstance(raw_options, list):
+            return []
+        options: list[dict[str, object]] = []
+        for raw_option in raw_options[:MAX_CLARIFY_OPTIONS]:
+            if not isinstance(raw_option, dict):
+                continue
+            label = raw_option.get("label")
+            if not isinstance(label, str) or not label.strip():
+                continue
+            option: dict[str, object] = {"label": self._lifecycle_preview(label)}
+            description = raw_option.get("description")
+            if isinstance(description, str) and description.strip():
+                option["description"] = self._lifecycle_preview(description)
+            options.append(option)
+        return options
 
     def _tool_lifecycle_id(self, call: ToolCall) -> str:
         if call.call_id:

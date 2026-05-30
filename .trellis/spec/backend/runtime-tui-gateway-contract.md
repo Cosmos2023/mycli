@@ -26,6 +26,7 @@
   - `status.update`
   - `approval.request`
   - `approval.respond`
+  - `clarify.request`
   - `tool.start`
   - `tool.progress`
   - `tool.complete`
@@ -67,6 +68,22 @@
     `reject`, or `allow_session`
 - `decision.resolve` remains accepted for older clients. It shares the same
   gateway path as `approval.respond`.
+- `clarify.request` payload:
+  - `client_turn_id`: optional string linking the clarification to the active
+    turn
+  - `request_id`: stable string for this clarification request, normally the
+    source tool call id
+  - `tool_id`, `call_id`, and `tool_name`: diagnostic routing fields for the
+    source tool request
+  - `question`: bounded user-facing question text
+  - `options`: bounded array of `{label, description?}` rows
+  - `header`: optional short label
+  - `multi_select`: boolean
+  - In the initial contract slice, `clarify.request` is emitted from
+    `AskUserQuestion` tool results with
+    `status == "awaiting_user_response"`. It is a notification contract only;
+    `clarify.respond`, runtime suspension/resume, and TUI rendering are future
+    slices.
 - `turn.completed` must include `turn_state`. A response with
   `pending_decision` maps to `waiting_approval`; otherwise it maps to
   `completed`.
@@ -188,6 +205,9 @@
 - Tool execution returns an unsuccessful `ToolResult` -> emit `tool.failed`
   during the running turn after the local `ToolResult` is known. Do not also
   emit `tool.complete` for the same failed result.
+- `AskUserQuestion` returns a successful tool result with
+  `status=awaiting_user_response` -> emit `clarify.request` after the normal
+  successful tool lifecycle events and mirror it through `runtime.event`.
 - Model reasoning chunk -> emit `reasoning.delta`, `thinking.delta`, and the
   compatibility `turn.event` with phase `reasoning`.
 - Model assistant text chunk -> emit `message.delta` and the compatibility
@@ -250,6 +270,8 @@
   execution stopped. It is currently an interrupt-request signal.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
   reference for channel separation.
+- Bad: Treating `clarify.request` as `approval.request`; clarification is a
+  user-input UX channel, while approval is a safety gate.
 
 ### 6. Tests Required
 - Gateway unit test for `approval.request` payload fields and option mapping.
@@ -264,6 +286,12 @@
   "tool_progress" | "tool_complete" | "tool_failed")` emits `tool.start` /
   `tool.progress` / `tool.complete` / `tool.failed`, not generic
   `turn.event`.
+- Tool execution unit test proving `AskUserQuestion` success emits a bounded
+  `clarify_request` lifecycle event after normal tool lifecycle events.
+- Gateway unit test proving `RuntimeStreamEvent(kind="clarify_request")` emits
+  `clarify.request` and a `runtime.event` mirror.
+- Node protocol typecheck/client test proving `clarify.request` payloads narrow
+  in `GatewayClient.waitForEvent(...)`.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
   `tool.complete`, and `tool.failed` into one matched `tool_summary` row.
 - Rendering/formatter tests proving lifecycle rows show readable running, done,

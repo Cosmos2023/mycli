@@ -105,6 +105,31 @@ class FakeSkillTool:
         )
 
 
+class FakeAskUserQuestionTool:
+    spec = ToolSpec(
+        name="AskUserQuestion",
+        description="Ask the user a structured question",
+        parameters=(ToolParameter("question", "string"), ToolParameter("options", "array")),
+    )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            success=True,
+            summary="Awaiting user response",
+            raw_payload={
+                "status": "awaiting_user_response",
+                "question": str(arguments["question"]),
+                "header": "Scope",
+                "options": [
+                    {"label": "Runtime", "description": "Only runtime contract"},
+                    {"label": "TUI", "description": "Render the request"},
+                    {"label": "Other", "description": "Custom answer"},
+                ],
+                "multi_select": False,
+            },
+        )
+
+
 def _tool_exposure() -> ToolExposure:
     return ToolExposure(
         entries=(
@@ -457,6 +482,74 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         "duration_s": 0.125,
         "summary": "Read README.md",
         "success": True,
+    }
+    assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
+
+
+def test_tool_execution_service_notifies_clarify_request_after_question_tool(
+    tmp_path: Path,
+) -> None:
+    hook_manager = HookManager()
+    ask_tool = FakeAskUserQuestionTool()
+    registry = ToolRegistry.from_tools([ask_tool])
+    service, _fake_tool = _service(tmp_path, hook_manager=hook_manager, registry=registry)
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((10.0, 10.125)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="AskUserQuestion",
+            arguments={
+                "question": "Which slice should come next?",
+                "options": [
+                    {"label": "Runtime", "description": "Only runtime contract"},
+                    {"label": "TUI", "description": "Render the request"},
+                ],
+            },
+            reason="Need user direction",
+            call_id="call_question_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("AskUserQuestion"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=ask_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+        lifecycle_sink=events.append,
+    )
+
+    assert [event.kind for event in events] == [
+        "tool_start",
+        "tool_progress",
+        "tool_complete",
+        "clarify_request",
+    ]
+    clarify = events[-1]
+    assert clarify.tool_name == "AskUserQuestion"
+    assert clarify.metadata == {
+        "request_id": "call_question_1",
+        "tool_id": "call_question_1",
+        "call_id": "call_question_1",
+        "tool_name": "AskUserQuestion",
+        "question": "Which slice should come next?",
+        "options": [
+            {"label": "Runtime", "description": "Only runtime contract"},
+            {"label": "TUI", "description": "Render the request"},
+            {"label": "Other", "description": "Custom answer"},
+        ],
+        "multi_select": False,
+        "header": "Scope",
     }
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
 
