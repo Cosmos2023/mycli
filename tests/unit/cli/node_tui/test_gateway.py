@@ -336,17 +336,87 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     assert response.result == {"accepted": True, "client_turn_id": "client_1"}
     assert [method for method, _params in events] == [
         "turn.started",
+        "status.update",
         "turn.event",
         "turn.event",
         "turn.event",
         "turn.event",
         "turn.completed",
+        "status.update",
         "status.changed",
     ]
-    completed = events[-2][1]
+    assert events[1][1] == {
+        "client_turn_id": "client_1",
+        "state": "running",
+        "kind": "running",
+        "text": "Running",
+    }
+    completed = events[-3][1]
     assert completed["assistant_message"] == "hello world"
     assert completed["progress_updates"] == ["[progress] done"]
     assert completed["plan_steps"] == ["completed: smoke"]
+    assert completed["turn_state"] == "completed"
+    assert events[-2][1] == {
+        "client_turn_id": "client_1",
+        "state": "completed",
+        "kind": "completed",
+        "text": "Completed",
+    }
+
+
+def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+
+    def pending_turn(_message: str, stream_sink=None) -> TurnResponse:
+        del stream_sink
+        decision = PendingDecision(
+            tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
+            kind=DecisionKind.NEEDS_CHOICE,
+            reason="git push requires confirmation.",
+            preview="git push",
+            options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+        )
+        service._session_service.pending_decision = decision
+        return TurnResponse(assistant_message="", pending_decision=decision)
+
+    service.handle_user_turn = pending_turn  # type: ignore[method-assign]
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "push", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert "approval.request" in [method for method, _params in events]
+    approval = next(params for method, params in events if method == "approval.request")
+    assert approval == {
+        "client_turn_id": "client_1",
+        "decision_id": "decision_current",
+        "preview": "git push",
+        "reason": "git push requires confirmation.",
+        "tool_name": "Bash",
+        "options": [
+            {"choice": "approve_once", "label": "Allow once"},
+            {"choice": "reject", "label": "Reject"},
+        ],
+    }
+    completed = next(params for method, params in events if method == "turn.completed")
+    assert completed["turn_state"] == "waiting_approval"
+    assert {
+        "client_turn_id": "client_1",
+        "state": "waiting_approval",
+        "kind": "waiting_approval",
+        "text": "Waiting approval",
+    } in [params for method, params in events if method == "status.update"]
 
 
 def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) -> None:
@@ -414,6 +484,39 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
     assert service.resolved_choices == ["1"]
     assert [method for method, _params in events] == [
         "turn.started",
+        "status.update",
+        "approval.respond",
         "turn.completed",
+        "status.update",
         "status.changed",
     ]
+
+
+def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compatible(
+    tmp_path: Path,
+) -> None:
+    service = FakeTurnService(tmp_path)
+    service._session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="approval.respond",
+            params={"decision_id": "decision_current", "choice": "reject"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "decision_id": "decision_current",
+        "client_turn_id": "approval_req_1",
+    }
+    assert service.resolved_choices == ["2"]

@@ -37,6 +37,21 @@ export type OverlayState = {
   lines: string[];
 };
 
+export type TurnLiveState =
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export type LiveStatus = {
+  client_turn_id?: string;
+  state: TurnLiveState;
+  kind: string;
+  text: string;
+  severity?: string;
+};
+
 export type ShellState = {
   sessionId: string | null;
   workspace: string;
@@ -51,6 +66,7 @@ export type ShellState = {
   restoredDraft: string;
   turnRunning: boolean;
   currentTurnId: string | null;
+  liveStatus: LiveStatus | null;
   viewMode: ViewMode;
   completion: CompletionState;
   overlay: OverlayState;

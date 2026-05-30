@@ -20,7 +20,7 @@ from mycli.cli.node_tui.protocol import (
 from mycli.cli.repl import build_command_handler, handle_slash_command
 from mycli.cli.tui.completion import slash_command_candidates
 from mycli.cli.tui.marks import startup_mark
-from mycli.domain.runtime import RuntimeStreamEvent, TurnResponse
+from mycli.domain.runtime import DecisionAction, PendingDecision, RuntimeStreamEvent, TurnResponse
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
@@ -29,6 +29,11 @@ DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",
     "allow_session": "3",
+}
+DECISION_OPTION_LABELS = {
+    DecisionAction.APPROVE_ONCE: "Allow once",
+    DecisionAction.REJECT: "Reject",
+    DecisionAction.ALLOW_SESSION: "Allow for session",
 }
 
 
@@ -107,6 +112,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_transcript_load(request.params))
             if request.method == "decision.resolve":
                 return self._handle_decision_resolve(request)
+            if request.method == "approval.respond":
+                return self._handle_approval_response(request)
             if request.method == "completion.slash":
                 return result_response(request.id, self._handle_completion_slash(request.params))
             if request.method == "completion.path":
@@ -200,10 +207,22 @@ class NodeTuiGateway:
                 self._interrupt_requested = True
         if running and self._emit is not None:
             self._emit("turn.interrupted", {"requested": True})
+            self._emit_status_update(
+                client_turn_id=None,
+                state="interrupted",
+                kind="interrupted",
+                text="Interrupted",
+            )
         return {"interrupted": running}
 
     def _run_turn_worker(self, *, message: str, client_turn_id: str) -> None:
         self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_status_update(
+            client_turn_id=client_turn_id,
+            state="running",
+            kind="running",
+            text="Running",
+        )
         try:
             response = self.service.handle_user_turn(
                 message,
@@ -214,10 +233,28 @@ class NodeTuiGateway:
                 "turn.failed",
                 {"client_turn_id": client_turn_id, "message": str(exc)},
             )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="failed",
+                kind="failed",
+                text="Failed",
+            )
         else:
+            if response.pending_decision is not None:
+                self._emit_event(
+                    "approval.request",
+                    _approval_request_payload(client_turn_id, response.pending_decision),
+                )
             self._emit_event(
                 "turn.completed",
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+            )
+            turn_state = _turn_state_for_response(response)
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state=turn_state,
+                kind=turn_state,
+                text=_status_text_for_state(turn_state),
             )
         finally:
             with self._turn_lock:
@@ -260,12 +297,30 @@ class NodeTuiGateway:
             "progress_updates": list(response.progress_updates),
             "plan_steps": list(response.plan_steps),
             "pending_decision": response.pending_decision is not None,
+            "turn_state": _turn_state_for_response(response),
             "usage": {},
         }
 
     def _emit_event(self, method: str, params: dict[str, object]) -> None:
         if self._emit is not None:
             self._emit(method, params)
+
+    def _emit_status_update(
+        self,
+        *,
+        client_turn_id: str | None,
+        state: str,
+        kind: str,
+        text: str,
+    ) -> None:
+        payload: dict[str, object] = {
+            "state": state,
+            "kind": kind,
+            "text": text,
+        }
+        if client_turn_id is not None:
+            payload["client_turn_id"] = client_turn_id
+        self._emit_event("status.update", payload)
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
@@ -310,6 +365,9 @@ class NodeTuiGateway:
         return {"session_id": session_id, "items": projected, "next_before": next_before}
 
     def _handle_decision_resolve(self, request: RpcRequest) -> RpcResponse:
+        return self._handle_approval_response(request)
+
+    def _handle_approval_response(self, request: RpcRequest) -> RpcResponse:
         decision_id = _required_str(request.params, "decision_id")
         if decision_id != "decision_current":
             return error_response(
@@ -354,6 +412,12 @@ class NodeTuiGateway:
 
     def _run_decision_worker(self, *, choice: str, client_turn_id: str) -> None:
         self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_status_update(
+            client_turn_id=client_turn_id,
+            state="running",
+            kind="running",
+            text="Resolving approval",
+        )
         try:
             response = self.service.resolve_pending_decision(choice)
         except Exception as exc:
@@ -361,10 +425,30 @@ class NodeTuiGateway:
                 "turn.failed",
                 {"client_turn_id": client_turn_id, "message": str(exc)},
             )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="failed",
+                kind="failed",
+                text="Failed",
+            )
         else:
+            self._emit_event(
+                "approval.respond",
+                {
+                    "client_turn_id": client_turn_id,
+                    "decision_id": "decision_current",
+                    "choice": _choice_for_resolved_value(choice),
+                },
+            )
             self._emit_event(
                 "turn.completed",
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+            )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state=_turn_state_for_response(response),
+                kind=_turn_state_for_response(response),
+                text=_status_text_for_state(_turn_state_for_response(response)),
             )
         finally:
             with self._turn_lock:
@@ -476,6 +560,49 @@ def _view_mode_from_command(command: str) -> str | None:
     if len(parts) == 2 and parts[0] == "/view" and parts[1] in {"default", "verbose", "focus"}:
         return parts[1]
     return None
+
+
+def _approval_request_payload(
+    client_turn_id: str,
+    decision: PendingDecision,
+) -> dict[str, object]:
+    return {
+        "client_turn_id": client_turn_id,
+        "decision_id": "decision_current",
+        "preview": decision.preview,
+        "reason": decision.reason,
+        "tool_name": decision.tool_call.name,
+        "options": [
+            {
+                "choice": action.value,
+                "label": DECISION_OPTION_LABELS[action],
+            }
+            for action in decision.options
+        ],
+    }
+
+
+def _turn_state_for_response(response: TurnResponse) -> str:
+    if response.pending_decision is not None:
+        return "waiting_approval"
+    return "completed"
+
+
+def _status_text_for_state(state: str) -> str:
+    return {
+        "running": "Running",
+        "waiting_approval": "Waiting approval",
+        "completed": "Completed",
+        "failed": "Failed",
+        "interrupted": "Interrupted",
+    }.get(state, state.replace("_", " ").title())
+
+
+def _choice_for_resolved_value(value: str) -> str:
+    for choice, mapped in DECISION_CHOICE_MAP.items():
+        if mapped == value:
+            return choice
+    return value
 
 
 def _project_history_item(item: HistoryItem) -> dict[str, object]:

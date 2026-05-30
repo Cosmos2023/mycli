@@ -1,7 +1,7 @@
 import { resolveTheme } from "../theme/resolveTheme.ts";
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
 import { applyTextDelta, applyToolEvent, itemId, reconcileFinalAnswer } from "./transcript.ts";
-import type { ShellState, TranscriptItem, ViewMode } from "./types.ts";
+import type { LiveStatus, ShellState, TranscriptItem, TurnLiveState, ViewMode } from "./types.ts";
 
 export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
@@ -43,6 +43,7 @@ export function initialState({
     restoredDraft: "",
     turnRunning: false,
     currentTurnId: null,
+    liveStatus: null,
     viewMode: "default",
     completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
     overlay: { visible: false, title: "", lines: [] },
@@ -162,6 +163,37 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         turnRunning: true,
         currentTurnId: String(action.params.client_turn_id ?? ""),
+        liveStatus: {
+          client_turn_id: String(action.params.client_turn_id ?? ""),
+          state: "running",
+          kind: "running",
+          text: "Running",
+        },
+      };
+    }
+    if (action.method === "status.update") {
+      const liveStatus = liveStatusFromParams(action.params);
+      if (!liveStatus) {
+        return state;
+      }
+      return {
+        ...state,
+        liveStatus,
+        turnRunning:
+          liveStatus.state === "running" || liveStatus.state === "waiting_approval"
+            ? true
+            : liveStatus.state === "completed" ||
+                liveStatus.state === "failed" ||
+                liveStatus.state === "interrupted"
+              ? false
+              : state.turnRunning,
+        currentTurnId: liveStatus.client_turn_id ?? state.currentTurnId,
+        pendingApproval:
+          liveStatus.state === "completed" ||
+          liveStatus.state === "failed" ||
+          liveStatus.state === "interrupted"
+            ? null
+            : state.pendingApproval,
       };
     }
     if (action.method === "turn.event" && action.params.phase === "assistant_delta") {
@@ -178,13 +210,18 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         turnRunning: false,
         currentTurnId: null,
+        liveStatus: stateFromTurnCompleted(action.params),
+        pendingApproval:
+          action.params.pending_decision === true || action.params.turn_state === "waiting_approval"
+            ? state.pendingApproval
+            : null,
         transcript: reconcileFinalAnswer(
           state.transcript,
           String(action.params.assistant_message ?? ""),
         ),
       };
     }
-    if (action.method === "approval.pending") {
+    if (action.method === "approval.request" || action.method === "approval.pending") {
       return {
         ...state,
         pendingApproval: action.params,
@@ -200,13 +237,31 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ],
       };
     }
+    if (action.method === "approval.respond") {
+      return { ...state, pendingApproval: null };
+    }
     if (action.method === "status.changed") {
-      return { ...state, status: action.params };
+      return {
+        ...state,
+        status: action.params,
+        pendingApproval: action.params.pending_decision === false ? null : state.pendingApproval,
+      };
     }
     if (action.method === "turn.failed") {
+      const failedStatus: LiveStatus = {
+        state: "failed",
+        kind: "failed",
+        text: String(action.params.message ?? "Turn failed"),
+      };
+      if (typeof action.params.client_turn_id === "string") {
+        failedStatus.client_turn_id = action.params.client_turn_id;
+      }
       return {
         ...state,
         turnRunning: false,
+        currentTurnId: null,
+        liveStatus: failedStatus,
+        pendingApproval: null,
         transcript: [
           ...state.transcript,
           {
@@ -248,6 +303,47 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     };
   }
   return state;
+}
+
+function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | null {
+  if (!isTurnLiveState(params.state)) {
+    return null;
+  }
+  const status: LiveStatus = {
+    state: params.state,
+    kind: String(params.kind ?? params.state),
+    text: String(params.text ?? params.state),
+  };
+  if (typeof params.client_turn_id === "string") {
+    status.client_turn_id = params.client_turn_id;
+  }
+  if (typeof params.severity === "string") {
+    status.severity = params.severity;
+  }
+  return status;
+}
+
+function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
+  const state = isTurnLiveState(params.turn_state) ? params.turn_state : "completed";
+  const liveStatus: LiveStatus = {
+    state,
+    kind: state,
+    text: state === "waiting_approval" ? "Waiting approval" : "Completed",
+  };
+  if (typeof params.client_turn_id === "string") {
+    liveStatus.client_turn_id = params.client_turn_id;
+  }
+  return liveStatus;
+}
+
+function isTurnLiveState(value: unknown): value is TurnLiveState {
+  return (
+    value === "running" ||
+    value === "waiting_approval" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "interrupted"
+  );
 }
 
 function recordOrNull(value: unknown): Record<string, unknown> | null {

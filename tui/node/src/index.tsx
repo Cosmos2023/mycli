@@ -66,7 +66,7 @@ function RuntimeApp() {
       onLocalAction={dispatch}
       onDraftChange={() => undefined}
       onDecision={(decisionId, choice) => {
-        void client.send("decision.resolve", { decision_id: decisionId, choice });
+        void client.send("approval.respond", { decision_id: decisionId, choice });
       }}
     />
   );

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "General Trellis thinking guides for verifying cross-layer contract changes."}
+{"file": ".trellis/tasks/05-30-runtime-to-tui-contract-gap-analysis/research/runtime-to-tui-contract-gaps.md", "reason": "Parent analysis defining expected runtime-to-TUI contract behavior for verification."}

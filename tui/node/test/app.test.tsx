@@ -32,6 +32,7 @@ const state: ShellState = {
   restoredDraft: "",
   turnRunning: false,
   currentTurnId: null,
+  liveStatus: null,
   viewMode: "default",
   completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
   overlay: { visible: true, title: "/usage", lines: ["turns=1"] },

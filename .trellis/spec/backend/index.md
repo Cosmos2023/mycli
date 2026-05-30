@@ -19,6 +19,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Active |
+| [Runtime TUI Gateway Contract](./runtime-tui-gateway-contract.md) | Runtime-to-Node-TUI event payloads and reducer contract | Active |
 
 ---
 

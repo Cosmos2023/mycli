@@ -77,3 +77,30 @@ test("running activity line renders Claude-style thinking row", () => {
 
   assert.match(frame, /● Thinking 12s · read/);
 });
+
+test("running activity prefers live status update text", () => {
+  const state = {
+    ...initialState({ rawThemeName: "graphite" }),
+    turnRunning: true,
+    liveStatus: {
+      client_turn_id: "c1",
+      state: "waiting_approval" as const,
+      kind: "waiting_approval",
+      text: "Waiting approval",
+    },
+    transcript: [
+      {
+        id: "t1",
+        type: "tool_summary" as const,
+        text: "Read pyproject.toml",
+        folded: true,
+        metadata: { tool_name: "Read", path: "pyproject.toml" },
+      },
+    ],
+  };
+
+  const { lastFrame } = render(<RunningActivity state={state} elapsedSeconds={12} />);
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /● Waiting approval 12s · read/);
+});

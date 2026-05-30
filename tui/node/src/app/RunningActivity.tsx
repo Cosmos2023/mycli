@@ -30,10 +30,11 @@ export function RunningActivity({
     return null;
   }
   const path = activityPath(state.transcript);
+  const label = state.liveStatus?.text || "Thinking";
   return (
     <Box marginLeft={0}>
       <Text color={state.theme.warning}>
-        ● Thinking {elapsedSeconds}s{path ? ` · ${path}` : ""}
+        ● {label} {elapsedSeconds}s{path ? ` · ${path}` : ""}
       </Text>
     </Box>
   );

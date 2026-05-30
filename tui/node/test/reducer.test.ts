@@ -91,7 +91,7 @@ test("command view mode updates local UI state", () => {
 test("approval pending event stores prompt state", () => {
   const state = reduceShellState(initialState(), {
     type: "gateway.event",
-    method: "approval.pending",
+    method: "approval.request",
     params: {
       decision_id: "decision_current",
       preview: "git push",
@@ -100,6 +100,53 @@ test("approval pending event stores prompt state", () => {
   });
 
   assert.equal(state.pendingApproval?.decision_id, "decision_current");
+});
+
+test("status update tracks live turn state and clears resolved approval", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.request",
+    params: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "reject", label: "Reject" }],
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "status.update",
+    params: {
+      client_turn_id: "c1",
+      state: "waiting_approval",
+      kind: "waiting_approval",
+      text: "Waiting approval",
+    },
+  });
+
+  assert.equal(state.pendingApproval?.decision_id, "decision_current");
+  assert.equal(state.liveStatus?.state, "waiting_approval");
+  assert.equal(state.turnRunning, true);
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.respond",
+    params: { decision_id: "decision_current", choice: "reject" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "status.update",
+    params: {
+      client_turn_id: "approval_c1",
+      state: "completed",
+      kind: "completed",
+      text: "Completed",
+    },
+  });
+
+  assert.equal(state.pendingApproval, null);
+  assert.equal(state.liveStatus?.state, "completed");
+  assert.equal(state.turnRunning, false);
 });
 
 test("overlay command result opens overlay instead of transcript row", () => {
