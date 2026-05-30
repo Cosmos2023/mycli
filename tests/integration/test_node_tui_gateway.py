@@ -163,7 +163,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
         args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
         env={
             **os.environ,
-            "MYCLI_NODE_TUI_SCRIPT": json.dumps(["hello"]),
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(["/help", "/theme mono", "hello"]),
             "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
         },
         cwd=repo_root,
@@ -175,6 +175,14 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
     assert exit_code == 0
     assert service.messages == ["hello"]
     state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["overlay"]["visible"] is True
+    assert state["overlay"]["title"] == "/help"
+    overlay_text = "\n".join(state["overlay"]["lines"])
+    assert "Enter send message" in overlay_text
+    assert "Approval: press 1-9" in overlay_text
+    assert state["themeName"] == "mono"
+    command_items = [item for item in state["transcript"] if item["type"] == "command_output"]
+    assert [item["text"] for item in command_items] == ["Theme changed to mono."]
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
