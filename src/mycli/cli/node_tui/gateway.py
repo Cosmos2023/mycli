@@ -214,7 +214,12 @@ class NodeTuiGateway:
             if running:
                 self._interrupt_requested = True
         if running and self._emit is not None:
-            self._emit("turn.interrupted", {"requested": True})
+            self._emit_event("turn.interrupted", {"requested": True})
+            self._emit_turn_status(
+                client_turn_id=None,
+                state="interrupted",
+                message="Interrupt requested",
+            )
             self._emit_status_update(
                 client_turn_id=None,
                 state="interrupted",
@@ -241,6 +246,11 @@ class NodeTuiGateway:
                 "turn.failed",
                 {"client_turn_id": client_turn_id, "message": str(exc)},
             )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="failed",
+                message=str(exc),
+            )
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state="failed",
@@ -258,6 +268,7 @@ class NodeTuiGateway:
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
             )
             turn_state = _turn_state_for_response(response)
+            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -366,6 +377,18 @@ class NodeTuiGateway:
             payload["client_turn_id"] = client_turn_id
         self._emit_event("status.update", payload)
 
+    def _emit_turn_status(
+        self,
+        *,
+        client_turn_id: str | None,
+        state: str,
+        message: str | None = None,
+    ) -> None:
+        self._emit_event(
+            "turn.status",
+            _turn_status_payload(client_turn_id=client_turn_id, state=state, message=message),
+        )
+
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
         if not command.startswith("/"):
@@ -469,6 +492,11 @@ class NodeTuiGateway:
                 "turn.failed",
                 {"client_turn_id": client_turn_id, "message": str(exc)},
             )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="failed",
+                message=str(exc),
+            )
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state="failed",
@@ -488,11 +516,13 @@ class NodeTuiGateway:
                 "turn.completed",
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
             )
+            turn_state = _turn_state_for_response(response)
+            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
-                state=_turn_state_for_response(response),
-                kind=_turn_state_for_response(response),
-                text=_status_text_for_state(_turn_state_for_response(response)),
+                state=turn_state,
+                kind=turn_state,
+                text=_status_text_for_state(turn_state),
             )
         finally:
             with self._turn_lock:
@@ -640,6 +670,25 @@ def _status_text_for_state(state: str) -> str:
         "failed": "Failed",
         "interrupted": "Interrupted",
     }.get(state, state.replace("_", " ").title())
+
+
+def _turn_status_payload(
+    *,
+    client_turn_id: str | None,
+    state: str,
+    message: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "state": state,
+        "kind": state,
+        "text": _status_text_for_state(state),
+        "terminal": state in {"completed", "failed", "interrupted"},
+    }
+    if client_turn_id is not None:
+        payload["client_turn_id"] = client_turn_id
+    if message:
+        payload["message"] = message
+    return payload
 
 
 def _choice_for_resolved_value(value: str) -> str:

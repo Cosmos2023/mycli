@@ -36,6 +36,7 @@
   - `turn.completed`
   - `turn.failed`
   - `turn.interrupted`
+  - `turn.status`
   - `status.changed`
 - TypeScript reducer entry point:
   `reduceShellState(state: ShellState, action: ShellAction) -> ShellState`
@@ -68,6 +69,22 @@
 - `turn.completed` must include `turn_state`. A response with
   `pending_decision` maps to `waiting_approval`; otherwise it maps to
   `completed`.
+- `turn.status` is the normalized turn outcome/status event for clients that
+  want one small routing payload instead of deriving outcomes from
+  `turn.completed`, `turn.failed`, `turn.interrupted`, and `status.update`:
+  - `client_turn_id`: optional string when known
+  - `state`: one of `waiting_approval`, `completed`, `failed`, `interrupted`
+  - `kind`: renderable status kind, normally same as `state`
+  - `text`: human-readable short status
+  - `terminal`: boolean; true for `completed`, `failed`, and `interrupted`;
+    false for `waiting_approval`
+  - `message`: optional failure or interruption detail
+  - Existing terminal method-name events remain the compatibility path. The
+    gateway emits the existing event first, then `turn.status`, then
+    `status.update` where applicable.
+  - `turn.status(state=interrupted)` currently reports that an interrupt was
+    requested; it does not guarantee that the running worker stopped before a
+    later terminal event.
 - `runtime.event` is the versioned envelope mirror for runtime notifications:
   - `version`: integer envelope contract version, currently `1`
   - `sequence`: monotonically increasing integer per gateway instance
@@ -153,8 +170,9 @@
   existing method-name notification and emit a `runtime.event` mirror with the
   next sequence number.
 - Turn returns `pending_decision` -> emit `approval.request`, then
-  `turn.completed` with `turn_state=waiting_approval`, then `status.update`
-  with `waiting_approval`.
+  `turn.completed` with `turn_state=waiting_approval`, then `turn.status` with
+  `state=waiting_approval` and `terminal=false`, then `status.update` with
+  `waiting_approval`.
 - Tool execution starts -> emit `tool.start` during the running turn before the
   local tool is executed.
 - Tool execution succeeds -> emit `tool.complete` during the running turn after
@@ -176,10 +194,13 @@
 - Model stream completion metadata -> emit `message.complete` and the
   compatibility `turn.event` with phase `model_completed`.
 - Turn completes without a pending decision -> emit `turn.completed` with
-  `turn_state=completed`, then `status.update` with `completed`.
-- Turn raises -> emit `turn.failed`, then `status.update` with `failed`.
+  `turn_state=completed`, then `turn.status` with `state=completed` and
+  `terminal=true`, then `status.update` with `completed`.
+- Turn raises -> emit `turn.failed`, then `turn.status` with `state=failed`,
+  `terminal=true`, and a bounded `message`, then `status.update` with `failed`.
 - User interrupt while a turn is running -> emit `turn.interrupted`, then
-  `status.update` with `interrupted`.
+  `turn.status` with `state=interrupted`, `terminal=true`, and a bounded
+  `message`, then `status.update` with `interrupted`.
 
 ### 5. Good/Base/Bad Cases
 - Good: TUI renders a concrete approval prompt from `approval.request` without
@@ -192,6 +213,9 @@
   clients keep rendering from `turn.event`.
 - Good: Future extension/ACP clients can subscribe to `runtime.event` and route
   by `type` without knowing every JSON-RPC method name ahead of time.
+- Good: Future extension/ACP clients can subscribe to `turn.status` outcomes
+  when they only need turn state, while current TUI clients keep rendering from
+  existing terminal events and `status.update`.
 - Good: TUI shows a compact running reasoning preview without mixing reasoning
   text into the final assistant answer.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
@@ -214,6 +238,8 @@
   payload types and reducer tests.
 - Bad: Feeding both direct method-name notifications and their `runtime.event`
   mirrors into the same visible reducer path without deduplication.
+- Bad: Treating `turn.status(state=interrupted)` as proof that runtime
+  execution stopped. It is currently an interrupt-request signal.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
   reference for channel separation.
 
@@ -256,6 +282,8 @@
   `message.complete` and still emits compatibility `turn.event`.
 - Gateway tests for `status.update` on running, waiting approval, completed,
   failed, and interrupted paths when those paths are changed.
+- Gateway tests for `turn.status` on completed, waiting approval, failed,
+  interrupted, and approval-resolution paths when those paths are changed.
 - Reducer unit test for `approval.request`, `approval.respond`,
   `status.update`, and terminal clearing behavior.
 - Rendering test proving live status text is displayed instead of a hardcoded

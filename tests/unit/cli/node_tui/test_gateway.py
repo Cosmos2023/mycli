@@ -366,6 +366,16 @@ class FakeToolLifecycleTurnService(FakeService):
         return TurnResponse(assistant_message="done")
 
 
+class FailingTurnService(FakeService):
+    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+        del message, stream_sink
+        raise RuntimeError("model unavailable")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        del choice
+        raise RuntimeError("approval resolution failed")
+
+
 def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     gateway = NodeTuiGateway(
@@ -391,7 +401,7 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     assert "thinking.delta" in methods
     assert "message.delta" in methods
     assert "message.complete" in methods
-    assert methods[-3:] == ["turn.completed", "status.update", "status.changed"]
+    assert methods[-4:] == ["turn.completed", "turn.status", "status.update", "status.changed"]
     assert direct_events[1][1] == {
         "client_turn_id": "client_1",
         "state": "running",
@@ -403,6 +413,13 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     assert completed["progress_updates"] == ["[progress] done"]
     assert completed["plan_steps"] == ["completed: smoke"]
     assert completed["turn_state"] == "completed"
+    assert next(params for method, params in direct_events if method == "turn.status") == {
+        "client_turn_id": "client_1",
+        "state": "completed",
+        "kind": "completed",
+        "text": "Completed",
+        "terminal": True,
+    }
     assert direct_events[-2][1] == {
         "client_turn_id": "client_1",
         "state": "completed",
@@ -597,6 +614,13 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         "state": "waiting_approval",
         "kind": "waiting_approval",
         "text": "Waiting approval",
+        "terminal": False,
+    } in [params for method, params in events if method == "turn.status"]
+    assert {
+        "client_turn_id": "client_1",
+        "state": "waiting_approval",
+        "kind": "waiting_approval",
+        "text": "Waiting approval",
     } in [params for method, params in events if method == "status.update"]
 
 
@@ -619,8 +643,39 @@ def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) 
     assert concurrent.error == {"code": "turn_in_progress", "message": "A turn is already running."}
 
 
+def test_gateway_turn_submit_emits_turn_status_for_failures(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FailingTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert {
+        "client_turn_id": "client_1",
+        "state": "failed",
+        "kind": "failed",
+        "text": "Failed",
+        "terminal": True,
+        "message": "model unavailable",
+    } in [params for method, params in events if method == "turn.status"]
+
+
 def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
-    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
     idle = gateway.handle_request(RpcRequest(id="req_1", method="turn.interrupt", params={}))
     accepted = gateway.handle_request(
         RpcRequest(id="req_2", method="turn.submit", params={"message": "hello"})
@@ -631,6 +686,13 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
     assert idle.result == {"interrupted": False}
     assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
     assert running.result == {"interrupted": True}
+    assert {
+        "state": "interrupted",
+        "kind": "interrupted",
+        "text": "Interrupted",
+        "terminal": True,
+        "message": "Interrupt requested",
+    } in [params for method, params in events if method == "turn.status"]
 
 
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:
@@ -668,6 +730,7 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
         "status.update",
         "approval.respond",
         "turn.completed",
+        "turn.status",
         "status.update",
         "status.changed",
     ]
@@ -701,3 +764,42 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["2"]
+
+
+def test_gateway_decision_resolve_emits_turn_status_for_failures(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FailingTurnService(tmp_path)
+    service._session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="decision.resolve",
+            params={"decision_id": "decision_current", "choice": "approve_once"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "decision_id": "decision_current",
+        "client_turn_id": "approval_req_1",
+    }
+    assert {
+        "client_turn_id": "approval_req_1",
+        "state": "failed",
+        "kind": "failed",
+        "text": "Failed",
+        "terminal": True,
+        "message": "approval resolution failed",
+    } in [params for method, params in events if method == "turn.status"]
