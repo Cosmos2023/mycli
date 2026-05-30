@@ -1,0 +1,28 @@
+{
+  "id": "runtime-to-tui-contract-gap-analysis",
+  "name": "runtime-to-tui-contract-gap-analysis",
+  "title": "Runtime-to-TUI event/status contract gap analysis",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-05-30",
+  "completedAt": "2026-05-30",
+  "branch": null,
+  "base_branch": "feature/mycli-runtime-capabilities",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "05-30-runtime-tui-approval-status-contract"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
