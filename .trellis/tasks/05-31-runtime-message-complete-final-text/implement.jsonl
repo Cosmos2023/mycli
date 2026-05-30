@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index and pre-development checklist"}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime-to-Node-TUI event contract for message.complete semantics"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Cache-aware runtime diagnostics and testing requirements"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index"}
+{"file": ".trellis/tasks/05-31-runtime-message-complete-final-text/research/runtime-message-complete-final-text.md", "reason": "Task-specific current-state and design notes"}

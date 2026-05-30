@@ -88,9 +88,16 @@
     only has one reasoning stream.
   - `message.complete` is emitted for model stream completion metadata and
     includes `client_turn_id` plus bounded metadata from the runtime stream
-    event.
-  - For this slice, `message.complete` is not the authoritative final assistant
-    message. Final assistant text remains in `turn.completed.assistant_message`.
+    event. This stream-time form does not include `final: true`.
+  - When a turn reaches a completed terminal response, a final
+    `message.complete` is emitted after `turn.completed` with
+    `client_turn_id`, bounded `text`, `final: true`, and
+    `source: "turn_response"`.
+  - Waiting-approval turns must not emit a final-text `message.complete`
+    because the assistant answer is not complete yet.
+  - `turn.completed.assistant_message` remains the compatibility authoritative
+    final assistant text until TUI clients migrate finalization to
+    `message.complete`.
   - Existing generic `turn.event` notifications must continue to be emitted
     alongside these typed message/reasoning notifications until Node TUI
     clients have migrated.
@@ -123,6 +130,12 @@
   `turn.event` with phase `assistant_delta`.
 - Model stream completion metadata -> emit `message.complete` and the
   compatibility `turn.event` with phase `model_completed`.
+- Completed turn response -> emit `turn.completed`, then final-text
+  `message.complete` with `final: true`, then `status.update` with
+  `completed`.
+- Waiting-approval turn response -> emit `approval.request`, then
+  `turn.completed`, then `status.update` with `waiting_approval`; do not emit
+  final-text `message.complete`.
 - Turn completes without a pending decision -> emit `turn.completed` with
   `turn_state=completed`, then `status.update` with `completed`.
 - Turn raises -> emit `turn.failed`, then `status.update` with `failed`.
@@ -147,7 +160,7 @@
 - Bad: Rendering both typed `message.delta` and compatibility `turn.event`
   assistant deltas in the same TUI path, causing duplicate text.
 - Bad: Treating `message.complete` as final assistant content before the
-  runtime emits `turn.completed`.
+  runtime emits the final form with `final: true`.
 - Bad: Sending full file contents, raw tool JSON, or provider transcript
   messages through lifecycle notification payloads.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
@@ -174,6 +187,11 @@
   `turn.event`.
 - Gateway unit test proving `RuntimeStreamEvent(kind="completed")` emits
   `message.complete` and still emits compatibility `turn.event`.
+- Gateway unit test proving completed turn responses emit a final-text
+  `message.complete` with bounded `text`, `final: true`, and
+  `source: "turn_response"`.
+- Gateway unit test proving waiting-approval responses do not emit final-text
+  `message.complete`.
 - Gateway tests for `status.update` on running, waiting approval, completed,
   failed, and interrupted paths when those paths are changed.
 - Reducer unit test for `approval.request`, `approval.respond`,
