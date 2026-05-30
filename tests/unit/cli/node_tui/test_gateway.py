@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from mycli.cli.node_tui.gateway import NodeTuiGateway
+from mycli.cli.node_tui.gateway import NodeTuiGateway, supported_rpc_methods
 from mycli.cli.node_tui.protocol import RpcRequest
 from mycli.domain.runtime import (
     DecisionAction,
@@ -334,6 +334,15 @@ def test_gateway_extension_manifest_returns_service_manifest(tmp_path: Path) -> 
         "event_streams": [],
         "capabilities": [],
     }
+
+
+def test_extension_manifest_advertises_only_supported_gateway_methods() -> None:
+    from mycli.services.extensions import ExtensionManifestService
+
+    manifest = ExtensionManifestService().manifest()
+    advertised_methods = {method["name"] for method in manifest["rpc_methods"]}
+
+    assert advertised_methods <= supported_rpc_methods()
 
 
 def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:

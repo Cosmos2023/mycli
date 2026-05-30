@@ -25,6 +25,25 @@ from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
+SUPPORTED_RPC_METHODS = frozenset(
+    {
+        "approval.respond",
+        "command.run",
+        "completion.path",
+        "completion.slash",
+        "decision.resolve",
+        "extension.manifest",
+        "session.bootstrap",
+        "session.list",
+        "session.resume",
+        "shutdown",
+        "status.inspect",
+        "trace.export",
+        "transcript.load",
+        "turn.interrupt",
+        "turn.submit",
+    }
+)
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",
@@ -35,6 +54,10 @@ DECISION_OPTION_LABELS = {
     DecisionAction.REJECT: "Reject",
     DecisionAction.ALLOW_SESSION: "Allow for session",
 }
+
+
+def supported_rpc_methods() -> frozenset[str]:
+    return SUPPORTED_RPC_METHODS
 
 
 class NodeTuiProcessLike(Protocol):
