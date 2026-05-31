@@ -149,9 +149,13 @@
     The first implemented progress stage is `executing`, emitted after
     `tool.start` and before `tool.complete` / `tool.failed`.
   - `tool.complete` payload includes `client_turn_id`, `tool_id`, `call_id`,
-    `name`, `duration_s`, bounded `summary`, and `success: true`.
+    `name`, `duration_s`, bounded `summary`, `summary_chars`,
+    `summary_truncated`, and `success: true`.
   - `tool.failed` payload includes the same completion fields with
-    `success: false` and optional bounded `error`.
+    `success: false` plus optional bounded `error`, `error_chars`, and
+    `error_truncated`.
+  - Bounded lifecycle text fields must expose whether they were truncated; TUI
+    and extension clients must not infer completeness from preview length.
   - `tool_id` is the model/provider `call_id` when available; runtimes may use
     a deterministic local fallback when a call id is absent.
   - Lifecycle payloads are UI/diagnostic signals only. They must not be written

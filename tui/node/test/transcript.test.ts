@@ -54,6 +54,8 @@ test("tool lifecycle start creates running summary and complete updates it in pl
     name: "Read",
     duration_s: 0.125,
     summary: "Read pyproject.toml",
+    summary_chars: 19,
+    summary_truncated: false,
     success: true,
   });
 
@@ -64,6 +66,8 @@ test("tool lifecycle start creates running summary and complete updates it in pl
   assert.equal(items[0]?.metadata.tool_name, "Read");
   assert.equal(items[0]?.metadata.duration_s, 0.125);
   assert.equal(items[0]?.metadata.summary, "Read pyproject.toml");
+  assert.equal(items[0]?.metadata.summary_chars, 19);
+  assert.equal(items[0]?.metadata.summary_truncated, false);
 });
 
 test("tool lifecycle progress updates a running row in place", () => {
@@ -130,6 +134,29 @@ test("tool lifecycle failed completion creates fallback failed summary", () => {
   assert.equal(items[0]?.metadata.status, "failed");
   assert.equal(items[0]?.metadata.error, "Missing required arguments: content");
   assert.equal(items[0]?.text, "Write Tool Write could not run because its arguments were invalid.");
+});
+
+test("tool lifecycle preserves long-output diagnostic metadata", () => {
+  const items = applyToolLifecycleEvent([], "tool.failed", {
+    client_turn_id: "c1",
+    tool_id: "call_long_1",
+    call_id: "call_long_1",
+    name: "Bash",
+    duration_s: 0.2,
+    summary: "stdout preview...",
+    summary_chars: 920,
+    summary_truncated: true,
+    success: false,
+    error: "stderr preview...",
+    error_chars: 480,
+    error_truncated: true,
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.metadata.summary_chars, 920);
+  assert.equal(items[0]?.metadata.summary_truncated, true);
+  assert.equal(items[0]?.metadata.error_chars, 480);
+  assert.equal(items[0]?.metadata.error_truncated, true);
 });
 
 test("final answer replaces active stream without duplication", () => {

@@ -130,6 +130,26 @@ class FakeAskUserQuestionTool:
         )
 
 
+class FakeLongOutputTool:
+    spec = ToolSpec(
+        name="long_output",
+        description="Return long diagnostics",
+        parameters=(),
+    )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            success=False,
+            summary="summary " * 80,
+            error="error " * 80,
+            raw_payload={
+                "stdout": "stdout " * 80,
+                "stderr": "stderr " * 80,
+                "error_kind": "long_output",
+            },
+        )
+
+
 def _tool_exposure() -> ToolExposure:
     return ToolExposure(
         entries=(
@@ -481,6 +501,8 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         "name": "read_file",
         "duration_s": 0.125,
         "summary": "Read README.md",
+        "summary_chars": len("Read README.md"),
+        "summary_truncated": False,
         "success": True,
     }
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
@@ -601,6 +623,56 @@ def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path
     assert trace.payload["filesystem_effect"] == "write"
     assert trace.payload["network_effect"] is False
     assert trace.payload["process_effect"] is False
+    assert trace.payload["stdout_chars"] == 0
+    assert trace.payload["stdout_truncated"] is False
+    assert trace.payload["stderr_chars"] == 0
+    assert trace.payload["stderr_truncated"] is False
+
+
+def test_tool_execution_service_records_long_output_trace_diagnostics(
+    tmp_path: Path,
+) -> None:
+    long_tool = FakeLongOutputTool()
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([long_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((1.0, 1.25)).__next__  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="long_output",
+            arguments={},
+            reason="diagnose",
+            call_id="call_long_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("long_output"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=long_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert len(str(trace.payload["stdout_preview"])) <= 120
+    assert len(str(trace.payload["stderr_preview"])) <= 120
+    assert trace.payload["stdout_chars"] == len(("stdout " * 80).strip())
+    assert trace.payload["stdout_truncated"] is True
+    assert trace.payload["stderr_chars"] == len(("stderr " * 80).strip())
+    assert trace.payload["stderr_truncated"] is True
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) -> None:
@@ -654,9 +726,61 @@ def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) 
     assert failed.metadata["name"] == "Write"
     assert failed.metadata["duration_s"] == 0.002
     assert failed.metadata["summary"] == "Tool Write could not run because its arguments were invalid."
+    assert failed.metadata["summary_chars"] == len("Tool Write could not run because its arguments were invalid.")
+    assert failed.metadata["summary_truncated"] is False
     assert failed.metadata["success"] is False
     assert isinstance(failed.metadata["error"], str)
     assert "Missing required arguments: content" in failed.metadata["error"]
+    assert isinstance(failed.metadata["error_chars"], int)
+    assert failed.metadata["error_truncated"] is False
+
+
+def test_tool_execution_service_marks_long_lifecycle_output_as_truncated(
+    tmp_path: Path,
+) -> None:
+    long_tool = FakeLongOutputTool()
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([long_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((1.0, 1.25)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="long_output",
+            arguments={},
+            reason="diagnose",
+            call_id="call_long_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("long_output"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=long_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+        lifecycle_sink=events.append,
+    )
+
+    failed = events[-1]
+    assert failed.kind == "tool_failed"
+    assert len(str(failed.metadata["summary"])) <= 160
+    assert len(str(failed.metadata["error"])) <= 160
+    assert failed.metadata["summary_truncated"] is True
+    assert failed.metadata["error_truncated"] is True
+    assert failed.metadata["summary_chars"] == len(("summary " * 80).strip())
+    assert failed.metadata["error_chars"] == len(("error " * 80).strip())
 
 
 def test_tool_execution_service_records_bash_effect_profile_in_trace(

@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Tool lifecycle payload contract for Python gateway and Node reducer"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime diagnostics must be bounded, local, and test-backed"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Tool lifecycle metadata flows from Python runtime through gateway to Node reducer"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse lifecycle preview helpers and avoid duplicate truncation behavior"}
+{"file": ".trellis/tasks/05-31-05-31-tool-lifecycle-long-output-diagnostics/research/tool-long-output-gap.md", "reason": "Recorded tool long-output diagnostic gap and slice scope"}

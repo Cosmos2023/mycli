@@ -720,11 +720,11 @@ class ToolExecutionService:
             "call_id": call.call_id or "",
             "name": call.name,
             "duration_s": round(duration_seconds, 3),
-            "summary": self._lifecycle_preview(result.summary),
             "success": result.success,
+            **self._lifecycle_text_metadata("summary", result.summary),
         }
         if not result.success and result.error:
-            metadata["error"] = self._lifecycle_preview(result.error)
+            metadata.update(self._lifecycle_text_metadata("error", result.error))
         return RuntimeStreamEvent(
             kind="tool_complete" if result.success else "tool_failed",
             tool_name=call.name,
@@ -898,8 +898,8 @@ class ToolExecutionService:
             "filesystem_effect": effect_profile.filesystem,
             "network_effect": effect_profile.network,
             "process_effect": effect_profile.process,
-            "stdout_preview": self._trace_preview(result.raw_payload.get("stdout")),
-            "stderr_preview": self._trace_preview(result.raw_payload.get("stderr")),
+            **self._trace_text_metadata("stdout", result.raw_payload.get("stdout")),
+            **self._trace_text_metadata("stderr", result.raw_payload.get("stderr")),
             **self._write_diagnostics_trace_payload(result.raw_payload),
         }
 
@@ -1269,6 +1269,34 @@ class ToolExecutionService:
         if len(normalized) <= max_chars:
             return normalized
         return normalized[: max_chars - 3] + "..."
+
+    def _trace_text_metadata(
+        self,
+        prefix: str,
+        value: object,
+        *,
+        max_chars: int = 120,
+    ) -> dict[str, object]:
+        if not isinstance(value, str) or not value.strip():
+            return {
+                f"{prefix}_preview": None,
+                f"{prefix}_chars": 0,
+                f"{prefix}_truncated": False,
+            }
+        normalized = self._context_manager._normalize_whitespace(value)
+        return {
+            f"{prefix}_preview": self._trace_preview(value, max_chars=max_chars),
+            f"{prefix}_chars": len(normalized),
+            f"{prefix}_truncated": len(normalized) > max_chars,
+        }
+
+    def _lifecycle_text_metadata(self, prefix: str, value: str) -> dict[str, object]:
+        normalized = self._context_manager._normalize_whitespace(value)
+        return {
+            prefix: self._lifecycle_preview(value),
+            f"{prefix}_chars": len(normalized),
+            f"{prefix}_truncated": len(normalized) > MAX_LIFECYCLE_PREVIEW_CHARS,
+        }
 
     def _serialize_evidence(self, evidence: ToolEvidence) -> dict[str, object]:
         return {
