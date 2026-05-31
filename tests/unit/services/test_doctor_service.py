@@ -176,7 +176,12 @@ def _create_sessions_db(path: Path, *, foreign_keys: bool = True) -> None:
         connection.execute("INSERT INTO schema_version (version) VALUES (2)")
 
 
-def _insert_session(connection: sqlite3.Connection, session_id: str) -> None:
+def _insert_session(
+    connection: sqlite3.Connection,
+    session_id: str,
+    *,
+    workspace_root: Path | str = "/workspace",
+) -> None:
     connection.execute(
         """
         INSERT INTO sessions (
@@ -188,9 +193,9 @@ def _insert_session(connection: sqlite3.Connection, session_id: str) -> None:
             last_active_at,
             status
         )
-        VALUES (?, '/workspace', ?, 'now', 'now', 'now', 'active')
+        VALUES (?, ?, ?, 'now', 'now', 'now', 'active')
         """,
-        (session_id, session_id),
+        (session_id, str(workspace_root), session_id),
     )
 
 
@@ -250,6 +255,13 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "Summary:" in rendered
     logs_redaction = next(check for check in report.checks if check.name == "logs_redaction")
     assert logs_redaction.status is DoctorStatus.OK
+    session_maintenance = next(
+        check for check in report.checks if check.name == "session_maintenance"
+    )
+    assert session_maintenance.status is DoctorStatus.OK
+    assert session_maintenance.message == (
+        "workspace_sessions=0 empty_sessions=0 freelist_pages=0"
+    )
     runtime_contract = next(check for check in report.checks if check.name == "runtime_contract")
     assert runtime_contract.status is DoctorStatus.OK
     assert runtime_contract.message == "gateway manifest matches supported contract"
@@ -275,10 +287,73 @@ def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) 
     ).run()
 
     assert any(check.name == "sessions_db" and check.status is DoctorStatus.WARNING for check in report.checks)
+    assert not any(check.name == "session_maintenance" for check in report.checks)
     assert any(check.name == "file_history" and check.status is DoctorStatus.WARNING for check in report.checks)
     assert any(check.name == "mcp" and check.status is DoctorStatus.FAILED for check in report.checks)
     assert not any(check.name == "logs_redaction" for check in report.checks)
     assert report.failed_count == 1
+
+
+def test_doctor_service_warns_about_session_maintenance_candidates(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "empty", workspace_root=workspace)
+        _insert_session(connection, "with-message", workspace_root=workspace)
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('with-message', 0, ?)
+            """,
+            ('{"role": "user", "content": "hello"}',),
+        )
+        _insert_session(connection, "other-empty", workspace_root=tmp_path / "other")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "session_maintenance")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message.startswith("workspace_sessions=2 empty_sessions=1 freelist_pages=")
+    assert "/session-maintenance" in check.message
+
+
+def test_doctor_service_skips_session_maintenance_when_sessions_db_is_invalid(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    sessions_db = next(check for check in report.checks if check.name == "sessions_db")
+    assert sessions_db.status is DoctorStatus.FAILED
+    assert not any(check.name == "session_maintenance" for check in report.checks)
 
 
 def test_doctor_service_fails_runtime_contract_manifest_mismatch(

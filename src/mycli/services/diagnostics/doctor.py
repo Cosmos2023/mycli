@@ -225,6 +225,10 @@ class DoctorService:
                         ),
                     )
                 integrity_problem = _session_db_integrity_problem(connection)
+                maintenance_check = _session_db_maintenance_check(
+                    connection,
+                    workspace_root=self._workspace_root,
+                )
         except sqlite3.Error as exc:
             return (DoctorCheck("sessions_db", DoctorStatus.FAILED, f"not openable: {exc}"),)
 
@@ -237,7 +241,10 @@ class DoctorService:
                     detail=str(path),
                 ),
             )
-        return (DoctorCheck("sessions_db", DoctorStatus.OK, f"openable {path}"),)
+        return (
+            DoctorCheck("sessions_db", DoctorStatus.OK, f"openable {path}"),
+            maintenance_check,
+        )
 
     def _check_logs(self) -> Iterable[DoctorCheck]:
         logs_dir = self._layout.logs_dir
@@ -820,6 +827,73 @@ def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
         return f"invalid recovery state payloads: {', '.join(invalid_recovery_state_details)}"
 
     return None
+
+
+def _session_db_maintenance_check(
+    connection: sqlite3.Connection,
+    *,
+    workspace_root: Path,
+) -> DoctorCheck:
+    session_count = _session_db_workspace_session_count(connection, workspace_root=workspace_root)
+    empty_session_count = _session_db_empty_workspace_session_count(
+        connection,
+        workspace_root=workspace_root,
+    )
+    freelist_count = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    message = (
+        f"workspace_sessions={session_count} "
+        f"empty_sessions={empty_session_count} "
+        f"freelist_pages={freelist_count}"
+    )
+    if empty_session_count or freelist_count:
+        return DoctorCheck(
+            "session_maintenance",
+            DoctorStatus.WARNING,
+            f"{message}; inspect with /session-maintenance",
+        )
+    return DoctorCheck("session_maintenance", DoctorStatus.OK, message)
+
+
+def _session_db_workspace_session_count(
+    connection: sqlite3.Connection,
+    *,
+    workspace_root: Path,
+) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM sessions
+        WHERE workspace_root = ?
+        """,
+        (str(workspace_root),),
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
+
+
+def _session_db_empty_workspace_session_count(
+    connection: sqlite3.Connection,
+    *,
+    workspace_root: Path,
+) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM (
+            SELECT sessions.session_id
+            FROM sessions
+            LEFT JOIN conversation_messages
+                ON conversation_messages.session_id = sessions.session_id
+            LEFT JOIN session_summaries
+                ON session_summaries.session_id = sessions.session_id
+            WHERE sessions.workspace_root = ?
+            GROUP BY sessions.session_id
+            HAVING COUNT(conversation_messages.message_index) = 0
+               AND COUNT(session_summaries.summary_index) = 0
+        )
+        """,
+        (str(workspace_root),),
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
 
 
 def _session_db_schema_version_problem(connection: sqlite3.Connection) -> str | None:

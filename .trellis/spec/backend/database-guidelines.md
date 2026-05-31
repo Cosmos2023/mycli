@@ -206,3 +206,59 @@ store.vacuum()
 report = store.session_maintenance_report(workspace_root=workspace_root)
 return tuple(format_report_field(report))
 ```
+
+## Scenario: Doctor Session Maintenance Readiness
+
+### 1. Scope / Trigger
+
+- Trigger: adding doctor checks for session cleanup readiness or long-running SQLite storage health.
+- This check is advisory and must only run after the main `sessions_db` structural integrity check succeeds.
+
+### 2. Signatures
+
+- Doctor check name: `session_maintenance`
+- Output fields: `workspace_sessions=<int> empty_sessions=<int> freelist_pages=<int>`
+- Remediation: warning messages should point to `/session-maintenance`.
+
+### 3. Contracts
+
+- Missing DB -> keep the existing `sessions_db=warning`; do not emit `session_maintenance`.
+- Invalid DB -> keep `sessions_db=failed`; do not emit `session_maintenance`.
+- Valid DB -> emit `session_maintenance=ok` or `warning`.
+- Warning is appropriate for non-corrupt cleanup candidates such as empty workspace sessions or free SQLite pages.
+- The check opens SQLite read-only through doctor's existing read connection and must not instantiate the write-path `SQLiteSessionStore`.
+
+### 4. Validation & Error Matrix
+
+- Empty workspace sessions > 0 -> warning with `/session-maintenance`.
+- `PRAGMA freelist_count` > 0 -> warning with `/session-maintenance`.
+- Both counts are zero -> ok.
+- Sessions from other workspaces -> excluded from workspace counts.
+
+### 5. Good/Base/Bad Cases
+
+- Good: doctor reports `session_maintenance: workspace_sessions=2 empty_sessions=1 ...; inspect with /session-maintenance`.
+- Base: fresh valid DB reports `workspace_sessions=0 empty_sessions=0 freelist_pages=0`.
+- Bad: doctor repairs, deletes, vacuums, or creates session storage while checking.
+
+### 6. Tests Required
+
+- Doctor test for the OK path on a valid DB.
+- Doctor test for warning on empty workspace session candidates.
+- Doctor test proving missing/invalid DB does not emit `session_maintenance`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+store = SQLiteSessionStore(path)
+store.session_maintenance_report(workspace_root=workspace_root)
+```
+
+#### Correct
+
+```python
+with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+    check = _session_db_maintenance_check(connection, workspace_root=workspace_root)
+```
