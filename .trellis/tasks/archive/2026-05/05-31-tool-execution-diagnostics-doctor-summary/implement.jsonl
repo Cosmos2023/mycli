@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Runtime trace/log diagnostics contracts and doctor summary redaction rules."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Doctor read-only diagnostics contracts and test expectations."}
+{"file":".trellis/tasks/05-31-tool-execution-diagnostics-doctor-summary/prd.md","reason":"Implementation requirements and acceptance criteria for this slice."}
+{"file":".trellis/tasks/05-31-tool-execution-diagnostics-doctor-summary/research/current-state.md","reason":"Current gap and selected implementation direction."}

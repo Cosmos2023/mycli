@@ -123,6 +123,18 @@ class _ClarificationDiagnosticsSummary:
     unreadable: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _ToolExecutionDiagnosticsSummary:
+    tool_count: int
+    failure_count: int
+    interrupted_count: int
+    denied_count: int
+    truncated_output_count: int
+    write_diagnostics_error_count: int
+    error_kinds: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
 class DoctorStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -190,6 +202,7 @@ class DoctorService:
             self._check_stream_diagnostics,
             self._check_approval_diagnostics,
             self._check_clarification_diagnostics,
+            self._check_tool_execution_diagnostics,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -685,6 +698,90 @@ class DoctorService:
             ),
         )
 
+    def _check_tool_execution_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "tool_execution_diagnostics",
+                    DoctorStatus.OK,
+                    "no tool execution diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "tool_execution_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "tool_execution_diagnostics",
+                    DoctorStatus.OK,
+                    "no tool execution diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_tool_execution_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "tool_execution_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.tool_count == 0:
+            return (
+                DoctorCheck(
+                    "tool_execution_diagnostics",
+                    DoctorStatus.OK,
+                    f"no tool execution diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        message = (
+            f"{summary.tool_count} tool execution diagnostic(s), "
+            f"failures={summary.failure_count} "
+            f"interrupted={summary.interrupted_count} "
+            f"denied={summary.denied_count} "
+            f"truncated_output={summary.truncated_output_count} "
+            f"write_diagnostic_errors={summary.write_diagnostics_error_count}"
+            f"{suffix}"
+        )
+        detail = f"error_kinds: {_format_count_pairs(summary.error_kinds)}"
+        if summary.failure_count:
+            return (
+                DoctorCheck(
+                    "tool_execution_diagnostics",
+                    DoctorStatus.WARNING,
+                    message,
+                    detail=detail,
+                ),
+            )
+        return (
+            DoctorCheck(
+                "tool_execution_diagnostics",
+                DoctorStatus.OK,
+                message,
+                detail=detail,
+            ),
+        )
+
     def _check_file_history(self) -> Iterable[DoctorCheck]:
         history_root = self._layout.root / "file-history"
         if not history_root.exists():
@@ -1129,6 +1226,64 @@ def _summarize_clarification_diagnostics(
         clarification_count=sum(result_counts.values()),
         result_counts=ordered_results,
         warning_results=warning_results,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _summarize_tool_execution_diagnostics(
+    paths: Iterable[Path],
+) -> _ToolExecutionDiagnosticsSummary:
+    tool_count = 0
+    failure_count = 0
+    interrupted_count = 0
+    denied_count = 0
+    truncated_output_count = 0
+    write_diagnostics_error_count = 0
+    error_kinds: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "tool_execution":
+                        continue
+                    tool_count += 1
+                    payload = event.payload
+                    error_kind = _safe_diagnostic_result(payload.get("error_kind"))
+                    failed = payload.get("success") is False or payload.get("status") == "failed"
+                    if failed:
+                        failure_count += 1
+                        error_kinds[error_kind] += 1
+                    if error_kind == "tool_interrupted":
+                        interrupted_count += 1
+                    if error_kind == "tool_denied_by_hook":
+                        denied_count += 1
+                    if payload.get("stdout_truncated") is True or payload.get("stderr_truncated") is True:
+                        truncated_output_count += 1
+                    write_error = payload.get("write_diagnostics_error")
+                    if isinstance(write_error, str) and write_error.strip():
+                        write_diagnostics_error_count += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_error_kinds = tuple(
+        sorted(error_kinds.items(), key=lambda item: (-item[1], item[0]))
+    )
+    return _ToolExecutionDiagnosticsSummary(
+        tool_count=tool_count,
+        failure_count=failure_count,
+        interrupted_count=interrupted_count,
+        denied_count=denied_count,
+        truncated_output_count=truncated_output_count,
+        write_diagnostics_error_count=write_diagnostics_error_count,
+        error_kinds=ordered_error_kinds,
         unreadable=tuple(unreadable),
     )
 

@@ -2033,6 +2033,183 @@ def test_doctor_service_warns_for_problem_clarification_diagnostics_without_raw_
     assert "raw answer" not in rendered
 
 
+def test_doctor_service_reports_missing_tool_execution_diagnostics_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no tool execution diagnostics found"
+
+
+def test_doctor_service_reports_no_tool_execution_diagnostics_rows_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}}),
+                json.dumps({"kind": "approval_resolution", "turn_id": "turn-1", "payload": {}}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no tool execution diagnostics found"
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_summarizes_successful_tool_execution_diagnostics(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "tool_execution",
+                        "turn_id": "turn-1",
+                        "payload": {"success": True, "status": "succeeded", "tool_name": "Read"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "tool_execution",
+                        "turn_id": "turn-2",
+                        "payload": {"success": True, "status": "succeeded", "tool_name": "Grep"},
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == (
+        "2 tool execution diagnostic(s), failures=0 interrupted=0 denied=0 "
+        "truncated_output=0 write_diagnostic_errors=0"
+    )
+    assert check.detail == "error_kinds: none"
+
+
+def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-toolexecutionsecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "tool_execution",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "success": False,
+                            "status": "failed",
+                            "tool_name": "Bash",
+                            "arguments": {"command": f"echo {secret}"},
+                            "summary": "raw summary should stay hidden",
+                            "stderr": f"raw stderr {secret}",
+                            "error_kind": "tool_interrupted",
+                            "stderr_truncated": True,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "tool_execution",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "success": False,
+                            "status": "failed",
+                            "tool_name": "Edit",
+                            "path": "/private/path/secret.txt",
+                            "error_kind": "tool_denied_by_hook",
+                            "write_diagnostics_error": "raw diagnostics should stay hidden",
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == (
+        "2 tool execution diagnostic(s), failures=2 interrupted=1 denied=1 "
+        "truncated_output=1 write_diagnostic_errors=1"
+    )
+    assert check.detail == "error_kinds: tool_denied_by_hook=1, tool_interrupted=1"
+    assert secret not in rendered
+    assert "raw summary" not in rendered
+    assert "raw stderr" not in rendered
+    assert "raw diagnostics" not in rendered
+    assert "/private/path" not in rendered
+
+
 def test_doctor_service_summarizes_successful_stream_diagnostics(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

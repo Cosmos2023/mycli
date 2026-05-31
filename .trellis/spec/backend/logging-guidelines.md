@@ -83,6 +83,11 @@ the local log root and must never become provider transcript inputs.
 - Doctor may summarize `clarification_resolution` trace rows with bounded
   result counts. It must not print raw response text, user text, request
   payloads, provider transcript content, headers, or secret-like values.
+- Doctor may summarize `tool_execution` trace rows with bounded counts for
+  total executions, failures, interruptions, denials, output truncation, write
+  diagnostic errors, and allowlisted `error_kind` counts. It must not print raw
+  tool arguments, stdout, stderr, summaries, file contents, local paths, user
+  text, headers, or secret-like values.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -185,6 +190,9 @@ the local log root and must never become provider transcript inputs.
 - Doctor unit tests for clarification diagnostics summaries, including warning
   rows whose trace payloads contain raw response/user text that must not be
   rendered.
+- Doctor unit tests for tool execution diagnostics summaries, including warning
+  rows whose trace payloads contain raw arguments, output, paths, or
+  secret-like values that must not be rendered.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

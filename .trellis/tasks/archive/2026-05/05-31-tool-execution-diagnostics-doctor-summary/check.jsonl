@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify the new doctor summary follows logging and redaction contracts."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify doctor remains read-only and test-covered."}
+{"file":".trellis/tasks/05-31-tool-execution-diagnostics-doctor-summary/prd.md","reason":"Verify implementation satisfies acceptance criteria."}
+{"file":".trellis/tasks/05-31-tool-execution-diagnostics-doctor-summary/research/current-state.md","reason":"Verify the implemented behavior closes the researched gap."}

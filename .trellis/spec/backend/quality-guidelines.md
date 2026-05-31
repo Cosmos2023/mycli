@@ -157,6 +157,18 @@ Questions to answer:
     results -> `clarification_diagnostics=warning` with bounded result counts.
     Doctor must not print raw response text, user text, request payloads,
     provider transcript content, headers, or secret-like values.
+- Tool execution diagnostics check:
+  - Missing `~/.mycli/traces/` or no `tool_execution` trace rows ->
+    `tool_execution_diagnostics=ok` with
+    `no tool execution diagnostics found`; doctor must not create the trace
+    directory.
+  - Successful-only tool execution rows -> `tool_execution_diagnostics=ok`
+    with bounded total/failure/interruption/denial/truncation/write-diagnostic
+    counts.
+  - Failed tool execution rows -> `tool_execution_diagnostics=warning` with
+    bounded counts and allowlisted `error_kind` counts. Doctor must not print
+    raw tool arguments, stdout, stderr, summaries, file contents, local paths,
+    user text, headers, or secret-like values.
 - Redaction diagnostics check:
   - `logs_redaction` scans `agent.log`, `errors.log`, `model-events.jsonl`,
     `model-raw/<session>/*.json`, and bounded `traces/*.jsonl` files for
@@ -217,6 +229,9 @@ Questions to answer:
   rows, successful summary, and warning-summary redaction.
 - Unit test clarification diagnostics doctor cases for missing directory, no
   clarification rows, successful summary, and warning-summary redaction.
+- Unit test tool execution diagnostics doctor cases for missing directory, no
+  tool rows, successful summary, failed/interrupted/denied/truncated/write
+  diagnostic summary, and warning-summary redaction.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,
