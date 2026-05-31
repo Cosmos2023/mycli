@@ -107,6 +107,8 @@ class NodeTuiServiceLike(Protocol):
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]: ...
 
+    def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None: ...
+
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
     process.start()
@@ -315,6 +317,8 @@ class NodeTuiGateway:
             client_turn_id = self._current_client_turn_id
             if running:
                 self._interrupt_requested = True
+        if running:
+            self._record_turn_interrupt_request(client_turn_id=client_turn_id)
         if running and self._emit is not None:
             self._emit_event(
                 "turn.interrupted",
@@ -336,6 +340,15 @@ class NodeTuiGateway:
                 message="Interrupt requested",
             )
         return {"interrupted": running}
+
+    def _record_turn_interrupt_request(self, *, client_turn_id: str | None) -> None:
+        recorder = getattr(self.service, "record_turn_interrupt_request", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(client_turn_id=client_turn_id)
+        except AttributeError:
+            return
 
     def _run_turn_worker(self, *, message: str, client_turn_id: str) -> None:
         self._emit_event("turn.started", {"client_turn_id": client_turn_id})

@@ -2086,6 +2086,38 @@ def test_agent_runtime_logs_unexpected_runtime_exceptions(tmp_path: Path) -> Non
     assert "turn_failed" in log_service.agent_log_path().read_text(encoding="utf-8")
 
 
+def test_turn_service_records_turn_interrupt_request_diagnostics(tmp_path: Path) -> None:
+    from mycli.application.turn_service import TurnService
+
+    log_service = WorkspaceLogService(workspace_root=tmp_path)
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+        workspace_log_service=log_service,
+    )
+    service = TurnService(
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+        runtime=runtime,
+    )
+
+    service.record_turn_interrupt_request(client_turn_id="client_1")
+
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    event = next(event for event in trace if event.kind == "turn_interrupt_requested")
+    assert event.turn_id == "client_1"
+    assert event.payload == {
+        "session_id": runtime._config.session_id,
+        "client_turn_id": "client_1",
+        "requested": True,
+        "source": "node_tui_gateway",
+    }
+    agent_log = log_service.agent_log_path().read_text(encoding="utf-8")
+    assert "turn_interrupt_requested" in agent_log
+    assert "client_1" in agent_log
+
+
 class FakeResponsesPayload:
     def to_dict(self) -> dict[str, object]:
         return {

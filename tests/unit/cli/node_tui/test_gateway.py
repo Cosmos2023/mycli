@@ -598,6 +598,7 @@ class FakeTurnService(FakeService):
         self.turn_calls: list[str] = []
         self.resolved_choices: list[str] = []
         self.clarification_responses: list[tuple[str, str]] = []
+        self.interrupt_requests: list[str | None] = []
 
     def handle_user_turn(
         self,
@@ -640,8 +641,29 @@ class FakeTurnService(FakeService):
         self.clarification_responses.append((request_id, response))
         return TurnResponse(assistant_message=f"clarified {response}")
 
+    def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None:
+        self.interrupt_requests.append(client_turn_id)
+
 
 class BlockingTurnService(FakeTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.started = Event()
+        self.release = Event()
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        self.started.set()
+        if not self.release.wait(timeout=2.0):
+            raise AssertionError("blocking fake turn was not released")
+        return TurnResponse(assistant_message="")
+
+
+class BlockingNoInterruptHookService(FakeService):
     def __init__(self, workspace_root: Path) -> None:
         super().__init__(workspace_root)
         self.started = Event()
@@ -1268,6 +1290,7 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
     assert idle.result == {"interrupted": False}
     assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
     assert running.result == {"interrupted": True}
+    assert service.interrupt_requests == ["req_2"]
     assert {
         "client_turn_id": "req_2",
         "state": "interrupted",
@@ -1283,6 +1306,24 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
         "text": "Interrupted",
         "message": "Interrupt requested",
     } in [params for method, params in events if method == "status.update"]
+
+
+def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_compatible(
+    tmp_path: Path,
+) -> None:
+    service = BlockingNoInterruptHookService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+
+    accepted = gateway.handle_request(
+        RpcRequest(id="req_1", method="turn.submit", params={"message": "hello"})
+    )
+    assert service.started.wait(timeout=2.0)
+    interrupted = gateway.handle_request(RpcRequest(id="req_2", method="turn.interrupt", params={}))
+    service.release.set()
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
+    assert interrupted.result == {"interrupted": True}
 
 
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:

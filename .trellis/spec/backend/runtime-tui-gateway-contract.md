@@ -148,6 +148,10 @@
   - `turn.status(state=interrupted)` currently reports that an interrupt was
     requested; it does not guarantee that the running worker stopped before a
     later terminal event.
+  - Accepted running-turn interrupt requests are recorded as local
+    `turn_interrupt_requested` trace/log diagnostics by the service boundary.
+    This diagnostic is not a gateway stream event and must not include raw user
+    messages, provider payloads, tool output, headers, or secrets.
   - Runtime finalization of interrupted turns records local `turn_interrupted`
     trace/log diagnostics after suspended state is saved. This is not a gateway
     stream event.

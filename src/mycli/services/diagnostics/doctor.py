@@ -151,6 +151,14 @@ class _TurnFailureDiagnosticsSummary:
     unreadable: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _TurnInterruptDiagnosticsSummary:
+    request_count: int
+    finalized_count: int
+    sources: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
 class DoctorStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -219,6 +227,7 @@ class DoctorService:
             self._check_approval_diagnostics,
             self._check_clarification_diagnostics,
             self._check_tool_execution_diagnostics,
+            self._check_turn_interrupt_diagnostics,
             self._check_turn_failure_diagnostics,
             self._check_file_history,
             self._check_tui,
@@ -805,6 +814,74 @@ class DoctorService:
                 DoctorStatus.OK,
                 message,
                 detail=detail,
+            ),
+        )
+
+    def _check_turn_interrupt_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "turn_interrupt_diagnostics",
+                    DoctorStatus.OK,
+                    "no turn interrupt diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "turn_interrupt_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "turn_interrupt_diagnostics",
+                    DoctorStatus.OK,
+                    "no turn interrupt diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_turn_interrupt_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "turn_interrupt_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.request_count == 0 and summary.finalized_count == 0:
+            return (
+                DoctorCheck(
+                    "turn_interrupt_diagnostics",
+                    DoctorStatus.OK,
+                    f"no turn interrupt diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        return (
+            DoctorCheck(
+                "turn_interrupt_diagnostics",
+                DoctorStatus.OK,
+                (
+                    f"interrupt_requests={summary.request_count} "
+                    f"interrupt_finalized={summary.finalized_count}"
+                    f"{suffix}"
+                ),
+                detail=f"sources: {_format_count_pairs(summary.sources)}",
             ),
         )
 
@@ -1447,6 +1524,41 @@ def _summarize_turn_failure_diagnostics(
         failure_count=failure_count,
         stop_reasons=ordered_stop_reasons,
         phases=ordered_phases,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _summarize_turn_interrupt_diagnostics(
+    paths: Iterable[Path],
+) -> _TurnInterruptDiagnosticsSummary:
+    request_count = 0
+    finalized_count = 0
+    sources: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind == "turn_interrupt_requested":
+                        request_count += 1
+                        sources[_safe_diagnostic_result(event.payload.get("source"))] += 1
+                    elif event.kind == "turn_interrupted":
+                        finalized_count += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_sources = tuple(sorted(sources.items(), key=lambda item: (-item[1], item[0])))
+    return _TurnInterruptDiagnosticsSummary(
+        request_count=request_count,
+        finalized_count=finalized_count,
+        sources=ordered_sources,
         unreadable=tuple(unreadable),
     )
 

@@ -82,6 +82,11 @@ the local log root and must never become provider transcript inputs.
   warning-level workspace log entries after suspended runtime state is saved.
   These diagnostics explain that resume state exists; they must not be used as
   provider transcript content.
+- Accepted gateway interrupt requests append local `turn_interrupt_requested`
+  trace rows and warning-level workspace log entries before any later runtime
+  finalization. These diagnostics explain that control-plane interruption was
+  requested; they must not include raw user messages, provider payloads, tool
+  output, headers, or secrets.
 - Failed turn diagnostics append local `turn_failed` trace rows and error-level
   workspace log entries from runtime failure finalizers. Payloads include
   bounded failure taxonomy fields such as `stop_reason`, `phase`, `error_type`,
@@ -160,6 +165,9 @@ the local log root and must never become provider transcript inputs.
   runtime trace row and warning-level workspace log entry with bounded
   `session_id`, `turn_id`, `stop_reason`, `suspend_reason`, `saved_state`, and
   `message_count`.
+- Gateway accepts `turn.interrupt` while a turn is running -> append a
+  `turn_interrupt_requested` runtime trace row and warning-level workspace log
+  entry with bounded `session_id`, `client_turn_id`, `requested`, and `source`.
 - Runtime turn is finalized as failed by model or runtime error finalizers ->
   append a `turn_failed` runtime trace row and error-level workspace log entry
   with bounded `session_id`, `turn_id`, `stop_reason`, `phase`, `error_type`,

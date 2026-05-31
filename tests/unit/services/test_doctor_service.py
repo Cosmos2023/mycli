@@ -2464,6 +2464,81 @@ def test_doctor_service_reports_missing_turn_failure_diagnostics_as_ok(
     assert check.message == "no turn failure diagnostics found"
 
 
+def test_doctor_service_reports_missing_turn_interrupt_diagnostics_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "turn_interrupt_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no turn interrupt diagnostics found"
+
+
+def test_doctor_service_summarizes_turn_interrupt_diagnostics_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-interruptsecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "turn_interrupt_requested",
+                        "turn_id": "client-1",
+                        "payload": {
+                            "source": "node_tui_gateway",
+                            "user_message": f"raw user text {secret}",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "turn_interrupted",
+                        "turn_id": "turn-1",
+                        "payload": {"suspend_reason": "interrupted"},
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "turn_interrupt_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "interrupt_requests=1 interrupt_finalized=1"
+    assert check.detail == "sources: node_tui_gateway=1"
+    assert secret not in rendered
+    assert "raw user text" not in rendered
+
+
 def test_doctor_service_reports_no_turn_failure_diagnostics_rows_as_ok(
     tmp_path: Path,
 ) -> None:

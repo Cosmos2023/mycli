@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from mycli.domain.conversation import Conversation, Message
+from mycli.domain.logging import LogLevel
 from mycli.domain.runtime import (
     AgentConfig,
     DecisionAction,
     HistoryItem,
     HistoryItemType,
+    RuntimeTraceEvent,
     RuntimeStreamEvent,
     TurnItemType,
     TurnResponse,
@@ -118,6 +120,32 @@ class TurnService:
         if log_service is None:
             return ("workspace log service is not configured",)
         return tuple(log_service.inspect_logs())
+
+    def record_turn_interrupt_request(
+        self,
+        *,
+        client_turn_id: str | None = None,
+        source: str = "node_tui_gateway",
+    ) -> None:
+        turn_id = client_turn_id or "interrupt_request"
+        payload = {
+            "session_id": self._config.session_id,
+            "client_turn_id": client_turn_id,
+            "requested": True,
+            "source": source,
+        }
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(kind="turn_interrupt_requested", turn_id=turn_id, payload=payload),
+        )
+        log_service = getattr(self._runtime, "_workspace_log_service", None)
+        if log_service is not None:
+            log_service.log(
+                level=LogLevel.WARNING,
+                event="turn_interrupt_requested",
+                message="Turn interrupt requested.",
+                context=payload,
+            )
 
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
         choice_to_action = {
