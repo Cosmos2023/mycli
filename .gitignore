@@ -1,5 +1,6 @@
 .venv/
 .uv-cache/
+.npm-cache/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
@@ -14,6 +15,7 @@ __pycache__/
 hermes-agent/
 node_modules/
 tui/node/node_modules/
+tui/node/.npm-cache/
 log/
 evaluation/runs/
 evaluation/**/fixtures/log/

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 from mycli.application.turn_service import TurnService
@@ -468,6 +469,24 @@ class FakeTurnService(FakeService):
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
         self.clarification_responses.append((request_id, response))
         return TurnResponse(assistant_message=f"clarified {response}")
+
+
+class BlockingTurnService(FakeTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.started = Event()
+        self.release = Event()
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        self.started.set()
+        if not self.release.wait(timeout=2.0):
+            raise AssertionError("blocking fake turn was not released")
+        return TurnResponse(assistant_message="")
 
 
 class FakeToolLifecycleTurnService(FakeService):
@@ -950,7 +969,8 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
 
 
 def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) -> None:
-    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+    service = BlockingTurnService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
 
     empty = gateway.handle_request(
         RpcRequest(id="req_1", method="turn.submit", params={"message": "   "})
@@ -958,9 +978,11 @@ def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) 
     accepted = gateway.handle_request(
         RpcRequest(id="req_2", method="turn.submit", params={"message": "hello"})
     )
+    assert service.started.wait(timeout=2.0)
     concurrent = gateway.handle_request(
         RpcRequest(id="req_3", method="turn.submit", params={"message": "again"})
     )
+    service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert empty.error == {"code": "invalid_params", "message": "message is required."}
@@ -997,15 +1019,18 @@ def test_gateway_turn_submit_emits_turn_status_for_failures(tmp_path: Path) -> N
 
 def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
+    service = BlockingTurnService(tmp_path)
     gateway = NodeTuiGateway(
-        service=FakeTurnService(tmp_path),
+        service=service,
         emit=lambda method, params: events.append((method, params)),
     )
     idle = gateway.handle_request(RpcRequest(id="req_1", method="turn.interrupt", params={}))
     accepted = gateway.handle_request(
         RpcRequest(id="req_2", method="turn.submit", params={"message": "hello"})
     )
+    assert service.started.wait(timeout=2.0)
     running = gateway.handle_request(RpcRequest(id="req_3", method="turn.interrupt", params={}))
+    service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert idle.result == {"interrupted": False}

@@ -240,10 +240,17 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       if (action.params.final === true) {
         return {
           ...state,
+          turnRunning: false,
+          currentTurnId:
+            clientTurnId && state.currentTurnId === clientTurnId ? null : state.currentTurnId,
           liveReasoning:
             clientTurnId && state.liveReasoning?.client_turn_id === clientTurnId
               ? null
               : state.liveReasoning,
+          typedMessageTurnId:
+            clientTurnId && state.typedMessageTurnId === clientTurnId
+              ? null
+              : state.typedMessageTurnId,
           transcript: reconcileFinalAnswer(state.transcript, String(action.params.text ?? "")),
         };
       }

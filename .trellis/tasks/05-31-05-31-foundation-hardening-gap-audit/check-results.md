@@ -9,12 +9,16 @@ Date: 2026-05-31
 - `node --test tui/node/test/verify-deps.test.js`
   - Result: `3 pass`
 - `uv run pytest tests/unit/services/test_doctor_service.py tests/unit/cli/node_tui/test_gateway.py tests/integration/test_node_tui_gateway.py -q`
-  - Result: `50 passed in 0.30s`
+  - Result: `50 passed in 0.72s`
+- `npm --prefix tui/node ci`
+  - Result: `added 50 packages in 6s`
+- `npm --prefix tui/node test`
+  - Result: `122 pass`
+- `npm --prefix tui/node run typecheck`
+  - Result: passed
 - `npm --prefix tui/node install --package-lock-only --no-audit --no-fund`
   - Result: `up to date in 181ms`
-- `uv run mycli doctor`
-  - Result: doctor runs and reports `node_tui_dependencies` as actionable warning for incomplete dependencies.
-- `uv run ruff check src/mycli/services/diagnostics/doctor.py tests/unit/services/test_doctor_service.py`
+- `uv run ruff check src/mycli/services/diagnostics/doctor.py tests/unit/services/test_doctor_service.py tests/unit/cli/node_tui/test_gateway.py`
   - Result: `All checks passed!`
 
 ## Additional Runtime Smoke Fix
@@ -29,28 +33,25 @@ misrouted.
 
 Fix: scripted smoke turn IDs now use a monotonic local sequence.
 
-## Blocked By Local Install Interruption
+## Install Interruption Root Cause And Fix
 
-The following commands are still blocked because this environment repeatedly
-interrupts actual `node_modules` installation after creating only
-`tui/node/node_modules/es-toolkit`:
+Initial verification repeatedly interrupted actual `node_modules` installation
+after creating only `tui/node/node_modules/es-toolkit`.
 
-- `npm --prefix tui/node ci --no-audit --no-fund`
-- `npm --prefix tui/node install --no-audit --no-fund --ignore-scripts`
-- `npm --prefix tui/node ci --omit=optional --ignore-scripts --no-audit --no-fund`
-
-The dependency verifier now detects this partial install state and prints:
+`npm cache verify` exposed the root cause:
 
 ```text
-Node TUI dependencies are incomplete.
-Run: npm --prefix tui/node ci
-If a previous install was interrupted, run 'rm -rf tui/node/node_modules' first and retry.
+npm error code EACCES
+npm error Your cache folder contains root-owned files
+npm error   sudo chown -R 501:20 "/Users/cosmos/.npm"
 ```
 
-Consequently:
+Project-side fix:
 
-- `npm --prefix tui/node test` fails early at `verify:deps` with the actionable diagnostic.
-- `npm --prefix tui/node run typecheck` fails early at `verify:deps` with the actionable diagnostic.
+- Added `tui/node/.npmrc`.
+- Routed Node TUI installs to a project-local npm cache.
+- Ignored generated npm cache directories.
+- Re-ran clean install successfully.
 
 ## Recovery Command
 
