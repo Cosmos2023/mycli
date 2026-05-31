@@ -203,6 +203,7 @@ return tuple(format_match(match) for match in matches)
 - Explicit cleanup commands:
   - `/session-maintenance --apply-empty`
   - `/session-maintenance --apply-orphans`
+  - `/session-maintenance --apply-vacuum`
 
 ### 3. Contracts
 
@@ -284,6 +285,39 @@ return tuple(format_report_field(report))
   valid sessions and valid child rows remain.
 - Store test proving empty sessions are not deleted by orphan cleanup.
 - Service/CLI/gateway tests for `/session-maintenance --apply-orphans`.
+
+## Scenario: Explicit Session Vacuum
+
+### 1. Scope / Trigger
+
+- Trigger: reclaiming free SQLite pages after explicit user request.
+- This is a destructive/high-impact maintenance action because SQLite rewrites
+  the database file, so it must stay behind an explicit slash-command flag.
+
+### 2. Signatures
+
+- Store:
+  `SessionStore.apply_session_maintenance_vacuum() -> SessionVacuumResult`
+- Domain payload:
+  `SessionVacuumResult(before_db_size_bytes, after_db_size_bytes, before_page_count, after_page_count, before_freelist_count, after_freelist_count, page_size, dry_run=False)`
+- CLI slash command: `/session-maintenance --apply-vacuum`
+
+### 3. Contracts
+
+- Default `/session-maintenance` remains read-only.
+- Doctor must not run `VACUUM`.
+- Empty-session cleanup and orphan cleanup must not run `VACUUM`.
+- Vacuum must not delete sessions, delete child rows, repair orphan rows, or
+  repair lineage parent references.
+- Output lines are bounded `key=value` fields with before/after size and page
+  counters so the maintenance action is diagnosable.
+
+### 4. Tests Required
+
+- Store test proving explicit vacuum returns before/after database metrics while
+  preserving sessions and messages.
+- Store test proving empty/orphan cleanup paths do not execute `VACUUM`.
+- Service/CLI/gateway completion tests for `/session-maintenance --apply-vacuum`.
 
 ## Scenario: Doctor Session Maintenance Readiness
 

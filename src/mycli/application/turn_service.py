@@ -353,6 +353,9 @@ class TurnService:
     def apply_session_maintenance_orphan_cleanup(self) -> tuple[str, ...]:
         return self._session_service.apply_session_maintenance_orphan_cleanup()
 
+    def apply_session_maintenance_vacuum(self) -> tuple[str, ...]:
+        return self._session_service.apply_session_maintenance_vacuum()
+
     def search_sessions(self, query: str) -> tuple[str, ...]:
         return self._session_service.search_sessions(query)
 

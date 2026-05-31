@@ -1193,6 +1193,70 @@ def test_sqlite_session_store_empty_cleanup_respects_candidate_limit(
     ]
 
 
+def test_sqlite_session_store_applies_explicit_vacuum_without_deleting_sessions(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+
+    store.replace_conversation(
+        session_id="with-message",
+        workspace_root=workspace,
+        thread_id="with-message",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    result = store.apply_session_maintenance_vacuum()
+
+    assert result.dry_run is False
+    assert result.before_db_size_bytes > 0
+    assert result.after_db_size_bytes > 0
+    assert result.before_page_count > 0
+    assert result.after_page_count > 0
+    assert result.before_freelist_count >= 0
+    assert result.after_freelist_count >= 0
+    assert result.page_size > 0
+    assert store.load_conversation("with-message") == [{"role": "user", "content": "hello"}]
+
+
+def test_sqlite_session_store_empty_and_orphan_cleanup_do_not_vacuum(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+    vacuum_called = False
+
+    store.replace_conversation(
+        session_id="empty",
+        workspace_root=workspace,
+        thread_id="empty",
+        messages=[],
+    )
+
+    original_connect = sqlite3.connect
+
+    class VacuumTrackingConnection(_ConnectionProxy):
+        def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+            nonlocal vacuum_called
+            if " ".join(sql.strip().upper().split()) == "VACUUM":
+                vacuum_called = True
+            return super().execute(sql, parameters)
+
+    def guarded_connect(*args: object, **kwargs: object) -> VacuumTrackingConnection:
+        connection = original_connect(*args, **kwargs)
+        return VacuumTrackingConnection(connection)
+
+    monkeypatch.setattr(sqlite_session_store.sqlite3, "connect", guarded_connect)
+
+    store.apply_session_maintenance_empty_cleanup(workspace_root=workspace)
+    store.apply_session_maintenance_orphan_cleanup()
+
+    assert vacuum_called is False
+
+
 def test_sqlite_session_store_applies_orphan_child_row_cleanup(
     tmp_path: Path,
 ) -> None:

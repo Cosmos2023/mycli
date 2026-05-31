@@ -18,6 +18,7 @@ from mycli.domain.session_store import (
     SessionMaintenanceCandidate,
     SessionOrphanCleanupResult,
     SessionMaintenanceReport,
+    SessionVacuumResult,
     SessionOverview,
     SessionSearchResult,
 )
@@ -1076,6 +1077,35 @@ class SQLiteSessionStore:
             deleted_rows_by_table=deleted_rows_by_table,
             total_deleted_rows=sum(count for _, count in deleted_rows_by_table),
         )
+
+    def apply_session_maintenance_vacuum(self) -> SessionVacuumResult:
+        with self._lock:
+            before = self._storage_metrics()
+            with self._connect() as connection:
+                connection.execute("VACUUM")
+            after = self._storage_metrics()
+        return SessionVacuumResult(
+            before_db_size_bytes=before["db_size_bytes"],
+            after_db_size_bytes=after["db_size_bytes"],
+            before_page_count=before["page_count"],
+            after_page_count=after["page_count"],
+            before_freelist_count=before["freelist_count"],
+            after_freelist_count=after["freelist_count"],
+            page_size=after["page_size"],
+        )
+
+    def _storage_metrics(self) -> dict[str, int]:
+        with self._connect() as connection:
+            page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+            freelist_count = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+            page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        db_size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
+        return {
+            "db_size_bytes": db_size_bytes,
+            "page_count": page_count,
+            "freelist_count": freelist_count,
+            "page_size": page_size,
+        }
 
     @staticmethod
     def _workspace_parameters(workspace_root: Path | None) -> list[object]:

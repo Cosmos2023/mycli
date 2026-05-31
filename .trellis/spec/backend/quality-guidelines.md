@@ -106,6 +106,10 @@ Questions to answer:
   `/session-maintenance --apply-orphans` form. It may delete only known child
   table rows whose `session_id` is absent from `sessions`; it must not delete
   sessions, repair lineage parent references, or run `VACUUM`.
+- SQLite vacuum requires the explicit `/session-maintenance --apply-vacuum`
+  form. It must report bounded before/after storage metrics, preserve sessions
+  and child rows, and must not run from doctor, the default dry-run report,
+  empty-session cleanup, or orphan cleanup.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.
@@ -251,6 +255,9 @@ Questions to answer:
 - Unit test explicit orphan child-row cleanup for multi-table orphan deletion,
   valid-row preservation, empty-session separation, and CLI/gateway routing
   through `/session-maintenance --apply-orphans`.
+- Unit test explicit vacuum maintenance for before/after storage metrics,
+  session preservation, cleanup-path separation, and CLI/gateway routing through
+  `/session-maintenance --apply-vacuum`.
 - Node protocol test for event method plus required-field, property-name, and
   enum-value parity with Python gateway contract/manifest.
 - CLI test for `mycli doctor` command parsing and no secret leakage.

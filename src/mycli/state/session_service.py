@@ -642,6 +642,19 @@ class SessionService:
         )
         return tuple(lines)
 
+    def apply_session_maintenance_vacuum(self) -> tuple[str, ...]:
+        result = self._store.apply_session_maintenance_vacuum()
+        return (
+            f"dry_run={str(result.dry_run).lower()}",
+            f"before_db_size_bytes={result.before_db_size_bytes}",
+            f"after_db_size_bytes={result.after_db_size_bytes}",
+            f"before_page_count={result.before_page_count}",
+            f"after_page_count={result.after_page_count}",
+            f"before_freelist_count={result.before_freelist_count}",
+            f"after_freelist_count={result.after_freelist_count}",
+            f"page_size={result.page_size}",
+        )
+
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
         return list(ContextManager().messages_from_history(self.load_history_items(session_id)))
 

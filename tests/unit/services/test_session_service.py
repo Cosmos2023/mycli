@@ -382,6 +382,34 @@ def test_session_service_formats_session_maintenance_orphan_cleanup(
     assert service.load_conversation("valid").messages == []
 
 
+def test_session_service_formats_session_maintenance_vacuum(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    service = SessionService(home_dir=home, workspace_root=workspace)
+    service.save_conversation(
+        Conversation(
+            session_id="with-message",
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    lines = service.apply_session_maintenance_vacuum()
+
+    assert "dry_run=false" in lines
+    assert any(line.startswith("before_db_size_bytes=") for line in lines)
+    assert any(line.startswith("after_db_size_bytes=") for line in lines)
+    assert any(line.startswith("before_page_count=") for line in lines)
+    assert any(line.startswith("after_page_count=") for line in lines)
+    assert any(line.startswith("before_freelist_count=") for line in lines)
+    assert any(line.startswith("after_freelist_count=") for line in lines)
+    assert any(line.startswith("page_size=") for line in lines)
+    assert service.load_conversation("with-message").messages == [
+        Message(role="user", content="hello")
+    ]
+
+
 def test_session_service_round_trips_message_metadata(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     conversation = Conversation(session_id="demo")

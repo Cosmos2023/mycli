@@ -70,6 +70,18 @@ class SessionOrphanCleanupResult:
     dry_run: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class SessionVacuumResult:
+    before_db_size_bytes: int
+    after_db_size_bytes: int
+    before_page_count: int
+    after_page_count: int
+    before_freelist_count: int
+    after_freelist_count: int
+    page_size: int
+    dry_run: bool = False
+
+
 class SessionStore(Protocol):
     def replace_conversation(
         self,
@@ -184,3 +196,5 @@ class SessionStore(Protocol):
     ) -> SessionMaintenanceApplyResult: ...
 
     def apply_session_maintenance_orphan_cleanup(self) -> SessionOrphanCleanupResult: ...
+
+    def apply_session_maintenance_vacuum(self) -> SessionVacuumResult: ...

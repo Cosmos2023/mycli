@@ -45,6 +45,7 @@ COMMAND_OVERLAYS = {
     "/session-maintenance",
     "/session-maintenance --apply-empty",
     "/session-maintenance --apply-orphans",
+    "/session-maintenance --apply-vacuum",
     "/release-notes",
 }
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
@@ -1076,6 +1077,7 @@ def _slash_description(command: str) -> str:
         "/session-maintenance": "Show session storage maintenance dry-run",
         "/session-maintenance --apply-empty": "Delete empty session maintenance candidates",
         "/session-maintenance --apply-orphans": "Delete orphan session child rows",
+        "/session-maintenance --apply-vacuum": "Run explicit SQLite vacuum for session storage",
         "/quit": "Exit mycli",
     }
     return descriptions.get(command, "")

@@ -313,6 +313,10 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
             "value": "/session-maintenance --apply-orphans",
             "description": "Delete orphan session child rows",
         },
+        {
+            "value": "/session-maintenance --apply-vacuum",
+            "description": "Run explicit SQLite vacuum for session storage",
+        },
     ]
 
 

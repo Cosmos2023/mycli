@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Session maintenance and destructive maintenance boundaries."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Doctor and session maintenance safety contracts."}
+{"file":".trellis/tasks/05-31-session-maintenance-apply-vacuum/prd.md","reason":"Implementation requirements and acceptance criteria."}
+{"file":".trellis/tasks/05-31-session-maintenance-apply-vacuum/research/current-state.md","reason":"Current maintenance gap and selected design."}
