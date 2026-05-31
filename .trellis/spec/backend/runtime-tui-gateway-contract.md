@@ -57,6 +57,8 @@
   - `kind`: renderable status kind, normally the same as `state`
   - `text`: human-readable short status
   - `client_turn_id`: optional string linking the status to the submitted turn
+  - `message`: optional bounded diagnostic detail for terminal or exceptional
+    states, such as an interrupt request
   - `severity`: optional string for future warning/error display
 - `approval.request` payload:
   - `decision_id`: stable string for the pending approval. Prefer the source
@@ -126,6 +128,11 @@
   - Existing terminal method-name events remain the compatibility path. The
     gateway emits the existing event first, then `turn.status`, then
     `status.update` where applicable.
+  - `turn.interrupted`, `turn.status(state=interrupted)`, and the matching
+    `status.update(state=interrupted)` must include the active
+    `client_turn_id` when a turn is running, so Node scripted smokes and future
+    clients can correlate the interrupt with the active turn. The status
+    payloads should include a bounded `message` such as `Interrupt requested`.
   - `turn.status(state=interrupted)` currently reports that an interrupt was
     requested; it does not guarantee that the running worker stopped before a
     later terminal event.

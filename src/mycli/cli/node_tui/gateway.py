@@ -147,6 +147,7 @@ class NodeTuiGateway:
         self._turn_lock = Lock()
         self._turn_thread: Thread | None = None
         self._turn_running = False
+        self._current_client_turn_id: str | None = None
         self._interrupt_requested = False
         self._event_sequence = 0
 
@@ -261,6 +262,7 @@ class NodeTuiGateway:
                     message="A turn is already running.",
                 )
             self._turn_running = True
+            self._current_client_turn_id = client_turn_id
             self._interrupt_requested = False
             self._turn_thread = Thread(
                 target=self._run_turn_worker,
@@ -273,20 +275,28 @@ class NodeTuiGateway:
     def _handle_turn_interrupt(self) -> dict[str, object]:
         with self._turn_lock:
             running = self._turn_running
+            client_turn_id = self._current_client_turn_id
             if running:
                 self._interrupt_requested = True
         if running and self._emit is not None:
-            self._emit_event("turn.interrupted", {"requested": True})
+            self._emit_event(
+                "turn.interrupted",
+                {
+                    "requested": True,
+                    **({"client_turn_id": client_turn_id} if client_turn_id is not None else {}),
+                },
+            )
             self._emit_turn_status(
-                client_turn_id=None,
+                client_turn_id=client_turn_id,
                 state="interrupted",
                 message="Interrupt requested",
             )
             self._emit_status_update(
-                client_turn_id=None,
+                client_turn_id=client_turn_id,
                 state="interrupted",
                 kind="interrupted",
                 text="Interrupted",
+                message="Interrupt requested",
             )
         return {"interrupted": running}
 
@@ -347,6 +357,7 @@ class NodeTuiGateway:
         finally:
             with self._turn_lock:
                 self._turn_running = False
+                self._current_client_turn_id = None
             self._emit_event("status.changed", self._status_payload())
 
     def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:

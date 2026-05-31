@@ -6,7 +6,8 @@ type ScriptedState = ReturnType<typeof initialState>;
 
 type ScriptedAction =
   | { type: "approval.respond"; choice: string }
-  | { type: "clarify.respond"; response: string };
+  | { type: "clarify.respond"; response: string }
+  | { type: "turn.submit_interrupt"; message: string };
 
 async function dumpStateIfRequested(state: ReturnType<typeof initialState>): Promise<void> {
   const dumpPath = process.env.MYCLI_NODE_TUI_STATE_DUMP;
@@ -110,6 +111,9 @@ function isScriptedAction(item: unknown): item is ScriptedAction {
   if (type === "clarify.respond") {
     return typeof (item as Record<string, unknown>).response === "string";
   }
+  if (type === "turn.submit_interrupt") {
+    return typeof (item as Record<string, unknown>).message === "string";
+  }
   return false;
 }
 
@@ -119,6 +123,26 @@ async function runScriptedAction(
   action: ScriptedAction,
 ): Promise<void> {
   const state = getState();
+  if (action.type === "turn.submit_interrupt") {
+    const clientTurnId = `script_interrupt_${Date.now()}`;
+    await client.send("turn.submit", {
+      message: action.message,
+      client_turn_id: clientTurnId,
+    });
+    await client.waitForEvent(
+      "turn.started",
+      (event) => event.params?.client_turn_id === clientTurnId,
+    );
+    await client.send("turn.interrupt", {});
+    await client.waitForEvent(
+      "turn.completed",
+      (event) =>
+        event.params?.client_turn_id === clientTurnId &&
+        event.params?.turn_state === "interrupted",
+    );
+    await waitForInterruptedStatus(client, clientTurnId);
+    return;
+  }
   if (action.type === "approval.respond") {
     const decisionId = pendingId(state.pendingApproval, "decision_id", "approval.respond");
     const result = await client.send("approval.respond", {
@@ -144,6 +168,19 @@ async function runScriptedAction(
     (event) => event.params?.client_turn_id === clientTurnId,
   );
   await waitForTerminalStatus(client, clientTurnId);
+}
+
+async function waitForInterruptedStatus(
+  client: GatewayClient,
+  clientTurnId: string,
+): Promise<void> {
+  await client.waitForEvent(
+    "turn.status",
+    (event) =>
+      event.params?.client_turn_id === clientTurnId &&
+      event.params?.state === "interrupted" &&
+      event.params?.terminal === true,
+  );
 }
 
 async function waitForTerminalStatus(client: GatewayClient, clientTurnId: string): Promise<void> {

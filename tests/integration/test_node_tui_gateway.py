@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import cast
 
@@ -517,3 +518,90 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_tool_lifecycle(
     ]
     assert [item["text"] for item in assistant_items] == ["tools done final"]
     assert "tools donetools done" not in assistant_items[0]["text"]
+
+
+class E2EInterruptedStateService:
+    def __init__(self, workspace_root: Path) -> None:
+        self._config = SimpleNamespace(
+            session_id="interrupted-smoke",
+            workspace_root=workspace_root,
+            model="gpt-smoke",
+            provider=SimpleNamespace(value="test"),
+            protocol=SimpleNamespace(value="chat_completions"),
+            max_prompt_tokens=12000,
+            tui_startup_mark="default",
+        )
+        self._session_service = E2ESessionService()
+        self.messages: list[str] = []
+        self.started = Event()
+        self.return_interrupted = Event()
+
+    def current_context_window_metrics(self) -> dict[str, object]:
+        return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        self.messages.append(message)
+        if message != "interrupt me":
+            raise AssertionError(f"unexpected message: {message}")
+        self.started.set()
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="reasoning", text="working"))
+        self.return_interrupted.wait(timeout=2.0)
+        turn = TurnRecord(
+            thread_id="interrupted-smoke",
+            turn_id="turn_interrupted_1",
+            status=TurnStatus.INTERRUPTED,
+            started_at="2026-05-31T00:00:00Z",
+            completed_at="2026-05-31T00:00:01Z",
+            stop_reason=StopReason.INTERRUPTED,
+            user_message=message,
+        )
+        return TurnResponse(assistant_message="Interrupt requested", turn=turn)
+
+    def inspect_usage(self) -> tuple[str, ...]:
+        return ("session=interrupted-smoke",)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        return ("session=interrupted-smoke context=test",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        return (f"mode={mode}",)
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        return (f"resumed {session_id or 'interrupted-smoke'}",)
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_interrupted_turn(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-interrupted-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [{"type": "turn.submit_interrupt", "message": "interrupt me"}]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EInterruptedStateService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["interrupt me"]
+    assert service.started.is_set()
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["turnRunning"] is False
+    assert state["currentTurnId"] is None
+    assert state["liveStatus"]["state"] == "interrupted"
+    assert state["liveStatus"]["message"] == "Interrupt requested"
+    assert state["pendingApproval"] is None
+    assert state["pendingClarification"] is None

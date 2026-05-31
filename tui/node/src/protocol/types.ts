@@ -63,6 +63,7 @@ export type StatusUpdatePayload = {
   state: TurnState;
   kind: string;
   text: string;
+  message?: string;
   severity?: string;
 };
 

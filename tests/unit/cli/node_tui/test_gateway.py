@@ -1136,12 +1136,20 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
     assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
     assert running.result == {"interrupted": True}
     assert {
+        "client_turn_id": "req_2",
         "state": "interrupted",
         "kind": "interrupted",
         "text": "Interrupted",
         "terminal": True,
         "message": "Interrupt requested",
     } in [params for method, params in events if method == "turn.status"]
+    assert {
+        "client_turn_id": "req_2",
+        "state": "interrupted",
+        "kind": "interrupted",
+        "text": "Interrupted",
+        "message": "Interrupt requested",
+    } in [params for method, params in events if method == "status.update"]
 
 
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:
