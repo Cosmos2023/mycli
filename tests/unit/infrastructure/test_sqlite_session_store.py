@@ -256,6 +256,125 @@ def test_sqlite_session_store_resolves_resume_session_to_descendant_tip(
     assert store.resolve_resume_session_id("grandchild") == "grandchild"
 
 
+def test_sqlite_session_store_resume_tip_prefers_latest_active_child(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    workspace = tmp_path / "workspace"
+    store = SQLiteSessionStore(db_path)
+    for session_id, parent_id in (
+        ("root", None),
+        ("older-child", "root"),
+        ("newer-child", "root"),
+    ):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+        store.save_conversation_tree(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            parent_id=parent_id,
+            fork_point=None,
+        )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-01T00:00:00+00:00' "
+            "WHERE session_id = 'older-child'"
+        )
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-02T00:00:00+00:00' "
+            "WHERE session_id = 'newer-child'"
+        )
+
+    assert store.resolve_resume_session_id("root") == "newer-child"
+
+
+def test_sqlite_session_store_resume_tip_uses_updated_at_tiebreaker(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    workspace = tmp_path / "workspace"
+    store = SQLiteSessionStore(db_path)
+    for session_id, parent_id in (
+        ("root", None),
+        ("older-update", "root"),
+        ("newer-update", "root"),
+    ):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+        store.save_conversation_tree(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            parent_id=parent_id,
+            fork_point=None,
+        )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE sessions
+            SET last_active_at = '2026-01-01T00:00:00+00:00',
+                updated_at = '2026-01-01T00:00:00+00:00'
+            WHERE session_id = 'older-update'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE sessions
+            SET last_active_at = '2026-01-01T00:00:00+00:00',
+                updated_at = '2026-01-01T00:00:01+00:00'
+            WHERE session_id = 'newer-update'
+            """
+        )
+
+    assert store.resolve_resume_session_id("root") == "newer-update"
+
+
+def test_sqlite_session_store_resume_tip_uses_session_id_tiebreaker(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    workspace = tmp_path / "workspace"
+    store = SQLiteSessionStore(db_path)
+    for session_id, parent_id in (
+        ("root", None),
+        ("branch-a", "root"),
+        ("branch-z", "root"),
+    ):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+        store.save_conversation_tree(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            parent_id=parent_id,
+            fork_point=None,
+        )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE sessions
+            SET last_active_at = '2026-01-01T00:00:00+00:00',
+                updated_at = '2026-01-01T00:00:00+00:00'
+            WHERE session_id IN ('branch-a', 'branch-z')
+            """
+        )
+
+    assert store.resolve_resume_session_id("root") == "branch-z"
+
+
 def test_sqlite_session_store_rejects_missing_resume_target(tmp_path: Path) -> None:
     db_path = tmp_path / "home" / ".mycli" / "sessions.db"
     store = SQLiteSessionStore(db_path)

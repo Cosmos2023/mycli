@@ -169,6 +169,62 @@ def test_session_service_resumes_ancestor_as_current_tip_lineage(tmp_path: Path)
     ]
 
 
+def test_session_service_resumes_newest_child_branch_when_siblings_exist(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+    root = Conversation(
+        session_id="root",
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="root-only"),
+        ],
+    )
+    older = Conversation(
+        session_id="older-branch",
+        parent_id="root",
+        fork_point=2,
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="older branch"),
+        ],
+    )
+    newer = Conversation(
+        session_id="newer-branch",
+        parent_id="root",
+        fork_point=2,
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="newer branch"),
+        ],
+    )
+    service.save_conversation(root)
+    service.save_conversation(older)
+    service.save_conversation(newer)
+    with sqlite3.connect(home_dir / ".mycli" / "sessions.db") as connection:
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-01T00:00:00+00:00' "
+            "WHERE session_id = 'older-branch'"
+        )
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-02T00:00:00+00:00' "
+            "WHERE session_id = 'newer-branch'"
+        )
+
+    resumed = service.resume_conversation("root")
+
+    assert resumed.session_id == "newer-branch"
+    assert [message.content for message in resumed.messages] == [
+        "one",
+        "two",
+        "newer branch",
+    ]
+
+
 def test_session_service_rejects_missing_resume_target(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
 

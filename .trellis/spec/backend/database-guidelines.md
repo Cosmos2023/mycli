@@ -37,6 +37,11 @@ Questions to answer:
   `sessions`, `conversation_trees`, or `conversation_messages` as valid resume
   evidence so legacy message-only sessions still work; a completely missing id
   must raise a clear error instead of returning an empty conversation.
+- When resuming an ancestor with multiple child branches, automatic root-to-tip
+  resolution chooses one child at each step by `sessions.last_active_at DESC`,
+  then `sessions.updated_at DESC`, then `conversation_trees.session_id DESC`.
+  This deterministic tie-breaker is part of the resume contract until an
+  explicit branch picker exists.
 - A child `fork_point` is bounded by both the child conversation and the parent
   conversation segment it references. Doctor/session integrity checks must fail
   if `fork_point` is negative, exceeds child message count, or exceeds parent
