@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend spec entry point for session storage changes"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "session DB maintenance and runtime-state conventions"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "doctor maintenance diagnostics contract and tests"}
+{"file": ".trellis/spec/guides/index.md", "reason": "shared Trellis thinking guide entry point"}
+{"file": ".trellis/tasks/05-31-runtime-state-aware-session-maintenance/research/current-state.md", "reason": "slice research and implementation direction"}

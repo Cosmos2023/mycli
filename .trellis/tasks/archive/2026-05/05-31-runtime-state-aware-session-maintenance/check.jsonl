@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "verify maintenance empty-session rule is documented and followed"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "verify doctor maintenance remains read-only and actionable"}
+{"file": ".trellis/tasks/05-31-runtime-state-aware-session-maintenance/research/current-state.md", "reason": "verify implementation covers researched gap"}

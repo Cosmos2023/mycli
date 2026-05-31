@@ -56,6 +56,11 @@ Questions to answer:
   `user_message`, a waiting-clarification `turn_record` with `user_message`, or
   a waiting-clarification rollout plus matching user history item. Doctor
   reports missing evidence read-only instead of clearing suspended state.
+- Session maintenance "empty session" detection must treat runtime state as
+  durable session content. A session is empty only when it has no
+  `conversation_messages`, no `session_summaries`, no `history_items`, no
+  `turn_rollouts`, and no `session_state` rows. Runtime-only sessions must not
+  appear as cleanup candidates.
 - Session message search is an explicit local query path only. Use
   `SessionStore.search_messages(query, workspace_root=..., limit=...)` for
   user-triggered lookup such as `/search <query>`; do not run it automatically as

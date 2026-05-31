@@ -978,10 +978,19 @@ def _session_db_empty_workspace_session_count(
                 ON conversation_messages.session_id = sessions.session_id
             LEFT JOIN session_summaries
                 ON session_summaries.session_id = sessions.session_id
+            LEFT JOIN history_items
+                ON history_items.session_id = sessions.session_id
+            LEFT JOIN turn_rollouts
+                ON turn_rollouts.session_id = sessions.session_id
+            LEFT JOIN session_state
+                ON session_state.session_id = sessions.session_id
             WHERE sessions.workspace_root = ?
             GROUP BY sessions.session_id
             HAVING COUNT(conversation_messages.message_index) = 0
                AND COUNT(session_summaries.summary_index) = 0
+               AND COUNT(history_items.sequence_no) = 0
+               AND COUNT(turn_rollouts.sequence_no) = 0
+               AND COUNT(session_state.state_key) = 0
         )
         """,
         (str(workspace_root),),

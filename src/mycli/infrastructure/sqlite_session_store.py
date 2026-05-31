@@ -977,10 +977,19 @@ class SQLiteSessionStore:
                             ON conversation_messages.session_id = sessions.session_id
                         LEFT JOIN session_summaries
                             ON session_summaries.session_id = sessions.session_id
+                        LEFT JOIN history_items
+                            ON history_items.session_id = sessions.session_id
+                        LEFT JOIN turn_rollouts
+                            ON turn_rollouts.session_id = sessions.session_id
+                        LEFT JOIN session_state
+                            ON session_state.session_id = sessions.session_id
                         {where_clause}
                         GROUP BY sessions.session_id
                         HAVING COUNT(conversation_messages.message_index) = 0
                            AND COUNT(session_summaries.summary_index) = 0
+                           AND COUNT(history_items.sequence_no) = 0
+                           AND COUNT(turn_rollouts.sequence_no) = 0
+                           AND COUNT(session_state.state_key) = 0
                     )
                     """,
                     parameters,
@@ -995,15 +1004,28 @@ class SQLiteSessionStore:
                         sessions.last_active_at,
                         sessions.status,
                         COUNT(conversation_messages.message_index) AS message_count,
-                        COUNT(session_summaries.summary_index) AS summary_count
+                        COUNT(session_summaries.summary_index) AS summary_count,
+                        COUNT(history_items.sequence_no) AS history_count,
+                        COUNT(turn_rollouts.sequence_no) AS rollout_count,
+                        COUNT(session_state.state_key) AS state_count
                     FROM sessions
                     LEFT JOIN conversation_messages
                         ON conversation_messages.session_id = sessions.session_id
                     LEFT JOIN session_summaries
                         ON session_summaries.session_id = sessions.session_id
+                    LEFT JOIN history_items
+                        ON history_items.session_id = sessions.session_id
+                    LEFT JOIN turn_rollouts
+                        ON turn_rollouts.session_id = sessions.session_id
+                    LEFT JOIN session_state
+                        ON session_state.session_id = sessions.session_id
                     {where_clause}
                     GROUP BY sessions.session_id, sessions.last_active_at, sessions.status
-                    HAVING message_count = 0 AND summary_count = 0
+                    HAVING message_count = 0
+                       AND summary_count = 0
+                       AND history_count = 0
+                       AND rollout_count = 0
+                       AND state_count = 0
                 )
                 ORDER BY last_active_at ASC, session_id ASC
                 LIMIT ?

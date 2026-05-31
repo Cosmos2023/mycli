@@ -918,6 +918,75 @@ def test_sqlite_session_store_reports_session_maintenance_dry_run(
     assert report.page_size > 0
 
 
+def test_sqlite_session_store_does_not_mark_runtime_state_sessions_empty(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+
+    for session_id in ("history-only", "rollout-only", "state-only", "empty"):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+    store.append_history_items(
+        session_id="history-only",
+        workspace_root=workspace,
+        thread_id="history-only",
+        items=[
+            {
+                "id": "hist_user_1",
+                "thread_id": "history-only",
+                "turn_id": "turn_1",
+                "type": "user_message",
+                "text": "hello",
+                "tool_name": None,
+                "call_id": None,
+                "metadata": {},
+            }
+        ],
+    )
+    store.append_turn_rollout(
+        session_id="rollout-only",
+        workspace_root=workspace,
+        thread_id="rollout-only",
+        rollout={
+            "thread_id": "rollout-only",
+            "turn_id": "turn_1",
+            "status": "waiting_approval",
+            "started_at": "2026-05-31T00:00:00Z",
+            "completed_at": None,
+            "stop_reason": "approval_required",
+            "events": [],
+            "continuation_state": {},
+        },
+    )
+    store.save_state(
+        session_id="state-only",
+        workspace_root=workspace,
+        thread_id="state-only",
+        state_key="turn_record",
+        payload={
+            "thread_id": "state-only",
+            "turn_id": "turn_1",
+            "status": "waiting_clarification",
+            "started_at": "2026-05-31T00:00:00Z",
+            "completed_at": None,
+            "stop_reason": "clarification_required",
+            "user_message": "choose runtime",
+            "items": [],
+        },
+    )
+
+    report = store.session_maintenance_report(workspace_root=workspace)
+
+    assert report.empty_session_count == 1
+    assert [candidate.session_id for candidate in report.empty_session_candidates] == ["empty"]
+
+
 def test_sqlite_session_store_bounds_session_maintenance_candidates(
     tmp_path: Path,
 ) -> None:

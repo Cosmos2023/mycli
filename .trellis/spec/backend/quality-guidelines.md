@@ -91,6 +91,9 @@ Questions to answer:
   message, or waiting-clarification rollout plus matching user history item ->
   `sessions_db=failed` with bounded session ids. Doctor must not repair or
   clear the suspended turn.
+- Session maintenance diagnostics must not classify runtime-only sessions as
+  empty. `history_items`, `turn_rollouts`, and `session_state` rows count as
+  durable session content even when legacy `conversation_messages` is empty.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.

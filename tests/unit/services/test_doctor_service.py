@@ -330,6 +330,94 @@ def test_doctor_service_warns_about_session_maintenance_candidates(
     assert "/session-maintenance" in check.message
 
 
+def test_doctor_service_session_maintenance_ignores_runtime_state_sessions(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        for session_id in ("history-only", "rollout-only", "state-only", "empty"):
+            _insert_session(connection, session_id, workspace_root=workspace)
+        connection.execute(
+            """
+            INSERT INTO history_items (session_id, item_id, payload_json)
+            VALUES ('history-only', 'hist_user_1', ?)
+            """,
+            (
+                json.dumps(
+                    {
+                        "id": "hist_user_1",
+                        "thread_id": "history-only",
+                        "turn_id": "turn_1",
+                        "type": "user_message",
+                        "text": "hello",
+                        "tool_name": None,
+                        "call_id": None,
+                        "metadata": {},
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+            VALUES ('rollout-only', 'turn_1', ?)
+            """,
+            (
+                json.dumps(
+                    {
+                        "thread_id": "rollout-only",
+                        "turn_id": "turn_1",
+                        "status": "waiting_approval",
+                        "started_at": "2026-05-31T00:00:00Z",
+                        "completed_at": None,
+                        "stop_reason": "approval_required",
+                        "events": [],
+                        "continuation_state": {},
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES ('state-only', 'turn_record', ?, 'now')
+            """,
+            (
+                json.dumps(
+                    {
+                        "thread_id": "state-only",
+                        "turn_id": "turn_1",
+                        "status": "waiting_clarification",
+                        "started_at": "2026-05-31T00:00:00Z",
+                        "completed_at": None,
+                        "stop_reason": "clarification_required",
+                        "user_message": "choose runtime",
+                        "items": [],
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "session_maintenance")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message.startswith("workspace_sessions=4 empty_sessions=1 freelist_pages=")
+    assert "/session-maintenance" in check.message
+
+
 def test_doctor_service_skips_session_maintenance_when_sessions_db_is_invalid(
     tmp_path: Path,
 ) -> None:
