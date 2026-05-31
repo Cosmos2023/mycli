@@ -91,6 +91,11 @@
     `status == "awaiting_user_response"`. The runtime must pause the active
     turn with a persisted pending clarification instead of continuing as if the
     tool had completed normally.
+  - The gateway emits `turn.status(state=waiting_clarification,
+    terminal=false)` and `status.update(state=waiting_clarification)` when it
+    forwards `clarify.request`, so clients can enter waiting-input UI state
+    immediately instead of waiting for the later `turn.completed` compatibility
+    event.
 - `clarify.respond` request payload:
   - `request_id`: must match the active pending clarification.
   - `response`: non-empty user answer text. The TUI may send an option label or
@@ -347,9 +352,10 @@
   emit `tool.complete` for the same failed result.
 - `AskUserQuestion` returns a successful tool result with
   `status=awaiting_user_response` -> emit `clarify.request` after the normal
-  successful tool lifecycle events, mirror it through `runtime.event`, persist
-  a suspended turn with pending clarification, and finish the current turn as
-  `waiting_clarification`.
+  successful tool lifecycle events, mirror it through `runtime.event`, emit
+  realtime `turn.status` / `status.update` with `waiting_clarification`,
+  persist a suspended turn with pending clarification, and finish the current
+  turn as `waiting_clarification`.
 - `clarify.respond` request with blank `response` -> JSON-RPC `invalid_params`.
 - `clarify.respond` request with a non-matching `request_id` -> runtime returns
   a non-resuming response; clients must keep diagnostics visible.
@@ -509,7 +515,8 @@
 - Tool execution unit test proving `AskUserQuestion` success emits a bounded
   `clarify_request` lifecycle event after normal tool lifecycle events.
 - Gateway unit test proving `RuntimeStreamEvent(kind="clarify_request")` emits
-  `clarify.request` and a `runtime.event` mirror.
+  `clarify.request`, realtime `waiting_clarification` status updates, and a
+  `runtime.event` mirror.
 - Node protocol typecheck/client test proving `clarify.request` payloads narrow
   in `GatewayClient.waitForEvent(...)`.
 - Reducer/rendering/status tests proving Node TUI consumes `clarify.request`,

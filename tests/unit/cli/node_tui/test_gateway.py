@@ -621,7 +621,19 @@ class FakeClarifyTurnService(FakeService):
                     },
                 )
             )
-        return TurnResponse(assistant_message="waiting")
+        return TurnResponse(
+            assistant_message="waiting",
+            turn=TurnRecord(
+                thread_id="demo",
+                turn_id="turn_waiting_clarification",
+                status=TurnStatus.WAITING_CLARIFICATION,
+                started_at="2026-05-31T00:00:00Z",
+                completed_at="2026-05-31T00:00:01Z",
+                stop_reason=StopReason.CLARIFICATION_REQUIRED,
+                user_message="ask",
+                items=(),
+            ),
+        )
 
 
 class FailingTurnService(FakeService):
@@ -936,6 +948,25 @@ def test_gateway_forwards_clarify_request_and_runtime_event_mirror(tmp_path: Pat
         for method, params in events
         if method == "runtime.event" and params["type"] == "clarify.request"
     ).items()
+    assert {
+        "client_turn_id": "client_1",
+        "state": "waiting_clarification",
+        "kind": "waiting_clarification",
+        "text": "Waiting clarification",
+        "terminal": False,
+    } in [params for method, params in events if method == "turn.status"]
+    assert {
+        "client_turn_id": "client_1",
+        "state": "waiting_clarification",
+        "kind": "waiting_clarification",
+        "text": "Waiting clarification",
+    } in [params for method, params in events if method == "status.update"]
+    final_completes = [
+        params
+        for method, params in events
+        if method == "message.complete" and params.get("final") is True
+    ]
+    assert final_completes == []
 
 
 def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path) -> None:

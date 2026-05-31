@@ -359,6 +359,16 @@ class NodeTuiGateway:
                 "clarify.request",
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="waiting_clarification",
+            )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="waiting_clarification",
+                kind="waiting_clarification",
+                text=_status_text_for_state("waiting_clarification"),
+            )
             return
         if event.kind == "reasoning":
             payload: dict[str, object] = {"client_turn_id": client_turn_id, "text": event.text}
