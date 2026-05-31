@@ -58,6 +58,10 @@ the local log root and must never become provider transcript inputs.
   blocked approval responses. These diagnostics explain why a pending approval
   did or did not resume a tool; they must not alter provider transcript replay
   or request-shape inputs.
+- Interrupted turn diagnostics append local `turn_interrupted` trace rows and
+  warning-level workspace log entries after suspended runtime state is saved.
+  These diagnostics explain that resume state exists; they must not be used as
+  provider transcript content.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -81,6 +85,10 @@ the local log root and must never become provider transcript inputs.
   and info-level workspace log entry with bounded `result`, `choice`,
   `tool_name`, `call_id`, `decision_id`, `command_pattern`, and `reason` when a
   decision is available.
+- Runtime turn is finalized as interrupted -> append a `turn_interrupted`
+  runtime trace row and warning-level workspace log entry with bounded
+  `session_id`, `turn_id`, `stop_reason`, `suspend_reason`, `saved_state`, and
+  `message_count`.
 - Ordinary safe auto approval -> do not emit `approval_auto_allowed`, because no
   prior user allowance was consumed.
 - `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
@@ -122,6 +130,9 @@ the local log root and must never become provider transcript inputs.
 - Integration test for approval resolution diagnostics proving invalid choices,
   rejections, and duplicate/no-pending responses appear in runtime trace and
   workspace logs without changing pending-decision behavior.
+- Unit or integration test for interrupted turn diagnostics proving
+  `turn_interrupted` appears in runtime trace and workspace logs while
+  suspended turn state remains resumable.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

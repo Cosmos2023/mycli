@@ -432,9 +432,10 @@ def test_turn_executor_emits_heartbeat_without_model_visible_context(tmp_path: P
 def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
     tmp_path: Path,
 ) -> None:
+    home_dir = tmp_path / "home"
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
-        home_dir=tmp_path / "home",
+        home_dir=home_dir,
         model_adapter=KeyboardInterruptAdapter(),
     )
 
@@ -453,6 +454,20 @@ def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
         and item.metadata.get("recovery_kind") == "interrupted_turn_saved"
         for item in response.turn.items
     )
+    trace = runtime._trace_service.load(runtime._config.session_id)
+    interrupted_event = next(event for event in trace if event.kind == "turn_interrupted")
+    assert interrupted_event.turn_id == response.turn.turn_id
+    assert interrupted_event.payload == {
+        "session_id": runtime._config.session_id,
+        "turn_id": response.turn.turn_id,
+        "stop_reason": "interrupted",
+        "suspend_reason": "interrupted",
+        "saved_state": True,
+        "message_count": 1,
+    }
+    agent_log = runtime._workspace_log_service.agent_log_path().read_text(encoding="utf-8")
+    assert "turn_interrupted" in agent_log
+    assert response.turn.turn_id in agent_log
 
 
 def test_turn_executor_saves_and_resumes_interrupted_turn(

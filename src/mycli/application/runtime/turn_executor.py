@@ -1219,6 +1219,11 @@ class TurnExecutor:
                 suspend_reason=StopReason.INTERRUPTED,
             ),
         )
+        _record_turn_interrupted(
+            runtime=runtime,
+            turn_id=turn_id,
+            message_count=len(conversation.messages),
+        )
         return runtime._finalize_response(
             response=TurnResponse(
                 assistant_message=interrupt_warning,
@@ -1356,6 +1361,32 @@ def _approval_resolution_payload(
         }
     )
     return payload
+
+
+def _record_turn_interrupted(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    message_count: int,
+) -> None:
+    payload = {
+        "session_id": runtime._config.session_id,
+        "turn_id": turn_id,
+        "stop_reason": StopReason.INTERRUPTED.value,
+        "suspend_reason": StopReason.INTERRUPTED.value,
+        "saved_state": True,
+        "message_count": message_count,
+    }
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(kind="turn_interrupted", turn_id=turn_id, payload=payload),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.WARNING,
+        event="turn_interrupted",
+        message="Interrupted turn state was saved for resume.",
+        context=payload,
+    )
 
 
 @dataclass(slots=True, frozen=True)

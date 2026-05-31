@@ -129,6 +129,9 @@
   - `turn.status(state=interrupted)` currently reports that an interrupt was
     requested; it does not guarantee that the running worker stopped before a
     later terminal event.
+  - Runtime finalization of interrupted turns records local `turn_interrupted`
+    trace/log diagnostics after suspended state is saved. This is not a gateway
+    stream event.
 - `gateway.error` payload:
   - `code`: stable short error code, for example `internal_error`
   - `message`: bounded user-facing error text
