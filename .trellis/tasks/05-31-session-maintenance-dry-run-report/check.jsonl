@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify read-only SQLite diagnostics and domain payload boundaries"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify test coverage and diagnostic behavior"}
+{"file": ".trellis/tasks/05-31-session-maintenance-dry-run-report/prd.md", "reason": "Verify implementation against acceptance criteria"}

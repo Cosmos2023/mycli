@@ -638,3 +638,53 @@ def test_sqlite_session_store_lists_recent_sessions_for_workspace(tmp_path: Path
     assert [overview.session_id for overview in overviews] == ["newer", "older"]
     assert all(overview.workspace_root == workspace for overview in overviews)
     assert [overview.session_id for overview in limited_overviews] == ["newer"]
+
+
+def test_sqlite_session_store_reports_session_maintenance_dry_run(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+    other_workspace = tmp_path / "other-workspace"
+
+    store.replace_conversation(
+        session_id="empty",
+        workspace_root=workspace,
+        thread_id="empty",
+        messages=[],
+    )
+    store.replace_conversation(
+        session_id="with-message",
+        workspace_root=workspace,
+        thread_id="with-message",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    store.replace_conversation(
+        session_id="with-summary",
+        workspace_root=workspace,
+        thread_id="with-summary",
+        messages=[],
+    )
+    store.append_session_summary(
+        session_id="with-summary",
+        workspace_root=workspace,
+        thread_id="with-summary",
+        summary="summary",
+    )
+    store.replace_conversation(
+        session_id="other-empty",
+        workspace_root=other_workspace,
+        thread_id="other-empty",
+        messages=[],
+    )
+
+    report = store.session_maintenance_report(workspace_root=workspace)
+
+    assert report.dry_run is True
+    assert report.workspace_session_count == 3
+    assert report.empty_session_count == 1
+    assert report.db_size_bytes > 0
+    assert report.page_count > 0
+    assert report.freelist_count >= 0
+    assert report.page_size > 0

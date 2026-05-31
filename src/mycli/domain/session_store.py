@@ -30,6 +30,17 @@ class SessionSearchResult:
     snippet: str
 
 
+@dataclass(slots=True, frozen=True)
+class SessionMaintenanceReport:
+    workspace_session_count: int
+    empty_session_count: int
+    db_size_bytes: int
+    page_count: int
+    freelist_count: int
+    page_size: int
+    dry_run: bool = True
+
+
 class SessionStore(Protocol):
     def replace_conversation(
         self,
@@ -128,3 +139,9 @@ class SessionStore(Protocol):
         workspace_root: Path | None = None,
         limit: int = 20,
     ) -> tuple[SessionOverview, ...]: ...
+
+    def session_maintenance_report(
+        self,
+        *,
+        workspace_root: Path | None = None,
+    ) -> SessionMaintenanceReport: ...

@@ -111,6 +111,7 @@ def test_help_lists_sessions_command() -> None:
     output = handle_slash_command("/help")
     assert "/session" in output
     assert "/sessions" in output
+    assert "/session-maintenance" in output
     assert "/context" in output
     assert "/bashes" in output
     assert "/changes" in output
@@ -1155,6 +1156,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_sessions(self) -> tuple[str, ...]:
             return ("* demo active messages=3", "  backlog active messages=1")
 
+        def inspect_session_maintenance(self) -> tuple[str, ...]:
+            return ("dry_run=true", "workspace_sessions=2", "empty_sessions=1")
+
         def search_sessions(self, query: str) -> tuple[str, ...]:
             return (f"demo#1 assistant: {query}",)
 
@@ -1221,6 +1225,11 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/sessions")) == [
         "[session] * demo active messages=3",
         "[session]   backlog active messages=1",
+    ]
+    assert list(handler("/session-maintenance")) == [
+        "[session] dry_run=true",
+        "[session] workspace_sessions=2",
+        "[session] empty_sessions=1",
     ]
     assert list(handler("/search checkpoint")) == ["[search] demo#1 assistant: checkpoint"]
     assert list(handler("/undo")) == ["[undo] Restored notes.txt"]

@@ -16,6 +16,7 @@ _SLASH_COMMANDS: tuple[str, ...] = (
     "/view focus",
     "/resume <session>",
     "/sessions",
+    "/session-maintenance",
     "/search <query>",
     "/quit",
     "/tools",

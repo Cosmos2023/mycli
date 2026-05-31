@@ -279,6 +279,19 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
     assert "/status" in values
     assert "/stats" in values
 
+    maintenance_response = gateway.handle_request(
+        RpcRequest(id="req_2", method="completion.slash", params={"prefix": "/session-m"})
+    )
+
+    assert maintenance_response.result is not None
+    maintenance_items = maintenance_response.result["items"]
+    assert maintenance_items == [
+        {
+            "value": "/session-maintenance",
+            "description": "Show session storage maintenance dry-run",
+        }
+    ]
+
 
 def test_gateway_path_completion_stays_inside_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"

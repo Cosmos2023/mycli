@@ -36,7 +36,15 @@ from mycli.domain.runtime.gateway_contract import (
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
-COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
+COMMAND_OVERLAYS = {
+    "/help",
+    "/status",
+    "/usage",
+    "/context",
+    "/sessions",
+    "/session-maintenance",
+    "/release-notes",
+}
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
 SUPPORTED_RPC_METHODS = SUPPORTED_GATEWAY_RPC_METHODS
 SUPPORTED_EVENT_STREAMS = SUPPORTED_GATEWAY_EVENT_STREAMS
@@ -1004,6 +1012,7 @@ def _slash_description(command: str) -> str:
         "/context": "Show context-window diagnostics",
         "/resume <session>": "Resume a saved session",
         "/sessions": "List saved sessions",
+        "/session-maintenance": "Show session storage maintenance dry-run",
         "/quit": "Exit mycli",
     }
     return descriptions.get(command, "")

@@ -344,6 +344,9 @@ class TurnService:
             )
         return tuple(lines)
 
+    def inspect_session_maintenance(self) -> tuple[str, ...]:
+        return self._session_service.inspect_session_maintenance()
+
     def search_sessions(self, query: str) -> tuple[str, ...]:
         return self._session_service.search_sessions(query)
 

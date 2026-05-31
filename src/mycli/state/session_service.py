@@ -25,7 +25,13 @@ from mycli.domain.runtime import (
     TurnRollout,
     TurnStatus,
 )
-from mycli.domain.session_store import JsonArray, JsonObject, SessionOverview, SessionStore
+from mycli.domain.session_store import (
+    JsonArray,
+    JsonObject,
+    SessionMaintenanceReport,
+    SessionOverview,
+    SessionStore,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.schemas.responses_protocol import ResponsesContinuationState
@@ -573,6 +579,21 @@ class SessionService:
         return tuple(
             f"{match.session_id}#{match.message_index} {match.role}: {match.snippet}"
             for match in matches
+        )
+
+    def session_maintenance_report(self) -> SessionMaintenanceReport:
+        return self._store.session_maintenance_report(workspace_root=self._workspace_root)
+
+    def inspect_session_maintenance(self) -> tuple[str, ...]:
+        report = self.session_maintenance_report()
+        return (
+            f"dry_run={str(report.dry_run).lower()}",
+            f"workspace_sessions={report.workspace_session_count}",
+            f"empty_sessions={report.empty_session_count}",
+            f"db_size_bytes={report.db_size_bytes}",
+            f"page_count={report.page_count}",
+            f"freelist_count={report.freelist_count}",
+            f"page_size={report.page_size}",
         )
 
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:

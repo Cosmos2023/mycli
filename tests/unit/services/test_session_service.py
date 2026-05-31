@@ -186,6 +186,28 @@ def test_session_service_search_reports_empty_query(tmp_path: Path) -> None:
     assert service.search_sessions("  ") == ("usage: /search <query>",)
 
 
+def test_session_service_formats_session_maintenance_report(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    service = SessionService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service.save_conversation(Conversation(session_id="empty"))
+    service.save_conversation(
+        Conversation(
+            session_id="with-message",
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    lines = service.inspect_session_maintenance()
+
+    assert "dry_run=true" in lines
+    assert "workspace_sessions=2" in lines
+    assert "empty_sessions=1" in lines
+    assert any(line.startswith("db_size_bytes=") for line in lines)
+    assert any(line.startswith("page_count=") for line in lines)
+    assert any(line.startswith("freelist_count=") for line in lines)
+    assert any(line.startswith("page_size=") for line in lines)
+
+
 def test_session_service_round_trips_message_metadata(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     conversation = Conversation(session_id="demo")

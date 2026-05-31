@@ -148,3 +148,61 @@ messages.extend(store.search_messages(user_text))
 matches = store.search_messages(query, workspace_root=workspace_root, limit=10)
 return tuple(format_match(match) for match in matches)
 ```
+
+## Scenario: Read-only Session Maintenance Report
+
+### 1. Scope / Trigger
+
+- Trigger: adding session cleanup, prune, vacuum, or long-running storage maintenance diagnostics.
+- The first step for maintenance must be a read-only report; destructive cleanup requires a separate PRD and tests.
+
+### 2. Signatures
+
+- Store:
+  `SessionStore.session_maintenance_report(workspace_root: Path | None = None) -> SessionMaintenanceReport`
+- Domain payload:
+  `SessionMaintenanceReport(workspace_session_count, empty_session_count, db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
+- CLI slash command: `/session-maintenance`
+
+### 3. Contracts
+
+- The report is read-only: no deletion, no `VACUUM`, no repair, and no automatic pruning.
+- Session counts are scoped by `workspace_root` when provided.
+- Empty sessions are sessions with no `conversation_messages` and no `session_summaries`.
+- SQLite page counters come from `PRAGMA page_count`, `PRAGMA freelist_count`, and `PRAGMA page_size`.
+- Output lines are bounded `key=value` fields suitable for CLI/TUI display and smoke tests.
+
+### 4. Validation & Error Matrix
+
+- No sessions for workspace -> counts are zero; storage counters still report DB shape.
+- Sessions in other workspaces -> excluded from `workspace_session_count` and `empty_session_count`.
+- Session has messages -> not empty.
+- Session has only summaries -> not empty.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `/session-maintenance` reports `dry_run=true`, workspace counts, empty counts, and SQLite page counters.
+- Base: A fresh DB reports zero workspace sessions without mutating data beyond normal store initialization.
+- Bad: Running `VACUUM`, deleting rows, or repairing orphaned state from the maintenance report path.
+
+### 6. Tests Required
+
+- Store test for workspace-scoped total and empty-session counts.
+- Service/application test for formatted `key=value` lines.
+- CLI/TUI completion or command-routing tests for `/session-maintenance`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+store.prune_empty_sessions(workspace_root=workspace_root)
+store.vacuum()
+```
+
+#### Correct
+
+```python
+report = store.session_maintenance_report(workspace_root=workspace_root)
+return tuple(format_report_field(report))
+```
