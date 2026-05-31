@@ -27,6 +27,7 @@ from mycli.domain.runtime import (
     RuntimeItem,
     RuntimeRole,
     RuntimeStreamEvent,
+    RuntimeTraceEvent,
     RequestShape,
     ReasoningEffort,
     RehydrationBudget,
@@ -38,6 +39,7 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
+from mycli.domain.logging import LogLevel
 from mycli.domain.subagents import SubAgentRunSummary
 from mycli.domain.tooling.exposure import (
     ToolExposure,
@@ -88,6 +90,7 @@ from mycli.application.runtime.ledger import RuntimeEventLedger
 from mycli.application.runtime.model import (
     AssistantConversationRecorder,
     AssistantBlockConsumer,
+    ModelStreamDiagnostics,
     ModelTurnRequester,
     RuntimeModelState,
 )
@@ -225,6 +228,7 @@ class AgentRuntime:
         self._model_turn_requester = ModelTurnRequester(
             model_adapter=model_adapter,
             normalize_tool_call=self._normalize_tool_call,
+            stream_diagnostics_sink=self._record_model_stream_diagnostics,
         )
         llm_summarization = LLMSummarization(
             summarizer_client=_SummarizerClientAdapter(
@@ -1229,6 +1233,43 @@ class AgentRuntime:
             legacy_messages=legacy_messages,
             tools=tools,
             stream_sink=stream_sink,
+        )
+
+    def _record_model_stream_diagnostics(self, diagnostics: ModelStreamDiagnostics) -> None:
+        turn_id = getattr(self, "_current_turn_id", "turn_unknown")
+        payload = {
+            "success": diagnostics.success,
+            "elapsed_ms": diagnostics.elapsed_ms,
+            "ttfb_ms": diagnostics.ttfb_ms,
+            "provider_event_count": diagnostics.provider_event_count,
+            "text_event_count": diagnostics.text_event_count,
+            "tool_call_event_count": diagnostics.tool_call_event_count,
+            "completed_event_count": diagnostics.completed_event_count,
+            "text_bytes": diagnostics.text_bytes,
+            "failure_kind": diagnostics.failure_kind,
+            "failure_message": diagnostics.failure_message,
+        }
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="model_stream_diagnostics",
+                turn_id=turn_id,
+                payload=payload,
+            ),
+        )
+        self._workspace_log_service.log(
+            level=LogLevel.INFO if diagnostics.success else LogLevel.WARNING,
+            event="model_stream_diagnostics",
+            message=(
+                "Model stream completed"
+                if diagnostics.success
+                else "Model stream failed"
+            ),
+            context={
+                "session_id": self._config.session_id,
+                "turn_id": turn_id,
+                **payload,
+            },
         )
 
     def _consume_assistant_blocks(

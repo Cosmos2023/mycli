@@ -62,6 +62,12 @@ the local log root and must never become provider transcript inputs.
   warning-level workspace log entries after suspended runtime state is saved.
   These diagnostics explain that resume state exists; they must not be used as
   provider transcript content.
+- Model stream diagnostics append local `model_stream_diagnostics` trace rows
+  and workspace log entries after each streaming model request. Payloads include
+  bounded operational counters such as `ttfb_ms`, `elapsed_ms`,
+  `provider_event_count`, text/tool/completed event counts, `text_bytes`,
+  `success`, and optional failure kind/message. These diagnostics are local
+  observability only and must not alter provider-visible transcript content.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -95,6 +101,12 @@ the local log root and must never become provider transcript inputs.
   runtime trace row and warning-level workspace log entry with bounded
   `session_id`, `turn_id`, `stop_reason`, `suspend_reason`, `saved_state`, and
   `message_count`.
+- Streaming model request completes -> append one
+  `model_stream_diagnostics` runtime trace row and info-level workspace log
+  entry.
+- Streaming model request yields malformed/unsupported provider events ->
+  append one `model_stream_diagnostics` runtime trace row and warning-level
+  workspace log entry before re-raising the original model response error.
 - Ordinary safe auto approval -> do not emit `approval_auto_allowed`, because no
   prior user allowance was consumed.
 - `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
@@ -139,6 +151,11 @@ the local log root and must never become provider transcript inputs.
 - Unit or integration test for interrupted turn diagnostics proving
   `turn_interrupted` appears in runtime trace and workspace logs while
   suspended turn state remains resumable.
+- Unit tests for model stream diagnostics proving successful streams,
+  malformed provider events, sink failure isolation, and non-streaming adapter
+  behavior.
+- Integration/runtime test proving `model_stream_diagnostics` reaches runtime
+  trace and workspace logs for a streaming turn.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

@@ -1341,6 +1341,34 @@ def test_agent_runtime_forwards_stream_events_to_sink(tmp_path: Path) -> None:
     )
 
 
+def test_agent_runtime_records_model_stream_diagnostics_to_trace_and_log(tmp_path: Path) -> None:
+    log_service = WorkspaceLogService(workspace_root=tmp_path)
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=StreamReasoningTextDoneAdapter(),
+        workspace_log_service=log_service,
+    )
+
+    response = runtime.handle_user_turn("inspect the repo")
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    diagnostics = [event for event in trace if event.kind == "model_stream_diagnostics"]
+    agent_log = (tmp_path / "log" / "agent.log").read_text(encoding="utf-8")
+
+    assert response.turn is not None
+    assert len(diagnostics) == 1
+    assert diagnostics[0].turn_id == response.turn.turn_id
+    assert diagnostics[0].payload["success"] is True
+    assert diagnostics[0].payload["provider_event_count"] == 4
+    assert diagnostics[0].payload["text_event_count"] == 2
+    assert diagnostics[0].payload["completed_event_count"] == 1
+    assert diagnostics[0].payload["text_bytes"] == len(
+        "Repository summary complete.".encode("utf-8")
+    )
+    assert "model_stream_diagnostics" in agent_log
+    assert "Model stream completed" in agent_log
+
+
 def test_agent_runtime_forwards_execution_tool_lifecycle_events_to_sink(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
     runtime = AgentRuntime.for_tests(
