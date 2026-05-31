@@ -410,6 +410,51 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_approval_reject(
     assert assistant_items == []
 
 
+def test_run_node_tui_gateway_with_real_node_scripted_client_wrong_approval_id(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-approval-wrong-id-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    "needs approval",
+                    {
+                        "type": "approval.respond_raw",
+                        "decision_id": "wrong_decision",
+                        "choice": "reject",
+                        "expect_error": True,
+                    },
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EWaitingStateService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["needs approval"]
+    assert service.resolved_choices == []
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["pendingApproval"]["decision_id"] == "call_approval_1"
+    assert state["liveStatus"]["state"] == "waiting_approval"
+    errors = [item for item in state["transcript"] if item["type"] == "error"]
+    assert len(errors) == 1
+    assert errors[0]["text"] == "No pending decision matches the provided decision_id."
+    assert errors[0]["metadata"] == {
+        "code": "decision_not_pending",
+        "message": "No pending decision matches the provided decision_id.",
+        "method": "approval.respond",
+        "source": "request",
+    }
+
+
 class E2EToolLifecycleService:
     def __init__(self, workspace_root: Path) -> None:
         self._config = SimpleNamespace(
