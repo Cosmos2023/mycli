@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.gateway import NodeTuiGateway
 from mycli.cli.node_tui.protocol import RpcRequest
 from mycli.domain.runtime import (
@@ -47,7 +48,7 @@ class FakeSessionService:
         )
 
 
-class FakeService:
+class FakeService(TurnService):
     def __init__(self, workspace_root: Path) -> None:
         self._config = SimpleNamespace(
             session_id="demo",
@@ -58,7 +59,8 @@ class FakeService:
             max_prompt_tokens=100000,
             tui_startup_mark="default",
         )
-        self._session_service = FakeSessionService()
+        self.fake_session_service = FakeSessionService()
+        self._session_service = self.fake_session_service
 
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=demo", "turns=1")
@@ -193,7 +195,7 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
 
 def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
-    service._session_service.history_items = (
+    service.fake_session_service.history_items = (
         HistoryItem(
             id="hist_user",
             thread_id="demo",
@@ -382,7 +384,7 @@ class FakeTurnService(FakeService):
 
     def resolve_pending_decision(self, choice: str) -> TurnResponse:
         self.resolved_choices.append(choice)
-        self._session_service.pending_decision = None
+        self.fake_session_service.pending_decision = None
         return TurnResponse(assistant_message=f"resolved {choice}")
 
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
@@ -526,7 +528,13 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     assert "thinking.delta" in methods
     assert "message.delta" in methods
     assert "message.complete" in methods
-    assert methods[-4:] == ["turn.completed", "turn.status", "status.update", "status.changed"]
+    assert methods[-5:] == [
+        "turn.completed",
+        "turn.status",
+        "message.complete",
+        "status.update",
+        "status.changed",
+    ]
     assert direct_events[1][1] == {
         "client_turn_id": "client_1",
         "state": "running",
@@ -544,6 +552,12 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
         "kind": "completed",
         "text": "Completed",
         "terminal": True,
+    }
+    assert direct_events[-3][1] == {
+        "client_turn_id": "client_1",
+        "text": "hello world",
+        "final": True,
+        "source": "turn_response",
     }
     assert direct_events[-2][1] == {
         "client_turn_id": "client_1",
@@ -576,6 +590,9 @@ def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Pa
     assert "message.delta" in methods
     assert "message.complete" in methods
     assert methods.count("turn.event") == 4
+    message_complete_payloads = [
+        params for method, params in events if method == "message.complete"
+    ]
     assert next(params for method, params in events if method == "reasoning.delta") == {
         "client_turn_id": "client_1",
         "text": "thinking",
@@ -588,9 +605,56 @@ def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Pa
         "client_turn_id": "client_1",
         "text": "hello",
     }
-    assert next(params for method, params in events if method == "message.complete") == {
+    assert message_complete_payloads == [
+        {
+            "client_turn_id": "client_1",
+            "response_status": "completed",
+        },
+        {
+            "client_turn_id": "client_1",
+            "text": "hello world",
+            "final": True,
+            "source": "turn_response",
+        },
+    ]
+
+
+def test_gateway_bounds_final_message_complete_text(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+    long_message = "x" * 16_010
+
+    def long_turn(
+        _message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
+        return TurnResponse(assistant_message=long_message)
+
+    service.handle_user_turn = long_turn  # type: ignore[assignment, method-assign]
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    final_complete = next(params for method, params in events if method == "message.complete")
+    assert final_complete == {
         "client_turn_id": "client_1",
-        "response_status": "completed",
+        "text": "x" * 16_000,
+        "final": True,
+        "source": "turn_response",
+        "truncated": True,
+        "original_length": 16_010,
     }
 
 
@@ -752,7 +816,7 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
             preview="git push",
             options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
         )
-        service._session_service.pending_decision = decision
+        service.fake_session_service.pending_decision = decision
         return TurnResponse(assistant_message="", pending_decision=decision)
 
     service.handle_user_turn = pending_turn  # type: ignore[method-assign, assignment]
@@ -786,6 +850,12 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
     }
     completed = next(params for method, params in events if method == "turn.completed")
     assert completed["turn_state"] == "waiting_approval"
+    final_completes = [
+        params
+        for method, params in events
+        if method == "message.complete" and params.get("final") is True
+    ]
+    assert final_completes == []
     assert {
         "client_turn_id": "client_1",
         "state": "waiting_approval",
@@ -875,7 +945,7 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
-    service._session_service.pending_decision = PendingDecision(
+    service.fake_session_service.pending_decision = PendingDecision(
         tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
         kind=DecisionKind.NEEDS_CHOICE,
         reason="git push requires confirmation.",
@@ -908,16 +978,24 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
         "approval.respond",
         "turn.completed",
         "turn.status",
+        "message.complete",
         "status.update",
         "status.changed",
     ]
+    final_complete = next(params for method, params in events if method == "message.complete")
+    assert final_complete == {
+        "client_turn_id": "approval_req_1",
+        "text": "resolved 1",
+        "final": True,
+        "source": "turn_response",
+    }
 
 
 def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compatible(
     tmp_path: Path,
 ) -> None:
     service = FakeTurnService(tmp_path)
-    service._session_service.pending_decision = PendingDecision(
+    service.fake_session_service.pending_decision = PendingDecision(
         tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
         kind=DecisionKind.NEEDS_CHOICE,
         reason="git push requires confirmation.",
@@ -972,6 +1050,7 @@ def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_pat
         "clarify.respond",
         "turn.completed",
         "turn.status",
+        "message.complete",
         "status.update",
         "status.changed",
     ]

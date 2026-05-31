@@ -237,6 +237,16 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     }
     if (action.method === "message.complete") {
       const clientTurnId = clientTurnIdFromParams(action.params);
+      if (action.params.final === true) {
+        return {
+          ...state,
+          liveReasoning:
+            clientTurnId && state.liveReasoning?.client_turn_id === clientTurnId
+              ? null
+              : state.liveReasoning,
+          transcript: reconcileFinalAnswer(state.transcript, String(action.params.text ?? "")),
+        };
+      }
       return {
         ...state,
         liveReasoning:
@@ -250,12 +260,22 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       };
     }
     if (action.method === "reasoning.delta" || action.method === "thinking.delta") {
+      const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
+      const kind = action.method === "thinking.delta" ? "thinking" : "reasoning";
+      const liveStatus: LiveStatus = {
+        state: "running",
+        kind,
+        text: reasoningStatusText(action.params.text),
+      };
+      if (clientTurnId) {
+        liveStatus.client_turn_id = clientTurnId;
+      }
       return {
         ...state,
-        liveReasoning: liveReasoningFromParams(
-          action.method === "thinking.delta" ? "thinking" : "reasoning",
-          action.params,
-        ),
+        turnRunning: true,
+        currentTurnId: clientTurnId,
+        liveStatus,
+        liveReasoning: liveReasoningFromParams(kind, action.params),
       };
     }
     if (action.method === "turn.event" && action.params.phase === "assistant_delta") {
@@ -302,10 +322,6 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
           action.params.turn_state === "waiting_clarification"
             ? state.pendingClarification
             : null,
-        transcript: reconcileFinalAnswer(
-          state.transcript,
-          String(action.params.assistant_message ?? ""),
-        ),
       };
     }
     if (action.method === "approval.request" || action.method === "approval.pending") {
@@ -561,6 +577,15 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
 function clarifyTextFromParams(params: Record<string, unknown>): string {
   const question = String(params.question ?? "Clarification requested").trim();
   return question || "Clarification requested";
+}
+
+function reasoningStatusText(value: unknown): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "Thinking";
+  }
+  const preview = text.length > 80 ? `${text.slice(0, 77)}...` : text;
+  return `Thinking: ${preview}`;
 }
 
 function isTurnLiveState(value: unknown): value is TurnLiveState {

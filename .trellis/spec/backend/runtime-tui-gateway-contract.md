@@ -164,9 +164,16 @@
     only has one reasoning stream.
   - `message.complete` is emitted for model stream completion metadata and
     includes `client_turn_id` plus bounded metadata from the runtime stream
-    event.
-  - For this slice, `message.complete` is not the authoritative final assistant
-    message. Final assistant text remains in `turn.completed.assistant_message`.
+    event. This stream-time form does not include `final: true`.
+  - When a turn reaches a completed terminal response, a final
+    `message.complete` is emitted after `turn.completed` with
+    `client_turn_id`, bounded `text`, `final: true`, and
+    `source: "turn_response"`.
+  - Waiting-approval turns must not emit a final-text `message.complete`
+    because the assistant answer is not complete yet.
+  - `turn.completed.assistant_message` remains the compatibility authoritative
+    final assistant text until TUI clients migrate finalization to
+    `message.complete`.
   - Existing generic `turn.event` notifications must continue to be emitted
     alongside these typed message/reasoning notifications until Node TUI
     clients have migrated.
@@ -243,6 +250,22 @@
 - The scripted Node client is allowed to write a final reducer state snapshot
   only when `MYCLI_NODE_TUI_STATE_DUMP` is set. This is a test/smoke hook, not
   a production persistence mechanism.
+  - Assistant stream text is accumulated from typed `message.delta`
+    notifications. Compatibility `turn.event` `assistant_delta` notifications
+    must not append assistant text in the Node TUI, because the gateway emits
+    both event families during migration.
+  - Reasoning/thinking display status is driven by typed `reasoning.delta` and
+    `thinking.delta` notifications. These update `liveStatus` with a bounded
+    `Thinking: ...` preview while the turn is running.
+  - Reasoning/thinking deltas must not append transcript rows. Compatibility
+    `turn.event` `reasoning` notifications must not drive transcript text or
+    duplicate the typed live-status path.
+  - Assistant finalization is driven by final `message.complete` events where
+    `final === true`; stream-metadata `message.complete` events without
+    `final: true` must not finalize transcript text.
+  - `turn.completed` remains responsible for terminal turn status and pending
+    approval cleanup, but the Node TUI must not append or overwrite assistant
+    transcript text from `turn.completed.assistant_message`.
 
 ### 4. Validation & Error Matrix
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
@@ -296,6 +319,12 @@
   the response `client_turn_id` before continuing.
 - Model stream completion metadata -> emit `message.complete` and the
   compatibility `turn.event` with phase `model_completed`.
+- Completed turn response -> emit `turn.completed`, then final-text
+  `message.complete` with `final: true`, then `status.update` with
+  `completed`.
+- Waiting-approval turn response -> emit `approval.request`, then
+  `turn.completed`, then `status.update` with `waiting_approval`; do not emit
+  final-text `message.complete`.
 - Turn completes without a pending decision -> emit `turn.completed` with
   `turn_state=completed`, then `turn.status` with `state=completed` and
   `terminal=true`, then `status.update` with `completed`.
@@ -340,7 +369,7 @@
   clarification waiting turns whose `turn.completed.assistant_message` is
   empty.
 - Good: Running activity prefers `liveStatus.text`, so the status line can show
-  `Waiting approval`, `Resolving approval`, or `Failed`.
+  reasoning previews, `Waiting approval`, `Resolving approval`, or `Failed`.
 - Good: A request-level gateway failure is visible as `gateway.error` without
   inventing a failed turn.
 - Good: A rejected `approval.respond` request is visible as one error row even
@@ -360,10 +389,18 @@
   start. That event only means the model requested a tool.
 - Bad: Rendering both typed `message.delta` and compatibility `turn.event`
   assistant deltas in the same TUI path, causing duplicate text.
+- Bad: Re-enabling compatibility `turn.event` assistant-delta rendering after
+  typed `message.delta` consumption has landed.
+- Bad: Rendering typed `reasoning.delta` or `thinking.delta` as assistant
+  transcript content. Reasoning is a running-status signal until the TUI grows
+  a dedicated reasoning view.
 - Bad: Treating `message.complete` as final assistant content before the
-  runtime emits `turn.completed`.
+  runtime emits the final form with `final: true`.
 - Bad: Rendering an empty `assistant_final` row for a waiting approval or
   waiting clarification turn.
+- Bad: Finalizing from both final `message.complete` and
+  `turn.completed.assistant_message`, causing duplicate or stale assistant
+  rows.
 - Bad: Sending full file contents, raw tool JSON, or provider transcript
   messages through lifecycle notification payloads.
 - Bad: Appending a new visible row on both `tool.start` and `tool.complete` for
@@ -475,12 +512,26 @@
   `turn.event`.
 - Gateway unit test proving `RuntimeStreamEvent(kind="completed")` emits
   `message.complete` and still emits compatibility `turn.event`.
+- Gateway unit test proving completed turn responses emit a final-text
+  `message.complete` with bounded `text`, `final: true`, and
+  `source: "turn_response"`.
+- Gateway unit test proving waiting-approval responses do not emit final-text
+  `message.complete`.
 - Gateway tests for `status.update` on running, waiting approval, completed,
   failed, and interrupted paths when those paths are changed.
 - Gateway tests for `turn.status` on completed, waiting approval, failed,
   interrupted, and approval-resolution paths when those paths are changed.
 - Reducer unit test for `approval.request`, `approval.respond`,
   `status.update`, and terminal clearing behavior.
+- Reducer unit test proving final `message.complete` reconciles the assistant
+  transcript, stream-metadata `message.complete` is ignored, and
+  `turn.completed` alone does not append blank final assistant rows.
+- Reducer unit test proving typed `message.delta` appends assistant stream text
+  and compatibility `turn.event` assistant deltas are ignored.
+- Reducer unit test proving typed `reasoning.delta` and `thinking.delta`
+  update live status without appending transcript text.
+- Reducer unit test proving compatibility `turn.event` reasoning messages do
+  not append transcript text.
 - Rendering test proving live status text is displayed instead of a hardcoded
   running label when present.
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node

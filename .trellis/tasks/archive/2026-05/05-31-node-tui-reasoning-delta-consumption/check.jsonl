@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Validate the reducer behavior still matches the runtime-to-TUI contract."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Re-check cross-layer assumptions before closing the slice."}
+{"file": ".trellis/tasks/05-31-node-tui-reasoning-delta-consumption/prd.md", "reason": "Task acceptance criteria for verification."}
+{"file": ".trellis/tasks/05-31-node-tui-reasoning-delta-consumption/research/node-tui-reasoning-delta-notes.md", "reason": "Task-specific risks and non-goals for verification."}

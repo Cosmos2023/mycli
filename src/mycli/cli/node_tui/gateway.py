@@ -33,6 +33,7 @@ from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
+MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",
@@ -303,6 +304,8 @@ class NodeTuiGateway:
             )
             turn_state = _turn_state_for_response(response)
             self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            if turn_state == "completed":
+                self._emit_final_message_complete(client_turn_id, response)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -445,6 +448,22 @@ class NodeTuiGateway:
             payload["method"] = method
         self._emit_event("gateway.error", payload)
 
+    def _emit_final_message_complete(
+        self,
+        client_turn_id: str,
+        response: TurnResponse,
+    ) -> None:
+        payload: dict[str, object] = {
+            "client_turn_id": client_turn_id,
+            "text": _bounded_message_complete_text(response.assistant_message),
+            "final": True,
+            "source": "turn_response",
+        }
+        if len(response.assistant_message) > MESSAGE_COMPLETE_TEXT_LIMIT:
+            payload["truncated"] = True
+            payload["original_length"] = len(response.assistant_message)
+        self._emit_event("message.complete", payload)
+
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
         if not command.startswith("/"):
@@ -574,6 +593,8 @@ class NodeTuiGateway:
             )
             turn_state = _turn_state_for_response(response)
             self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            if turn_state == "completed":
+                self._emit_final_message_complete(client_turn_id, response)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -663,6 +684,8 @@ class NodeTuiGateway:
             )
             turn_state = _turn_state_for_response(turn_response)
             self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            if turn_state == "completed":
+                self._emit_final_message_complete(client_turn_id, turn_response)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -851,6 +874,12 @@ def _choice_for_resolved_value(value: str) -> str:
         if mapped == value:
             return choice
     return value
+
+
+def _bounded_message_complete_text(value: str) -> str:
+    if len(value) <= MESSAGE_COMPLETE_TEXT_LIMIT:
+        return value
+    return value[:MESSAGE_COMPLETE_TEXT_LIMIT]
 
 
 def _project_history_item(item: HistoryItem) -> dict[str, object]:

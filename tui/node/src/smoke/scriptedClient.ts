@@ -78,10 +78,17 @@ export async function runScriptedClient(
       }
       const clientTurnId = `script_${Date.now()}`;
       await client.send("turn.submit", { message: item, client_turn_id: clientTurnId });
-      await client.waitForEvent(
+      const completed = await client.waitForEvent(
         "turn.completed",
         (event) => event.params?.client_turn_id === clientTurnId,
       );
+      if (completed.params.turn_state === "waiting_approval") {
+        await waitForPending(() => state.pendingApproval, "approval.request");
+      } else if (completed.params.turn_state === "waiting_clarification") {
+        await waitForPending(() => state.pendingClarification, "clarify.request");
+      } else {
+        await waitForTerminalStatus(client, clientTurnId);
+      }
     }
     await client.send("shutdown", {});
     await dumpStateIfRequested(state);
@@ -121,6 +128,7 @@ async function runScriptedAction(
       "turn.completed",
       (event) => event.params?.client_turn_id === clientTurnId,
     );
+    await waitForTerminalStatus(client, clientTurnId);
     return;
   }
   const requestId = pendingId(state.pendingClarification, "request_id", "clarify.respond");
@@ -133,6 +141,32 @@ async function runScriptedAction(
     "turn.completed",
     (event) => event.params?.client_turn_id === clientTurnId,
   );
+  await waitForTerminalStatus(client, clientTurnId);
+}
+
+async function waitForTerminalStatus(client: GatewayClient, clientTurnId: string): Promise<void> {
+  await client.waitForEvent(
+    "status.update",
+    (event) =>
+      event.params?.client_turn_id === clientTurnId &&
+      (event.params?.state === "completed" ||
+        event.params?.state === "failed" ||
+        event.params?.state === "interrupted"),
+  );
+}
+
+async function waitForPending(
+  getPending: () => Record<string, unknown> | null,
+  eventName: string,
+): Promise<void> {
+  if (getPending()) {
+    return;
+  }
+  await Promise.resolve();
+  if (getPending()) {
+    return;
+  }
+  throw new Error(`${eventName} did not update scripted client state.`);
 }
 
 function pendingId(

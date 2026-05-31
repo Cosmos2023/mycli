@@ -32,7 +32,7 @@ test("bootstrap adds welcome notice and status", () => {
   assert.match(state.transcript[0]?.text ?? "", /mycli/);
 });
 
-test("turn events stream into one assistant item and finalize authoritatively", () => {
+test("turn events stream into one assistant item and finalize from message complete", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "hello" });
   state = reduceShellState(state, {
@@ -42,21 +42,17 @@ test("turn events stream into one assistant item and finalize authoritatively", 
   });
   state = reduceShellState(state, {
     type: "gateway.event",
-    method: "turn.event",
+    method: "message.delta",
     params: {
       client_turn_id: "c1",
-      phase: "assistant_delta",
-      kind: "text_delta",
       text: "hel",
     },
   });
   state = reduceShellState(state, {
     type: "gateway.event",
-    method: "turn.event",
+    method: "message.delta",
     params: {
       client_turn_id: "c1",
-      phase: "assistant_delta",
-      kind: "text_delta",
       text: "lo",
     },
   });
@@ -65,11 +61,22 @@ test("turn events stream into one assistant item and finalize authoritatively", 
     method: "turn.completed",
     params: {
       client_turn_id: "c1",
-      assistant_message: "hello final",
+      assistant_message: "legacy final should not win",
       activity_events: [],
       progress_updates: [],
       plan_steps: [],
       pending_decision: false,
+      turn_state: "completed",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.complete",
+    params: {
+      client_turn_id: "c1",
+      text: "hello final",
+      final: true,
+      source: "turn_response",
     },
   });
 
@@ -177,6 +184,8 @@ test("reasoning and thinking deltas update live reasoning without changing answe
   assert.equal(state.transcript.at(-1)?.text, "answer");
   assert.equal(state.liveReasoning?.text, "reading tests");
   assert.equal(state.liveReasoning?.kind, "thinking");
+  assert.equal(state.liveStatus?.kind, "thinking");
+  assert.equal(state.liveStatus?.text, "Thinking: reading tests");
 });
 
 test("message complete annotates active stream metadata without finalizing the answer", () => {
@@ -221,8 +230,8 @@ test("message complete annotates active stream metadata without finalizing the a
 
   state = reduceShellState(state, {
     type: "gateway.event",
-    method: "turn.completed",
-    params: { client_turn_id: "c1", assistant_message: "final answer" },
+    method: "message.complete",
+    params: { client_turn_id: "c1", text: "final answer", final: true },
   });
 
   assert.equal(state.turnRunning, false);
@@ -255,6 +264,37 @@ test("runtime event envelope can carry message complete into reducer state", () 
     client_turn_id: "c1",
     response_status: "completed",
   });
+});
+
+test("turn completed without final message complete does not append blank assistant row", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "push" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.request",
+    params: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "approve_once", label: "Allow once" }],
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.completed",
+    params: {
+      client_turn_id: "c1",
+      assistant_message: "",
+      pending_decision: true,
+      turn_state: "waiting_approval",
+    },
+  });
+
+  assert.equal(state.pendingApproval?.decision_id, "decision_current");
+  assert.equal(state.transcript.at(-1)?.type, "approval");
+  assert.equal(
+    state.transcript.some((item) => item.type === "assistant_final" && item.text === ""),
+    false,
+  );
 });
 
 test("command view mode updates local UI state", () => {
