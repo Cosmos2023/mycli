@@ -228,9 +228,24 @@ export const KNOWN_GATEWAY_EVENT_METHODS = [
 
 type ListedKnownGatewayEventMethod = (typeof KNOWN_GATEWAY_EVENT_METHODS)[number];
 
-export const GATEWAY_EVENT_PAYLOAD_CONTRACTS = {
-  "approval.request": { required: ["decision_id", "preview", "options"] },
-  "approval.respond": { required: ["decision_id", "choice"] },
+type GatewayEventPayloadContract = {
+  required: readonly string[];
+  properties: readonly string[];
+  enums?: Readonly<Record<string, readonly string[]>>;
+};
+
+export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
+  ListedKnownGatewayEventMethod,
+  GatewayEventPayloadContract
+> = {
+  "approval.request": {
+    required: ["decision_id", "preview", "options"],
+    properties: ["client_turn_id", "decision_id", "options", "preview", "reason", "tool_name"],
+  },
+  "approval.respond": {
+    required: ["decision_id", "choice"],
+    properties: ["choice", "client_turn_id", "decision_id"],
+  },
   "clarify.request": {
     required: [
       "request_id",
@@ -241,17 +256,69 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS = {
       "options",
       "multi_select",
     ],
+    properties: [
+      "call_id",
+      "client_turn_id",
+      "header",
+      "multi_select",
+      "options",
+      "question",
+      "request_id",
+      "tool_id",
+      "tool_name",
+    ],
   },
-  "clarify.respond": { required: ["request_id", "response"] },
-  "gateway.error": { required: ["code", "message"] },
-  "message.complete": { required: [] },
-  "message.delta": { required: ["text"] },
-  "reasoning.delta": { required: ["text"] },
-  "runtime.event": { required: ["version", "sequence", "type", "payload", "timestamp"] },
-  "session.changed": { required: ["session_id"] },
-  "status.changed": { required: [] },
-  "status.update": { required: ["state", "kind", "text"] },
-  "thinking.delta": { required: ["text"] },
+  "clarify.respond": {
+    required: ["request_id", "response"],
+    properties: ["client_turn_id", "request_id", "response"],
+  },
+  "gateway.error": {
+    required: ["code", "message"],
+    properties: ["code", "detail", "message", "method"],
+  },
+  "message.complete": {
+    required: [],
+    properties: ["client_turn_id", "final", "source", "text"],
+  },
+  "message.delta": {
+    required: ["text"],
+    properties: ["client_turn_id", "text"],
+  },
+  "reasoning.delta": {
+    required: ["text"],
+    properties: ["client_turn_id", "text"],
+  },
+  "runtime.event": {
+    required: ["version", "sequence", "type", "payload", "timestamp"],
+    properties: ["payload", "sequence", "timestamp", "type", "version"],
+  },
+  "session.changed": {
+    required: ["session_id"],
+    properties: ["session_id"],
+  },
+  "status.changed": {
+    required: [],
+    properties: [],
+  },
+  "status.update": {
+    required: ["state", "kind", "text"],
+    properties: ["client_turn_id", "kind", "message", "severity", "state", "text"],
+    enums: {
+      state: [
+        "running",
+        "waiting_approval",
+        "waiting_clarification",
+        "completed",
+        "failed",
+        "interrupted",
+        "rejected",
+      ],
+    },
+  },
+  "thinking.delta": {
+    required: ["text"],
+    properties: ["client_turn_id", "text"],
+  },
   "tool.complete": {
     required: [
       "tool_id",
@@ -262,6 +329,17 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS = {
       "summary_chars",
       "summary_truncated",
       "success",
+    ],
+    properties: [
+      "call_id",
+      "client_turn_id",
+      "duration_s",
+      "name",
+      "success",
+      "summary",
+      "summary_chars",
+      "summary_truncated",
+      "tool_id",
     ],
   },
   "tool.failed": {
@@ -275,16 +353,84 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS = {
       "summary_truncated",
       "success",
     ],
+    properties: [
+      "call_id",
+      "client_turn_id",
+      "duration_s",
+      "error",
+      "error_chars",
+      "error_truncated",
+      "name",
+      "success",
+      "summary",
+      "summary_chars",
+      "summary_truncated",
+      "tool_id",
+    ],
   },
-  "tool.progress": { required: ["tool_id", "call_id", "name", "stage", "message"] },
-  "tool.start": { required: ["tool_id", "call_id", "name", "context"] },
-  "turn.completed": { required: [] },
-  "turn.event": { required: ["phase", "kind"] },
-  "turn.failed": { required: [] },
-  "turn.interrupted": { required: [] },
-  "turn.started": { required: ["client_turn_id"] },
-  "turn.status": { required: ["state", "kind", "text", "terminal"] },
-} as const satisfies Record<ListedKnownGatewayEventMethod, { required: readonly string[] }>;
+  "tool.progress": {
+    required: ["tool_id", "call_id", "name", "stage", "message"],
+    properties: ["args_preview", "call_id", "client_turn_id", "message", "name", "stage", "tool_id"],
+  },
+  "tool.start": {
+    required: ["tool_id", "call_id", "name", "context"],
+    properties: ["args_preview", "call_id", "client_turn_id", "context", "name", "tool_id"],
+  },
+  "turn.completed": {
+    required: [],
+    properties: [
+      "activity_events",
+      "assistant_message",
+      "client_turn_id",
+      "pending_decision",
+      "plan_steps",
+      "progress_updates",
+      "turn_state",
+      "usage",
+    ],
+    enums: {
+      turn_state: [
+        "running",
+        "waiting_approval",
+        "waiting_clarification",
+        "completed",
+        "failed",
+        "interrupted",
+        "rejected",
+      ],
+    },
+  },
+  "turn.event": {
+    required: ["phase", "kind"],
+    properties: ["client_turn_id", "kind", "metadata", "phase", "text", "tool_name"],
+  },
+  "turn.failed": {
+    required: [],
+    properties: ["client_turn_id", "message"],
+  },
+  "turn.interrupted": {
+    required: [],
+    properties: ["client_turn_id", "requested"],
+  },
+  "turn.started": {
+    required: ["client_turn_id"],
+    properties: ["client_turn_id"],
+  },
+  "turn.status": {
+    required: ["state", "kind", "text", "terminal"],
+    properties: ["client_turn_id", "kind", "message", "state", "terminal", "text"],
+    enums: {
+      state: [
+        "waiting_approval",
+        "waiting_clarification",
+        "completed",
+        "failed",
+        "interrupted",
+        "rejected",
+      ],
+    },
+  },
+};
 
 export type KnownGatewayEvent =
   | Notification<"runtime.event", RuntimeEventEnvelopePayload>

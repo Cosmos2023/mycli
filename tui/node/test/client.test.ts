@@ -210,22 +210,34 @@ test("known TypeScript event methods match Python advertised gateway streams", a
   assert.deepEqual(KNOWN_GATEWAY_EVENT_METHODS.slice().sort(), JSON.parse(stdout));
 });
 
-test("TypeScript payload contracts match Python manifest required fields", async () => {
+test("TypeScript payload contracts match Python manifest schemas", async () => {
   const pythonManifest = await pythonGatewayManifest();
-  const pythonRequiredFields = Object.fromEntries(
+  const pythonContracts = Object.fromEntries(
     (pythonManifest.event_streams as Array<Record<string, unknown>>).map((entry) => {
       const schema = entry.payload_schema as Record<string, unknown>;
-      return [String(entry.name), schema.required ?? []];
+      const properties = schema.properties as Record<string, Record<string, unknown>>;
+      return [
+        String(entry.name),
+        {
+          required: schema.required ?? [],
+          properties: Object.keys(properties ?? {}).sort(),
+          enums: enumProperties(properties ?? {}),
+        },
+      ];
     }),
   );
-  const tsRequiredFields = Object.fromEntries(
+  const tsContracts = Object.fromEntries(
     Object.entries(GATEWAY_EVENT_PAYLOAD_CONTRACTS).map(([name, contract]) => [
       name,
-      contract.required,
+      {
+        required: contract.required,
+        properties: contract.properties,
+        enums: contract.enums ?? {},
+      },
     ]),
   );
 
-  assert.deepEqual(tsRequiredFields, pythonRequiredFields);
+  assert.deepEqual(tsContracts, pythonContracts);
 });
 
 async function pythonGatewayManifest(): Promise<Record<string, unknown>> {
@@ -257,4 +269,14 @@ async function pythonGatewayManifest(): Promise<Record<string, unknown>> {
   const exitCode = await new Promise<number | null>((resolve) => python.on("close", resolve));
   assert.equal(exitCode, 0, stderr);
   return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+function enumProperties(
+  properties: Record<string, Record<string, unknown>>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(properties)
+      .filter(([, schema]) => Array.isArray(schema.enum))
+      .map(([name, schema]) => [name, schema.enum]),
+  );
 }

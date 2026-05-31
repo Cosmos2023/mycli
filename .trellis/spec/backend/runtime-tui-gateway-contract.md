@@ -224,9 +224,10 @@
     runtime validator. It must cover every supported gateway event stream so
     external clients can inspect required fields without scraping prose docs.
   - Node protocol code must keep a machine-readable
-    `GATEWAY_EVENT_PAYLOAD_CONTRACTS` map whose required fields match the
-    Python manifest `payload_schema.required` arrays for every known event
-    method. Node tests should compare that map against the live Python
+    `GATEWAY_EVENT_PAYLOAD_CONTRACTS` map whose required fields, known
+    property names, and enum values match the Python manifest
+    `payload_schema` object for every known event method. Node tests should
+    compare that map against the live Python
     `ExtensionManifestService().manifest()` output so Python/TypeScript drift is
     caught before runtime.
   - It must list machine-readable integration methods such as `trace.export`.
@@ -514,8 +515,9 @@
   the same `tool_id`; that creates duplicated tool activity.
 - Bad: Adding new untyped event fields in Python without updating TypeScript
   payload types and reducer tests.
-- Bad: Adding or changing Python `payload_schema.required` fields without
-  updating the TypeScript protocol contract map and cross-language Node test.
+- Bad: Adding or changing Python `payload_schema.required`, `properties`, or
+  enum values without updating the TypeScript protocol contract map and
+  cross-language Node test.
 - Bad: Feeding both direct method-name notifications and their `runtime.event`
   mirrors into the same visible reducer path without deduplication.
 - Bad: Treating `turn.status(state=interrupted)` as proof that runtime
@@ -563,7 +565,8 @@
   in `GatewayClient.waitForEvent(...)`.
 - Node protocol test proving `KNOWN_GATEWAY_EVENT_METHODS` and
   `GATEWAY_EVENT_PAYLOAD_CONTRACTS` stay aligned with Python supported event
-  streams and manifest payload-schema required fields.
+  streams and manifest payload-schema required fields, property names, and enum
+  values.
 - Reducer/rendering/status tests proving Node TUI consumes `clarify.request`,
   stores `pendingClarification`, renders a distinct clarification row, supports
   `runtime.event` envelope unwrap, and shows `clarification pending` metadata.
