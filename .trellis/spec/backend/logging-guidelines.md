@@ -67,6 +67,12 @@ the local log root and must never become provider transcript inputs.
   warning-level workspace log entries after suspended runtime state is saved.
   These diagnostics explain that resume state exists; they must not be used as
   provider transcript content.
+- Failed turn diagnostics append local `turn_failed` trace rows and error-level
+  workspace log entries from runtime failure finalizers. Payloads include
+  bounded failure taxonomy fields such as `stop_reason`, `phase`, `error_type`,
+  and optional `error_path`; they must not include raw exception messages,
+  tracebacks, provider payloads, user text, tool output, headers, or
+  secret-like values.
 - Model stream diagnostics append local `model_stream_diagnostics` trace rows
   and workspace log entries after each streaming model request. Payloads include
   bounded operational counters such as `ttfb_ms`, `elapsed_ms`,
@@ -88,6 +94,10 @@ the local log root and must never become provider transcript inputs.
   diagnostic errors, and allowlisted `error_kind` counts. It must not print raw
   tool arguments, stdout, stderr, summaries, file contents, local paths, user
   text, headers, or secret-like values.
+- Doctor may summarize `turn_failed` trace rows with bounded total,
+  `stop_reason`, and `phase` counts. It must not print raw exception messages,
+  tracebacks, provider payloads, user text, tool output, headers, or
+  secret-like values.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -130,6 +140,10 @@ the local log root and must never become provider transcript inputs.
   runtime trace row and warning-level workspace log entry with bounded
   `session_id`, `turn_id`, `stop_reason`, `suspend_reason`, `saved_state`, and
   `message_count`.
+- Runtime turn is finalized as failed by model or runtime error finalizers ->
+  append a `turn_failed` runtime trace row and error-level workspace log entry
+  with bounded `session_id`, `turn_id`, `stop_reason`, `phase`, `error_type`,
+  and `error_path` when available.
 - Streaming model request completes -> append one
   `model_stream_diagnostics` runtime trace row and info-level workspace log
   entry.
@@ -180,6 +194,9 @@ the local log root and must never become provider transcript inputs.
 - Unit or integration test for interrupted turn diagnostics proving
   `turn_interrupted` appears in runtime trace and workspace logs while
   suspended turn state remains resumable.
+- Unit or integration test for failed turn diagnostics proving `turn_failed`
+  appears in runtime trace and workspace logs while existing failed-turn status
+  and raw error-payload behavior remain unchanged.
 - Unit tests for model stream diagnostics proving successful streams,
   malformed provider events, sink failure isolation, and non-streaming adapter
   behavior.
@@ -193,6 +210,9 @@ the local log root and must never become provider transcript inputs.
 - Doctor unit tests for tool execution diagnostics summaries, including warning
   rows whose trace payloads contain raw arguments, output, paths, or
   secret-like values that must not be rendered.
+- Doctor unit tests for failed turn diagnostics summaries, including warning
+  rows whose trace payloads contain raw messages, tracebacks, request payloads,
+  or secret-like values that must not be rendered.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

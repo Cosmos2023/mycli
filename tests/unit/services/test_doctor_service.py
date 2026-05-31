@@ -2210,6 +2210,128 @@ def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw
     assert "/private/path" not in rendered
 
 
+def test_doctor_service_reports_missing_turn_failure_diagnostics_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "turn_failure_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no turn failure diagnostics found"
+
+
+def test_doctor_service_reports_no_turn_failure_diagnostics_rows_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}}),
+                json.dumps({"kind": "turn_interrupted", "turn_id": "turn-2", "payload": {}}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "turn_failure_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no turn failure diagnostics found"
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_warns_for_turn_failure_diagnostics_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-turnfailuresecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "turn_failed",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "stop_reason": "model_error",
+                            "phase": "model_error",
+                            "error_type": "ModelResponseError",
+                            "message": f"raw provider failure {secret}",
+                            "traceback": "Traceback should stay hidden",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "turn_failed",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "stop_reason": "runtime_error",
+                            "phase": "runtime_error",
+                            "error_type": "ValueError",
+                            "request": {"Authorization": f"Bearer {secret}"},
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "turn_failure_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == "2 turn failure diagnostic(s)"
+    assert check.detail == (
+        "stop_reasons: model_error=1, runtime_error=1; "
+        "phases: model_error=1, runtime_error=1"
+    )
+    assert secret not in rendered
+    assert "raw provider failure" not in rendered
+    assert "Traceback" not in rendered
+    assert "Authorization" not in rendered
+
+
 def test_doctor_service_summarizes_successful_stream_diagnostics(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

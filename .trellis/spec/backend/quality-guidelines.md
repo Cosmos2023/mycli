@@ -169,6 +169,14 @@ Questions to answer:
     bounded counts and allowlisted `error_kind` counts. Doctor must not print
     raw tool arguments, stdout, stderr, summaries, file contents, local paths,
     user text, headers, or secret-like values.
+- Turn failure diagnostics check:
+  - Missing `~/.mycli/traces/` or no `turn_failed` trace rows ->
+    `turn_failure_diagnostics=ok` with `no turn failure diagnostics found`;
+    doctor must not create the trace directory.
+  - Any `turn_failed` rows -> `turn_failure_diagnostics=warning` with bounded
+    total, `stop_reason`, and `phase` counts. Doctor must not print raw
+    exception messages, tracebacks, provider payloads, request payloads, user
+    text, tool output, headers, or secret-like values.
 - Redaction diagnostics check:
   - `logs_redaction` scans `agent.log`, `errors.log`, `model-events.jsonl`,
     `model-raw/<session>/*.json`, and bounded `traces/*.jsonl` files for
@@ -232,6 +240,9 @@ Questions to answer:
 - Unit test tool execution diagnostics doctor cases for missing directory, no
   tool rows, successful summary, failed/interrupted/denied/truncated/write
   diagnostic summary, and warning-summary redaction.
+- Unit test turn failure diagnostics doctor cases for missing directory, no
+  failed-turn rows, warning summary, and raw message/traceback/request/secret
+  redaction.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,

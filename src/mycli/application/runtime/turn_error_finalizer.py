@@ -6,12 +6,14 @@ from mycli.domain.runtime import (
     ActivityEvent,
     ContextBaseline,
     PlanState,
+    RuntimeTraceEvent,
     StopReason,
     TurnItem,
     TurnItemType,
     TurnResponse,
     TurnStatus,
 )
+from mycli.domain.logging import LogLevel
 from mycli.llms.clients.openai_chat import ModelResponseError
 
 if TYPE_CHECKING:
@@ -55,6 +57,14 @@ class TurnErrorFinalizer:
             turn_id=turn_id,
             phase="model_request_failed",
             exc=exc,
+        )
+        _record_turn_failed(
+            runtime=runtime,
+            turn_id=turn_id,
+            stop_reason=stop_reason,
+            phase=phase,
+            exc=exc,
+            error_path=error_path,
         )
         return runtime._finalize_response(
             response=TurnResponse(
@@ -107,6 +117,14 @@ class TurnErrorFinalizer:
             phase="runtime_error",
             exc=exc,
         )
+        _record_turn_failed(
+            runtime=runtime,
+            turn_id=turn_id,
+            stop_reason=StopReason.RUNTIME_ERROR,
+            phase="runtime_error",
+            exc=exc,
+            error_path=error_path,
+        )
         return runtime._finalize_response(
             response=TurnResponse(
                 assistant_message=f"Internal runtime error: {exc}",
@@ -123,3 +141,32 @@ class TurnErrorFinalizer:
             turn_items=turn_items,
             context_baseline=latest_context_baseline,
         )
+
+
+def _record_turn_failed(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    stop_reason: StopReason,
+    phase: str,
+    exc: Exception,
+    error_path: str | None,
+) -> None:
+    payload: dict[str, object] = {
+        "session_id": runtime._config.session_id,
+        "turn_id": turn_id,
+        "stop_reason": stop_reason.value,
+        "phase": phase[:80],
+        "error_type": type(exc).__name__[:120],
+        "error_path": error_path,
+    }
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(kind="turn_failed", turn_id=turn_id, payload=payload),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.ERROR,
+        event="turn_failed",
+        message=f"Turn failed during {phase}.",
+        context=payload,
+    )

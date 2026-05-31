@@ -1945,19 +1945,33 @@ class ErroringAdapter:
 
 
 def test_agent_runtime_emits_model_error_activity_event(tmp_path: Path) -> None:
+    log_service = WorkspaceLogService(workspace_root=tmp_path)
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
         model_adapter=ErroringAdapter(),
+        workspace_log_service=log_service,
     )
 
     response = runtime.handle_user_turn("search for anything")
 
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.FAILED
     assert "Model request failed: boom" == response.assistant_message
     assert response.activity_events[-1] == ActivityEvent(
         kind="model_error",
         message="Model error: boom",
     )
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    failure = next(event for event in trace if event.kind == "turn_failed")
+    assert failure.turn_id == response.turn.turn_id
+    assert failure.payload["stop_reason"] == StopReason.MODEL_ERROR.value
+    assert failure.payload["phase"] == "model_error"
+    assert failure.payload["error_type"] == "ModelResponseError"
+    assert "boom" not in failure.payload.values()
+    agent_log = log_service.agent_log_path().read_text(encoding="utf-8")
+    assert "turn_failed" in agent_log
+    assert "Turn failed during model_error." in agent_log
 
 
 class UnexpectedErrorAdapter:
@@ -1967,14 +1981,18 @@ class UnexpectedErrorAdapter:
 
 
 def test_agent_runtime_logs_unexpected_runtime_exceptions(tmp_path: Path) -> None:
+    log_service = WorkspaceLogService(workspace_root=tmp_path)
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
         model_adapter=UnexpectedErrorAdapter(),
+        workspace_log_service=log_service,
     )
 
     response = runtime.handle_user_turn("search for anything")
 
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.FAILED
     assert response.assistant_message == "Internal runtime error: runtime exploded"
     assert "Details logged to log/errors.log" in response.error_details
     assert any(detail.endswith("-error.json") for detail in response.error_details)
@@ -1982,6 +2000,15 @@ def test_agent_runtime_logs_unexpected_runtime_exceptions(tmp_path: Path) -> Non
     assert len(error_files) == 1
     payload = json.loads(error_files[0].read_text(encoding="utf-8"))
     assert payload["error_type"] == "ValueError"
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    failure = next(event for event in trace if event.kind == "turn_failed")
+    assert failure.turn_id == response.turn.turn_id
+    assert failure.payload["stop_reason"] == StopReason.RUNTIME_ERROR.value
+    assert failure.payload["phase"] == "runtime_error"
+    assert failure.payload["error_type"] == "ValueError"
+    assert failure.payload["error_path"] in response.error_details[-1]
+    assert "runtime exploded" not in failure.payload.values()
+    assert "turn_failed" in log_service.agent_log_path().read_text(encoding="utf-8")
 
 
 class FakeResponsesPayload:

@@ -135,6 +135,14 @@ class _ToolExecutionDiagnosticsSummary:
     unreadable: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _TurnFailureDiagnosticsSummary:
+    failure_count: int
+    stop_reasons: tuple[tuple[str, int], ...]
+    phases: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
 class DoctorStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -203,6 +211,7 @@ class DoctorService:
             self._check_approval_diagnostics,
             self._check_clarification_diagnostics,
             self._check_tool_execution_diagnostics,
+            self._check_turn_failure_diagnostics,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -782,6 +791,74 @@ class DoctorService:
             ),
         )
 
+    def _check_turn_failure_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "turn_failure_diagnostics",
+                    DoctorStatus.OK,
+                    "no turn failure diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "turn_failure_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "turn_failure_diagnostics",
+                    DoctorStatus.OK,
+                    "no turn failure diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_turn_failure_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "turn_failure_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.failure_count == 0:
+            return (
+                DoctorCheck(
+                    "turn_failure_diagnostics",
+                    DoctorStatus.OK,
+                    f"no turn failure diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        return (
+            DoctorCheck(
+                "turn_failure_diagnostics",
+                DoctorStatus.WARNING,
+                f"{summary.failure_count} turn failure diagnostic(s){suffix}",
+                detail=(
+                    f"stop_reasons: {_format_count_pairs(summary.stop_reasons)}; "
+                    f"phases: {_format_count_pairs(summary.phases)}"
+                ),
+            ),
+        )
+
     def _check_file_history(self) -> Iterable[DoctorCheck]:
         history_root = self._layout.root / "file-history"
         if not history_root.exists():
@@ -1284,6 +1361,46 @@ def _summarize_tool_execution_diagnostics(
         truncated_output_count=truncated_output_count,
         write_diagnostics_error_count=write_diagnostics_error_count,
         error_kinds=ordered_error_kinds,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _summarize_turn_failure_diagnostics(
+    paths: Iterable[Path],
+) -> _TurnFailureDiagnosticsSummary:
+    failure_count = 0
+    stop_reasons: Counter[str] = Counter()
+    phases: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "turn_failed":
+                        continue
+                    failure_count += 1
+                    stop_reasons[
+                        _safe_diagnostic_result(event.payload.get("stop_reason"))
+                    ] += 1
+                    phases[_safe_diagnostic_result(event.payload.get("phase"))] += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_stop_reasons = tuple(
+        sorted(stop_reasons.items(), key=lambda item: (-item[1], item[0]))
+    )
+    ordered_phases = tuple(sorted(phases.items(), key=lambda item: (-item[1], item[0])))
+    return _TurnFailureDiagnosticsSummary(
+        failure_count=failure_count,
+        stop_reasons=ordered_stop_reasons,
+        phases=ordered_phases,
         unreadable=tuple(unreadable),
     )
 
