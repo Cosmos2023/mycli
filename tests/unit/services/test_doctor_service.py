@@ -755,6 +755,53 @@ def test_doctor_service_fails_session_db_invalid_fork_point(tmp_path: Path) -> N
     assert check.message == "invalid fork points: child=2/1"
 
 
+def test_doctor_service_fails_session_db_child_fork_beyond_parent_messages(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "root")
+        _insert_session(connection, "child")
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('root', 0, '{}')
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('child', ?, '{}')
+            """,
+            ((0,), (1,)),
+        )
+        connection.executemany(
+            """
+            INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
+            VALUES (?, ?, ?, 'now')
+            """,
+            (("root", None, None), ("child", "root", 2)),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "invalid fork points: child=2/parent:1"
+
+
 def test_doctor_service_fails_session_db_invalid_recovery_state_json(
     tmp_path: Path,
 ) -> None:

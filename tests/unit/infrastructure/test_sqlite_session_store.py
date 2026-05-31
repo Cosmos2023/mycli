@@ -369,6 +369,46 @@ def test_sqlite_session_store_lineage_detects_cycles(tmp_path: Path) -> None:
         store.load_conversation_lineage("one")
 
 
+def test_sqlite_session_store_lineage_rejects_child_fork_beyond_parent_messages(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    workspace = tmp_path / "workspace"
+    store = SQLiteSessionStore(db_path)
+    store.replace_conversation(
+        session_id="root",
+        workspace_root=workspace,
+        thread_id="root",
+        messages=[{"role": "user", "content": "root only"}],
+    )
+    store.save_conversation_tree(
+        session_id="root",
+        workspace_root=workspace,
+        thread_id="root",
+        parent_id=None,
+        fork_point=None,
+    )
+    store.replace_conversation(
+        session_id="child",
+        workspace_root=workspace,
+        thread_id="child",
+        messages=[
+            {"role": "user", "content": "root only"},
+            {"role": "assistant", "content": "child branch"},
+        ],
+    )
+    store.save_conversation_tree(
+        session_id="child",
+        workspace_root=workspace,
+        thread_id="child",
+        parent_id="root",
+        fork_point=2,
+    )
+
+    with pytest.raises(ValueError, match="invalid fork point"):
+        store.load_conversation_lineage("root")
+
+
 def test_sqlite_session_store_searches_backfilled_conversation_messages(
     tmp_path: Path,
 ) -> None:

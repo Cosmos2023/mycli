@@ -1027,24 +1027,39 @@ def _session_db_invalid_fork_details(connection: sqlite3.Connection) -> list[str
         """
         SELECT
             conversation_trees.session_id AS session_id,
+            conversation_trees.parent_id AS parent_id,
             conversation_trees.fork_point AS fork_point,
-            COUNT(conversation_messages.message_index) AS message_count
+            COALESCE(child_counts.message_count, 0) AS child_message_count,
+            COALESCE(parent_counts.message_count, 0) AS parent_message_count
         FROM conversation_trees
-        LEFT JOIN conversation_messages
-            ON conversation_messages.session_id = conversation_trees.session_id
+        LEFT JOIN (
+            SELECT session_id, COUNT(*) AS message_count
+            FROM conversation_messages
+            GROUP BY session_id
+        ) AS child_counts
+            ON child_counts.session_id = conversation_trees.session_id
+        LEFT JOIN (
+            SELECT session_id, COUNT(*) AS message_count
+            FROM conversation_messages
+            GROUP BY session_id
+        ) AS parent_counts
+            ON parent_counts.session_id = conversation_trees.parent_id
         WHERE conversation_trees.fork_point IS NOT NULL
-        GROUP BY conversation_trees.session_id, conversation_trees.fork_point
         ORDER BY conversation_trees.session_id
         """
     ).fetchall()
     details: list[str] = []
     for row in rows:
         fork_point = int(row["fork_point"])
-        message_count = int(row["message_count"])
-        if fork_point < 0 or fork_point > message_count:
-            details.append(f"{row['session_id']}={fork_point}/{message_count}")
-            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
-                break
+        child_message_count = int(row["child_message_count"])
+        parent_message_count = int(row["parent_message_count"])
+        parent_id = row["parent_id"]
+        if fork_point < 0 or fork_point > child_message_count:
+            details.append(f"{row['session_id']}={fork_point}/{child_message_count}")
+        elif parent_id is not None and fork_point > parent_message_count:
+            details.append(f"{row['session_id']}={fork_point}/parent:{parent_message_count}")
+        if details and len(details) >= _SESSION_DB_DETAIL_LIMIT:
+            break
     return details
 
 

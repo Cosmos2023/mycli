@@ -33,6 +33,10 @@ Questions to answer:
 - Session lineage queries must respect `conversation_trees.parent_id` and
   `fork_point`; do not concatenate parent and child transcripts blindly because
   forked child conversations include the parent prefix.
+- A child `fork_point` is bounded by both the child conversation and the parent
+  conversation segment it references. Doctor/session integrity checks must fail
+  if `fork_point` is negative, exceeds child message count, or exceeds parent
+  message count when `parent_id` is set.
 - Session message search is an explicit local query path only. Use
   `SessionStore.search_messages(query, workspace_root=..., limit=...)` for
   user-triggered lookup such as `/search <query>`; do not run it automatically as
@@ -78,6 +82,10 @@ Questions to answer:
 - Treating `conversation_trees.parent_id` as enough to replay history. For forked
   conversations, use `fork_point` to include only the ancestor segment that the
   child actually forked from.
+- Counting child and parent messages in one unaggregated join when validating
+  fork points. That multiplies rows and can hide corrupted parent fork points.
+  Aggregate message counts per `session_id` first, then join those counts to
+  `conversation_trees`.
 - Treating a runtime `Conversation` without `parent_id` and `fork_point` as a
   request to clear persisted lineage. Ordinary turn execution, compaction, and
   transcript rebuilds may save plain conversation objects; `SessionService` must
