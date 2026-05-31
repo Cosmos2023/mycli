@@ -4,6 +4,7 @@ from mycli.domain.runtime import DecisionAction
 from mycli.domain.runtime.gateway_contract import (
     APPROVAL_DECISION_CHOICES,
     GATEWAY_ERROR_CODES,
+    TERMINAL_TURN_STATES,
     gateway_event_payload_schemas,
 )
 
@@ -73,3 +74,54 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "source",
         "used_tokens",
     ]
+
+
+def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:
+    schema = gateway_event_payload_schemas()["turn.completed"]
+
+    assert schema["required"] == [
+        "client_turn_id",
+        "assistant_message",
+        "activity_events",
+        "progress_updates",
+        "plan_steps",
+        "pending_decision",
+        "turn_state",
+        "usage",
+    ]
+    assert sorted(schema["properties"]) == [
+        "activity_events",
+        "assistant_message",
+        "client_turn_id",
+        "pending_decision",
+        "plan_steps",
+        "progress_updates",
+        "turn_state",
+        "usage",
+    ]
+    assert schema["properties"]["pending_decision"] == {"type": "boolean"}
+    assert schema["properties"]["turn_state"]["enum"] == [
+        "running",
+        "waiting_approval",
+        "waiting_clarification",
+        "completed",
+        "failed",
+        "interrupted",
+        "rejected",
+    ]
+
+
+def test_turn_status_schema_exposes_terminal_routing_contract() -> None:
+    schema = gateway_event_payload_schemas()["turn.status"]
+
+    assert schema["required"] == ["state", "kind", "text", "terminal"]
+    assert sorted(schema["properties"]) == [
+        "client_turn_id",
+        "kind",
+        "message",
+        "state",
+        "terminal",
+        "text",
+    ]
+    assert schema["properties"]["state"]["enum"] == list(TERMINAL_TURN_STATES)
+    assert schema["properties"]["terminal"] == {"type": "boolean"}

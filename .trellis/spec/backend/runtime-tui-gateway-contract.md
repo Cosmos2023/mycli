@@ -115,10 +115,12 @@
   - `request_id`: the resolved clarification request id.
   - `response`: bounded response preview for UI/diagnostics. Do not include
     secrets or unbounded text.
-- `turn.completed` must include `turn_state`. A response with
-  `pending_decision` maps to `waiting_approval`; a turn record with
-  `WAITING_CLARIFICATION` maps to `waiting_clarification`; a turn record with
-  `REJECTED` maps to `rejected`; otherwise it maps to `completed`.
+- `turn.completed` must include `client_turn_id`, `assistant_message`,
+  `activity_events`, `progress_updates`, `plan_steps`, `pending_decision`,
+  `turn_state`, and `usage`. A response with `pending_decision` maps to
+  `waiting_approval`; a turn record with `WAITING_CLARIFICATION` maps to
+  `waiting_clarification`; a turn record with `REJECTED` maps to `rejected`;
+  otherwise it maps to `completed`.
 - `turn.status` is the normalized turn outcome/status event for clients that
   want one small routing payload instead of deriving outcomes from
   `turn.completed`, `turn.failed`, `turn.interrupted`, and `status.update`:

@@ -116,6 +116,7 @@ _TERMINAL_TURN_STATE = {
         "rejected",
     ],
 }
+TERMINAL_TURN_STATES = tuple(_TERMINAL_TURN_STATE["enum"])
 
 
 def gateway_event_payload_schemas() -> dict[str, dict[str, Any]]:
@@ -318,6 +319,16 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "turn.completed": _schema(
         "turn.completed",
+        required=(
+            "client_turn_id",
+            "assistant_message",
+            "activity_events",
+            "progress_updates",
+            "plan_steps",
+            "pending_decision",
+            "turn_state",
+            "usage",
+        ),
         properties=_with_client_turn(
             {
                 "assistant_message": _STRING,

@@ -426,7 +426,16 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
     properties: ["args_preview", "call_id", "client_turn_id", "context", "name", "tool_id"],
   },
   "turn.completed": {
-    required: [],
+    required: [
+      "client_turn_id",
+      "assistant_message",
+      "activity_events",
+      "progress_updates",
+      "plan_steps",
+      "pending_decision",
+      "turn_state",
+      "usage",
+    ],
     properties: [
       "activity_events",
       "assistant_message",
