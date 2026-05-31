@@ -46,6 +46,12 @@ _SESSION_DB_CHILD_TABLES = (
     "session_state",
     "session_summaries",
 )
+_SESSION_DB_RECOVERY_STATE_KEYS = {
+    "pending_decision",
+    "responses_continuation_state",
+    "suspended_turn",
+    "turn_record",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +697,10 @@ def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
     if invalid_fork_details:
         return f"invalid fork points: {', '.join(invalid_fork_details)}"
 
+    invalid_recovery_state_details = _session_db_invalid_recovery_state_details(connection)
+    if invalid_recovery_state_details:
+        return f"invalid recovery state payloads: {', '.join(invalid_recovery_state_details)}"
+
     return None
 
 
@@ -778,6 +788,84 @@ def _session_db_invalid_fork_details(connection: sqlite3.Connection) -> list[str
             if len(details) >= _SESSION_DB_DETAIL_LIMIT:
                 break
     return details
+
+
+def _session_db_invalid_recovery_state_details(connection: sqlite3.Connection) -> list[str]:
+    placeholders = ", ".join("?" for _ in _SESSION_DB_RECOVERY_STATE_KEYS)
+    rows = connection.execute(
+        f"""
+        SELECT session_id, state_key, payload_json
+        FROM session_state
+        WHERE state_key IN ({placeholders})
+        ORDER BY session_id, state_key
+        """,
+        tuple(sorted(_SESSION_DB_RECOVERY_STATE_KEYS)),
+    ).fetchall()
+    details: list[str] = []
+    for row in rows:
+        detail = _session_db_recovery_state_problem(
+            session_id=str(row["session_id"]),
+            state_key=str(row["state_key"]),
+            payload_json=str(row["payload_json"]),
+        )
+        if detail is not None:
+            details.append(detail)
+            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
+                break
+    return details
+
+
+def _session_db_recovery_state_problem(
+    *,
+    session_id: str,
+    state_key: str,
+    payload_json: str,
+) -> str | None:
+    prefix = f"{session_id}:{state_key}"
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return f"{prefix} invalid json"
+    if not isinstance(payload, dict):
+        return f"{prefix} not object"
+    reason = _session_db_recovery_object_problem(state_key, payload)
+    if reason is not None:
+        return f"{prefix} {reason}"
+    return None
+
+
+def _session_db_recovery_object_problem(state_key: str, payload: Mapping[str, object]) -> str | None:
+    if state_key == "pending_decision":
+        return _required_object_problem(payload, "tool_call")
+    if state_key == "suspended_turn":
+        user_message = payload.get("user_message")
+        if not isinstance(user_message, str):
+            return "user_message missing"
+        conversation = payload.get("conversation")
+        if conversation is not None and not isinstance(conversation, list):
+            return "conversation not list"
+        pending_approval = payload.get("pending_approval")
+        if pending_approval is not None:
+            if not isinstance(pending_approval, dict):
+                return "pending_approval not object"
+            nested_problem = _required_object_problem(pending_approval, "tool_call")
+            if nested_problem is not None:
+                return f"pending_approval.{nested_problem}"
+        pending_clarification = payload.get("pending_clarification")
+        if pending_clarification is not None:
+            if not isinstance(pending_clarification, dict):
+                return "pending_clarification not object"
+            nested_problem = _required_object_problem(pending_clarification, "tool_call")
+            if nested_problem is not None:
+                return f"pending_clarification.{nested_problem}"
+    return None
+
+
+def _required_object_problem(payload: Mapping[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        return f"{key} missing"
+    return None
 
 
 def _format_row_references(references: tuple[str, ...]) -> str:

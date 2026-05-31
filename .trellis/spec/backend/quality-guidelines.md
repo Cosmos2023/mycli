@@ -71,6 +71,11 @@ Questions to answer:
 - API key missing -> `api_key=warning`.
 - `~/.mycli/sessions.db` missing -> `sessions_db=warning`.
 - Sessions DB exists but is not openable or lacks required tables -> failed.
+- Sessions DB critical recovery rows in `session_state` for `pending_decision`,
+  `suspended_turn`, `turn_record`, or `responses_continuation_state` contain
+  invalid JSON, non-object JSON, or malformed nested approval/clarification
+  objects -> `sessions_db=failed` with bounded `session_id:state_key`
+  references. Doctor must not print raw `payload_json`.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.
@@ -118,6 +123,9 @@ Questions to answer:
 #### 6. Tests Required
 - Unit test service success with config/storage/logs/history/MCP fixtures.
 - Unit test warning-only conditions such as missing sessions DB and history.
+- Unit test malformed critical `session_state` recovery payloads, including
+  invalid JSON, non-object JSON, and nested suspended-turn approval or
+  clarification payloads that cannot be recovered.
 - Unit test failed MCP or storage parse/open behavior.
 - Unit test storage layout reserved directories missing, present, path-conflict,
   and non-writable cases.

@@ -434,6 +434,115 @@ def test_doctor_service_fails_session_db_invalid_fork_point(tmp_path: Path) -> N
     assert check.message == "invalid fork points: child=2/1"
 
 
+def test_doctor_service_fails_session_db_invalid_recovery_state_json(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES ('demo', 'pending_decision', '{bad json', 'now')
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "invalid recovery state payloads: demo:pending_decision invalid json"
+
+
+def test_doctor_service_fails_session_db_non_object_recovery_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES ('demo', 'turn_record', '[]', 'now')
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "invalid recovery state payloads: demo:turn_record not object"
+
+
+def test_doctor_service_fails_session_db_malformed_suspended_turn_recovery_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'suspended_turn', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "user_message": "continue",
+                        "conversation": [],
+                        "pending_approval": {"preview": "approve this"},
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert (
+        check.message
+        == "invalid recovery state payloads: demo:suspended_turn pending_approval.tool_call missing"
+    )
+
+
 def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
     tmp_path: Path,
 ) -> None:
