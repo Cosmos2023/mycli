@@ -29,56 +29,17 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
+from mycli.domain.runtime.gateway_contract import (
+    SUPPORTED_GATEWAY_EVENT_STREAMS,
+    SUPPORTED_GATEWAY_RPC_METHODS,
+)
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
-SUPPORTED_RPC_METHODS = frozenset(
-    {
-        "approval.respond",
-        "clarify.respond",
-        "command.run",
-        "completion.path",
-        "completion.slash",
-        "decision.resolve",
-        "extension.manifest",
-        "session.bootstrap",
-        "session.list",
-        "session.resume",
-        "shutdown",
-        "status.inspect",
-        "trace.export",
-        "transcript.load",
-        "turn.interrupt",
-        "turn.submit",
-    }
-)
-SUPPORTED_EVENT_STREAMS = frozenset(
-    {
-        "approval.request",
-        "approval.respond",
-        "clarify.request",
-        "clarify.respond",
-        "gateway.error",
-        "message.complete",
-        "message.delta",
-        "reasoning.delta",
-        "status.changed",
-        "status.update",
-        "thinking.delta",
-        "tool.complete",
-        "tool.failed",
-        "tool.progress",
-        "tool.start",
-        "turn.completed",
-        "turn.event",
-        "turn.failed",
-        "turn.interrupted",
-        "turn.started",
-        "turn.status",
-    }
-)
+SUPPORTED_RPC_METHODS = SUPPORTED_GATEWAY_RPC_METHODS
+SUPPORTED_EVENT_STREAMS = SUPPORTED_GATEWAY_EVENT_STREAMS
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",

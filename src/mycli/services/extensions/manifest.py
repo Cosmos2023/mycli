@@ -2,6 +2,57 @@ from __future__ import annotations
 
 from typing import Any
 
+from mycli.domain.runtime.gateway_contract import (
+    SUPPORTED_GATEWAY_EVENT_STREAMS,
+    SUPPORTED_GATEWAY_RPC_METHODS,
+)
+
+
+_RPC_DESCRIPTIONS = {
+    "approval.respond": "Resolve a pending approval request.",
+    "clarify.respond": "Resolve a pending clarification request.",
+    "command.run": "Run a slash command through the local runtime.",
+    "completion.path": "List workspace path completions.",
+    "completion.slash": "List slash command completions.",
+    "decision.resolve": "Compatibility alias for approval.respond.",
+    "extension.manifest": "Return the read-only extension capability manifest.",
+    "session.bootstrap": "Initialize a Node TUI gateway client session.",
+    "session.list": "List recent sessions.",
+    "session.resume": "Activate an existing session.",
+    "shutdown": "Request gateway shutdown.",
+    "status.inspect": "Return current runtime status and context window metadata.",
+    "trace.export": "Return sanitized runtime trace JSONL rows for the active session.",
+    "transcript.load": "Load projected transcript history for a session.",
+    "turn.interrupt": "Request interruption of the active turn.",
+    "turn.submit": "Submit a user turn for runtime execution.",
+}
+
+_EVENT_DESCRIPTIONS = {
+    "approval.request": "Approval gate prompts.",
+    "approval.respond": "Approval resolution notifications.",
+    "clarify.request": "Clarification gate prompts.",
+    "clarify.respond": "Clarification resolution notifications.",
+    "gateway.error": "Gateway request or protocol error diagnostics.",
+    "message.complete": "Message stream completion metadata or final answer.",
+    "message.delta": "Assistant message text deltas.",
+    "reasoning.delta": "Reasoning stream deltas.",
+    "runtime.event": "Versioned envelope mirror for runtime notifications.",
+    "session.changed": "Active session changed after resume or fork.",
+    "status.changed": "Runtime status snapshot changes.",
+    "status.update": "Runtime status changes.",
+    "thinking.delta": "Compatibility thinking stream deltas.",
+    "tool.complete": "Tool lifecycle completion.",
+    "tool.failed": "Tool lifecycle failure.",
+    "tool.progress": "Tool lifecycle progress.",
+    "tool.start": "Tool lifecycle start.",
+    "turn.completed": "Terminal successful or waiting turn state.",
+    "turn.event": "Compatibility runtime stream event.",
+    "turn.failed": "Terminal failed turn state.",
+    "turn.interrupted": "Terminal interrupted turn state.",
+    "turn.started": "Turn execution start.",
+    "turn.status": "Normalized turn status and terminal state.",
+}
+
 
 class ExtensionManifestService:
     """Builds the read-only integration discovery manifest."""
@@ -13,53 +64,8 @@ class ExtensionManifestService:
                 "name": "mycli",
                 "kind": "local_coding_agent",
             },
-            "rpc_methods": [
-                {
-                    "name": "extension.manifest",
-                    "description": "Return the read-only extension capability manifest.",
-                },
-                {
-                    "name": "trace.export",
-                    "description": "Return sanitized runtime trace JSONL rows for the active session.",
-                },
-                {
-                    "name": "status.inspect",
-                    "description": "Return current runtime status and context window metadata.",
-                },
-                {
-                    "name": "transcript.load",
-                    "description": "Load projected transcript history for a session.",
-                },
-                {
-                    "name": "session.list",
-                    "description": "List recent sessions.",
-                },
-                {
-                    "name": "session.resume",
-                    "description": "Activate an existing session.",
-                },
-                {
-                    "name": "approval.respond",
-                    "description": "Resolve a pending approval request.",
-                },
-                {
-                    "name": "completion.slash",
-                    "description": "List slash command completions.",
-                },
-                {
-                    "name": "completion.path",
-                    "description": "List workspace path completions.",
-                },
-            ],
-            "event_streams": [
-                {"name": "status.update", "description": "Runtime status changes."},
-                {"name": "approval.request", "description": "Approval gate prompts."},
-                {"name": "approval.respond", "description": "Approval resolution notifications."},
-                {"name": "turn.event", "description": "Compatibility runtime stream event."},
-                {"name": "turn.completed", "description": "Terminal successful turn state."},
-                {"name": "turn.failed", "description": "Terminal failed turn state."},
-                {"name": "turn.interrupted", "description": "Terminal interrupted turn state."},
-            ],
+            "rpc_methods": _described_entries(SUPPORTED_GATEWAY_RPC_METHODS, _RPC_DESCRIPTIONS),
+            "event_streams": _described_entries(SUPPORTED_GATEWAY_EVENT_STREAMS, _EVENT_DESCRIPTIONS),
             "capabilities": [
                 {
                     "id": "runtime.trace.export",
@@ -108,3 +114,16 @@ class ExtensionManifestService:
                 },
             ],
         }
+
+
+def _described_entries(
+    names: frozenset[str],
+    descriptions: dict[str, str],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "name": name,
+            "description": descriptions.get(name, f"{name} integration surface."),
+        }
+        for name in sorted(names)
+    ]

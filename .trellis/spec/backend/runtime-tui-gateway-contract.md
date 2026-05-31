@@ -42,6 +42,7 @@
   - `turn.interrupted`
   - `turn.status`
   - `gateway.error`
+  - `session.changed`
   - `status.changed`
 - TypeScript reducer entry point:
   `reduceShellState(state: ShellState, action: ShellAction) -> ShellState`
@@ -182,9 +183,20 @@
 - `extension.manifest` is a read-only discovery RPC for external clients:
   - Response payload includes `schema_version`, `agent`, `rpc_methods`,
     `event_streams`, and `capabilities`.
+  - `rpc_methods` names must match
+    `mycli.cli.node_tui.gateway.supported_rpc_methods()`.
+  - `event_streams` names must match
+    `mycli.cli.node_tui.gateway.supported_event_streams()`.
   - It must list machine-readable integration methods such as `trace.export`.
+  - It must list runtime stream discovery surfaces such as `runtime.event`,
+    `message.delta`, `tool.start`, `turn.status`, and `session.changed`.
   - It must not claim dynamic extension lifecycle or ACP server support until
     those capabilities exist.
+- `session.changed` payload:
+  - `session_id`: the active session id after `/resume`, `/fork`, or
+    `session.resume`.
+  - `session.changed` is a direct gateway notification and is not currently
+    mirrored through `runtime.event` when emitted outside `_emit_event`.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use
@@ -290,7 +302,9 @@
 - Invalid `status.update.state` in the reducer -> ignore the event and preserve
   existing state.
 - `extension.manifest` -> return static capability discovery data without
-  mutating runtime, session, or extension state.
+  mutating runtime, session, or extension state. RPC and event names must be
+  generated from gateway supported-contract constants, not from a hand-maintained
+  partial list.
 - Turn starts -> emit `turn.started` and live `status.update` with `running`.
 - Any runtime event emitted through the gateway event boundary -> preserve the
   existing method-name notification and emit a `runtime.event` mirror with the

@@ -102,6 +102,17 @@ test("typed client narrows known event payloads and keeps unknown events", async
   assert.equal(clarifyEvent.params.options[0]?.label, "A");
   assert.equal(clarifyEvent.params.multi_select, false);
 
+  const sessionChangedPromise = client.waitForEvent(
+    "session.changed",
+    (event) => event.params.session_id === "resumed",
+  );
+  input.write(
+    '{"jsonrpc":"2.0","method":"session.changed","params":{"session_id":"resumed"}}\n',
+  );
+  const sessionChangedEvent = await sessionChangedPromise;
+  assert.equal(sessionChangedEvent.method, "session.changed");
+  assert.equal(sessionChangedEvent.params.session_id, "resumed");
+
   const unknownPromise = client.waitForEvent("custom.event");
   input.write('{"jsonrpc":"2.0","method":"custom.event","params":{"ok":true}}\n');
   const unknownEvent = await unknownPromise;

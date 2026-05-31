@@ -35,6 +35,10 @@ from mycli.domain.runtime.events import (
     RuntimeEventEnvelope as RuntimeEventEnvelope,
     RuntimeEventType as RuntimeEventType,
 )
+from mycli.domain.runtime.gateway_contract import (
+    SUPPORTED_GATEWAY_EVENT_STREAMS as SUPPORTED_GATEWAY_EVENT_STREAMS,
+    SUPPORTED_GATEWAY_RPC_METHODS as SUPPORTED_GATEWAY_RPC_METHODS,
+)
 from mycli.domain.runtime.planning import (
     PlanItem as PlanItem,
     PlanState as PlanState,

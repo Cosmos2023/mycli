@@ -49,6 +49,7 @@ from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.tools import ToolCall
 from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
+from mycli.services.extensions import ExtensionManifestService
 
 
 def test_build_parser_uses_mycli_prog_name() -> None:
@@ -1125,8 +1126,13 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             return ("preference tone=concise",)
 
         def inspect_extensions(self) -> tuple[str, ...]:
+            manifest = ExtensionManifestService().manifest()
             return (
-                "agent=mycli schema=1 rpc_methods=9 event_streams=7",
+                (
+                    "agent=mycli schema=1 "
+                    f"rpc_methods={len(manifest['rpc_methods'])} "
+                    f"event_streams={len(manifest['event_streams'])}"
+                ),
                 "rpc extension.manifest",
                 "rpc trace.export",
                 "runtime.trace.export available",
@@ -1182,6 +1188,12 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             )
 
     handler = build_command_handler(FakeService())
+    manifest = ExtensionManifestService().manifest()
+    extension_summary = (
+        "agent=mycli schema=1 "
+        f"rpc_methods={len(manifest['rpc_methods'])} "
+        f"event_streams={len(manifest['event_streams'])}"
+    )
 
     assert list(handler("/plan")) == ["[plan] in_progress: Inspect runtime entrypoints"]
     assert list(handler("/skills")) == ["[skill] repository-analysis: Inspect repos"]
@@ -1190,7 +1202,7 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
     assert list(handler("/extensions")) == [
-        "[extension] agent=mycli schema=1 rpc_methods=9 event_streams=7",
+        f"[extension] {extension_summary}",
         "[extension] rpc extension.manifest",
         "[extension] rpc trace.export",
         "[extension] runtime.trace.export available",

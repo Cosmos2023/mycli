@@ -142,6 +142,10 @@ export type TurnInterruptedPayload = {
 
 export type StatusChangedPayload = JsonObject;
 
+export type SessionChangedPayload = {
+  session_id: string;
+};
+
 export type GatewayErrorPayload = {
   code: string;
   message: string;
@@ -200,6 +204,7 @@ export type KnownGatewayEvent =
   | Notification<"turn.interrupted", TurnInterruptedPayload>
   | Notification<"turn.status", TurnStatusPayload>
   | Notification<"gateway.error", GatewayErrorPayload>
+  | Notification<"session.changed", SessionChangedPayload>
   | Notification<"status.changed", StatusChangedPayload>;
 
 export type KnownGatewayEventMethod = KnownGatewayEvent["method"];
