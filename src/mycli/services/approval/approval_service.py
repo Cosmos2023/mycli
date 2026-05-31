@@ -10,6 +10,9 @@ from mycli.services.approval.safety_policy import SafetyPolicy
 @dataclass(slots=True, frozen=True)
 class ApprovalOutcome:
     auto_approved: bool = False
+    auto_approved_by: str | None = None
+    command_pattern: str | None = None
+    reason: str | None = None
     denied_reason: str | None = None
     pending_approval: PendingApproval | None = None
 
@@ -28,7 +31,12 @@ class ApprovalService:
         if safety.kind is DecisionKind.DENY:
             return ApprovalOutcome(denied_reason=safety.reason)
         if self._matches_session_allowance(call, safety.command_pattern):
-            return ApprovalOutcome(auto_approved=True)
+            return ApprovalOutcome(
+                auto_approved=True,
+                auto_approved_by="session_allowance",
+                command_pattern=safety.command_pattern,
+                reason=safety.reason,
+            )
         if safety.kind is DecisionKind.NEEDS_CHOICE:
             return ApprovalOutcome(
                 pending_approval=PendingApproval(
@@ -38,7 +46,11 @@ class ApprovalService:
                     command_pattern=safety.command_pattern,
                 )
             )
-        return ApprovalOutcome(auto_approved=True)
+        return ApprovalOutcome(
+            auto_approved=True,
+            command_pattern=safety.command_pattern,
+            reason=safety.reason,
+        )
 
     def _matches_session_allowance(
         self,

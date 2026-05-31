@@ -379,6 +379,7 @@ class AgentRuntime:
             session_id=config.session_id,
             session_service=self._session_service,
             approval_service=self._approval_service,
+            trace_service=self._trace_service,
             workspace_log_service=self._workspace_log_service,
             append_turn_item=self._append_turn_item,
             tool_call_from_block=self._tool_call_from_block,

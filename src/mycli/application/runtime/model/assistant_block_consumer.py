@@ -13,6 +13,7 @@ from mycli.domain.runtime import (
     PlanState,
     RuntimeBlock,
     RuntimeStreamEvent,
+    RuntimeTraceEvent,
     StopReason,
     SuspendedTurn,
     TurnItem,
@@ -24,6 +25,7 @@ from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.domain.tooling.calls import ToolCall
 from mycli.application.runtime.tools.tool_execution_service import CONCURRENCY_SAFE_TOOLS
 from mycli.services.approval.approval_service import ApprovalService
+from mycli.services.tracing import TraceService
 from mycli.state.session_service import SessionService
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.utils.workspace_logger import WorkspaceLogService
@@ -38,6 +40,7 @@ class AssistantBlockConsumer:
         session_id: str,
         session_service: SessionService,
         approval_service: ApprovalService,
+        trace_service: TraceService,
         workspace_log_service: WorkspaceLogService,
         append_turn_item: Callable[..., None],
         tool_call_from_block: Callable[[RuntimeBlock], ToolCall],
@@ -51,6 +54,7 @@ class AssistantBlockConsumer:
         self._session_id = session_id
         self._session_service = session_service
         self._approval_service = approval_service
+        self._trace_service = trace_service
         self._workspace_log_service = workspace_log_service
         self._append_turn_item = append_turn_item
         self._tool_call_from_block = tool_call_from_block
@@ -267,6 +271,12 @@ class AssistantBlockConsumer:
                         safety.command_pattern,
                     )
                 ):
+                    self._record_approval_auto_allowed(
+                        turn_id=turn_id,
+                        tool_call=tool_call,
+                        command_pattern=safety.command_pattern,
+                        reason=safety.reason,
+                    )
                     if tool_call.name in CONCURRENCY_SAFE_TOOLS:
                         pending_safe_tool_calls.append((tool_call, block))
                         continue
@@ -457,6 +467,14 @@ class AssistantBlockConsumer:
                         ),
                     )
 
+                if approval.auto_approved_by == "session_allowance":
+                    self._record_approval_auto_allowed(
+                        turn_id=turn_id,
+                        tool_call=tool_call,
+                        command_pattern=approval.command_pattern,
+                        reason=approval.reason,
+                    )
+
                 if tool_call.name in CONCURRENCY_SAFE_TOOLS:
                     pending_safe_tool_calls.append((tool_call, block))
                     continue
@@ -541,6 +559,33 @@ class AssistantBlockConsumer:
                 "turn_id": turn_id,
                 **metadata,
             },
+        )
+
+    def _record_approval_auto_allowed(
+        self,
+        *,
+        turn_id: str,
+        tool_call: ToolCall,
+        command_pattern: str | None,
+        reason: str | None,
+    ) -> None:
+        payload = {
+            "source": "session_allowance",
+            "tool_name": tool_call.name,
+            "call_id": tool_call.call_id,
+            "command_pattern": command_pattern,
+            "decision_id": tool_call.call_id or "decision_current",
+            "reason": reason,
+        }
+        self._trace_service.append(
+            self._session_id,
+            RuntimeTraceEvent(kind="approval_auto_allowed", turn_id=turn_id, payload=payload),
+        )
+        self._workspace_log_service.log(
+            level=LogLevel.INFO,
+            event="approval_auto_allowed",
+            message=f"Auto-approved {tool_call.name} via session allowance.",
+            context=payload,
         )
 
     def _deepseek_reasoning_content_from_block(

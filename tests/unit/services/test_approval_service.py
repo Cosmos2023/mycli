@@ -45,3 +45,23 @@ def test_approval_service_denies_even_when_session_allowance_matches() -> None:
 
     assert outcome.denied_reason is not None
     assert outcome.auto_approved is False
+
+
+def test_approval_service_marks_session_allowance_auto_approval() -> None:
+    service = ApprovalService(
+        session_allowances=(SessionCommandAllowance(command_pattern="git push"),)
+    )
+
+    outcome = service.evaluate(
+        ToolCall(
+            name="Bash",
+            arguments={"command": "git push origin main"},
+            reason="publish branch",
+            call_id="call_push_1",
+        )
+    )
+
+    assert outcome.auto_approved is True
+    assert outcome.auto_approved_by == "session_allowance"
+    assert outcome.command_pattern == "git push"
+    assert outcome.reason == "git push requires confirmation."

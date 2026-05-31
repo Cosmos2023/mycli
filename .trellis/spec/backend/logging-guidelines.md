@@ -48,6 +48,11 @@ the local log root and must never become provider transcript inputs.
 - Runtime session changes must call `WorkspaceLogService.set_session_id()` from
   the rebind path so `/resume` and `/fork` diagnostics follow the active
   session tip/branch.
+- Runtime safety diagnostics may append local trace/log events that explain why
+  a risky action was allowed. For example, `approval_auto_allowed` records a
+  later risky tool call that matched a prior session-scoped approval allowance.
+  This event is diagnostic-only; it is not a gateway stream event and must not
+  be replayed into provider-visible transcript messages.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -62,6 +67,12 @@ the local log root and must never become provider transcript inputs.
   do not raise.
 - Warning/error event -> append to both `agent.log` and `errors.log`.
 - Secret-like text in message/context/raw payload -> redact before persistence.
+- Risky tool call matches a session-scoped approval allowance -> append an
+  `approval_auto_allowed` runtime trace row and an info-level workspace log
+  entry with `source=session_allowance`, `tool_name`, `call_id`,
+  `decision_id`, `command_pattern`, and `reason`.
+- Ordinary safe auto approval -> do not emit `approval_auto_allowed`, because no
+  prior user allowance was consumed.
 - `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
   session trace without mutating trace files.
 - `trace.export` -> return the same bounded sanitized JSONL rows as raw row
@@ -77,6 +88,8 @@ the local log root and must never become provider transcript inputs.
   operational logs and makes `/logs` inspection session-dependent.
 - Bad: Persisting `Authorization: Bearer sk-...` or JSON `api_key` values.
 - Bad: Adding log summaries to system prompts or provider transcript replay.
+- Bad: Emitting `approval_auto_allowed` for a safe built-in tool that never
+  consumed a session-scoped approval allowance.
 - Bad: Building external integrations by scraping human `/trace` prose when a
   JSONL export is available.
 - Bad: Building extension/ACP integrations by stripping `[trace-jsonl]`
@@ -93,6 +106,9 @@ the local log root and must never become provider transcript inputs.
 - CLI/REPL tests for `/trace-jsonl` completion, command routing, and JSONL
   export sanitization.
 - Gateway tests for `trace.export` raw rows and tail bounding.
+- Integration test for session allowance hits proving `approval_auto_allowed`
+  appears in runtime trace and workspace logs while the turn still avoids a new
+  pending approval.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

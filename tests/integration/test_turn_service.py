@@ -378,6 +378,19 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
 
     assert response.pending_decision is None
     assert len(second_registry.calls) == 1
+    trace_events = second._trace_service.load("demo")
+    auto_allowed = next(event for event in trace_events if event.kind == "approval_auto_allowed")
+    assert auto_allowed.payload["source"] == "session_allowance"
+    assert auto_allowed.payload["tool_name"] == "Bash"
+    assert auto_allowed.payload["command_pattern"] == "git push"
+    assert auto_allowed.payload["call_id"]
+    assert auto_allowed.payload["decision_id"] == auto_allowed.payload["call_id"]
+    assert auto_allowed.payload["reason"] == "git push requires confirmation."
+    agent_log = second._runtime._workspace_log_service.agent_log_path().read_text(
+        encoding="utf-8"
+    )
+    assert "approval_auto_allowed" in agent_log
+    assert "session_allowance" in agent_log
 
 
 def test_turn_service_blocks_new_turns_while_decision_is_pending(tmp_path: Path) -> None:
