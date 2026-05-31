@@ -14,9 +14,22 @@ def test_extension_manifest_exposes_core_discovery_surfaces() -> None:
 
     capabilities = {capability["id"]: capability for capability in manifest["capabilities"]}
     assert capabilities["runtime.trace.export"]["status"] == "available"
+    assert capabilities["runtime.tui_gateway"]["status"] == "available"
+    assert capabilities["approvals"]["status"] == "available"
+    assert capabilities["sessions"]["status"] == "available"
     assert capabilities["extensions.lifecycle"]["status"] == "not_available"
-    assert capabilities["mcp.tools"]["status"] == "available"
-    assert capabilities["subagents"]["status"] == "available"
+    assert capabilities["acp.server"]["status"] == "not_available"
+
+
+def test_extension_manifest_does_not_productize_foundation_only_capabilities() -> None:
+    manifest = ExtensionManifestService().manifest()
+
+    capabilities = {capability["id"]: capability for capability in manifest["capabilities"]}
+
+    for capability_id in ("mcp.tools", "skills", "subagents"):
+        capability = capabilities[capability_id]
+        assert capability["status"] == "foundation_only"
+        assert "product" in capability["description"].lower()
 
 
 def test_extension_manifest_has_stable_event_stream_entries() -> None:

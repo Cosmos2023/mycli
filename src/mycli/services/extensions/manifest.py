@@ -89,18 +89,27 @@ class ExtensionManifestService:
                 },
                 {
                     "id": "mcp.tools",
-                    "status": "available",
-                    "description": "Configured MCP tools can contribute runtime tool registrations.",
+                    "status": "foundation_only",
+                    "description": (
+                        "Internal MCP tool registration foundations exist, but the external "
+                        "MCP tool capability is not productized."
+                    ),
                 },
                 {
                     "id": "skills",
-                    "status": "available",
-                    "description": "Built-in and user skills can be listed and invoked through the Skill tool.",
+                    "status": "foundation_only",
+                    "description": (
+                        "Skill registry and invocation foundations exist, but the extension "
+                        "manifest does not expose skills as a stable product capability."
+                    ),
                 },
                 {
                     "id": "subagents",
-                    "status": "available",
-                    "description": "Task tool can run scoped sub-agent work.",
+                    "status": "foundation_only",
+                    "description": (
+                        "Sub-agent runtime foundations exist, but multi-agent product "
+                        "surfaces are not part of the stable extension contract."
+                    ),
                 },
                 {
                     "id": "extensions.lifecycle",
