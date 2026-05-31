@@ -745,6 +745,62 @@ test("request failure appends one error row and deduplicates matching gateway er
   });
 });
 
+test("failed terminal turn status appends one recoverable error row", () => {
+  const state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      client_turn_id: "c1",
+      state: "failed",
+      kind: "failed",
+      text: "Failed",
+      terminal: true,
+      message: "Provider failed after retries.",
+    },
+  });
+
+  const errors = state.transcript.filter((item) => item.type === "error");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.text, "Provider failed after retries.");
+  assert.deepEqual(errors[0]?.metadata, {
+    client_turn_id: "c1",
+    state: "failed",
+    kind: "failed",
+    text: "Failed",
+    terminal: true,
+    message: "Provider failed after retries.",
+  });
+  assert.equal(state.liveStatus?.state, "failed");
+  assert.equal(state.turnRunning, false);
+});
+
+test("failed terminal turn status does not duplicate prior turn failed errors", () => {
+  let state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "turn.failed",
+    params: {
+      client_turn_id: "c1",
+      message: "Provider failed after retries.",
+    },
+  });
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      client_turn_id: "c1",
+      state: "failed",
+      kind: "failed",
+      text: "Failed",
+      terminal: true,
+      message: "Provider failed after retries.",
+    },
+  });
+
+  const errors = state.transcript.filter((item) => item.type === "error");
+  assert.equal(errors.length, 1);
+});
+
 test("tool lifecycle events update the active tool row without duplication", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "read config" });

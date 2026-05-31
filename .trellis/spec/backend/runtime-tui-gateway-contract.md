@@ -316,6 +316,10 @@
     mirrors into visible state until a transport preference/dedup strategy is
     introduced.
   - Terminal turn events clear live reasoning and typed-message bookkeeping.
+  - `turn.status(state=failed, terminal=true)` with a bounded `message` appends
+    one recoverable `error` transcript row so terminal failed `TurnResponse`
+    paths remain visible after later turns. If an adjacent `turn.failed` event
+    already produced the same error, the reducer must keep a single row.
   - `gateway.error` appends an `error` transcript row without mutating turn
     status unless a separate `turn.failed` or `status.update` also arrives.
   - `error` and `warning` transcript rows may render a secondary diagnostic line

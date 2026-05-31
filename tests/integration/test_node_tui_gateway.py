@@ -688,6 +688,188 @@ class E2EInterruptedStateService:
         return (f"resumed {session_id or 'interrupted-smoke'}",)
 
 
+class E2EFailureRecoveryService:
+    def __init__(self, workspace_root: Path) -> None:
+        self._config = SimpleNamespace(
+            session_id="failure-recovery-smoke",
+            workspace_root=workspace_root,
+            model="gpt-smoke",
+            provider=SimpleNamespace(value="test"),
+            protocol=SimpleNamespace(value="chat_completions"),
+            max_prompt_tokens=12000,
+            tui_startup_mark="default",
+        )
+        self._session_service = E2EWaitingSessionService()
+        self.messages: list[str] = []
+        self.resolved_choices: list[str] = []
+        self.clarification_responses: list[tuple[str, str]] = []
+
+    def current_context_window_metrics(self) -> dict[str, object]:
+        return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        self.messages.append(message)
+        if message == "fail once":
+            return TurnResponse(
+                assistant_message="Provider failed after retries.",
+                turn=TurnRecord(
+                    thread_id="failure-recovery-smoke",
+                    turn_id="turn_failed_1",
+                    status=TurnStatus.FAILED,
+                    started_at="2026-05-31T00:00:00Z",
+                    completed_at="2026-05-31T00:00:01Z",
+                    stop_reason=StopReason.RUNTIME_ERROR,
+                    user_message=message,
+                ),
+            )
+        if message == "needs approval":
+            decision = PendingDecision(
+                tool_call=ToolCall(
+                    name="Bash",
+                    arguments={"command": "git push"},
+                    reason="approval recovery smoke",
+                    call_id="call_recovery_approval_1",
+                ),
+                kind=DecisionKind.NEEDS_CHOICE,
+                reason="git push requires confirmation.",
+                preview="git push",
+                options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+            )
+            self._session_service.pending_decision = decision
+            return TurnResponse(assistant_message="", pending_decision=decision)
+        if message == "needs clarification":
+            turn = TurnRecord(
+                thread_id="failure-recovery-smoke",
+                turn_id="turn_recovery_clarify_1",
+                status=TurnStatus.WAITING_CLARIFICATION,
+                started_at="2026-05-31T00:00:02Z",
+                stop_reason=StopReason.CLARIFICATION_REQUIRED,
+                user_message=message,
+            )
+            self._session_service.suspended_turn = turn
+            if stream_sink is not None:
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="clarify_request",
+                        metadata={
+                            "request_id": "call_recovery_question_1",
+                            "tool_id": "call_recovery_question_1",
+                            "call_id": "call_recovery_question_1",
+                            "tool_name": "AskUserQuestion",
+                            "question": "Continue after failure?",
+                            "options": [{"label": "Continue"}, {"label": "Stop"}],
+                            "header": "Recovery",
+                            "multi_select": False,
+                        },
+                    )
+                )
+            return TurnResponse(assistant_message="", turn=turn)
+        if message == "tool lifecycle":
+            if stream_sink is not None:
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_start",
+                        tool_name="Read",
+                        metadata={
+                            "tool_id": "call_recovery_read_1",
+                            "call_id": "call_recovery_read_1",
+                            "name": "Read",
+                            "context": "README.md",
+                            "args_preview": "path=README.md",
+                        },
+                    )
+                )
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_complete",
+                        tool_name="Read",
+                        metadata={
+                            "tool_id": "call_recovery_read_1",
+                            "call_id": "call_recovery_read_1",
+                            "name": "Read",
+                            "duration_s": 0.125,
+                            "summary": "Read README.md",
+                            "summary_chars": len("Read README.md"),
+                            "summary_truncated": False,
+                            "success": True,
+                        },
+                    )
+                )
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_failed",
+                        tool_name="Write",
+                        metadata={
+                            "tool_id": "call_recovery_write_1",
+                            "call_id": "call_recovery_write_1",
+                            "name": "Write",
+                            "duration_s": 0.002,
+                            "summary": "Tool Write could not run.",
+                            "summary_chars": len("Tool Write could not run."),
+                            "summary_truncated": False,
+                            "success": False,
+                            "error": "Missing required parameter: content",
+                            "error_chars": len("Missing required parameter: content"),
+                            "error_truncated": False,
+                        },
+                    )
+                )
+                stream_sink(RuntimeStreamEvent(kind="text_delta", text="tool recovery"))
+            return TurnResponse(assistant_message="tool recovery final")
+        if message == "interrupt after recovery":
+            if stream_sink is not None:
+                stream_sink(RuntimeStreamEvent(kind="reasoning", text="recovering"))
+            return TurnResponse(
+                assistant_message="Interrupt requested",
+                turn=TurnRecord(
+                    thread_id="failure-recovery-smoke",
+                    turn_id="turn_recovery_interrupted_1",
+                    status=TurnStatus.INTERRUPTED,
+                    started_at="2026-05-31T00:00:03Z",
+                    completed_at="2026-05-31T00:00:04Z",
+                    stop_reason=StopReason.INTERRUPTED,
+                    user_message=message,
+                ),
+            )
+        raise AssertionError(f"unexpected message: {message}")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        self.resolved_choices.append(choice)
+        self._session_service.pending_decision = None
+        return TurnResponse(
+            assistant_message="Rejected Bash. Pending decision cleared.",
+            turn=TurnRecord(
+                thread_id="failure-recovery-smoke",
+                turn_id="turn_recovery_rejected_1",
+                status=TurnStatus.REJECTED,
+                started_at="2026-05-31T00:00:01Z",
+                stop_reason=StopReason.APPROVAL_REJECTED,
+                user_message="needs approval",
+            ),
+        )
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        self.clarification_responses.append((request_id, response))
+        self._session_service.suspended_turn = None
+        return TurnResponse(assistant_message="clarification recovery final")
+
+    def inspect_usage(self) -> tuple[str, ...]:
+        return ("session=failure-recovery-smoke",)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        return ("session=failure-recovery-smoke context=test",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        return (f"mode={mode}",)
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        return (f"resumed {session_id or 'failure-recovery-smoke'}",)
+
+
 def test_run_node_tui_gateway_with_real_node_scripted_client_interrupted_turn(
     tmp_path: Path,
 ) -> None:
@@ -718,3 +900,84 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_interrupted_turn(
     assert state["liveStatus"]["message"] == "Interrupt requested"
     assert state["pendingApproval"] is None
     assert state["pendingClarification"] is None
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_matrix(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-failure-recovery-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    "fail once",
+                    "needs approval",
+                    {"type": "approval.respond", "choice": "reject"},
+                    "needs clarification",
+                    {"type": "clarify.respond", "response": "Continue"},
+                    "tool lifecycle",
+                    "interrupt after recovery",
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EFailureRecoveryService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == [
+        "fail once",
+        "needs approval",
+        "needs clarification",
+        "tool lifecycle",
+        "interrupt after recovery",
+    ]
+    assert service.resolved_choices == ["2"]
+    assert service.clarification_responses == [("call_recovery_question_1", "Continue")]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["turnRunning"] is False
+    assert state["currentTurnId"] is None
+    assert state["pendingApproval"] is None
+    assert state["pendingClarification"] is None
+    assert state["liveStatus"]["state"] == "interrupted"
+    assert state["liveStatus"]["message"] == "Interrupt requested"
+
+    errors = [item for item in state["transcript"] if item["type"] == "error"]
+    assert [item["text"] for item in errors] == ["Provider failed after retries."]
+
+    approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
+    assert len(approval_items) == 1
+    assert approval_items[0]["metadata"]["decision_id"] == "call_recovery_approval_1"
+
+    clarification_items = [
+        item for item in state["transcript"] if item["type"] == "clarification"
+    ]
+    assert len(clarification_items) == 1
+    assert clarification_items[0]["metadata"]["request_id"] == "call_recovery_question_1"
+
+    tool_items = [item for item in state["transcript"] if item["type"] == "tool_summary"]
+    assert len(tool_items) == 2
+    read_item = next(
+        item for item in tool_items if item["metadata"]["tool_id"] == "call_recovery_read_1"
+    )
+    assert read_item["metadata"]["status"] == "done"
+    write_item = next(
+        item for item in tool_items if item["metadata"]["tool_id"] == "call_recovery_write_1"
+    )
+    assert write_item["metadata"]["status"] == "failed"
+    assert write_item["metadata"]["error"] == "Missing required parameter: content"
+
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == [
+        "clarification recovery final",
+        "tool recovery final",
+    ]
+    assert "tool recoverytool recovery" not in assistant_items[-1]["text"]

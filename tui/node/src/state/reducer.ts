@@ -223,7 +223,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       if (!liveStatus) {
         return state;
       }
-      return applyLiveStatus(state, liveStatus);
+      return applyTurnStatus(state, liveStatus, action.params);
     }
     if (action.method === "gateway.error") {
       return appendErrorItem(state, action.params, "Gateway error");
@@ -551,6 +551,18 @@ function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState 
     pendingApproval: isTerminalTurnState(liveStatus.state) ? null : state.pendingApproval,
     pendingClarification: isTerminalTurnState(liveStatus.state) ? null : state.pendingClarification,
   };
+}
+
+function applyTurnStatus(
+  state: ShellState,
+  liveStatus: LiveStatus,
+  params: Record<string, unknown>,
+): ShellState {
+  const next = applyLiveStatus(state, liveStatus);
+  if (liveStatus.state !== "failed" || params.terminal !== true) {
+    return next;
+  }
+  return appendErrorItem(next, params, "Turn failed");
 }
 
 function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | null {
