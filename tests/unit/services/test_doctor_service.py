@@ -999,6 +999,115 @@ def test_doctor_service_fails_session_db_malformed_suspended_turn_recovery_state
     )
 
 
+def test_doctor_service_fails_session_db_malformed_pending_decision_shape(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'pending_decision', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "tool_call": {
+                            "name": "Bash",
+                            "arguments": {"command": "git push"},
+                        },
+                        "kind": "needs_choice",
+                        "reason": "requires approval",
+                        "preview": "git push",
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert (
+        check.message
+        == "invalid recovery state payloads: demo:pending_decision tool_call.reason missing"
+    )
+
+
+def test_doctor_service_fails_session_db_malformed_pending_clarification_shape(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'suspended_turn', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "user_message": "ask",
+                        "conversation": [],
+                        "suspend_reason": "clarification_required",
+                        "plan_items": [],
+                        "pending_approval": None,
+                        "pending_clarification": {
+                            "tool_call": {
+                                "name": "AskUserQuestion",
+                                "arguments": {"question": "Which runtime?"},
+                                "reason": "needs user input",
+                                "call_id": "call_question_1",
+                            },
+                            "question": "Which runtime?",
+                            "options": [],
+                            "header": "",
+                            "multi_select": False,
+                        },
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert (
+        check.message
+        == "invalid recovery state payloads: demo:suspended_turn "
+        "pending_clarification.request_id missing"
+    )
+
+
 def test_doctor_service_fails_unresumable_pending_approval_state(
     tmp_path: Path,
 ) -> None:

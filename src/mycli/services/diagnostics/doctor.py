@@ -2200,7 +2200,7 @@ def _session_db_recovery_state_problem(
 
 def _session_db_recovery_object_problem(state_key: str, payload: Mapping[str, object]) -> str | None:
     if state_key == "pending_decision":
-        return _required_object_problem(payload, "tool_call")
+        return _pending_decision_payload_problem(payload)
     if state_key == "suspended_turn":
         user_message = payload.get("user_message")
         if not isinstance(user_message, str):
@@ -2212,16 +2212,78 @@ def _session_db_recovery_object_problem(state_key: str, payload: Mapping[str, ob
         if pending_approval is not None:
             if not isinstance(pending_approval, dict):
                 return "pending_approval not object"
-            nested_problem = _required_object_problem(pending_approval, "tool_call")
+            nested_problem = _pending_approval_payload_problem(pending_approval)
             if nested_problem is not None:
                 return f"pending_approval.{nested_problem}"
         pending_clarification = payload.get("pending_clarification")
         if pending_clarification is not None:
             if not isinstance(pending_clarification, dict):
                 return "pending_clarification not object"
-            nested_problem = _required_object_problem(pending_clarification, "tool_call")
+            nested_problem = _pending_clarification_payload_problem(pending_clarification)
             if nested_problem is not None:
                 return f"pending_clarification.{nested_problem}"
+    return None
+
+
+def _pending_decision_payload_problem(payload: Mapping[str, object]) -> str | None:
+    tool_problem = _prefixed_tool_call_payload_problem(payload.get("tool_call"))
+    if tool_problem is not None:
+        return tool_problem
+    if not isinstance(payload.get("kind"), str):
+        return "kind missing"
+    if not isinstance(payload.get("preview"), str):
+        return "preview missing"
+    if not isinstance(payload.get("options"), list):
+        return "options not list"
+    return None
+
+
+def _pending_approval_payload_problem(payload: Mapping[str, object]) -> str | None:
+    tool_problem = _prefixed_tool_call_payload_problem(payload.get("tool_call"))
+    if tool_problem is not None:
+        return tool_problem
+    if not isinstance(payload.get("reason"), str):
+        return "reason missing"
+    if not isinstance(payload.get("preview"), str):
+        return "preview missing"
+    return None
+
+
+def _pending_clarification_payload_problem(payload: Mapping[str, object]) -> str | None:
+    tool_problem = _prefixed_tool_call_payload_problem(payload.get("tool_call"))
+    if tool_problem is not None:
+        return tool_problem
+    if not isinstance(payload.get("request_id"), str):
+        return "request_id missing"
+    if not isinstance(payload.get("question"), str):
+        return "question missing"
+    options = payload.get("options")
+    if options is not None and not isinstance(options, list):
+        return "options not list"
+    multi_select = payload.get("multi_select")
+    if multi_select is not None and not isinstance(multi_select, bool):
+        return "multi_select not boolean"
+    return None
+
+
+def _prefixed_tool_call_payload_problem(value: object) -> str | None:
+    problem = _tool_call_payload_problem(value)
+    if problem is None:
+        return None
+    if problem == "missing":
+        return "tool_call missing"
+    return f"tool_call.{problem}"
+
+
+def _tool_call_payload_problem(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return "missing"
+    if not isinstance(value.get("name"), str):
+        return "name missing"
+    if not isinstance(value.get("arguments"), dict):
+        return "arguments not object"
+    if not isinstance(value.get("reason"), str):
+        return "reason missing"
     return None
 
 
