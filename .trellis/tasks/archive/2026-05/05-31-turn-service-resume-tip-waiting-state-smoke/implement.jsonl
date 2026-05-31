@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session lineage, fork_point, and resume-tip persistence contracts."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Waiting-state and session resume semantics for runtime/TUI clients."}
+{"file": ".trellis/tasks/05-31-turn-service-resume-tip-waiting-state-smoke/research/current-state.md", "reason": "Documents the targeted real smoke coverage gap."}

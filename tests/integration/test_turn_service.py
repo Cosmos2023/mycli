@@ -8,14 +8,18 @@ from mycli.domain.runtime import (
     AgentConfig,
     DecisionAction,
     DecisionKind,
+    ModelTurnResult,
     ModelDecision,
     PendingDecision,
+    RuntimeBlock,
+    RuntimeItem,
     SessionCommandAllowance,
     StopReason,
     TurnResponse,
     TurnStatus,
 )
 from mycli.domain.tools import ToolCall
+from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.base import ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
 
@@ -218,6 +222,66 @@ class PushThenDoneRuntimeAdapter:
         return ModelDecision(assistant_message="Push finished", done=True)
 
 
+class DoneRuntimeAdapter:
+    def next_action(self, *_args, **_kwargs) -> ModelDecision:
+        return ModelDecision(assistant_message="Push finished", done=True)
+
+
+class ClarifyThenWaitingRuntimeAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_turn(self, *, items, tools) -> ModelTurnResult:
+        del items, tools
+        self.calls += 1
+        if self.calls == 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="AskUserQuestion",
+                                tool_arguments={
+                                    "question": "Which slice should come next?",
+                                    "options": [
+                                        {"label": "Runtime"},
+                                        {"label": "TUI"},
+                                    ],
+                                },
+                                call_id="call_question_1",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Runtime slice selected."),),
+                ),
+            ),
+            done=True,
+        )
+
+
+class ClarificationDoneRuntimeAdapter:
+    def next_turn(self, *, items, tools) -> ModelTurnResult:
+        del items, tools
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Runtime slice selected."),),
+                ),
+            ),
+            done=True,
+        )
+
+
 def test_turn_service_returns_pending_decision_for_risky_command(tmp_path: Path) -> None:
     service = make_turn_service(
         tmp_path=tmp_path,
@@ -271,6 +335,103 @@ def test_turn_service_runtime_recovers_pending_approval_from_structured_runtime_
     resolved = service.resolve_pending_decision("1")
 
     assert resolved.assistant_message == "Push finished"
+
+
+def test_turn_service_resumes_root_to_tip_before_resolving_pending_approval(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=home_dir,
+        model_adapter=PushThenDoneRuntimeAdapter(),
+    )
+    service = TurnService(
+        runtime=runtime,
+        config=AgentConfig(workspace_root=tmp_path, session_id="default"),
+        home_dir=home_dir,
+    )
+    root = Conversation(session_id="default")
+    root.append(Message(role="user", content="start here"))
+    root.append(Message(role="assistant", content="root answer"))
+    runtime._session_service.save_conversation(root)
+
+    assert service.fork_session(None, "branch", None)[0] == "forked default -> branch"
+    first = service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    assert runtime._session_service.load_pending_decision("branch") is not None
+    assert runtime._session_service.load_pending_decision("default") is None
+
+    fresh_runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=home_dir,
+        model_adapter=DoneRuntimeAdapter(),
+    )
+    fresh_service = TurnService(
+        runtime=fresh_runtime,
+        config=AgentConfig(workspace_root=tmp_path, session_id="default"),
+        home_dir=home_dir,
+    )
+
+    resumed = fresh_service.resume_session("default")
+    resolved = fresh_service.resolve_pending_decision("1")
+
+    assert resumed[0] == "resumed branch"
+    assert fresh_service._config.session_id == "branch"
+    assert fresh_runtime._config.session_id == "branch"
+    assert resolved.assistant_message == "Push finished"
+    assert fresh_runtime._session_service.load_pending_decision("branch") is None
+    assert fresh_runtime._session_service.load_pending_decision("default") is None
+
+
+def test_turn_service_resumes_root_to_tip_before_resolving_pending_clarification(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=home_dir,
+        model_adapter=ClarifyThenWaitingRuntimeAdapter(),
+    )
+    runtime._tool_registry.register(AskUserQuestionTool())
+    service = TurnService(
+        runtime=runtime,
+        config=AgentConfig(workspace_root=tmp_path, session_id="default"),
+        home_dir=home_dir,
+    )
+    root = Conversation(session_id="default")
+    root.append(Message(role="user", content="start here"))
+    root.append(Message(role="assistant", content="root answer"))
+    runtime._session_service.save_conversation(root)
+
+    assert service.fork_session(None, "branch", None)[0] == "forked default -> branch"
+    first = service.handle_user_turn("choose next slice")
+    assert first.turn is not None
+    assert first.turn.status is TurnStatus.WAITING_CLARIFICATION
+    assert runtime._session_service.load_suspended_turn("branch") is not None
+    assert runtime._session_service.load_suspended_turn("default") is None
+
+    fresh_runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=home_dir,
+        model_adapter=ClarificationDoneRuntimeAdapter(),
+    )
+    fresh_runtime._tool_registry.register(AskUserQuestionTool())
+    fresh_service = TurnService(
+        runtime=fresh_runtime,
+        config=AgentConfig(workspace_root=tmp_path, session_id="default"),
+        home_dir=home_dir,
+    )
+
+    resumed = fresh_service.resume_session("default")
+    resolved = fresh_service.resolve_pending_clarification("call_question_1", "Runtime")
+
+    assert resumed[0] == "resumed branch"
+    assert fresh_service._config.session_id == "branch"
+    assert fresh_runtime._config.session_id == "branch"
+    assert resolved.assistant_message == "Runtime slice selected."
+    assert fresh_runtime._session_service.load_suspended_turn("branch") is None
+    assert fresh_runtime._session_service.load_suspended_turn("default") is None
 
 
 def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) -> None:
