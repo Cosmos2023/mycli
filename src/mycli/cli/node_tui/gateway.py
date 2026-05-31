@@ -44,6 +44,19 @@ SUPPORTED_RPC_METHODS = frozenset(
         "turn.submit",
     }
 )
+SUPPORTED_EVENT_STREAMS = frozenset(
+    {
+        "approval.request",
+        "approval.respond",
+        "status.changed",
+        "status.update",
+        "turn.completed",
+        "turn.event",
+        "turn.failed",
+        "turn.interrupted",
+        "turn.started",
+    }
+)
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",
@@ -58,6 +71,10 @@ DECISION_OPTION_LABELS = {
 
 def supported_rpc_methods() -> frozenset[str]:
     return SUPPORTED_RPC_METHODS
+
+
+def supported_event_streams() -> frozenset[str]:
+    return SUPPORTED_EVENT_STREAMS
 
 
 class NodeTuiProcessLike(Protocol):
