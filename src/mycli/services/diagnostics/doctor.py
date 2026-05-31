@@ -50,6 +50,10 @@ _SESSION_DB_REQUIRED_SEARCH_OBJECTS = {
     "conversation_messages_fts_insert": "trigger",
     "conversation_messages_fts_delete": "trigger",
     "conversation_messages_fts_update": "trigger",
+    "history_items_fts": "table",
+    "history_items_fts_insert": "trigger",
+    "history_items_fts_delete": "trigger",
+    "history_items_fts_update": "trigger",
 }
 _SESSION_DB_CHILD_TABLES = (
     "conversation_messages",

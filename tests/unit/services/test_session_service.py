@@ -302,6 +302,27 @@ def test_session_service_searches_sessions_with_bounded_output(tmp_path: Path) -
     )
 
 
+def test_session_service_searches_runtime_history_items(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home", workspace_root=tmp_path / "workspace")
+    service.append_history_items(
+        "demo",
+        (
+            HistoryItem(
+                id="hist_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="runtime history has searchable state",
+                metadata={"role": "assistant"},
+            ),
+        ),
+    )
+
+    assert service.search_sessions("searchable") == (
+        "demo#1 history:assistant_message: runtime history has searchable state",
+    )
+
+
 def test_session_service_search_reports_empty_query(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
 

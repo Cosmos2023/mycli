@@ -171,6 +171,51 @@ def _create_sessions_db(path: Path, *, foreign_keys: bool = True) -> None:
                     new.payload_json
                 );
             END;
+            CREATE VIRTUAL TABLE history_items_fts USING fts5(
+                session_id UNINDEXED,
+                item_id UNINDEXED,
+                sequence_no UNINDEXED,
+                content
+            );
+            CREATE TRIGGER history_items_fts_insert
+            AFTER INSERT ON history_items BEGIN
+                INSERT INTO history_items_fts(
+                    rowid,
+                    session_id,
+                    item_id,
+                    sequence_no,
+                    content
+                )
+                VALUES (
+                    new.rowid,
+                    new.session_id,
+                    new.item_id,
+                    new.sequence_no,
+                    COALESCE(json_extract(new.payload_json, '$.text'), new.payload_json)
+                );
+            END;
+            CREATE TRIGGER history_items_fts_delete
+            AFTER DELETE ON history_items BEGIN
+                DELETE FROM history_items_fts WHERE rowid = old.rowid;
+            END;
+            CREATE TRIGGER history_items_fts_update
+            AFTER UPDATE ON history_items BEGIN
+                DELETE FROM history_items_fts WHERE rowid = old.rowid;
+                INSERT INTO history_items_fts(
+                    rowid,
+                    session_id,
+                    item_id,
+                    sequence_no,
+                    content
+                )
+                VALUES (
+                    new.rowid,
+                    new.session_id,
+                    new.item_id,
+                    new.sequence_no,
+                    COALESCE(json_extract(new.payload_json, '$.text'), new.payload_json)
+                );
+            END;
             """
         )
         connection.execute("INSERT INTO schema_version (version) VALUES (2)")
@@ -681,6 +726,35 @@ def test_doctor_service_fails_session_db_missing_search_objects(tmp_path: Path) 
     assert check.message == (
         "missing search objects: "
         "conversation_messages_fts_delete, conversation_messages_fts_update"
+    )
+
+
+def test_doctor_service_fails_session_db_missing_history_search_objects(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TRIGGER history_items_fts_update")
+        connection.execute("DROP TRIGGER history_items_fts_delete")
+        connection.execute("DROP TABLE history_items_fts")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == (
+        "missing search objects: "
+        "history_items_fts, history_items_fts_delete, history_items_fts_update"
     )
 
 

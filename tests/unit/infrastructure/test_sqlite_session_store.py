@@ -675,6 +675,103 @@ def test_sqlite_session_store_search_backfills_legacy_messages(tmp_path: Path) -
     assert [match.session_id for match in matches] == ["legacy"]
 
 
+def test_sqlite_session_store_searches_runtime_history_items(tmp_path: Path) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    workspace = tmp_path / "workspace"
+    store = SQLiteSessionStore(db_path)
+    store.append_history_items(
+        session_id="demo",
+        workspace_root=workspace,
+        thread_id="thread_demo",
+        items=[
+            {
+                "id": "hist_1",
+                "thread_id": "thread_demo",
+                "turn_id": "turn_1",
+                "type": "assistant_message",
+                "text": "runtime history contains searchable evidence",
+                "metadata": {},
+            }
+        ],
+    )
+
+    matches = store.search_messages("searchable", workspace_root=workspace)
+
+    assert [(match.session_id, match.message_index, match.role) for match in matches] == [
+        ("demo", 1, "history:assistant_message")
+    ]
+    assert matches[0].snippet == "runtime history contains searchable evidence"
+
+
+def test_sqlite_session_store_search_backfills_legacy_history_items(tmp_path: Path) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                workspace_root TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+
+            CREATE TABLE conversation_messages (
+                session_id TEXT NOT NULL,
+                message_index INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, message_index),
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE history_items (
+                session_id TEXT NOT NULL,
+                sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                session_id,
+                workspace_root,
+                thread_id,
+                created_at,
+                updated_at,
+                last_active_at,
+                status
+            )
+            VALUES ('legacy-history', ?, 'legacy-history', 'now', 'now', 'now', 'active')
+            """,
+            (str(workspace),),
+        )
+        connection.execute(
+            """
+            INSERT INTO history_items (session_id, item_id, payload_json)
+            VALUES ('legacy-history', 'hist_1', ?)
+            """,
+            (
+                '{"id": "hist_1", "type": "tool_result", '
+                '"text": "legacy runtime searchable item"}',
+            ),
+        )
+
+    store = SQLiteSessionStore(db_path)
+
+    matches = store.search_messages("searchable", workspace_root=workspace)
+
+    assert [(match.session_id, match.role, match.snippet) for match in matches] == [
+        ("legacy-history", "history:tool_result", "legacy runtime searchable item")
+    ]
+
+
 def test_sqlite_session_store_search_returns_bounded_snippets(tmp_path: Path) -> None:
     db_path = tmp_path / "home" / ".mycli" / "sessions.db"
     workspace = tmp_path / "workspace"

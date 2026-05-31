@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session SQLite search, FTS backfill, bounded search payloads, and migration expectations."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor read-only diagnostics and session DB search-object validation requirements."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This slice crosses storage, service rendering, diagnostics, and tests."}
+{"file": ".trellis/tasks/05-31-session-runtime-history-search-closure/research/current-state.md", "reason": "Current gap analysis for runtime history search parity."}

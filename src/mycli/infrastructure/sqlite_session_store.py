@@ -208,6 +208,55 @@ class SQLiteSessionStore:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                 );
 
+                CREATE VIRTUAL TABLE IF NOT EXISTS history_items_fts USING fts5(
+                    session_id UNINDEXED,
+                    item_id UNINDEXED,
+                    sequence_no UNINDEXED,
+                    content
+                );
+
+                CREATE TRIGGER IF NOT EXISTS history_items_fts_insert
+                AFTER INSERT ON history_items BEGIN
+                    INSERT INTO history_items_fts(
+                        rowid,
+                        session_id,
+                        item_id,
+                        sequence_no,
+                        content
+                    )
+                    VALUES (
+                        new.rowid,
+                        new.session_id,
+                        new.item_id,
+                        new.sequence_no,
+                        COALESCE(json_extract(new.payload_json, '$.text'), new.payload_json)
+                    );
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS history_items_fts_delete
+                AFTER DELETE ON history_items BEGIN
+                    DELETE FROM history_items_fts WHERE rowid = old.rowid;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS history_items_fts_update
+                AFTER UPDATE ON history_items BEGIN
+                    DELETE FROM history_items_fts WHERE rowid = old.rowid;
+                    INSERT INTO history_items_fts(
+                        rowid,
+                        session_id,
+                        item_id,
+                        sequence_no,
+                        content
+                    )
+                    VALUES (
+                        new.rowid,
+                        new.session_id,
+                        new.item_id,
+                        new.sequence_no,
+                        COALESCE(json_extract(new.payload_json, '$.text'), new.payload_json)
+                    );
+                END;
+
                 CREATE TABLE IF NOT EXISTS turn_rollouts (
                     session_id TEXT NOT NULL,
                     sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,6 +308,21 @@ class SQLiteSessionStore:
             LEFT JOIN conversation_messages_fts
                 ON conversation_messages_fts.rowid = conversation_messages.rowid
             WHERE conversation_messages_fts.rowid IS NULL
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO history_items_fts(rowid, session_id, item_id, sequence_no, content)
+            SELECT
+                history_items.rowid,
+                history_items.session_id,
+                history_items.item_id,
+                history_items.sequence_no,
+                COALESCE(json_extract(history_items.payload_json, '$.text'), history_items.payload_json)
+            FROM history_items
+            LEFT JOIN history_items_fts
+                ON history_items_fts.rowid = history_items.rowid
+            WHERE history_items_fts.rowid IS NULL
             """
         )
 
@@ -366,22 +430,54 @@ class SQLiteSessionStore:
         if workspace_root is not None:
             workspace_filter = "AND sessions.workspace_root = ?"
             parameters.append(str(workspace_root))
+        parameters.append(match_query)
+        if workspace_root is not None:
+            parameters.append(str(workspace_root))
         parameters.append(limit)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT
-                    conversation_messages.session_id,
-                    conversation_messages.message_index,
-                    conversation_messages.payload_json
-                FROM conversation_messages_fts
-                JOIN conversation_messages
-                    ON conversation_messages.rowid = conversation_messages_fts.rowid
-                JOIN sessions
-                    ON sessions.session_id = conversation_messages.session_id
-                WHERE conversation_messages_fts MATCH ?
-                {workspace_filter}
-                ORDER BY rank, sessions.last_active_at DESC, conversation_messages.message_index ASC
+                    session_id,
+                    message_index,
+                    payload_json,
+                    source,
+                    rank_order,
+                    last_active_at
+                FROM (
+                    SELECT
+                        conversation_messages.session_id,
+                        conversation_messages.message_index,
+                        conversation_messages.payload_json,
+                        'message' AS source,
+                        conversation_messages_fts.rank AS rank_order,
+                        sessions.last_active_at
+                    FROM conversation_messages_fts
+                    JOIN conversation_messages
+                        ON conversation_messages.rowid = conversation_messages_fts.rowid
+                    JOIN sessions
+                        ON sessions.session_id = conversation_messages.session_id
+                    WHERE conversation_messages_fts MATCH ?
+                    {workspace_filter}
+
+                    UNION ALL
+
+                    SELECT
+                        history_items.session_id,
+                        history_items.sequence_no AS message_index,
+                        history_items.payload_json,
+                        'history' AS source,
+                        history_items_fts.rank AS rank_order,
+                        sessions.last_active_at
+                    FROM history_items_fts
+                    JOIN history_items
+                        ON history_items.rowid = history_items_fts.rowid
+                    JOIN sessions
+                        ON sessions.session_id = history_items.session_id
+                    WHERE history_items_fts MATCH ?
+                    {workspace_filter}
+                )
+                ORDER BY rank_order, last_active_at DESC, message_index ASC
                 LIMIT ?
                 """,
                 parameters,
@@ -400,12 +496,18 @@ class SQLiteSessionStore:
         payload = json.loads(str(row["payload_json"]))
         if not isinstance(payload, dict):
             return None
-        role = payload.get("role")
-        content = self._message_search_content(cast(JsonObject, payload))
+        source = str(row["source"])
+        if source == "history":
+            role = self._history_search_role(cast(JsonObject, payload))
+            content = self._history_search_content(cast(JsonObject, payload))
+        else:
+            role_value = payload.get("role")
+            role = str(role_value) if isinstance(role_value, str) else "unknown"
+            content = self._message_search_content(cast(JsonObject, payload))
         return SessionSearchResult(
             session_id=str(row["session_id"]),
             message_index=int(row["message_index"]),
-            role=str(role) if isinstance(role, str) else "unknown",
+            role=role,
             snippet=self._search_snippet(content, query),
         )
 
@@ -432,6 +534,24 @@ class SQLiteSessionStore:
             ]
             return " ".join(text_parts)
         return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _history_search_role(payload: JsonObject) -> str:
+        item_type = payload.get("type")
+        return f"history:{item_type}" if isinstance(item_type, str) else "history:unknown"
+
+    @staticmethod
+    def _history_search_content(payload: JsonObject) -> str:
+        text = payload.get("text")
+        if isinstance(text, str) and text:
+            return text
+        parts = [
+            payload.get("type"),
+            payload.get("tool_name"),
+            payload.get("call_id"),
+        ]
+        rendered = " ".join(part for part in parts if isinstance(part, str) and part)
+        return rendered or "[history item]"
 
     def _search_snippet(self, content: str, query: str) -> str:
         text = " ".join(content.split())
