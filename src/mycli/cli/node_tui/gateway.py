@@ -26,6 +26,7 @@ from mycli.domain.runtime import (
     PendingDecision,
     RuntimeEventEnvelope,
     RuntimeStreamEvent,
+    SuspendedTurn,
     TurnResponse,
     TurnStatus,
 )
@@ -869,6 +870,7 @@ class NodeTuiGateway:
         if self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
             self._emit_event("status.changed", self._status_payload())
+            self._emit_resume_pending_state()
         return {"session_id": self.service._config.session_id, "lines": lines}
 
     def _handle_trace_export(self, params: dict[str, object]) -> dict[str, object]:
@@ -902,6 +904,23 @@ class NodeTuiGateway:
             "pending_decision": pending is not None,
             "suspended_turn": suspended is not None,
         }
+
+    def _emit_resume_pending_state(self) -> None:
+        pending = self.service._session_service.load_pending_decision(self.service._config.session_id)
+        if pending is not None:
+            self._emit_event(
+                "approval.request",
+                _approval_request_payload(self.service._config.session_id, pending),
+            )
+        suspended = self.service._session_service.load_suspended_turn(self.service._config.session_id)
+        if isinstance(suspended, SuspendedTurn) and suspended.pending_clarification is not None:
+            self._emit_event(
+                "clarify.request",
+                _clarify_request_payload(
+                    client_turn_id=self.service._config.session_id,
+                    suspended=suspended,
+                ),
+            )
 
 
 class _GatewayError(ValueError):
@@ -976,6 +995,27 @@ def _decision_id_for_pending_decision(decision: PendingDecision) -> str:
     if decision.tool_call.call_id:
         return decision.tool_call.call_id
     return DECISION_CURRENT_ALIAS
+
+
+def _clarify_request_payload(
+    *,
+    client_turn_id: str,
+    suspended: SuspendedTurn,
+) -> dict[str, object]:
+    pending = suspended.pending_clarification
+    if pending is None:
+        return {}
+    return {
+        "client_turn_id": client_turn_id,
+        "request_id": pending.request_id,
+        "tool_id": pending.tool_call.call_id or pending.request_id,
+        "call_id": pending.tool_call.call_id or pending.request_id,
+        "tool_name": pending.tool_call.name,
+        "question": pending.question,
+        "options": list(pending.options),
+        "header": pending.header,
+        "multi_select": pending.multi_select,
+    }
 
 
 def _turn_state_for_response(response: TurnResponse) -> str:

@@ -514,6 +514,27 @@ test("status changed snapshot clears stale pending state after session resume", 
   assert.equal(state.status.session_id, "resumed-tip");
 });
 
+test("session changed updates active session id before status snapshot", () => {
+  let state = reduceShellState(initialState(), {
+    type: "bootstrap.result",
+    payload: {
+      session_id: "root",
+      workspace: "/workspace",
+      model: "test",
+      provider: "test/chat",
+      status: { session_id: "root" },
+    },
+  });
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "session.changed",
+    params: { session_id: "branch" },
+  });
+
+  assert.equal(state.sessionId, "branch");
+});
+
 test("turn status tracks waiting approval without appending transcript rows", () => {
   let state = initialState();
   state = reduceShellState(state, {

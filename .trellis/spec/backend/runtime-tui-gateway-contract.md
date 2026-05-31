@@ -264,6 +264,12 @@
   - Gateway `session.resume` must emit `session.changed` first, then a
     `status.changed` snapshot for the same active session so clients clear or
     retain pending state based on the resolved session tip.
+  - If the resolved active session has a persisted pending approval or pending
+    clarification, `session.resume` must then re-emit the concrete
+    `approval.request` or `clarify.request` payload. A boolean
+    `status.changed.pending_decision` / `suspended_turn` flag is not enough for
+    clients to respond because they need the stable `decision_id` or
+    `request_id`.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use
@@ -638,6 +644,10 @@
   `approval.request` and `clarify.request` by deriving ids from reducer state,
   sending the matching gateway request, waiting for the resolution turn, and
   clearing pending state.
+- Integration smoke proving the real Node scripted client can call
+  `session.resume` on an ancestor, receive pending-state payloads for the
+  resolved tip, respond to approval or clarification, and finish with pending
+  state cleared.
 - Transcript reducer test proving blank final answers do not create visible
   assistant rows.
 - Gateway unit test proving `RuntimeStreamEvent(kind="text_delta")` emits

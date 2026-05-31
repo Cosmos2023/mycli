@@ -15,8 +15,10 @@ from mycli.domain.runtime import (
     DecisionAction,
     DecisionKind,
     PendingDecision,
+    PendingClarification,
     RuntimeStreamEvent,
     StopReason,
+    SuspendedTurn,
     TurnRecord,
     TurnResponse,
     TurnStatus,
@@ -981,3 +983,198 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_ma
         "tool recovery final",
     ]
     assert "tool recoverytool recovery" not in assistant_items[-1]["text"]
+
+
+class E2EResumeTipSessionService:
+    def __init__(
+        self,
+        *,
+        pending_decision: PendingDecision | None = None,
+        suspended_turn: SuspendedTurn | None = None,
+    ) -> None:
+        self.pending_decision = pending_decision
+        self.suspended_turn = suspended_turn
+
+    def load_pending_decision(self, session_id: str) -> object | None:
+        return self.pending_decision if session_id == "branch" else None
+
+    def load_suspended_turn(self, session_id: str) -> object | None:
+        return self.suspended_turn if session_id == "branch" else None
+
+    def load_history_items(self, _session_id: str) -> tuple[object, ...]:
+        return ()
+
+    def list_sessions(self, limit: int = 20) -> tuple[object, ...]:
+        del limit
+        return ()
+
+
+class E2EResumeTipService:
+    def __init__(
+        self,
+        workspace_root: Path,
+        *,
+        pending_decision: PendingDecision | None = None,
+        suspended_turn: SuspendedTurn | None = None,
+    ) -> None:
+        self._config = SimpleNamespace(
+            session_id="root",
+            workspace_root=workspace_root,
+            model="gpt-smoke",
+            provider=SimpleNamespace(value="test"),
+            protocol=SimpleNamespace(value="chat_completions"),
+            max_prompt_tokens=12000,
+            tui_startup_mark="default",
+        )
+        self._session_service = E2EResumeTipSessionService(
+            pending_decision=pending_decision,
+            suspended_turn=suspended_turn,
+        )
+        self.resumed: list[str] = []
+        self.resolved_choices: list[str] = []
+        self.clarification_responses: list[tuple[str, str]] = []
+
+    def current_context_window_metrics(self) -> dict[str, object]:
+        return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        return TurnResponse(assistant_message="unexpected turn")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        self.resolved_choices.append(choice)
+        self._session_service.pending_decision = None
+        return TurnResponse(assistant_message="approval resumed on branch")
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        self.clarification_responses.append((request_id, response))
+        self._session_service.suspended_turn = None
+        return TurnResponse(assistant_message="clarification resumed on branch")
+
+    def inspect_usage(self) -> tuple[str, ...]:
+        return ("session=branch",)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        return ("session=branch context=test",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        return (f"mode={mode}",)
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        requested = session_id or self._config.session_id
+        self.resumed.append(requested)
+        self._config.session_id = "branch"
+        return ("resumed branch", "messages=3")
+
+
+def test_run_node_tui_gateway_scripted_resume_tip_then_approval_response(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-resume-tip-approval.json"
+    decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Bash",
+            arguments={"command": "git push"},
+            reason="resume tip approval smoke",
+            call_id="call_resume_approval_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {"type": "session.resume", "session_id": "root"},
+                    {"type": "approval.respond", "choice": "approve_once"},
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EResumeTipService(tmp_path, pending_decision=decision)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.resumed == ["root"]
+    assert service.resolved_choices == ["1"]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["sessionId"] == "branch"
+    assert state["status"]["session_id"] == "branch"
+    assert state["pendingApproval"] is None
+    assert state["pendingClarification"] is None
+    assert state["liveStatus"]["state"] == "completed"
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == ["approval resumed on branch"]
+
+
+def test_run_node_tui_gateway_scripted_resume_tip_then_clarification_response(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-resume-tip-clarification.json"
+    suspended = SuspendedTurn(
+        user_message="choose next slice",
+        conversation=(),
+        suspend_reason=StopReason.CLARIFICATION_REQUIRED,
+        pending_clarification=PendingClarification(
+            request_id="call_resume_question_1",
+            tool_call=ToolCall(
+                name="AskUserQuestion",
+                arguments={
+                    "question": "Which slice should come next?",
+                    "options": [{"label": "Runtime"}, {"label": "TUI"}],
+                },
+                reason="clarify scope",
+                call_id="call_resume_question_1",
+            ),
+            question="Which slice should come next?",
+            options=({"label": "Runtime"}, {"label": "TUI"}),
+            header="Scope",
+            multi_select=False,
+        ),
+    )
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {"type": "session.resume", "session_id": "root"},
+                    {"type": "clarify.respond", "response": "Runtime"},
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EResumeTipService(tmp_path, suspended_turn=suspended)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.resumed == ["root"]
+    assert service.clarification_responses == [("call_resume_question_1", "Runtime")]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["sessionId"] == "branch"
+    assert state["status"]["session_id"] == "branch"
+    assert state["pendingApproval"] is None
+    assert state["pendingClarification"] is None
+    assert state["liveStatus"]["state"] == "completed"
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == ["clarification resumed on branch"]

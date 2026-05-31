@@ -228,6 +228,13 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     if (action.method === "gateway.error") {
       return appendErrorItem(state, action.params, "Gateway error");
     }
+    if (action.method === "session.changed") {
+      const sessionId = String(action.params.session_id ?? "").trim();
+      if (!sessionId) {
+        return state;
+      }
+      return { ...state, sessionId };
+    }
     if (action.method === "message.delta") {
       const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
       return {

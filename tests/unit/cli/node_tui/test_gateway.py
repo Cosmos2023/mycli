@@ -16,8 +16,10 @@ from mycli.domain.runtime import (
     DecisionAction,
     DecisionKind,
     PendingDecision,
+    PendingClarification,
     RuntimeStreamEvent,
     StopReason,
+    SuspendedTurn,
     TurnResponse,
     TurnRecord,
     TurnStatus,
@@ -39,12 +41,13 @@ class FakeSessionService:
     def __init__(self) -> None:
         self.history_items: tuple[HistoryItem, ...] = ()
         self.pending_decision: object | None = None
+        self.suspended_turn: object | None = None
 
     def load_pending_decision(self, _session_id: str) -> object | None:
         return self.pending_decision
 
     def load_suspended_turn(self, _session_id: str) -> object | None:
-        return None
+        return self.suspended_turn
 
     def load_history_items(self, _session_id: str) -> tuple[HistoryItem, ...]:
         return self.history_items
@@ -107,7 +110,7 @@ class FakeService(TurnService):
         del request_id, response
         return TurnResponse(assistant_message="")
 
-    def export_trace_jsonl(self, *, tail: int = 50) -> tuple[str, ...]:
+    def export_trace_jsonl(self, tail: int = 50) -> tuple[str, ...]:
         return tuple(f'{{"kind":"tool_execution","turn_id":"turn_{index}","payload":{{}}}}' for index in range(tail))
 
     def extension_manifest(self) -> dict[str, object]:
@@ -381,6 +384,86 @@ def test_gateway_session_resume_emits_status_snapshot_for_active_session(
     assert events[1][1]["session_id"] == "demo"
     assert events[1][1]["pending_decision"] is False
     assert events[1][1]["suspended_turn"] is False
+
+
+def test_gateway_session_resume_reemits_pending_approval_payload(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Bash",
+            arguments={"command": "git push"},
+            reason="push",
+            call_id="call_resume_approval_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="session.resume", params={"session_id": "demo"})
+    )
+
+    assert response.error is None
+    assert [method for method, _params in events if method != "runtime.event"] == [
+        "session.changed",
+        "status.changed",
+        "approval.request",
+    ]
+    approval = next(params for method, params in events if method == "approval.request")
+    assert approval["decision_id"] == "call_resume_approval_1"
+    assert approval["client_turn_id"] == "demo"
+
+
+def test_gateway_session_resume_reemits_pending_clarification_payload(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    service.fake_session_service.suspended_turn = SuspendedTurn(
+        user_message="choose next slice",
+        conversation=(),
+        pending_clarification=PendingClarification(
+            request_id="call_resume_question_1",
+            tool_call=ToolCall(
+                name="AskUserQuestion",
+                arguments={
+                    "question": "Which slice should come next?",
+                    "options": [{"label": "Runtime"}, {"label": "TUI"}],
+                },
+                reason="clarify scope",
+                call_id="call_resume_question_1",
+            ),
+            question="Which slice should come next?",
+            options=({"label": "Runtime"}, {"label": "TUI"}),
+            header="Scope",
+            multi_select=False,
+        ),
+        suspend_reason=StopReason.CLARIFICATION_REQUIRED,
+    )
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="session.resume", params={"session_id": "demo"})
+    )
+
+    assert response.error is None
+    assert [method for method, _params in events if method != "runtime.event"] == [
+        "session.changed",
+        "status.changed",
+        "clarify.request",
+    ]
+    clarify = next(params for method, params in events if method == "clarify.request")
+    assert clarify["request_id"] == "call_resume_question_1"
+    assert clarify["client_turn_id"] == "demo"
+    assert clarify["question"] == "Which slice should come next?"
 
 
 def test_gateway_trace_export_returns_unprefixed_jsonl_rows(tmp_path: Path) -> None:
@@ -1545,7 +1628,7 @@ def test_gateway_clarify_respond_rejects_blank_response(tmp_path: Path) -> None:
 def test_gateway_decision_resolve_emits_turn_status_for_failures(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = FailingTurnService(tmp_path)
-    service._session_service.pending_decision = PendingDecision(
+    service.fake_session_service.pending_decision = PendingDecision(
         tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
         kind=DecisionKind.NEEDS_CHOICE,
         reason="git push requires confirmation.",

@@ -13,6 +13,7 @@ type ScriptedAction =
       expect_error?: boolean;
     }
   | { type: "clarify.respond"; response: string }
+  | { type: "session.resume"; session_id: string }
   | { type: "turn.submit_interrupt"; message: string };
 
 async function dumpStateIfRequested(state: ReturnType<typeof initialState>): Promise<void> {
@@ -121,6 +122,9 @@ function isScriptedAction(item: unknown): item is ScriptedAction {
   if (type === "clarify.respond") {
     return typeof (item as Record<string, unknown>).response === "string";
   }
+  if (type === "session.resume") {
+    return typeof (item as Record<string, unknown>).session_id === "string";
+  }
   if (type === "turn.submit_interrupt") {
     return typeof (item as Record<string, unknown>).message === "string";
   }
@@ -151,6 +155,10 @@ async function runScriptedAction(
         event.params?.turn_state === "interrupted",
     );
     await waitForInterruptedStatus(client, clientTurnId);
+    return;
+  }
+  if (action.type === "session.resume") {
+    await client.send("session.resume", { session_id: action.session_id });
     return;
   }
   if (action.type === "approval.respond") {
