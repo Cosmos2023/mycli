@@ -788,6 +788,7 @@ class NodeTuiGateway:
         lines = [f"[session] {line}" for line in self.service.resume_session(session_id)]
         if self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
+            self._emit_event("status.changed", self._status_payload())
         return {"session_id": self.service._config.session_id, "lines": lines}
 
     def _handle_trace_export(self, params: dict[str, object]) -> dict[str, object]:

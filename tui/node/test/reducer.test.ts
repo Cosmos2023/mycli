@@ -452,6 +452,46 @@ test("status update tracks live turn state and clears resolved approval", () => 
   assert.equal(state.turnRunning, false);
 });
 
+test("status changed snapshot clears stale pending state after session resume", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.request",
+    params: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "reject", label: "Reject" }],
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "clarify.request",
+    params: {
+      request_id: "question_1",
+      tool_id: "question_1",
+      call_id: "question_1",
+      tool_name: "AskUserQuestion",
+      question: "Which branch?",
+      options: [{ label: "main" }],
+      multi_select: false,
+    },
+  });
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "status.changed",
+    params: {
+      session_id: "resumed-tip",
+      pending_decision: false,
+      suspended_turn: false,
+    },
+  });
+
+  assert.equal(state.pendingApproval, null);
+  assert.equal(state.pendingClarification, null);
+  assert.equal(state.status.session_id, "resumed-tip");
+});
+
 test("turn status tracks waiting approval without appending transcript rows", () => {
   let state = initialState();
   state = reduceShellState(state, {

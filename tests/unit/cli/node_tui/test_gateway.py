@@ -322,6 +322,27 @@ def test_gateway_session_list_and_resume(tmp_path: Path) -> None:
     }
 
 
+def test_gateway_session_resume_emits_status_snapshot_for_active_session(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="session.resume", params={"session_id": "demo"})
+    )
+
+    assert response.error is None
+    assert events[0] == ("session.changed", {"session_id": "demo"})
+    assert events[1][0] == "status.changed"
+    assert events[1][1]["session_id"] == "demo"
+    assert events[1][1]["pending_decision"] is False
+    assert events[1][1]["suspended_turn"] is False
+
+
 def test_gateway_trace_export_returns_unprefixed_jsonl_rows(tmp_path: Path) -> None:
     gateway = NodeTuiGateway(service=FakeService(tmp_path))
 

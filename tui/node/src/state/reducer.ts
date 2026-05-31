@@ -374,6 +374,8 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         status: action.params,
         pendingApproval: action.params.pending_decision === false ? null : state.pendingApproval,
+        pendingClarification:
+          action.params.suspended_turn === false ? null : state.pendingClarification,
       };
     }
     if (action.method === "turn.failed") {

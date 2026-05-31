@@ -205,6 +205,9 @@
     `session.resume`.
   - `session.changed` is a direct gateway notification and is not currently
     mirrored through `runtime.event` when emitted outside `_emit_event`.
+  - Gateway `session.resume` must emit `session.changed` first, then a
+    `status.changed` snapshot for the same active session so clients clear or
+    retain pending state based on the resolved session tip.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use
@@ -221,7 +224,8 @@
   - `pendingClarification` is driven by `clarify.request` and displayed as a
     distinct `clarification` transcript row. It must not reuse approval state or
     approval response keybindings.
-  - `pendingClarification` is cleared by `clarify.respond` or terminal status.
+  - `pendingClarification` is cleared by `clarify.respond`, terminal status, or
+    a `status.changed` snapshot with `suspended_turn === false`.
   - While `pendingClarification` exists, plain TUI input submit sends
     `clarify.respond` with `{request_id, response}` instead of `turn.submit`.
     Slash commands remain slash commands.
