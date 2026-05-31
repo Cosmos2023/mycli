@@ -159,9 +159,11 @@ return tuple(format_match(match) for match in matches)
 ### 2. Signatures
 
 - Store:
-  `SessionStore.session_maintenance_report(workspace_root: Path | None = None) -> SessionMaintenanceReport`
+  `SessionStore.session_maintenance_report(workspace_root: Path | None = None, candidate_limit: int = 5) -> SessionMaintenanceReport`
 - Domain payload:
-  `SessionMaintenanceReport(workspace_session_count, empty_session_count, db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
+  `SessionMaintenanceReport(workspace_session_count, empty_session_count, empty_session_candidates, empty_session_candidates_omitted, db_size_bytes, page_count, freelist_count, page_size, dry_run=True)`
+- Candidate payload:
+  `SessionMaintenanceCandidate(session_id, last_active_at, status)`
 - CLI slash command: `/session-maintenance`
 
 ### 3. Contracts
@@ -178,16 +180,19 @@ return tuple(format_match(match) for match in matches)
 - Sessions in other workspaces -> excluded from `workspace_session_count` and `empty_session_count`.
 - Session has messages -> not empty.
 - Session has only summaries -> not empty.
+- Empty candidates are ordered by oldest `last_active_at`, then `session_id`.
+- Empty candidate details are bounded by `candidate_limit`; omitted count is `empty_session_count - len(empty_session_candidates)`.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: `/session-maintenance` reports `dry_run=true`, workspace counts, empty counts, and SQLite page counters.
+- Good: `/session-maintenance` reports `dry_run=true`, workspace counts, empty counts, bounded empty candidates, and SQLite page counters.
 - Base: A fresh DB reports zero workspace sessions without mutating data beyond normal store initialization.
 - Bad: Running `VACUUM`, deleting rows, or repairing orphaned state from the maintenance report path.
 
 ### 6. Tests Required
 
 - Store test for workspace-scoped total and empty-session counts.
+- Store test for bounded, workspace-scoped empty candidate details and omitted count.
 - Service/application test for formatted `key=value` lines.
 - CLI/TUI completion or command-routing tests for `/session-maintenance`.
 

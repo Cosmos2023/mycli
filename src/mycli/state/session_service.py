@@ -586,7 +586,7 @@ class SessionService:
 
     def inspect_session_maintenance(self) -> tuple[str, ...]:
         report = self.session_maintenance_report()
-        return (
+        lines = [
             f"dry_run={str(report.dry_run).lower()}",
             f"workspace_sessions={report.workspace_session_count}",
             f"empty_sessions={report.empty_session_count}",
@@ -594,7 +594,16 @@ class SessionService:
             f"page_count={report.page_count}",
             f"freelist_count={report.freelist_count}",
             f"page_size={report.page_size}",
+        ]
+        lines.extend(
+            f"empty_candidate={candidate.session_id} "
+            f"status={candidate.status} "
+            f"last_active_at={candidate.last_active_at}"
+            for candidate in report.empty_session_candidates
         )
+        if report.empty_session_candidates_omitted:
+            lines.append(f"empty_candidates_omitted={report.empty_session_candidates_omitted}")
+        return tuple(lines)
 
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
         return list(ContextManager().messages_from_history(self.load_history_items(session_id)))

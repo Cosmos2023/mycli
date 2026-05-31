@@ -31,9 +31,18 @@ class SessionSearchResult:
 
 
 @dataclass(slots=True, frozen=True)
+class SessionMaintenanceCandidate:
+    session_id: str
+    last_active_at: str
+    status: str
+
+
+@dataclass(slots=True, frozen=True)
 class SessionMaintenanceReport:
     workspace_session_count: int
     empty_session_count: int
+    empty_session_candidates: tuple[SessionMaintenanceCandidate, ...]
+    empty_session_candidates_omitted: int
     db_size_bytes: int
     page_count: int
     freelist_count: int
@@ -144,4 +153,5 @@ class SessionStore(Protocol):
         self,
         *,
         workspace_root: Path | None = None,
+        candidate_limit: int = 5,
     ) -> SessionMaintenanceReport: ...

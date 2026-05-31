@@ -684,7 +684,69 @@ def test_sqlite_session_store_reports_session_maintenance_dry_run(
     assert report.dry_run is True
     assert report.workspace_session_count == 3
     assert report.empty_session_count == 1
+    assert [candidate.session_id for candidate in report.empty_session_candidates] == ["empty"]
+    assert report.empty_session_candidates[0].status == "active"
+    assert report.empty_session_candidates[0].last_active_at
+    assert report.empty_session_candidates_omitted == 0
     assert report.db_size_bytes > 0
     assert report.page_count > 0
     assert report.freelist_count >= 0
     assert report.page_size > 0
+
+
+def test_sqlite_session_store_bounds_session_maintenance_candidates(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+    other_workspace = tmp_path / "other-workspace"
+
+    for session_id in ("newer-empty", "older-empty", "newest-empty"):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+    store.replace_conversation(
+        session_id="with-message",
+        workspace_root=workspace,
+        thread_id="with-message",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    store.replace_conversation(
+        session_id="other-empty",
+        workspace_root=other_workspace,
+        thread_id="other-empty",
+        messages=[],
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-02T00:00:00+00:00' "
+            "WHERE session_id = 'newer-empty'"
+        )
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-01T00:00:00+00:00' "
+            "WHERE session_id = 'older-empty'"
+        )
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-03T00:00:00+00:00' "
+            "WHERE session_id = 'newest-empty'"
+        )
+
+    report = store.session_maintenance_report(
+        workspace_root=workspace,
+        candidate_limit=2,
+    )
+
+    assert report.empty_session_count == 3
+    assert [candidate.session_id for candidate in report.empty_session_candidates] == [
+        "older-empty",
+        "newer-empty",
+    ]
+    assert [candidate.last_active_at for candidate in report.empty_session_candidates] == [
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-02T00:00:00+00:00",
+    ]
+    assert report.empty_session_candidates_omitted == 1

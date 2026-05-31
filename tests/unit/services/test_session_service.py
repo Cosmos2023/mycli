@@ -202,6 +202,8 @@ def test_session_service_formats_session_maintenance_report(tmp_path: Path) -> N
     assert "dry_run=true" in lines
     assert "workspace_sessions=2" in lines
     assert "empty_sessions=1" in lines
+    assert any(line.startswith("empty_candidate=empty status=active ") for line in lines)
+    assert "empty_candidates_omitted=1" not in lines
     assert any(line.startswith("db_size_bytes=") for line in lines)
     assert any(line.startswith("page_count=") for line in lines)
     assert any(line.startswith("freelist_count=") for line in lines)

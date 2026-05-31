@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify report stays read-only and bounded"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify coverage and cross-layer formatting"}
+{"file": ".trellis/tasks/05-31-session-maintenance-candidate-details/prd.md", "reason": "Verify implementation against acceptance criteria"}

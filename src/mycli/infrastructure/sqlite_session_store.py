@@ -14,6 +14,7 @@ from typing import Callable, Iterator, TypeVar, cast
 from mycli.domain.session_store import (
     JsonArray,
     JsonObject,
+    SessionMaintenanceCandidate,
     SessionMaintenanceReport,
     SessionOverview,
     SessionSearchResult,
@@ -924,12 +925,14 @@ class SQLiteSessionStore:
         self,
         *,
         workspace_root: Path | None = None,
+        candidate_limit: int = 5,
     ) -> SessionMaintenanceReport:
         parameters: list[object] = []
         where_clause = ""
         if workspace_root is not None:
             where_clause = "WHERE sessions.workspace_root = ?"
             parameters.append(str(workspace_root))
+        normalized_candidate_limit = max(candidate_limit, 0)
         with self._connect() as connection:
             session_count = int(
                 connection.execute(
@@ -957,13 +960,47 @@ class SQLiteSessionStore:
                     parameters,
                 ).fetchone()["count"]
             )
+            candidate_rows = connection.execute(
+                f"""
+                SELECT session_id, last_active_at, status
+                FROM (
+                    SELECT
+                        sessions.session_id,
+                        sessions.last_active_at,
+                        sessions.status,
+                        COUNT(conversation_messages.message_index) AS message_count,
+                        COUNT(session_summaries.summary_index) AS summary_count
+                    FROM sessions
+                    LEFT JOIN conversation_messages
+                        ON conversation_messages.session_id = sessions.session_id
+                    LEFT JOIN session_summaries
+                        ON session_summaries.session_id = sessions.session_id
+                    {where_clause}
+                    GROUP BY sessions.session_id, sessions.last_active_at, sessions.status
+                    HAVING message_count = 0 AND summary_count = 0
+                )
+                ORDER BY last_active_at ASC, session_id ASC
+                LIMIT ?
+                """,
+                [*parameters, normalized_candidate_limit],
+            ).fetchall()
             page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
             freelist_count = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
             page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
         db_size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
+        candidates = tuple(
+            SessionMaintenanceCandidate(
+                session_id=str(row["session_id"]),
+                last_active_at=str(row["last_active_at"]),
+                status=str(row["status"]),
+            )
+            for row in candidate_rows
+        )
         return SessionMaintenanceReport(
             workspace_session_count=session_count,
             empty_session_count=empty_session_count,
+            empty_session_candidates=candidates,
+            empty_session_candidates_omitted=max(empty_session_count - len(candidates), 0),
             db_size_bytes=db_size_bytes,
             page_count=page_count,
             freelist_count=freelist_count,
