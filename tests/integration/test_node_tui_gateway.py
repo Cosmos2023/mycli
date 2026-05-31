@@ -293,6 +293,18 @@ class E2EWaitingStateService:
     def resolve_pending_decision(self, choice: str) -> TurnResponse:
         self.resolved_choices.append(choice)
         self._session_service.pending_decision = None
+        if choice == "2":
+            return TurnResponse(
+                assistant_message="Rejected Bash. Pending decision cleared.",
+                turn=TurnRecord(
+                    thread_id="waiting-smoke",
+                    turn_id="turn_rejected_1",
+                    status=TurnStatus.REJECTED,
+                    started_at="2026-05-31T00:00:00Z",
+                    stop_reason=StopReason.APPROVAL_REJECTED,
+                    user_message="needs approval",
+                ),
+            )
         return TurnResponse(assistant_message="approval resolved")
 
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
@@ -359,6 +371,43 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_waiting_state_route
         "approval resolved",
         "clarification resolved",
     ]
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_approval_reject(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-approval-reject-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    "needs approval",
+                    {"type": "approval.respond", "choice": "reject"},
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EWaitingStateService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["needs approval"]
+    assert service.resolved_choices == ["2"]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["pendingApproval"] is None
+    assert state["pendingClarification"] is None
+    assert state["liveStatus"]["state"] == "rejected"
+    assert state["liveStatus"]["message"] == "Rejected Bash. Pending decision cleared."
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert assistant_items == []
 
 
 class E2EToolLifecycleService:
