@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import { resolve } from "node:path";
 import { GatewayClient, GatewayRequestError } from "../src/protocol/client.ts";
 import {
+  GATEWAY_ERROR_CODES,
   GATEWAY_EVENT_PAYLOAD_CONTRACTS,
   KNOWN_GATEWAY_EVENT_METHODS,
 } from "../src/protocol/types.ts";
@@ -208,6 +209,20 @@ test("known TypeScript event methods match Python advertised gateway streams", a
   const exitCode = await new Promise<number | null>((resolve) => python.on("close", resolve));
   assert.equal(exitCode, 0, stderr);
   assert.deepEqual(KNOWN_GATEWAY_EVENT_METHODS.slice().sort(), JSON.parse(stdout));
+});
+
+test("TypeScript gateway error codes match Python manifest taxonomy", async () => {
+  const pythonManifest = await pythonGatewayManifest();
+  const gatewayError = (pythonManifest.event_streams as Array<Record<string, unknown>>).find(
+    (entry) => entry.name === "gateway.error",
+  );
+  const payloadSchema = gatewayError?.payload_schema as Record<string, unknown> | undefined;
+  const properties = payloadSchema?.properties as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  const codeSchema = properties?.code;
+
+  assert.deepEqual(GATEWAY_ERROR_CODES, codeSchema?.enum);
 });
 
 test("TypeScript payload contracts match Python manifest schemas", async () => {

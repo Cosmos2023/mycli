@@ -174,6 +174,16 @@ export type GatewayErrorCode =
   | "clarification_not_pending"
   | "incompatible_protocol";
 
+export const GATEWAY_ERROR_CODES = [
+  "internal_error",
+  "invalid_params",
+  "method_not_found",
+  "turn_in_progress",
+  "decision_not_pending",
+  "clarification_not_pending",
+  "incompatible_protocol",
+] as const satisfies readonly GatewayErrorCode[];
+
 export type GatewayErrorPayload = {
   code: GatewayErrorCode;
   message: string;
@@ -296,15 +306,7 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
     required: ["code", "message"],
     properties: ["code", "detail", "message", "method"],
     enums: {
-      code: [
-        "internal_error",
-        "invalid_params",
-        "method_not_found",
-        "turn_in_progress",
-        "decision_not_pending",
-        "clarification_not_pending",
-        "incompatible_protocol",
-      ],
+      code: GATEWAY_ERROR_CODES,
     },
   },
   "message.complete": {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
+from mycli.domain.runtime.gateway_contract import GATEWAY_ERROR_CODES
 from mycli.services.extensions import ExtensionManifestService
 
 
@@ -70,6 +71,7 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "clarification_not_pending",
         "incompatible_protocol",
     ]
+    assert schemas["gateway.error"]["properties"]["code"]["enum"] == list(GATEWAY_ERROR_CODES)
     assert schemas["approval.respond"]["properties"]["choice"]["enum"] == [
         "approve_once",
         "reject",

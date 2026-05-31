@@ -149,6 +149,11 @@
     `internal_error`, `invalid_params`, `method_not_found`,
     `turn_in_progress`, `decision_not_pending`, or
     `clarification_not_pending`, or `incompatible_protocol`
+  - Python exposes the source taxonomy as `GATEWAY_ERROR_CODES` from
+    `mycli.domain.runtime.gateway_contract`; Node TUI exposes the matching
+    `GATEWAY_ERROR_CODES` runtime constant and `GatewayErrorCode` type from
+    `tui/node/src/protocol/types.ts`. Node tests must compare the TypeScript
+    constant against the Python extension manifest schema.
   - `message`: bounded user-facing error text
   - `detail`: optional bounded diagnostic detail
   - `method`: optional JSON-RPC request method that triggered the error
