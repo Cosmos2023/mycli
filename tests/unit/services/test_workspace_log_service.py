@@ -192,3 +192,140 @@ def test_workspace_log_service_inspects_log_paths_and_recent_lines(tmp_path: Pat
     assert lines[3] == f"model_raw={tmp_path / 'log' / 'model-raw' / 'demo'}"
     assert any("ERROR [demo] second two" in line for line in lines)
     assert all("first one" not in line for line in lines)
+    assert f"log_rotation_max_bytes={5 * 1024 * 1024}" in lines
+    assert "log_rotation_backup_count=3" in lines
+
+
+def test_workspace_log_service_rotates_agent_log_with_bounded_backups(tmp_path: Path) -> None:
+    service = WorkspaceLogService(
+        workspace_root=tmp_path,
+        session_id="demo",
+        now_provider=lambda: datetime(2026, 4, 11, 12, 30, 45, tzinfo=timezone.utc),
+        max_log_bytes=120,
+        backup_count=2,
+    )
+
+    for index in range(5):
+        service.log(
+            level=LogLevel.INFO,
+            event=f"event_{index}",
+            message=f"message {index} {'x' * 80}",
+        )
+
+    log_dir = tmp_path / "log"
+    agent_log = (log_dir / "agent.log").read_text(encoding="utf-8")
+
+    assert "event_4" in agent_log
+    assert (log_dir / "agent.log.1").exists()
+    assert (log_dir / "agent.log.2").exists()
+    assert not (log_dir / "agent.log.3").exists()
+
+
+def test_workspace_log_service_rotates_errors_log_independently(tmp_path: Path) -> None:
+    service = WorkspaceLogService(
+        workspace_root=tmp_path,
+        session_id="demo",
+        now_provider=lambda: datetime(2026, 4, 11, 12, 30, 45, tzinfo=timezone.utc),
+        max_log_bytes=130,
+        backup_count=1,
+    )
+
+    service.log(level=LogLevel.INFO, event="info_only", message="x" * 90)
+    for index in range(3):
+        service.log(level=LogLevel.ERROR, event=f"error_{index}", message="y" * 90)
+
+    log_dir = tmp_path / "log"
+    errors_log = (log_dir / "errors.log").read_text(encoding="utf-8")
+    errors_backup = (log_dir / "errors.log.1").read_text(encoding="utf-8")
+
+    assert "error_2" in errors_log
+    assert "info_only" not in errors_log
+    assert "ERROR [demo]" in errors_backup
+    assert (log_dir / "agent.log.1").exists()
+
+
+def test_workspace_log_service_rotates_model_events_jsonl(tmp_path: Path) -> None:
+    service = WorkspaceLogService(
+        workspace_root=tmp_path,
+        now_provider=lambda: datetime(2026, 4, 11, 12, 30, 45, tzinfo=timezone.utc),
+        max_log_bytes=260,
+        backup_count=1,
+    )
+
+    for index in range(4):
+        service.log_model_event(
+            ModelLogEvent(
+                timestamp="2026-04-11T12:30:45Z",
+                level=LogLevel.INFO,
+                event="model_request_started",
+                session_id="demo",
+                turn_id=f"turn_{index}",
+                protocol="responses",
+                model="gpt-test",
+                provider="example.invalid",
+                message=f"Sent model request {index}",
+            )
+        )
+
+    model_events = tmp_path / "log" / "model-events.jsonl"
+    active_rows = [
+        json.loads(line)
+        for line in model_events.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+
+    assert active_rows
+    assert active_rows[-1]["turn_id"] == "turn_3"
+    assert (tmp_path / "log" / "model-events.jsonl.1").exists()
+
+
+def test_workspace_log_service_redacts_before_rotating(tmp_path: Path) -> None:
+    service = WorkspaceLogService(
+        workspace_root=tmp_path,
+        session_id="demo",
+        now_provider=lambda: datetime(2026, 4, 11, 12, 30, 45, tzinfo=timezone.utc),
+        max_log_bytes=110,
+        backup_count=1,
+    )
+
+    service.log(
+        level=LogLevel.ERROR,
+        event="request_failed",
+        message="Authorization: Bearer sk-secret-token " + ("x" * 80),
+    )
+    service.log(
+        level=LogLevel.ERROR,
+        event="request_failed_again",
+        message="api_key=plain-secret-token " + ("y" * 80),
+    )
+
+    combined = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((tmp_path / "log").glob("*.log*"))
+    )
+
+    assert "sk-secret-token" not in combined
+    assert "plain-secret-token" not in combined
+    assert "[REDACTED]" in combined
+
+
+def test_workspace_log_service_truncates_on_overflow_when_backup_count_is_zero(
+    tmp_path: Path,
+) -> None:
+    service = WorkspaceLogService(
+        workspace_root=tmp_path,
+        session_id="demo",
+        now_provider=lambda: datetime(2026, 4, 11, 12, 30, 45, tzinfo=timezone.utc),
+        max_log_bytes=100,
+        backup_count=0,
+    )
+
+    service.log(level=LogLevel.INFO, event="first", message="x" * 80)
+    service.log(level=LogLevel.INFO, event="second", message="y" * 80)
+
+    log_dir = tmp_path / "log"
+    agent_log = (log_dir / "agent.log").read_text(encoding="utf-8")
+
+    assert "second" in agent_log
+    assert "first" not in agent_log
+    assert not (log_dir / "agent.log.1").exists()

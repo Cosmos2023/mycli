@@ -30,6 +30,8 @@ _ASSIGNMENT_PATTERN = re.compile(
     r"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password)[A-Za-z0-9_.-]*)(\s*[:=]\s*)([\"']?)([^\"'\s,;}]+)(\3)"
 )
 _OPENAI_KEY_PATTERN = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{6,}\b")
+_DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024
+_DEFAULT_LOG_BACKUP_COUNT = 3
 
 
 class WorkspaceLogService:
@@ -39,12 +41,16 @@ class WorkspaceLogService:
         logs_root: Path | None = None,
         session_id: str | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        max_log_bytes: int = _DEFAULT_MAX_LOG_BYTES,
+        backup_count: int = _DEFAULT_LOG_BACKUP_COUNT,
     ) -> None:
         self._workspace_root = workspace_root
         self._logs_root = logs_root or (workspace_root / "log")
         self._raw_root = self._logs_root / "model-raw"
         self._session_id = session_id
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self._max_log_bytes = max(0, max_log_bytes)
+        self._backup_count = max(0, backup_count)
 
     def set_session_id(self, session_id: str | None) -> None:
         self._session_id = session_id
@@ -70,10 +76,8 @@ class WorkspaceLogService:
 
     def log_model_event(self, event: ModelLogEvent) -> None:
         path = self._logs_root / "model-events.jsonl"
-        ensure_parent(path)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(self._redact_payload(event.to_dict()), ensure_ascii=False))
-            handle.write("\n")
+        line = json.dumps(self._redact_payload(event.to_dict()), ensure_ascii=False)
+        self._append_line(path, line)
         self.log(
             level=event.level,
             event=event.event,
@@ -153,6 +157,8 @@ class WorkspaceLogService:
             f"errors_log={self.error_log_path()}",
             f"model_events={self.model_events_path()}",
             f"model_raw={self.model_raw_dir()}",
+            f"log_rotation_max_bytes={self._max_log_bytes}",
+            f"log_rotation_backup_count={self._backup_count}",
         ]
         for line in self._tail_lines(self.agent_log_path(), tail):
             lines.append(f"tail: {line}")
@@ -160,9 +166,28 @@ class WorkspaceLogService:
 
     def _append_line(self, path: Path, line: str) -> None:
         ensure_parent(path)
+        encoded_line = f"{line}\n".encode("utf-8")
+        self._rotate_if_needed(path, incoming_bytes=len(encoded_line))
         with path.open("a", encoding="utf-8") as handle:
             handle.write(line)
             handle.write("\n")
+
+    def _rotate_if_needed(self, path: Path, *, incoming_bytes: int) -> None:
+        if self._max_log_bytes <= 0 or not path.exists():
+            return
+        if path.stat().st_size + incoming_bytes <= self._max_log_bytes:
+            return
+        if self._backup_count == 0:
+            path.write_text("", encoding="utf-8")
+            return
+        oldest = path.with_name(f"{path.name}.{self._backup_count}")
+        if oldest.exists():
+            oldest.unlink()
+        for index in range(self._backup_count - 1, 0, -1):
+            source = path.with_name(f"{path.name}.{index}")
+            if source.exists():
+                source.replace(path.with_name(f"{path.name}.{index + 1}"))
+        path.replace(path.with_name(f"{path.name}.1"))
 
     def _build_raw_file_name(self, *, kind: str, session_id: str, turn_id: str) -> str:
         safe_session_id = self._safe_path_part(session_id)

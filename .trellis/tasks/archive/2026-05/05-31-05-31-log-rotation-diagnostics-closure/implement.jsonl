@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Workspace logging layout, redaction, log levels, and diagnostics contract."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor/log redaction expectations and read-only diagnostics boundaries."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Rotation crosses runtime logging, tests, slash log inspection, and doctor compatibility."}
+{"file": ".trellis/tasks/05-31-05-31-log-rotation-diagnostics-closure/research/current-state.md", "reason": "Current bounded-log gap and slice direction."}

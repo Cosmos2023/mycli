@@ -43,6 +43,11 @@ the local log root and must never become provider transcript inputs.
   - `model-events.jsonl`: one redacted model event JSON object per line.
   - `model-raw/<safe-session-id>/*.json`: redacted raw request/response/error
     payloads bucketed by session.
+- `agent.log`, `errors.log`, and `model-events.jsonl` use size-based rotation
+  from `WorkspaceLogService` before append. The default active-file cap is
+  5 MiB with 3 numbered backups (`.1`, `.2`, `.3`). Rotation is per file, has
+  no time dimension, and does not apply to `model-raw/<session>/*.json`
+  payloads.
 - Operational log lines include the active session tag when known, for example
   `2026-05-29T12:00:00Z INFO [demo] turn_started ...`.
 - Runtime session changes must call `WorkspaceLogService.set_session_id()` from
@@ -126,6 +131,9 @@ the local log root and must never become provider transcript inputs.
 - Missing log files during `/logs` inspection -> return paths and no tail lines;
   do not raise.
 - Warning/error event -> append to both `agent.log` and `errors.log`.
+- A log append that would exceed the active file cap -> rotate numbered
+  backups before writing the redacted line. Backup count `0` truncates the
+  active file on overflow without retaining backups.
 - Secret-like text in message/context/raw payload -> redact before persistence.
 - Risky tool call matches a session-scoped approval allowance -> append an
   `approval_auto_allowed` runtime trace row and an info-level workspace log
