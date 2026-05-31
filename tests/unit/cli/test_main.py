@@ -1159,6 +1159,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_session_maintenance(self) -> tuple[str, ...]:
             return ("dry_run=true", "workspace_sessions=2", "empty_sessions=1")
 
+        def apply_session_maintenance_empty_cleanup(self) -> tuple[str, ...]:
+            return ("dry_run=false", "deleted_empty_sessions=1", "deleted_session=empty")
+
         def search_sessions(self, query: str) -> tuple[str, ...]:
             return (f"demo#1 assistant: {query}",)
 
@@ -1230,6 +1233,11 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         "[session] dry_run=true",
         "[session] workspace_sessions=2",
         "[session] empty_sessions=1",
+    ]
+    assert list(handler("/session-maintenance --apply-empty")) == [
+        "[session] dry_run=false",
+        "[session] deleted_empty_sessions=1",
+        "[session] deleted_session=empty",
     ]
     assert list(handler("/search checkpoint")) == ["[search] demo#1 assistant: checkpoint"]
     assert list(handler("/undo")) == ["[undo] Restored notes.txt"]

@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify SQLite session cleanup remains bounded and recovery-safe."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify maintenance behavior is explicit and test-backed."}
+{"file":".trellis/tasks/05-31-session-maintenance-apply-empty-cleanup/prd.md","reason":"Acceptance criteria for the cleanup slice."}

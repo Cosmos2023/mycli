@@ -332,6 +332,30 @@ def test_session_service_formats_session_maintenance_report(tmp_path: Path) -> N
     assert any(line.startswith("page_size=") for line in lines)
 
 
+def test_session_service_formats_session_maintenance_apply_result(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    service = SessionService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service.save_conversation(Conversation(session_id="empty"))
+    service.save_conversation(
+        Conversation(
+            session_id="with-message",
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    lines = service.apply_session_maintenance_empty_cleanup()
+
+    assert "dry_run=false" in lines
+    assert "deleted_empty_sessions=1" in lines
+    assert "deleted_session=empty" in lines
+    assert "empty_sessions_remaining=0" in lines
+    assert any(line.startswith("db_size_bytes=") for line in lines)
+    assert service.load_conversation("with-message").messages == [
+        Message(role="user", content="hello")
+    ]
+    assert [overview.session_id for overview in service.list_sessions()] == ["with-message"]
+
+
 def test_session_service_round_trips_message_metadata(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     conversation = Conversation(session_id="demo")

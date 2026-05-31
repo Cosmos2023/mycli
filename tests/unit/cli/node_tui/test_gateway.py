@@ -289,7 +289,11 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
         {
             "value": "/session-maintenance",
             "description": "Show session storage maintenance dry-run",
-        }
+        },
+        {
+            "value": "/session-maintenance --apply-empty",
+            "description": "Delete empty session maintenance candidates",
+        },
     ]
 
 

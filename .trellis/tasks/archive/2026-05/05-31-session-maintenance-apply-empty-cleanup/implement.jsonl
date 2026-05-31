@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Session cleanup touches SQLite persistence and must preserve recovery invariants."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Session maintenance and doctor safety rules define read-only vs explicit cleanup boundaries."}
+{"file":".trellis/spec/backend/runtime-tui-gateway-contract.md","reason":"Slash command exposure and Node TUI command routing must remain compatible."}
+{"file":".trellis/tasks/05-31-session-maintenance-apply-empty-cleanup/research/current-state.md","reason":"Current state and chosen safety boundary for this cleanup slice."}

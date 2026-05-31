@@ -94,6 +94,14 @@ Questions to answer:
 - Session maintenance diagnostics must not classify runtime-only sessions as
   empty. `history_items`, `turn_rollouts`, and `session_state` rows count as
   durable session content even when legacy `conversation_messages` is empty.
+- `/session-maintenance` is read-only by default. Empty-session cleanup requires
+  the explicit `/session-maintenance --apply-empty` form, must recompute
+  candidates at apply time, and must only delete workspace-scoped sessions that
+  still have no conversation messages, summaries, history items, turn rollouts,
+  or session state.
+- Empty-session cleanup must preserve sessions that participate in conversation
+  lineage as forked children or as parents of other sessions. Lineage pruning
+  requires a separate explicit policy.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.
@@ -167,6 +175,9 @@ Questions to answer:
   rows, and bounded scan reporting.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
+- Unit test session maintenance cleanup for workspace-scoped empty sessions,
+  runtime-state protection, lineage protection, bounded apply limits, and CLI
+  routing through `/session-maintenance --apply-empty`.
 - Node protocol test for event method plus required-field, property-name, and
   enum-value parity with Python gateway contract/manifest.
 - CLI test for `mycli doctor` command parsing and no secret leakage.

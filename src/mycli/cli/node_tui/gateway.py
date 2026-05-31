@@ -43,6 +43,7 @@ COMMAND_OVERLAYS = {
     "/context",
     "/sessions",
     "/session-maintenance",
+    "/session-maintenance --apply-empty",
     "/release-notes",
 }
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
@@ -1024,6 +1025,7 @@ def _slash_description(command: str) -> str:
         "/resume <session>": "Resume a saved session",
         "/sessions": "List saved sessions",
         "/session-maintenance": "Show session storage maintenance dry-run",
+        "/session-maintenance --apply-empty": "Delete empty session maintenance candidates",
         "/quit": "Exit mycli",
     }
     return descriptions.get(command, "")

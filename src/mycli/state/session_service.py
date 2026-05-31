@@ -605,6 +605,31 @@ class SessionService:
             lines.append(f"empty_candidates_omitted={report.empty_session_candidates_omitted}")
         return tuple(lines)
 
+    def apply_session_maintenance_empty_cleanup(self) -> tuple[str, ...]:
+        result = self._store.apply_session_maintenance_empty_cleanup(
+            workspace_root=self._workspace_root
+        )
+        lines = [
+            f"dry_run={str(result.dry_run).lower()}",
+            f"deleted_empty_sessions={len(result.deleted_empty_sessions)}",
+        ]
+        lines.extend(f"deleted_session={session_id}" for session_id in result.deleted_empty_sessions)
+        lines.extend(
+            [
+                f"workspace_sessions={result.workspace_session_count}",
+                f"empty_sessions_remaining={result.empty_session_count}",
+                f"db_size_bytes={result.db_size_bytes}",
+                f"page_count={result.page_count}",
+                f"freelist_count={result.freelist_count}",
+                f"page_size={result.page_size}",
+            ]
+        )
+        if result.empty_session_candidates_omitted:
+            lines.append(
+                f"empty_candidates_omitted={result.empty_session_candidates_omitted}"
+            )
+        return tuple(lines)
+
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
         return list(ContextManager().messages_from_history(self.load_history_items(session_id)))
 

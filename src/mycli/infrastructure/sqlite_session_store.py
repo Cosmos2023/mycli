@@ -14,6 +14,7 @@ from typing import Callable, Iterator, TypeVar, cast
 from mycli.domain.session_store import (
     JsonArray,
     JsonObject,
+    SessionMaintenanceApplyResult,
     SessionMaintenanceCandidate,
     SessionMaintenanceReport,
     SessionOverview,
@@ -953,11 +954,8 @@ class SQLiteSessionStore:
         workspace_root: Path | None = None,
         candidate_limit: int = 5,
     ) -> SessionMaintenanceReport:
-        parameters: list[object] = []
-        where_clause = ""
-        if workspace_root is not None:
-            where_clause = "WHERE sessions.workspace_root = ?"
-            parameters.append(str(workspace_root))
+        parameters = self._workspace_parameters(workspace_root)
+        where_clause = self._workspace_where_clause(workspace_root)
         normalized_candidate_limit = max(candidate_limit, 0)
         with self._connect() as connection:
             session_count = int(
@@ -970,27 +968,7 @@ class SQLiteSessionStore:
                 connection.execute(
                     f"""
                     SELECT COUNT(*) AS count
-                    FROM (
-                        SELECT sessions.session_id
-                        FROM sessions
-                        LEFT JOIN conversation_messages
-                            ON conversation_messages.session_id = sessions.session_id
-                        LEFT JOIN session_summaries
-                            ON session_summaries.session_id = sessions.session_id
-                        LEFT JOIN history_items
-                            ON history_items.session_id = sessions.session_id
-                        LEFT JOIN turn_rollouts
-                            ON turn_rollouts.session_id = sessions.session_id
-                        LEFT JOIN session_state
-                            ON session_state.session_id = sessions.session_id
-                        {where_clause}
-                        GROUP BY sessions.session_id
-                        HAVING COUNT(conversation_messages.message_index) = 0
-                           AND COUNT(session_summaries.summary_index) = 0
-                           AND COUNT(history_items.sequence_no) = 0
-                           AND COUNT(turn_rollouts.sequence_no) = 0
-                           AND COUNT(session_state.state_key) = 0
-                    )
+                    FROM ({self._empty_session_candidate_query(workspace_root)})
                     """,
                     parameters,
                 ).fetchone()["count"]
@@ -998,35 +976,7 @@ class SQLiteSessionStore:
             candidate_rows = connection.execute(
                 f"""
                 SELECT session_id, last_active_at, status
-                FROM (
-                    SELECT
-                        sessions.session_id,
-                        sessions.last_active_at,
-                        sessions.status,
-                        COUNT(conversation_messages.message_index) AS message_count,
-                        COUNT(session_summaries.summary_index) AS summary_count,
-                        COUNT(history_items.sequence_no) AS history_count,
-                        COUNT(turn_rollouts.sequence_no) AS rollout_count,
-                        COUNT(session_state.state_key) AS state_count
-                    FROM sessions
-                    LEFT JOIN conversation_messages
-                        ON conversation_messages.session_id = sessions.session_id
-                    LEFT JOIN session_summaries
-                        ON session_summaries.session_id = sessions.session_id
-                    LEFT JOIN history_items
-                        ON history_items.session_id = sessions.session_id
-                    LEFT JOIN turn_rollouts
-                        ON turn_rollouts.session_id = sessions.session_id
-                    LEFT JOIN session_state
-                        ON session_state.session_id = sessions.session_id
-                    {where_clause}
-                    GROUP BY sessions.session_id, sessions.last_active_at, sessions.status
-                    HAVING message_count = 0
-                       AND summary_count = 0
-                       AND history_count = 0
-                       AND rollout_count = 0
-                       AND state_count = 0
-                )
+                FROM ({self._empty_session_candidate_query(workspace_root)})
                 ORDER BY last_active_at ASC, session_id ASC
                 LIMIT ?
                 """,
@@ -1054,3 +1004,97 @@ class SQLiteSessionStore:
             freelist_count=freelist_count,
             page_size=page_size,
         )
+
+    def apply_session_maintenance_empty_cleanup(
+        self,
+        *,
+        workspace_root: Path | None = None,
+        candidate_limit: int = 5,
+    ) -> SessionMaintenanceApplyResult:
+        normalized_candidate_limit = max(candidate_limit, 0)
+
+        def write(connection: sqlite3.Connection) -> tuple[str, ...]:
+            candidate_rows = connection.execute(
+                f"""
+                SELECT session_id
+                FROM ({self._empty_session_candidate_query(workspace_root)})
+                ORDER BY last_active_at ASC, session_id ASC
+                LIMIT ?
+                """,
+                [*self._workspace_parameters(workspace_root), normalized_candidate_limit],
+            ).fetchall()
+            deleted_session_ids = tuple(str(row["session_id"]) for row in candidate_rows)
+            if deleted_session_ids:
+                placeholders = ",".join("?" for _ in deleted_session_ids)
+                connection.execute(
+                    f"DELETE FROM sessions WHERE session_id IN ({placeholders})",
+                    deleted_session_ids,
+                )
+            return deleted_session_ids
+
+        deleted_session_ids = self._execute_write(write)
+        report = self.session_maintenance_report(workspace_root=workspace_root)
+        return SessionMaintenanceApplyResult(
+            deleted_empty_sessions=deleted_session_ids,
+            workspace_session_count=report.workspace_session_count,
+            empty_session_count=report.empty_session_count,
+            empty_session_candidates_omitted=report.empty_session_candidates_omitted,
+            db_size_bytes=report.db_size_bytes,
+            page_count=report.page_count,
+            freelist_count=report.freelist_count,
+            page_size=report.page_size,
+        )
+
+    @staticmethod
+    def _workspace_parameters(workspace_root: Path | None) -> list[object]:
+        if workspace_root is None:
+            return []
+        return [str(workspace_root)]
+
+    @staticmethod
+    def _workspace_where_clause(workspace_root: Path | None) -> str:
+        if workspace_root is None:
+            return ""
+        return "WHERE sessions.workspace_root = ?"
+
+    @staticmethod
+    def _empty_session_candidate_query(workspace_root: Path | None) -> str:
+        where_clause = SQLiteSessionStore._workspace_where_clause(workspace_root)
+        return f"""
+            SELECT
+                sessions.session_id,
+                sessions.last_active_at,
+                sessions.status,
+                COUNT(DISTINCT conversation_messages.message_index) AS message_count,
+                COUNT(DISTINCT session_summaries.summary_index) AS summary_count,
+                COUNT(DISTINCT history_items.sequence_no) AS history_count,
+                COUNT(DISTINCT turn_rollouts.sequence_no) AS rollout_count,
+                COUNT(DISTINCT session_state.state_key) AS state_count,
+                COUNT(DISTINCT fork_tree.session_id) AS fork_tree_count,
+                COUNT(DISTINCT child_tree.session_id) AS child_tree_count
+            FROM sessions
+            LEFT JOIN conversation_messages
+                ON conversation_messages.session_id = sessions.session_id
+            LEFT JOIN session_summaries
+                ON session_summaries.session_id = sessions.session_id
+            LEFT JOIN history_items
+                ON history_items.session_id = sessions.session_id
+            LEFT JOIN turn_rollouts
+                ON turn_rollouts.session_id = sessions.session_id
+            LEFT JOIN session_state
+                ON session_state.session_id = sessions.session_id
+            LEFT JOIN conversation_trees AS fork_tree
+                ON fork_tree.session_id = sessions.session_id
+                AND fork_tree.parent_id IS NOT NULL
+            LEFT JOIN conversation_trees AS child_tree
+                ON child_tree.parent_id = sessions.session_id
+            {where_clause}
+            GROUP BY sessions.session_id, sessions.last_active_at, sessions.status
+            HAVING message_count = 0
+               AND summary_count = 0
+               AND history_count = 0
+               AND rollout_count = 0
+               AND state_count = 0
+               AND fork_tree_count = 0
+               AND child_tree_count = 0
+        """

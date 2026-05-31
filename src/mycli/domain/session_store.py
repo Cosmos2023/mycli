@@ -50,6 +50,19 @@ class SessionMaintenanceReport:
     dry_run: bool = True
 
 
+@dataclass(slots=True, frozen=True)
+class SessionMaintenanceApplyResult:
+    deleted_empty_sessions: tuple[str, ...]
+    workspace_session_count: int
+    empty_session_count: int
+    empty_session_candidates_omitted: int
+    db_size_bytes: int
+    page_count: int
+    freelist_count: int
+    page_size: int
+    dry_run: bool = False
+
+
 class SessionStore(Protocol):
     def replace_conversation(
         self,
@@ -155,3 +168,10 @@ class SessionStore(Protocol):
         workspace_root: Path | None = None,
         candidate_limit: int = 5,
     ) -> SessionMaintenanceReport: ...
+
+    def apply_session_maintenance_empty_cleanup(
+        self,
+        *,
+        workspace_root: Path | None = None,
+        candidate_limit: int = 5,
+    ) -> SessionMaintenanceApplyResult: ...

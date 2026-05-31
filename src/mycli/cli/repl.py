@@ -34,6 +34,7 @@ def handle_slash_command(command: str) -> str:
                 "/session",
                 "/sessions",
                 "/session-maintenance",
+                "/session-maintenance --apply-empty",
                 "/search <query>",
                 "/quit",
             ]
@@ -71,6 +72,11 @@ def build_command_handler(
             return [f"[session] {line}" for line in service.inspect_sessions()]
         if command == "/session-maintenance":
             return [f"[session] {line}" for line in service.inspect_session_maintenance()]
+        if command == "/session-maintenance --apply-empty":
+            return [
+                f"[session] {line}"
+                for line in service.apply_session_maintenance_empty_cleanup()
+            ]
         if command.startswith("/search"):
             parts = command.split(maxsplit=1)
             query = parts[1] if len(parts) > 1 else ""

@@ -17,6 +17,7 @@ _SLASH_COMMANDS: tuple[str, ...] = (
     "/resume <session>",
     "/sessions",
     "/session-maintenance",
+    "/session-maintenance --apply-empty",
     "/search <query>",
     "/quit",
     "/tools",

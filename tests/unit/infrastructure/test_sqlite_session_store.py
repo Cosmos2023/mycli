@@ -1043,3 +1043,150 @@ def test_sqlite_session_store_bounds_session_maintenance_candidates(
         "2026-01-02T00:00:00+00:00",
     ]
     assert report.empty_session_candidates_omitted == 1
+
+
+def test_sqlite_session_store_applies_empty_session_cleanup(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+    other_workspace = tmp_path / "other-workspace"
+
+    store.replace_conversation(
+        session_id="empty",
+        workspace_root=workspace,
+        thread_id="empty",
+        messages=[],
+    )
+    store.replace_conversation(
+        session_id="with-message",
+        workspace_root=workspace,
+        thread_id="with-message",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    store.replace_conversation(
+        session_id="other-empty",
+        workspace_root=other_workspace,
+        thread_id="other-empty",
+        messages=[],
+    )
+
+    result = store.apply_session_maintenance_empty_cleanup(workspace_root=workspace)
+
+    assert result.dry_run is False
+    assert result.deleted_empty_sessions == ("empty",)
+    assert result.empty_session_count == 0
+    assert result.workspace_session_count == 1
+    workspace_sessions = store.list_sessions(workspace_root=workspace)
+    other_workspace_sessions = store.list_sessions(workspace_root=other_workspace)
+    assert [overview.session_id for overview in workspace_sessions] == ["with-message"]
+    assert [overview.session_id for overview in other_workspace_sessions] == ["other-empty"]
+    assert store.load_conversation("with-message") == [{"role": "user", "content": "hello"}]
+
+
+def test_sqlite_session_store_empty_cleanup_protects_runtime_and_lineage_state(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+
+    for session_id in ("history-only", "state-only", "lineage-root", "lineage-child", "empty"):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+    store.append_history_items(
+        session_id="history-only",
+        workspace_root=workspace,
+        thread_id="history-only",
+        items=[
+            {
+                "id": "hist_user_1",
+                "thread_id": "history-only",
+                "turn_id": "turn_1",
+                "type": "user_message",
+                "text": "hello",
+                "tool_name": None,
+                "call_id": None,
+                "metadata": {},
+            }
+        ],
+    )
+    store.save_state(
+        session_id="state-only",
+        workspace_root=workspace,
+        thread_id="state-only",
+        state_key="turn_record",
+        payload={"status": "waiting_approval"},
+    )
+    store.save_conversation_tree(
+        session_id="lineage-root",
+        workspace_root=workspace,
+        thread_id="lineage-root",
+        parent_id=None,
+        fork_point=None,
+    )
+    store.save_conversation_tree(
+        session_id="lineage-child",
+        workspace_root=workspace,
+        thread_id="lineage-child",
+        parent_id="lineage-root",
+        fork_point=0,
+    )
+
+    report = store.session_maintenance_report(workspace_root=workspace)
+    result = store.apply_session_maintenance_empty_cleanup(workspace_root=workspace)
+
+    assert [candidate.session_id for candidate in report.empty_session_candidates] == ["empty"]
+    assert result.deleted_empty_sessions == ("empty",)
+    assert [overview.session_id for overview in store.list_sessions(workspace_root=workspace)] == [
+        "lineage-child",
+        "lineage-root",
+        "state-only",
+        "history-only",
+    ]
+
+
+def test_sqlite_session_store_empty_cleanup_respects_candidate_limit(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+
+    for session_id in ("older-empty", "newer-empty", "newest-empty"):
+        store.replace_conversation(
+            session_id=session_id,
+            workspace_root=workspace,
+            thread_id=session_id,
+            messages=[],
+        )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-01T00:00:00+00:00' "
+            "WHERE session_id = 'older-empty'"
+        )
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-02T00:00:00+00:00' "
+            "WHERE session_id = 'newer-empty'"
+        )
+        connection.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-03T00:00:00+00:00' "
+            "WHERE session_id = 'newest-empty'"
+        )
+
+    result = store.apply_session_maintenance_empty_cleanup(
+        workspace_root=workspace,
+        candidate_limit=2,
+    )
+
+    assert result.deleted_empty_sessions == ("older-empty", "newer-empty")
+    assert result.empty_session_count == 1
+    assert result.empty_session_candidates_omitted == 0
+    assert [overview.session_id for overview in store.list_sessions(workspace_root=workspace)] == [
+        "newest-empty"
+    ]
