@@ -110,7 +110,10 @@ class _ApprovalDiagnosticsSummary:
     resolution_count: int
     allowance_count: int
     auto_allowed_count: int
+    safety_metadata_count: int
     resolution_results: tuple[tuple[str, int], ...]
+    risk_levels: tuple[tuple[str, int], ...]
+    policies: tuple[tuple[str, int], ...]
     warning_results: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
 
@@ -611,9 +614,17 @@ class DoctorService:
             f"resolutions={summary.resolution_count} "
             f"allowances={summary.allowance_count} "
             f"auto_allowed={summary.auto_allowed_count}"
+            f" safety_metadata={summary.safety_metadata_count}"
             f"{suffix}"
         )
-        detail = f"resolution_results: {_format_count_pairs(summary.resolution_results)}"
+        detail_parts = [
+            f"resolution_results: {_format_count_pairs(summary.resolution_results)}"
+        ]
+        if summary.risk_levels:
+            detail_parts.append(f"risk_levels: {_format_count_pairs(summary.risk_levels)}")
+        if summary.policies:
+            detail_parts.append(f"policies: {_format_count_pairs(summary.policies)}")
+        detail = "; ".join(detail_parts)
         if summary.warning_results:
             return (
                 DoctorCheck(
@@ -1229,7 +1240,10 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
     resolution_count = 0
     allowance_count = 0
     auto_allowed_count = 0
+    safety_metadata_count = 0
     resolution_results: Counter[str] = Counter()
+    risk_levels: Counter[str] = Counter()
+    policies: Counter[str] = Counter()
     unreadable: list[str] = []
 
     for path in paths:
@@ -1251,6 +1265,17 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
                         allowance_count += 1
                     elif event.kind == "approval_auto_allowed":
                         auto_allowed_count += 1
+                    else:
+                        continue
+                    metadata = event.payload.get("safety_metadata")
+                    if isinstance(metadata, dict):
+                        safety_metadata_count += 1
+                        risk_levels[
+                            _safe_safety_metadata_value(metadata.get("risk_level"))
+                        ] += 1
+                        policies[
+                            _safe_safety_metadata_value(metadata.get("policy"))
+                        ] += 1
         except OSError as exc:
             unreadable.append(f"{path.name}: {exc}")
 
@@ -1262,12 +1287,21 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
         for result, count in ordered_results
         if result not in _SUCCESSFUL_APPROVAL_RESULTS
     )
+    ordered_risk_levels = tuple(
+        sorted(risk_levels.items(), key=lambda item: (-item[1], item[0]))
+    )
+    ordered_policies = tuple(
+        sorted(policies.items(), key=lambda item: (-item[1], item[0]))
+    )
     return _ApprovalDiagnosticsSummary(
         approval_count=resolution_count + allowance_count + auto_allowed_count,
         resolution_count=resolution_count,
         allowance_count=allowance_count,
         auto_allowed_count=auto_allowed_count,
+        safety_metadata_count=safety_metadata_count,
         resolution_results=ordered_results,
+        risk_levels=ordered_risk_levels,
+        policies=ordered_policies,
         warning_results=warning_results,
         unreadable=tuple(unreadable),
     )
@@ -1448,6 +1482,10 @@ def _safe_failure_kind(value: object) -> str:
 
 
 def _safe_approval_result(value: object) -> str:
+    return _safe_diagnostic_result(value)
+
+
+def _safe_safety_metadata_value(value: object) -> str:
     return _safe_diagnostic_result(value)
 
 

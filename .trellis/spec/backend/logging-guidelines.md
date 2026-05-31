@@ -89,8 +89,10 @@ the local log root and must never become provider transcript inputs.
   provider failure messages because those can contain sensitive upstream text.
 - Doctor may summarize approval diagnostic trace rows with bounded counts for
   `approval_resolution`, `approval_allowance`, and `approval_auto_allowed`.
-  It may expose `approval_resolution` result counts, but must not print raw
-  command patterns, reasons, user text, headers, or secret-like values.
+  It may expose `approval_resolution` result counts and aggregate
+  `safety_metadata` counts for allowlisted `risk_level` and `policy` values,
+  but must not print raw command patterns, reasons, user text, tool arguments,
+  local paths, headers, or secret-like values.
 - Doctor may summarize `clarification_resolution` trace rows with bounded
   result counts. It must not print raw response text, user text, request
   payloads, provider transcript content, headers, or secret-like values.

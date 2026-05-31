@@ -1885,14 +1885,28 @@ def test_doctor_service_summarizes_successful_approval_diagnostics(tmp_path: Pat
                     {
                         "kind": "approval_allowance",
                         "turn_id": "turn-3",
-                        "payload": {"command_pattern": "git push"},
+                        "payload": {
+                            "command_pattern": "git push",
+                            "safety_metadata": {
+                                "risk_level": "high",
+                                "policy": "shell_command_analysis",
+                                "command_pattern": "git push",
+                            },
+                        },
                     }
                 ),
                 json.dumps(
                     {
                         "kind": "approval_auto_allowed",
                         "turn_id": "turn-4",
-                        "payload": {"source": "session_allowance"},
+                        "payload": {
+                            "source": "session_allowance",
+                            "safety_metadata": {
+                                "risk_level": "high",
+                                "policy": "shell_command_analysis",
+                                "reason": "raw reason must stay hidden",
+                            },
+                        },
                     }
                 ),
             )
@@ -1911,9 +1925,17 @@ def test_doctor_service_summarizes_successful_approval_diagnostics(tmp_path: Pat
     check = next(check for check in report.checks if check.name == "approval_diagnostics")
     assert check.status is DoctorStatus.OK
     assert check.message == (
-        "4 approval diagnostic(s), resolutions=2 allowances=1 auto_allowed=1"
+        "4 approval diagnostic(s), resolutions=2 allowances=1 auto_allowed=1 "
+        "safety_metadata=2"
     )
-    assert check.detail == "resolution_results: approved=1, rejected=1"
+    assert check.detail == (
+        "resolution_results: approved=1, rejected=1; "
+        "risk_levels: high=2; "
+        "policies: shell_command_analysis=2"
+    )
+    rendered = "\n".join(render_doctor_report(report))
+    assert "git push" not in rendered
+    assert "raw reason" not in rendered
 
 
 def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_payload(
@@ -1939,6 +1961,13 @@ def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_paylo
                             "choice": "999",
                             "reason": f"raw provider text {secret}",
                             "command_pattern": "git push --force",
+                            "safety_metadata": {
+                                "risk_level": "high",
+                                "policy": "shell_command_analysis",
+                                "command_pattern": "git push --force",
+                                "arguments": {"path": "/Users/cosmos/secret.txt"},
+                                "reason": f"unsafe reason {secret}",
+                            },
                         },
                     }
                 ),
@@ -1970,12 +1999,15 @@ def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_paylo
     check = next(check for check in report.checks if check.name == "approval_diagnostics")
     assert check.status is DoctorStatus.WARNING
     assert check.message == (
-        "2 approval diagnostic(s), resolutions=2 allowances=0 auto_allowed=0"
+        "2 approval diagnostic(s), resolutions=2 allowances=0 auto_allowed=0 "
+        "safety_metadata=1"
     )
     assert check.detail == "warning_results: invalid_choice=1, missing_suspended_turn=1"
     assert secret not in rendered
     assert "raw provider text" not in rendered
+    assert "unsafe reason" not in rendered
     assert "git push --force" not in rendered
+    assert "/Users/cosmos/secret.txt" not in rendered
 
 
 def test_doctor_service_reports_missing_clarification_diagnostics_as_ok(
