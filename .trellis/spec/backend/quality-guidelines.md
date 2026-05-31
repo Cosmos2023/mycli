@@ -102,6 +102,10 @@ Questions to answer:
 - Empty-session cleanup must preserve sessions that participate in conversation
   lineage as forked children or as parents of other sessions. Lineage pruning
   requires a separate explicit policy.
+- Orphan child-row cleanup requires the explicit
+  `/session-maintenance --apply-orphans` form. It may delete only known child
+  table rows whose `session_id` is absent from `sessions`; it must not delete
+  sessions, repair lineage parent references, or run `VACUUM`.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.
@@ -190,6 +194,9 @@ Questions to answer:
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,
   runtime-state protection, lineage protection, bounded apply limits, and CLI
   routing through `/session-maintenance --apply-empty`.
+- Unit test explicit orphan child-row cleanup for multi-table orphan deletion,
+  valid-row preservation, empty-session separation, and CLI/gateway routing
+  through `/session-maintenance --apply-orphans`.
 - Node protocol test for event method plus required-field, property-name, and
   enum-value parity with Python gateway contract/manifest.
 - CLI test for `mycli doctor` command parsing and no secret leakage.

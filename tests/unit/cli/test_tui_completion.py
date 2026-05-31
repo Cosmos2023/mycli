@@ -12,6 +12,7 @@ def test_slash_command_candidates_include_required_and_tui_only_commands() -> No
     assert "/view focus" in candidates
     assert "/resume <session>" in candidates
     assert "/session-maintenance" in candidates
+    assert "/session-maintenance --apply-orphans" in candidates
     assert "/search <query>" in candidates
     assert "/clear" in candidates
     assert "/theme" in candidates

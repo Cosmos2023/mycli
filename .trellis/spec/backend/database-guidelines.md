@@ -200,6 +200,9 @@ return tuple(format_match(match) for match in matches)
 - Candidate payload:
   `SessionMaintenanceCandidate(session_id, last_active_at, status)`
 - CLI slash command: `/session-maintenance`
+- Explicit cleanup commands:
+  - `/session-maintenance --apply-empty`
+  - `/session-maintenance --apply-orphans`
 
 ### 3. Contracts
 
@@ -223,6 +226,8 @@ return tuple(format_match(match) for match in matches)
 - Good: `/session-maintenance` reports `dry_run=true`, workspace counts, empty counts, bounded empty candidates, and SQLite page counters.
 - Base: A fresh DB reports zero workspace sessions without mutating data beyond normal store initialization.
 - Bad: Running `VACUUM`, deleting rows, or repairing orphaned state from the maintenance report path.
+- Bad: Cleaning orphan child rows from the default dry-run command. Orphan
+  cleanup requires the explicit `--apply-orphans` form.
 
 ### 6. Tests Required
 
@@ -246,6 +251,39 @@ store.vacuum()
 report = store.session_maintenance_report(workspace_root=workspace_root)
 return tuple(format_report_field(report))
 ```
+
+## Scenario: Explicit Session Orphan Cleanup
+
+### 1. Scope / Trigger
+
+- Trigger: adding cleanup for legacy/corrupt child rows whose `session_id` no
+  longer exists in `sessions`.
+- This is a destructive maintenance action and must stay behind an explicit
+  slash-command flag.
+
+### 2. Signatures
+
+- Store:
+  `SessionStore.apply_session_maintenance_orphan_cleanup() -> SessionOrphanCleanupResult`
+- Domain payload:
+  `SessionOrphanCleanupResult(deleted_rows_by_table, total_deleted_rows, dry_run=False)`
+- CLI slash command: `/session-maintenance --apply-orphans`
+
+### 3. Contracts
+
+- Default `/session-maintenance` remains read-only.
+- Orphan cleanup may delete rows only from known session child tables.
+- Orphan cleanup must not delete rows from `sessions`.
+- Orphan cleanup must not repair missing lineage parents or run `VACUUM`.
+- Output lines are bounded `key=value` fields, including total deleted rows and
+  per-table counts for tables with deletions.
+
+### 4. Tests Required
+
+- Store test proving orphan rows in multiple child tables are deleted while
+  valid sessions and valid child rows remain.
+- Store test proving empty sessions are not deleted by orphan cleanup.
+- Service/CLI/gateway tests for `/session-maintenance --apply-orphans`.
 
 ## Scenario: Doctor Session Maintenance Readiness
 

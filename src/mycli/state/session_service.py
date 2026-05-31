@@ -630,6 +630,18 @@ class SessionService:
             )
         return tuple(lines)
 
+    def apply_session_maintenance_orphan_cleanup(self) -> tuple[str, ...]:
+        result = self._store.apply_session_maintenance_orphan_cleanup()
+        lines = [
+            f"dry_run={str(result.dry_run).lower()}",
+            f"deleted_orphan_rows={result.total_deleted_rows}",
+        ]
+        lines.extend(
+            f"deleted_orphan_table={table} rows={count}"
+            for table, count in result.deleted_rows_by_table
+        )
+        return tuple(lines)
+
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
         return list(ContextManager().messages_from_history(self.load_history_items(session_id)))
 

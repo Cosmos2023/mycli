@@ -1162,6 +1162,13 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def apply_session_maintenance_empty_cleanup(self) -> tuple[str, ...]:
             return ("dry_run=false", "deleted_empty_sessions=1", "deleted_session=empty")
 
+        def apply_session_maintenance_orphan_cleanup(self) -> tuple[str, ...]:
+            return (
+                "dry_run=false",
+                "deleted_orphan_rows=2",
+                "deleted_orphan_table=history_items rows=2",
+            )
+
         def search_sessions(self, query: str) -> tuple[str, ...]:
             return (f"demo#1 assistant: {query}",)
 
@@ -1238,6 +1245,11 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         "[session] dry_run=false",
         "[session] deleted_empty_sessions=1",
         "[session] deleted_session=empty",
+    ]
+    assert list(handler("/session-maintenance --apply-orphans")) == [
+        "[session] dry_run=false",
+        "[session] deleted_orphan_rows=2",
+        "[session] deleted_orphan_table=history_items rows=2",
     ]
     assert list(handler("/search checkpoint")) == ["[search] demo#1 assistant: checkpoint"]
     assert list(handler("/undo")) == ["[undo] Restored notes.txt"]

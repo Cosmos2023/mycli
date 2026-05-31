@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from types import SimpleNamespace
 from pathlib import Path
@@ -1189,4 +1190,117 @@ def test_sqlite_session_store_empty_cleanup_respects_candidate_limit(
     assert result.empty_session_candidates_omitted == 0
     assert [overview.session_id for overview in store.list_sessions(workspace_root=workspace)] == [
         "newest-empty"
+    ]
+
+
+def test_sqlite_session_store_applies_orphan_child_row_cleanup(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+    store.replace_conversation(
+        session_id="valid",
+        workspace_root=workspace,
+        thread_id="valid",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    store.append_history_items(
+        session_id="valid",
+        workspace_root=workspace,
+        thread_id="valid",
+        items=[
+            {
+                "id": "hist_valid_1",
+                "thread_id": "valid",
+                "turn_id": "turn_1",
+                "type": "user_message",
+                "text": "hello",
+                "tool_name": None,
+                "call_id": None,
+                "metadata": {},
+            }
+        ],
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('orphan', 0, ?)
+            """,
+            (json.dumps({"role": "user", "content": "orphan"}),),
+        )
+        connection.execute(
+            """
+            INSERT INTO history_items (session_id, item_id, payload_json)
+            VALUES ('orphan', 'hist_orphan_1', ?)
+            """,
+            (
+                json.dumps(
+                    {
+                        "id": "hist_orphan_1",
+                        "thread_id": "orphan",
+                        "turn_id": "turn_1",
+                        "type": "user_message",
+                        "text": "orphan",
+                        "tool_name": None,
+                        "call_id": None,
+                        "metadata": {},
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES ('orphan', 'turn_record', ?, 'now')
+            """,
+            (json.dumps({"status": "waiting_approval"}),),
+        )
+
+    result = store.apply_session_maintenance_orphan_cleanup()
+
+    assert result.dry_run is False
+    assert result.total_deleted_rows == 3
+    assert result.deleted_rows_by_table == (
+        ("conversation_messages", 1),
+        ("history_items", 1),
+        ("session_state", 1),
+    )
+    assert store.load_conversation("valid") == [{"role": "user", "content": "hello"}]
+    assert store.load_history_items("valid")[0]["id"] == "hist_valid_1"
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = 'valid'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM conversation_messages WHERE session_id = 'orphan'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM history_items WHERE session_id = 'orphan'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM session_state WHERE session_id = 'orphan'"
+        ).fetchone()[0] == 0
+
+
+def test_sqlite_session_store_orphan_cleanup_does_not_delete_empty_sessions(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+    workspace = tmp_path / "workspace"
+    store.replace_conversation(
+        session_id="empty",
+        workspace_root=workspace,
+        thread_id="empty",
+        messages=[],
+    )
+
+    result = store.apply_session_maintenance_orphan_cleanup()
+
+    assert result.total_deleted_rows == 0
+    assert [overview.session_id for overview in store.list_sessions(workspace_root=workspace)] == [
+        "empty"
     ]

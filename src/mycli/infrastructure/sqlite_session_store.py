@@ -16,12 +16,21 @@ from mycli.domain.session_store import (
     JsonObject,
     SessionMaintenanceApplyResult,
     SessionMaintenanceCandidate,
+    SessionOrphanCleanupResult,
     SessionMaintenanceReport,
     SessionOverview,
     SessionSearchResult,
 )
 
 T = TypeVar("T")
+_SESSION_CHILD_TABLES = (
+    "conversation_messages",
+    "conversation_trees",
+    "history_items",
+    "turn_rollouts",
+    "session_state",
+    "session_summaries",
+)
 
 
 class SQLiteSessionStore:
@@ -1043,6 +1052,29 @@ class SQLiteSessionStore:
             page_count=report.page_count,
             freelist_count=report.freelist_count,
             page_size=report.page_size,
+        )
+
+    def apply_session_maintenance_orphan_cleanup(self) -> SessionOrphanCleanupResult:
+        def write(connection: sqlite3.Connection) -> tuple[tuple[str, int], ...]:
+            deleted: list[tuple[str, int]] = []
+            for table in _SESSION_CHILD_TABLES:
+                cursor = connection.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE session_id NOT IN (
+                        SELECT session_id FROM sessions
+                    )
+                    """
+                )
+                count = cursor.rowcount if cursor.rowcount is not None else 0
+                if count:
+                    deleted.append((table, count))
+            return tuple(deleted)
+
+        deleted_rows_by_table = self._execute_write(write)
+        return SessionOrphanCleanupResult(
+            deleted_rows_by_table=deleted_rows_by_table,
+            total_deleted_rows=sum(count for _, count in deleted_rows_by_table),
         )
 
     @staticmethod

@@ -63,6 +63,13 @@ class SessionMaintenanceApplyResult:
     dry_run: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class SessionOrphanCleanupResult:
+    deleted_rows_by_table: tuple[tuple[str, int], ...]
+    total_deleted_rows: int
+    dry_run: bool = False
+
+
 class SessionStore(Protocol):
     def replace_conversation(
         self,
@@ -175,3 +182,5 @@ class SessionStore(Protocol):
         workspace_root: Path | None = None,
         candidate_limit: int = 5,
     ) -> SessionMaintenanceApplyResult: ...
+
+    def apply_session_maintenance_orphan_cleanup(self) -> SessionOrphanCleanupResult: ...

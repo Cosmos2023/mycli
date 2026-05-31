@@ -44,6 +44,7 @@ COMMAND_OVERLAYS = {
     "/sessions",
     "/session-maintenance",
     "/session-maintenance --apply-empty",
+    "/session-maintenance --apply-orphans",
     "/release-notes",
 }
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
@@ -97,6 +98,10 @@ class NodeTuiServiceLike(Protocol):
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse: ...
 
     def current_context_window_metrics(self) -> dict[str, object]: ...
+
+    def extension_manifest(self) -> dict[str, object]: ...
+
+    def export_trace_jsonl(self, tail: int = 50) -> tuple[str, ...]: ...
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]: ...
 
@@ -1026,6 +1031,7 @@ def _slash_description(command: str) -> str:
         "/sessions": "List saved sessions",
         "/session-maintenance": "Show session storage maintenance dry-run",
         "/session-maintenance --apply-empty": "Delete empty session maintenance candidates",
+        "/session-maintenance --apply-orphans": "Delete orphan session child rows",
         "/quit": "Exit mycli",
     }
     return descriptions.get(command, "")

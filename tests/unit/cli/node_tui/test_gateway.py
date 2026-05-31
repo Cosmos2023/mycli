@@ -294,6 +294,10 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
             "value": "/session-maintenance --apply-empty",
             "description": "Delete empty session maintenance candidates",
         },
+        {
+            "value": "/session-maintenance --apply-orphans",
+            "description": "Delete orphan session child rows",
+        },
     ]
 
 
