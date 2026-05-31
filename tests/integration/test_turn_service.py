@@ -10,7 +10,9 @@ from mycli.domain.runtime import (
     DecisionKind,
     ModelDecision,
     PendingDecision,
+    StopReason,
     TurnResponse,
+    TurnStatus,
 )
 from mycli.domain.tools import ToolCall
 from mycli.tools.base import ToolResult, ToolSpec
@@ -394,6 +396,9 @@ def test_resolve_pending_decision_reject_clears_it(tmp_path: Path) -> None:
     after = service.resolve_pending_decision("1")
 
     assert "rejected" in rejected.assistant_message.lower()
+    assert rejected.turn is not None
+    assert rejected.turn.status is TurnStatus.REJECTED
+    assert rejected.turn.stop_reason is StopReason.APPROVAL_REJECTED
     assert "no pending" in after.assistant_message.lower()
 
 

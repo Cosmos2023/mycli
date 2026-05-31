@@ -44,7 +44,8 @@ export type TurnLiveState =
   | "waiting_clarification"
   | "completed"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  | "rejected";
 
 export type LiveStatus = {
   client_turn_id?: string;

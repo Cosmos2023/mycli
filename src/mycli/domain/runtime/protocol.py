@@ -12,6 +12,7 @@ class TurnStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
+    REJECTED = "rejected"
 
 
 class StopReason(StrEnum):
@@ -19,6 +20,7 @@ class StopReason(StrEnum):
     SUFFICIENT_EVIDENCE = "sufficient_evidence"
     LOOP_DETECTED = "loop_detected"
     APPROVAL_REQUIRED = "approval_required"
+    APPROVAL_REJECTED = "approval_rejected"
     CLARIFICATION_REQUIRED = "clarification_required"
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
     RETRY_EXHAUSTED = "retry_exhausted"

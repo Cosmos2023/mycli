@@ -527,6 +527,47 @@ test("terminal turn status clears live turn bookkeeping without transcript outpu
   assert.equal(state.transcript.length, transcriptLength);
 });
 
+test("rejected turn status is terminal and clears pending approval", () => {
+  let state = initialState();
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.request",
+    params: {
+      client_turn_id: "c1",
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "reject", label: "Reject" }],
+    },
+  });
+  const transcriptLength = state.transcript.length;
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      client_turn_id: "c1",
+      state: "rejected",
+      kind: "rejected",
+      text: "Rejected",
+      terminal: true,
+      message: "Rejected Bash. Pending decision cleared.",
+    },
+  });
+
+  assert.equal(state.turnRunning, false);
+  assert.equal(state.currentTurnId, null);
+  assert.equal(state.liveStatus?.state, "rejected");
+  assert.equal(state.liveStatus?.message, "Rejected Bash. Pending decision cleared.");
+  assert.equal(state.pendingApproval, null);
+  assert.equal(state.pendingClarification, null);
+  assert.equal(state.transcript.length, transcriptLength);
+});
+
 test("invalid turn status payload is ignored", () => {
   const state = initialState();
 

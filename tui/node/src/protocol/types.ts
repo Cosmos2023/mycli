@@ -6,7 +6,8 @@ export type TurnState =
   | "waiting_clarification"
   | "completed"
   | "failed"
-  | "interrupted";
+  | "interrupted"
+  | "rejected";
 
 export type Notification<Method extends string, Params extends JsonObject> = {
   jsonrpc: "2.0";

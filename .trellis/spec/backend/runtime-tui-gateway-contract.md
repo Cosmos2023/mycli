@@ -50,9 +50,10 @@
   `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/node/src/index.js`
 
 ### 3. Contracts
-  - `status.update` payload:
+- `status.update` payload:
   - `state`: one of `running`, `waiting_approval`,
-    `waiting_clarification`, `completed`, `failed`, `interrupted`
+    `waiting_clarification`, `completed`, `failed`, `interrupted`,
+    `rejected`
   - `kind`: renderable status kind, normally the same as `state`
   - `text`: human-readable short status
   - `client_turn_id`: optional string linking the status to the submitted turn
@@ -98,19 +99,19 @@
     secrets or unbounded text.
 - `turn.completed` must include `turn_state`. A response with
   `pending_decision` maps to `waiting_approval`; a turn record with
-  `WAITING_CLARIFICATION` maps to `waiting_clarification`; otherwise it maps
-  to `completed`.
+  `WAITING_CLARIFICATION` maps to `waiting_clarification`; a turn record with
+  `REJECTED` maps to `rejected`; otherwise it maps to `completed`.
 - `turn.status` is the normalized turn outcome/status event for clients that
   want one small routing payload instead of deriving outcomes from
   `turn.completed`, `turn.failed`, `turn.interrupted`, and `status.update`:
   - `client_turn_id`: optional string when known
   - `state`: one of `waiting_approval`, `waiting_clarification`,
-    `completed`, `failed`, `interrupted`
+    `completed`, `failed`, `interrupted`, `rejected`
   - `kind`: renderable status kind, normally same as `state`
   - `text`: human-readable short status
-  - `terminal`: boolean; true for `completed`, `failed`, and `interrupted`;
-    false for `waiting_approval` and `waiting_clarification`
-  - `message`: optional failure or interruption detail
+  - `terminal`: boolean; true for `completed`, `failed`, `interrupted`, and
+    `rejected`; false for `waiting_approval` and `waiting_clarification`
+  - `message`: optional failure, interruption, or rejection detail
   - Existing terminal method-name events remain the compatibility path. The
     gateway emits the existing event first, then `turn.status`, then
     `status.update` where applicable.
@@ -303,6 +304,11 @@
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
 - Unknown or legacy approval choice -> map through the existing decision choice
   table; reject invalid choices at the runtime decision boundary.
+- Accepted `approval.respond(choice=reject)` -> persist the resolved turn as
+  `TurnStatus.REJECTED` with `StopReason.APPROVAL_REJECTED`, emit
+  `approval.respond`, then `turn.completed(turn_state=rejected)`, then
+  `turn.status(state=rejected, terminal=true)`, then
+  `status.update(state=rejected)`. Do not emit final-text `message.complete`.
 - Invalid `status.update.state` in the reducer -> ignore the event and preserve
   existing state.
 - `extension.manifest` -> return static capability discovery data without
@@ -360,6 +366,9 @@
 - Completed turn response -> emit `turn.completed`, then final-text
   `message.complete` with `final: true`, then `status.update` with
   `completed`.
+- Rejected approval turn response -> emit `turn.completed`, then `turn.status`
+  with `state=rejected`, `terminal=true`, and a bounded `message`, then
+  `status.update` with `rejected`; do not emit final-text `message.complete`.
 - Waiting-approval turn response -> emit `approval.request`, then
   `turn.completed`, then `status.update` with `waiting_approval`; do not emit
   final-text `message.complete`.

@@ -209,8 +209,8 @@ class TurnExecutor:
                 turn_id=turn_id,
                 user_message=user_message,
                 started_at=started_at,
-                status=TurnStatus.COMPLETED,
-                stop_reason=StopReason.ASSISTANT_COMPLETED,
+                status=TurnStatus.REJECTED,
+                stop_reason=StopReason.APPROVAL_REJECTED,
                 turn_items=turn_items,
             )
 

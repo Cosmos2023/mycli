@@ -57,7 +57,7 @@ export function activityStyle(
   if (state === "waiting_clarification") {
     return { color: theme.warning, glyph: "?" };
   }
-  if (state === "failed" || state === "interrupted") {
+  if (state === "failed" || state === "interrupted" || state === "rejected") {
     return { color: theme.error, glyph: "x" };
   }
   if (state === "completed") {

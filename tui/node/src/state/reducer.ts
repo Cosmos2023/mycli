@@ -515,7 +515,12 @@ function boundedMessageCompleteMetadata(
 }
 
 function isTerminalTurnState(state: TurnLiveState): boolean {
-  return state === "completed" || state === "failed" || state === "interrupted";
+  return (
+    state === "completed" ||
+    state === "failed" ||
+    state === "interrupted" ||
+    state === "rejected"
+  );
 }
 
 function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState {
@@ -529,7 +534,8 @@ function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState 
         ? true
         : liveStatus.state === "completed" ||
             liveStatus.state === "failed" ||
-            liveStatus.state === "interrupted"
+            liveStatus.state === "interrupted" ||
+            liveStatus.state === "rejected"
           ? false
           : state.turnRunning,
     currentTurnId: isTerminalTurnState(liveStatus.state)
@@ -573,6 +579,8 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
         ? "Waiting approval"
         : state === "waiting_clarification"
           ? "Waiting clarification"
+          : state === "rejected"
+            ? "Rejected"
           : "Completed",
   };
   if (typeof params.client_turn_id === "string") {
@@ -602,7 +610,8 @@ function isTurnLiveState(value: unknown): value is TurnLiveState {
     value === "waiting_clarification" ||
     value === "completed" ||
     value === "failed" ||
-    value === "interrupted"
+    value === "interrupted" ||
+    value === "rejected"
   );
 }
 

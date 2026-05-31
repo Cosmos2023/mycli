@@ -321,7 +321,11 @@ class NodeTuiGateway:
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
             )
             turn_state = _turn_state_for_response(response)
-            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state=turn_state,
+                message=_terminal_status_message(response, turn_state),
+            )
             if turn_state == "completed":
                 self._emit_final_message_complete(client_turn_id, response)
             self._emit_status_update(
@@ -329,6 +333,7 @@ class NodeTuiGateway:
                 state=turn_state,
                 kind=turn_state,
                 text=_status_text_for_state(turn_state),
+                message=_terminal_status_message(response, turn_state),
             )
         finally:
             with self._turn_lock:
@@ -429,6 +434,7 @@ class NodeTuiGateway:
         state: str,
         kind: str,
         text: str,
+        message: str | None = None,
     ) -> None:
         payload: dict[str, object] = {
             "state": state,
@@ -437,6 +443,8 @@ class NodeTuiGateway:
         }
         if client_turn_id is not None:
             payload["client_turn_id"] = client_turn_id
+        if message:
+            payload["message"] = message
         self._emit_event("status.update", payload)
 
     def _emit_turn_status(
@@ -610,7 +618,11 @@ class NodeTuiGateway:
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
             )
             turn_state = _turn_state_for_response(response)
-            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state=turn_state,
+                message=_terminal_status_message(response, turn_state),
+            )
             if turn_state == "completed":
                 self._emit_final_message_complete(client_turn_id, response)
             self._emit_status_update(
@@ -618,6 +630,7 @@ class NodeTuiGateway:
                 state=turn_state,
                 kind=turn_state,
                 text=_status_text_for_state(turn_state),
+                message=_terminal_status_message(response, turn_state),
             )
         finally:
             with self._turn_lock:
@@ -701,7 +714,11 @@ class NodeTuiGateway:
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=turn_response),
             )
             turn_state = _turn_state_for_response(turn_response)
-            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state=turn_state,
+                message=_terminal_status_message(turn_response, turn_state),
+            )
             if turn_state == "completed":
                 self._emit_final_message_complete(client_turn_id, turn_response)
             self._emit_status_update(
@@ -709,6 +726,7 @@ class NodeTuiGateway:
                 state=turn_state,
                 kind=turn_state,
                 text=_status_text_for_state(turn_state),
+                message=_terminal_status_message(turn_response, turn_state),
             )
         finally:
             with self._turn_lock:
@@ -860,8 +878,15 @@ def _approval_request_payload(
 def _turn_state_for_response(response: TurnResponse) -> str:
     if response.pending_decision is not None:
         return "waiting_approval"
-    if response.turn is not None and response.turn.status is TurnStatus.WAITING_CLARIFICATION:
-        return "waiting_clarification"
+    if response.turn is not None:
+        if response.turn.status is TurnStatus.WAITING_CLARIFICATION:
+            return "waiting_clarification"
+        if response.turn.status is TurnStatus.REJECTED:
+            return "rejected"
+        if response.turn.status is TurnStatus.FAILED:
+            return "failed"
+        if response.turn.status is TurnStatus.INTERRUPTED:
+            return "interrupted"
     return "completed"
 
 
@@ -873,7 +898,14 @@ def _status_text_for_state(state: str) -> str:
         "completed": "Completed",
         "failed": "Failed",
         "interrupted": "Interrupted",
+        "rejected": "Rejected",
     }.get(state, state.replace("_", " ").title())
+
+
+def _terminal_status_message(response: TurnResponse, state: str) -> str | None:
+    if state in {"failed", "interrupted", "rejected"} and response.assistant_message:
+        return _bounded_text(response.assistant_message)
+    return None
 
 
 def _turn_status_payload(
@@ -886,7 +918,7 @@ def _turn_status_payload(
         "state": state,
         "kind": state,
         "text": _status_text_for_state(state),
-        "terminal": state in {"completed", "failed", "interrupted"},
+        "terminal": state in {"completed", "failed", "interrupted", "rejected"},
     }
     if client_turn_id is not None:
         payload["client_turn_id"] = client_turn_id

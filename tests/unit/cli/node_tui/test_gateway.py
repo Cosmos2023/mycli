@@ -17,7 +17,10 @@ from mycli.domain.runtime import (
     DecisionKind,
     PendingDecision,
     RuntimeStreamEvent,
+    StopReason,
     TurnResponse,
+    TurnRecord,
+    TurnStatus,
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 from mycli.domain.tooling.calls import ToolCall
@@ -464,6 +467,20 @@ class FakeTurnService(FakeService):
     def resolve_pending_decision(self, choice: str) -> TurnResponse:
         self.resolved_choices.append(choice)
         self.fake_session_service.pending_decision = None
+        if choice == "2":
+            return TurnResponse(
+                assistant_message="Rejected Bash. Pending decision cleared.",
+                turn=TurnRecord(
+                    thread_id="demo",
+                    turn_id="turn_rejected",
+                    status=TurnStatus.REJECTED,
+                    started_at="2026-05-31T00:00:00Z",
+                    completed_at="2026-05-31T00:00:01Z",
+                    stop_reason=StopReason.APPROVAL_REJECTED,
+                    user_message="push",
+                    items=(),
+                ),
+            )
         return TurnResponse(assistant_message=f"resolved {choice}")
 
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
@@ -1122,6 +1139,52 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["2"]
+
+
+def test_gateway_approval_reject_emits_rejected_terminal_status(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="approval.respond",
+            params={"decision_id": "decision_current", "choice": "reject"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "decision_id": "decision_current",
+        "client_turn_id": "approval_req_1",
+    }
+    assert {
+        "client_turn_id": "approval_req_1",
+        "state": "rejected",
+        "kind": "rejected",
+        "text": "Rejected",
+        "terminal": True,
+        "message": "Rejected Bash. Pending decision cleared.",
+    } in [params for method, params in events if method == "turn.status"]
+    assert {
+        "client_turn_id": "approval_req_1",
+        "state": "rejected",
+        "kind": "rejected",
+        "text": "Rejected",
+        "message": "Rejected Bash. Pending decision cleared.",
+    } in [params for method, params in events if method == "status.update"]
 
 
 def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_path: Path) -> None:

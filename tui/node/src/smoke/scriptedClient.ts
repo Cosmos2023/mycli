@@ -153,7 +153,8 @@ async function waitForTerminalStatus(client: GatewayClient, clientTurnId: string
       event.params?.client_turn_id === clientTurnId &&
       (event.params?.state === "completed" ||
         event.params?.state === "failed" ||
-        event.params?.state === "interrupted"),
+        event.params?.state === "interrupted" ||
+        event.params?.state === "rejected"),
   );
 }
 
