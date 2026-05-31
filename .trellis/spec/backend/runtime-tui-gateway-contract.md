@@ -213,14 +213,25 @@
     `mycli.cli.node_tui.gateway.supported_rpc_methods()`.
   - `event_streams` names must match
     `mycli.cli.node_tui.gateway.supported_event_streams()`.
+  - Each `event_streams` entry must include `payload_schema`, a lightweight
+    JSON-schema-like object generated from the runtime domain contract. The
+    schema object includes:
+    - `name`: event stream name, matching the entry name
+    - `type: "object"`
+    - `required`: stable required payload fields
+    - `properties`: known payload fields and primitive/enum type metadata
+  - `payload_schema` is a discovery and compatibility surface, not a full
+    runtime validator. It must cover every supported gateway event stream so
+    external clients can inspect required fields without scraping prose docs.
   - It must list machine-readable integration methods such as `trace.export`.
   - It must list runtime stream discovery surfaces such as `runtime.event`,
     `message.delta`, `tool.start`, `turn.status`, and `session.changed`.
   - It must not claim dynamic extension lifecycle or ACP server support until
     those capabilities exist.
-  - `mycli doctor` validates the manifest against gateway-advertised RPC and
-    event stream sets through a read-only `runtime_contract` check. This check
-    must not start runtime turns, call providers, or run Node.
+  - `mycli doctor` validates the manifest against gateway-advertised RPC names,
+    event stream names, and event payload schema names through a read-only
+    `runtime_contract` check. This check must not start runtime turns, call
+    providers, or run Node.
 - `session.changed` payload:
   - `session_id`: the active session id after `/resume`, `/fork`, or
     `session.resume`.

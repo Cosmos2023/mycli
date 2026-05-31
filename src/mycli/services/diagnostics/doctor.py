@@ -12,6 +12,7 @@ import sqlite3
 
 from mycli.config.settings import resolve_config
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
+from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
@@ -521,8 +522,10 @@ class DoctorService:
         manifest = ExtensionManifestService().manifest()
         rpc_methods = _manifest_named_entries(manifest.get("rpc_methods"))
         event_streams = _manifest_named_entries(manifest.get("event_streams"))
+        event_payload_schemas = _manifest_event_payload_schema_names(manifest.get("event_streams"))
         expected_rpc_methods = supported_rpc_methods()
         expected_event_streams = supported_event_streams()
+        expected_event_payload_schemas = set(gateway_event_payload_schemas())
 
         rpc_message = _set_mismatch_message(
             "manifest RPC mismatch",
@@ -544,9 +547,19 @@ class DoctorService:
                 include_extra=False,
             )
         )
+        event_schema_message = _set_mismatch_message(
+            "event payload schemas mismatch",
+            expected=expected_event_payload_schemas,
+            actual=event_payload_schemas,
+        )
         problems = [
             message
-            for message in (rpc_message, event_message, required_stream_message)
+            for message in (
+                rpc_message,
+                event_message,
+                required_stream_message,
+                event_schema_message,
+            )
             if message is not None
         ]
         if problems:
@@ -607,6 +620,24 @@ def _manifest_named_entries(value: object) -> set[str]:
         name = item.get("name")
         if isinstance(name, str) and name:
             names.add(name)
+    return names
+
+
+def _manifest_event_payload_schema_names(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    names: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        payload_schema = item.get("payload_schema")
+        if not isinstance(payload_schema, dict):
+            continue
+        if payload_schema.get("type") != "object":
+            continue
+        schema_name = payload_schema.get("name")
+        if isinstance(schema_name, str) and schema_name:
+            names.add(schema_name)
     return names
 
 

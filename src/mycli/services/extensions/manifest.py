@@ -5,6 +5,7 @@ from typing import Any
 from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_EVENT_STREAMS,
     SUPPORTED_GATEWAY_RPC_METHODS,
+    gateway_event_payload_schemas,
 )
 
 
@@ -58,6 +59,7 @@ class ExtensionManifestService:
     """Builds the read-only integration discovery manifest."""
 
     def manifest(self) -> dict[str, Any]:
+        payload_schemas = gateway_event_payload_schemas()
         return {
             "schema_version": 1,
             "agent": {
@@ -65,7 +67,7 @@ class ExtensionManifestService:
                 "kind": "local_coding_agent",
             },
             "rpc_methods": _described_entries(SUPPORTED_GATEWAY_RPC_METHODS, _RPC_DESCRIPTIONS),
-            "event_streams": _described_entries(SUPPORTED_GATEWAY_EVENT_STREAMS, _EVENT_DESCRIPTIONS),
+            "event_streams": _event_stream_entries(payload_schemas),
             "capabilities": [
                 {
                     "id": "runtime.trace.export",
@@ -135,4 +137,15 @@ def _described_entries(
             "description": descriptions.get(name, f"{name} integration surface."),
         }
         for name in sorted(names)
+    ]
+
+
+def _event_stream_entries(payload_schemas: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "description": _EVENT_DESCRIPTIONS.get(name, f"{name} integration surface."),
+            "payload_schema": payload_schemas[name],
+        }
+        for name in sorted(SUPPORTED_GATEWAY_EVENT_STREAMS)
     ]

@@ -393,8 +393,84 @@ def test_doctor_service_fails_runtime_contract_manifest_mismatch(
         "extra ghost.rpc"
     )
     assert check.detail == (
-        "event streams mismatch: missing approval.request, approval.respond, clarify.request, ..."
+        "event streams mismatch: missing approval.request, approval.respond, clarify.request, ...; "
+        "event payload schemas mismatch: missing approval.request, approval.respond, "
+        "clarify.request, ..."
     )
+
+
+def test_doctor_service_fails_runtime_contract_missing_payload_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    class BrokenManifestService:
+        def manifest(self) -> dict[str, object]:
+            from mycli.services.extensions import ExtensionManifestService
+
+            manifest = ExtensionManifestService().manifest()
+            event_streams = list(manifest["event_streams"])
+            event_streams[0] = {
+                key: value for key, value in event_streams[0].items() if key != "payload_schema"
+            }
+            manifest["event_streams"] = event_streams
+            return manifest
+
+    monkeypatch.setattr(doctor_module, "ExtensionManifestService", BrokenManifestService)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "runtime_contract")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message.startswith("event payload schemas mismatch: missing ")
+
+
+def test_doctor_service_fails_runtime_contract_payload_schema_name_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    class BrokenManifestService:
+        def manifest(self) -> dict[str, object]:
+            from mycli.services.extensions import ExtensionManifestService
+
+            manifest = ExtensionManifestService().manifest()
+            event_streams = list(manifest["event_streams"])
+            payload_schema = dict(event_streams[0]["payload_schema"])
+            payload_schema["name"] = "ghost.event"
+            event_streams[0] = {**event_streams[0], "payload_schema": payload_schema}
+            manifest["event_streams"] = event_streams
+            return manifest
+
+    monkeypatch.setattr(doctor_module, "ExtensionManifestService", BrokenManifestService)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "runtime_contract")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message.startswith("event payload schemas mismatch: missing ")
 
 
 def test_doctor_service_fails_session_db_missing_recovery_tables(tmp_path: Path) -> None:
