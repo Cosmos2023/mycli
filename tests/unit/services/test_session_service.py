@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     BaselineFragment,
@@ -165,6 +167,70 @@ def test_session_service_resumes_ancestor_as_current_tip_lineage(tmp_path: Path)
         "two",
         "branch-only",
     ]
+
+
+def test_session_service_rejects_missing_resume_target(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+
+    with pytest.raises(ValueError, match="Conversation does not exist: missing"):
+        service.resume_conversation("missing")
+
+
+def test_session_service_resumes_legacy_message_only_session(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    db_path = home_dir / ".mycli" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                workspace_root TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE conversation_messages (
+                session_id TEXT NOT NULL,
+                message_index INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, message_index),
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                session_id,
+                workspace_root,
+                thread_id,
+                created_at,
+                updated_at,
+                last_active_at,
+                status
+            )
+            VALUES ('legacy', '/tmp/workspace', 'legacy', 'now', 'now', 'now', 'active')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('legacy', 0, ?)
+            """,
+            ('{"role": "user", "content": "legacy hello"}',),
+        )
+
+    service = SessionService(home_dir=home_dir)
+
+    resumed = service.resume_conversation("legacy")
+
+    assert resumed.session_id == "legacy"
+    assert resumed.parent_id is None
+    assert resumed.fork_point is None
+    assert [message.content for message in resumed.messages] == ["legacy hello"]
 
 
 def test_session_service_searches_sessions_with_bounded_output(tmp_path: Path) -> None:

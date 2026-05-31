@@ -33,6 +33,10 @@ Questions to answer:
 - Session lineage queries must respect `conversation_trees.parent_id` and
   `fork_point`; do not concatenate parent and child transcripts blindly because
   forked child conversations include the parent prefix.
+- Resume target ids must exist before lineage traversal. Treat a row in
+  `sessions`, `conversation_trees`, or `conversation_messages` as valid resume
+  evidence so legacy message-only sessions still work; a completely missing id
+  must raise a clear error instead of returning an empty conversation.
 - A child `fork_point` is bounded by both the child conversation and the parent
   conversation segment it references. Doctor/session integrity checks must fail
   if `fork_point` is negative, exceeds child message count, or exceeds parent
@@ -94,6 +98,9 @@ Questions to answer:
 - Adding diagnostic/search/recall data directly to provider transcript replay.
   Session DB enhancements must stay local unless a caller explicitly asks to load
   or replay that data.
+- Letting `/resume missing-id` create or return an empty conversation. Empty
+  saved sessions have a `sessions` row; a missing id has no persisted resume
+  evidence and should fail clearly.
 - Letting FTS query syntax leak through user input. Quote or otherwise sanitize
   tokens before passing a user query to SQLite `MATCH`, and cover punctuation or
   quoted-token cases with regression tests.

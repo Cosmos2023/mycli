@@ -440,6 +440,8 @@ class SQLiteSessionStore:
         connection: sqlite3.Connection,
         session_id: str,
     ) -> str:
+        if not self._session_has_resume_state(connection, session_id):
+            raise ValueError(f"Conversation does not exist: {session_id}")
         current = session_id
         seen: set[str] = set()
         for _ in range(100):
@@ -451,6 +453,30 @@ class SQLiteSessionStore:
                 return current
             current = child
         raise ValueError("Conversation lineage exceeds the maximum depth.")
+
+    def _session_has_resume_state(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+    ) -> bool:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM sessions
+            WHERE session_id = ?
+            UNION
+            SELECT 1
+            FROM conversation_trees
+            WHERE session_id = ?
+            UNION
+            SELECT 1
+            FROM conversation_messages
+            WHERE session_id = ?
+            LIMIT 1
+            """,
+            (session_id, session_id, session_id),
+        ).fetchone()
+        return row is not None
 
     def _latest_child_session_id(
         self,

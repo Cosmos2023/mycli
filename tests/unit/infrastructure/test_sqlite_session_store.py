@@ -256,6 +256,71 @@ def test_sqlite_session_store_resolves_resume_session_to_descendant_tip(
     assert store.resolve_resume_session_id("grandchild") == "grandchild"
 
 
+def test_sqlite_session_store_rejects_missing_resume_target(tmp_path: Path) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    store = SQLiteSessionStore(db_path)
+
+    with pytest.raises(ValueError, match="Conversation does not exist: missing"):
+        store.resolve_resume_session_id("missing")
+
+    with pytest.raises(ValueError, match="Conversation does not exist: missing"):
+        store.load_conversation_lineage("missing")
+
+
+def test_sqlite_session_store_resumes_legacy_message_only_session(tmp_path: Path) -> None:
+    db_path = tmp_path / "home" / ".mycli" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                workspace_root TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_active_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE conversation_messages (
+                session_id TEXT NOT NULL,
+                message_index INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, message_index),
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                session_id,
+                workspace_root,
+                thread_id,
+                created_at,
+                updated_at,
+                last_active_at,
+                status
+            )
+            VALUES ('legacy', '/tmp/workspace', 'legacy', 'now', 'now', 'now', 'active')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('legacy', 0, ?)
+            """,
+            ('{"role": "user", "content": "legacy hello"}',),
+        )
+
+    store = SQLiteSessionStore(db_path)
+
+    assert store.resolve_resume_session_id("legacy") == "legacy"
+    assert store.load_conversation_lineage("legacy") == [
+        {"role": "user", "content": "legacy hello"}
+    ]
+
+
 def test_sqlite_session_store_loads_fork_lineage_without_duplicating_parent_prefix(
     tmp_path: Path,
 ) -> None:
