@@ -71,6 +71,12 @@ Questions to answer:
 - API key missing -> `api_key=warning`.
 - `~/.mycli/sessions.db` missing -> `sessions_db=warning`.
 - Sessions DB exists but is not openable or lacks required tables -> failed.
+- Sessions DB `schema_version` table is missing, empty, invalid, or does not
+  match the current `SQLiteSessionStore.SCHEMA_VERSION` -> `sessions_db=failed`
+  with expected/current version detail.
+- Sessions DB local search FTS table/triggers for `conversation_messages` are
+  missing -> `sessions_db=failed` with bounded object names. Doctor must not
+  open the write-path store or repair the objects while checking.
 - Sessions DB critical recovery rows in `session_state` for `pending_decision`,
   `suspended_turn`, `turn_record`, or `responses_continuation_state` contain
   invalid JSON, non-object JSON, or malformed nested approval/clarification

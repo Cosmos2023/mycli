@@ -12,6 +12,7 @@ import sqlite3
 
 from mycli.config.settings import resolve_config
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
+from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.mcp.client import load_mcp_server_configs
 from mycli.services.storage_layout import MycliStorageLayout
 
@@ -30,6 +31,7 @@ _LOG_SECRET_PATTERNS = (
 )
 _SESSION_DB_DETAIL_LIMIT = 3
 _SESSION_DB_REQUIRED_TABLES = {
+    "schema_version",
     "sessions",
     "conversation_messages",
     "conversation_trees",
@@ -37,6 +39,12 @@ _SESSION_DB_REQUIRED_TABLES = {
     "turn_rollouts",
     "session_state",
     "session_summaries",
+}
+_SESSION_DB_REQUIRED_SEARCH_OBJECTS = {
+    "conversation_messages_fts": "table",
+    "conversation_messages_fts_insert": "trigger",
+    "conversation_messages_fts_delete": "trigger",
+    "conversation_messages_fts_update": "trigger",
 }
 _SESSION_DB_CHILD_TABLES = (
     "conversation_messages",
@@ -685,6 +693,14 @@ def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
     if orphan_details:
         return f"orphan session rows: {', '.join(orphan_details)}"
 
+    schema_version_problem = _session_db_schema_version_problem(connection)
+    if schema_version_problem is not None:
+        return schema_version_problem
+
+    missing_search_objects = _session_db_missing_search_objects(connection)
+    if missing_search_objects:
+        return f"missing search objects: {', '.join(missing_search_objects)}"
+
     missing_parent_details = _session_db_missing_parent_details(connection)
     if missing_parent_details:
         return f"missing lineage parents: {', '.join(missing_parent_details)}"
@@ -702,6 +718,41 @@ def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
         return f"invalid recovery state payloads: {', '.join(invalid_recovery_state_details)}"
 
     return None
+
+
+def _session_db_schema_version_problem(connection: sqlite3.Connection) -> str | None:
+    rows = connection.execute("SELECT version FROM schema_version").fetchall()
+    if not rows:
+        return "schema version missing"
+    versions: list[int] = []
+    for row in rows:
+        try:
+            versions.append(int(row["version"]))
+        except (TypeError, ValueError):
+            return "schema version invalid"
+    expected = SQLiteSessionStore.SCHEMA_VERSION
+    if len(versions) != 1 or versions[0] != expected:
+        found = ", ".join(str(version) for version in versions) if versions else "none"
+        return f"schema version mismatch: expected {expected}, found {found}"
+    return None
+
+
+def _session_db_missing_search_objects(connection: sqlite3.Connection) -> list[str]:
+    details: list[str] = []
+    for name, object_type in sorted(_SESSION_DB_REQUIRED_SEARCH_OBJECTS.items()):
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE name = ? AND type = ?
+            """,
+            (name, object_type),
+        ).fetchone()
+        if row is None:
+            details.append(name)
+            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
+                break
+    return details
 
 
 def _session_db_orphan_details(connection: sqlite3.Connection) -> list[str]:

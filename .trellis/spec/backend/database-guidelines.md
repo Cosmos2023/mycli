@@ -47,6 +47,9 @@ Questions to answer:
 
 - `SQLiteSessionStore.SCHEMA_VERSION` is the schema anchor for future migration
   work.
+- `mycli doctor` must validate `schema_version` and required search FTS objects
+  read-only. It reports missing/stale objects as diagnostics and must not repair
+  them by opening `SQLiteSessionStore` from the doctor path.
 - Additive schema changes should preserve existing session rows and be covered by
   a regression test that initializes a legacy DB shape, opens it through
   `SQLiteSessionStore`, and verifies existing messages still load.
