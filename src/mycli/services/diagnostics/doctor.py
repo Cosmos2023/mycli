@@ -909,6 +909,10 @@ def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
     if invalid_recovery_state_details:
         return f"invalid recovery state payloads: {', '.join(invalid_recovery_state_details)}"
 
+    unresumable_approval_details = _session_db_unresumable_pending_approval_details(connection)
+    if unresumable_approval_details:
+        return f"unresumable pending approvals: {', '.join(unresumable_approval_details)}"
+
     return None
 
 
@@ -1138,6 +1142,154 @@ def _session_db_invalid_recovery_state_details(connection: sqlite3.Connection) -
             if len(details) >= _SESSION_DB_DETAIL_LIMIT:
                 break
     return details
+
+
+def _session_db_unresumable_pending_approval_details(
+    connection: sqlite3.Connection,
+) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT pending.session_id
+        FROM session_state AS pending
+        LEFT JOIN session_state AS suspended
+            ON suspended.session_id = pending.session_id
+            AND suspended.state_key = 'suspended_turn'
+        LEFT JOIN session_state AS turn_record
+            ON turn_record.session_id = pending.session_id
+            AND turn_record.state_key = 'turn_record'
+        WHERE pending.state_key = 'pending_decision'
+        ORDER BY pending.session_id
+        """
+    ).fetchall()
+    details: list[str] = []
+    for row in rows:
+        session_id = str(row["session_id"])
+        if not _session_db_pending_approval_has_resume_evidence(connection, session_id):
+            details.append(session_id)
+            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
+                break
+    return details
+
+
+def _session_db_pending_approval_has_resume_evidence(
+    connection: sqlite3.Connection,
+    session_id: str,
+) -> bool:
+    suspended = connection.execute(
+        """
+        SELECT payload_json
+        FROM session_state
+        WHERE session_id = ? AND state_key = 'suspended_turn'
+        """,
+        (session_id,),
+    ).fetchone()
+    if suspended is not None:
+        problem = _session_db_recovery_state_problem(
+            session_id=session_id,
+            state_key="suspended_turn",
+            payload_json=str(suspended["payload_json"]),
+        )
+        if problem is None:
+            return True
+
+    turn_record = connection.execute(
+        """
+        SELECT payload_json
+        FROM session_state
+        WHERE session_id = ? AND state_key = 'turn_record'
+        """,
+        (session_id,),
+    ).fetchone()
+    if turn_record is not None and _turn_record_payload_has_waiting_approval_user_message(
+        str(turn_record["payload_json"])
+    ):
+        return True
+
+    return _session_db_has_waiting_approval_rollout_user_message(connection, session_id)
+
+
+def _turn_record_payload_has_waiting_approval_user_message(payload_json: str) -> bool:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return (
+        payload.get("status") == "waiting_approval"
+        and isinstance(payload.get("user_message"), str)
+        and bool(str(payload["user_message"]).strip())
+    )
+
+
+def _session_db_has_waiting_approval_rollout_user_message(
+    connection: sqlite3.Connection,
+    session_id: str,
+) -> bool:
+    rollout_rows = connection.execute(
+        """
+        SELECT payload_json
+        FROM turn_rollouts
+        WHERE session_id = ?
+        ORDER BY sequence_no DESC
+        """,
+        (session_id,),
+    ).fetchall()
+    for row in rollout_rows:
+        turn_id = _waiting_approval_turn_id(str(row["payload_json"]))
+        if turn_id is not None and _session_db_has_user_message_for_turn(
+            connection,
+            session_id=session_id,
+            turn_id=turn_id,
+        ):
+            return True
+    return False
+
+
+def _waiting_approval_turn_id(payload_json: str) -> str | None:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") != "waiting_approval":
+        return None
+    turn_id = payload.get("turn_id")
+    if isinstance(turn_id, str) and turn_id.strip():
+        return turn_id
+    return None
+
+
+def _session_db_has_user_message_for_turn(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+    turn_id: str,
+) -> bool:
+    rows = connection.execute(
+        """
+        SELECT payload_json
+        FROM history_items
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("turn_id") == turn_id
+            and payload.get("type") == "user_message"
+            and isinstance(payload.get("text"), str)
+            and bool(str(payload["text"]).strip())
+        ):
+            return True
+    return False
 
 
 def _session_db_recovery_state_problem(

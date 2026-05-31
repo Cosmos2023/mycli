@@ -911,6 +911,217 @@ def test_doctor_service_fails_session_db_malformed_suspended_turn_recovery_state
     )
 
 
+def test_doctor_service_fails_unresumable_pending_approval_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'pending_decision', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "tool_call": {
+                            "name": "Bash",
+                            "arguments": {"command": "git push"},
+                            "reason": "publish",
+                            "call_id": "call_push_1",
+                        },
+                        "kind": "needs_choice",
+                        "reason": "requires approval",
+                        "preview": "git push",
+                        "options": ["approve_once", "reject"],
+                        "command_pattern": "git push",
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "unresumable pending approvals: demo"
+
+
+def test_doctor_service_accepts_pending_approval_with_waiting_turn_record(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo", workspace_root=workspace)
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'pending_decision', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "tool_call": {
+                            "name": "Bash",
+                            "arguments": {"command": "git push"},
+                            "reason": "publish",
+                            "call_id": "call_push_1",
+                        },
+                        "kind": "needs_choice",
+                        "reason": "requires approval",
+                        "preview": "git push",
+                        "options": ["approve_once", "reject"],
+                        "command_pattern": "git push",
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'turn_record', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "thread_id": "demo",
+                        "turn_id": "turn_waiting",
+                        "status": "waiting_approval",
+                        "started_at": "2026-05-31T00:00:00Z",
+                        "completed_at": None,
+                        "stop_reason": "approval_required",
+                        "user_message": "push the branch",
+                        "items": [],
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.OK
+
+
+def test_doctor_service_accepts_pending_approval_with_rollout_history_evidence(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo", workspace_root=workspace)
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'pending_decision', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "tool_call": {
+                            "name": "Bash",
+                            "arguments": {"command": "git push"},
+                            "reason": "publish",
+                            "call_id": "call_push_1",
+                        },
+                        "kind": "needs_choice",
+                        "reason": "requires approval",
+                        "preview": "git push",
+                        "options": ["approve_once", "reject"],
+                        "command_pattern": "git push",
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+            VALUES (?, 'turn_waiting', ?)
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "thread_id": "demo",
+                        "turn_id": "turn_waiting",
+                        "status": "waiting_approval",
+                        "started_at": "2026-05-31T00:00:00Z",
+                        "completed_at": None,
+                        "stop_reason": "approval_required",
+                        "events": [],
+                        "continuation_state": {},
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO history_items (session_id, item_id, payload_json)
+            VALUES (?, 'hist_user_1', ?)
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "id": "hist_user_1",
+                        "thread_id": "demo",
+                        "turn_id": "turn_waiting",
+                        "type": "user_message",
+                        "text": "push the branch",
+                        "tool_name": None,
+                        "call_id": None,
+                        "metadata": {},
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.OK
+
+
 def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
     tmp_path: Path,
 ) -> None:

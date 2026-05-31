@@ -46,6 +46,11 @@ Questions to answer:
   conversation segment it references. Doctor/session integrity checks must fail
   if `fork_point` is negative, exceeds child message count, or exceeds parent
   message count when `parent_id` is set.
+- Pending approval recovery is a DB integrity concern: a persisted
+  `pending_decision` must have either valid explicit `suspended_turn` state,
+  a waiting-approval `turn_record` with `user_message`, or a waiting-approval
+  rollout plus matching user history item. Doctor reports missing evidence
+  read-only instead of clearing state.
 - Session message search is an explicit local query path only. Use
   `SessionStore.search_messages(query, workspace_root=..., limit=...)` for
   user-triggered lookup such as `/search <query>`; do not run it automatically as

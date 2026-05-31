@@ -82,6 +82,10 @@ Questions to answer:
   invalid JSON, non-object JSON, or malformed nested approval/clarification
   objects -> `sessions_db=failed` with bounded `session_id:state_key`
   references. Doctor must not print raw `payload_json`.
+- Sessions DB contains a `pending_decision` but no valid `suspended_turn`,
+  waiting-approval `turn_record` with user message, or waiting-approval
+  rollout plus matching user history item -> `sessions_db=failed` with bounded
+  session ids. Doctor must not repair or clear the pending decision.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.
