@@ -59,6 +59,14 @@ _INTEGER = {"type": "integer"}
 _BOOLEAN = {"type": "boolean"}
 _OBJECT = {"type": "object"}
 _ARRAY = {"type": "array"}
+_CONTEXT_WINDOW = {
+    "type": "object",
+    "properties": {
+        "used_tokens": _INTEGER,
+        "max_tokens": _INTEGER,
+        "source": _STRING,
+    },
+}
 GATEWAY_ERROR_CODES = (
     "internal_error",
     "invalid_params",
@@ -239,7 +247,27 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         required=("session_id",),
         properties={"session_id": _STRING},
     ),
-    "status.changed": _schema("status.changed", properties={}),
+    "status.changed": _schema(
+        "status.changed",
+        required=(
+            "session_id",
+            "workspace",
+            "model",
+            "provider",
+            "context_window",
+            "pending_decision",
+            "suspended_turn",
+        ),
+        properties={
+            "session_id": _STRING,
+            "workspace": _STRING,
+            "model": _STRING,
+            "provider": _STRING,
+            "context_window": _CONTEXT_WINDOW,
+            "pending_decision": _BOOLEAN,
+            "suspended_turn": _BOOLEAN,
+        },
+    ),
     "status.update": _schema(
         "status.update",
         required=("state", "kind", "text"),

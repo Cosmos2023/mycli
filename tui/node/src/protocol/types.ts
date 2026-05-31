@@ -330,8 +330,24 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
     properties: ["session_id"],
   },
   "status.changed": {
-    required: [],
-    properties: [],
+    required: [
+      "session_id",
+      "workspace",
+      "model",
+      "provider",
+      "context_window",
+      "pending_decision",
+      "suspended_turn",
+    ],
+    properties: [
+      "context_window",
+      "model",
+      "pending_decision",
+      "provider",
+      "session_id",
+      "suspended_turn",
+      "workspace",
+    ],
   },
   "status.update": {
     required: ["state", "kind", "text"],

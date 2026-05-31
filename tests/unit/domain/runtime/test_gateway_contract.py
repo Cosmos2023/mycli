@@ -43,3 +43,33 @@ def test_approval_request_options_schema_uses_decision_choice_taxonomy() -> None
 
     assert options["type"] == "array"
     assert options["items"]["properties"]["choice"]["enum"] == list(APPROVAL_DECISION_CHOICES)
+
+
+def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
+    schema = gateway_event_payload_schemas()["status.changed"]
+
+    assert schema["required"] == [
+        "session_id",
+        "workspace",
+        "model",
+        "provider",
+        "context_window",
+        "pending_decision",
+        "suspended_turn",
+    ]
+    assert sorted(schema["properties"]) == [
+        "context_window",
+        "model",
+        "pending_decision",
+        "provider",
+        "session_id",
+        "suspended_turn",
+        "workspace",
+    ]
+    assert schema["properties"]["pending_decision"] == {"type": "boolean"}
+    assert schema["properties"]["suspended_turn"] == {"type": "boolean"}
+    assert sorted(schema["properties"]["context_window"]["properties"]) == [
+        "max_tokens",
+        "source",
+        "used_tokens",
+    ]

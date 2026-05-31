@@ -261,6 +261,18 @@
     `session.resume`.
   - `session.changed` is a direct gateway notification and is not currently
     mirrored through `runtime.event` when emitted outside `_emit_event`.
+- `status.changed` payload:
+  - `session_id`: the active session id for the snapshot.
+  - `workspace`, `model`, and `provider`: bounded display metadata for the
+    active runtime context.
+  - `context_window`: object with `used_tokens`, `max_tokens`, and `source`.
+  - `pending_decision`: boolean indicating whether the active session has a
+    persisted pending approval.
+  - `suspended_turn`: boolean indicating whether the active session has a
+    persisted suspended turn.
+  - `status.changed` is a snapshot event. It is not a replacement for
+    `status.update`, and booleans alone are not enough to recover a pending
+    approval or clarification.
   - Gateway `session.resume` must emit `session.changed` first, then a
     `status.changed` snapshot for the same active session so clients clear or
     retain pending state based on the resolved session tip.
