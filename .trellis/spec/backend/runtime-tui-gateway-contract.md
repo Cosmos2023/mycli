@@ -38,6 +38,7 @@
   - `reasoning.delta`
   - `thinking.delta`
   - `turn.completed`
+  - `turn.completion_suppressed`
   - `turn.failed`
   - `turn.interrupted`
   - `turn.status`
@@ -145,9 +146,24 @@
     `client_turn_id` when a turn is running, so Node scripted smokes and future
     clients can correlate the interrupt with the active turn. The status
     payloads should include a bounded `message` such as `Interrupt requested`.
-  - `turn.status(state=interrupted)` currently reports that an interrupt was
-    requested; it does not guarantee that the running worker stopped before a
-    later terminal event.
+  - `turn.status(state=interrupted)` reports that an interrupt was requested
+    and is terminal for that `client_turn_id` at the gateway/TUI boundary.
+    If the running worker later returns a normal completed `TurnResponse` for
+    the same turn, the gateway must suppress `turn.completed`,
+    final `message.complete(final=true)`, `turn.status(state=completed)`, and
+    `status.update(state=completed)`.
+  - `turn.completion_suppressed` payload:
+    - `client_turn_id`: string for the interrupted turn whose late completion
+      was suppressed
+    - `reason`: stable short reason, currently `interrupt_requested`
+    - `suppressed_state`: terminal state that would have been emitted without
+      suppression, normally `completed`
+    - This event is a bounded diagnostic/runtime notification. It must not
+      include raw user text, assistant text, provider payloads, tool output,
+      headers, or secrets.
+  - Node reducers must defensively ignore stale `turn.completed`, final
+    `message.complete(final=true)`, and completed `status.update` events for a
+    `client_turn_id` whose live status is already terminal `interrupted`.
   - Accepted running-turn interrupt requests are recorded as local
     `turn_interrupt_requested` trace/log diagnostics by the service boundary.
     This diagnostic is not a gateway stream event and must not include raw user
@@ -495,6 +511,9 @@
 - User interrupt while a turn is running -> emit `turn.interrupted`, then
   `turn.status` with `state=interrupted`, `terminal=true`, and a bounded
   `message`, then `status.update` with `interrupted`.
+- User interrupt followed by a late normal worker completion -> preserve the
+  interrupted status, emit `turn.completion_suppressed`, and do not append or
+  finalize late assistant text.
 
 ### 5. Good/Base/Bad Cases
 - Good: TUI renders a concrete approval prompt from `approval.request` without

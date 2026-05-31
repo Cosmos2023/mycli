@@ -972,6 +972,22 @@ class E2EFailureRecoveryService:
         return (f"resumed {session_id or 'failure-recovery-smoke'}",)
 
 
+class E2ELateCompletionAfterInterruptService(E2EInterruptedStateService):
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        self.messages.append(message)
+        if message != "interrupt me":
+            raise AssertionError(f"unexpected message: {message}")
+        self.started.set()
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text="late draft"))
+        self.return_interrupted.wait(timeout=2.0)
+        return TurnResponse(assistant_message="late normal answer")
+
+
 def test_run_node_tui_gateway_with_real_node_scripted_client_interrupted_turn(
     tmp_path: Path,
 ) -> None:
@@ -1002,6 +1018,40 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_interrupted_turn(
     assert state["liveStatus"]["message"] == "Interrupt requested"
     assert state["pendingApproval"] is None
     assert state["pendingClarification"] is None
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_suppresses_late_completion(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-interrupt-late-completion-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [{"type": "turn.submit_interrupt", "message": "interrupt me"}]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2ELateCompletionAfterInterruptService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["interrupt me"]
+    assert service.started.is_set()
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["turnRunning"] is False
+    assert state["currentTurnId"] is None
+    assert state["liveStatus"]["state"] == "interrupted"
+    assert state["liveStatus"]["message"] == "Interrupt requested"
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == ["late draft"]
 
 
 def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_matrix(

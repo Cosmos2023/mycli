@@ -44,6 +44,7 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "tool.progress",
         "tool.start",
         "turn.completed",
+        "turn.completion_suppressed",
         "turn.event",
         "turn.failed",
         "turn.interrupted",
@@ -339,6 +340,16 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "progress_updates": _ARRAY,
                 "plan_steps": _ARRAY,
                 "usage": _OBJECT,
+            }
+        ),
+    ),
+    "turn.completion_suppressed": _schema(
+        "turn.completion_suppressed",
+        required=("client_turn_id", "reason", "suppressed_state"),
+        properties=_with_client_turn(
+            {
+                "reason": _STRING,
+                "suppressed_state": _TERMINAL_TURN_STATE,
             }
         ),
     ),

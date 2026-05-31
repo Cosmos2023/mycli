@@ -149,6 +149,12 @@ export type TurnCompletedPayload = {
   usage?: JsonObject;
 };
 
+export type TurnCompletionSuppressedPayload = {
+  client_turn_id: string;
+  reason: string;
+  suppressed_state: Exclude<TurnState, "running">;
+};
+
 export type TurnFailedPayload = {
   client_turn_id?: string;
   message?: string;
@@ -240,6 +246,7 @@ export const KNOWN_GATEWAY_EVENT_METHODS = [
   "tool.progress",
   "tool.start",
   "turn.completed",
+  "turn.completion_suppressed",
   "turn.event",
   "turn.failed",
   "turn.interrupted",
@@ -460,6 +467,20 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
       ],
     },
   },
+  "turn.completion_suppressed": {
+    required: ["client_turn_id", "reason", "suppressed_state"],
+    properties: ["client_turn_id", "reason", "suppressed_state"],
+    enums: {
+      suppressed_state: [
+        "waiting_approval",
+        "waiting_clarification",
+        "completed",
+        "failed",
+        "interrupted",
+        "rejected",
+      ],
+    },
+  },
   "turn.event": {
     required: ["phase", "kind"],
     properties: ["client_turn_id", "kind", "metadata", "phase", "text", "tool_name"],
@@ -509,6 +530,7 @@ export type KnownGatewayEvent =
   | Notification<"reasoning.delta", TextDeltaPayload>
   | Notification<"thinking.delta", TextDeltaPayload>
   | Notification<"turn.completed", TurnCompletedPayload>
+  | Notification<"turn.completion_suppressed", TurnCompletionSuppressedPayload>
   | Notification<"turn.event", TurnEventPayload>
   | Notification<"turn.failed", TurnFailedPayload>
   | Notification<"turn.interrupted", TurnInterruptedPayload>

@@ -610,6 +610,74 @@ test("terminal turn status clears live turn bookkeeping without transcript outpu
   assert.equal(state.transcript.length, transcriptLength);
 });
 
+test("interrupted turn ignores stale completion and final answer events", () => {
+  let state = initialState();
+  state = reduceShellState(state, { type: "user.submit", message: "stop this" });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.started",
+    params: { client_turn_id: "c1" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.delta",
+    params: { client_turn_id: "c1", text: "draft" },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.status",
+    params: {
+      client_turn_id: "c1",
+      state: "interrupted",
+      kind: "interrupted",
+      text: "Interrupted",
+      terminal: true,
+      message: "Interrupt requested",
+    },
+  });
+  const transcriptBeforeStale = state.transcript.map((item) => ({ ...item }));
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "turn.completed",
+    params: {
+      client_turn_id: "c1",
+      assistant_message: "late normal answer",
+      activity_events: [],
+      progress_updates: [],
+      plan_steps: [],
+      pending_decision: false,
+      turn_state: "completed",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "message.complete",
+    params: {
+      client_turn_id: "c1",
+      text: "late normal answer",
+      final: true,
+      source: "turn_response",
+    },
+  });
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "status.update",
+    params: {
+      client_turn_id: "c1",
+      state: "completed",
+      kind: "completed",
+      text: "Completed",
+    },
+  });
+
+  assert.equal(state.liveStatus?.state, "interrupted");
+  assert.equal(state.liveStatus?.message, "Interrupt requested");
+  assert.deepEqual(state.transcript, transcriptBeforeStale);
+  assert.equal(state.turnRunning, false);
+  assert.equal(state.currentTurnId, null);
+});
+
 test("rejected turn status is terminal and clears pending approval", () => {
   let state = initialState();
   state = reduceShellState(state, {

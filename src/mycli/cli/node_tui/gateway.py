@@ -380,6 +380,9 @@ class NodeTuiGateway:
                 text="Failed",
             )
         else:
+            if self._should_suppress_late_completion(client_turn_id, response):
+                self._emit_late_completion_suppressed(client_turn_id, response)
+                return
             if response.pending_decision is not None:
                 self._emit_event(
                     "approval.request",
@@ -409,6 +412,34 @@ class NodeTuiGateway:
                 self._turn_running = False
                 self._current_client_turn_id = None
             self._emit_event("status.changed", self._status_payload())
+
+    def _should_suppress_late_completion(
+        self,
+        client_turn_id: str,
+        response: TurnResponse,
+    ) -> bool:
+        if _turn_state_for_response(response) != "completed":
+            return False
+        with self._turn_lock:
+            return (
+                self._interrupt_requested
+                and self._turn_running
+                and self._current_client_turn_id == client_turn_id
+            )
+
+    def _emit_late_completion_suppressed(
+        self,
+        client_turn_id: str,
+        response: TurnResponse,
+    ) -> None:
+        self._emit_event(
+            "turn.completion_suppressed",
+            {
+                "client_turn_id": client_turn_id,
+                "reason": "interrupt_requested",
+                "suppressed_state": _turn_state_for_response(response),
+            },
+        )
 
     def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:
         if event.kind in {"tool_start", "tool_progress", "tool_complete", "tool_failed"}:

@@ -148,12 +148,7 @@ async function runScriptedAction(
       (event) => event.params?.client_turn_id === clientTurnId,
     );
     await client.send("turn.interrupt", {});
-    await client.waitForEvent(
-      "turn.completed",
-      (event) =>
-        event.params?.client_turn_id === clientTurnId &&
-        event.params?.turn_state === "interrupted",
-    );
+    await waitForInterruptedTerminal(client, clientTurnId);
     await waitForInterruptedStatus(client, clientTurnId);
     return;
   }
@@ -211,6 +206,26 @@ async function runScriptedAction(
     (event) => event.params?.client_turn_id === clientTurnId,
   );
   await waitForTerminalStatus(client, clientTurnId);
+}
+
+async function waitForInterruptedTerminal(
+  client: GatewayClient,
+  clientTurnId: string,
+): Promise<void> {
+  await Promise.race([
+    client.waitForEvent(
+      "turn.completed",
+      (event) =>
+        event.params?.client_turn_id === clientTurnId &&
+        event.params?.turn_state === "interrupted",
+    ),
+    client.waitForEvent(
+      "turn.completion_suppressed",
+      (event) =>
+        event.params?.client_turn_id === clientTurnId &&
+        event.params?.reason === "interrupt_requested",
+    ),
+  ]);
 }
 
 async function sendForScriptedState(

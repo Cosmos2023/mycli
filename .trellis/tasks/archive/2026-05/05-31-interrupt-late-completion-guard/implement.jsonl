@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime/TUI event contract and cross-language manifest requirements for interrupt terminal semantics."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verification expectations for gateway diagnostics and runtime contract tests."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Python gateway to Node reducer contract spans multiple layers."}
+{"file": ".trellis/tasks/05-31-interrupt-late-completion-guard/research/current-state.md", "reason": "Current-state race analysis and desired interrupt late-completion behavior."}

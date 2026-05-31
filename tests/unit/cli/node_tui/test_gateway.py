@@ -663,6 +663,21 @@ class BlockingTurnService(FakeTurnService):
         return TurnResponse(assistant_message="")
 
 
+class BlockingLateCompletionTurnService(BlockingTurnService):
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message
+        self.started.set()
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text="late draft"))
+        if not self.release.wait(timeout=2.0):
+            raise AssertionError("blocking fake turn was not released")
+        return TurnResponse(assistant_message="late normal answer")
+
+
 class BlockingNoInterruptHookService(FakeService):
     def __init__(self, workspace_root: Path) -> None:
         super().__init__(workspace_root)
@@ -1306,6 +1321,64 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
         "text": "Interrupted",
         "message": "Interrupt requested",
     } in [params for method, params in events if method == "status.update"]
+
+
+def test_gateway_turn_interrupt_suppresses_late_normal_completion(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = BlockingLateCompletionTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    accepted = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    assert service.started.wait(timeout=2.0)
+    interrupted = gateway.handle_request(RpcRequest(id="req_2", method="turn.interrupt", params={}))
+    service.release.set()
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert accepted.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert interrupted.result == {"interrupted": True}
+    assert service.interrupt_requests == ["client_1"]
+
+    terminal_events = [
+        (method, params)
+        for method, params in events
+        if params.get("client_turn_id") == "client_1"
+        and method in {"turn.completed", "turn.status", "message.complete", "status.update"}
+    ]
+    assert ("turn.completed",) not in [(method,) for method, _params in terminal_events]
+    assert not any(
+        method == "message.complete" and params.get("final") is True
+        for method, params in terminal_events
+    )
+    assert not any(
+        method == "turn.status" and params.get("state") == "completed"
+        for method, params in terminal_events
+    )
+    assert not any(
+        method == "status.update" and params.get("state") == "completed"
+        for method, params in terminal_events
+    )
+    assert {
+        "client_turn_id": "client_1",
+        "state": "interrupted",
+        "kind": "interrupted",
+        "text": "Interrupted",
+        "terminal": True,
+        "message": "Interrupt requested",
+    } in [params for method, params in events if method == "turn.status"]
+    assert {
+        "client_turn_id": "client_1",
+        "reason": "interrupt_requested",
+        "suppressed_state": "completed",
+    } in [params for method, params in events if method == "turn.completion_suppressed"]
 
 
 def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_compatible(

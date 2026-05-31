@@ -216,6 +216,12 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       if (!liveStatus) {
         return state;
       }
+      if (
+        liveStatus.state === "completed" &&
+        isInterruptedTerminalForClient(state, liveStatus.client_turn_id)
+      ) {
+        return state;
+      }
       return applyLiveStatus(state, liveStatus);
     }
     if (action.method === "turn.status") {
@@ -246,6 +252,9 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     if (action.method === "message.complete") {
       const clientTurnId = clientTurnIdFromParams(action.params);
       if (action.params.final === true) {
+        if (isInterruptedTerminalForClient(state, clientTurnId)) {
+          return state;
+        }
         return {
           ...state,
           turnRunning: false,
@@ -322,6 +331,10 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       };
     }
     if (action.method === "turn.completed") {
+      const clientTurnId = clientTurnIdFromParams(action.params);
+      if (isInterruptedTerminalForClient(state, clientTurnId)) {
+        return state;
+      }
       return {
         ...state,
         turnRunning: false,
@@ -358,6 +371,9 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     }
     if (action.method === "approval.respond") {
       return { ...state, pendingApproval: null };
+    }
+    if (action.method === "turn.completion_suppressed") {
+      return state;
     }
     if (action.method === "clarify.request") {
       const pendingClarification = action.params as ClarifyRequestPayload;
@@ -570,6 +586,17 @@ function applyTurnStatus(
     return next;
   }
   return appendErrorItem(next, params, "Turn failed");
+}
+
+function isInterruptedTerminalForClient(
+  state: ShellState,
+  clientTurnId: string | null | undefined,
+): boolean {
+  if (state.liveStatus?.state !== "interrupted") {
+    return false;
+  }
+  const interruptedTurnId = state.liveStatus.client_turn_id;
+  return Boolean(clientTurnId && interruptedTurnId && clientTurnId === interruptedTurnId);
 }
 
 function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | null {
