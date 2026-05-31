@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from json import JSONDecodeError
 from pathlib import Path
+import re
 from typing import Any
 
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
@@ -11,6 +12,30 @@ from mycli.services.storage_layout import MycliStorageLayout
 
 
 _TRACE_PREVIEW_CHARS = 240
+_SECRET_VALUE = "[REDACTED]"
+_SENSITIVE_KEYS = frozenset(
+    {
+        "authorization",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "token",
+        "access_token",
+        "refresh_token",
+        "secret",
+        "password",
+    }
+)
+_BEARER_PATTERN = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9_./+=:-]{6,})\b")
+_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password)[A-Za-z0-9_.-]*)"
+    r"(\s*[:=]\s*)([\"']?)([^\"'\s,;}]+)(\3)"
+)
+_FLAG_PATTERN = re.compile(
+    r"(?i)(--[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password)[A-Za-z0-9_.-]*"
+    r"\s+)([\"']?)([^\"'\s,;}]+)(\2)"
+)
+_OPENAI_KEY_PATTERN = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{6,}\b")
 
 
 class TraceService:
@@ -95,6 +120,8 @@ class TraceService:
             return cls._sanitize_mapping(value)
         if isinstance(value, (list, tuple)):
             return [cls._sanitize_value(item) for item in value]
+        if isinstance(value, str):
+            return cls._redact_text(value)
         return value
 
     @classmethod
@@ -102,6 +129,9 @@ class TraceService:
         sanitized: dict[str, Any] = {}
         for raw_key, raw_value in value.items():
             key = str(raw_key)
+            if cls._is_sensitive_key(key):
+                sanitized[key] = cls._redact_sensitive_value(raw_value, key=key)
+                continue
             if key == "raw_payload" and isinstance(raw_value, dict):
                 sanitized[key] = cls._sanitize_raw_payload(raw_value)
                 continue
@@ -126,7 +156,7 @@ class TraceService:
             key = str(raw_key)
             if key == "content" and isinstance(raw_value, str):
                 sanitized["content_chars"] = len(raw_value)
-                sanitized["content_preview"] = cls._preview(raw_value)
+                sanitized["content_preview"] = cls._preview(cls._redact_text(raw_value))
                 continue
             sanitized[key] = cls._sanitize_value(raw_value)
         return sanitized
@@ -136,3 +166,29 @@ class TraceService:
         if len(value) <= _TRACE_PREVIEW_CHARS:
             return value
         return value[:_TRACE_PREVIEW_CHARS] + "..."
+
+    @classmethod
+    def _redact_sensitive_value(cls, value: Any, *, key: str) -> Any:
+        if isinstance(value, str):
+            if key.lower() == "authorization" and value.lower().startswith("bearer "):
+                return "Bearer " + _SECRET_VALUE
+            return _SECRET_VALUE
+        if isinstance(value, dict):
+            return cls._sanitize_mapping(value)
+        if isinstance(value, (list, tuple)):
+            return [cls._sanitize_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _redact_text(value: str) -> str:
+        redacted = _BEARER_PATTERN.sub(rf"\1{_SECRET_VALUE}", value)
+        redacted = _ASSIGNMENT_PATTERN.sub(rf"\1\2\3{_SECRET_VALUE}\5", redacted)
+        redacted = _FLAG_PATTERN.sub(rf"\1\2{_SECRET_VALUE}\4", redacted)
+        return _OPENAI_KEY_PATTERN.sub(_SECRET_VALUE, redacted)
+
+    @staticmethod
+    def _is_sensitive_key(key: str) -> bool:
+        normalized = key.strip().lower().replace("-", "_")
+        if normalized in _SENSITIVE_KEYS:
+            return True
+        return any(part in normalized for part in ("api_key", "apikey", "token", "secret", "password"))
