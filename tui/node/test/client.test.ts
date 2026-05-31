@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
+import { resolve } from "node:path";
 import { GatewayClient, GatewayRequestError } from "../src/protocol/client.ts";
+import { KNOWN_GATEWAY_EVENT_METHODS } from "../src/protocol/types.ts";
 
 test("typed client sends requests and receives matching responses", async () => {
   const input = new PassThrough();
@@ -113,10 +115,57 @@ test("typed client narrows known event payloads and keeps unknown events", async
   assert.equal(sessionChangedEvent.method, "session.changed");
   assert.equal(sessionChangedEvent.params.session_id, "resumed");
 
+  const turnEventPromise = client.waitForEvent(
+    "turn.event",
+    (event) => event.params.phase === "assistant_delta",
+  );
+  input.write(
+    [
+      '{"jsonrpc":"2.0","method":"turn.event","params":',
+      '{"client_turn_id":"c1","phase":"assistant_delta","kind":"text_delta",',
+      '"text":"legacy","tool_name":null,"metadata":{}}}\n',
+    ].join(""),
+  );
+  const turnEvent = await turnEventPromise;
+  assert.equal(turnEvent.method, "turn.event");
+  assert.equal(turnEvent.params.phase, "assistant_delta");
+  assert.equal(turnEvent.params.text, "legacy");
+
   const unknownPromise = client.waitForEvent("custom.event");
   input.write('{"jsonrpc":"2.0","method":"custom.event","params":{"ok":true}}\n');
   const unknownEvent = await unknownPromise;
   assert.equal(unknownEvent.method, "custom.event");
   assert.equal(unknownEvent.params.ok, true);
   client.stop();
+});
+
+test("known TypeScript event methods match Python advertised gateway streams", async () => {
+  const { spawn } = await import("node:child_process");
+  const python = spawn("python3", [
+    "-c",
+    [
+      "import json",
+      "from mycli.domain.runtime.gateway_contract import SUPPORTED_GATEWAY_EVENT_STREAMS",
+      "print(json.dumps(sorted(SUPPORTED_GATEWAY_EVENT_STREAMS)))",
+    ].join("; "),
+  ], {
+    env: {
+      ...process.env,
+      PYTHONPATH: [resolve(process.cwd(), "../../src"), process.env.PYTHONPATH]
+        .filter(Boolean)
+        .join(":"),
+    },
+  });
+  let stdout = "";
+  let stderr = "";
+  python.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  python.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+
+  const exitCode = await new Promise<number | null>((resolve) => python.on("close", resolve));
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(KNOWN_GATEWAY_EVENT_METHODS.slice().sort(), JSON.parse(stdout));
 });

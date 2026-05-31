@@ -116,6 +116,15 @@ export type MessageCompletePayload = {
   [key: string]: unknown;
 };
 
+export type TurnEventPayload = {
+  client_turn_id?: string;
+  phase: string;
+  kind: string;
+  text?: string;
+  tool_name?: string | null;
+  metadata?: JsonObject;
+};
+
 export type TurnStartedPayload = {
   client_turn_id: string;
 };
@@ -184,6 +193,32 @@ export type RpcNotification = {
 
 export type RpcMessage = RpcRequest | RpcResponse | RpcNotification;
 
+export const KNOWN_GATEWAY_EVENT_METHODS = [
+  "approval.request",
+  "approval.respond",
+  "clarify.request",
+  "clarify.respond",
+  "gateway.error",
+  "message.complete",
+  "message.delta",
+  "reasoning.delta",
+  "runtime.event",
+  "session.changed",
+  "status.changed",
+  "status.update",
+  "thinking.delta",
+  "tool.complete",
+  "tool.failed",
+  "tool.progress",
+  "tool.start",
+  "turn.completed",
+  "turn.event",
+  "turn.failed",
+  "turn.interrupted",
+  "turn.started",
+  "turn.status",
+] as const;
+
 export type KnownGatewayEvent =
   | Notification<"runtime.event", RuntimeEventEnvelopePayload>
   | Notification<"turn.started", TurnStartedPayload>
@@ -201,6 +236,7 @@ export type KnownGatewayEvent =
   | Notification<"reasoning.delta", TextDeltaPayload>
   | Notification<"thinking.delta", TextDeltaPayload>
   | Notification<"turn.completed", TurnCompletedPayload>
+  | Notification<"turn.event", TurnEventPayload>
   | Notification<"turn.failed", TurnFailedPayload>
   | Notification<"turn.interrupted", TurnInterruptedPayload>
   | Notification<"turn.status", TurnStatusPayload>
@@ -209,6 +245,15 @@ export type KnownGatewayEvent =
   | Notification<"status.changed", StatusChangedPayload>;
 
 export type KnownGatewayEventMethod = KnownGatewayEvent["method"];
+
+type ListedKnownGatewayEventMethod = (typeof KNOWN_GATEWAY_EVENT_METHODS)[number];
+type AssertNever<T extends never> = T;
+type _KnownGatewayEventMethodMissingFromList = AssertNever<
+  Exclude<KnownGatewayEventMethod, ListedKnownGatewayEventMethod>
+>;
+type _KnownGatewayEventMethodExtraInList = AssertNever<
+  Exclude<ListedKnownGatewayEventMethod, KnownGatewayEventMethod>
+>;
 
 export type GatewayEventFor<Method extends KnownGatewayEventMethod> = Extract<
   KnownGatewayEvent,
