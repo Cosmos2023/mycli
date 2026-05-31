@@ -204,6 +204,8 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "mcp: 1 configured, 1 enabled" in rendered
     assert "storage_layout" in rendered
     assert "Summary:" in rendered
+    logs_redaction = next(check for check in report.checks if check.name == "logs_redaction")
+    assert logs_redaction.status is DoctorStatus.OK
 
 
 def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) -> None:
@@ -228,6 +230,7 @@ def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) 
     assert any(check.name == "sessions_db" and check.status is DoctorStatus.WARNING for check in report.checks)
     assert any(check.name == "file_history" and check.status is DoctorStatus.WARNING for check in report.checks)
     assert any(check.name == "mcp" and check.status is DoctorStatus.FAILED for check in report.checks)
+    assert not any(check.name == "logs_redaction" for check in report.checks)
     assert report.failed_count == 1
 
 
@@ -461,6 +464,112 @@ def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
     logs_check = next(check for check in report.checks if check.name == "logs")
     assert logs_check.status is DoctorStatus.OK
     assert "errors.log" not in logs_check.message
+
+
+def test_doctor_service_reports_clean_log_redaction_scan(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    logs = home / ".mycli" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "agent.log").write_text(
+        "2026-05-31 INFO [demo] request Authorization: Bearer [REDACTED]\n",
+        encoding="utf-8",
+    )
+    (logs / "errors.log").write_text("", encoding="utf-8")
+    (logs / "model-events.jsonl").write_text(
+        json.dumps({"message": "api_key=[REDACTED]"}) + "\n",
+        encoding="utf-8",
+    )
+    raw_dir = logs / "model-raw" / "demo"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "request.json").write_text(
+        json.dumps({"headers": {"Authorization": "Bearer [REDACTED]"}}),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "logs_redaction")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "scanned 4 log file(s) for obvious secrets"
+
+
+def test_doctor_service_fails_log_redaction_scan_without_printing_secret(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    secret = "sk-leakedsecret"
+    logs = home / ".mycli" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "agent.log").write_text(
+        f"2026-05-31 ERROR [demo] request failed api_key={secret}\n",
+        encoding="utf-8",
+    )
+    (logs / "model-events.jsonl").write_text("", encoding="utf-8")
+    (logs / "model-raw").mkdir()
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "logs_redaction")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "1 possible secret leak(s) in diagnostic logs"
+    assert check.detail == "agent.log:1"
+    assert secret not in rendered
+
+
+def test_doctor_service_fails_model_raw_redaction_scan_without_printing_secret(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    secret = "raw-token-secret"
+    logs = home / ".mycli" / "logs"
+    raw_dir = logs / "model-raw" / "demo"
+    raw_dir.mkdir(parents=True)
+    (logs / "agent.log").write_text("", encoding="utf-8")
+    (logs / "model-events.jsonl").write_text("", encoding="utf-8")
+    (raw_dir / "request.json").write_text(
+        json.dumps({"body": {"nested": [{"token": secret}]}}),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "logs_redaction")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "1 possible secret leak(s) in diagnostic logs"
+    assert check.detail == "model-raw/demo/request.json:$.body.nested[0].token"
+    assert secret not in rendered
 
 
 def test_doctor_service_reports_storage_layout_missing_reserved_dirs_as_ok(

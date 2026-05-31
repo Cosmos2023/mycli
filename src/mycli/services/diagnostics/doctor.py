@@ -6,6 +6,7 @@ from enum import StrEnum
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 
@@ -16,6 +17,17 @@ from mycli.services.storage_layout import MycliStorageLayout
 
 _TRACE_SCAN_LIMIT = 50
 _TRACE_DETAIL_LIMIT = 3
+_LOG_REDACTION_TEXT_BYTES = 512_000
+_LOG_REDACTION_RAW_FILE_LIMIT = 20
+_LOG_REDACTION_DETAIL_LIMIT = 3
+_LOG_SECRET_PATTERNS = (
+    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{6,}\b"),
+    re.compile(r"(?i)\bBearer\s+(?!\[REDACTED\]\b)[A-Za-z0-9_./+=:-]{6,}\b"),
+    re.compile(
+        r"(?i)\b[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password)[A-Za-z0-9_.-]*"
+        r"\s*[:=]\s*[\"']?(?!\[REDACTED\][\"']?(?:\s|$|[,;}]))[^\"'\s,;}]{6,}"
+    ),
+)
 _SESSION_DB_DETAIL_LIMIT = 3
 _SESSION_DB_REQUIRED_TABLES = {
     "sessions",
@@ -41,6 +53,12 @@ class _NodeTuiDependencyConfig:
     required_paths: tuple[str, ...]
     install_command: str
     cleanup_command: str
+
+
+@dataclass(frozen=True, slots=True)
+class _LogRedactionScanResult:
+    files_scanned: int
+    leaks: tuple[str, ...]
 
 
 class DoctorStatus(StrEnum):
@@ -104,6 +122,7 @@ class DoctorService:
             self._check_config,
             self._check_sessions_db,
             self._check_logs,
+            self._check_logs_redaction,
             self._check_storage_layout,
             self._check_traces,
             self._check_file_history,
@@ -214,6 +233,42 @@ class DoctorService:
                 ),
             )
         return (DoctorCheck("logs", status, message, detail=str(logs_dir)),)
+
+    def _check_logs_redaction(self) -> Iterable[DoctorCheck]:
+        logs_dir = self._layout.logs_dir
+        if not logs_dir.exists() or not logs_dir.is_dir():
+            return ()
+        try:
+            scan_result = _scan_logs_for_secret_leaks(logs_dir)
+        except OSError as exc:
+            return (
+                DoctorCheck(
+                    "logs_redaction",
+                    DoctorStatus.FAILED,
+                    f"log redaction scan failed: {exc}",
+                    detail=str(logs_dir),
+                ),
+            )
+        if scan_result.leaks:
+            detail = ", ".join(scan_result.leaks[:_LOG_REDACTION_DETAIL_LIMIT])
+            if len(scan_result.leaks) > _LOG_REDACTION_DETAIL_LIMIT:
+                detail = f"{detail}, ..."
+            return (
+                DoctorCheck(
+                    "logs_redaction",
+                    DoctorStatus.FAILED,
+                    f"{len(scan_result.leaks)} possible secret leak(s) in diagnostic logs",
+                    detail=detail,
+                ),
+            )
+        return (
+            DoctorCheck(
+                "logs_redaction",
+                DoctorStatus.OK,
+                f"scanned {scan_result.files_scanned} log file(s) for obvious secrets",
+                detail=str(logs_dir),
+            ),
+        )
 
     def _check_storage_layout(self) -> Iterable[DoctorCheck]:
         reserved_dirs = {
@@ -511,6 +566,101 @@ def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:
                 continue
             valid_count += 1
     return valid_count, tuple(invalid_lines)
+
+
+def _scan_logs_for_secret_leaks(logs_dir: Path) -> _LogRedactionScanResult:
+    paths = _log_redaction_scan_paths(logs_dir)
+    leaks: list[str] = []
+    for path in paths:
+        relative = path.relative_to(logs_dir)
+        if path.suffix == ".json":
+            leaks.extend(f"{relative}:{reference}" for reference in _json_secret_references(path))
+        else:
+            leaks.extend(f"{relative}:{line_no}" for line_no in _text_secret_line_numbers(path))
+        if len(leaks) >= _LOG_REDACTION_DETAIL_LIMIT:
+            break
+    return _LogRedactionScanResult(files_scanned=len(paths), leaks=tuple(leaks))
+
+
+def _log_redaction_scan_paths(logs_dir: Path) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for name in ("agent.log", "errors.log", "model-events.jsonl"):
+        path = logs_dir / name
+        if path.exists() and path.is_file():
+            paths.append(path)
+    raw_root = logs_dir / "model-raw"
+    if raw_root.exists() and raw_root.is_dir():
+        paths.extend(sorted(raw_root.glob("*/*.json"))[:_LOG_REDACTION_RAW_FILE_LIMIT])
+    return tuple(paths)
+
+
+def _text_secret_line_numbers(path: Path) -> tuple[int, ...]:
+    matches: list[int] = []
+    bytes_read = 0
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            bytes_read += len(line.encode("utf-8", errors="replace"))
+            if _contains_probable_secret(line):
+                matches.append(line_number)
+                if len(matches) >= _LOG_REDACTION_DETAIL_LIMIT:
+                    break
+            if bytes_read >= _LOG_REDACTION_TEXT_BYTES:
+                break
+    return tuple(matches)
+
+
+def _json_secret_references(path: Path) -> tuple[str, ...]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return _text_secret_line_numbers(path)
+    matches = list(_iter_json_secret_references(payload))
+    return tuple(matches[:_LOG_REDACTION_DETAIL_LIMIT])
+
+
+def _iter_json_secret_references(payload: object, *, path: str = "$") -> Iterable[str]:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}"
+            if _is_sensitive_log_key(key_text) and _json_value_contains_unredacted_secret(value):
+                yield child_path
+                continue
+            yield from _iter_json_secret_references(value, path=child_path)
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            yield from _iter_json_secret_references(value, path=f"{path}[{index}]")
+    elif isinstance(payload, str) and _contains_probable_secret(payload):
+        yield path
+
+
+def _json_value_contains_unredacted_secret(value: object) -> bool:
+    if isinstance(value, str):
+        return value not in {"", "[REDACTED]", "Bearer [REDACTED]"}
+    if isinstance(value, (dict, list)):
+        return any(True for _ in _iter_json_secret_references(value))
+    return False
+
+
+def _contains_probable_secret(value: str) -> bool:
+    return any(pattern.search(value) is not None for pattern in _LOG_SECRET_PATTERNS)
+
+
+def _is_sensitive_log_key(key: str) -> bool:
+    normalized = key.strip().lower().replace("-", "_")
+    if normalized in {
+        "authorization",
+        "api_key",
+        "apikey",
+        "x_api_key",
+        "token",
+        "access_token",
+        "refresh_token",
+        "secret",
+        "password",
+    }:
+        return True
+    return any(part in normalized for part in ("api_key", "apikey", "token", "secret", "password"))
 
 
 def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:

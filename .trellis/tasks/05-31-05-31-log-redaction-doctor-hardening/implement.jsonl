@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Workspace logging layout and redaction contracts"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor must remain read-only, actionable, and not leak secrets"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Doctor check spans service diagnostics, log files, raw JSON payloads, and CLI rendering"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing log/redaction semantics before adding diagnostics helpers"}
+{"file": ".trellis/tasks/05-31-05-31-log-redaction-doctor-hardening/research/log-redaction-gap.md", "reason": "Recorded log redaction diagnostic gap and slice scope"}
