@@ -48,6 +48,7 @@ export async function runScriptedClient(
     });
     state = reduceShellState(state, { type: "bootstrap.result", payload: bootstrap });
     const script = JSON.parse(scriptRaw) as unknown[];
+    let turnSequence = 0;
     for (const item of script) {
       if (isScriptedAction(item)) {
         await runScriptedAction(client, () => state, item);
@@ -76,7 +77,8 @@ export async function runScriptedClient(
         }
         continue;
       }
-      const clientTurnId = `script_${Date.now()}`;
+      turnSequence += 1;
+      const clientTurnId = `script_${turnSequence}`;
       await client.send("turn.submit", { message: item, client_turn_id: clientTurnId });
       const completed = await client.waitForEvent(
         "turn.completed",

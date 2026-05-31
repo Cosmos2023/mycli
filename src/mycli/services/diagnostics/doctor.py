@@ -18,6 +18,13 @@ _TRACE_SCAN_LIMIT = 50
 _TRACE_DETAIL_LIMIT = 3
 
 
+@dataclass(frozen=True, slots=True)
+class _NodeTuiDependencyConfig:
+    required_paths: tuple[str, ...]
+    install_command: str
+    cleanup_command: str
+
+
 class DoctorStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -322,22 +329,42 @@ class DoctorService:
         node_tui_root = _node_tui_source_root()
         if node_tui_root.exists():
             checks.append(DoctorCheck("node_tui", DoctorStatus.OK, f"source present {node_tui_root}"))
-            dependency_marker = _node_tui_dependency_marker(node_tui_root)
-            if dependency_marker.is_file():
+            dependency_config = _node_tui_dependency_config(node_tui_root)
+            missing_markers = [
+                marker
+                for marker in dependency_config.required_paths
+                if not (node_tui_root / marker).exists()
+            ]
+            if not missing_markers:
                 checks.append(
                     DoctorCheck(
                         "node_tui_dependencies",
                         DoctorStatus.OK,
-                        f"tsx present {dependency_marker}",
+                        "required Node TUI dependencies present",
+                        detail=str(node_tui_root / "node_modules"),
                     )
                 )
             else:
+                node_modules = node_tui_root / "node_modules"
+                state = "incomplete" if node_modules.exists() else "missing"
+                detail = ", ".join(missing_markers[:3])
+                if len(missing_markers) > 3:
+                    detail = f"{detail}, ..."
+                cleanup = (
+                    "; if a previous install was interrupted, run: "
+                    f"{dependency_config.cleanup_command}"
+                    if state == "incomplete"
+                    else ""
+                )
                 checks.append(
                     DoctorCheck(
                         "node_tui_dependencies",
                         DoctorStatus.WARNING,
-                        "missing Node TUI dependencies; run: npm --prefix tui/node install",
-                        detail=str(dependency_marker),
+                        (
+                            f"Node TUI dependencies {state}; "
+                            f"run: {dependency_config.install_command}{cleanup}"
+                        ),
+                        detail=detail,
                     )
                 )
         else:
@@ -404,8 +431,32 @@ def _node_tui_source_root() -> Path:
     return Path(__file__).resolve().parents[4] / "tui" / "node"
 
 
-def _node_tui_dependency_marker(node_tui_root: Path) -> Path:
-    return node_tui_root / "node_modules" / ".bin" / "tsx"
+def _node_tui_dependency_config(node_tui_root: Path) -> _NodeTuiDependencyConfig:
+    config_path = node_tui_root / "dependency-markers.json"
+    fallback = _NodeTuiDependencyConfig(
+        required_paths=(
+            "node_modules/.bin/tsx",
+            "node_modules/.bin/tsc",
+            "node_modules/ink",
+            "node_modules/react",
+            "node_modules/tsx",
+            "node_modules/typescript",
+        ),
+        install_command="npm --prefix tui/node ci",
+        cleanup_command="rm -rf tui/node/node_modules",
+    )
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fallback
+    required_paths = payload.get("required_paths")
+    if not isinstance(required_paths, list) or not required_paths:
+        return fallback
+    return _NodeTuiDependencyConfig(
+        required_paths=tuple(str(path) for path in required_paths),
+        install_command=str(payload.get("install_command") or fallback.install_command),
+        cleanup_command=str(payload.get("cleanup_command") or fallback.cleanup_command),
+    )
 
 
 def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:

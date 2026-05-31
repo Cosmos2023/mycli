@@ -14,6 +14,16 @@ from mycli.services.diagnostics.doctor import (
 )
 
 
+NODE_TUI_MARKERS = (
+    "node_modules/.bin/tsx",
+    "node_modules/.bin/tsc",
+    "node_modules/ink",
+    "node_modules/react",
+    "node_modules/tsx",
+    "node_modules/typescript",
+)
+
+
 def _write_project_config(workspace: Path, *, api_key: str = "sk-secret") -> None:
     config_dir = workspace / ".mycli"
     config_dir.mkdir(parents=True)
@@ -52,6 +62,16 @@ def _create_sessions_db(path: Path) -> None:
         )
 
 
+def _create_node_tui_dependencies(node_tui: Path) -> None:
+    for marker in NODE_TUI_MARKERS:
+        path = node_tui / marker
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if marker.startswith("node_modules/.bin/"):
+            path.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+
+
 def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -76,9 +96,7 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
         encoding="utf-8",
     )
     node_tui = tmp_path / "repo" / "tui" / "node"
-    tsx = node_tui / "node_modules" / ".bin" / "tsx"
-    tsx.parent.mkdir(parents=True)
-    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    _create_node_tui_dependencies(node_tui)
     monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
 
     report = DoctorService(
@@ -383,9 +401,7 @@ def test_doctor_service_reports_node_tui_dependency_status(
     home.mkdir()
     _write_project_config(workspace)
     node_tui = tmp_path / "repo" / "tui" / "node"
-    tsx = node_tui / "node_modules" / ".bin" / "tsx"
-    tsx.parent.mkdir(parents=True)
-    tsx.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    _create_node_tui_dependencies(node_tui)
     monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
 
     report = DoctorService(
@@ -398,7 +414,7 @@ def test_doctor_service_reports_node_tui_dependency_status(
 
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
     assert dependency_check.status is DoctorStatus.OK
-    assert "tsx" in dependency_check.message
+    assert dependency_check.message == "required Node TUI dependencies present"
 
 
 def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(
@@ -424,5 +440,35 @@ def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_cre
 
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
     assert dependency_check.status is DoctorStatus.WARNING
-    assert "npm --prefix tui/node install" in dependency_check.message
+    assert "npm --prefix tui/node ci" in dependency_check.message
+    assert "rm -rf tui/node/node_modules" not in dependency_check.message
     assert not (node_tui / "node_modules").exists()
+
+
+def test_doctor_service_warns_when_node_tui_dependencies_are_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    node_tui = tmp_path / "repo" / "tui" / "node"
+    (node_tui / "node_modules" / "es-toolkit").mkdir(parents=True)
+    monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
+    assert dependency_check.status is DoctorStatus.WARNING
+    assert "Node TUI dependencies incomplete" in dependency_check.message
+    assert "npm --prefix tui/node ci" in dependency_check.message
+    assert "rm -rf tui/node/node_modules" in dependency_check.message
+    assert "node_modules/.bin/tsx" in str(dependency_check.detail)
