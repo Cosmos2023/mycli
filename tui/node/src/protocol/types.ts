@@ -15,8 +15,10 @@ export type Notification<Method extends string, Params extends JsonObject> = {
   params: Params;
 };
 
+export type ApprovalDecisionChoice = "approve_once" | "reject" | "allow_session";
+
 export type ApprovalOptionPayload = {
-  choice: "approve_once" | "reject" | "allow_session" | string;
+  choice: ApprovalDecisionChoice;
   label: string;
 };
 
@@ -32,7 +34,7 @@ export type ApprovalRequestPayload = {
 export type ApprovalRespondPayload = {
   client_turn_id?: string;
   decision_id: string;
-  choice: string;
+  choice: ApprovalDecisionChoice;
 };
 
 export type ClarifyRespondPayload = {
@@ -240,6 +242,7 @@ type GatewayEventPayloadContract = {
   required: readonly string[];
   properties: readonly string[];
   enums?: Readonly<Record<string, readonly string[]>>;
+  itemEnums?: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
 };
 
 export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
@@ -249,10 +252,18 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
   "approval.request": {
     required: ["decision_id", "preview", "options"],
     properties: ["client_turn_id", "decision_id", "options", "preview", "reason", "tool_name"],
+    itemEnums: {
+      options: {
+        choice: ["approve_once", "reject", "allow_session"],
+      },
+    },
   },
   "approval.respond": {
     required: ["decision_id", "choice"],
     properties: ["choice", "client_turn_id", "decision_id"],
+    enums: {
+      choice: ["approve_once", "reject", "allow_session"],
+    },
   },
   "clarify.request": {
     required: [

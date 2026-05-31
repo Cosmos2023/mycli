@@ -68,6 +68,22 @@ GATEWAY_ERROR_CODES = (
     "clarification_not_pending",
 )
 _GATEWAY_ERROR_CODE = {"type": "string", "enum": list(GATEWAY_ERROR_CODES)}
+APPROVAL_DECISION_CHOICES = (
+    "approve_once",
+    "reject",
+    "allow_session",
+)
+_APPROVAL_DECISION_CHOICE = {"type": "string", "enum": list(APPROVAL_DECISION_CHOICES)}
+_APPROVAL_OPTIONS = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "choice": _APPROVAL_DECISION_CHOICE,
+            "label": _STRING,
+        },
+    },
+}
 _TURN_STATE = {
     "type": "string",
     "enum": [
@@ -152,14 +168,14 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "preview": _STRING,
                 "reason": _STRING,
                 "tool_name": _STRING,
-                "options": _ARRAY,
+                "options": _APPROVAL_OPTIONS,
             }
         ),
     ),
     "approval.respond": _schema(
         "approval.respond",
         required=("decision_id", "choice"),
-        properties=_with_client_turn({"decision_id": _STRING, "choice": _STRING}),
+        properties=_with_client_turn({"decision_id": _STRING, "choice": _APPROVAL_DECISION_CHOICE}),
     ),
     "clarify.request": _schema(
         "clarify.request",

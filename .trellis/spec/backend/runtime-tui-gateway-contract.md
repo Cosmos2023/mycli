@@ -70,12 +70,17 @@
   - `tool_name`: optional tool name
   - `options`: array of `{choice, label}` rows matching runtime
     `DecisionAction` values
+  - `choice` is a stable approval decision-choice value:
+    `approve_once`, `reject`, or `allow_session`
 - `approval.respond` request payload:
   - `decision_id`: must match the active decision id. The compatibility alias
     `decision_current` remains accepted for older clients while one decision is
     pending.
   - `choice`: preferred Hermes-like choice string, such as `approve_once`,
     `reject`, or `allow_session`
+  - Runtime contracts and extension manifests must expose this choice taxonomy
+    as machine-readable enum metadata, including `approval.request.options`
+    item metadata and `approval.respond.choice`.
   - Runtime-side resolution failures and terminal decisions should be recorded
     as local `approval_resolution` trace/log diagnostics. They are not gateway
     stream events and must not be replayed into provider-visible transcripts.

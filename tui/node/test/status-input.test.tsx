@@ -38,7 +38,7 @@ test("status metadata includes live status and approval marker", () => {
     pendingApproval: {
       decision_id: "decision_current",
       preview: "git push",
-      options: [{ choice: "approve_once", label: "Allow once" }],
+      options: [{ choice: "approve_once" as const, label: "Allow once" }],
     },
   };
 
@@ -54,8 +54,12 @@ test("status metadata includes clarification marker", () => {
     model: "deepseek-v4",
     pendingClarification: {
       request_id: "call_question_1",
+      tool_id: "call_question_1",
+      call_id: "call_question_1",
+      tool_name: "AskUserQuestion",
       question: "Which slice should come next?",
       options: [{ label: "Runtime" }, { label: "TUI" }],
+      multi_select: false,
     },
   };
 

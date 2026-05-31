@@ -1,4 +1,5 @@
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
+import type { ApprovalRequestPayload, ClarifyRequestPayload } from "../protocol/types.ts";
 
 export type ViewMode = "default" | "verbose" | "focus";
 
@@ -82,6 +83,6 @@ export type ShellState = {
   viewMode: ViewMode;
   completion: CompletionState;
   overlay: OverlayState;
-  pendingApproval: Record<string, unknown> | null;
-  pendingClarification: Record<string, unknown> | null;
+  pendingApproval: ApprovalRequestPayload | null;
+  pendingClarification: ClarifyRequestPayload | null;
 };

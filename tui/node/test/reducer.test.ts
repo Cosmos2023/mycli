@@ -321,6 +321,28 @@ test("approval pending event stores prompt state", () => {
   assert.equal(state.pendingApproval?.decision_id, "decision_current");
 });
 
+test("approval response event preserves canonical decision choices", () => {
+  let state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "approval.request",
+    params: {
+      decision_id: "decision_current",
+      preview: "git push",
+      options: [{ choice: "allow_session", label: "Allow for session" }],
+    },
+  });
+
+  assert.equal(state.pendingApproval?.options[0]?.choice, "allow_session");
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "approval.respond",
+    params: { decision_id: "decision_current", choice: "allow_session" },
+  });
+
+  assert.equal(state.pendingApproval, null);
+});
+
 test("clarify request stores pending state and appends transcript row", () => {
   let state = initialState();
   state = reduceShellState(state, { type: "user.submit", message: "choose scope" });

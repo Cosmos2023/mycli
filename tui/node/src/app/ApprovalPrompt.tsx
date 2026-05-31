@@ -1,19 +1,18 @@
 import React from "react";
 import { Box, Text, useInput } from "ink";
 import type { ThemeTokens } from "../theme/types.ts";
-
-type ApprovalOption = { choice: string; label: string };
+import type { ApprovalDecisionChoice, ApprovalRequestPayload } from "../protocol/types.ts";
 
 export function ApprovalPrompt({
   pendingApproval,
   theme,
   onDecision = () => undefined,
 }: {
-  pendingApproval: Record<string, unknown> | null;
+  pendingApproval: ApprovalRequestPayload | null;
   theme?: ThemeTokens;
-  onDecision?: (decisionId: string, choice: string) => void;
+  onDecision?: (decisionId: string, choice: ApprovalDecisionChoice) => void;
 }) {
-  const options = (pendingApproval?.options as ApprovalOption[] | undefined) ?? [];
+  const options = pendingApproval?.options ?? [];
   useInput(
     (input) => {
       if (!pendingApproval) {
@@ -33,9 +32,8 @@ export function ApprovalPrompt({
   const titleColor = theme?.warning ?? "yellow";
   const mutedColor = theme?.muted ?? "gray";
   const accentColor = theme?.accent ?? "cyan";
-  const reason = typeof pendingApproval.reason === "string" ? pendingApproval.reason.trim() : "";
-  const toolName =
-    typeof pendingApproval.tool_name === "string" ? pendingApproval.tool_name.trim() : "";
+  const reason = pendingApproval.reason?.trim() ?? "";
+  const toolName = pendingApproval.tool_name?.trim() ?? "";
   return (
     <Box
       borderColor={titleColor}

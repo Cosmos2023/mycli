@@ -69,6 +69,16 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "decision_not_pending",
         "clarification_not_pending",
     ]
+    assert schemas["approval.respond"]["properties"]["choice"]["enum"] == [
+        "approve_once",
+        "reject",
+        "allow_session",
+    ]
+    assert schemas["approval.request"]["properties"]["options"]["items"]["properties"]["choice"]["enum"] == [
+        "approve_once",
+        "reject",
+        "allow_session",
+    ]
     assert schemas["runtime.event"]["required"] == [
         "version",
         "sequence",

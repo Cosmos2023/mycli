@@ -222,6 +222,7 @@ test("TypeScript payload contracts match Python manifest schemas", async () => {
           required: schema.required ?? [],
           properties: Object.keys(properties ?? {}).sort(),
           enums: enumProperties(properties ?? {}),
+          itemEnums: itemEnumProperties(properties ?? {}),
         },
       ];
     }),
@@ -233,6 +234,7 @@ test("TypeScript payload contracts match Python manifest schemas", async () => {
         required: contract.required,
         properties: contract.properties,
         enums: contract.enums ?? {},
+        itemEnums: contract.itemEnums ?? {},
       },
     ]),
   );
@@ -278,5 +280,21 @@ function enumProperties(
     Object.entries(properties)
       .filter(([, schema]) => Array.isArray(schema.enum))
       .map(([name, schema]) => [name, schema.enum]),
+  );
+}
+
+function itemEnumProperties(
+  properties: Record<string, Record<string, unknown>>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(properties)
+      .map(([name, schema]) => {
+        const itemSchema = schema.items as Record<string, unknown> | undefined;
+        const itemProperties = itemSchema?.properties as
+          | Record<string, Record<string, unknown>>
+          | undefined;
+        return [name, enumProperties(itemProperties ?? {})];
+      })
+      .filter(([, enums]) => Object.keys(enums as Record<string, unknown>).length > 0),
   );
 }

@@ -121,8 +121,12 @@ test("app routes normal submit to clarification response while clarification is 
         ...state,
         pendingClarification: {
           request_id: "call_question_1",
+          tool_id: "call_question_1",
+          call_id: "call_question_1",
+          tool_name: "AskUserQuestion",
           question: "Which slice should come next?",
           options: [{ label: "Runtime" }, { label: "TUI" }],
+          multi_select: false,
         },
       }}
       onSubmit={(value) => submitted.push(value)}
@@ -145,6 +149,9 @@ test("app maps numeric clarification input to option labels", () => {
         ...state,
         pendingClarification: {
           request_id: "call_question_1",
+          tool_id: "call_question_1",
+          call_id: "call_question_1",
+          tool_name: "AskUserQuestion",
           question: "Which slice should come next?",
           options: [{ label: "Runtime" }, { label: "TUI" }],
           multi_select: false,
@@ -168,6 +175,9 @@ test("app maps case-insensitive clarification labels and preserves free-form ans
         ...state,
         pendingClarification: {
           request_id: "call_question_1",
+          tool_id: "call_question_1",
+          call_id: "call_question_1",
+          tool_name: "AskUserQuestion",
           question: "Which slice should come next?",
           options: [{ label: "Runtime" }, { label: "TUI" }],
           multi_select: false,
@@ -197,6 +207,9 @@ test("app keeps slash commands routed as commands while clarification is pending
         ...state,
         pendingClarification: {
           request_id: "call_question_1",
+          tool_id: "call_question_1",
+          call_id: "call_question_1",
+          tool_name: "AskUserQuestion",
           question: "Which slice should come next?",
           options: [{ label: "Runtime" }, { label: "TUI" }],
           multi_select: false,
@@ -243,7 +256,12 @@ test("app input hint follows the current interaction mode", () => {
       ...state,
       pendingClarification: {
         request_id: "call_question_1",
+        tool_id: "call_question_1",
+        call_id: "call_question_1",
+        tool_name: "AskUserQuestion",
         question: "Which slice should come next?",
+        options: [],
+        multi_select: false,
       },
     }),
     "Type a reply · Enter send · / for commands",

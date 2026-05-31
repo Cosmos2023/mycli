@@ -1,5 +1,6 @@
 import { resolveTheme } from "../theme/resolveTheme.ts";
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
+import type { ApprovalRequestPayload, ClarifyRequestPayload } from "../protocol/types.ts";
 import {
   applyMessageComplete,
   applyTextDelta,
@@ -332,17 +333,18 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       };
     }
     if (action.method === "approval.request" || action.method === "approval.pending") {
+      const pendingApproval = action.params as ApprovalRequestPayload;
       return {
         ...state,
-        pendingApproval: action.params,
+        pendingApproval,
         transcript: [
           ...state.transcript,
           {
             id: itemId("approval"),
             type: "approval",
-            text: String(action.params.preview ?? "Approval required"),
+            text: String(pendingApproval.preview ?? "Approval required"),
             folded: false,
-            metadata: action.params,
+            metadata: pendingApproval,
           },
         ],
       };
@@ -351,17 +353,18 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       return { ...state, pendingApproval: null };
     }
     if (action.method === "clarify.request") {
+      const pendingClarification = action.params as ClarifyRequestPayload;
       return {
         ...state,
-        pendingClarification: action.params,
+        pendingClarification,
         transcript: [
           ...state.transcript,
           {
             id: itemId("clarification"),
             type: "clarification",
-            text: clarifyTextFromParams(action.params),
+            text: clarifyTextFromParams(pendingClarification),
             folded: false,
-            metadata: action.params,
+            metadata: pendingClarification,
           },
         ],
       };

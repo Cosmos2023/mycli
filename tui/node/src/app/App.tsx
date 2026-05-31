@@ -10,6 +10,7 @@ import { statusMetadata } from "./StatusLine.tsx";
 import { Transcript } from "./Transcript.tsx";
 import { WelcomePanel } from "./WelcomePanel.tsx";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
+import type { ApprovalDecisionChoice } from "../protocol/types.ts";
 import type { ShellAction } from "../state/reducer.ts";
 import type { ShellState } from "../state/types.ts";
 
@@ -31,7 +32,7 @@ export function App({
   onLocalAction?: (action: ShellAction) => void;
   onInterrupt?: () => void;
   onDraftChange?: (value: string) => void;
-  onDecision?: (decisionId: string, choice: string) => void;
+  onDecision?: (decisionId: string, choice: ApprovalDecisionChoice) => void;
   onClarification?: (requestId: string, response: string) => void;
 }) {
   return (
