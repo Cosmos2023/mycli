@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import shlex
 
@@ -16,6 +16,7 @@ class ToolSafetyDecision:
     reason: str
     preview: str
     command_pattern: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class SafetyPolicy:
@@ -67,6 +68,13 @@ class SafetyPolicy:
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
                 preview=name,
+                metadata=_metadata(
+                    call=call,
+                    canonical_name=name,
+                    risk_level=RiskLevel.LOW,
+                    decision_kind=DecisionKind.AUTO_ALLOW,
+                    policy="builtin_safe_tool",
+                ),
             )
         if name in {"Edit", "Write"}:
             boundary_decision = self._workspace_boundary_decision(call)
@@ -83,12 +91,26 @@ class SafetyPolicy:
                     or call.arguments.get("shell_id")
                     or ""
                 ),
+                metadata=_metadata(
+                    call=call,
+                    canonical_name=name,
+                    risk_level=RiskLevel.MEDIUM,
+                    decision_kind=DecisionKind.AUTO_ALLOW,
+                    policy="workspace_write_tool",
+                ),
             )
         if name == "KillShell":
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
                 preview=str(call.arguments.get("shell_id") or ""),
+                metadata=_metadata(
+                    call=call,
+                    canonical_name=name,
+                    risk_level=RiskLevel.MEDIUM,
+                    decision_kind=DecisionKind.AUTO_ALLOW,
+                    policy="shell_control_tool",
+                ),
             )
         if name == "Bash":
             command_value = call.arguments.get("command")
@@ -104,6 +126,13 @@ class SafetyPolicy:
                     kind=DecisionKind.DENY,
                     reason="Bash requires a non-empty command.",
                     preview="invalid shell call",
+                    metadata=_metadata(
+                        call=call,
+                        canonical_name=name,
+                        risk_level=RiskLevel.HIGH,
+                        decision_kind=DecisionKind.DENY,
+                        policy="invalid_shell_call",
+                    ),
                 )
             analysis = analyze_shell_command(command)
             if analysis.risk_level is ShellRiskLevel.DENY:
@@ -111,6 +140,15 @@ class SafetyPolicy:
                     kind=DecisionKind.DENY,
                     reason=analysis.reason,
                     preview=analysis.preview,
+                    command_pattern=analysis.command_pattern,
+                    metadata=_metadata(
+                        call=call,
+                        canonical_name=name,
+                        risk_level=RiskLevel.HIGH,
+                        decision_kind=DecisionKind.DENY,
+                        policy="shell_command_analysis",
+                        command_pattern=analysis.command_pattern,
+                    ),
                 )
             if analysis.risk_level is ShellRiskLevel.CONFIRM:
                 return ToolSafetyDecision(
@@ -118,17 +156,40 @@ class SafetyPolicy:
                     reason=analysis.reason,
                     preview=analysis.preview,
                     command_pattern=analysis.command_pattern,
+                    metadata=_metadata(
+                        call=call,
+                        canonical_name=name,
+                        risk_level=RiskLevel.HIGH,
+                        decision_kind=DecisionKind.NEEDS_CHOICE,
+                        policy="shell_command_analysis",
+                        command_pattern=analysis.command_pattern,
+                    ),
                 )
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
                 preview=analysis.preview,
                 command_pattern=analysis.command_pattern,
+                metadata=_metadata(
+                    call=call,
+                    canonical_name=name,
+                    risk_level=RiskLevel.HIGH,
+                    decision_kind=DecisionKind.AUTO_ALLOW,
+                    policy="shell_command_analysis",
+                    command_pattern=analysis.command_pattern,
+                ),
             )
         return ToolSafetyDecision(
             kind=DecisionKind.DENY,
             reason="Unsupported tool.",
             preview=call.name,
+            metadata=_metadata(
+                call=call,
+                canonical_name=name,
+                risk_level=RiskLevel.HIGH,
+                decision_kind=DecisionKind.DENY,
+                policy="unsupported_tool",
+            ),
         )
 
     def _workspace_boundary_decision(
@@ -151,6 +212,16 @@ class SafetyPolicy:
                 kind=DecisionKind.DENY,
                 reason=str(exc),
                 preview=raw_path,
+                metadata={
+                    **_metadata(
+                        call=call,
+                        canonical_name=_canonical_tool_name(call.name),
+                        risk_level=RiskLevel.MEDIUM,
+                        decision_kind=DecisionKind.DENY,
+                        policy="workspace_boundary",
+                    ),
+                    "path_boundary": "outside_workspace",
+                },
             )
         return None
 
@@ -166,3 +237,24 @@ def _canonical_tool_name(name: str) -> str:
         "run_shell": "Bash",
         "update_plan": "Plan",
     }.get(name, name)
+
+
+def _metadata(
+    *,
+    call: ToolCall,
+    canonical_name: str,
+    risk_level: RiskLevel,
+    decision_kind: DecisionKind,
+    policy: str,
+    command_pattern: str | None = None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "tool_name": call.name,
+        "canonical_tool_name": canonical_name,
+        "risk_level": risk_level.value,
+        "decision_kind": decision_kind.value,
+        "policy": policy,
+    }
+    if command_pattern:
+        metadata["command_pattern"] = command_pattern
+    return metadata

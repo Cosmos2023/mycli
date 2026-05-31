@@ -11,6 +11,13 @@ def test_safety_policy_auto_allows_workspace_reads() -> None:
         ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect")
     )
     assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.metadata == {
+        "tool_name": "Read",
+        "canonical_tool_name": "Read",
+        "risk_level": "low",
+        "decision_kind": "auto_allow",
+        "policy": "builtin_safe_tool",
+    }
 
 
 def test_safety_policy_auto_allows_task_delegation() -> None:
@@ -35,6 +42,14 @@ def test_safety_policy_requires_choice_for_git_push() -> None:
     assert decision.kind is DecisionKind.NEEDS_CHOICE
     assert decision.command_pattern == "git push"
     assert decision.reason == "git push requires confirmation."
+    assert decision.metadata == {
+        "tool_name": "Bash",
+        "canonical_tool_name": "Bash",
+        "risk_level": "high",
+        "decision_kind": "needs_choice",
+        "policy": "shell_command_analysis",
+        "command_pattern": "git push",
+    }
 
 
 def test_safety_policy_denies_invalid_shell_call() -> None:
@@ -42,6 +57,13 @@ def test_safety_policy_denies_invalid_shell_call() -> None:
         ToolCall(name="Bash", arguments={}, reason="broken")
     )
     assert decision.kind is DecisionKind.DENY
+    assert decision.metadata == {
+        "tool_name": "Bash",
+        "canonical_tool_name": "Bash",
+        "risk_level": "high",
+        "decision_kind": "deny",
+        "policy": "invalid_shell_call",
+    }
 
 
 def test_derive_command_pattern_handles_known_prefixes() -> None:
@@ -78,6 +100,9 @@ def test_safety_policy_denies_rm_rf_root() -> None:
 
     assert decision.kind is DecisionKind.DENY
     assert decision.reason == "rm -rf / is forbidden"
+    assert decision.metadata["policy"] == "shell_command_analysis"
+    assert decision.metadata["decision_kind"] == "deny"
+    assert decision.metadata["command_pattern"] == "rm -rf"
 
 
 def test_safety_policy_requires_choice_for_curl_pipe_shell() -> None:
@@ -129,3 +154,11 @@ def test_safety_policy_denies_write_outside_workspace() -> None:
 
     assert decision.kind is DecisionKind.DENY
     assert "workspace" in decision.reason.lower()
+    assert decision.metadata == {
+        "tool_name": "Write",
+        "canonical_tool_name": "Write",
+        "risk_level": "medium",
+        "decision_kind": "deny",
+        "policy": "workspace_boundary",
+        "path_boundary": "outside_workspace",
+    }

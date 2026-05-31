@@ -15,6 +15,7 @@ class ApprovalOutcome:
     reason: str | None = None
     denied_reason: str | None = None
     pending_approval: PendingApproval | None = None
+    safety_metadata: dict[str, object] | None = None
 
 
 class ApprovalService:
@@ -29,13 +30,17 @@ class ApprovalService:
     def evaluate(self, call: ToolCall) -> ApprovalOutcome:
         safety = self._safety_policy.evaluate(call)
         if safety.kind is DecisionKind.DENY:
-            return ApprovalOutcome(denied_reason=safety.reason)
+            return ApprovalOutcome(
+                denied_reason=safety.reason,
+                safety_metadata=safety.metadata,
+            )
         if self._matches_session_allowance(call, safety.command_pattern):
             return ApprovalOutcome(
                 auto_approved=True,
                 auto_approved_by="session_allowance",
                 command_pattern=safety.command_pattern,
                 reason=safety.reason,
+                safety_metadata=safety.metadata,
             )
         if safety.kind is DecisionKind.NEEDS_CHOICE:
             return ApprovalOutcome(
@@ -44,12 +49,14 @@ class ApprovalService:
                     reason=safety.reason,
                     preview=safety.preview,
                     command_pattern=safety.command_pattern,
-                )
+                ),
+                safety_metadata=safety.metadata,
             )
         return ApprovalOutcome(
             auto_approved=True,
             command_pattern=safety.command_pattern,
             reason=safety.reason,
+            safety_metadata=safety.metadata,
         )
 
     def _matches_session_allowance(

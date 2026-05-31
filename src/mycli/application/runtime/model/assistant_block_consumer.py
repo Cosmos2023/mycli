@@ -276,6 +276,7 @@ class AssistantBlockConsumer:
                         tool_call=tool_call,
                         command_pattern=safety.command_pattern,
                         reason=safety.reason,
+                        safety_metadata=safety.metadata,
                     )
                     if tool_call.name in CONCURRENCY_SAFE_TOOLS:
                         pending_safe_tool_calls.append((tool_call, block))
@@ -473,6 +474,7 @@ class AssistantBlockConsumer:
                         tool_call=tool_call,
                         command_pattern=approval.command_pattern,
                         reason=approval.reason,
+                        safety_metadata=approval.safety_metadata,
                     )
 
                 if tool_call.name in CONCURRENCY_SAFE_TOOLS:
@@ -568,8 +570,9 @@ class AssistantBlockConsumer:
         tool_call: ToolCall,
         command_pattern: str | None,
         reason: str | None,
+        safety_metadata: dict[str, object] | None = None,
     ) -> None:
-        payload = {
+        payload: dict[str, object] = {
             "source": "session_allowance",
             "tool_name": tool_call.name,
             "call_id": tool_call.call_id,
@@ -577,6 +580,8 @@ class AssistantBlockConsumer:
             "decision_id": tool_call.call_id or "decision_current",
             "reason": reason,
         }
+        if safety_metadata:
+            payload["safety_metadata"] = safety_metadata
         self._trace_service.append(
             self._session_id,
             RuntimeTraceEvent(kind="approval_auto_allowed", turn_id=turn_id, payload=payload),

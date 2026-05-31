@@ -471,6 +471,14 @@ def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) 
         "decision_id": allowance_event.payload["call_id"],
         "new_allowance": True,
         "reason": "git push requires confirmation.",
+        "safety_metadata": {
+            "tool_name": "Bash",
+            "canonical_tool_name": "Bash",
+            "risk_level": "high",
+            "decision_kind": "needs_choice",
+            "policy": "shell_command_analysis",
+            "command_pattern": "git push",
+        },
     }
     agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
         encoding="utf-8"
@@ -557,6 +565,14 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
     assert auto_allowed.payload["call_id"]
     assert auto_allowed.payload["decision_id"] == auto_allowed.payload["call_id"]
     assert auto_allowed.payload["reason"] == "git push requires confirmation."
+    assert auto_allowed.payload["safety_metadata"] == {
+        "tool_name": "Bash",
+        "canonical_tool_name": "Bash",
+        "risk_level": "high",
+        "decision_kind": "needs_choice",
+        "policy": "shell_command_analysis",
+        "command_pattern": "git push",
+    }
     agent_log = second._runtime._workspace_log_service.agent_log_path().read_text(
         encoding="utf-8"
     )

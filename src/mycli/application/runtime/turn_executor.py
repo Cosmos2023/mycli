@@ -1326,7 +1326,7 @@ def _record_approval_allowance(
     decision: PendingDecision,
     new_allowance: bool,
 ) -> None:
-    payload = {
+    payload: dict[str, object] = {
         "action": DecisionAction.ALLOW_SESSION.value,
         "tool_name": decision.tool_call.name,
         "call_id": decision.tool_call.call_id,
@@ -1335,6 +1335,9 @@ def _record_approval_allowance(
         "new_allowance": new_allowance,
         "reason": decision.reason,
     }
+    safety = runtime._approval_service._safety_policy.evaluate(decision.tool_call)
+    if safety.metadata:
+        payload["safety_metadata"] = safety.metadata
     runtime._trace_service.append(
         runtime._config.session_id,
         RuntimeTraceEvent(kind="approval_allowance", turn_id=turn_id, payload=payload),

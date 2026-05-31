@@ -17,6 +17,14 @@ def test_approval_service_suspends_git_push_with_command_pattern() -> None:
     assert decision.pending_approval is not None
     assert decision.pending_approval.command_pattern == "git push"
     assert decision.pending_approval.reason == "git push requires confirmation."
+    assert decision.safety_metadata == {
+        "tool_name": "run_shell",
+        "canonical_tool_name": "Bash",
+        "risk_level": "high",
+        "decision_kind": "needs_choice",
+        "policy": "shell_command_analysis",
+        "command_pattern": "git push",
+    }
 
 
 def test_approval_service_denies_rm_rf_root() -> None:
@@ -28,6 +36,10 @@ def test_approval_service_denies_rm_rf_root() -> None:
 
     assert decision.denied_reason == "rm -rf / is forbidden"
     assert decision.pending_approval is None
+    assert decision.safety_metadata is not None
+    assert decision.safety_metadata["policy"] == "shell_command_analysis"
+    assert decision.safety_metadata["decision_kind"] == "deny"
+    assert decision.safety_metadata["command_pattern"] == "rm -rf"
 
 
 def test_approval_service_denies_even_when_session_allowance_matches() -> None:
@@ -65,3 +77,11 @@ def test_approval_service_marks_session_allowance_auto_approval() -> None:
     assert outcome.auto_approved_by == "session_allowance"
     assert outcome.command_pattern == "git push"
     assert outcome.reason == "git push requires confirmation."
+    assert outcome.safety_metadata == {
+        "tool_name": "Bash",
+        "canonical_tool_name": "Bash",
+        "risk_level": "high",
+        "decision_kind": "needs_choice",
+        "policy": "shell_command_analysis",
+        "command_pattern": "git push",
+    }

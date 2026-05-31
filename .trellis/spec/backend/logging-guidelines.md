@@ -53,6 +53,11 @@ the local log root and must never become provider transcript inputs.
   later risky tool call that matched a prior session-scoped approval allowance.
   This event is diagnostic-only; it is not a gateway stream event and must not
   be replayed into provider-visible transcript messages.
+- Approval and safety diagnostics may include bounded `safety_metadata` with
+  stable keys such as `tool_name`, `canonical_tool_name`, `risk_level`,
+  `decision_kind`, `policy`, and sanitized `command_pattern`. They must not
+  include raw tool arguments, full shell commands beyond the sanitized command
+  pattern, file contents, provider text, headers, or secret-like values.
 - Approval resolution diagnostics may append local `approval_resolution` trace
   rows and workspace log entries for rejected, invalid, duplicate, or otherwise
   blocked approval responses. These diagnostics explain why a pending approval
@@ -118,7 +123,7 @@ the local log root and must never become provider transcript inputs.
 - Risky tool call matches a session-scoped approval allowance -> append an
   `approval_auto_allowed` runtime trace row and an info-level workspace log
   entry with `source=session_allowance`, `tool_name`, `call_id`,
-  `decision_id`, `command_pattern`, and `reason`.
+  `decision_id`, `command_pattern`, `reason`, and bounded `safety_metadata`.
 - Approval response is rejected, invalid, duplicated after clearing, or cannot
   resume a suspended turn -> append an `approval_resolution` runtime trace row
   and info-level workspace log entry with bounded `result`, `choice`,
