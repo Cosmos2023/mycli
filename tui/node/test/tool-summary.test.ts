@@ -52,6 +52,54 @@ test("formats Grep query and match count", () => {
   );
 });
 
+test("formats lifecycle running tool from context and seconds duration", () => {
+  assert.deepEqual(
+    formatToolSummary({
+      tool_name: "Read",
+      metadata: {
+        status: "running",
+        context: "pyproject.toml",
+        args_preview: "file_path=pyproject.toml",
+      },
+    }),
+    { verb: "read", target: "pyproject.toml", status: "running" },
+  );
+
+  assert.deepEqual(
+    formatToolSummary({
+      tool_name: "Read",
+      metadata: {
+        status: "done",
+        summary: "Read pyproject.toml",
+        duration_s: 0.125,
+        success: true,
+      },
+    }),
+    { verb: "read", target: "Read pyproject.toml", status: "done", detail: "125ms" },
+  );
+});
+
+test("formats lifecycle failed tool from summary and error", () => {
+  assert.deepEqual(
+    formatToolSummary({
+      tool_name: "Write",
+      metadata: {
+        status: "failed",
+        summary: "Tool Write could not run.",
+        error: "Missing required arguments: content",
+        duration_s: 0.002,
+        success: false,
+      },
+    }),
+    {
+      verb: "write",
+      target: "Tool Write could not run.",
+      status: "failed",
+      detail: "2ms",
+    },
+  );
+});
+
 test("falls back for unknown tools without throwing", () => {
   assert.deepEqual(
     formatToolSummary({ tool_name: "CustomTool", text: "custom target", metadata: {} }),

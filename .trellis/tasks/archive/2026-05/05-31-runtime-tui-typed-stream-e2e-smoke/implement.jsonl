@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Runtime-to-TUI typed stream contract and e2e verification requirements"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer smoke data flow guidance"}
+{"file": ".trellis/tasks/05-31-runtime-tui-typed-stream-e2e-smoke/research/runtime-tui-typed-stream-e2e-smoke.md", "reason": "Research for Python gateway + Node scripted client smoke"}

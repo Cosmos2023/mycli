@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor diagnostics contract and read-only requirements"}
+{"file": ".trellis/tasks/05-31-doctor-node-tui-dependency-diagnostics/research/doctor-node-tui-dependency-diagnostics.md", "reason": "Research for Node TUI dependency doctor check"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "CLI/service/storage boundary checklist"}

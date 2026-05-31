@@ -11,6 +11,9 @@ from mycli.domain.runtime.approvals import (
     ApprovalStatus as ApprovalStatus,
     PendingApproval as PendingApproval,
 )
+from mycli.domain.runtime.clarifications import (
+    PendingClarification as PendingClarification,
+)
 from mycli.domain.runtime.blocks import (
     BlockType as BlockType,
     ModelTurnResult as ModelTurnResult,
@@ -27,7 +30,9 @@ from mycli.domain.runtime.compaction_rehydration import (
     RehydrationBudget as RehydrationBudget,
 )
 from mycli.domain.runtime.events import (
+    RUNTIME_EVENT_ENVELOPE_VERSION as RUNTIME_EVENT_ENVELOPE_VERSION,
     RuntimeEvent as RuntimeEvent,
+    RuntimeEventEnvelope as RuntimeEventEnvelope,
     RuntimeEventType as RuntimeEventType,
 )
 from mycli.domain.runtime.planning import (
@@ -280,6 +285,7 @@ __all__ = [
     "ModelDecision",
     "ModelTurnResult",
     "PendingApproval",
+    "PendingClarification",
     "PendingDecision",
     "PlanItem",
     "PlanState",
@@ -293,8 +299,10 @@ __all__ = [
     "RehydratedFile",
     "RehydratedSkill",
     "RehydrationBudget",
+    "RUNTIME_EVENT_ENVELOPE_VERSION",
     "RuntimeBlock",
     "RuntimeEvent",
+    "RuntimeEventEnvelope",
     "RuntimeEventType",
     "RuntimeItem",
     "RuntimeRole",

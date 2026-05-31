@@ -31,13 +31,17 @@ export function RunningActivity({
     return null;
   }
   const path = activityPath(state.transcript);
+  const reasoning = state.liveReasoning?.text
+    ? `${state.liveReasoning.kind}: ${state.liveReasoning.text}`
+    : "";
+  const details = [reasoning, path].filter(Boolean).join(" · ");
   const liveState = state.liveStatus?.state ?? "running";
   const label = state.liveStatus?.text || "Thinking";
   const style = activityStyle(liveState, state.theme);
   return (
     <Box marginLeft={0}>
       <Text color={style.color}>
-        {style.glyph} {label} {elapsedSeconds}s{path ? ` · ${path}` : ""}
+        {style.glyph} {label} {elapsedSeconds}s{details ? ` · ${details}` : ""}
       </Text>
     </Box>
   );
@@ -49,6 +53,9 @@ export function activityStyle(
 ): { color: string; glyph: string } {
   if (state === "waiting_approval") {
     return { color: theme.warning, glyph: "!" };
+  }
+  if (state === "waiting_clarification") {
+    return { color: theme.warning, glyph: "?" };
   }
   if (state === "failed" || state === "interrupted") {
     return { color: theme.error, glyph: "x" };

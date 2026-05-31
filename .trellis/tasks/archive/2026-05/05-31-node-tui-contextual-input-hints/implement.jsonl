@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines approval, clarification, status, and terminal interaction contracts that drive contextual hints."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Guides bounded UI changes and reuse before adding helper logic."}

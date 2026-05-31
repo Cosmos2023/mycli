@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Protocol
+import time
+from typing import Any, Protocol, cast
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
@@ -20,7 +21,14 @@ from mycli.cli.node_tui.protocol import (
 from mycli.cli.repl import build_command_handler, handle_slash_command
 from mycli.cli.tui.completion import slash_command_candidates
 from mycli.cli.tui.marks import startup_mark
-from mycli.domain.runtime import DecisionAction, PendingDecision, RuntimeStreamEvent, TurnResponse
+from mycli.domain.runtime import (
+    DecisionAction,
+    PendingDecision,
+    RuntimeEventEnvelope,
+    RuntimeStreamEvent,
+    TurnResponse,
+    TurnStatus,
+)
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 
 PROTOCOL_VERSION = 1
@@ -49,13 +57,32 @@ class NodeTuiProcessLike(Protocol):
     def terminate(self) -> None: ...
 
 
+class NodeTuiServiceLike(Protocol):
+    _config: Any
+    _session_service: Any
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse: ...
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse: ...
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse: ...
+
+    def current_context_window_metrics(self) -> dict[str, object]: ...
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]: ...
+
+
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
     process.start()
 
     def emit(method: str, params: dict[str, object]) -> None:
         process.write_line(encode_message(notification(method, params)))
 
-    gateway = NodeTuiGateway(service=service, emit=emit)
+    gateway = NodeTuiGateway(service=cast(NodeTuiServiceLike, service), emit=emit)
     emit("runtime.ready", gateway._status_payload())
     try:
         while True:
@@ -87,16 +114,17 @@ class NodeTuiGateway:
     def __init__(
         self,
         *,
-        service: TurnService,
+        service: NodeTuiServiceLike,
         emit: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self.service = service
         self._emit = emit
-        self._command_handler = build_command_handler(service)
+        self._command_handler = build_command_handler(cast(TurnService, service))
         self._turn_lock = Lock()
         self._turn_thread: Thread | None = None
         self._turn_running = False
         self._interrupt_requested = False
+        self._event_sequence = 0
 
     def handle_request(self, request: RpcRequest) -> RpcResponse:
         try:
@@ -114,6 +142,8 @@ class NodeTuiGateway:
                 return self._handle_decision_resolve(request)
             if request.method == "approval.respond":
                 return self._handle_approval_response(request)
+            if request.method == "clarify.respond":
+                return self._handle_clarification_response(request)
             if request.method == "completion.slash":
                 return result_response(request.id, self._handle_completion_slash(request.params))
             if request.method == "completion.path":
@@ -135,6 +165,18 @@ class NodeTuiGateway:
             return error_response(request.id, code=exc.code, message=exc.message)
         except ValueError as exc:
             return error_response(request.id, code="invalid_params", message=str(exc))
+        except Exception as exc:
+            self._emit_gateway_error(
+                code="internal_error",
+                message="Internal gateway error.",
+                detail=str(exc),
+                method=request.method,
+            )
+            return error_response(
+                request.id,
+                code="internal_error",
+                message="Internal gateway error.",
+            )
 
     def wait_for_current_turn(self, timeout: float | None = None) -> None:
         thread = self._turn_thread
@@ -206,7 +248,12 @@ class NodeTuiGateway:
             if running:
                 self._interrupt_requested = True
         if running and self._emit is not None:
-            self._emit("turn.interrupted", {"requested": True})
+            self._emit_event("turn.interrupted", {"requested": True})
+            self._emit_turn_status(
+                client_turn_id=None,
+                state="interrupted",
+                message="Interrupt requested",
+            )
             self._emit_status_update(
                 client_turn_id=None,
                 state="interrupted",
@@ -233,6 +280,11 @@ class NodeTuiGateway:
                 "turn.failed",
                 {"client_turn_id": client_turn_id, "message": str(exc)},
             )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="failed",
+                message=str(exc),
+            )
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state="failed",
@@ -250,6 +302,7 @@ class NodeTuiGateway:
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
             )
             turn_state = _turn_state_for_response(response)
+            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -262,6 +315,38 @@ class NodeTuiGateway:
             self._emit_event("status.changed", self._status_payload())
 
     def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:
+        if event.kind in {"tool_start", "tool_progress", "tool_complete", "tool_failed"}:
+            method = {
+                "tool_start": "tool.start",
+                "tool_progress": "tool.progress",
+                "tool_complete": "tool.complete",
+                "tool_failed": "tool.failed",
+            }[event.kind]
+            self._emit_event(
+                method,
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            return
+        if event.kind == "clarify_request":
+            self._emit_event(
+                "clarify.request",
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            return
+        if event.kind == "reasoning":
+            payload: dict[str, object] = {"client_turn_id": client_turn_id, "text": event.text}
+            self._emit_event("reasoning.delta", payload)
+            self._emit_event("thinking.delta", payload)
+        elif event.kind == "text_delta":
+            self._emit_event(
+                "message.delta",
+                {"client_turn_id": client_turn_id, "text": event.text},
+            )
+        elif event.kind == "completed":
+            self._emit_event(
+                "message.complete",
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
         self._emit_event(
             "turn.event",
             {
@@ -304,6 +389,17 @@ class NodeTuiGateway:
     def _emit_event(self, method: str, params: dict[str, object]) -> None:
         if self._emit is not None:
             self._emit(method, params)
+            if method != "runtime.event":
+                self._emit("runtime.event", self._runtime_event_envelope(method, params))
+
+    def _runtime_event_envelope(self, method: str, params: dict[str, object]) -> dict[str, object]:
+        self._event_sequence += 1
+        return RuntimeEventEnvelope(
+            sequence=self._event_sequence,
+            event_type=method,
+            payload=params,
+            timestamp=time.time(),
+        ).to_dict()
 
     def _emit_status_update(
         self,
@@ -321,6 +417,33 @@ class NodeTuiGateway:
         if client_turn_id is not None:
             payload["client_turn_id"] = client_turn_id
         self._emit_event("status.update", payload)
+
+    def _emit_turn_status(
+        self,
+        *,
+        client_turn_id: str | None,
+        state: str,
+        message: str | None = None,
+    ) -> None:
+        self._emit_event(
+            "turn.status",
+            _turn_status_payload(client_turn_id=client_turn_id, state=state, message=message),
+        )
+
+    def _emit_gateway_error(
+        self,
+        *,
+        code: str,
+        message: str,
+        detail: str | None = None,
+        method: str | None = None,
+    ) -> None:
+        payload: dict[str, object] = {"code": code, "message": message}
+        if detail:
+            payload["detail"] = _bounded_text(detail)
+        if method:
+            payload["method"] = method
+        self._emit_event("gateway.error", payload)
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
@@ -425,6 +548,11 @@ class NodeTuiGateway:
                 "turn.failed",
                 {"client_turn_id": client_turn_id, "message": str(exc)},
             )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="failed",
+                message=str(exc),
+            )
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state="failed",
@@ -444,11 +572,102 @@ class NodeTuiGateway:
                 "turn.completed",
                 self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
             )
+            turn_state = _turn_state_for_response(response)
+            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
-                state=_turn_state_for_response(response),
-                kind=_turn_state_for_response(response),
-                text=_status_text_for_state(_turn_state_for_response(response)),
+                state=turn_state,
+                kind=turn_state,
+                text=_status_text_for_state(turn_state),
+            )
+        finally:
+            with self._turn_lock:
+                self._turn_running = False
+            self._emit_event("status.changed", self._status_payload())
+
+    def _handle_clarification_response(self, request: RpcRequest) -> RpcResponse:
+        request_id = _required_str(request.params, "request_id").strip()
+        if not request_id:
+            return error_response(request.id, code="invalid_params", message="request_id is required.")
+        response = _required_str(request.params, "response").strip()
+        if not response:
+            return error_response(request.id, code="invalid_params", message="response is required.")
+        client_turn_id = f"clarify_{request.id}"
+        with self._turn_lock:
+            if self._turn_running:
+                return error_response(
+                    request.id,
+                    code="turn_in_progress",
+                    message="A turn is already running.",
+                )
+            self._turn_running = True
+            self._turn_thread = Thread(
+                target=self._run_clarification_worker,
+                kwargs={
+                    "request_id": request_id,
+                    "response": response,
+                    "client_turn_id": client_turn_id,
+                },
+                daemon=True,
+            )
+            self._turn_thread.start()
+        return result_response(
+            request.id,
+            {"accepted": True, "request_id": request_id, "client_turn_id": client_turn_id},
+        )
+
+    def _run_clarification_worker(
+        self,
+        *,
+        request_id: str,
+        response: str,
+        client_turn_id: str,
+    ) -> None:
+        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_status_update(
+            client_turn_id=client_turn_id,
+            state="running",
+            kind="running",
+            text="Resolving clarification",
+        )
+        try:
+            turn_response = self.service.resolve_pending_clarification(request_id, response)
+        except Exception as exc:
+            self._emit_event(
+                "turn.failed",
+                {"client_turn_id": client_turn_id, "message": str(exc)},
+            )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="failed",
+                message=str(exc),
+            )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="failed",
+                kind="failed",
+                text="Failed",
+            )
+        else:
+            self._emit_event(
+                "clarify.respond",
+                {
+                    "client_turn_id": client_turn_id,
+                    "request_id": request_id,
+                    "response": _bounded_text(response),
+                },
+            )
+            self._emit_event(
+                "turn.completed",
+                self._turn_completed_payload(client_turn_id=client_turn_id, response=turn_response),
+            )
+            turn_state = _turn_state_for_response(turn_response)
+            self._emit_turn_status(client_turn_id=client_turn_id, state=turn_state)
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state=turn_state,
+                kind=turn_state,
+                text=_status_text_for_state(turn_state),
             )
         finally:
             with self._turn_lock:
@@ -555,6 +774,13 @@ def _positive_int(value: object, *, default: int) -> int:
     return value
 
 
+def _bounded_text(value: str, *, max_chars: int = 500) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3] + "..."
+
+
 def _view_mode_from_command(command: str) -> str | None:
     parts = command.split(maxsplit=1)
     if len(parts) == 2 and parts[0] == "/view" and parts[1] in {"default", "verbose", "focus"}:
@@ -585,6 +811,8 @@ def _approval_request_payload(
 def _turn_state_for_response(response: TurnResponse) -> str:
     if response.pending_decision is not None:
         return "waiting_approval"
+    if response.turn is not None and response.turn.status is TurnStatus.WAITING_CLARIFICATION:
+        return "waiting_clarification"
     return "completed"
 
 
@@ -592,10 +820,30 @@ def _status_text_for_state(state: str) -> str:
     return {
         "running": "Running",
         "waiting_approval": "Waiting approval",
+        "waiting_clarification": "Waiting clarification",
         "completed": "Completed",
         "failed": "Failed",
         "interrupted": "Interrupted",
     }.get(state, state.replace("_", " ").title())
+
+
+def _turn_status_payload(
+    *,
+    client_turn_id: str | None,
+    state: str,
+    message: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "state": state,
+        "kind": state,
+        "text": _status_text_for_state(state),
+        "terminal": state in {"completed", "failed", "interrupted"},
+    }
+    if client_turn_id is not None:
+        payload["client_turn_id"] = client_turn_id
+    if message:
+        payload["message"] = message
+    return payload
 
 
 def _choice_for_resolved_value(value: str) -> str:

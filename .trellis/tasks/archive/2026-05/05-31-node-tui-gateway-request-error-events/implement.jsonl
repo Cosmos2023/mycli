@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Defines runtime-to-TUI notification contract and reducer behavior."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Applies to request-level gateway exception handling and client error responses."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Defines project test expectations for cross-layer runtime diagnostics."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Points to cross-layer thinking guidance for Python gateway plus Node reducer changes."}

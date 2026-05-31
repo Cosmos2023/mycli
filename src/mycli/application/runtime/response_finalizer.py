@@ -49,7 +49,7 @@ class RuntimeResponseFinalizer:
         context_baseline: ContextBaseline | None = None,
     ) -> TurnResponse:
         activity_events = list(response.activity_events)
-        if status is not TurnStatus.WAITING_APPROVAL:
+        if status not in {TurnStatus.WAITING_APPROVAL, TurnStatus.WAITING_CLARIFICATION}:
             expired_events = self._contributed_tool_registry.expire_turn_scoped()
             if expired_events:
                 self._append_lifecycle_events(

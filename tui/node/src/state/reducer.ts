@@ -1,12 +1,27 @@
 import { resolveTheme } from "../theme/resolveTheme.ts";
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
-import { applyTextDelta, applyToolEvent, itemId, reconcileFinalAnswer } from "./transcript.ts";
-import type { LiveStatus, ShellState, TranscriptItem, TurnLiveState, ViewMode } from "./types.ts";
+import {
+  applyMessageComplete,
+  applyTextDelta,
+  applyToolEvent,
+  applyToolLifecycleEvent,
+  itemId,
+  reconcileFinalAnswer,
+} from "./transcript.ts";
+import type {
+  LiveReasoning,
+  LiveStatus,
+  ShellState,
+  TranscriptItem,
+  TurnLiveState,
+  ViewMode,
+} from "./types.ts";
 
 export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
   | { type: "transcript.loaded"; payload: Record<string, unknown> }
   | { type: "user.submit"; message: string }
+  | { type: "request.failed"; method: string; code: string; message: string }
   | { type: "theme.changed"; themeName: ThemeName; theme: ThemeTokens; message: string }
   | { type: "theme.failed"; message: string }
   | { type: "local.command_output"; command: string; lines: string[] }
@@ -44,10 +59,13 @@ export function initialState({
     turnRunning: false,
     currentTurnId: null,
     liveStatus: null,
+    liveReasoning: null,
+    typedMessageTurnId: null,
     viewMode: "default",
     completion: { visible: false, requestId: 0, prefix: "", items: [], selectedIndex: 0 },
     overlay: { visible: false, title: "", lines: [] },
     pendingApproval: null,
+    pendingClarification: null,
   };
 }
 
@@ -86,6 +104,14 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         { id: itemId("user"), type: "user", text: action.message, folded: false, metadata: {} },
       ],
     };
+  }
+  if (action.type === "request.failed") {
+    return appendErrorItem(state, {
+      code: action.code,
+      message: action.message,
+      method: action.method,
+      source: "request",
+    });
   }
   if (action.type === "transcript.loaded") {
     const items = Array.isArray(action.payload.items)
@@ -158,11 +184,24 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     };
   }
   if (action.type === "gateway.event") {
+    if (action.method === "runtime.event") {
+      const unwrapped = runtimeEventFromParams(action.params);
+      if (!unwrapped) {
+        return state;
+      }
+      return reduceShellState(state, {
+        type: "gateway.event",
+        method: unwrapped.method,
+        params: unwrapped.params,
+      });
+    }
     if (action.method === "turn.started") {
       return {
         ...state,
         turnRunning: true,
         currentTurnId: String(action.params.client_turn_id ?? ""),
+        liveReasoning: null,
+        typedMessageTurnId: null,
         liveStatus: {
           client_turn_id: String(action.params.client_turn_id ?? ""),
           state: "running",
@@ -176,27 +215,58 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       if (!liveStatus) {
         return state;
       }
+      return applyLiveStatus(state, liveStatus);
+    }
+    if (action.method === "turn.status") {
+      const liveStatus = liveStatusFromParams(action.params);
+      if (!liveStatus) {
+        return state;
+      }
+      return applyLiveStatus(state, liveStatus);
+    }
+    if (action.method === "gateway.error") {
+      return appendErrorItem(state, action.params, "Gateway error");
+    }
+    if (action.method === "message.delta") {
+      const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
       return {
         ...state,
-        liveStatus,
-        turnRunning:
-          liveStatus.state === "running" || liveStatus.state === "waiting_approval"
-            ? true
-            : liveStatus.state === "completed" ||
-                liveStatus.state === "failed" ||
-                liveStatus.state === "interrupted"
-              ? false
-              : state.turnRunning,
-        currentTurnId: liveStatus.client_turn_id ?? state.currentTurnId,
-        pendingApproval:
-          liveStatus.state === "completed" ||
-          liveStatus.state === "failed" ||
-          liveStatus.state === "interrupted"
+        typedMessageTurnId: clientTurnId,
+        transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
+      };
+    }
+    if (action.method === "message.complete") {
+      const clientTurnId = clientTurnIdFromParams(action.params);
+      return {
+        ...state,
+        liveReasoning:
+          clientTurnId && state.liveReasoning?.client_turn_id === clientTurnId
             ? null
-            : state.pendingApproval,
+            : state.liveReasoning,
+        transcript: applyMessageComplete(
+          state.transcript,
+          boundedMessageCompleteMetadata(action.params),
+        ),
+      };
+    }
+    if (action.method === "reasoning.delta" || action.method === "thinking.delta") {
+      return {
+        ...state,
+        liveReasoning: liveReasoningFromParams(
+          action.method === "thinking.delta" ? "thinking" : "reasoning",
+          action.params,
+        ),
       };
     }
     if (action.method === "turn.event" && action.params.phase === "assistant_delta") {
+      const clientTurnId = clientTurnIdFromParams(action.params);
+      if (
+        state.typedMessageTurnId &&
+        clientTurnId &&
+        clientTurnId === state.typedMessageTurnId
+      ) {
+        return state;
+      }
       return {
         ...state,
         transcript: applyTextDelta(state.transcript, String(action.params.text ?? "")),
@@ -205,15 +275,32 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     if (action.method === "turn.event" && action.params.phase === "tool_call") {
       return { ...state, transcript: applyToolEvent(state.transcript, action.params) };
     }
+    if (
+      action.method === "tool.start" ||
+      action.method === "tool.progress" ||
+      action.method === "tool.complete" ||
+      action.method === "tool.failed"
+    ) {
+      return {
+        ...state,
+        transcript: applyToolLifecycleEvent(state.transcript, action.method, action.params),
+      };
+    }
     if (action.method === "turn.completed") {
       return {
         ...state,
         turnRunning: false,
         currentTurnId: null,
+        liveReasoning: null,
+        typedMessageTurnId: null,
         liveStatus: stateFromTurnCompleted(action.params),
         pendingApproval:
           action.params.pending_decision === true || action.params.turn_state === "waiting_approval"
             ? state.pendingApproval
+            : null,
+        pendingClarification:
+          action.params.turn_state === "waiting_clarification"
+            ? state.pendingClarification
             : null,
         transcript: reconcileFinalAnswer(
           state.transcript,
@@ -240,6 +327,25 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     if (action.method === "approval.respond") {
       return { ...state, pendingApproval: null };
     }
+    if (action.method === "clarify.request") {
+      return {
+        ...state,
+        pendingClarification: action.params,
+        transcript: [
+          ...state.transcript,
+          {
+            id: itemId("clarification"),
+            type: "clarification",
+            text: clarifyTextFromParams(action.params),
+            folded: false,
+            metadata: action.params,
+          },
+        ],
+      };
+    }
+    if (action.method === "clarify.respond") {
+      return { ...state, pendingClarification: null };
+    }
     if (action.method === "status.changed") {
       return {
         ...state,
@@ -260,8 +366,11 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
         ...state,
         turnRunning: false,
         currentTurnId: null,
+        liveReasoning: null,
+        typedMessageTurnId: null,
         liveStatus: failedStatus,
         pendingApproval: null,
+        pendingClarification: null,
         transcript: [
           ...state.transcript,
           {
@@ -305,6 +414,111 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
   return state;
 }
 
+function appendErrorItem(
+  state: ShellState,
+  metadata: Record<string, unknown>,
+  fallbackMessage = "Request failed",
+): ShellState {
+  if (matchesRecentError(state.transcript, metadata)) {
+    return state;
+  }
+  return {
+    ...state,
+    transcript: [
+      ...state.transcript,
+      {
+        id: itemId("error"),
+        type: "error",
+        text: String(metadata.message ?? fallbackMessage),
+        folded: false,
+        metadata,
+      },
+    ],
+  };
+}
+
+function matchesRecentError(
+  transcript: TranscriptItem[],
+  metadata: Record<string, unknown>,
+): boolean {
+  const recent = transcript.slice(-3);
+  return recent.some(
+    (item) =>
+      item.type === "error" &&
+      item.metadata.code === metadata.code &&
+      item.metadata.method === metadata.method &&
+      item.metadata.message === metadata.message,
+  );
+}
+
+function clientTurnIdFromParams(params: Record<string, unknown>): string | null {
+  return typeof params.client_turn_id === "string" && params.client_turn_id
+    ? params.client_turn_id
+    : null;
+}
+
+function liveReasoningFromParams(
+  kind: LiveReasoning["kind"],
+  params: Record<string, unknown>,
+): LiveReasoning {
+  const reasoning: LiveReasoning = {
+    kind,
+    text: truncatePreview(String(params.text ?? "")),
+  };
+  const clientTurnId = clientTurnIdFromParams(params);
+  if (clientTurnId) {
+    reasoning.client_turn_id = clientTurnId;
+  }
+  return reasoning;
+}
+
+function truncatePreview(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function boundedMessageCompleteMetadata(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string") {
+      metadata[key] = truncatePreview(value);
+    } else if (typeof value === "number" || typeof value === "boolean" || value === null) {
+      metadata[key] = value;
+    }
+  }
+  return metadata;
+}
+
+function isTerminalTurnState(state: TurnLiveState): boolean {
+  return state === "completed" || state === "failed" || state === "interrupted";
+}
+
+function applyLiveStatus(state: ShellState, liveStatus: LiveStatus): ShellState {
+  return {
+    ...state,
+    liveStatus,
+    turnRunning:
+      liveStatus.state === "running" ||
+      liveStatus.state === "waiting_approval" ||
+      liveStatus.state === "waiting_clarification"
+        ? true
+        : liveStatus.state === "completed" ||
+            liveStatus.state === "failed" ||
+            liveStatus.state === "interrupted"
+          ? false
+          : state.turnRunning,
+    currentTurnId: isTerminalTurnState(liveStatus.state)
+      ? null
+      : liveStatus.client_turn_id ?? state.currentTurnId,
+    liveReasoning: isTerminalTurnState(liveStatus.state) ? null : state.liveReasoning,
+    typedMessageTurnId: isTerminalTurnState(liveStatus.state) ? null : state.typedMessageTurnId,
+    pendingApproval: isTerminalTurnState(liveStatus.state) ? null : state.pendingApproval,
+    pendingClarification: isTerminalTurnState(liveStatus.state) ? null : state.pendingClarification,
+  };
+}
+
 function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | null {
   if (!isTurnLiveState(params.state)) {
     return null;
@@ -320,6 +534,9 @@ function liveStatusFromParams(params: Record<string, unknown>): LiveStatus | nul
   if (typeof params.severity === "string") {
     status.severity = params.severity;
   }
+  if (typeof params.message === "string") {
+    status.message = params.message;
+  }
   return status;
 }
 
@@ -328,7 +545,12 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
   const liveStatus: LiveStatus = {
     state,
     kind: state,
-    text: state === "waiting_approval" ? "Waiting approval" : "Completed",
+    text:
+      state === "waiting_approval"
+        ? "Waiting approval"
+        : state === "waiting_clarification"
+          ? "Waiting clarification"
+          : "Completed",
   };
   if (typeof params.client_turn_id === "string") {
     liveStatus.client_turn_id = params.client_turn_id;
@@ -336,10 +558,16 @@ function stateFromTurnCompleted(params: Record<string, unknown>): LiveStatus {
   return liveStatus;
 }
 
+function clarifyTextFromParams(params: Record<string, unknown>): string {
+  const question = String(params.question ?? "Clarification requested").trim();
+  return question || "Clarification requested";
+}
+
 function isTurnLiveState(value: unknown): value is TurnLiveState {
   return (
     value === "running" ||
     value === "waiting_approval" ||
+    value === "waiting_clarification" ||
     value === "completed" ||
     value === "failed" ||
     value === "interrupted"
@@ -355,4 +583,17 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 
 function isViewMode(value: unknown): value is ViewMode {
   return value === "default" || value === "verbose" || value === "focus";
+}
+
+function runtimeEventFromParams(
+  params: Record<string, unknown>,
+): { method: string; params: Record<string, unknown> } | null {
+  if (params.version !== 1 || typeof params.type !== "string" || params.type === "runtime.event") {
+    return null;
+  }
+  const payload = recordOrNull(params.payload);
+  if (!payload) {
+    return null;
+  }
+  return { method: params.type, params: payload };
 }

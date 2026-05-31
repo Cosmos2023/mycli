@@ -147,6 +147,18 @@ class TurnService:
             raise RuntimeError("TurnService has no runtime.")
         return cast(TurnResponse, runtime.resolve_pending_approval(choice))
 
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("TurnService has no runtime.")
+        return cast(
+            TurnResponse,
+            runtime.resolve_pending_clarification(
+                request_id=request_id,
+                response=response,
+            ),
+        )
+
     def confirm_pending_action(self) -> TurnResponse:
         return self.resolve_pending_decision("1")
 

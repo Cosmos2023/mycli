@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,9 @@ from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 from mycli.domain.tooling.calls import ToolCall
 
 
+StreamSink = Callable[[RuntimeStreamEvent], None]
+
+
 class FakeSessionService:
     def __init__(self) -> None:
         self.history_items: tuple[HistoryItem, ...] = ()
@@ -30,7 +34,7 @@ class FakeSessionService:
     def load_history_items(self, _session_id: str) -> tuple[HistoryItem, ...]:
         return self.history_items
 
-    def list_sessions(self, limit: int = 20):
+    def list_sessions(self, limit: int = 20) -> tuple[SimpleNamespace, ...]:
         del limit
         return (
             SimpleNamespace(
@@ -70,6 +74,22 @@ class FakeService:
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
         return (f"resumed {session_id or 'demo'}", "messages=4")
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        return TurnResponse(assistant_message="")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        del choice
+        return TurnResponse(assistant_message="")
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        del request_id, response
+        return TurnResponse(assistant_message="")
 
 
 def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> None:
@@ -291,13 +311,62 @@ def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:
     }
 
 
+class ExplodingStatusService(FakeService):
+    def current_context_window_metrics(self) -> dict[str, object]:
+        raise RuntimeError("status exploded")
+
+
+def test_gateway_unexpected_request_error_returns_json_rpc_error_and_event(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=ExplodingStatusService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(RpcRequest(id="req_1", method="status.inspect", params={}))
+
+    assert response.error == {
+        "code": "internal_error",
+        "message": "Internal gateway error.",
+    }
+    assert (
+        "gateway.error",
+        {
+            "code": "internal_error",
+            "message": "Internal gateway error.",
+            "detail": "status exploded",
+            "method": "status.inspect",
+        },
+    ) in events
+    assert {
+        "type": "gateway.error",
+        "payload": {
+            "code": "internal_error",
+            "message": "Internal gateway error.",
+            "detail": "status exploded",
+            "method": "status.inspect",
+        },
+    }.items() <= next(
+        params
+        for method, params in events
+        if method == "runtime.event" and params["type"] == "gateway.error"
+    ).items()
+
+
 class FakeTurnService(FakeService):
     def __init__(self, workspace_root: Path) -> None:
         super().__init__(workspace_root)
         self.turn_calls: list[str] = []
         self.resolved_choices: list[str] = []
+        self.clarification_responses: list[tuple[str, str]] = []
 
-    def handle_user_turn(self, message: str, stream_sink=None) -> TurnResponse:
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
         self.turn_calls.append(message)
         if stream_sink is not None:
             stream_sink(RuntimeStreamEvent(kind="reasoning", text="thinking"))
@@ -315,6 +384,121 @@ class FakeTurnService(FakeService):
         self.resolved_choices.append(choice)
         self._session_service.pending_decision = None
         return TurnResponse(assistant_message=f"resolved {choice}")
+
+    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+        self.clarification_responses.append((request_id, response))
+        return TurnResponse(assistant_message=f"clarified {response}")
+
+
+class FakeToolLifecycleTurnService(FakeService):
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message
+        if stream_sink is not None:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_start",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "context": "README.md",
+                        "args_preview": "path=README.md",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_progress",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "stage": "executing",
+                        "message": "Executing Read",
+                        "args_preview": "path=README.md",
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_complete",
+                    tool_name="Read",
+                    metadata={
+                        "tool_id": "call_read_1",
+                        "call_id": "call_read_1",
+                        "name": "Read",
+                        "duration_s": 0.125,
+                        "summary": "Read README.md",
+                        "success": True,
+                    },
+                )
+            )
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="tool_failed",
+                    tool_name="Write",
+                    metadata={
+                        "tool_id": "call_write_1",
+                        "call_id": "call_write_1",
+                        "name": "Write",
+                        "duration_s": 0.002,
+                        "summary": "Tool Write could not run.",
+                        "success": False,
+                        "error": "Missing required parameter: content",
+                    },
+                )
+            )
+        return TurnResponse(assistant_message="done")
+
+
+class FakeClarifyTurnService(FakeService):
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message
+        if stream_sink is not None:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="clarify_request",
+                    tool_name="AskUserQuestion",
+                    metadata={
+                        "request_id": "call_question_1",
+                        "tool_id": "call_question_1",
+                        "call_id": "call_question_1",
+                        "tool_name": "AskUserQuestion",
+                        "question": "Which slice should come next?",
+                        "options": [
+                            {"label": "Runtime", "description": "Only runtime contract"},
+                            {"label": "TUI", "description": "Render the request"},
+                        ],
+                        "header": "Scope",
+                        "multi_select": False,
+                    },
+                )
+            )
+        return TurnResponse(assistant_message="waiting")
+
+
+class FailingTurnService(FakeService):
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        raise RuntimeError("model unavailable")
+
+    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+        del choice
+        raise RuntimeError("approval resolution failed")
 
 
 def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
@@ -334,29 +518,34 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert response.result == {"accepted": True, "client_turn_id": "client_1"}
-    assert [method for method, _params in events] == [
-        "turn.started",
-        "status.update",
-        "turn.event",
-        "turn.event",
-        "turn.event",
-        "turn.event",
-        "turn.completed",
-        "status.update",
-        "status.changed",
-    ]
-    assert events[1][1] == {
+    direct_events = [(method, params) for method, params in events if method != "runtime.event"]
+    methods = [method for method, _params in direct_events]
+    assert methods[:2] == ["turn.started", "status.update"]
+    assert methods.count("turn.event") == 4
+    assert "reasoning.delta" in methods
+    assert "thinking.delta" in methods
+    assert "message.delta" in methods
+    assert "message.complete" in methods
+    assert methods[-4:] == ["turn.completed", "turn.status", "status.update", "status.changed"]
+    assert direct_events[1][1] == {
         "client_turn_id": "client_1",
         "state": "running",
         "kind": "running",
         "text": "Running",
     }
-    completed = events[-3][1]
+    completed = next(params for method, params in events if method == "turn.completed")
     assert completed["assistant_message"] == "hello world"
     assert completed["progress_updates"] == ["[progress] done"]
     assert completed["plan_steps"] == ["completed: smoke"]
     assert completed["turn_state"] == "completed"
-    assert events[-2][1] == {
+    assert next(params for method, params in direct_events if method == "turn.status") == {
+        "client_turn_id": "client_1",
+        "state": "completed",
+        "kind": "completed",
+        "text": "Completed",
+        "terminal": True,
+    }
+    assert direct_events[-2][1] == {
         "client_turn_id": "client_1",
         "state": "completed",
         "kind": "completed",
@@ -364,11 +553,197 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     }
 
 
+def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    methods = [method for method, _params in events]
+    assert "reasoning.delta" in methods
+    assert "thinking.delta" in methods
+    assert "message.delta" in methods
+    assert "message.complete" in methods
+    assert methods.count("turn.event") == 4
+    assert next(params for method, params in events if method == "reasoning.delta") == {
+        "client_turn_id": "client_1",
+        "text": "thinking",
+    }
+    assert next(params for method, params in events if method == "thinking.delta") == {
+        "client_turn_id": "client_1",
+        "text": "thinking",
+    }
+    assert next(params for method, params in events if method == "message.delta") == {
+        "client_turn_id": "client_1",
+        "text": "hello",
+    }
+    assert next(params for method, params in events if method == "message.complete") == {
+        "client_turn_id": "client_1",
+        "response_status": "completed",
+    }
+
+
+def test_gateway_mirrors_runtime_notifications_with_versioned_envelopes(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    envelopes = [params for method, params in events if method == "runtime.event"]
+    direct_events = [(method, params) for method, params in events if method != "runtime.event"]
+    assert envelopes
+    assert len(envelopes) == len(direct_events)
+    assert [envelope["sequence"] for envelope in envelopes] == list(range(1, len(envelopes) + 1))
+    for envelope, (method, params) in zip(envelopes, direct_events, strict=True):
+        assert envelope["version"] == 1
+        assert envelope["type"] == method
+        assert envelope["payload"] == params
+        assert isinstance(envelope["timestamp"], float)
+    assert all(envelope["type"] != "runtime.event" for envelope in envelopes)
+
+
+def test_gateway_runtime_event_envelope_does_not_recurse(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._emit_event("runtime.event", {"type": "status.update", "payload": {}})
+
+    assert events == [("runtime.event", {"type": "status.update", "payload": {}})]
+
+
+def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeToolLifecycleTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    methods = [method for method, _params in events]
+    assert "tool.start" in methods
+    assert "tool.progress" in methods
+    assert "tool.complete" in methods
+    assert "tool.failed" in methods
+    assert "turn.event" not in methods
+    assert next(params for method, params in events if method == "tool.start") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "Read",
+        "context": "README.md",
+        "args_preview": "path=README.md",
+    }
+    assert next(params for method, params in events if method == "tool.progress") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "Read",
+        "stage": "executing",
+        "message": "Executing Read",
+        "args_preview": "path=README.md",
+    }
+    assert next(params for method, params in events if method == "tool.complete") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "Read",
+        "duration_s": 0.125,
+        "summary": "Read README.md",
+        "success": True,
+    }
+    assert next(params for method, params in events if method == "tool.failed") == {
+        "client_turn_id": "client_1",
+        "tool_id": "call_write_1",
+        "call_id": "call_write_1",
+        "name": "Write",
+        "duration_s": 0.002,
+        "summary": "Tool Write could not run.",
+        "success": False,
+        "error": "Missing required parameter: content",
+    }
+
+
+def test_gateway_forwards_clarify_request_and_runtime_event_mirror(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeClarifyTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "ask", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    clarify = next(params for method, params in events if method == "clarify.request")
+    assert clarify == {
+        "client_turn_id": "client_1",
+        "request_id": "call_question_1",
+        "tool_id": "call_question_1",
+        "call_id": "call_question_1",
+        "tool_name": "AskUserQuestion",
+        "question": "Which slice should come next?",
+        "options": [
+            {"label": "Runtime", "description": "Only runtime contract"},
+            {"label": "TUI", "description": "Render the request"},
+        ],
+        "header": "Scope",
+        "multi_select": False,
+    }
+    assert {
+        "type": "clarify.request",
+        "payload": clarify,
+    }.items() <= next(
+        params
+        for method, params in events
+        if method == "runtime.event" and params["type"] == "clarify.request"
+    ).items()
+
+
 def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
 
-    def pending_turn(_message: str, stream_sink=None) -> TurnResponse:
+    def pending_turn(_message: str, stream_sink: StreamSink | None = None) -> TurnResponse:
         del stream_sink
         decision = PendingDecision(
             tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
@@ -380,7 +755,7 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         service._session_service.pending_decision = decision
         return TurnResponse(assistant_message="", pending_decision=decision)
 
-    service.handle_user_turn = pending_turn  # type: ignore[method-assign]
+    service.handle_user_turn = pending_turn  # type: ignore[method-assign, assignment]
     gateway = NodeTuiGateway(
         service=service,
         emit=lambda method, params: events.append((method, params)),
@@ -416,6 +791,13 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         "state": "waiting_approval",
         "kind": "waiting_approval",
         "text": "Waiting approval",
+        "terminal": False,
+    } in [params for method, params in events if method == "turn.status"]
+    assert {
+        "client_turn_id": "client_1",
+        "state": "waiting_approval",
+        "kind": "waiting_approval",
+        "text": "Waiting approval",
     } in [params for method, params in events if method == "status.update"]
 
 
@@ -438,8 +820,39 @@ def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) 
     assert concurrent.error == {"code": "turn_in_progress", "message": "A turn is already running."}
 
 
+def test_gateway_turn_submit_emits_turn_status_for_failures(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FailingTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert {
+        "client_turn_id": "client_1",
+        "state": "failed",
+        "kind": "failed",
+        "text": "Failed",
+        "terminal": True,
+        "message": "model unavailable",
+    } in [params for method, params in events if method == "turn.status"]
+
+
 def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
-    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
     idle = gateway.handle_request(RpcRequest(id="req_1", method="turn.interrupt", params={}))
     accepted = gateway.handle_request(
         RpcRequest(id="req_2", method="turn.submit", params={"message": "hello"})
@@ -450,6 +863,13 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
     assert idle.result == {"interrupted": False}
     assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
     assert running.result == {"interrupted": True}
+    assert {
+        "state": "interrupted",
+        "kind": "interrupted",
+        "text": "Interrupted",
+        "terminal": True,
+        "message": "Interrupt requested",
+    } in [params for method, params in events if method == "turn.status"]
 
 
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:
@@ -482,11 +902,12 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["1"]
-    assert [method for method, _params in events] == [
+    assert [method for method, _params in events if method != "runtime.event"] == [
         "turn.started",
         "status.update",
         "approval.respond",
         "turn.completed",
+        "turn.status",
         "status.update",
         "status.changed",
     ]
@@ -520,3 +941,107 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["2"]
+
+
+def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="clarify.respond",
+            params={"request_id": "call_question_1", "response": "Runtime"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "request_id": "call_question_1",
+        "client_turn_id": "clarify_req_1",
+    }
+    assert service.clarification_responses == [("call_question_1", "Runtime")]
+    assert [method for method, _params in events if method != "runtime.event"] == [
+        "turn.started",
+        "status.update",
+        "clarify.respond",
+        "turn.completed",
+        "turn.status",
+        "status.update",
+        "status.changed",
+    ]
+    clarify = next(params for method, params in events if method == "clarify.respond")
+    assert clarify == {
+        "client_turn_id": "clarify_req_1",
+        "request_id": "call_question_1",
+        "response": "Runtime",
+    }
+    assert {
+        "type": "clarify.respond",
+        "payload": clarify,
+    }.items() <= next(
+        params
+        for method, params in events
+        if method == "runtime.event" and params["type"] == "clarify.respond"
+    ).items()
+
+
+def test_gateway_clarify_respond_rejects_blank_response(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="clarify.respond",
+            params={"request_id": "call_question_1", "response": "   "},
+        )
+    )
+
+    assert response.error == {
+        "code": "invalid_params",
+        "message": "response is required.",
+    }
+
+
+def test_gateway_decision_resolve_emits_turn_status_for_failures(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FailingTurnService(tmp_path)
+    service._session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="decision.resolve",
+            params={"decision_id": "decision_current", "choice": "approve_once"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "decision_id": "decision_current",
+        "client_turn_id": "approval_req_1",
+    }
+    assert {
+        "client_turn_id": "approval_req_1",
+        "state": "failed",
+        "kind": "failed",
+        "text": "Failed",
+        "terminal": True,
+        "message": "approval resolution failed",
+    } in [params for method, params in events if method == "turn.status"]

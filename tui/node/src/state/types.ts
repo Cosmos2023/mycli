@@ -13,6 +13,7 @@ export type TranscriptItemType =
   | "warning"
   | "error"
   | "approval"
+  | "clarification"
   | "system_notice";
 
 export type TranscriptItem = {
@@ -40,6 +41,7 @@ export type OverlayState = {
 export type TurnLiveState =
   | "running"
   | "waiting_approval"
+  | "waiting_clarification"
   | "completed"
   | "failed"
   | "interrupted";
@@ -49,7 +51,14 @@ export type LiveStatus = {
   state: TurnLiveState;
   kind: string;
   text: string;
+  message?: string;
   severity?: string;
+};
+
+export type LiveReasoning = {
+  client_turn_id?: string;
+  kind: "reasoning" | "thinking";
+  text: string;
 };
 
 export type ShellState = {
@@ -67,8 +76,11 @@ export type ShellState = {
   turnRunning: boolean;
   currentTurnId: string | null;
   liveStatus: LiveStatus | null;
+  liveReasoning: LiveReasoning | null;
+  typedMessageTurnId: string | null;
   viewMode: ViewMode;
   completion: CompletionState;
   overlay: OverlayState;
   pendingApproval: Record<string, unknown> | null;
+  pendingClarification: Record<string, unknown> | null;
 };

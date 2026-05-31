@@ -9,8 +9,10 @@ from mycli.domain.runtime import (
     DecisionKind,
     ModelTurnResult,
     PendingDecision,
+    PendingClarification,
     PlanState,
     RuntimeBlock,
+    RuntimeStreamEvent,
     StopReason,
     SuspendedTurn,
     TurnItem,
@@ -42,6 +44,7 @@ class AssistantBlockConsumer:
         record_assistant_text_block: Callable[..., None],
         record_assistant_tool_calls: Callable[..., None],
         execute_tool_call: Callable[..., PlanState],
+        execute_tool_call_for_clarification: Callable[..., tuple[PlanState, PendingClarification | None]],
         execute_tool_calls: Callable[..., PlanState],
         pending_decision_from_approval: Callable[..., PendingDecision],
     ) -> None:
@@ -54,6 +57,7 @@ class AssistantBlockConsumer:
         self._record_assistant_text_block = record_assistant_text_block
         self._record_assistant_tool_calls = record_assistant_tool_calls
         self._execute_tool_call = execute_tool_call
+        self._execute_tool_call_for_clarification = execute_tool_call_for_clarification
         self._execute_tool_calls = execute_tool_calls
         self._pending_decision_from_approval = pending_decision_from_approval
 
@@ -74,6 +78,7 @@ class AssistantBlockConsumer:
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> tuple[
         PlanState,
         bool,
@@ -170,6 +175,7 @@ class AssistantBlockConsumer:
                     response_id=turn_result.response_id,
                     metadata=metadata,
                     record_assistant_call=False,
+                    lifecycle_sink=stream_sink,
                 )
                 pending_safe_tool_calls.clear()
 
@@ -279,6 +285,7 @@ class AssistantBlockConsumer:
                         response_id=turn_result.response_id,
                         metadata=dict(block.metadata),
                         record_assistant_call=False,
+                        lifecycle_sink=stream_sink,
                     )
                     continue
 
@@ -301,7 +308,65 @@ class AssistantBlockConsumer:
                         response_id=turn_result.response_id,
                         metadata=dict(block.metadata),
                         record_assistant_call=False,
+                        lifecycle_sink=stream_sink,
                     )
+                    continue
+
+                if tool_call.name == "AskUserQuestion":
+                    flush_pending_safe_tool_calls()
+                    record_tool_call_group_once()
+                    current_plan_state, pending_clarification = (
+                        self._execute_tool_call_for_clarification(
+                            conversation=conversation,
+                            call=tool_call,
+                            tool_router=tool_router,
+                            tool_exposure=tool_exposure,
+                            plan_state=current_plan_state,
+                            turn_id=turn_id,
+                            activity_events=activity_events,
+                            turn_items=turn_items,
+                            provider_id=block.provider_id,
+                            response_id=turn_result.response_id,
+                            metadata=dict(block.metadata),
+                            lifecycle_sink=stream_sink,
+                        )
+                    )
+                    if pending_clarification is not None:
+                        self._session_service.save_suspended_turn(
+                            self._session_id,
+                            SuspendedTurn(
+                                user_message=user_message,
+                                conversation=tuple(conversation.messages),
+                                plan_state=current_plan_state,
+                                pending_clarification=pending_clarification,
+                                suspend_reason=StopReason.CLARIFICATION_REQUIRED,
+                            ),
+                        )
+                        question = getattr(pending_clarification, "question")
+                        waiting_message = f"Waiting clarification: {question}"
+                        return (
+                            current_plan_state,
+                            turn_has_tool_call,
+                            turn_text_chunks,
+                            (
+                                TurnResponse(
+                                    assistant_message="A clarification is waiting for your response.",
+                                    activity_events=(
+                                        *activity_events,
+                                        ActivityEvent(
+                                            kind="waiting_clarification",
+                                            message=waiting_message,
+                                            tool_name=tool_call.name,
+                                            preview=question,
+                                        ),
+                                    ),
+                                    streamed_chunks=tuple(streamed_chunks),
+                                    progress_updates=tuple(progress_updates),
+                                ),
+                                TurnStatus.WAITING_CLARIFICATION,
+                                StopReason.CLARIFICATION_REQUIRED,
+                            ),
+                        )
                     continue
 
                 approval = self._approval_service.evaluate(tool_call)
@@ -410,6 +475,7 @@ class AssistantBlockConsumer:
                     response_id=turn_result.response_id,
                     metadata=dict(block.metadata),
                     record_assistant_call=False,
+                    lifecycle_sink=stream_sink,
                 )
 
             flush_pending_safe_tool_calls()

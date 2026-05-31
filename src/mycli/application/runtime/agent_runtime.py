@@ -20,6 +20,7 @@ from mycli.domain.runtime import (
     InstructionContract,
     ModelTurnResult,
     PendingApproval,
+    PendingClarification,
     PendingDecision,
     PlanState,
     RuntimeBlock,
@@ -384,6 +385,7 @@ class AgentRuntime:
             record_assistant_text_block=self._record_assistant_text_block,
             record_assistant_tool_calls=self._record_assistant_tool_calls,
             execute_tool_call=self._execute_tool_call,
+            execute_tool_call_for_clarification=self._execute_tool_call_for_clarification,
             execute_tool_calls=self._execute_tool_calls,
             pending_decision_from_approval=self._pending_decision_from_approval,
         )
@@ -750,6 +752,7 @@ class AgentRuntime:
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
+        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_call(
             conversation=conversation,
@@ -764,6 +767,51 @@ class AgentRuntime:
             response_id=response_id,
             metadata=metadata,
             record_assistant_call=record_assistant_call,
+            lifecycle_sink=lifecycle_sink,
+        )
+
+    def _execute_tool_call_for_clarification(
+        self,
+        *,
+        conversation: Conversation,
+        call: ToolCall,
+        tool_router: ToolRouter,
+        tool_exposure: ToolExposure,
+        plan_state: PlanState,
+        turn_id: str,
+        activity_events: list[ActivityEvent],
+        turn_items: list[TurnItem],
+        provider_id: str | None = None,
+        response_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> tuple[PlanState, PendingClarification | None]:
+        return self._tool_execution_service.execute_tool_call_for_clarification(
+            conversation=conversation,
+            call=call,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+            plan_state=plan_state,
+            turn_id=turn_id,
+            activity_events=activity_events,
+            turn_items=turn_items,
+            provider_id=provider_id,
+            response_id=response_id,
+            metadata=metadata,
+            lifecycle_sink=lifecycle_sink,
+        )
+
+    def _record_clarification_response_tool_result(
+        self,
+        conversation: Conversation,
+        *,
+        call: ToolCall,
+        response: str,
+    ) -> None:
+        self._tool_execution_service.record_clarification_response(
+            conversation,
+            call=call,
+            response=response,
         )
 
     def _execute_tool_calls(
@@ -781,6 +829,7 @@ class AgentRuntime:
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
+        lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_calls(
             conversation=conversation,
@@ -795,6 +844,7 @@ class AgentRuntime:
             response_id=response_id,
             metadata=metadata,
             record_assistant_call=record_assistant_call,
+            lifecycle_sink=lifecycle_sink,
         )
 
     def _render_model_tools(
@@ -1194,6 +1244,7 @@ class AgentRuntime:
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> tuple[
         PlanState,
         bool,
@@ -1212,6 +1263,7 @@ class AgentRuntime:
             activity_events=activity_events,
             streamed_chunks=streamed_chunks,
             turn_items=turn_items,
+            stream_sink=stream_sink,
         )
 
     def _append_turn_item(
@@ -1384,3 +1436,11 @@ class AgentRuntime:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
         return TurnExecutor(self).resolve_pending_approval(choice)
+
+    def resolve_pending_clarification(self, *, request_id: str, response: str) -> TurnResponse:
+        from mycli.application.runtime.turn_executor import TurnExecutor
+
+        return TurnExecutor(self).resolve_pending_clarification(
+            request_id=request_id,
+            response=response,
+        )

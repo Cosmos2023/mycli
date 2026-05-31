@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --import tsx --test \"test/**/*.test.ts\" \"test/**/*.test.tsx\" \"test/**/*.test.js\"",
-    "typecheck": "tsc --noEmit"
+    "test": "npm run verify:deps && node --import tsx --test \"test/**/*.test.ts\" \"test/**/*.test.tsx\" \"test/**/*.test.js\"",
+    "typecheck": "npm run verify:deps && tsc --noEmit",
+    "verify:deps": "node scripts/verify-deps.js"
   },
   "engines": {
     "node": ">=20"

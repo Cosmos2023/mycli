@@ -14,6 +14,7 @@ test("input submits non-empty message and clears draft", () => {
       completionVisible={false}
       theme={initialState().theme}
       metadata="default · deep-teal"
+      hint="Enter send · / commands · Ctrl-C interrupt"
       width={80}
       onDraftChange={() => undefined}
       onSubmit={(value) => submitted.push(value)}

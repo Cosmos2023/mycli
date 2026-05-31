@@ -1,6 +1,7 @@
 import React, { memo } from "react";
 import { Box, Text } from "ink";
 import { AssistantBlock } from "./AssistantBlock.tsx";
+import { ClarificationRow } from "./ClarificationRow.tsx";
 import { CommandOutput } from "./CommandOutput.tsx";
 import {
   groupTranscriptIntoTurns,
@@ -40,7 +41,9 @@ const PreludeRow = memo(function PreludeRow({
     return <CommandOutput text={item.text} theme={theme} />;
   }
   if (item.type === "system_notice" || item.type === "warning" || item.type === "error") {
-    return <SystemNotice text={item.text} type={item.type} theme={theme} />;
+    return (
+      <SystemNotice text={item.text} type={item.type} theme={theme} metadata={item.metadata} />
+    );
   }
   return (
     <Box>
@@ -66,6 +69,9 @@ const TurnView = memo(function TurnView({
       {turn.user ? <UserPromptRow text={turn.user.text} theme={theme} width={width} /> : null}
       {turn.approvals.map((item) => (
         <SystemNotice key={item.id} text={item.text} type="system_notice" theme={theme} />
+      ))}
+      {turn.clarifications.map((item) => (
+        <ClarificationRow key={item.id} item={item} theme={theme} />
       ))}
       {turn.tools.map((item) => (
         <ToolRow key={item.id} summary={toolSummaryFor(item)} theme={theme} width={width} />
@@ -96,7 +102,13 @@ const TurnView = memo(function TurnView({
         ),
       )}
       {turn.errors.map((item) => (
-        <SystemNotice key={item.id} text={item.text} type={item.type} theme={theme} />
+        <SystemNotice
+          key={item.id}
+          text={item.text}
+          type={item.type}
+          theme={theme}
+          metadata={item.metadata}
+        />
       ))}
     </Box>
   );

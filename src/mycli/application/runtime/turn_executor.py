@@ -296,6 +296,90 @@ class TurnExecutor:
             last_tool_exposure_summary=last_tool_exposure_summary,
         )
 
+    def resolve_pending_clarification(
+        self,
+        *,
+        request_id: str,
+        response: str,
+    ) -> TurnResponse:
+        runtime = self._runtime
+        normalized_response = response.strip()
+        if not normalized_response:
+            return TurnResponse(assistant_message="Please provide a clarification response.")
+        suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+        if suspended is None or suspended.pending_clarification is None:
+            return TurnResponse(assistant_message="There is no pending clarification to resolve.")
+        pending = suspended.pending_clarification
+        if pending.request_id != request_id:
+            return TurnResponse(assistant_message="No pending clarification matches the provided request_id.")
+
+        runtime._session_service.clear_suspended_turn(runtime._config.session_id)
+        current_plan_state = suspended.plan_state
+        turn_id = f"turn_{uuid4().hex}"
+        runtime._set_current_turn_id(turn_id)
+        started_at = runtime._timestamp()
+        turn_items: list[TurnItem] = []
+        runtime._load_model_continuation_state(turn_id=turn_id)
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.CLARIFICATION_RESPONSE,
+                text=normalized_response,
+                tool_name=pending.tool_call.name,
+                call_id=pending.tool_call.call_id,
+                metadata={"request_id": pending.request_id},
+            ),
+        )
+        tool_result_text = f"User answered clarification: {normalized_response}"
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.TOOL_RESULT,
+                text=tool_result_text,
+                tool_name=pending.tool_call.name,
+                call_id=pending.tool_call.call_id,
+                metadata={
+                    "success": True,
+                    "summary": "User answered clarification",
+                    "error": None,
+                    "raw_payload": {
+                        "status": "answered",
+                        "response": normalized_response,
+                    },
+                    "transcript_content": tool_result_text,
+                },
+            ),
+        )
+        conversation = Conversation(
+            session_id=runtime._config.session_id,
+            messages=list(suspended.conversation),
+        )
+        runtime._record_clarification_response_tool_result(
+            conversation,
+            call=pending.tool_call,
+            response=normalized_response,
+        )
+        return self._run_turn_loop(
+            user_message=suspended.user_message,
+            conversation=conversation,
+            current_plan_state=current_plan_state,
+            initial_in_progress_item_id=current_plan_state.current_in_progress_item_id(),
+            turn_id=turn_id,
+            started_at=started_at,
+            turn_items=turn_items,
+            progress_updates=["[clarify] answered"],
+            activity_events=[
+                ActivityEvent(
+                    kind="clarification_resolved",
+                    message=f"answered clarification {pending.request_id}",
+                    tool_name=pending.tool_call.name,
+                )
+            ],
+            streamed_chunks=[],
+        )
+
     def _run_turn_loop(
         self,
         *,
@@ -765,6 +849,7 @@ class TurnExecutor:
                 activity_events=activity_events,
                 streamed_chunks=streamed_chunks,
                 turn_items=turn_items,
+                stream_sink=stream_sink,
             )
             if early_response is not None:
                 response, status, stop_reason = early_response

@@ -8,6 +8,7 @@ from typing import Any
 class TurnStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_CLARIFICATION = "waiting_clarification"
     COMPLETED = "completed"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
@@ -18,6 +19,7 @@ class StopReason(StrEnum):
     SUFFICIENT_EVIDENCE = "sufficient_evidence"
     LOOP_DETECTED = "loop_detected"
     APPROVAL_REQUIRED = "approval_required"
+    CLARIFICATION_REQUIRED = "clarification_required"
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
     RETRY_EXHAUSTED = "retry_exhausted"
     TRANSPORT_FAILED = "transport_failed"
@@ -39,6 +41,8 @@ class TurnItemType(StrEnum):
     TOOL_RESULT = "tool_result"
     APPROVAL_REQUEST = "approval_request"
     APPROVAL_RESOLUTION = "approval_resolution"
+    CLARIFICATION_REQUEST = "clarification_request"
+    CLARIFICATION_RESPONSE = "clarification_response"
     MODEL_USAGE = "model_usage"
     WARNING = "warning"
 

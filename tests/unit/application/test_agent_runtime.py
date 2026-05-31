@@ -51,6 +51,7 @@ from mycli.tools.registry import ToolRegistry
 from mycli.tools.bash import BashTool
 from mycli.tools.grep import GrepTool
 from mycli.tools.plan import PlanTool
+from mycli.tools.ask_user_question import AskUserQuestionTool
 
 
 class PushThenDoneAdapter:
@@ -123,6 +124,42 @@ def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(
     assert "tool_finished" in kinds
     assert any(message.startswith("query=search_text") for message in messages)
     assert any(message.startswith("query=search_text") for message in messages)
+
+
+def test_agent_runtime_pauses_and_resumes_after_clarification(tmp_path: Path) -> None:
+    adapter = ClarifyThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._tool_registry.register(AskUserQuestionTool())
+
+    first = runtime.handle_user_turn("choose next slice")
+
+    assert first.turn is not None
+    assert first.turn.status is TurnStatus.WAITING_CLARIFICATION
+    assert first.turn.stop_reason is StopReason.CLARIFICATION_REQUIRED
+    suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+    assert suspended is not None
+    assert suspended.pending_clarification is not None
+    assert suspended.pending_clarification.request_id == "call_question_1"
+
+    resumed = runtime.resolve_pending_clarification(
+        request_id="call_question_1",
+        response="Runtime",
+    )
+
+    assert resumed.assistant_message == "Runtime slice selected."
+    assert runtime._session_service.load_suspended_turn(runtime._config.session_id) is None
+    assert any(
+        message.role == "tool"
+        and message.tool_call_id == "call_question_1"
+        and "Runtime" in message.content
+        for message in runtime._session_service.load_conversation(
+            runtime._config.session_id
+        ).messages
+    )
 
 
 def test_runtime_registers_bound_task_tool(tmp_path: Path) -> None:
@@ -210,6 +247,49 @@ class SearchThenDoneAdapter:
                 "done": True,
             },
         )()
+
+
+class ClarifyThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_items: list[list[RuntimeItem]] = []
+
+    def next_turn(self, *, items, tools):
+        del tools
+        self.seen_items.append(items)
+        self.calls += 1
+        if self.calls == 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="AskUserQuestion",
+                                tool_arguments={
+                                    "question": "Which slice should come next?",
+                                    "options": [
+                                        {"label": "Runtime"},
+                                        {"label": "TUI"},
+                                    ],
+                                },
+                                call_id="call_question_1",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Runtime slice selected."),),
+                ),
+            ),
+            done=True,
+        )
 
 
 class OverviewReasoningEffortAdapter:
@@ -1259,6 +1339,43 @@ def test_agent_runtime_forwards_stream_events_to_sink(tmp_path: Path) -> None:
     assert "".join(event.text for event in events if event.kind == "text_delta") == (
         "Repository summary complete."
     )
+
+
+def test_agent_runtime_forwards_execution_tool_lifecycle_events_to_sink(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=StreamReasoningToolThenDoneAdapter(),
+    )
+    events = []
+
+    response = runtime.handle_user_turn("inspect the repo", stream_sink=events.append)
+
+    assert response.assistant_message == "Repository summary complete."
+    assert [event.kind for event in events] == [
+        "reasoning",
+        "tool_call",
+        "completed",
+        "tool_start",
+        "tool_progress",
+        "tool_complete",
+        "text_delta",
+        "completed",
+    ]
+    tool_start = next(event for event in events if event.kind == "tool_start")
+    tool_progress = next(event for event in events if event.kind == "tool_progress")
+    tool_complete = next(event for event in events if event.kind == "tool_complete")
+    assert tool_start.tool_name == "Read"
+    assert tool_start.metadata["tool_id"] == "call_stream_read_1"
+    assert tool_start.metadata["args_preview"] == "file_path=pyproject.toml"
+    assert tool_progress.tool_name == "Read"
+    assert tool_progress.metadata["tool_id"] == "call_stream_read_1"
+    assert tool_progress.metadata["stage"] == "executing"
+    assert tool_complete.tool_name == "Read"
+    assert tool_complete.metadata["tool_id"] == "call_stream_read_1"
+    assert tool_complete.metadata["summary"] == "Read pyproject.toml"
+    assert tool_complete.metadata["success"] is True
 
 
 def test_agent_runtime_uses_configured_reasoning_effort_across_overview_turns(

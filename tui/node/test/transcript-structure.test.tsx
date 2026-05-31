@@ -63,3 +63,36 @@ test("transcript routes user and assistant rows through Claude-style components"
   assert.doesNotMatch(frame, /│/);
   assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
 });
+
+test("transcript renders clarification request with options", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    transcript: [
+      { id: "u1", type: "user" as const, text: "继续", folded: false, metadata: {} },
+      {
+        id: "q1",
+        type: "clarification" as const,
+        text: "Which slice should come next?",
+        folded: false,
+        metadata: {
+          header: "Scope",
+          options: [
+            { label: "Runtime", description: "Only runtime contract" },
+            { label: "TUI", description: "Render the request" },
+          ],
+        },
+      },
+    ],
+  };
+
+  const { lastFrame } = render(<Transcript state={state} width={80} />);
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /Scope/);
+  assert.match(frame, /Which slice should come next\?/);
+  assert.match(frame, /Runtime/);
+  assert.match(frame, /Only runtime contract/);
+  assert.match(frame, /TUI/);
+  assert.doesNotMatch(frame, /Approval required/);
+  assert.doesNotMatch(frame, /Press a number/);
+});

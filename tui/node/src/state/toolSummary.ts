@@ -32,6 +32,12 @@ function numberValue(value: unknown): number | null {
 }
 
 function statusFrom(metadata: Record<string, unknown>): ToolSummary["status"] {
+  if (metadata.success === false) {
+    return "failed";
+  }
+  if (metadata.success === true) {
+    return "done";
+  }
   if (metadata.status === "running") {
     return "running";
   }
@@ -42,6 +48,32 @@ function statusFrom(metadata: Record<string, unknown>): ToolSummary["status"] {
     return "done";
   }
   return "unknown";
+}
+
+function lifecycleTarget(metadata: Record<string, unknown>): string | null {
+  return (
+    stringValue(metadata.path) ??
+    stringValue(metadata.query) ??
+    stringValue(metadata.command) ??
+    stringValue(metadata.context) ??
+    stringValue(metadata.summary) ??
+    stringValue(metadata.args_preview)
+  );
+}
+
+function durationDetailFrom(metadata: Record<string, unknown>): string | undefined {
+  const durationMs = numberValue(metadata.duration_ms);
+  if (durationMs !== null) {
+    return `${durationMs}ms`;
+  }
+  const durationSeconds = numberValue(metadata.duration_s);
+  if (durationSeconds === null) {
+    return undefined;
+  }
+  if (durationSeconds < 1) {
+    return `${Math.round(durationSeconds * 1000)}ms`;
+  }
+  return `${durationSeconds.toFixed(1)}s`;
 }
 
 function summaryWithDetail(
@@ -57,8 +89,7 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
   const name = stringValue(input.tool_name) ?? "Tool";
   const normalized = name.toLowerCase();
   const status = statusFrom(metadata);
-  const duration = numberValue(metadata.duration_ms);
-  const durationDetail = duration === null ? undefined : `${duration}ms`;
+  const durationDetail = durationDetailFrom(metadata);
 
   if (normalized === "read") {
     return summaryWithDetail(
@@ -66,6 +97,8 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
         verb: "read",
         target:
           stringValue(metadata.path) ??
+          stringValue(metadata.context) ??
+          stringValue(metadata.summary) ??
           stringValue(args.path) ??
           stringValue(args.file_path) ??
           stringValue(input.text) ??
@@ -87,6 +120,8 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
         verb: normalized,
         target:
           stringValue(metadata.path) ??
+          stringValue(metadata.context) ??
+          stringValue(metadata.summary) ??
           stringValue(args.path) ??
           stringValue(args.file_path) ??
           stringValue(input.text) ??
@@ -103,6 +138,8 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
         verb: "bash",
         target:
           stringValue(metadata.command) ??
+          stringValue(metadata.context) ??
+          stringValue(metadata.summary) ??
           stringValue(args.command) ??
           stringValue(input.text) ??
           "command",
@@ -118,6 +155,8 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
         verb: "grep",
         target:
           stringValue(metadata.query) ??
+          stringValue(metadata.context) ??
+          stringValue(metadata.summary) ??
           stringValue(args.query) ??
           stringValue(args.pattern) ??
           stringValue(input.text) ??
@@ -132,6 +171,7 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
       verb: normalized,
       target:
         stringValue(metadata.path) ??
+        lifecycleTarget(metadata) ??
         stringValue(args.path) ??
         stringValue(args.file_path) ??
         stringValue(input.text) ??

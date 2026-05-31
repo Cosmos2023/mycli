@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
     HistoryItemType,
     InvokedSkillSnapshot,
     PendingApproval,
+    PendingClarification,
     PendingDecision,
     PlanItem,
     PlanState,
@@ -359,6 +360,21 @@ class SessionService:
                     "preview": turn.pending_approval.preview,
                     "command_pattern": turn.pending_approval.command_pattern,
                 },
+                "pending_clarification": None
+                if turn.pending_clarification is None
+                else {
+                    "request_id": turn.pending_clarification.request_id,
+                    "tool_call": {
+                        "name": turn.pending_clarification.tool_call.name,
+                        "arguments": turn.pending_clarification.tool_call.arguments,
+                        "reason": turn.pending_clarification.tool_call.reason,
+                        "call_id": turn.pending_clarification.tool_call.call_id,
+                    },
+                    "question": turn.pending_clarification.question,
+                    "options": list(turn.pending_clarification.options),
+                    "header": turn.pending_clarification.header,
+                    "multi_select": turn.pending_clarification.multi_select,
+                },
             },
         )
 
@@ -383,6 +399,32 @@ class SessionService:
                 reason=str(pending_payload["reason"]),
                 preview=str(pending_payload["preview"]),
                 command_pattern=optional_str(pending_payload.get("command_pattern")),
+            )
+
+        clarification_payload = payload.get("pending_clarification")
+        pending_clarification = None
+        if isinstance(clarification_payload, dict):
+            tool_call_payload = clarification_payload.get("tool_call")
+            if not isinstance(tool_call_payload, dict):
+                raise ValueError("Suspended turn pending clarification must include a tool call object.")
+            raw_options = clarification_payload.get("options")
+            options = tuple(
+                dict(item)
+                for item in raw_options
+                if isinstance(item, dict)
+            ) if isinstance(raw_options, list) else ()
+            pending_clarification = PendingClarification(
+                request_id=str(clarification_payload["request_id"]),
+                tool_call=ToolCall(
+                    name=str(tool_call_payload["name"]),
+                    arguments=dict(tool_call_payload["arguments"]),
+                    reason=str(tool_call_payload["reason"]),
+                    call_id=optional_str(tool_call_payload.get("call_id")),
+                ),
+                question=str(clarification_payload["question"]),
+                options=options,
+                header=str(clarification_payload.get("header") or ""),
+                multi_select=bool(clarification_payload.get("multi_select", False)),
             )
 
         plan_items_payload = payload.get("plan_items")
@@ -416,6 +458,7 @@ class SessionService:
             ),
             plan_state=PlanState(items=plan_items),
             pending_approval=pending_approval,
+            pending_clarification=pending_clarification,
             suspend_reason=suspend_reason,
         )
 

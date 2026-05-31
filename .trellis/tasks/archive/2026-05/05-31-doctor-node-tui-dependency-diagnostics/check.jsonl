@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor stays read-only and warning-only for optional TUI deps"}
+{"file": ".trellis/tasks/05-31-doctor-node-tui-dependency-diagnostics/research/doctor-node-tui-dependency-diagnostics.md", "reason": "Acceptance criteria and test risks"}

@@ -2,12 +2,14 @@ import { createInterface, type Interface } from "node:readline";
 import type {
   GatewayClientOptions,
   GatewayEvent,
+  GatewayEventForMethod,
   JsonObject,
   RpcMessage,
   RpcRequest,
 } from "./types.ts";
 
 type PendingRequest = {
+  method: string;
   resolve: (value: JsonObject) => void;
   reject: (error: Error) => void;
 };
@@ -32,6 +34,18 @@ export function decodeMessage(line: string): RpcMessage {
     throw new Error("Unsupported JSON-RPC version");
   }
   return message;
+}
+
+export class GatewayRequestError extends Error {
+  readonly code: string;
+  readonly method: string;
+
+  constructor({ code, message, method }: { code: string; message: string; method: string }) {
+    super(message);
+    this.name = "GatewayRequestError";
+    this.code = code;
+    this.method = method;
+  }
 }
 
 export class GatewayClient {
@@ -63,20 +77,28 @@ export class GatewayClient {
   send(method: string, params: JsonObject = {}): Promise<JsonObject> {
     const id = String(this.nextId++);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { method, resolve, reject });
       this.output.write(encodeMessage(request(id, method, params)));
     });
   }
 
-  waitForEvent(
-    method: string,
-    predicate: (event: GatewayEvent) => boolean = () => true,
-  ): Promise<GatewayEvent> {
-    const existing = this.events.find((event) => event.method === method && predicate(event));
+  waitForEvent<Method extends string>(
+    method: Method,
+    predicate: (event: GatewayEventForMethod<Method>) => boolean = () => true,
+  ): Promise<GatewayEventForMethod<Method>> {
+    const matches = (event: GatewayEvent): event is GatewayEventForMethod<Method> =>
+      event.method === method && predicate(event as GatewayEventForMethod<Method>);
+    const existing = this.events.find(matches);
     if (existing) {
       return Promise.resolve(existing);
     }
-    return new Promise((resolve) => this.eventWaiters.push({ method, predicate, resolve }));
+    return new Promise((resolve) =>
+      this.eventWaiters.push({
+        method,
+        predicate: (event) => predicate(event as GatewayEventForMethod<Method>),
+        resolve: (event) => resolve(event as GatewayEventForMethod<Method>),
+      }),
+    );
   }
 
   private handleLine(line: string): void {
@@ -88,7 +110,13 @@ export class GatewayClient {
         return;
       }
       if ("error" in message && message.error) {
-        pending.reject(new Error(message.error.message));
+        pending.reject(
+          new GatewayRequestError({
+            code: message.error.code,
+            message: message.error.message,
+            method: pending.method,
+          }),
+        );
       } else {
         pending.resolve(("result" in message && message.result) || {});
       }

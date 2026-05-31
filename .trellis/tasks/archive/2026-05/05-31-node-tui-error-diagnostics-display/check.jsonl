@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify error metadata remains compact, visible, and separate from gateway semantics."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify tests and quality gates for UI rendering changes."}

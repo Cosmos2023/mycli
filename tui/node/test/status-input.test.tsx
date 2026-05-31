@@ -46,3 +46,76 @@ test("status metadata includes live status and approval marker", () => {
   assert.match(metadata, /Waiting approval/);
   assert.match(metadata, /approval pending/);
 });
+
+test("status metadata includes clarification marker", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    model: "deepseek-v4",
+    pendingClarification: {
+      request_id: "call_question_1",
+      question: "Which slice should come next?",
+      options: [{ label: "Runtime" }, { label: "TUI" }],
+    },
+  };
+
+  const metadata = statusMetadata(state);
+  assert.match(metadata, /clarification pending/);
+});
+
+test("status metadata includes bounded live status detail", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    model: "deepseek-v4",
+    liveStatus: {
+      client_turn_id: "c1",
+      state: "failed" as const,
+      kind: "failed",
+      text: "Failed",
+      message: "Provider returned 429",
+    },
+  };
+
+  const metadata = statusMetadata(state);
+  assert.match(metadata, /Failed: Provider returned 429/);
+});
+
+test("status metadata truncates long live status detail", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    model: "deepseek-v4",
+    liveStatus: {
+      client_turn_id: "c1",
+      state: "failed" as const,
+      kind: "failed",
+      text: "Failed",
+      message:
+        "Provider returned a very long upstream error message with internal diagnostics and retry metadata",
+    },
+  };
+
+  const metadata = statusMetadata(state);
+  assert.match(metadata, /Failed: Provid…metadata/);
+  assert.doesNotMatch(metadata, /internal diagnostics and retry/);
+});
+
+test("completed live status remains hidden from metadata", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    model: "deepseek-v4",
+    liveStatus: {
+      client_turn_id: "c1",
+      state: "completed" as const,
+      kind: "completed",
+      text: "Completed",
+      message: "Done with detail",
+    },
+  };
+
+  const metadata = statusMetadata(state);
+  assert.doesNotMatch(metadata, /Completed/);
+  assert.doesNotMatch(metadata, /Done with detail/);
+});

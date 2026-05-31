@@ -72,18 +72,45 @@ Questions to answer:
 - `~/.mycli/sessions.db` missing -> `sessions_db=warning`.
 - Sessions DB exists but is not openable or lacks required tables -> failed.
 - Logs or FileHistory missing -> warning, not failure.
+- Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
+  must not create them because runtime writers create parents lazily.
+- Reserved trace/artifact path exists as a non-directory -> `storage_layout=failed`.
+- Reserved trace/artifact directory exists without write bits ->
+  `storage_layout=failed`.
+- Trace diagnostics check:
+  - Missing `~/.mycli/traces/` -> `traces=ok`; doctor must not create it.
+  - Existing empty `traces/` -> `traces=ok`.
+  - Existing readable `*.jsonl` trace files with valid runtime trace rows ->
+    `traces=ok` with bounded file/row counts.
+  - Existing trace files with invalid JSONL rows, non-object rows, or rows that
+    cannot decode as runtime trace events -> `traces=warning`; runtime loading
+    skips bad rows, but doctor must surface degraded diagnostics.
+  - Existing trace files that cannot be opened/read -> `traces=failed`.
+  - Trace doctor output must report counts and bounded file/line references, not
+    raw trace payload content.
 - `errors.log` missing by itself -> OK when `agent.log`, `model-events.jsonl`,
   and `model-raw/` exist; `errors.log` is created on first warning/error.
 - FileHistory `index.json` exists but cannot parse -> failed.
 - MCP config load fails -> failed; do not start servers.
 - Node/npm or Python TUI unavailable -> warning unless a stricter command is
   explicitly introduced later.
+- Node TUI source exists but `tui/node/node_modules/.bin/tsx` is missing ->
+  `node_tui_dependencies=warning` with remediation text
+  `npm --prefix tui/node install`; do not create `node_modules` or run npm.
+- Node-side TUI verification should run a dependency-free preflight before
+  commands that import `tsx`, and should print missing markers plus the
+  remediation `npm --prefix tui/node ci`.
+- Node TUI source is missing -> report the existing `node_tui` warning and skip
+  dependency-marker checks, because missing source is the actionable root cause.
 
 #### 5. Good/Base/Bad Cases
 - Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
   `0` with only warnings.
+- Good: A fresh machine without `~/.mycli/traces` or `~/.mycli/artifacts`
+  reports `storage_layout=ok` without creating those directories.
 - Base: A fresh machine with no prior sessions gets missing-storage warnings but
   no model request.
+- Bad: Creating `traces/` or `artifacts/` just to check doctor health.
 - Bad: Calling `build_turn_service()` for doctor, because that can require an
   API key and initialize runtime dependencies unrelated to diagnostics.
 - Bad: Printing `sk-...` or MCP environment secret values in remediation text.
@@ -92,6 +119,12 @@ Questions to answer:
 - Unit test service success with config/storage/logs/history/MCP fixtures.
 - Unit test warning-only conditions such as missing sessions DB and history.
 - Unit test failed MCP or storage parse/open behavior.
+- Unit test storage layout reserved directories missing, present, path-conflict,
+  and non-writable cases.
+- Unit test trace doctor cases for missing directory, valid trace files, invalid
+  rows, and bounded scan reporting.
+- Unit test Node TUI dependency marker OK and missing-warning cases without
+  creating `node_modules`.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
 - Full lint, type-check, and pytest must pass because doctor touches CLI
   startup paths.

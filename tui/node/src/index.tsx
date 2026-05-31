@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useReducer } from "react";
+import React, { useCallback, useEffect, useMemo, useReducer } from "react";
 import { render } from "ink";
 import { App } from "./app/App.tsx";
-import { GatewayClient } from "./protocol/client.ts";
+import { GatewayClient, GatewayRequestError } from "./protocol/client.ts";
 import { initialState, reduceShellState } from "./state/reducer.ts";
 import { openTtyStreams } from "./terminal/tty.ts";
 
@@ -20,53 +20,88 @@ function RuntimeApp() {
       new GatewayClient({
         input: process.stdin,
         output: process.stdout,
-        log: (event) =>
-          dispatch({ type: "gateway.event", method: event.method, params: event.params }),
+        log: (event) => {
+          if (event.method === "runtime.event") {
+            return;
+          }
+          dispatch({ type: "gateway.event", method: event.method, params: event.params });
+        },
       }),
     [],
+  );
+  const reportRequestError = useCallback((method: string, error: unknown): void => {
+    const gatewayError =
+      error instanceof GatewayRequestError
+        ? error
+        : new GatewayRequestError({
+            code: "request_failed",
+            message: error instanceof Error ? error.message : "Request failed.",
+            method,
+          });
+    dispatch({
+      type: "request.failed",
+      method: gatewayError.method || method,
+      code: gatewayError.code,
+      message: gatewayError.message,
+    });
+  }, []);
+  const send = useCallback(
+    (method: string, params: Record<string, unknown> = {}) =>
+      client.send(method, params).catch((error: unknown) => {
+        reportRequestError(method, error);
+        throw error;
+      }),
+    [client, reportRequestError],
   );
 
   useEffect(() => {
     client.start();
-    void client
-      .send("session.bootstrap", {
-        protocol_version: 1,
-        client: { name: "mycli-node-tui", version: "0.2.0" },
-      })
+    void send("session.bootstrap", {
+      protocol_version: 1,
+      client: { name: "mycli-node-tui", version: "0.2.0" },
+    })
       .then(async (payload) => {
         dispatch({ type: "bootstrap.result", payload });
-        const transcript = await client.send("transcript.load", {
+        const transcript = await send("transcript.load", {
           session_id: payload.session_id,
           limit: 200,
           before: null,
         });
         dispatch({ type: "transcript.loaded", payload: transcript });
-      });
+      })
+      .catch(() => undefined);
     return () => client.stop();
-  }, [client]);
+  }, [client, send]);
 
   return (
     <App
       state={state}
       onSubmit={(message) => {
         dispatch({ type: "user.submit", message });
-        void client.send("turn.submit", { message, client_turn_id: `ui_${Date.now()}` });
+        void send("turn.submit", { message, client_turn_id: `ui_${Date.now()}` }).catch(
+          () => undefined,
+        );
       }}
       onCommand={(command) => {
-        void client.send("command.run", { command }).then((result) => {
-          dispatch({ type: "command.result", command, result });
-          if (result.exit_requested === true) {
-            void client.send("shutdown", {}).then(() => process.exit(0));
-          }
-        });
+        void send("command.run", { command })
+          .then((result) => {
+            dispatch({ type: "command.result", command, result });
+            if (result.exit_requested === true) {
+              void send("shutdown", {}).then(() => process.exit(0), () => undefined);
+            }
+          })
+          .catch(() => undefined);
       }}
       onInterrupt={() => {
-        void client.send("turn.interrupt", {});
+        void send("turn.interrupt", {}).catch(() => undefined);
       }}
       onLocalAction={dispatch}
       onDraftChange={() => undefined}
       onDecision={(decisionId, choice) => {
-        void client.send("approval.respond", { decision_id: decisionId, choice });
+        void send("approval.respond", { decision_id: decisionId, choice }).catch(() => undefined);
+      }}
+      onClarification={(requestId, response) => {
+        void send("clarify.respond", { request_id: requestId, response }).catch(() => undefined);
       }}
     />
   );

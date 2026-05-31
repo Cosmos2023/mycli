@@ -11,10 +11,12 @@ from mycli.domain.runtime import (
     DecisionKind,
     FileRehydrationCandidate,
     PendingDecision,
+    RUNTIME_EVENT_ENVELOPE_VERSION,
     RiskLevel,
     RehydratedFile,
     RehydratedSkill,
     RehydrationBudget,
+    RuntimeEventEnvelope,
     SessionCommandAllowance,
     StopReason,
     TurnItem,
@@ -174,6 +176,36 @@ def test_runtime_stream_event_defaults_are_empty() -> None:
     assert event.text == "hello"
     assert event.tool_name is None
     assert event.metadata == {}
+
+
+def test_runtime_event_envelope_serializes_stable_contract_shape() -> None:
+    payload = {"client_turn_id": "client_1", "text": "hello"}
+
+    envelope = RuntimeEventEnvelope(
+        sequence=3,
+        event_type="message.delta",
+        payload=payload,
+        timestamp=1_779_999_999.25,
+    )
+
+    assert envelope.to_dict() == {
+        "version": RUNTIME_EVENT_ENVELOPE_VERSION,
+        "sequence": 3,
+        "type": "message.delta",
+        "payload": payload,
+        "timestamp": 1_779_999_999.25,
+    }
+
+
+def test_runtime_event_envelope_rejects_invalid_metadata() -> None:
+    with pytest.raises(ValueError, match="sequence"):
+        RuntimeEventEnvelope(sequence=0, event_type="status.update", payload={}, timestamp=1.0)
+
+    with pytest.raises(ValueError, match="event_type"):
+        RuntimeEventEnvelope(sequence=1, event_type=" ", payload={}, timestamp=1.0)
+
+    with pytest.raises(ValueError, match="timestamp"):
+        RuntimeEventEnvelope(sequence=1, event_type="status.update", payload={}, timestamp=-1.0)
 
 
 def test_runtime_exposes_turn_protocol_models() -> None:

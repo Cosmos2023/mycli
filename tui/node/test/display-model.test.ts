@@ -23,6 +23,7 @@ test("groupTranscriptIntoTurns returns prelude and starts a turn at each user it
     item("a1", "assistant_final", "我是 mycli"),
     item("u2", "user", "有哪些 skill"),
     item("t1", "tool_summary", "Read AGENTS.md", { tool_name: "Read", path: "AGENTS.md" }),
+    item("q1", "clarification", "Pick one", { options: [{ label: "Runtime" }] }),
     item("d1", "tool_detail", "AGENTS content"),
     item("a2", "assistant_final", "两个 skill"),
   ]);
@@ -32,6 +33,7 @@ test("groupTranscriptIntoTurns returns prelude and starts a turn at each user it
   assert.equal(grouped.turns[0]?.user?.text, "你是谁");
   assert.equal(grouped.turns[0]?.assistantFinal?.text, "我是 mycli");
   assert.equal(grouped.turns[1]?.tools.length, 1);
+  assert.equal(grouped.turns[1]?.clarifications.length, 1);
   assert.equal(grouped.turns[1]?.toolDetails.length, 1);
 });
 

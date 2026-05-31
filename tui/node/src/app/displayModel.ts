@@ -7,6 +7,7 @@ export type DisplayTurn = {
   toolDetails: TranscriptItem[];
   statuses: TranscriptItem[];
   approvals: TranscriptItem[];
+  clarifications: TranscriptItem[];
   assistantStream: TranscriptItem | null;
   assistantFinal: TranscriptItem | null;
   notices: TranscriptItem[];
@@ -26,6 +27,7 @@ function emptyTurn(user: TranscriptItem): DisplayTurn {
     toolDetails: [],
     statuses: [],
     approvals: [],
+    clarifications: [],
     assistantStream: null,
     assistantFinal: null,
     notices: [],
@@ -45,6 +47,9 @@ function appendToTurn(turn: DisplayTurn, item: TranscriptItem): DisplayTurn {
   }
   if (item.type === "approval") {
     return { ...turn, approvals: [...turn.approvals, item] };
+  }
+  if (item.type === "clarification") {
+    return { ...turn, clarifications: [...turn.clarifications, item] };
   }
   if (item.type === "assistant_stream") {
     return { ...turn, assistantStream: item };
