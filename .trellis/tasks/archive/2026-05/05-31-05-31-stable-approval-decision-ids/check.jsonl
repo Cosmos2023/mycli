@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify stable decision id contract matches gateway and Node client behavior."}
+{"file": ".trellis/tasks/05-31-05-31-stable-approval-decision-ids/prd.md", "reason": "Acceptance criteria and focused verification for this slice."}

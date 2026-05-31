@@ -59,8 +59,9 @@
   - `client_turn_id`: optional string linking the status to the submitted turn
   - `severity`: optional string for future warning/error display
 - `approval.request` payload:
-  - `decision_id`: stable string for the pending approval, currently
-    `decision_current`
+  - `decision_id`: stable string for the pending approval. Prefer the source
+    tool call id when present; fall back to `decision_current` only when no
+    stable call id exists.
   - `client_turn_id`: string for the turn that produced the approval request
   - `preview`: human-readable operation preview
   - `reason`: optional human-readable rationale
@@ -68,7 +69,9 @@
   - `options`: array of `{choice, label}` rows matching runtime
     `DecisionAction` values
 - `approval.respond` request payload:
-  - `decision_id`: must match the active decision id
+  - `decision_id`: must match the active decision id. The compatibility alias
+    `decision_current` remains accepted for older clients while one decision is
+    pending.
   - `choice`: preferred Hermes-like choice string, such as `approve_once`,
     `reject`, or `allow_session`
 - `decision.resolve` remains accepted for older clients. It shares the same
@@ -302,6 +305,9 @@
 
 ### 4. Validation & Error Matrix
 - Unknown approval `decision_id` -> JSON-RPC error; do not resolve anything.
+- Approval `decision_id` equal to the active tool call id -> accepted.
+- Approval `decision_id=decision_current` -> accepted as a compatibility alias
+  for the active pending decision.
 - Unknown or legacy approval choice -> map through the existing decision choice
   table; reject invalid choices at the runtime decision boundary.
 - Accepted `approval.respond(choice=reject)` -> persist the resolved turn as

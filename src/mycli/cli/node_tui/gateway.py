@@ -45,6 +45,7 @@ DECISION_CHOICE_MAP = {
     "reject": "2",
     "allow_session": "3",
 }
+DECISION_CURRENT_ALIAS = "decision_current"
 DECISION_OPTION_LABELS = {
     DecisionAction.APPROVE_ONCE: "Allow once",
     DecisionAction.REJECT: "Reject",
@@ -537,12 +538,6 @@ class NodeTuiGateway:
 
     def _handle_approval_response(self, request: RpcRequest) -> RpcResponse:
         decision_id = _required_str(request.params, "decision_id")
-        if decision_id != "decision_current":
-            return error_response(
-                request.id,
-                code="decision_not_pending",
-                message="No pending decision matches the provided decision_id.",
-            )
         choice = _required_str(request.params, "choice")
         mapped = DECISION_CHOICE_MAP.get(choice)
         if mapped is None:
@@ -558,6 +553,13 @@ class NodeTuiGateway:
                 code="decision_not_pending",
                 message="No pending decision is available.",
             )
+        active_decision_id = _decision_id_for_pending_decision(pending)
+        if decision_id not in {active_decision_id, DECISION_CURRENT_ALIAS}:
+            return error_response(
+                request.id,
+                code="decision_not_pending",
+                message="No pending decision matches the provided decision_id.",
+            )
         client_turn_id = f"approval_{request.id}"
         with self._turn_lock:
             if self._turn_running:
@@ -569,16 +571,30 @@ class NodeTuiGateway:
             self._turn_running = True
             self._turn_thread = Thread(
                 target=self._run_decision_worker,
-                kwargs={"choice": mapped, "client_turn_id": client_turn_id},
+                kwargs={
+                    "choice": mapped,
+                    "client_turn_id": client_turn_id,
+                    "decision_id": active_decision_id,
+                },
                 daemon=True,
             )
             self._turn_thread.start()
         return result_response(
             request.id,
-            {"accepted": True, "decision_id": decision_id, "client_turn_id": client_turn_id},
+            {
+                "accepted": True,
+                "decision_id": active_decision_id,
+                "client_turn_id": client_turn_id,
+            },
         )
 
-    def _run_decision_worker(self, *, choice: str, client_turn_id: str) -> None:
+    def _run_decision_worker(
+        self,
+        *,
+        choice: str,
+        client_turn_id: str,
+        decision_id: str,
+    ) -> None:
         self._emit_event("turn.started", {"client_turn_id": client_turn_id})
         self._emit_status_update(
             client_turn_id=client_turn_id,
@@ -609,7 +625,7 @@ class NodeTuiGateway:
                 "approval.respond",
                 {
                     "client_turn_id": client_turn_id,
-                    "decision_id": "decision_current",
+                    "decision_id": decision_id,
                     "choice": _choice_for_resolved_value(choice),
                 },
             )
@@ -861,7 +877,7 @@ def _approval_request_payload(
 ) -> dict[str, object]:
     return {
         "client_turn_id": client_turn_id,
-        "decision_id": "decision_current",
+        "decision_id": _decision_id_for_pending_decision(decision),
         "preview": decision.preview,
         "reason": decision.reason,
         "tool_name": decision.tool_call.name,
@@ -873,6 +889,12 @@ def _approval_request_payload(
             for action in decision.options
         ],
     }
+
+
+def _decision_id_for_pending_decision(decision: PendingDecision) -> str:
+    if decision.tool_call.call_id:
+        return decision.tool_call.call_id
+    return DECISION_CURRENT_ALIAS
 
 
 def _turn_state_for_response(response: TurnResponse) -> str:

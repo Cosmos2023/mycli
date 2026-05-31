@@ -348,7 +348,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_waiting_state_route
     approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
     clarification_items = [item for item in state["transcript"] if item["type"] == "clarification"]
     assert len(approval_items) == 1
-    assert approval_items[0]["metadata"]["decision_id"] == "decision_current"
+    assert approval_items[0]["metadata"]["decision_id"] == "call_approval_1"
     assert len(clarification_items) == 1
     assert clarification_items[0]["metadata"]["request_id"] == "call_question_1"
     assistant_items = [
