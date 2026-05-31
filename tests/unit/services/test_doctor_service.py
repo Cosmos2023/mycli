@@ -1869,6 +1869,170 @@ def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_paylo
     assert "git push --force" not in rendered
 
 
+def test_doctor_service_reports_missing_clarification_diagnostics_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "clarification_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no clarification diagnostics found"
+
+
+def test_doctor_service_reports_no_clarification_diagnostics_rows_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}}),
+                json.dumps({"kind": "tool_execution", "turn_id": "turn-1", "payload": {}}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "clarification_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no clarification diagnostics found"
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_summarizes_successful_clarification_diagnostics(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "clarification_resolution",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "result": "answered",
+                            "request_id": "call_question_1",
+                            "tool_name": "AskUserQuestion",
+                            "response_chars": 7,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "clarification_resolution",
+                        "turn_id": "turn-2",
+                        "payload": {"result": "answered", "response_chars": 3},
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "clarification_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "2 clarification diagnostic(s)"
+    assert check.detail == "resolution_results: answered=2"
+
+
+def test_doctor_service_warns_for_problem_clarification_diagnostics_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-clarificationsecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "clarification_resolution",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "result": "request_id_mismatch",
+                            "request_id": "call_question_1",
+                            "response": f"raw answer {secret}",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "clarification_resolution",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "result": "blank_response",
+                            "user_text": "raw answer should stay hidden",
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "clarification_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == "2 clarification diagnostic(s)"
+    assert check.detail == "warning_results: blank_response=1, request_id_mismatch=1"
+    assert secret not in rendered
+    assert "raw answer" not in rendered
+
+
 def test_doctor_service_summarizes_successful_stream_diagnostics(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

@@ -18,6 +18,7 @@ from mycli.domain.runtime import (
     CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
+    PendingClarification,
     PendingDecision,
     PlanState,
     RuntimeStreamEvent,
@@ -352,12 +353,36 @@ class TurnExecutor:
         runtime = self._runtime
         normalized_response = response.strip()
         if not normalized_response:
+            _record_clarification_resolution(
+                runtime=runtime,
+                turn_id=f"clarification_{uuid4().hex}",
+                result="blank_response",
+                request_id=request_id,
+                response=normalized_response,
+                pending=None,
+            )
             return TurnResponse(assistant_message="Please provide a clarification response.")
         suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
         if suspended is None or suspended.pending_clarification is None:
+            _record_clarification_resolution(
+                runtime=runtime,
+                turn_id=f"clarification_{uuid4().hex}",
+                result="no_pending_clarification",
+                request_id=request_id,
+                response=normalized_response,
+                pending=None,
+            )
             return TurnResponse(assistant_message="There is no pending clarification to resolve.")
         pending = suspended.pending_clarification
         if pending.request_id != request_id:
+            _record_clarification_resolution(
+                runtime=runtime,
+                turn_id=f"clarification_{uuid4().hex}",
+                result="request_id_mismatch",
+                request_id=request_id,
+                response=normalized_response,
+                pending=pending,
+            )
             return TurnResponse(assistant_message="No pending clarification matches the provided request_id.")
 
         runtime._session_service.clear_suspended_turn(runtime._config.session_id)
@@ -366,6 +391,14 @@ class TurnExecutor:
         runtime._set_current_turn_id(turn_id)
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
+        _record_clarification_resolution(
+            runtime=runtime,
+            turn_id=turn_id,
+            result="answered",
+            request_id=request_id,
+            response=normalized_response,
+            pending=pending,
+        )
         runtime._load_model_continuation_state(turn_id=turn_id)
         runtime._append_turn_item(
             turn_id=turn_id,
@@ -1358,6 +1391,58 @@ def _approval_resolution_payload(
             "decision_id": decision.tool_call.call_id or "decision_current",
             "command_pattern": decision.command_pattern,
             "reason": decision.reason,
+        }
+    )
+    return payload
+
+
+def _record_clarification_resolution(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    result: str,
+    request_id: str,
+    response: str,
+    pending: PendingClarification | None,
+) -> None:
+    payload = _clarification_resolution_payload(
+        result=result,
+        request_id=request_id,
+        response=response,
+        pending=pending,
+    )
+    level = LogLevel.INFO if result == "answered" else LogLevel.WARNING
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(kind="clarification_resolution", turn_id=turn_id, payload=payload),
+    )
+    runtime._workspace_log_service.log(
+        level=level,
+        event="clarification_resolution",
+        message=f"Clarification resolution {result}.",
+        context=payload,
+    )
+
+
+def _clarification_resolution_payload(
+    *,
+    result: str,
+    request_id: str,
+    response: str,
+    pending: PendingClarification | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "result": result,
+        "request_id": request_id[:120],
+        "response_chars": len(response),
+    }
+    if pending is None:
+        return payload
+    payload.update(
+        {
+            "expected_request_id": pending.request_id,
+            "tool_name": pending.tool_call.name,
+            "call_id": pending.tool_call.call_id,
         }
     )
     return payload

@@ -77,6 +77,7 @@ _RUNTIME_CONTRACT_REQUIRED_STREAMS = {
     "turn.status",
 }
 _SUCCESSFUL_APPROVAL_RESULTS = frozenset({"approved", "rejected"})
+_SUCCESSFUL_CLARIFICATION_RESULTS = frozenset({"answered"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +111,14 @@ class _ApprovalDiagnosticsSummary:
     allowance_count: int
     auto_allowed_count: int
     resolution_results: tuple[tuple[str, int], ...]
+    warning_results: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ClarificationDiagnosticsSummary:
+    clarification_count: int
+    result_counts: tuple[tuple[str, int], ...]
     warning_results: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
 
@@ -180,6 +189,7 @@ class DoctorService:
             self._check_traces,
             self._check_stream_diagnostics,
             self._check_approval_diagnostics,
+            self._check_clarification_diagnostics,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -599,6 +609,82 @@ class DoctorService:
             ),
         )
 
+    def _check_clarification_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "clarification_diagnostics",
+                    DoctorStatus.OK,
+                    "no clarification diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "clarification_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "clarification_diagnostics",
+                    DoctorStatus.OK,
+                    "no clarification diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_clarification_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "clarification_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.clarification_count == 0:
+            return (
+                DoctorCheck(
+                    "clarification_diagnostics",
+                    DoctorStatus.OK,
+                    f"no clarification diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        message = f"{summary.clarification_count} clarification diagnostic(s){suffix}"
+        detail = f"resolution_results: {_format_count_pairs(summary.result_counts)}"
+        if summary.warning_results:
+            return (
+                DoctorCheck(
+                    "clarification_diagnostics",
+                    DoctorStatus.WARNING,
+                    message,
+                    detail=f"warning_results: {_format_count_pairs(summary.warning_results)}",
+                ),
+            )
+        return (
+            DoctorCheck(
+                "clarification_diagnostics",
+                DoctorStatus.OK,
+                message,
+                detail=detail,
+            ),
+        )
+
     def _check_file_history(self) -> Iterable[DoctorCheck]:
         history_root = self._layout.root / "file-history"
         if not history_root.exists():
@@ -1011,6 +1097,42 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
     )
 
 
+def _summarize_clarification_diagnostics(
+    paths: Iterable[Path],
+) -> _ClarificationDiagnosticsSummary:
+    result_counts: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "clarification_resolution":
+                        continue
+                    result_counts[_safe_diagnostic_result(event.payload.get("result"))] += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_results = tuple(sorted(result_counts.items(), key=lambda item: (-item[1], item[0])))
+    warning_results = tuple(
+        (result, count)
+        for result, count in ordered_results
+        if result not in _SUCCESSFUL_CLARIFICATION_RESULTS
+    )
+    return _ClarificationDiagnosticsSummary(
+        clarification_count=sum(result_counts.values()),
+        result_counts=ordered_results,
+        warning_results=warning_results,
+        unreadable=tuple(unreadable),
+    )
+
+
 def _parse_trace_event_line(line: str) -> RuntimeTraceEvent:
     payload = json.loads(line)
     if not isinstance(payload, dict):
@@ -1046,6 +1168,10 @@ def _safe_failure_kind(value: object) -> str:
 
 
 def _safe_approval_result(value: object) -> str:
+    return _safe_diagnostic_result(value)
+
+
+def _safe_diagnostic_result(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         return "unknown"
     normalized = value.strip()[:80]

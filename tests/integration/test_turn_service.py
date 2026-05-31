@@ -432,6 +432,16 @@ def test_turn_service_resumes_root_to_tip_before_resolving_pending_clarification
     assert resolved.assistant_message == "Runtime slice selected."
     assert fresh_runtime._session_service.load_suspended_turn("branch") is None
     assert fresh_runtime._session_service.load_suspended_turn("default") is None
+    trace_events = fresh_runtime._trace_service.load("branch")
+    resolution = next(
+        event
+        for event in trace_events
+        if event.kind == "clarification_resolution"
+        and event.payload["result"] == "answered"
+    )
+    assert resolution.payload["request_id"] == "call_question_1"
+    assert resolution.payload["tool_name"] == "AskUserQuestion"
+    assert resolution.payload["response_chars"] == len("Runtime")
 
 
 def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) -> None:

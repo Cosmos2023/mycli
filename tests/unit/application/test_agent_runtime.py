@@ -128,10 +128,12 @@ def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(
 
 def test_agent_runtime_pauses_and_resumes_after_clarification(tmp_path: Path) -> None:
     adapter = ClarifyThenDoneAdapter()
+    log_service = WorkspaceLogService(workspace_root=tmp_path)
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
         model_adapter=adapter,
+        workspace_log_service=log_service,
     )
     runtime._tool_registry.register(AskUserQuestionTool())
 
@@ -152,6 +154,20 @@ def test_agent_runtime_pauses_and_resumes_after_clarification(tmp_path: Path) ->
 
     assert resumed.assistant_message == "Runtime slice selected."
     assert runtime._session_service.load_suspended_turn(runtime._config.session_id) is None
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    resolution = next(event for event in trace if event.kind == "clarification_resolution")
+    assert resolution.payload == {
+        "result": "answered",
+        "request_id": "call_question_1",
+        "response_chars": len("Runtime"),
+        "expected_request_id": "call_question_1",
+        "tool_name": "AskUserQuestion",
+        "call_id": "call_question_1",
+    }
+    agent_log = log_service.agent_log_path().read_text(encoding="utf-8")
+    assert "clarification_resolution" in agent_log
+    assert "answered" in agent_log
+    assert "Runtime slice selected" not in agent_log
     assert any(
         message.role == "tool"
         and message.tool_call_id == "call_question_1"
@@ -160,6 +176,93 @@ def test_agent_runtime_pauses_and_resumes_after_clarification(tmp_path: Path) ->
             runtime._config.session_id
         ).messages
     )
+
+
+def test_agent_runtime_records_blank_clarification_response_without_raw_text(
+    tmp_path: Path,
+) -> None:
+    log_service = WorkspaceLogService(workspace_root=tmp_path)
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ClarifyThenDoneAdapter(),
+        workspace_log_service=log_service,
+    )
+
+    response = runtime.resolve_pending_clarification(
+        request_id="call_question_1",
+        response="   ",
+    )
+
+    assert response.assistant_message == "Please provide a clarification response."
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    resolution = next(event for event in trace if event.kind == "clarification_resolution")
+    assert resolution.payload == {
+        "result": "blank_response",
+        "request_id": "call_question_1",
+        "response_chars": 0,
+    }
+    agent_log = log_service.agent_log_path().read_text(encoding="utf-8")
+    assert "blank_response" in agent_log
+
+
+def test_agent_runtime_records_no_pending_clarification_response(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ClarifyThenDoneAdapter(),
+    )
+
+    response = runtime.resolve_pending_clarification(
+        request_id="call_question_1",
+        response="Runtime",
+    )
+
+    assert response.assistant_message == "There is no pending clarification to resolve."
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    resolution = next(event for event in trace if event.kind == "clarification_resolution")
+    assert resolution.payload == {
+        "result": "no_pending_clarification",
+        "request_id": "call_question_1",
+        "response_chars": len("Runtime"),
+    }
+
+
+def test_agent_runtime_records_mismatched_clarification_without_clearing_state(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ClarifyThenDoneAdapter(),
+    )
+    runtime._tool_registry.register(AskUserQuestionTool())
+    first = runtime.handle_user_turn("choose next slice")
+    assert first.turn is not None
+    assert first.turn.status is TurnStatus.WAITING_CLARIFICATION
+
+    response = runtime.resolve_pending_clarification(
+        request_id="wrong_request",
+        response="Runtime",
+    )
+
+    assert response.assistant_message == "No pending clarification matches the provided request_id."
+    assert runtime._session_service.load_suspended_turn(runtime._config.session_id) is not None
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    resolution = next(
+        event
+        for event in trace
+        if event.kind == "clarification_resolution"
+        and event.payload["result"] == "request_id_mismatch"
+    )
+    assert resolution.payload == {
+        "result": "request_id_mismatch",
+        "request_id": "wrong_request",
+        "response_chars": len("Runtime"),
+        "expected_request_id": "call_question_1",
+        "tool_name": "AskUserQuestion",
+        "call_id": "call_question_1",
+    }
 
 
 def test_runtime_registers_bound_task_tool(tmp_path: Path) -> None:

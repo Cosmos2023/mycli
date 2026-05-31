@@ -146,6 +146,17 @@ Questions to answer:
     unknown non-empty results -> `approval_diagnostics=warning` with bounded
     result counts. Doctor must not print raw trace payloads, command patterns,
     reasons, user text, headers, or secret-like values.
+- Clarification diagnostics check:
+  - Missing `~/.mycli/traces/` or no `clarification_resolution` trace rows ->
+    `clarification_diagnostics=ok` with `no clarification diagnostics found`;
+    doctor must not create the trace directory.
+  - Successful answered rows -> `clarification_diagnostics=ok` with bounded
+    total and result counts.
+  - Problem clarification-resolution results such as `blank_response`,
+    `no_pending_clarification`, `request_id_mismatch`, or unknown non-empty
+    results -> `clarification_diagnostics=warning` with bounded result counts.
+    Doctor must not print raw response text, user text, request payloads,
+    provider transcript content, headers, or secret-like values.
 - Redaction diagnostics check:
   - `logs_redaction` scans `agent.log`, `errors.log`, `model-events.jsonl`,
     `model-raw/<session>/*.json`, and bounded `traces/*.jsonl` files for
@@ -204,6 +215,8 @@ Questions to answer:
   rows, successful summary, and failed-summary redaction.
 - Unit test approval diagnostics doctor cases for missing directory, no approval
   rows, successful summary, and warning-summary redaction.
+- Unit test clarification diagnostics doctor cases for missing directory, no
+  clarification rows, successful summary, and warning-summary redaction.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,

@@ -58,6 +58,11 @@ the local log root and must never become provider transcript inputs.
   blocked approval responses. These diagnostics explain why a pending approval
   did or did not resume a tool; they must not alter provider transcript replay
   or request-shape inputs.
+- Clarification resolution diagnostics may append local
+  `clarification_resolution` trace rows and workspace log entries for answered,
+  blank, no-pending, or request-id-mismatch clarification responses. Payloads
+  may include bounded request/tool identifiers and `response_chars`, but must
+  not include raw user response text or provider transcript content.
 - Interrupted turn diagnostics append local `turn_interrupted` trace rows and
   warning-level workspace log entries after suspended runtime state is saved.
   These diagnostics explain that resume state exists; they must not be used as
@@ -75,6 +80,9 @@ the local log root and must never become provider transcript inputs.
   `approval_resolution`, `approval_allowance`, and `approval_auto_allowed`.
   It may expose `approval_resolution` result counts, but must not print raw
   command patterns, reasons, user text, headers, or secret-like values.
+- Doctor may summarize `clarification_resolution` trace rows with bounded
+  result counts. It must not print raw response text, user text, request
+  payloads, provider transcript content, headers, or secret-like values.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -101,6 +109,11 @@ the local log root and must never become provider transcript inputs.
   and info-level workspace log entry with bounded `result`, `choice`,
   `tool_name`, `call_id`, `decision_id`, `command_pattern`, and `reason` when a
   decision is available.
+- Clarification response is answered, blank, duplicated after clearing, or has
+  the wrong request id -> append a `clarification_resolution` runtime trace row
+  and workspace log entry with bounded `result`, `request_id`, `response_chars`,
+  and, when a pending clarification exists, `expected_request_id`, `tool_name`,
+  and `call_id`. Do not persist raw response text in this diagnostic payload.
 - Pre-tool safety hook denial -> append the same bounded `tool_execution` trace
   row used by other tool failures with `status=failed` and
   `error_kind=tool_denied_by_hook`; do not execute the underlying tool.
@@ -169,6 +182,9 @@ the local log root and must never become provider transcript inputs.
   trace and workspace logs for a streaming turn.
 - Doctor unit tests for approval diagnostics summaries, including warning rows
   that include raw command patterns or secret-like reason payloads.
+- Doctor unit tests for clarification diagnostics summaries, including warning
+  rows whose trace payloads contain raw response/user text that must not be
+  rendered.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct
