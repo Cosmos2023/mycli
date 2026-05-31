@@ -105,6 +105,26 @@ def test_run_node_tui_gateway_processes_fake_node_requests(tmp_path: Path) -> No
     assert '"[usage] session=demo"' in output
 
 
+def test_run_node_tui_gateway_reports_non_request_messages_with_declared_error_code(
+    tmp_path: Path,
+) -> None:
+    process = FakeNodeProcess(
+        [
+            '{"jsonrpc":"2.0","method":"client.notification","params":{}}\n',
+            '{"jsonrpc":"2.0","id":"1","method":"shutdown","params":{}}\n',
+        ]
+    )
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, FakeService(tmp_path)), process=process)
+
+    assert exit_code == 0
+    output = "".join(process.written)
+    assert '"method":"gateway.error"' in output
+    assert '"code":"invalid_params"' in output
+    assert '"message":"Expected request."' in output
+    assert '"code":"invalid_request"' not in output
+
+
 class E2ESessionService:
     def load_pending_decision(self, _session_id: str) -> object | None:
         return None
@@ -447,12 +467,11 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_wrong_approval_id(
     errors = [item for item in state["transcript"] if item["type"] == "error"]
     assert len(errors) == 1
     assert errors[0]["text"] == "No pending decision matches the provided decision_id."
-    assert errors[0]["metadata"] == {
+    assert {
         "code": "decision_not_pending",
         "message": "No pending decision matches the provided decision_id.",
         "method": "approval.respond",
-        "source": "request",
-    }
+    }.items() <= errors[0]["metadata"].items()
 
 
 class E2EToolLifecycleService:

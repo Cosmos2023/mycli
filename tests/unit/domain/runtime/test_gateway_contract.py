@@ -20,6 +20,7 @@ def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
         "turn_in_progress",
         "decision_not_pending",
         "clarification_not_pending",
+        "incompatible_protocol",
     ]
 
 

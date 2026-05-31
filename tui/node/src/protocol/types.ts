@@ -171,7 +171,8 @@ export type GatewayErrorCode =
   | "method_not_found"
   | "turn_in_progress"
   | "decision_not_pending"
-  | "clarification_not_pending";
+  | "clarification_not_pending"
+  | "incompatible_protocol";
 
 export type GatewayErrorPayload = {
   code: GatewayErrorCode;
@@ -302,6 +303,7 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
         "turn_in_progress",
         "decision_not_pending",
         "clarification_not_pending",
+        "incompatible_protocol",
       ],
     },
   },

@@ -128,7 +128,7 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
             if not isinstance(message, RpcRequest):
                 emit(
                     "gateway.error",
-                    {"code": "invalid_request", "message": "Expected request."},
+                    {"code": "invalid_params", "message": "Expected request."},
                 )
                 continue
             response = gateway.handle_request(message)
@@ -191,15 +191,26 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_session_resume(request.params))
             if request.method == "shutdown":
                 return result_response(request.id, {"ok": True})
-            return error_response(
+            return self._gateway_error_response(
                 request.id,
                 code="method_not_found",
                 message=f"Unknown method: {request.method}",
+                method=request.method,
             )
         except _GatewayError as exc:
-            return error_response(request.id, code=exc.code, message=exc.message)
+            return self._gateway_error_response(
+                request.id,
+                code=exc.code,
+                message=exc.message,
+                method=request.method,
+            )
         except ValueError as exc:
-            return error_response(request.id, code="invalid_params", message=str(exc))
+            return self._gateway_error_response(
+                request.id,
+                code="invalid_params",
+                message=str(exc),
+                method=request.method,
+            )
         except Exception as exc:
             self._emit_gateway_error(
                 code="internal_error",
@@ -212,6 +223,18 @@ class NodeTuiGateway:
                 code="internal_error",
                 message="Internal gateway error.",
             )
+
+    def _gateway_error_response(
+        self,
+        message_id: str | int | None,
+        *,
+        code: str,
+        message: str,
+        method: str | None = None,
+        detail: str | None = None,
+    ) -> RpcResponse:
+        self._emit_gateway_error(code=code, message=message, detail=detail, method=method)
+        return error_response(message_id, code=code, message=message)
 
     def wait_for_current_turn(self, timeout: float | None = None) -> None:
         thread = self._turn_thread
@@ -258,14 +281,20 @@ class NodeTuiGateway:
     def _handle_turn_submit(self, request: RpcRequest) -> RpcResponse:
         message = _required_str(request.params, "message").strip()
         if not message:
-            return error_response(request.id, code="invalid_params", message="message is required.")
+            return self._gateway_error_response(
+                request.id,
+                code="invalid_params",
+                message="message is required.",
+                method=request.method,
+            )
         client_turn_id = _optional_str(request.params.get("client_turn_id")) or str(request.id)
         with self._turn_lock:
             if self._turn_running:
-                return error_response(
+                return self._gateway_error_response(
                     request.id,
                     code="turn_in_progress",
                     message="A turn is already running.",
+                    method=request.method,
                 )
             self._turn_running = True
             self._current_client_turn_id = client_turn_id
@@ -576,32 +605,36 @@ class NodeTuiGateway:
         choice = _required_str(request.params, "choice")
         mapped = DECISION_CHOICE_MAP.get(choice)
         if mapped is None:
-            return error_response(
+            return self._gateway_error_response(
                 request.id,
                 code="invalid_params",
                 message="Unsupported decision choice.",
+                method=request.method,
             )
         pending = self.service._session_service.load_pending_decision(self.service._config.session_id)
         if pending is None:
-            return error_response(
+            return self._gateway_error_response(
                 request.id,
                 code="decision_not_pending",
                 message="No pending decision is available.",
+                method=request.method,
             )
         active_decision_id = _decision_id_for_pending_decision(pending)
         if decision_id not in {active_decision_id, DECISION_CURRENT_ALIAS}:
-            return error_response(
+            return self._gateway_error_response(
                 request.id,
                 code="decision_not_pending",
                 message="No pending decision matches the provided decision_id.",
+                method=request.method,
             )
         client_turn_id = f"approval_{request.id}"
         with self._turn_lock:
             if self._turn_running:
-                return error_response(
+                return self._gateway_error_response(
                     request.id,
                     code="turn_in_progress",
                     message="A turn is already running.",
+                    method=request.method,
                 )
             self._turn_running = True
             self._turn_thread = Thread(
@@ -691,17 +724,28 @@ class NodeTuiGateway:
     def _handle_clarification_response(self, request: RpcRequest) -> RpcResponse:
         request_id = _required_str(request.params, "request_id").strip()
         if not request_id:
-            return error_response(request.id, code="invalid_params", message="request_id is required.")
+            return self._gateway_error_response(
+                request.id,
+                code="invalid_params",
+                message="request_id is required.",
+                method=request.method,
+            )
         response = _required_str(request.params, "response").strip()
         if not response:
-            return error_response(request.id, code="invalid_params", message="response is required.")
+            return self._gateway_error_response(
+                request.id,
+                code="invalid_params",
+                message="response is required.",
+                method=request.method,
+            )
         client_turn_id = f"clarify_{request.id}"
         with self._turn_lock:
             if self._turn_running:
-                return error_response(
+                return self._gateway_error_response(
                     request.id,
                     code="turn_in_progress",
                     message="A turn is already running.",
+                    method=request.method,
                 )
             self._turn_running = True
             self._turn_thread = Thread(

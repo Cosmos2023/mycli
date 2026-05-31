@@ -29,6 +29,12 @@ from mycli.domain.tooling.calls import ToolCall
 StreamSink = Callable[[RuntimeStreamEvent], None]
 
 
+def _gateway_error_events(
+    events: list[tuple[str, dict[str, object]]],
+) -> list[dict[str, object]]:
+    return [params for method, params in events if method == "gateway.error"]
+
+
 class FakeSessionService:
     def __init__(self) -> None:
         self.history_items: tuple[HistoryItem, ...] = ()
@@ -161,7 +167,11 @@ def test_gateway_bootstrap_includes_welcome_payload(tmp_path: Path) -> None:
 
 
 def test_gateway_rejects_incompatible_protocol_version(tmp_path: Path) -> None:
-    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
 
     response = gateway.handle_request(
         RpcRequest(id="req_1", method="session.bootstrap", params={"protocol_version": 999})
@@ -171,6 +181,11 @@ def test_gateway_rejects_incompatible_protocol_version(tmp_path: Path) -> None:
         "code": "incompatible_protocol",
         "message": "Unsupported Node TUI protocol version: 999",
     }
+    assert {
+        "code": "incompatible_protocol",
+        "message": "Unsupported Node TUI protocol version: 999",
+        "method": "session.bootstrap",
+    } in _gateway_error_events(events)
 
 
 def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None:
@@ -427,7 +442,11 @@ def test_extension_manifest_advertises_only_supported_event_streams() -> None:
 
 
 def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:
-    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
 
     response = gateway.handle_request(RpcRequest(id="req_1", method="missing.method", params={}))
 
@@ -435,6 +454,11 @@ def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:
         "code": "method_not_found",
         "message": "Unknown method: missing.method",
     }
+    assert {
+        "code": "method_not_found",
+        "message": "Unknown method: missing.method",
+        "method": "missing.method",
+    } in _gateway_error_events(events)
 
 
 class ExplodingStatusService(FakeService):
@@ -1076,8 +1100,12 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
 
 
 def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
     service = BlockingTurnService(tmp_path)
-    gateway = NodeTuiGateway(service=service)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
 
     empty = gateway.handle_request(
         RpcRequest(id="req_1", method="turn.submit", params={"message": "   "})
@@ -1095,6 +1123,16 @@ def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) 
     assert empty.error == {"code": "invalid_params", "message": "message is required."}
     assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
     assert concurrent.error == {"code": "turn_in_progress", "message": "A turn is already running."}
+    assert {
+        "code": "invalid_params",
+        "message": "message is required.",
+        "method": "turn.submit",
+    } in _gateway_error_events(events)
+    assert {
+        "code": "turn_in_progress",
+        "message": "A turn is already running.",
+        "method": "turn.submit",
+    } in _gateway_error_events(events)
 
 
 def test_gateway_turn_submit_emits_turn_status_for_failures(tmp_path: Path) -> None:
@@ -1273,6 +1311,7 @@ def test_gateway_approval_respond_accepts_stable_decision_id(tmp_path: Path) -> 
 
 
 def test_gateway_approval_respond_rejects_stale_decision_id(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
     service.fake_session_service.pending_decision = PendingDecision(
         tool_call=ToolCall(
@@ -1286,7 +1325,10 @@ def test_gateway_approval_respond_rejects_stale_decision_id(tmp_path: Path) -> N
         preview="git push",
         options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
     )
-    gateway = NodeTuiGateway(service=service)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
 
     response = gateway.handle_request(
         RpcRequest(
@@ -1301,6 +1343,78 @@ def test_gateway_approval_respond_rejects_stale_decision_id(tmp_path: Path) -> N
         "message": "No pending decision matches the provided decision_id.",
     }
     assert service.resolved_choices == []
+    assert {
+        "code": "decision_not_pending",
+        "message": "No pending decision matches the provided decision_id.",
+        "method": "approval.respond",
+    } in _gateway_error_events(events)
+
+
+def test_gateway_approval_respond_rejects_unsupported_choice_with_error_event(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="approval.respond",
+            params={"decision_id": "decision_current", "choice": "forever"},
+        )
+    )
+
+    assert response.error == {
+        "code": "invalid_params",
+        "message": "Unsupported decision choice.",
+    }
+    assert service.resolved_choices == []
+    assert {
+        "code": "invalid_params",
+        "message": "Unsupported decision choice.",
+        "method": "approval.respond",
+    } in _gateway_error_events(events)
+
+
+def test_gateway_approval_respond_rejects_missing_pending_decision_with_error_event(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="approval.respond",
+            params={"decision_id": "decision_current", "choice": "reject"},
+        )
+    )
+
+    assert response.error == {
+        "code": "decision_not_pending",
+        "message": "No pending decision is available.",
+    }
+    assert service.resolved_choices == []
+    assert {
+        "code": "decision_not_pending",
+        "message": "No pending decision is available.",
+        "method": "approval.respond",
+    } in _gateway_error_events(events)
 
 
 def test_gateway_approval_reject_emits_rejected_terminal_status(tmp_path: Path) -> None:
@@ -1399,7 +1513,11 @@ def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_pat
 
 
 def test_gateway_clarify_respond_rejects_blank_response(tmp_path: Path) -> None:
-    gateway = NodeTuiGateway(service=FakeTurnService(tmp_path))
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
 
     response = gateway.handle_request(
         RpcRequest(
@@ -1413,6 +1531,11 @@ def test_gateway_clarify_respond_rejects_blank_response(tmp_path: Path) -> None:
         "code": "invalid_params",
         "message": "response is required.",
     }
+    assert {
+        "code": "invalid_params",
+        "message": "response is required.",
+        "method": "clarify.respond",
+    } in _gateway_error_events(events)
 
 
 def test_gateway_decision_resolve_emits_turn_status_for_failures(tmp_path: Path) -> None:

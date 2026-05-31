@@ -66,6 +66,7 @@ GATEWAY_ERROR_CODES = (
     "turn_in_progress",
     "decision_not_pending",
     "clarification_not_pending",
+    "incompatible_protocol",
 )
 _GATEWAY_ERROR_CODE = {"type": "string", "enum": list(GATEWAY_ERROR_CODES)}
 APPROVAL_DECISION_CHOICES = (

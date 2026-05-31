@@ -68,6 +68,7 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "turn_in_progress",
         "decision_not_pending",
         "clarification_not_pending",
+        "incompatible_protocol",
     ]
     assert schemas["approval.respond"]["properties"]["choice"]["enum"] == [
         "approve_once",

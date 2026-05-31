@@ -148,10 +148,14 @@
   - `code`: stable short error code from the gateway request-error taxonomy:
     `internal_error`, `invalid_params`, `method_not_found`,
     `turn_in_progress`, `decision_not_pending`, or
-    `clarification_not_pending`
+    `clarification_not_pending`, or `incompatible_protocol`
   - `message`: bounded user-facing error text
   - `detail`: optional bounded diagnostic detail
   - `method`: optional JSON-RPC request method that triggered the error
+  - Request-scoped gateway failures must both return the existing JSON-RPC
+    error response and emit `gateway.error` when an event sink exists, so
+    passive TUI/extension clients can observe the same failure surface without
+    parsing response-only state.
   - Unexpected request-handler exceptions must return a JSON-RPC error
     response and emit `gateway.error`; they must not escape the gateway loop.
   - Turn-worker failures still use `turn.failed` / `turn.status` /
