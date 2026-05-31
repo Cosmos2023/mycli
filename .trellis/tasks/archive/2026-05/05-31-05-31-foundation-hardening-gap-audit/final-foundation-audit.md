@@ -6,7 +6,9 @@ Worktree: `/Users/cosmos/Desktop/mycli/.worktrees/mycli-foundation-hardening-aud
 
 Branch: `feature/mycli-foundation-hardening-audit`
 
-Latest audited commit: `9040050 Make scripted smokes assert runtime turn states`
+Latest implementation commit audited: `9040050 Make scripted smokes assert runtime turn states`
+
+Final audit artifact commit: `cad2da2 Close the Hermes-like foundation hardening audit`
 
 Baseline: `feature/mycli-hermes-parity-integration`
 
@@ -32,8 +34,23 @@ Known verification caveat:
 - Repo-wide `uv run ruff check .` is not used as the completion gate for this
   audit because unrelated pre-existing `.claude/.trellis` lint content is
   outside the foundation-hardening implementation scope. Slice-level ruff checks
-  were recorded in the archived Trellis task check results for changed Python
-  files.
+  were recorded in the relevant archived Trellis task check results for changed
+  Python files.
+
+Trellis process caveat:
+
+- This audit verifies the foundation goal against current code, tests, specs,
+  and archived task evidence. It does not claim the whole repository Trellis
+  tree is pristine:
+  - `.trellis/tasks/` still contains older 05-29 planning/done task directories
+    from prior branches.
+  - An empty stale task directory exists at
+    `.trellis/tasks/05-31-approval-rejection-terminal-state/research`; the real
+    completed task is archived at
+    `.trellis/tasks/archive/2026-05/05-31-05-31-approval-rejection-terminal-state/`.
+  - Some early 05-31 archive directories predate the later check-results
+    convention and do not contain `check-results.md`; their behavior is covered
+    by the final full Python and Node verification commands above.
 
 ## Requirement Audit
 
