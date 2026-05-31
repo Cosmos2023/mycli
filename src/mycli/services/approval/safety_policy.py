@@ -20,8 +20,14 @@ class ToolSafetyDecision:
 
 
 class SafetyPolicy:
-    def __init__(self, *, workspace_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_root: Path | None = None,
+        auto_approve_medium: bool = True,
+    ) -> None:
         self._workspace_root = workspace_root
+        self._auto_approve_medium = auto_approve_medium
 
     def classify(self, call: ToolCall) -> RiskLevel:
         name = _canonical_tool_name(call.name)
@@ -80,6 +86,8 @@ class SafetyPolicy:
             boundary_decision = self._workspace_boundary_decision(call)
             if boundary_decision is not None:
                 return boundary_decision
+            if not self._auto_approve_medium:
+                return self._medium_risk_approval_decision(call, canonical_name=name)
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
@@ -100,6 +108,8 @@ class SafetyPolicy:
                 ),
             )
         if name == "KillShell":
+            if not self._auto_approve_medium:
+                return self._medium_risk_approval_decision(call, canonical_name=name)
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,
                 reason=call.reason,
@@ -224,6 +234,38 @@ class SafetyPolicy:
                 },
             )
         return None
+
+    @staticmethod
+    def _medium_risk_approval_decision(
+        call: ToolCall,
+        *,
+        canonical_name: str,
+    ) -> ToolSafetyDecision:
+        preview = str(
+            call.arguments.get("file_path")
+            or call.arguments.get("path")
+            or call.arguments.get("target")
+            or call.arguments.get("source")
+            or call.arguments.get("destination")
+            or call.arguments.get("shell_id")
+            or call.arguments.get("bash_id")
+            or canonical_name
+        )
+        return ToolSafetyDecision(
+            kind=DecisionKind.NEEDS_CHOICE,
+            reason=(
+                f"{canonical_name} requires approval because medium-risk tools "
+                "are not auto-approved."
+            ),
+            preview=preview,
+            metadata=_metadata(
+                call=call,
+                canonical_name=canonical_name,
+                risk_level=RiskLevel.MEDIUM,
+                decision_kind=DecisionKind.NEEDS_CHOICE,
+                policy="medium_risk_requires_approval",
+            ),
+        )
 
 
 def _canonical_tool_name(name: str) -> str:

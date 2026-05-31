@@ -162,3 +162,59 @@ def test_safety_policy_denies_write_outside_workspace() -> None:
         "policy": "workspace_boundary",
         "path_boundary": "outside_workspace",
     }
+
+
+def test_safety_policy_requires_choice_for_medium_risk_write_when_strict() -> None:
+    policy = SafetyPolicy(
+        workspace_root=Path("/workspace"),
+        auto_approve_medium=False,
+    )
+
+    decision = policy.evaluate(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "hello"},
+            reason="write file",
+        )
+    )
+
+    assert decision.kind is DecisionKind.NEEDS_CHOICE
+    assert decision.command_pattern is None
+    assert decision.reason == "Write requires approval because medium-risk tools are not auto-approved."
+    assert decision.preview == "notes.txt"
+    assert decision.metadata == {
+        "tool_name": "Write",
+        "canonical_tool_name": "Write",
+        "risk_level": "medium",
+        "decision_kind": "needs_choice",
+        "policy": "medium_risk_requires_approval",
+    }
+
+
+def test_safety_policy_requires_choice_for_medium_risk_edit_when_strict() -> None:
+    policy = SafetyPolicy(
+        workspace_root=Path("/workspace"),
+        auto_approve_medium=False,
+    )
+
+    decision = policy.evaluate(
+        ToolCall(
+            name="Edit",
+            arguments={"file_path": "notes.txt", "old_string": "a", "new_string": "b"},
+            reason="edit file",
+        )
+    )
+
+    assert decision.kind is DecisionKind.NEEDS_CHOICE
+    assert decision.command_pattern is None
+    assert decision.metadata["policy"] == "medium_risk_requires_approval"
+
+
+def test_safety_policy_requires_choice_for_medium_risk_kill_shell_when_strict() -> None:
+    decision = SafetyPolicy(auto_approve_medium=False).evaluate(
+        ToolCall(name="KillShell", arguments={"shell_id": "shell_1"}, reason="stop shell")
+    )
+
+    assert decision.kind is DecisionKind.NEEDS_CHOICE
+    assert decision.preview == "shell_1"
+    assert decision.metadata["policy"] == "medium_risk_requires_approval"

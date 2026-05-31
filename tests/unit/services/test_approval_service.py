@@ -1,6 +1,7 @@
 from mycli.domain.runtime import SessionCommandAllowance
 from mycli.domain.tools import ToolCall
 from mycli.services.approval.approval_service import ApprovalService
+from mycli.services.safety_policy import SafetyPolicy
 
 
 def test_approval_service_suspends_git_push_with_command_pattern() -> None:
@@ -84,4 +85,30 @@ def test_approval_service_marks_session_allowance_auto_approval() -> None:
         "decision_kind": "needs_choice",
         "policy": "shell_command_analysis",
         "command_pattern": "git push",
+    }
+
+
+def test_approval_service_suspends_medium_risk_write_when_strict() -> None:
+    service = ApprovalService(
+        safety_policy=SafetyPolicy(auto_approve_medium=False),
+    )
+
+    outcome = service.evaluate(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "hello"},
+            reason="write file",
+            call_id="call_write_1",
+        )
+    )
+
+    assert outcome.pending_approval is not None
+    assert outcome.pending_approval.command_pattern is None
+    assert outcome.pending_approval.preview == "notes.txt"
+    assert outcome.safety_metadata == {
+        "tool_name": "Write",
+        "canonical_tool_name": "Write",
+        "risk_level": "medium",
+        "decision_kind": "needs_choice",
+        "policy": "medium_risk_requires_approval",
     }

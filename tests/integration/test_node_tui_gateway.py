@@ -8,14 +8,19 @@ from threading import Event
 from types import SimpleNamespace
 from typing import cast
 
+from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.process import NodeTuiProcess
 from mycli.cli.node_tui.gateway import run_node_tui_gateway
 from mycli.domain.runtime import (
+    AgentConfig,
     DecisionAction,
     DecisionKind,
+    ModelTurnResult,
     PendingDecision,
     PendingClarification,
+    RuntimeBlock,
+    RuntimeItem,
     RuntimeStreamEvent,
     StopReason,
     SuspendedTurn,
@@ -24,6 +29,8 @@ from mycli.domain.runtime import (
     TurnStatus,
 )
 from mycli.domain.tooling.calls import ToolCall
+from mycli.tools.registry import ToolRegistry
+from mycli.tools.write import WriteTool
 
 
 class FakeNodeProcess:
@@ -430,6 +437,99 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_approval_reject(
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
     assert assistant_items == []
+
+
+def test_run_node_tui_gateway_with_real_runtime_strict_write_approval(
+    tmp_path: Path,
+) -> None:
+    class WriteThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(
+                                RuntimeBlock(
+                                    type="tool_call",
+                                    tool_name="Write",
+                                    tool_arguments={
+                                        "file_path": "notes.txt",
+                                        "content": "hello from tui\n",
+                                    },
+                                    call_id="call_write_strict_1",
+                                ),
+                            ),
+                        ),
+                    ),
+                    done=False,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Write approved."),),
+                    ),
+                ),
+                done=True,
+            )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-strict-write-approval.json"
+    runtime = AgentRuntime(
+        model_adapter=WriteThenDoneAdapter(),
+        tool_registry=ToolRegistry.from_tools((WriteTool(tmp_path),)),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            session_id="strict-write-smoke",
+            auto_approve_medium=False,
+        ),
+        home_dir=tmp_path / "home",
+    )
+    service = TurnService(
+        runtime=runtime,
+        config=runtime._config,
+        home_dir=tmp_path / "home",
+    )
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    "write notes",
+                    {"type": "approval.respond", "choice": "approve_once"},
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+
+    exit_code = run_node_tui_gateway(service=service, process=process)
+
+    assert exit_code == 0
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello from tui\n"
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["pendingApproval"] is None
+    assert state["liveStatus"]["state"] == "completed"
+    approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
+    assert len(approval_items) == 1
+    assert approval_items[0]["metadata"]["decision_id"] == "call_write_strict_1"
+    assert approval_items[0]["metadata"]["tool_name"] == "Write"
+    assert approval_items[0]["metadata"]["options"] == [
+        {"choice": "approve_once", "label": "Allow once"},
+        {"choice": "reject", "label": "Reject"},
+    ]
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == ["Write approved."]
 
 
 def test_run_node_tui_gateway_with_real_node_scripted_client_wrong_approval_id(

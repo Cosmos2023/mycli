@@ -50,6 +50,7 @@ from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.bash import BashTool
 from mycli.tools.grep import GrepTool
+from mycli.tools.write import WriteTool
 from mycli.tools.plan import PlanTool
 from mycli.tools.ask_user_question import AskUserQuestionTool
 
@@ -100,6 +101,80 @@ def test_agent_runtime_resumes_after_approval(tmp_path: Path) -> None:
 
     resumed = runtime.resolve_pending_approval("1")
     assert resumed.assistant_message == "Push finished"
+
+
+def test_agent_runtime_requires_approval_for_medium_risk_write_when_strict(
+    tmp_path: Path,
+) -> None:
+    class WriteThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(
+                                RuntimeBlock(
+                                    type="tool_call",
+                                    tool_name="Write",
+                                    tool_arguments={
+                                        "file_path": "notes.txt",
+                                        "content": "hello\n",
+                                    },
+                                    call_id="call_write_1",
+                                ),
+                            ),
+                        ),
+                    ),
+                    done=False,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Write finished."),),
+                    ),
+                ),
+                done=True,
+            )
+
+    adapter = WriteThenDoneAdapter()
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools(
+            [
+                WriteTool(tmp_path),
+            ]
+        ),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            auto_approve_medium=False,
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    first = runtime.handle_user_turn("write notes")
+
+    assert first.pending_decision is not None
+    assert first.pending_decision.tool_call.name == "Write"
+    assert first.pending_decision.command_pattern is None
+    assert [option.value for option in first.pending_decision.options] == [
+        "approve_once",
+        "reject",
+    ]
+    assert first.turn is not None
+    assert first.turn.status is TurnStatus.WAITING_APPROVAL
+    assert not (tmp_path / "notes.txt").exists()
+
+    resumed = runtime.resolve_pending_approval("1")
+
+    assert resumed.assistant_message == "Write finished."
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello\n"
 
 
 def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(

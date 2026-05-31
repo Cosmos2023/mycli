@@ -58,6 +58,11 @@ the local log root and must never become provider transcript inputs.
   `decision_kind`, `policy`, and sanitized `command_pattern`. They must not
   include raw tool arguments, full shell commands beyond the sanitized command
   pattern, file contents, provider text, headers, or secret-like values.
+- When runtime config disables medium-risk auto-approval, local mutation tools
+  such as `Edit`, `Write`, and `KillShell` should produce pending approval
+  decisions with `safety_metadata.policy=medium_risk_requires_approval`.
+  These diagnostics are local safety evidence only and must not be replayed as
+  provider-visible transcript content.
 - Approval resolution diagnostics may append local `approval_resolution` trace
   rows and workspace log entries for rejected, invalid, duplicate, or otherwise
   blocked approval responses. These diagnostics explain why a pending approval

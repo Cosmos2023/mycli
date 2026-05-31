@@ -51,6 +51,7 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.approval.approval_service import ApprovalService
+from mycli.services.approval.safety_policy import SafetyPolicy
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.compaction import (
     CompactionRehydrationService,
@@ -219,7 +220,12 @@ class AgentRuntime:
         self._config = config
         self._recovery_sleep = time.sleep
         self._monotonic = time.monotonic
-        self._approval_service = approval_service or ApprovalService()
+        self._approval_service = approval_service or ApprovalService(
+            safety_policy=SafetyPolicy(
+                workspace_root=config.workspace_root,
+                auto_approve_medium=config.auto_approve_medium,
+            )
+        )
         self._tool_result_formatter = ToolResultFormatter()
         self._token_counter = TokenCounter()
         self._observability_service = observability_service or ObservabilityService()

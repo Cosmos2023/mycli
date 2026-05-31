@@ -72,6 +72,11 @@
     `DecisionAction` values
   - `choice` is a stable approval decision-choice value:
     `approve_once`, `reject`, or `allow_session`
+  - Medium-risk local mutation tools such as `Edit`, `Write`, and `KillShell`
+    emit `approval.request` when runtime config disables medium-risk
+    auto-approval. These requests should normally expose only `approve_once`
+    and `reject`; `allow_session` is reserved for approvals that have a stable
+    `command_pattern`, such as shell command-pattern approvals.
 - `approval.respond` request payload:
   - `decision_id`: must match the active decision id. The compatibility alias
     `decision_current` remains accepted for older clients while one decision is
