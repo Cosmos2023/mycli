@@ -51,6 +51,15 @@ class TraceService:
             event for event in self.load(session_id) if event.turn_id == turn_id
         )
 
+    def export_jsonl(self, session_id: str, *, tail: int = 50) -> tuple[str, ...]:
+        events = self.load(session_id)
+        if tail > 0:
+            events = events[-tail:]
+        return tuple(
+            json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True)
+            for event in events
+        )
+
     def _trace_path(self, session_id: str) -> Path:
         return self._layout.trace_path(session_id)
 

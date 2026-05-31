@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/05-31-node-tui-trace-export-rpc/prd.md", "reason": "Acceptance criteria for this slice."}
+{"file": ".trellis/tasks/05-31-node-tui-trace-export-rpc/research/node-gateway-trace-export-rpc.md", "reason": "Task risks and non-goals."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Validate gateway contract updates."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Validate trace export semantics remain sanitized and read-only."}

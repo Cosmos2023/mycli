@@ -34,6 +34,51 @@ from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {"/help", "/status", "/usage", "/context", "/sessions", "/release-notes"}
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
+SUPPORTED_RPC_METHODS = frozenset(
+    {
+        "approval.respond",
+        "clarify.respond",
+        "command.run",
+        "completion.path",
+        "completion.slash",
+        "decision.resolve",
+        "extension.manifest",
+        "session.bootstrap",
+        "session.list",
+        "session.resume",
+        "shutdown",
+        "status.inspect",
+        "trace.export",
+        "transcript.load",
+        "turn.interrupt",
+        "turn.submit",
+    }
+)
+SUPPORTED_EVENT_STREAMS = frozenset(
+    {
+        "approval.request",
+        "approval.respond",
+        "clarify.request",
+        "clarify.respond",
+        "gateway.error",
+        "message.complete",
+        "message.delta",
+        "reasoning.delta",
+        "status.changed",
+        "status.update",
+        "thinking.delta",
+        "tool.complete",
+        "tool.failed",
+        "tool.progress",
+        "tool.start",
+        "turn.completed",
+        "turn.event",
+        "turn.failed",
+        "turn.interrupted",
+        "turn.started",
+        "turn.status",
+    }
+)
 DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",
@@ -44,6 +89,14 @@ DECISION_OPTION_LABELS = {
     DecisionAction.REJECT: "Reject",
     DecisionAction.ALLOW_SESSION: "Allow for session",
 }
+
+
+def supported_rpc_methods() -> frozenset[str]:
+    return SUPPORTED_RPC_METHODS
+
+
+def supported_event_streams() -> frozenset[str]:
+    return SUPPORTED_EVENT_STREAMS
 
 
 class NodeTuiProcessLike(Protocol):
@@ -151,6 +204,10 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_completion_path(request.params))
             if request.method == "status.inspect":
                 return result_response(request.id, self._status_payload())
+            if request.method == "extension.manifest":
+                return result_response(request.id, self.service.extension_manifest())
+            if request.method == "trace.export":
+                return result_response(request.id, self._handle_trace_export(request.params))
             if request.method == "session.list":
                 return result_response(request.id, self._handle_session_list())
             if request.method == "session.resume":
@@ -737,6 +794,14 @@ class NodeTuiGateway:
         if self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
         return {"session_id": self.service._config.session_id, "lines": lines}
+
+    def _handle_trace_export(self, params: dict[str, object]) -> dict[str, object]:
+        tail = _positive_int(params.get("tail"), default=50)
+        return {
+            "session_id": self.service._config.session_id,
+            "format": "jsonl",
+            "rows": list(self.service.export_trace_jsonl(tail=tail)),
+        }
 
     def _status_payload(self) -> dict[str, object]:
         context_window = self.service.current_context_window_metrics()

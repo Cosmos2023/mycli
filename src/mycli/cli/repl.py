@@ -17,11 +17,13 @@ def handle_slash_command(command: str) -> str:
                 "/plan",
                 "/subagents",
                 "/trace",
+                "/trace-jsonl",
                 "/logs",
                 "/tools",
                 "/bashes",
                 "/changes",
                 "/undo",
+                "/extensions",
                 "/resume <session>",
                 "/fork [source] <new-session> [message-index]",
                 "/status",
@@ -54,6 +56,8 @@ def build_command_handler(
             return [f"[change] {line}" for line in service.inspect_file_changes()]
         if command == "/memory":
             return [f"[memory] {line}" for line in service.inspect_memory()]
+        if command == "/extensions":
+            return [f"[extension] {line}" for line in service.inspect_extensions()]
         if command == "/plan":
             return [f"[plan] {line}" for line in service.inspect_plan()]
         if command.startswith("/subagents"):
@@ -106,6 +110,8 @@ def build_command_handler(
             ]
         if command == "/trace":
             return [f"[trace] {line}" for line in service.inspect_trace()]
+        if command == "/trace-jsonl":
+            return [f"[trace-jsonl] {line}" for line in service.export_trace_jsonl() if line]
         if command == "/logs":
             return [f"[log] {line}" for line in service.inspect_logs()]
         if command == "/undo":

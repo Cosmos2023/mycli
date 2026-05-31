@@ -27,6 +27,10 @@ the local log root and must never become provider transcript inputs.
 - `WorkspaceLogService.write_raw_model_payload(kind: str, payload: Any, session_id: str, turn_id: str) -> Path`
 - `WorkspaceLogService.inspect_logs(tail: int = 20) -> tuple[str, ...]`
 - Slash command: `/logs` renders `TurnService.inspect_logs()` with `[log]` prefixes.
+- Slash command: `/trace-jsonl` renders `TurnService.export_trace_jsonl()` with
+  `[trace-jsonl]` prefixes for machine-readable runtime trace rows.
+- Node gateway RPC: `trace.export` renders the same rows without slash-command
+  prefixes for external/extension clients.
 
 ### 3. Contracts
 - CLI/runtime injection uses `MycliStorageLayout.from_home_dir(home_dir).logs_dir`,
@@ -58,6 +62,10 @@ the local log root and must never become provider transcript inputs.
   do not raise.
 - Warning/error event -> append to both `agent.log` and `errors.log`.
 - Secret-like text in message/context/raw payload -> redact before persistence.
+- `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
+  session trace without mutating trace files.
+- `trace.export` -> return the same bounded sanitized JSONL rows as raw row
+  strings, not prefixed command output.
 
 ### 5. Good/Base/Bad Cases
 - Good: `build_turn_service(..., home=home)` creates a log service rooted at
@@ -69,6 +77,10 @@ the local log root and must never become provider transcript inputs.
   operational logs and makes `/logs` inspection session-dependent.
 - Bad: Persisting `Authorization: Bearer sk-...` or JSON `api_key` values.
 - Bad: Adding log summaries to system prompts or provider transcript replay.
+- Bad: Building external integrations by scraping human `/trace` prose when a
+  JSONL export is available.
+- Bad: Building extension/ACP integrations by stripping `[trace-jsonl]`
+  prefixes when the gateway `trace.export` RPC is available.
 
 ### 6. Tests Required
 - Unit test global and compatibility log roots.
@@ -78,6 +90,9 @@ the local log root and must never become provider transcript inputs.
 - Unit test `set_session_id()` / runtime `rebind_session()` changes the active
   log tag and raw payload bucket.
 - CLI/REPL tests for `/logs` help, completion, and command routing.
+- CLI/REPL tests for `/trace-jsonl` completion, command routing, and JSONL
+  export sanitization.
+- Gateway tests for `trace.export` raw rows and tail bounding.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

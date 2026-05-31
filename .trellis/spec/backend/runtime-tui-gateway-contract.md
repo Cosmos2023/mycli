@@ -16,7 +16,9 @@
 ### 2. Signatures
 - Python event emitter:
   `NodeTuiGateway._emit_event(method: str, params: dict[str, object]) -> None`
+- Extension discovery request method: `extension.manifest`
 - Turn submit request method: `turn.submit`
+- Trace export request method: `trace.export`
 - Approval response request methods:
   - Preferred: `approval.respond`
   - Compatibility: `decision.resolve`
@@ -177,6 +179,20 @@
   - Existing generic `turn.event` notifications must continue to be emitted
     alongside these typed message/reasoning notifications until Node TUI
     clients have migrated.
+- `extension.manifest` is a read-only discovery RPC for external clients:
+  - Response payload includes `schema_version`, `agent`, `rpc_methods`,
+    `event_streams`, and `capabilities`.
+  - It must list machine-readable integration methods such as `trace.export`.
+  - It must not claim dynamic extension lifecycle or ACP server support until
+    those capabilities exist.
+- `trace.export` is a read-only pull RPC for machine-readable runtime trace
+  rows:
+  - Request payload accepts optional `tail`; invalid or non-positive values use
+    the gateway default.
+  - Response payload includes `session_id`, `format: "jsonl"`, and `rows`.
+  - `rows` contains unprefixed JSONL row strings from the active session trace.
+  - The slash command `/trace-jsonl` may prefix these rows for human command
+    output, but RPC consumers must receive raw row strings.
 - Reducer state:
   - `liveStatus` is driven by `status.update` and terminal turn events.
   - `pendingApproval` is driven by `approval.request`.
@@ -273,10 +289,14 @@
   table; reject invalid choices at the runtime decision boundary.
 - Invalid `status.update.state` in the reducer -> ignore the event and preserve
   existing state.
+- `extension.manifest` -> return static capability discovery data without
+  mutating runtime, session, or extension state.
 - Turn starts -> emit `turn.started` and live `status.update` with `running`.
 - Any runtime event emitted through the gateway event boundary -> preserve the
   existing method-name notification and emit a `runtime.event` mirror with the
   next sequence number.
+- `trace.export` -> return bounded sanitized JSONL rows without mutating trace
+  files or session state.
 - Turn returns `pending_decision` -> emit `approval.request`, then
   `turn.completed` with `turn_state=waiting_approval`, then `turn.status` with
   `state=waiting_approval` and `terminal=false`, then `status.update` with
@@ -381,6 +401,10 @@
   clarification is pending.
 - Good: `/help` is available without a gateway round trip and documents local
   TUI commands plus modal key actions.
+- Good: External/extension clients call `trace.export` instead of scraping
+  human `/trace` or prefixed `/trace-jsonl` command output.
+- Good: External/extension clients call `extension.manifest` before assuming
+  which RPC methods, event streams, and capability families are available.
 - Base: Older clients still send `decision.resolve` and receive compatible
   behavior.
 - Bad: Only setting `pending_decision: true` on `turn.completed`; that tells the
@@ -411,6 +435,10 @@
   mirrors into the same visible reducer path without deduplication.
 - Bad: Treating `turn.status(state=interrupted)` as proof that runtime
   execution stopped. It is currently an interrupt-request signal.
+- Bad: Returning `[trace-jsonl]` prefixes from `trace.export`; those are only
+  for slash command transcript output.
+- Bad: Advertising extension lifecycle or ACP server support before those
+  transports are actually implemented.
 - Bad: Copying Hermes implementation code. Use Hermes only as the semantic
   reference for channel separation.
 - Bad: Treating `clarify.request` as `approval.request`; clarification is a
@@ -521,6 +549,9 @@
   failed, and interrupted paths when those paths are changed.
 - Gateway tests for `turn.status` on completed, waiting approval, failed,
   interrupted, and approval-resolution paths when those paths are changed.
+- Gateway unit test proving `trace.export` returns unprefixed JSONL rows and
+  honors bounded `tail` behavior.
+- Gateway unit test proving `extension.manifest` returns the service manifest.
 - Reducer unit test for `approval.request`, `approval.respond`,
   `status.update`, and terminal clearing behavior.
 - Reducer unit test proving final `message.complete` reconciles the assistant

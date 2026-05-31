@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/05-31-extensions-command-discovery/prd.md", "reason": "Acceptance criteria for this slice."}
+{"file": ".trellis/tasks/05-31-extensions-command-discovery/research/extensions-command-discovery.md", "reason": "Output design and risk checks."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Validate command summarizes the manifest rather than creating a new contract."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer verification check."}

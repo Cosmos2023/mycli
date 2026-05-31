@@ -5,7 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from mycli.application.turn_service import TurnService
-from mycli.cli.node_tui.gateway import NodeTuiGateway
+from mycli.cli.node_tui.gateway import (
+    NodeTuiGateway,
+    supported_event_streams,
+    supported_rpc_methods,
+)
 from mycli.cli.node_tui.protocol import RpcRequest
 from mycli.domain.runtime import (
     DecisionAction,
@@ -92,6 +96,18 @@ class FakeService(TurnService):
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
         del request_id, response
         return TurnResponse(assistant_message="")
+
+    def export_trace_jsonl(self, *, tail: int = 50) -> tuple[str, ...]:
+        return tuple(f'{{"kind":"tool_execution","turn_id":"turn_{index}","payload":{{}}}}' for index in range(tail))
+
+    def extension_manifest(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "agent": {"name": "mycli"},
+            "rpc_methods": [{"name": "extension.manifest"}],
+            "event_streams": [],
+            "capabilities": [],
+        }
 
 
 def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> None:
@@ -300,6 +316,68 @@ def test_gateway_session_list_and_resume(tmp_path: Path) -> None:
         "session_id": "demo",
         "lines": ["[session] resumed demo", "[session] messages=4"],
     }
+
+
+def test_gateway_trace_export_returns_unprefixed_jsonl_rows(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="trace.export", params={"tail": 2})
+    )
+
+    assert response.result == {
+        "session_id": "demo",
+        "format": "jsonl",
+        "rows": [
+            '{"kind":"tool_execution","turn_id":"turn_0","payload":{}}',
+            '{"kind":"tool_execution","turn_id":"turn_1","payload":{}}',
+        ],
+    }
+
+
+def test_gateway_trace_export_uses_default_tail_for_invalid_values(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="trace.export", params={"tail": 0})
+    )
+
+    assert response.result is not None
+    assert len(response.result["rows"]) == 50
+
+
+def test_gateway_extension_manifest_returns_service_manifest(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="extension.manifest", params={})
+    )
+
+    assert response.result == {
+        "schema_version": 1,
+        "agent": {"name": "mycli"},
+        "rpc_methods": [{"name": "extension.manifest"}],
+        "event_streams": [],
+        "capabilities": [],
+    }
+
+
+def test_extension_manifest_advertises_only_supported_gateway_methods() -> None:
+    from mycli.services.extensions import ExtensionManifestService
+
+    manifest = ExtensionManifestService().manifest()
+    advertised_methods = {method["name"] for method in manifest["rpc_methods"]}
+
+    assert advertised_methods <= supported_rpc_methods()
+
+
+def test_extension_manifest_advertises_only_supported_event_streams() -> None:
+    from mycli.services.extensions import ExtensionManifestService
+
+    manifest = ExtensionManifestService().manifest()
+    advertised_streams = {event["name"] for event in manifest["event_streams"]}
+
+    assert advertised_streams <= supported_event_streams()
 
 
 def test_gateway_unknown_method_returns_json_rpc_error(tmp_path: Path) -> None:
