@@ -11,8 +11,10 @@ import shutil
 import sqlite3
 
 from mycli.config.settings import resolve_config
+from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
+from mycli.services.extensions import ExtensionManifestService
 from mycli.services.mcp.client import load_mcp_server_configs
 from mycli.services.storage_layout import MycliStorageLayout
 
@@ -59,6 +61,17 @@ _SESSION_DB_RECOVERY_STATE_KEYS = {
     "responses_continuation_state",
     "suspended_turn",
     "turn_record",
+}
+_RUNTIME_CONTRACT_REQUIRED_STREAMS = {
+    "approval.request",
+    "clarify.request",
+    "message.complete",
+    "message.delta",
+    "runtime.event",
+    "tool.complete",
+    "tool.failed",
+    "tool.start",
+    "turn.status",
 }
 
 
@@ -141,6 +154,7 @@ class DoctorService:
             self._check_traces,
             self._check_file_history,
             self._check_tui,
+            self._check_runtime_contract,
             self._check_mcp,
         ):
             try:
@@ -496,6 +510,56 @@ class DoctorService:
             ),
         )
 
+    def _check_runtime_contract(self) -> Iterable[DoctorCheck]:
+        manifest = ExtensionManifestService().manifest()
+        rpc_methods = _manifest_named_entries(manifest.get("rpc_methods"))
+        event_streams = _manifest_named_entries(manifest.get("event_streams"))
+        expected_rpc_methods = supported_rpc_methods()
+        expected_event_streams = supported_event_streams()
+
+        rpc_message = _set_mismatch_message(
+            "manifest RPC mismatch",
+            expected=expected_rpc_methods,
+            actual=rpc_methods,
+        )
+        event_message = _set_mismatch_message(
+            "event streams mismatch",
+            expected=expected_event_streams,
+            actual=event_streams,
+        )
+        required_stream_message = (
+            None
+            if event_message is not None
+            else _set_mismatch_message(
+                "required streams missing",
+                expected=_RUNTIME_CONTRACT_REQUIRED_STREAMS,
+                actual=event_streams,
+                include_extra=False,
+            )
+        )
+        problems = [
+            message
+            for message in (rpc_message, event_message, required_stream_message)
+            if message is not None
+        ]
+        if problems:
+            return (
+                DoctorCheck(
+                    "runtime_contract",
+                    DoctorStatus.FAILED,
+                    problems[0],
+                    detail="; ".join(problems[1:]) if len(problems) > 1 else None,
+                ),
+            )
+        return (
+            DoctorCheck(
+                "runtime_contract",
+                DoctorStatus.OK,
+                "gateway manifest matches supported contract",
+                detail=f"{len(rpc_methods)} rpc method(s), {len(event_streams)} event stream(s)",
+            ),
+        )
+
 
 def render_doctor_report(report: DoctorReport) -> tuple[str, ...]:
     lines = ["mycli doctor"]
@@ -524,6 +588,44 @@ def _status_marker(status: DoctorStatus) -> str:
 
 def _can_import(module: str) -> bool:
     return importlib.util.find_spec(module) is not None
+
+
+def _manifest_named_entries(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    names: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _set_mismatch_message(
+    label: str,
+    *,
+    expected: set[str] | frozenset[str],
+    actual: set[str],
+    include_extra: bool = True,
+) -> str | None:
+    missing = sorted(set(expected) - actual)
+    extra = sorted(actual - set(expected)) if include_extra else []
+    parts: list[str] = []
+    if missing:
+        parts.append(f"missing {_bounded_name_list(missing)}")
+    if extra:
+        parts.append(f"extra {_bounded_name_list(extra)}")
+    if not parts:
+        return None
+    return f"{label}: {'; '.join(parts)}"
+
+
+def _bounded_name_list(names: list[str]) -> str:
+    if len(names) <= _SESSION_DB_DETAIL_LIMIT:
+        return ", ".join(names)
+    return f"{', '.join(names[:_SESSION_DB_DETAIL_LIMIT])}, ..."
 
 
 def _node_tui_source_root() -> Path:

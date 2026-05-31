@@ -205,6 +205,9 @@
     `message.delta`, `tool.start`, `turn.status`, and `session.changed`.
   - It must not claim dynamic extension lifecycle or ACP server support until
     those capabilities exist.
+  - `mycli doctor` validates the manifest against gateway-advertised RPC and
+    event stream sets through a read-only `runtime_contract` check. This check
+    must not start runtime turns, call providers, or run Node.
 - `session.changed` payload:
   - `session_id`: the active session id after `/resume`, `/fork`, or
     `session.resume`.

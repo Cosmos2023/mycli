@@ -113,6 +113,10 @@ Questions to answer:
   remediation `npm --prefix tui/node ci`.
 - Node TUI source is missing -> report the existing `node_tui` warning and skip
   dependency-marker checks, because missing source is the actionable root cause.
+- Runtime gateway discovery contract mismatch between `extension.manifest` and
+  the advertised Python gateway RPC/event stream sets -> `runtime_contract=failed`
+  with bounded missing/extra names. Doctor must not run a turn, call a model, or
+  start Node to validate this contract.
 
 #### 5. Good/Base/Bad Cases
 - Good: `uv run mycli doctor` reports local health, redacts API keys, and exits

@@ -250,6 +250,9 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "Summary:" in rendered
     logs_redaction = next(check for check in report.checks if check.name == "logs_redaction")
     assert logs_redaction.status is DoctorStatus.OK
+    runtime_contract = next(check for check in report.checks if check.name == "runtime_contract")
+    assert runtime_contract.status is DoctorStatus.OK
+    assert runtime_contract.message == "gateway manifest matches supported contract"
 
 
 def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) -> None:
@@ -276,6 +279,47 @@ def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) 
     assert any(check.name == "mcp" and check.status is DoctorStatus.FAILED for check in report.checks)
     assert not any(check.name == "logs_redaction" for check in report.checks)
     assert report.failed_count == 1
+
+
+def test_doctor_service_fails_runtime_contract_manifest_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    class BrokenManifestService:
+        def manifest(self) -> dict[str, object]:
+            return {
+                "schema_version": 1,
+                "agent": {"name": "mycli"},
+                "rpc_methods": [{"name": "turn.submit"}, {"name": "ghost.rpc"}],
+                "event_streams": [{"name": "message.delta"}],
+                "capabilities": [],
+            }
+
+    monkeypatch.setattr(doctor_module, "ExtensionManifestService", BrokenManifestService)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "runtime_contract")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == (
+        "manifest RPC mismatch: missing approval.respond, clarify.respond, command.run, ...; "
+        "extra ghost.rpc"
+    )
+    assert check.detail == (
+        "event streams mismatch: missing approval.request, approval.respond, clarify.request, ..."
+    )
 
 
 def test_doctor_service_fails_session_db_missing_recovery_tables(tmp_path: Path) -> None:
