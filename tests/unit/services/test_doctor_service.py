@@ -1122,6 +1122,238 @@ def test_doctor_service_accepts_pending_approval_with_rollout_history_evidence(
     assert check.status is DoctorStatus.OK
 
 
+def test_doctor_service_fails_unresumable_pending_clarification_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo")
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'suspended_turn', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "user_message": "   ",
+                        "conversation": [],
+                        "suspend_reason": "clarification_required",
+                        "plan_items": [],
+                        "pending_approval": None,
+                        "pending_clarification": {
+                            "request_id": "call_question_1",
+                            "tool_call": {
+                                "name": "AskUserQuestion",
+                                "arguments": {"question": "Which runtime?"},
+                                "reason": "needs user input",
+                                "call_id": "call_question_1",
+                            },
+                            "question": "Which runtime?",
+                            "options": [],
+                            "header": "",
+                            "multi_select": False,
+                        },
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "unresumable pending clarifications: demo"
+
+
+def test_doctor_service_accepts_pending_clarification_with_waiting_turn_record(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo", workspace_root=workspace)
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'suspended_turn', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "user_message": "   ",
+                        "conversation": [],
+                        "suspend_reason": "clarification_required",
+                        "plan_items": [],
+                        "pending_approval": None,
+                        "pending_clarification": {
+                            "request_id": "call_question_1",
+                            "tool_call": {
+                                "name": "AskUserQuestion",
+                                "arguments": {"question": "Which runtime?"},
+                                "reason": "needs user input",
+                                "call_id": "call_question_1",
+                            },
+                            "question": "Which runtime?",
+                            "options": [],
+                            "header": "",
+                            "multi_select": False,
+                        },
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'turn_record', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "thread_id": "demo",
+                        "turn_id": "turn_clarify",
+                        "status": "waiting_clarification",
+                        "started_at": "2026-05-31T00:00:00Z",
+                        "completed_at": None,
+                        "stop_reason": "clarification_required",
+                        "user_message": "ask about runtime",
+                        "items": [],
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.OK
+
+
+def test_doctor_service_accepts_pending_clarification_with_rollout_history_evidence(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "demo", workspace_root=workspace)
+        connection.execute(
+            """
+            INSERT INTO session_state (session_id, state_key, payload_json, updated_at)
+            VALUES (?, 'suspended_turn', ?, 'now')
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "user_message": "   ",
+                        "conversation": [],
+                        "suspend_reason": "clarification_required",
+                        "plan_items": [],
+                        "pending_approval": None,
+                        "pending_clarification": {
+                            "request_id": "call_question_1",
+                            "tool_call": {
+                                "name": "AskUserQuestion",
+                                "arguments": {"question": "Which runtime?"},
+                                "reason": "needs user input",
+                                "call_id": "call_question_1",
+                            },
+                            "question": "Which runtime?",
+                            "options": [],
+                            "header": "",
+                            "multi_select": False,
+                        },
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO turn_rollouts (session_id, turn_id, payload_json)
+            VALUES (?, 'turn_clarify', ?)
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "thread_id": "demo",
+                        "turn_id": "turn_clarify",
+                        "status": "waiting_clarification",
+                        "started_at": "2026-05-31T00:00:00Z",
+                        "completed_at": None,
+                        "stop_reason": "clarification_required",
+                        "events": [],
+                        "continuation_state": {},
+                    }
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO history_items (session_id, item_id, payload_json)
+            VALUES (?, 'hist_user_1', ?)
+            """,
+            (
+                "demo",
+                json.dumps(
+                    {
+                        "id": "hist_user_1",
+                        "thread_id": "demo",
+                        "turn_id": "turn_clarify",
+                        "type": "user_message",
+                        "text": "ask about runtime",
+                        "tool_name": None,
+                        "call_id": None,
+                        "metadata": {},
+                    }
+                ),
+            ),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.OK
+
+
 def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
     tmp_path: Path,
 ) -> None:

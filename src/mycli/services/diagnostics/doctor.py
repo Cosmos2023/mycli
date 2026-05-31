@@ -913,6 +913,12 @@ def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
     if unresumable_approval_details:
         return f"unresumable pending approvals: {', '.join(unresumable_approval_details)}"
 
+    unresumable_clarification_details = (
+        _session_db_unresumable_pending_clarification_details(connection)
+    )
+    if unresumable_clarification_details:
+        return f"unresumable pending clarifications: {', '.join(unresumable_clarification_details)}"
+
     return None
 
 
@@ -1290,6 +1296,132 @@ def _session_db_has_user_message_for_turn(
         ):
             return True
     return False
+
+
+def _session_db_unresumable_pending_clarification_details(
+    connection: sqlite3.Connection,
+) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT session_id, payload_json
+        FROM session_state
+        WHERE state_key = 'suspended_turn'
+        ORDER BY session_id
+        """
+    ).fetchall()
+    details: list[str] = []
+    for row in rows:
+        session_id = str(row["session_id"])
+        if not _suspended_turn_payload_has_pending_clarification(str(row["payload_json"])):
+            continue
+        if not _session_db_pending_clarification_has_resume_evidence(
+            connection,
+            session_id,
+            payload_json=str(row["payload_json"]),
+        ):
+            details.append(session_id)
+            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
+                break
+    return details
+
+
+def _session_db_pending_clarification_has_resume_evidence(
+    connection: sqlite3.Connection,
+    session_id: str,
+    *,
+    payload_json: str,
+) -> bool:
+    if _suspended_turn_payload_has_user_message(payload_json):
+        return True
+
+    turn_record = connection.execute(
+        """
+        SELECT payload_json
+        FROM session_state
+        WHERE session_id = ? AND state_key = 'turn_record'
+        """,
+        (session_id,),
+    ).fetchone()
+    if turn_record is not None and _turn_record_payload_has_waiting_clarification_user_message(
+        str(turn_record["payload_json"])
+    ):
+        return True
+
+    return _session_db_has_waiting_clarification_rollout_user_message(connection, session_id)
+
+
+def _suspended_turn_payload_has_pending_clarification(payload_json: str) -> bool:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return isinstance(payload.get("pending_clarification"), dict)
+
+
+def _suspended_turn_payload_has_user_message(payload_json: str) -> bool:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    user_message = payload.get("user_message")
+    return isinstance(user_message, str) and bool(user_message.strip())
+
+
+def _turn_record_payload_has_waiting_clarification_user_message(payload_json: str) -> bool:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return (
+        payload.get("status") == "waiting_clarification"
+        and isinstance(payload.get("user_message"), str)
+        and bool(str(payload["user_message"]).strip())
+    )
+
+
+def _session_db_has_waiting_clarification_rollout_user_message(
+    connection: sqlite3.Connection,
+    session_id: str,
+) -> bool:
+    rollout_rows = connection.execute(
+        """
+        SELECT payload_json
+        FROM turn_rollouts
+        WHERE session_id = ?
+        ORDER BY sequence_no DESC
+        """,
+        (session_id,),
+    ).fetchall()
+    for row in rollout_rows:
+        turn_id = _waiting_clarification_turn_id(str(row["payload_json"]))
+        if turn_id is not None and _session_db_has_user_message_for_turn(
+            connection,
+            session_id=session_id,
+            turn_id=turn_id,
+        ):
+            return True
+    return False
+
+
+def _waiting_clarification_turn_id(payload_json: str) -> str | None:
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") != "waiting_clarification":
+        return None
+    turn_id = payload.get("turn_id")
+    if isinstance(turn_id, str) and turn_id.strip():
+        return turn_id
+    return None
 
 
 def _session_db_recovery_state_problem(

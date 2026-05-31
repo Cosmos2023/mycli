@@ -86,6 +86,11 @@ Questions to answer:
   waiting-approval `turn_record` with user message, or waiting-approval
   rollout plus matching user history item -> `sessions_db=failed` with bounded
   session ids. Doctor must not repair or clear the pending decision.
+- Sessions DB contains a `suspended_turn.pending_clarification` but no non-blank
+  suspended `user_message`, waiting-clarification `turn_record` with user
+  message, or waiting-clarification rollout plus matching user history item ->
+  `sessions_db=failed` with bounded session ids. Doctor must not repair or
+  clear the suspended turn.
 - Logs or FileHistory missing -> warning, not failure.
 - Reserved trace/artifact directories missing -> `storage_layout=ok`; doctor
   must not create them because runtime writers create parents lazily.

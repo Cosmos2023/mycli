@@ -51,6 +51,11 @@ Questions to answer:
   a waiting-approval `turn_record` with `user_message`, or a waiting-approval
   rollout plus matching user history item. Doctor reports missing evidence
   read-only instead of clearing state.
+- Pending clarification recovery is also a DB integrity concern: a
+  `suspended_turn` with `pending_clarification` must have a non-blank explicit
+  `user_message`, a waiting-clarification `turn_record` with `user_message`, or
+  a waiting-clarification rollout plus matching user history item. Doctor
+  reports missing evidence read-only instead of clearing suspended state.
 - Session message search is an explicit local query path only. Use
   `SessionStore.search_messages(query, workspace_root=..., limit=...)` for
   user-triggered lookup such as `/search <query>`; do not run it automatically as
