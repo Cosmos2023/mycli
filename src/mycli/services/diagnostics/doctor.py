@@ -16,6 +16,24 @@ from mycli.services.storage_layout import MycliStorageLayout
 
 _TRACE_SCAN_LIMIT = 50
 _TRACE_DETAIL_LIMIT = 3
+_SESSION_DB_DETAIL_LIMIT = 3
+_SESSION_DB_REQUIRED_TABLES = {
+    "sessions",
+    "conversation_messages",
+    "conversation_trees",
+    "history_items",
+    "turn_rollouts",
+    "session_state",
+    "session_summaries",
+}
+_SESSION_DB_CHILD_TABLES = (
+    "conversation_messages",
+    "conversation_trees",
+    "history_items",
+    "turn_rollouts",
+    "session_state",
+    "session_summaries",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,22 +159,34 @@ class DoctorService:
         path = self._layout.sessions_db_path
         if not path.exists():
             return (DoctorCheck("sessions_db", DoctorStatus.WARNING, f"missing {path}"),)
-        required_tables = {"sessions", "conversation_messages", "turn_rollouts"}
         try:
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
                 rows = connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 ).fetchall()
+                present_tables = {str(row[0]) for row in rows}
+                missing_tables = sorted(_SESSION_DB_REQUIRED_TABLES - present_tables)
+                if missing_tables:
+                    return (
+                        DoctorCheck(
+                            "sessions_db",
+                            DoctorStatus.FAILED,
+                            f"missing tables: {', '.join(missing_tables)}",
+                            detail=str(path),
+                        ),
+                    )
+                integrity_problem = _session_db_integrity_problem(connection)
         except sqlite3.Error as exc:
             return (DoctorCheck("sessions_db", DoctorStatus.FAILED, f"not openable: {exc}"),)
-        present_tables = {str(row[0]) for row in rows}
-        missing_tables = sorted(required_tables - present_tables)
-        if missing_tables:
+
+        if integrity_problem is not None:
             return (
                 DoctorCheck(
                     "sessions_db",
                     DoctorStatus.FAILED,
-                    f"missing tables: {', '.join(missing_tables)}",
+                    integrity_problem,
                     detail=str(path),
                 ),
             )
@@ -481,6 +511,132 @@ def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:
                 continue
             valid_count += 1
     return valid_count, tuple(invalid_lines)
+
+
+def _session_db_integrity_problem(connection: sqlite3.Connection) -> str | None:
+    foreign_key_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if foreign_key_violations:
+        details = _format_row_references(
+            tuple(
+                f"{row['table']}#{row['rowid']}"
+                for row in foreign_key_violations
+                if "table" in row.keys() and "rowid" in row.keys()
+            )
+        )
+        return f"{len(foreign_key_violations)} foreign key violation(s){details}"
+
+    orphan_details = _session_db_orphan_details(connection)
+    if orphan_details:
+        return f"orphan session rows: {', '.join(orphan_details)}"
+
+    missing_parent_details = _session_db_missing_parent_details(connection)
+    if missing_parent_details:
+        return f"missing lineage parents: {', '.join(missing_parent_details)}"
+
+    cycle_session = _session_db_lineage_cycle(connection)
+    if cycle_session is not None:
+        return f"conversation lineage cycle detected at {cycle_session}"
+
+    invalid_fork_details = _session_db_invalid_fork_details(connection)
+    if invalid_fork_details:
+        return f"invalid fork points: {', '.join(invalid_fork_details)}"
+
+    return None
+
+
+def _session_db_orphan_details(connection: sqlite3.Connection) -> list[str]:
+    details: list[str] = []
+    for table in _SESSION_DB_CHILD_TABLES:
+        rows = connection.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM {table}
+            LEFT JOIN sessions ON sessions.session_id = {table}.session_id
+            WHERE sessions.session_id IS NULL
+            """
+        ).fetchone()
+        count = int(rows["count"]) if rows is not None else 0
+        if count:
+            details.append(f"{table}={count}")
+            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
+                break
+    return details
+
+
+def _session_db_missing_parent_details(connection: sqlite3.Connection) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT conversation_trees.session_id, conversation_trees.parent_id
+        FROM conversation_trees
+        LEFT JOIN sessions
+            ON sessions.session_id = conversation_trees.parent_id
+        WHERE conversation_trees.parent_id IS NOT NULL
+            AND conversation_trees.parent_id != ''
+            AND sessions.session_id IS NULL
+        ORDER BY conversation_trees.session_id
+        LIMIT ?
+        """,
+        (_SESSION_DB_DETAIL_LIMIT,),
+    ).fetchall()
+    return [f"{row['session_id']}->{row['parent_id']}" for row in rows]
+
+
+def _session_db_lineage_cycle(connection: sqlite3.Connection) -> str | None:
+    parent_rows = connection.execute(
+        """
+        SELECT session_id, parent_id
+        FROM conversation_trees
+        WHERE parent_id IS NOT NULL AND parent_id != ''
+        """
+    ).fetchall()
+    parents = {str(row["session_id"]): str(row["parent_id"]) for row in parent_rows}
+    for session_id in sorted(parents):
+        current = session_id
+        seen: set[str] = set()
+        for _ in range(len(parents) + 1):
+            if current in seen:
+                return current
+            seen.add(current)
+            parent_id = parents.get(current)
+            if parent_id is None:
+                break
+            current = parent_id
+    return None
+
+
+def _session_db_invalid_fork_details(connection: sqlite3.Connection) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT
+            conversation_trees.session_id AS session_id,
+            conversation_trees.fork_point AS fork_point,
+            COUNT(conversation_messages.message_index) AS message_count
+        FROM conversation_trees
+        LEFT JOIN conversation_messages
+            ON conversation_messages.session_id = conversation_trees.session_id
+        WHERE conversation_trees.fork_point IS NOT NULL
+        GROUP BY conversation_trees.session_id, conversation_trees.fork_point
+        ORDER BY conversation_trees.session_id
+        """
+    ).fetchall()
+    details: list[str] = []
+    for row in rows:
+        fork_point = int(row["fork_point"])
+        message_count = int(row["message_count"])
+        if fork_point < 0 or fork_point > message_count:
+            details.append(f"{row['session_id']}={fork_point}/{message_count}")
+            if len(details) >= _SESSION_DB_DETAIL_LIMIT:
+                break
+    return details
+
+
+def _format_row_references(references: tuple[str, ...]) -> str:
+    if not references:
+        return ""
+    detail = ", ".join(references[:_SESSION_DB_DETAIL_LIMIT])
+    if len(references) > _SESSION_DB_DETAIL_LIMIT:
+        detail = f"{detail}, ..."
+    return f": {detail}"
 
 
 def _is_writable(path: Path) -> bool:

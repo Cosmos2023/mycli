@@ -41,25 +41,113 @@ def _write_project_config(workspace: Path, *, api_key: str = "sk-secret") -> Non
     )
 
 
-def _create_sessions_db(path: Path) -> None:
+def _create_sessions_db(path: Path, *, foreign_keys: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    message_fk = (
+        ",\n                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
+        if foreign_keys
+        else ""
+    )
+    tree_fk = (
+        ",\n                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
+        if foreign_keys
+        else ""
+    )
+    history_fk = (
+        ",\n                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
+        if foreign_keys
+        else ""
+    )
+    rollout_fk = (
+        ",\n                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
+        if foreign_keys
+        else ""
+    )
+    state_fk = (
+        ",\n                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
+        if foreign_keys
+        else ""
+    )
+    summary_fk = (
+        ",\n                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
+        if foreign_keys
+        else ""
+    )
     with sqlite3.connect(path) as connection:
         connection.executescript(
-            """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            f"""
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                workspace_root TEXT NOT NULL DEFAULT '',
+                thread_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                last_active_at TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active'
+            );
             CREATE TABLE conversation_messages (
                 session_id TEXT NOT NULL,
                 message_index INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, message_index)
+                {message_fk}
+            );
+            CREATE TABLE conversation_trees (
+                session_id TEXT PRIMARY KEY,
+                parent_id TEXT,
+                fork_point INTEGER,
+                updated_at TEXT NOT NULL
+                {tree_fk}
+            );
+            CREATE TABLE history_items (
+                session_id TEXT NOT NULL,
+                sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id TEXT NOT NULL,
                 payload_json TEXT NOT NULL
+                {history_fk}
             );
             CREATE TABLE turn_rollouts (
                 session_id TEXT NOT NULL,
                 sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
                 turn_id TEXT NOT NULL,
                 payload_json TEXT NOT NULL
+                {rollout_fk}
+            );
+            CREATE TABLE session_state (
+                session_id TEXT NOT NULL,
+                state_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, state_key)
+                {state_fk}
+            );
+            CREATE TABLE session_summaries (
+                session_id TEXT NOT NULL,
+                summary_index INTEGER PRIMARY KEY AUTOINCREMENT,
+                summary_text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+                {summary_fk}
             );
             """
         )
+
+
+def _insert_session(connection: sqlite3.Connection, session_id: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id,
+            workspace_root,
+            thread_id,
+            created_at,
+            updated_at,
+            last_active_at,
+            status
+        )
+        VALUES (?, '/workspace', ?, 'now', 'now', 'now', 'active')
+        """,
+        (session_id, session_id),
+    )
 
 
 def _create_node_tui_dependencies(node_tui: Path) -> None:
@@ -141,6 +229,206 @@ def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) 
     assert any(check.name == "file_history" and check.status is DoctorStatus.WARNING for check in report.checks)
     assert any(check.name == "mcp" and check.status is DoctorStatus.FAILED for check in report.checks)
     assert report.failed_count == 1
+
+
+def test_doctor_service_fails_session_db_missing_recovery_tables(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE conversation_messages (
+                session_id TEXT NOT NULL,
+                message_index INTEGER NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            CREATE TABLE turn_rollouts (
+                session_id TEXT NOT NULL,
+                sequence_no INTEGER PRIMARY KEY AUTOINCREMENT,
+                turn_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert "missing tables:" in check.message
+    assert "conversation_trees" in check.message
+    assert "session_state" in check.message
+
+
+def test_doctor_service_fails_session_db_foreign_key_violations(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('missing', 0, '{}')
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "1 foreign key violation(s): conversation_messages#1"
+
+
+def test_doctor_service_fails_session_db_legacy_orphan_rows(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path, foreign_keys=False)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('missing', 0, '{}')
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "orphan session rows: conversation_messages=1"
+
+
+def test_doctor_service_fails_session_db_missing_lineage_parent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "child")
+        connection.execute(
+            """
+            INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
+            VALUES ('child', 'missing-parent', 0, 'now')
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "missing lineage parents: child->missing-parent"
+
+
+def test_doctor_service_fails_session_db_lineage_cycle(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        for session_id in ("one", "two"):
+            _insert_session(connection, session_id)
+        connection.executemany(
+            """
+            INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
+            VALUES (?, ?, NULL, 'now')
+            """,
+            (("one", "two"), ("two", "one")),
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message in {
+        "conversation lineage cycle detected at one",
+        "conversation lineage cycle detected at two",
+    }
+
+
+def test_doctor_service_fails_session_db_invalid_fork_point(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    db_path = home / ".mycli" / "sessions.db"
+    _create_sessions_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        _insert_session(connection, "child")
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (session_id, message_index, payload_json)
+            VALUES ('child', 0, '{}')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO conversation_trees (session_id, parent_id, fork_point, updated_at)
+            VALUES ('child', NULL, 2, 'now')
+            """
+        )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "sessions_db")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "invalid fork points: child=2/1"
 
 
 def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
