@@ -136,6 +136,10 @@ Questions to answer:
   the advertised Python gateway RPC/event stream sets -> `runtime_contract=failed`
   with bounded missing/extra names. Doctor must not run a turn, call a model, or
   start Node to validate this contract.
+- Node protocol contract mismatch between TypeScript
+  `GATEWAY_EVENT_PAYLOAD_CONTRACTS` and Python manifest
+  `event_streams[].payload_schema.required` -> Node protocol tests fail. Keep
+  this as a test-time cross-language check, not a hot-path validator.
 
 #### 5. Good/Base/Bad Cases
 - Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
@@ -162,6 +166,8 @@ Questions to answer:
   rows, and bounded scan reporting.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
+- Node protocol test for event method and required-field parity with Python
+  gateway contract/manifest.
 - CLI test for `mycli doctor` command parsing and no secret leakage.
 - Full lint, type-check, and pytest must pass because doctor touches CLI
   startup paths.

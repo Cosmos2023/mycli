@@ -226,6 +226,66 @@ export const KNOWN_GATEWAY_EVENT_METHODS = [
   "turn.status",
 ] as const;
 
+type ListedKnownGatewayEventMethod = (typeof KNOWN_GATEWAY_EVENT_METHODS)[number];
+
+export const GATEWAY_EVENT_PAYLOAD_CONTRACTS = {
+  "approval.request": { required: ["decision_id", "preview", "options"] },
+  "approval.respond": { required: ["decision_id", "choice"] },
+  "clarify.request": {
+    required: [
+      "request_id",
+      "tool_id",
+      "call_id",
+      "tool_name",
+      "question",
+      "options",
+      "multi_select",
+    ],
+  },
+  "clarify.respond": { required: ["request_id", "response"] },
+  "gateway.error": { required: ["code", "message"] },
+  "message.complete": { required: [] },
+  "message.delta": { required: ["text"] },
+  "reasoning.delta": { required: ["text"] },
+  "runtime.event": { required: ["version", "sequence", "type", "payload", "timestamp"] },
+  "session.changed": { required: ["session_id"] },
+  "status.changed": { required: [] },
+  "status.update": { required: ["state", "kind", "text"] },
+  "thinking.delta": { required: ["text"] },
+  "tool.complete": {
+    required: [
+      "tool_id",
+      "call_id",
+      "name",
+      "duration_s",
+      "summary",
+      "summary_chars",
+      "summary_truncated",
+      "success",
+    ],
+  },
+  "tool.failed": {
+    required: [
+      "tool_id",
+      "call_id",
+      "name",
+      "duration_s",
+      "summary",
+      "summary_chars",
+      "summary_truncated",
+      "success",
+    ],
+  },
+  "tool.progress": { required: ["tool_id", "call_id", "name", "stage", "message"] },
+  "tool.start": { required: ["tool_id", "call_id", "name", "context"] },
+  "turn.completed": { required: [] },
+  "turn.event": { required: ["phase", "kind"] },
+  "turn.failed": { required: [] },
+  "turn.interrupted": { required: [] },
+  "turn.started": { required: ["client_turn_id"] },
+  "turn.status": { required: ["state", "kind", "text", "terminal"] },
+} as const satisfies Record<ListedKnownGatewayEventMethod, { required: readonly string[] }>;
+
 export type KnownGatewayEvent =
   | Notification<"runtime.event", RuntimeEventEnvelopePayload>
   | Notification<"turn.started", TurnStartedPayload>
@@ -253,13 +313,18 @@ export type KnownGatewayEvent =
 
 export type KnownGatewayEventMethod = KnownGatewayEvent["method"];
 
-type ListedKnownGatewayEventMethod = (typeof KNOWN_GATEWAY_EVENT_METHODS)[number];
 type AssertNever<T extends never> = T;
 type _KnownGatewayEventMethodMissingFromList = AssertNever<
   Exclude<KnownGatewayEventMethod, ListedKnownGatewayEventMethod>
 >;
 type _KnownGatewayEventMethodExtraInList = AssertNever<
   Exclude<ListedKnownGatewayEventMethod, KnownGatewayEventMethod>
+>;
+type _KnownGatewayEventMethodMissingFromContract = AssertNever<
+  Exclude<KnownGatewayEventMethod, keyof typeof GATEWAY_EVENT_PAYLOAD_CONTRACTS>
+>;
+type _ContractMethodMissingFromKnownGatewayEvent = AssertNever<
+  Exclude<keyof typeof GATEWAY_EVENT_PAYLOAD_CONTRACTS, KnownGatewayEventMethod>
 >;
 
 export type GatewayEventFor<Method extends KnownGatewayEventMethod> = Extract<

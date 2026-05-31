@@ -3,7 +3,10 @@ import test from "node:test";
 import { PassThrough } from "node:stream";
 import { resolve } from "node:path";
 import { GatewayClient, GatewayRequestError } from "../src/protocol/client.ts";
-import { KNOWN_GATEWAY_EVENT_METHODS } from "../src/protocol/types.ts";
+import {
+  GATEWAY_EVENT_PAYLOAD_CONTRACTS,
+  KNOWN_GATEWAY_EVENT_METHODS,
+} from "../src/protocol/types.ts";
 
 test("typed client sends requests and receives matching responses", async () => {
   const input = new PassThrough();
@@ -206,3 +209,52 @@ test("known TypeScript event methods match Python advertised gateway streams", a
   assert.equal(exitCode, 0, stderr);
   assert.deepEqual(KNOWN_GATEWAY_EVENT_METHODS.slice().sort(), JSON.parse(stdout));
 });
+
+test("TypeScript payload contracts match Python manifest required fields", async () => {
+  const pythonManifest = await pythonGatewayManifest();
+  const pythonRequiredFields = Object.fromEntries(
+    (pythonManifest.event_streams as Array<Record<string, unknown>>).map((entry) => {
+      const schema = entry.payload_schema as Record<string, unknown>;
+      return [String(entry.name), schema.required ?? []];
+    }),
+  );
+  const tsRequiredFields = Object.fromEntries(
+    Object.entries(GATEWAY_EVENT_PAYLOAD_CONTRACTS).map(([name, contract]) => [
+      name,
+      contract.required,
+    ]),
+  );
+
+  assert.deepEqual(tsRequiredFields, pythonRequiredFields);
+});
+
+async function pythonGatewayManifest(): Promise<Record<string, unknown>> {
+  const { spawn } = await import("node:child_process");
+  const python = spawn("python3", [
+    "-c",
+    [
+      "import json",
+      "from mycli.services.extensions.manifest import ExtensionManifestService",
+      "print(json.dumps(ExtensionManifestService().manifest()))",
+    ].join("; "),
+  ], {
+    env: {
+      ...process.env,
+      PYTHONPATH: [resolve(process.cwd(), "../../src"), process.env.PYTHONPATH]
+        .filter(Boolean)
+        .join(":"),
+    },
+  });
+  let stdout = "";
+  let stderr = "";
+  python.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  python.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+
+  const exitCode = await new Promise<number | null>((resolve) => python.on("close", resolve));
+  assert.equal(exitCode, 0, stderr);
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
