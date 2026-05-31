@@ -53,6 +53,11 @@ the local log root and must never become provider transcript inputs.
   later risky tool call that matched a prior session-scoped approval allowance.
   This event is diagnostic-only; it is not a gateway stream event and must not
   be replayed into provider-visible transcript messages.
+- Approval resolution diagnostics may append local `approval_resolution` trace
+  rows and workspace log entries for rejected, invalid, duplicate, or otherwise
+  blocked approval responses. These diagnostics explain why a pending approval
+  did or did not resume a tool; they must not alter provider transcript replay
+  or request-shape inputs.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -71,6 +76,11 @@ the local log root and must never become provider transcript inputs.
   `approval_auto_allowed` runtime trace row and an info-level workspace log
   entry with `source=session_allowance`, `tool_name`, `call_id`,
   `decision_id`, `command_pattern`, and `reason`.
+- Approval response is rejected, invalid, duplicated after clearing, or cannot
+  resume a suspended turn -> append an `approval_resolution` runtime trace row
+  and info-level workspace log entry with bounded `result`, `choice`,
+  `tool_name`, `call_id`, `decision_id`, `command_pattern`, and `reason` when a
+  decision is available.
 - Ordinary safe auto approval -> do not emit `approval_auto_allowed`, because no
   prior user allowance was consumed.
 - `/trace-jsonl` -> return bounded sanitized JSONL rows from the current
@@ -109,6 +119,9 @@ the local log root and must never become provider transcript inputs.
 - Integration test for session allowance hits proving `approval_auto_allowed`
   appears in runtime trace and workspace logs while the turn still avoids a new
   pending approval.
+- Integration test for approval resolution diagnostics proving invalid choices,
+  rejections, and duplicate/no-pending responses appear in runtime trace and
+  workspace logs without changing pending-decision behavior.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

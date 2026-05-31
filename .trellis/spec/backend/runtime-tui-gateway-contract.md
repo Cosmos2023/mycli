@@ -74,6 +74,9 @@
     pending.
   - `choice`: preferred Hermes-like choice string, such as `approve_once`,
     `reject`, or `allow_session`
+  - Runtime-side resolution failures and terminal decisions should be recorded
+    as local `approval_resolution` trace/log diagnostics. They are not gateway
+    stream events and must not be replayed into provider-visible transcripts.
 - `decision.resolve` remains accepted for older clients. It shares the same
   gateway path as `approval.respond`.
 - `clarify.request` payload:

@@ -618,6 +618,28 @@ def test_resolve_pending_decision_reject_clears_it(tmp_path: Path) -> None:
     assert rejected.turn.status is TurnStatus.REJECTED
     assert rejected.turn.stop_reason is StopReason.APPROVAL_REJECTED
     assert "no pending" in after.assistant_message.lower()
+    trace_events = service._trace_service.load("demo")
+    rejected_event = next(
+        event
+        for event in trace_events
+        if event.kind == "approval_resolution" and event.payload["result"] == "rejected"
+    )
+    assert rejected_event.turn_id == rejected.turn.turn_id
+    assert rejected_event.payload["choice"] == "2"
+    assert rejected_event.payload["tool_name"] == "Bash"
+    assert rejected_event.payload["command_pattern"] == "git push"
+    no_pending_event = next(
+        event
+        for event in trace_events
+        if event.kind == "approval_resolution"
+        and event.payload["result"] == "no_pending_decision"
+    )
+    assert no_pending_event.payload["choice"] == "1"
+    agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
+        encoding="utf-8"
+    )
+    assert "approval_resolution" in agent_log
+    assert "no_pending_decision" in agent_log
 
 
 def test_resolve_pending_decision_invalid_choice_keeps_it(tmp_path: Path) -> None:
@@ -634,6 +656,17 @@ def test_resolve_pending_decision_invalid_choice_keeps_it(tmp_path: Path) -> Non
 
     assert "choose 1, 2, or 3" in response.assistant_message.lower()
     assert service._session_service.load_pending_decision("demo") is not None
+    trace_events = service._trace_service.load("demo")
+    invalid_event = next(
+        event for event in trace_events if event.kind == "approval_resolution"
+    )
+    assert invalid_event.payload["result"] == "invalid_choice"
+    assert invalid_event.payload["choice"] == "nope"
+    assert invalid_event.payload["tool_name"] == "Bash"
+    agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
+        encoding="utf-8"
+    )
+    assert "invalid_choice" in agent_log
 
 
 def test_resolve_pending_decision_choice_three_rejected_without_allow_session_option(tmp_path: Path) -> None:

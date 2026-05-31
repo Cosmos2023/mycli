@@ -145,11 +145,18 @@ class TurnExecutor:
 
     def resolve_pending_approval(self, choice: str) -> TurnResponse:
         runtime = self._runtime
+        normalized = choice.strip()
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
         if decision is None:
+            _record_approval_resolution(
+                runtime=runtime,
+                turn_id=f"approval_{uuid4().hex}",
+                result="no_pending_decision",
+                choice=normalized,
+                decision=None,
+            )
             return TurnResponse(assistant_message="There is no pending decision to resolve.")
 
-        normalized = choice.strip()
         choice_to_action = {
             "1": DecisionAction.APPROVE_ONCE,
             "2": DecisionAction.REJECT,
@@ -159,6 +166,13 @@ class TurnExecutor:
             key for key, action in choice_to_action.items() if action in decision.options
         )
         if normalized not in allowed_choices:
+            _record_approval_resolution(
+                runtime=runtime,
+                turn_id=f"approval_{uuid4().hex}",
+                result="invalid_choice",
+                choice=normalized,
+                decision=decision,
+            )
             return TurnResponse(
                 assistant_message=(
                     f"Please choose {runtime._format_allowed_choices(decision.options)}."
@@ -168,6 +182,13 @@ class TurnExecutor:
 
         selected_action = choice_to_action[normalized]
         if selected_action is DecisionAction.ALLOW_SESSION and not decision.command_pattern:
+            _record_approval_resolution(
+                runtime=runtime,
+                turn_id=f"approval_{uuid4().hex}",
+                result="allow_session_unavailable",
+                choice=normalized,
+                decision=decision,
+            )
             return TurnResponse(
                 assistant_message=(
                     f"Please choose {runtime._format_allowed_choices(decision.options)}."
@@ -198,6 +219,13 @@ class TurnExecutor:
             ),
         )
         if selected_action is DecisionAction.REJECT:
+            _record_approval_resolution(
+                runtime=runtime,
+                turn_id=turn_id,
+                result="rejected",
+                choice=normalized,
+                decision=decision,
+            )
             runtime._session_service.clear_pending_decision(runtime._config.session_id)
             runtime._session_service.clear_suspended_turn(runtime._config.session_id)
             message = f"Rejected {decision.tool_call.name}. Pending decision cleared."
@@ -217,6 +245,13 @@ class TurnExecutor:
             )
 
         if suspended is None or suspended.pending_approval is None:
+            _record_approval_resolution(
+                runtime=runtime,
+                turn_id=turn_id,
+                result="missing_suspended_turn",
+                choice=normalized,
+                decision=decision,
+            )
             return TurnResponse(
                 assistant_message=(
                     "The pending decision exists, but the suspended turn cannot be resumed."
@@ -1272,6 +1307,55 @@ def _record_approval_allowance(
         message=f"Allowed {decision.tool_call.name} for this session.",
         context=payload,
     )
+
+
+def _record_approval_resolution(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    result: str,
+    choice: str,
+    decision: PendingDecision | None,
+) -> None:
+    payload = _approval_resolution_payload(
+        result=result,
+        choice=choice,
+        decision=decision,
+    )
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(kind="approval_resolution", turn_id=turn_id, payload=payload),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.INFO,
+        event="approval_resolution",
+        message=f"Approval resolution {result}.",
+        context=payload,
+    )
+
+
+def _approval_resolution_payload(
+    *,
+    result: str,
+    choice: str,
+    decision: PendingDecision | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "result": result,
+        "choice": choice[:80],
+    }
+    if decision is None:
+        return payload
+    payload.update(
+        {
+            "tool_name": decision.tool_call.name,
+            "call_id": decision.tool_call.call_id,
+            "decision_id": decision.tool_call.call_id or "decision_current",
+            "command_pattern": decision.command_pattern,
+            "reason": decision.reason,
+        }
+    )
+    return payload
 
 
 @dataclass(slots=True, frozen=True)
