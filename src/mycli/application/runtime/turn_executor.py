@@ -18,6 +18,7 @@ from mycli.domain.runtime import (
     CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
+    PendingDecision,
     PlanState,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
@@ -30,6 +31,7 @@ from mycli.domain.runtime import (
     TurnStatus,
 )
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
+from mycli.domain.logging import LogLevel
 from mycli.services.context.compaction import CacheZones, ContextBudget
 from mycli.services.hooks import HookContext, HookPoint
 from mycli.llms.clients.openai_chat import ModelResponseError
@@ -226,9 +228,19 @@ class TurnExecutor:
             selected_action is DecisionAction.ALLOW_SESSION
             and decision.command_pattern
         ):
+            previous_allowances = runtime._session_service.load_command_allowances(
+                runtime._config.session_id
+            )
+            new_allowance = decision.command_pattern not in previous_allowances
             runtime._session_service.add_command_allowance(
                 runtime._config.session_id,
                 SessionCommandAllowance(command_pattern=decision.command_pattern),
+            )
+            _record_approval_allowance(
+                runtime=runtime,
+                turn_id=turn_id,
+                decision=decision,
+                new_allowance=new_allowance,
             )
 
         runtime._session_service.clear_pending_decision(runtime._config.session_id)
@@ -1232,6 +1244,34 @@ def _apply_l4_recent_file_hints(
     if reminder in runtime_reminders:
         return runtime_reminders
     return (*runtime_reminders, reminder)
+
+
+def _record_approval_allowance(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    decision: PendingDecision,
+    new_allowance: bool,
+) -> None:
+    payload = {
+        "action": DecisionAction.ALLOW_SESSION.value,
+        "tool_name": decision.tool_call.name,
+        "call_id": decision.tool_call.call_id,
+        "command_pattern": decision.command_pattern,
+        "decision_id": decision.tool_call.call_id or "decision_current",
+        "new_allowance": new_allowance,
+        "reason": decision.reason,
+    }
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(kind="approval_allowance", turn_id=turn_id, payload=payload),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.INFO,
+        event="approval_allowance",
+        message=f"Allowed {decision.tool_call.name} for this session.",
+        context=payload,
+    )
 
 
 @dataclass(slots=True, frozen=True)

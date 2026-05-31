@@ -10,6 +10,7 @@ from mycli.domain.runtime import (
     DecisionKind,
     ModelDecision,
     PendingDecision,
+    SessionCommandAllowance,
     StopReason,
     TurnResponse,
     TurnStatus,
@@ -273,12 +274,13 @@ def test_turn_service_runtime_recovers_pending_approval_from_structured_runtime_
 
 
 def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
     service = make_turn_service(
         tmp_path=tmp_path,
         model=PushThenDoneModel(),
         tool_registry=FakeToolRegistry(),
         config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
-        home_dir=tmp_path / "home",
+        home_dir=home_dir,
     )
 
     service.handle_user_turn("push the branch")
@@ -286,6 +288,48 @@ def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) 
 
     assert "[decision] approved" in resolved.progress_updates
     assert service._session_service.is_command_allowed("demo", "git push") is True
+    trace_events = service._trace_service.load("demo")
+    allowance_event = next(event for event in trace_events if event.kind == "approval_allowance")
+    assert allowance_event.turn_id == resolved.turn.turn_id
+    assert allowance_event.payload["call_id"]
+    assert allowance_event.payload == {
+        "action": "allow_session",
+        "tool_name": "Bash",
+        "call_id": allowance_event.payload["call_id"],
+        "command_pattern": "git push",
+        "decision_id": allowance_event.payload["call_id"],
+        "new_allowance": True,
+        "reason": "git push requires confirmation.",
+    }
+    agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
+        encoding="utf-8"
+    )
+    assert "approval_allowance" in agent_log
+    assert "git push" in agent_log
+
+
+def test_turn_service_records_duplicate_allow_session_diagnostic(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushThenDoneModel(),
+        tool_registry=FakeToolRegistry(),
+        config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
+        home_dir=home_dir,
+    )
+    first = service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    service._session_service.add_command_allowance(
+        "demo",
+        SessionCommandAllowance(command_pattern="git push"),
+    )
+    resolved = service.resolve_pending_decision("3")
+
+    assert "[decision] approved" in resolved.progress_updates
+    trace_events = service._trace_service.load("demo")
+    allowance_event = next(event for event in trace_events if event.kind == "approval_allowance")
+    assert allowance_event.payload["command_pattern"] == "git push"
+    assert allowance_event.payload["new_allowance"] is False
 
 
 def test_resolve_pending_decision_choice_one_executes_and_clears(tmp_path: Path) -> None:

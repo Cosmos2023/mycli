@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify allow-session diagnostics stay operational-only and redacted."}
+{"file": ".trellis/tasks/05-31-05-31-allow-session-approval-diagnostics/prd.md", "reason": "Acceptance criteria and verification scope for this slice."}
