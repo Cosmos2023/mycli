@@ -535,6 +535,8 @@ def test_tool_execution_service_records_standard_tool_trace_payload(tmp_path: Pa
     assert trace.payload["duration_ms"] == 125
     assert trace.payload["path"] == "README.md"
     assert trace.payload["error_kind"] is None
+    assert trace.payload["argument_count"] == 1
+    assert trace.payload["argument_keys"] == ["path"]
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) -> None:
@@ -706,6 +708,8 @@ def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path
     assert trace.payload["duration_ms"] == 2
     assert trace.payload["path"] == "notes.txt"
     assert trace.payload["error_kind"] == "tool_validation_error"
+    assert trace.payload["argument_count"] == 1
+    assert trace.payload["argument_keys"] == ["file_path"]
     assert trace.payload["filesystem_effect"] == "write"
     assert trace.payload["network_effect"] is False
     assert trace.payload["process_effect"] is False
@@ -831,6 +835,8 @@ def test_tool_execution_service_records_interrupted_tool_before_reraising(
     assert trace.payload["success"] is False
     assert trace.payload["duration_ms"] == 42
     assert trace.payload["error_kind"] == "tool_interrupted"
+    assert trace.payload["argument_count"] == 1
+    assert trace.payload["argument_keys"] == ["path"]
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) -> None:

@@ -955,10 +955,13 @@ class ToolExecutionService:
         raw_path = result.raw_payload.get("path") or call.arguments.get("file_path") or call.arguments.get("path")
         path = raw_path if isinstance(raw_path, str) and raw_path else None
         error_kind = result.raw_payload.get("error_kind")
+        argument_keys = tuple(sorted(str(key) for key in call.arguments))
         return {
             "tool_name": call.name,
             "tool_call_id": call.call_id or "",
             "arguments": call.arguments,
+            "argument_count": len(argument_keys),
+            "argument_keys": list(argument_keys),
             "summary": result.summary,
             "success": result.success,
             "status": "succeeded" if result.success else "failed",

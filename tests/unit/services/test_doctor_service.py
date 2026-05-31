@@ -2215,14 +2215,26 @@ def test_doctor_service_summarizes_successful_tool_execution_diagnostics(
                     {
                         "kind": "tool_execution",
                         "turn_id": "turn-1",
-                        "payload": {"success": True, "status": "succeeded", "tool_name": "Read"},
+                        "payload": {
+                            "success": True,
+                            "status": "succeeded",
+                            "tool_name": "Read",
+                            "argument_count": 1,
+                            "argument_keys": ["path"],
+                        },
                     }
                 ),
                 json.dumps(
                     {
                         "kind": "tool_execution",
                         "turn_id": "turn-2",
-                        "payload": {"success": True, "status": "succeeded", "tool_name": "Grep"},
+                        "payload": {
+                            "success": True,
+                            "status": "succeeded",
+                            "tool_name": "Grep",
+                            "argument_count": 2,
+                            "argument_keys": ["pattern", "path"],
+                        },
                     }
                 ),
             )
@@ -2242,7 +2254,7 @@ def test_doctor_service_summarizes_successful_tool_execution_diagnostics(
     assert check.status is DoctorStatus.OK
     assert check.message == (
         "2 tool execution diagnostic(s), failures=0 interrupted=0 denied=0 "
-        "truncated_output=0 write_diagnostic_errors=0"
+        "truncated_output=0 write_diagnostic_errors=0 argument_summaries=2"
     )
     assert check.detail == "error_kinds: none"
 
@@ -2274,6 +2286,8 @@ def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw
                             "stderr": f"raw stderr {secret}",
                             "error_kind": "tool_interrupted",
                             "stderr_truncated": True,
+                            "argument_count": 1,
+                            "argument_keys": ["command"],
                         },
                     }
                 ),
@@ -2288,6 +2302,8 @@ def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw
                             "path": "/private/path/secret.txt",
                             "error_kind": "tool_denied_by_hook",
                             "write_diagnostics_error": "raw diagnostics should stay hidden",
+                            "argument_count": 1,
+                            "argument_keys": ["path"],
                         },
                     }
                 ),
@@ -2309,7 +2325,7 @@ def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw
     assert check.status is DoctorStatus.WARNING
     assert check.message == (
         "2 tool execution diagnostic(s), failures=2 interrupted=1 denied=1 "
-        "truncated_output=1 write_diagnostic_errors=1"
+        "truncated_output=1 write_diagnostic_errors=1 argument_summaries=2"
     )
     assert check.detail == "error_kinds: tool_denied_by_hook=1, tool_interrupted=1"
     assert secret not in rendered
@@ -2317,6 +2333,7 @@ def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw
     assert "raw stderr" not in rendered
     assert "raw diagnostics" not in rendered
     assert "/private/path" not in rendered
+    assert "command" not in rendered
 
 
 def test_doctor_service_reports_missing_turn_failure_diagnostics_as_ok(

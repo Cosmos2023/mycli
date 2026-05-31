@@ -131,6 +131,7 @@ class _ToolExecutionDiagnosticsSummary:
     denied_count: int
     truncated_output_count: int
     write_diagnostics_error_count: int
+    argument_summary_count: int
     error_kinds: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
 
@@ -769,7 +770,8 @@ class DoctorService:
             f"interrupted={summary.interrupted_count} "
             f"denied={summary.denied_count} "
             f"truncated_output={summary.truncated_output_count} "
-            f"write_diagnostic_errors={summary.write_diagnostics_error_count}"
+            f"write_diagnostic_errors={summary.write_diagnostics_error_count} "
+            f"argument_summaries={summary.argument_summary_count}"
             f"{suffix}"
         )
         detail = f"error_kinds: {_format_count_pairs(summary.error_kinds)}"
@@ -1316,6 +1318,7 @@ def _summarize_tool_execution_diagnostics(
     denied_count = 0
     truncated_output_count = 0
     write_diagnostics_error_count = 0
+    argument_summary_count = 0
     error_kinds: Counter[str] = Counter()
     unreadable: list[str] = []
 
@@ -1347,6 +1350,10 @@ def _summarize_tool_execution_diagnostics(
                     write_error = payload.get("write_diagnostics_error")
                     if isinstance(write_error, str) and write_error.strip():
                         write_diagnostics_error_count += 1
+                    argument_keys = payload.get("argument_keys")
+                    argument_count = payload.get("argument_count")
+                    if isinstance(argument_keys, list) and isinstance(argument_count, int):
+                        argument_summary_count += 1
         except OSError as exc:
             unreadable.append(f"{path.name}: {exc}")
 
@@ -1360,6 +1367,7 @@ def _summarize_tool_execution_diagnostics(
         denied_count=denied_count,
         truncated_output_count=truncated_output_count,
         write_diagnostics_error_count=write_diagnostics_error_count,
+        argument_summary_count=argument_summary_count,
         error_kinds=ordered_error_kinds,
         unreadable=tuple(unreadable),
     )
