@@ -85,6 +85,43 @@ test("typed client narrows known event payloads and keeps unknown events", async
   assert.equal(progressEvent.params.tool_id, "call_1");
   assert.equal(progressEvent.params.stage, "executing");
 
+  const completePromise = client.waitForEvent(
+    "tool.complete",
+    (event) => event.params.summary_chars === 19,
+  );
+  input.write(
+    [
+      '{"jsonrpc":"2.0","method":"tool.complete","params":',
+      '{"client_turn_id":"c1","tool_id":"call_1","call_id":"call_1",',
+      '"name":"Read","duration_s":0.125,"summary":"Read pyproject.toml",',
+      '"summary_chars":19,"summary_truncated":false,"success":true}}\n',
+    ].join(""),
+  );
+  const completeEvent = await completePromise;
+  assert.equal(completeEvent.method, "tool.complete");
+  assert.equal(completeEvent.params.summary_chars, 19);
+  assert.equal(completeEvent.params.summary_truncated, false);
+
+  const failedPromise = client.waitForEvent(
+    "tool.failed",
+    (event) => event.params.error_truncated === true,
+  );
+  input.write(
+    [
+      '{"jsonrpc":"2.0","method":"tool.failed","params":',
+      '{"client_turn_id":"c1","tool_id":"call_2","call_id":"call_2",',
+      '"name":"Bash","duration_s":0.2,"summary":"stdout preview...",',
+      '"summary_chars":920,"summary_truncated":true,"success":false,',
+      '"error":"stderr preview...","error_chars":480,"error_truncated":true}}\n',
+    ].join(""),
+  );
+  const failedEvent = await failedPromise;
+  assert.equal(failedEvent.method, "tool.failed");
+  assert.equal(failedEvent.params.summary_chars, 920);
+  assert.equal(failedEvent.params.summary_truncated, true);
+  assert.equal(failedEvent.params.error_chars, 480);
+  assert.equal(failedEvent.params.error_truncated, true);
+
   const clarifyPromise = client.waitForEvent(
     "clarify.request",
     (event) => event.params.request_id === "question_1",

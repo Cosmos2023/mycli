@@ -96,14 +96,20 @@ export type ToolProgressPayload = ToolLifecycleBasePayload & {
 export type ToolCompletePayload = ToolLifecycleBasePayload & {
   duration_s: number;
   summary: string;
+  summary_chars: number;
+  summary_truncated: boolean;
   success: true;
 };
 
 export type ToolFailedPayload = ToolLifecycleBasePayload & {
   duration_s: number;
   summary: string;
+  summary_chars: number;
+  summary_truncated: boolean;
   success: false;
   error?: string;
+  error_chars?: number;
+  error_truncated?: boolean;
 };
 
 export type TextDeltaPayload = {

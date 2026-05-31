@@ -572,6 +572,8 @@ class FakeToolLifecycleTurnService(FakeService):
                         "name": "Read",
                         "duration_s": 0.125,
                         "summary": "Read README.md",
+                        "summary_chars": len("Read README.md"),
+                        "summary_truncated": False,
                         "success": True,
                     },
                 )
@@ -586,8 +588,12 @@ class FakeToolLifecycleTurnService(FakeService):
                         "name": "Write",
                         "duration_s": 0.002,
                         "summary": "Tool Write could not run.",
+                        "summary_chars": len("Tool Write could not run."),
+                        "summary_truncated": False,
                         "success": False,
                         "error": "Missing required parameter: content",
+                        "error_chars": len("Missing required parameter: content"),
+                        "error_truncated": False,
                     },
                 )
             )
@@ -894,6 +900,8 @@ def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: 
         "name": "Read",
         "duration_s": 0.125,
         "summary": "Read README.md",
+        "summary_chars": len("Read README.md"),
+        "summary_truncated": False,
         "success": True,
     }
     assert next(params for method, params in events if method == "tool.failed") == {
@@ -903,8 +911,12 @@ def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: 
         "name": "Write",
         "duration_s": 0.002,
         "summary": "Tool Write could not run.",
+        "summary_chars": len("Tool Write could not run."),
+        "summary_truncated": False,
         "success": False,
         "error": "Missing required parameter: content",
+        "error_chars": len("Missing required parameter: content"),
+        "error_truncated": False,
     }
 
 

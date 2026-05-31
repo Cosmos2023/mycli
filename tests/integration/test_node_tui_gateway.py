@@ -423,6 +423,8 @@ class E2EToolLifecycleService:
                         "name": "Read",
                         "duration_s": 0.125,
                         "summary": "Read README.md",
+                        "summary_chars": len("Read README.md"),
+                        "summary_truncated": False,
                         "success": True,
                     },
                 )
@@ -450,8 +452,12 @@ class E2EToolLifecycleService:
                         "name": "Write",
                         "duration_s": 0.002,
                         "summary": "Tool Write could not run.",
+                        "summary_chars": len("Tool Write could not run."),
+                        "summary_truncated": False,
                         "success": False,
                         "error": "Missing required parameter: content",
+                        "error_chars": len("Missing required parameter: content"),
+                        "error_truncated": False,
                     },
                 )
             )
