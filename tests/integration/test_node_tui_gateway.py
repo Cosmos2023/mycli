@@ -576,6 +576,110 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_wrong_approval_id(
     }.items() <= errors[0]["metadata"].items()
 
 
+def test_run_node_tui_gateway_scripted_expected_failed_state(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-expected-failed-state.json"
+    process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {
+                        "type": "turn.submit_expect",
+                        "message": "fail once",
+                        "expected_state": "failed",
+                    },
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EFailureRecoveryService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.messages == ["fail once"]
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["turnRunning"] is False
+    assert state["currentTurnId"] is None
+    assert state["liveStatus"]["state"] == "failed"
+    errors = [item for item in state["transcript"] if item["type"] == "error"]
+    assert [item["text"] for item in errors] == ["Provider failed after retries."]
+
+
+def test_run_node_tui_gateway_scripted_expected_waiting_states(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+
+    approval_dump_path = tmp_path / "node-expected-waiting-approval.json"
+    approval_process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {
+                        "type": "turn.submit_expect",
+                        "message": "needs approval",
+                        "expected_state": "waiting_approval",
+                    },
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(approval_dump_path),
+        },
+        cwd=repo_root,
+    )
+    approval_service = E2EWaitingStateService(tmp_path)
+
+    approval_exit_code = run_node_tui_gateway(
+        service=cast(TurnService, approval_service),
+        process=approval_process,
+    )
+
+    assert approval_exit_code == 0
+    assert approval_service.messages == ["needs approval"]
+    approval_state = json.loads(approval_dump_path.read_text(encoding="utf-8"))
+    assert approval_state["liveStatus"]["state"] == "waiting_approval"
+    assert approval_state["pendingApproval"]["decision_id"] == "call_approval_1"
+
+    clarification_dump_path = tmp_path / "node-expected-waiting-clarification.json"
+    clarification_process = NodeTuiProcess(
+        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {
+                        "type": "turn.submit_expect",
+                        "message": "needs clarification",
+                        "expected_state": "waiting_clarification",
+                    },
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(clarification_dump_path),
+        },
+        cwd=repo_root,
+    )
+    clarification_service = E2EWaitingStateService(tmp_path)
+
+    clarification_exit_code = run_node_tui_gateway(
+        service=cast(TurnService, clarification_service),
+        process=clarification_process,
+    )
+
+    assert clarification_exit_code == 0
+    assert clarification_service.messages == ["needs clarification"]
+    clarification_state = json.loads(clarification_dump_path.read_text(encoding="utf-8"))
+    assert clarification_state["liveStatus"]["state"] == "waiting_clarification"
+    assert clarification_state["pendingClarification"]["request_id"] == "call_question_1"
+
+
 class E2EToolLifecycleService:
     def __init__(self, workspace_root: Path) -> None:
         self._config = SimpleNamespace(

@@ -1,8 +1,10 @@
 import { GatewayClient, GatewayRequestError } from "../protocol/client.ts";
+import type { TurnState } from "../protocol/types.ts";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
 import { initialState, reduceShellState } from "../state/reducer.ts";
 
 type ScriptedState = ReturnType<typeof initialState>;
+type ExpectedScriptedTurnState = Exclude<TurnState, "running">;
 
 type ScriptedAction =
   | { type: "approval.respond"; choice: string }
@@ -14,6 +16,11 @@ type ScriptedAction =
     }
   | { type: "clarify.respond"; response: string }
   | { type: "session.resume"; session_id: string }
+  | {
+      type: "turn.submit_expect";
+      message: string;
+      expected_state: ExpectedScriptedTurnState;
+    }
   | { type: "turn.submit_interrupt"; message: string };
 
 async function dumpStateIfRequested(state: ReturnType<typeof initialState>): Promise<void> {
@@ -125,6 +132,12 @@ function isScriptedAction(item: unknown): item is ScriptedAction {
   if (type === "session.resume") {
     return typeof (item as Record<string, unknown>).session_id === "string";
   }
+  if (type === "turn.submit_expect") {
+    const record = item as Record<string, unknown>;
+    return (
+      typeof record.message === "string" && isExpectedScriptedTurnState(record.expected_state)
+    );
+  }
   if (type === "turn.submit_interrupt") {
     return typeof (item as Record<string, unknown>).message === "string";
   }
@@ -150,6 +163,19 @@ async function runScriptedAction(
     await client.send("turn.interrupt", {});
     await waitForInterruptedTerminal(client, clientTurnId);
     await waitForInterruptedStatus(client, clientTurnId);
+    return;
+  }
+  if (action.type === "turn.submit_expect") {
+    const clientTurnId = `script_expect_${Date.now()}`;
+    await client.send("turn.submit", {
+      message: action.message,
+      client_turn_id: clientTurnId,
+    });
+    await client.waitForEvent(
+      "turn.started",
+      (event) => event.params?.client_turn_id === clientTurnId,
+    );
+    await waitForExpectedTurnState(client, getState, clientTurnId, action.expected_state);
     return;
   }
   if (action.type === "session.resume") {
@@ -206,6 +232,46 @@ async function runScriptedAction(
     (event) => event.params?.client_turn_id === clientTurnId,
   );
   await waitForTerminalStatus(client, clientTurnId);
+}
+
+async function waitForExpectedTurnState(
+  client: GatewayClient,
+  getState: () => ScriptedState,
+  clientTurnId: string,
+  expectedState: ExpectedScriptedTurnState,
+): Promise<void> {
+  if (expectedState === "waiting_approval") {
+    await waitForCompletedTurnState(client, clientTurnId, expectedState);
+    await waitForPending(() => getState().pendingApproval, "approval.request");
+    await waitForLiveStatus(client, clientTurnId, expectedState);
+    return;
+  }
+  if (expectedState === "waiting_clarification") {
+    await waitForCompletedTurnState(client, clientTurnId, expectedState);
+    await waitForPending(() => getState().pendingClarification, "clarify.request");
+    await waitForLiveStatus(client, clientTurnId, expectedState);
+    return;
+  }
+  if (expectedState === "interrupted") {
+    await waitForInterruptedTerminal(client, clientTurnId);
+    await waitForInterruptedStatus(client, clientTurnId);
+    return;
+  }
+  await waitForCompletedTurnState(client, clientTurnId, expectedState);
+  await waitForLiveStatus(client, clientTurnId, expectedState);
+}
+
+async function waitForCompletedTurnState(
+  client: GatewayClient,
+  clientTurnId: string,
+  expectedState: ExpectedScriptedTurnState,
+): Promise<void> {
+  await client.waitForEvent(
+    "turn.completed",
+    (event) =>
+      event.params?.client_turn_id === clientTurnId &&
+      event.params?.turn_state === expectedState,
+  );
 }
 
 async function waitForInterruptedTerminal(
@@ -276,6 +342,19 @@ async function waitForInterruptedStatus(
   );
 }
 
+async function waitForLiveStatus(
+  client: GatewayClient,
+  clientTurnId: string,
+  expectedState: ExpectedScriptedTurnState,
+): Promise<void> {
+  await client.waitForEvent(
+    "status.update",
+    (event) =>
+      event.params?.client_turn_id === clientTurnId &&
+      event.params?.state === expectedState,
+  );
+}
+
 async function waitForTerminalStatus(client: GatewayClient, clientTurnId: string): Promise<void> {
   await client.waitForEvent(
     "status.update",
@@ -285,6 +364,17 @@ async function waitForTerminalStatus(client: GatewayClient, clientTurnId: string
         event.params?.state === "failed" ||
         event.params?.state === "interrupted" ||
         event.params?.state === "rejected"),
+  );
+}
+
+function isExpectedScriptedTurnState(value: unknown): value is ExpectedScriptedTurnState {
+  return (
+    value === "waiting_approval" ||
+    value === "waiting_clarification" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "interrupted" ||
+    value === "rejected"
   );
 }
 

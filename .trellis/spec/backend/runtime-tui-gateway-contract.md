@@ -49,6 +49,8 @@
   `reduceShellState(state: ShellState, action: ShellAction) -> ShellState`
 - Scripted smoke state dump:
   `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/node/src/index.js`
+- Scripted smoke assertion action:
+  `{"type":"turn.submit_expect","message":"...","expected_state":"failed"}`
 
 ### 3. Contracts
 - `status.update` payload:
@@ -514,6 +516,11 @@
 - User interrupt followed by a late normal worker completion -> preserve the
   interrupted status, emit `turn.completion_suppressed`, and do not append or
   finalize late assistant text.
+- Scripted Node smoke for a single turn with known outcome -> use
+  `turn.submit_expect` so the script fails if the expected runtime/TUI state is
+  not observed through gateway events and reducer state. Supported
+  `expected_state` values are `waiting_approval`, `waiting_clarification`,
+  `completed`, `failed`, `interrupted`, and `rejected`.
 
 ### 5. Good/Base/Bad Cases
 - Good: TUI renders a concrete approval prompt from `approval.request` without

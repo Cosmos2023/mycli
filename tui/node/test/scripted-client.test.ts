@@ -242,3 +242,83 @@ test("scripted client records approval request failures in dumped state", async 
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("scripted client submits a turn and waits for an expected failed state", async () => {
+  const originalStdin = process.stdin;
+  const originalStdout = process.stdout;
+  const originalDump = process.env.MYCLI_NODE_TUI_STATE_DUMP;
+  const tempDir = await mkdtemp(join(tmpdir(), "mycli-scripted-expect-"));
+  const dumpPath = join(tempDir, "state.json");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const messages: Array<{ id: string; method: string; params?: Record<string, unknown> }> = [];
+  output.on("data", (chunk) => {
+    const text = chunk.toString("utf8");
+    for (const rawLine of text.split("\n")) {
+      if (!rawLine.trim()) {
+        continue;
+      }
+      const message = JSON.parse(rawLine) as {
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      messages.push(message);
+      if (message.method === "session.bootstrap") {
+        input.write(`{"jsonrpc":"2.0","id":"${message.id}","result":{"ok":true}}\n`);
+      }
+      if (message.method === "turn.submit") {
+        const clientTurnId = String(message.params?.client_turn_id);
+        input.write(`{"jsonrpc":"2.0","id":"${message.id}","result":{"accepted":true,"client_turn_id":"${clientTurnId}"}}\n`);
+        input.write(`{"jsonrpc":"2.0","method":"turn.started","params":{"client_turn_id":"${clientTurnId}"}}\n`);
+        input.write(
+          [
+            '{"jsonrpc":"2.0","method":"turn.completed","params":',
+            `{"client_turn_id":"${clientTurnId}","assistant_message":"failed",`,
+            '"activity_events":[],"progress_updates":[],"plan_steps":[],',
+            '"pending_decision":false,"turn_state":"failed","usage":{}}}\n',
+          ].join(""),
+        );
+        input.write(
+          `{"jsonrpc":"2.0","method":"status.update","params":{"client_turn_id":"${clientTurnId}","state":"failed","kind":"failed","text":"Failed"}}\n`,
+        );
+      }
+      if (message.method === "shutdown") {
+        input.write(`{"jsonrpc":"2.0","id":"${message.id}","result":{"ok":true}}\n`);
+      }
+    }
+  });
+  Object.defineProperty(process, "stdin", { value: input, configurable: true });
+  Object.defineProperty(process, "stdout", { value: output, configurable: true });
+  process.env.MYCLI_NODE_TUI_STATE_DUMP = dumpPath;
+  try {
+    await runScriptedClient(
+      JSON.stringify([
+        {
+          type: "turn.submit_expect",
+          message: "fail once",
+          expected_state: "failed",
+        },
+      ]),
+    );
+  } finally {
+    Object.defineProperty(process, "stdin", { value: originalStdin, configurable: true });
+    Object.defineProperty(process, "stdout", { value: originalStdout, configurable: true });
+    if (originalDump === undefined) {
+      delete process.env.MYCLI_NODE_TUI_STATE_DUMP;
+    } else {
+      process.env.MYCLI_NODE_TUI_STATE_DUMP = originalDump;
+    }
+  }
+
+  try {
+    const submitted = messages.find((message) => message.method === "turn.submit");
+    assert.equal(submitted?.params?.message, "fail once");
+    const state = JSON.parse(await readFile(dumpPath, "utf8")) as {
+      liveStatus: { state: string };
+    };
+    assert.equal(state.liveStatus.state, "failed");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
