@@ -23,6 +23,7 @@ _TRACE_SCAN_LIMIT = 50
 _TRACE_DETAIL_LIMIT = 3
 _LOG_REDACTION_TEXT_BYTES = 512_000
 _LOG_REDACTION_RAW_FILE_LIMIT = 20
+_LOG_REDACTION_TRACE_FILE_LIMIT = 20
 _LOG_REDACTION_DETAIL_LIMIT = 3
 _LOG_SECRET_PATTERNS = (
     re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{6,}\b"),
@@ -275,7 +276,10 @@ class DoctorService:
         if not logs_dir.exists() or not logs_dir.is_dir():
             return ()
         try:
-            scan_result = _scan_logs_for_secret_leaks(logs_dir)
+            scan_result = _scan_diagnostics_for_secret_leaks(
+                logs_dir=logs_dir,
+                traces_dir=self._layout.traces_dir,
+            )
         except OSError as exc:
             return (
                 DoctorCheck(
@@ -293,7 +297,7 @@ class DoctorService:
                 DoctorCheck(
                     "logs_redaction",
                     DoctorStatus.FAILED,
-                    f"{len(scan_result.leaks)} possible secret leak(s) in diagnostic logs",
+                    f"{len(scan_result.leaks)} possible secret leak(s) in diagnostic logs/traces",
                     detail=detail,
                 ),
             )
@@ -301,7 +305,7 @@ class DoctorService:
             DoctorCheck(
                 "logs_redaction",
                 DoctorStatus.OK,
-                f"scanned {scan_result.files_scanned} log file(s) for obvious secrets",
+                f"scanned {scan_result.files_scanned} diagnostic file(s) for obvious secrets",
                 detail=str(logs_dir),
             ),
         )
@@ -722,13 +726,19 @@ def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:
     return valid_count, tuple(invalid_lines)
 
 
-def _scan_logs_for_secret_leaks(logs_dir: Path) -> _LogRedactionScanResult:
-    paths = _log_redaction_scan_paths(logs_dir)
+def _scan_diagnostics_for_secret_leaks(
+    *,
+    logs_dir: Path,
+    traces_dir: Path,
+) -> _LogRedactionScanResult:
+    paths = _log_redaction_scan_paths(logs_dir) + _trace_redaction_scan_paths(traces_dir)
     leaks: list[str] = []
     for path in paths:
-        relative = path.relative_to(logs_dir)
+        relative = _diagnostic_scan_relative_path(path, logs_dir=logs_dir, traces_dir=traces_dir)
         if path.suffix == ".json":
             leaks.extend(f"{relative}:{reference}" for reference in _json_secret_references(path))
+        elif path.suffix == ".jsonl":
+            leaks.extend(f"{relative}:{reference}" for reference in _jsonl_secret_references(path))
         else:
             leaks.extend(f"{relative}:{line_no}" for line_no in _text_secret_line_numbers(path))
         if len(leaks) >= _LOG_REDACTION_DETAIL_LIMIT:
@@ -748,6 +758,27 @@ def _log_redaction_scan_paths(logs_dir: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def _trace_redaction_scan_paths(traces_dir: Path) -> tuple[Path, ...]:
+    if not traces_dir.exists() or not traces_dir.is_dir():
+        return ()
+    return tuple(sorted(traces_dir.glob("*.jsonl"))[:_LOG_REDACTION_TRACE_FILE_LIMIT])
+
+
+def _diagnostic_scan_relative_path(
+    path: Path,
+    *,
+    logs_dir: Path,
+    traces_dir: Path,
+) -> Path:
+    try:
+        return path.relative_to(logs_dir)
+    except ValueError:
+        try:
+            return Path("traces") / path.relative_to(traces_dir)
+        except ValueError:
+            return Path(path.name)
+
+
 def _text_secret_line_numbers(path: Path) -> tuple[int, ...]:
     matches: list[int] = []
     bytes_read = 0
@@ -759,6 +790,27 @@ def _text_secret_line_numbers(path: Path) -> tuple[int, ...]:
                 if len(matches) >= _LOG_REDACTION_DETAIL_LIMIT:
                     break
             if bytes_read >= _LOG_REDACTION_TEXT_BYTES:
+                break
+    return tuple(matches)
+
+
+def _jsonl_secret_references(path: Path) -> tuple[str, ...]:
+    matches: list[str] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                if _contains_probable_secret(line):
+                    matches.append(str(line_number))
+            else:
+                for reference in _iter_json_secret_references(payload):
+                    matches.append(f"{line_number}:{reference}")
+                    if len(matches) >= _LOG_REDACTION_DETAIL_LIMIT:
+                        break
+            if len(matches) >= _LOG_REDACTION_DETAIL_LIMIT:
                 break
     return tuple(matches)
 

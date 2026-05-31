@@ -99,6 +99,13 @@ Questions to answer:
   - Existing trace files that cannot be opened/read -> `traces=failed`.
   - Trace doctor output must report counts and bounded file/line references, not
     raw trace payload content.
+- Redaction diagnostics check:
+  - `logs_redaction` scans `agent.log`, `errors.log`, `model-events.jsonl`,
+    `model-raw/<session>/*.json`, and bounded `traces/*.jsonl` files for
+    obvious unredacted secret shapes.
+  - Secret findings in traces must report bounded references such as
+    `traces/demo-trace.jsonl:1:$.payload.headers.Authorization`, not raw trace
+    payloads or secret values.
 - `errors.log` missing by itself -> OK when `agent.log`, `model-events.jsonl`,
   and `model-raw/` exist; `errors.log` is created on first warning/error.
 - FileHistory `index.json` exists but cannot parse -> failed.

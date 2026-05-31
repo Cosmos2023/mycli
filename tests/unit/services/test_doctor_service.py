@@ -977,7 +977,7 @@ def test_doctor_service_reports_clean_log_redaction_scan(tmp_path: Path) -> None
 
     check = next(check for check in report.checks if check.name == "logs_redaction")
     assert check.status is DoctorStatus.OK
-    assert check.message == "scanned 4 log file(s) for obvious secrets"
+    assert check.message == "scanned 4 diagnostic file(s) for obvious secrets"
 
 
 def test_doctor_service_fails_log_redaction_scan_without_printing_secret(
@@ -1009,7 +1009,7 @@ def test_doctor_service_fails_log_redaction_scan_without_printing_secret(
 
     check = next(check for check in report.checks if check.name == "logs_redaction")
     assert check.status is DoctorStatus.FAILED
-    assert check.message == "1 possible secret leak(s) in diagnostic logs"
+    assert check.message == "1 possible secret leak(s) in diagnostic logs/traces"
     assert check.detail == "agent.log:1"
     assert secret not in rendered
 
@@ -1044,7 +1044,7 @@ def test_doctor_service_fails_model_raw_redaction_scan_without_printing_secret(
 
     check = next(check for check in report.checks if check.name == "logs_redaction")
     assert check.status is DoctorStatus.FAILED
-    assert check.message == "1 possible secret leak(s) in diagnostic logs"
+    assert check.message == "1 possible secret leak(s) in diagnostic logs/traces"
     assert check.detail == "model-raw/demo/request.json:$.body.nested[0].token"
     assert secret not in rendered
 
@@ -1127,6 +1127,55 @@ def test_doctor_service_reports_valid_trace_files_as_ok(tmp_path: Path) -> None:
     assert check.status is DoctorStatus.OK
     assert check.message == "1 trace file(s), 2 valid row(s)"
     assert check.detail == str(traces)
+
+
+def test_doctor_service_fails_trace_redaction_scan_without_printing_secret(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    logs = home / ".mycli" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "agent.log").write_text("", encoding="utf-8")
+    (logs / "model-events.jsonl").write_text("", encoding="utf-8")
+    (logs / "model-raw").mkdir()
+    secret = "trace-token-secret"
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "status",
+                "turn_id": "turn-1",
+                "payload": {
+                    "headers": {"Authorization": f"Bearer {secret}"},
+                    "nested": [{"token": secret}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "logs_redaction")
+    assert check.status is DoctorStatus.FAILED
+    assert check.message == "2 possible secret leak(s) in diagnostic logs/traces"
+    assert check.detail == (
+        "traces/demo-trace.jsonl:1:$.payload.headers.Authorization, "
+        "traces/demo-trace.jsonl:1:$.payload.nested[0].token"
+    )
+    assert secret not in rendered
 
 
 def test_doctor_service_warns_for_invalid_trace_rows(tmp_path: Path) -> None:

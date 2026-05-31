@@ -65,6 +65,9 @@ the local log root and must never become provider transcript inputs.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
+- Doctor redaction diagnostics scan operational logs, model event JSONL, raw
+  model payload JSON, and bounded runtime trace JSONL files. Findings must use
+  relative file/line or JSON-path references and must not print secret values.
 
 ### 4. Validation & Error Matrix
 - `logs_root=None` -> write under `<workspace_root>/log`.
