@@ -61,6 +61,14 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "interrupted",
         "rejected",
     ]
+    assert schemas["gateway.error"]["properties"]["code"]["enum"] == [
+        "internal_error",
+        "invalid_params",
+        "method_not_found",
+        "turn_in_progress",
+        "decision_not_pending",
+        "clarification_not_pending",
+    ]
     assert schemas["runtime.event"]["required"] == [
         "version",
         "sequence",

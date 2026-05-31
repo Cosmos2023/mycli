@@ -59,6 +59,15 @@ _INTEGER = {"type": "integer"}
 _BOOLEAN = {"type": "boolean"}
 _OBJECT = {"type": "object"}
 _ARRAY = {"type": "array"}
+GATEWAY_ERROR_CODES = (
+    "internal_error",
+    "invalid_params",
+    "method_not_found",
+    "turn_in_progress",
+    "decision_not_pending",
+    "clarification_not_pending",
+)
+_GATEWAY_ERROR_CODE = {"type": "string", "enum": list(GATEWAY_ERROR_CODES)}
 _TURN_STATE = {
     "type": "string",
     "enum": [
@@ -176,7 +185,12 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     "gateway.error": _schema(
         "gateway.error",
         required=("code", "message"),
-        properties={"code": _STRING, "message": _STRING, "detail": _STRING, "method": _STRING},
+        properties={
+            "code": _GATEWAY_ERROR_CODE,
+            "message": _STRING,
+            "detail": _STRING,
+            "method": _STRING,
+        },
     ),
     "message.complete": _schema(
         "message.complete",

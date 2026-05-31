@@ -673,6 +673,27 @@ test("gateway error event appends an error transcript row", () => {
   });
 });
 
+test("gateway error event preserves stable request error codes", () => {
+  const state = reduceShellState(initialState(), {
+    type: "gateway.event",
+    method: "gateway.error",
+    params: {
+      code: "turn_in_progress",
+      message: "A turn is already running.",
+      method: "turn.submit",
+    },
+  });
+
+  const error = state.transcript.at(-1);
+  assert.equal(error?.type, "error");
+  assert.equal(error?.text, "A turn is already running.");
+  assert.deepEqual(error?.metadata, {
+    code: "turn_in_progress",
+    message: "A turn is already running.",
+    method: "turn.submit",
+  });
+});
+
 test("request failure appends one error row and deduplicates matching gateway error", () => {
   let state = reduceShellState(initialState(), {
     type: "request.failed",

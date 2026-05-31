@@ -140,7 +140,10 @@
     trace/log diagnostics after suspended state is saved. This is not a gateway
     stream event.
 - `gateway.error` payload:
-  - `code`: stable short error code, for example `internal_error`
+  - `code`: stable short error code from the gateway request-error taxonomy:
+    `internal_error`, `invalid_params`, `method_not_found`,
+    `turn_in_progress`, `decision_not_pending`, or
+    `clarification_not_pending`
   - `message`: bounded user-facing error text
   - `detail`: optional bounded diagnostic detail
   - `method`: optional JSON-RPC request method that triggered the error

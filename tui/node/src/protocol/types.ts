@@ -163,8 +163,16 @@ export type SessionChangedPayload = {
   session_id: string;
 };
 
+export type GatewayErrorCode =
+  | "internal_error"
+  | "invalid_params"
+  | "method_not_found"
+  | "turn_in_progress"
+  | "decision_not_pending"
+  | "clarification_not_pending";
+
 export type GatewayErrorPayload = {
-  code: string;
+  code: GatewayErrorCode;
   message: string;
   detail?: string;
   method?: string;
@@ -275,6 +283,16 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
   "gateway.error": {
     required: ["code", "message"],
     properties: ["code", "detail", "message", "method"],
+    enums: {
+      code: [
+        "internal_error",
+        "invalid_params",
+        "method_not_found",
+        "turn_in_progress",
+        "decision_not_pending",
+        "clarification_not_pending",
+      ],
+    },
   },
   "message.complete": {
     required: [],
