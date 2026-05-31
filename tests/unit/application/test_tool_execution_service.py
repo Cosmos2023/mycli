@@ -150,6 +150,31 @@ class FakeLongOutputTool:
         )
 
 
+class FakeInterruptTool:
+    spec = ToolSpec(
+        name="interrupt_tool",
+        description="Interrupt while running",
+        parameters=(ToolParameter("path", "string"),),
+    )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        raise KeyboardInterrupt
+
+
+class FakeInterruptMutationTool:
+    spec = ToolSpec(
+        name="interrupt_write",
+        description="Interrupt while mutating a file",
+        parameters=(ToolParameter("path", "string"),),
+    )
+
+    def mutation_targets(self, arguments: dict[str, object]) -> tuple[str, ...]:
+        return (str(arguments["path"]),)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        raise KeyboardInterrupt
+
+
 def _tool_exposure() -> ToolExposure:
     return ToolExposure(
         entries=(
@@ -736,6 +761,78 @@ def test_tool_execution_service_records_long_output_trace_diagnostics(
     assert trace.payload["stderr_truncated"] is True
 
 
+def test_tool_execution_service_records_interrupted_tool_before_reraising(
+    tmp_path: Path,
+) -> None:
+    interrupt_tool = FakeInterruptTool()
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([interrupt_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((7.0, 7.042)).__next__  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+    turn_items = []
+    events: list[RuntimeStreamEvent] = []
+
+    try:
+        service.execute_tool_call(
+            conversation=conversation,
+            call=ToolCall(
+                name="interrupt_tool",
+                arguments={"path": "notes.txt"},
+                reason="interrupt",
+                call_id="call_interrupt_1",
+            ),
+            tool_router=router,
+            tool_exposure=ToolExposure(
+                entries=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("interrupt_tool"),
+                        source=ToolRouteSource.REGISTRY,
+                        spec=interrupt_tool.spec,
+                    ),
+                )
+            ),
+            plan_state=PlanState(),
+            turn_id="turn_1",
+            activity_events=[],
+            turn_items=turn_items,
+            lifecycle_sink=events.append,
+        )
+    except KeyboardInterrupt:
+        pass
+    else:  # pragma: no cover - explicit failure path
+        raise AssertionError("KeyboardInterrupt should be re-raised")
+
+    assert [event.kind for event in events] == ["tool_start", "tool_progress", "tool_failed"]
+    failed = events[-1]
+    assert failed.metadata["tool_id"] == "call_interrupt_1"
+    assert failed.metadata["call_id"] == "call_interrupt_1"
+    assert failed.metadata["success"] is False
+    assert failed.metadata["summary"] == "Tool interrupt_tool was interrupted before it completed."
+    assert failed.metadata["error"] == "Tool interrupt_tool was interrupted before it completed."
+    assert [item.type for item in turn_items] == [
+        TurnItemType.TOOL_CALL,
+        TurnItemType.TOOL_RESULT,
+    ]
+    result_item = turn_items[-1]
+    assert result_item.metadata["success"] is False
+    assert result_item.metadata["error_kind"] == "tool_interrupted"
+    assert result_item.metadata["raw_payload"]["error_kind"] == "tool_interrupted"
+    assert conversation.messages[-1].tool_call_id == "call_interrupt_1"
+
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["tool_name"] == "interrupt_tool"
+    assert trace.payload["tool_call_id"] == "call_interrupt_1"
+    assert trace.payload["status"] == "failed"
+    assert trace.payload["success"] is False
+    assert trace.payload["duration_ms"] == 42
+    assert trace.payload["error_kind"] == "tool_interrupted"
+
+
 def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1278,6 +1375,58 @@ def test_tool_execution_service_does_not_snapshot_failed_validation(tmp_path: Pa
     )
 
     assert file_history.list_snapshots(session_id="demo") == ()
+
+
+def test_tool_execution_service_discards_snapshot_for_interrupted_mutation(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("before\n", encoding="utf-8")
+    interrupt_tool = FakeInterruptMutationTool()
+    file_history = FileHistoryService(home_dir=tmp_path / "home", workspace_root=workspace)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([interrupt_tool]),
+        file_history=file_history,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    turn_items = []
+
+    try:
+        service.execute_tool_call(
+            conversation=Conversation(session_id="demo"),
+            call=ToolCall(
+                name="interrupt_write",
+                arguments={"path": "notes.txt"},
+                reason="interrupt",
+                call_id="call_interrupt_write_1",
+            ),
+            tool_router=router,
+            tool_exposure=ToolExposure(
+                entries=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("interrupt_write"),
+                        source=ToolRouteSource.REGISTRY,
+                        spec=interrupt_tool.spec,
+                    ),
+                )
+            ),
+            plan_state=PlanState(),
+            turn_id="turn_1",
+            activity_events=[],
+            turn_items=turn_items,
+        )
+    except KeyboardInterrupt:
+        pass
+    else:  # pragma: no cover - explicit failure path
+        raise AssertionError("KeyboardInterrupt should be re-raised")
+
+    assert file_history.list_snapshots(session_id="demo") == ()
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "before\n"
+    result_item = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert result_item.metadata["error_kind"] == "tool_interrupted"
 
 
 def test_file_history_rewind_refuses_to_overwrite_later_modification(

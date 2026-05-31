@@ -272,6 +272,30 @@ class ToolExecutionService:
         )
         try:
             result = tool_router.execute(normalized_call, exposure=tool_exposure)
+        except KeyboardInterrupt:
+            interrupted_result = self._interrupted_tool_result(normalized_call)
+            self._finalize_file_history_snapshots(
+                snapshot_ids=snapshot_ids,
+                result=interrupted_result,
+                turn_metadata=turn_metadata,
+            )
+            self._record_tool_outcome(
+                conversation=conversation,
+                normalized_call=normalized_call,
+                result=interrupted_result,
+                plan_state=plan_state,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                response_id=response_id,
+                record_assistant_call=False,
+                execution_started_at=execution_started_at,
+                effect_profile=effect_profile,
+                lifecycle_sink=lifecycle_sink,
+            )
+            raise
         except ValueError as exc:
             result = ToolResult(
                 success=False,
@@ -723,6 +747,19 @@ class ToolExecutionService:
         if args_preview:
             metadata["args_preview"] = args_preview
         return RuntimeStreamEvent(kind="tool_start", tool_name=call.name, metadata=metadata)
+
+    def _interrupted_tool_result(self, call: ToolCall) -> ToolResult:
+        error = f"Tool {call.name} was interrupted before it completed."
+        return ToolResult(
+            success=False,
+            summary=error,
+            error=error,
+            raw_payload={
+                "tool_name": call.name,
+                "arguments": dict(call.arguments),
+                "error_kind": "tool_interrupted",
+            },
+        )
 
     def _tool_lifecycle_progress_event(
         self,

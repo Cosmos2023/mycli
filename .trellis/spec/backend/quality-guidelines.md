@@ -251,6 +251,9 @@ for line in render_doctor_report(report):
 - Unit test successful write diagnostics metadata and trace payload.
 - Unit test failed validation and no-op write skip diagnostics.
 - Unit test diagnostic exceptions do not fail the write.
+- Unit test interrupted tool execution emits failed lifecycle/trace diagnostics,
+  discards pending file-history snapshots, and re-raises the interrupt for
+  turn-level recovery.
 - Unit test guardrail trace payloads for checkpoint exits.
 - Request-shape regression proving diagnostic metadata does not change stable system hash, tool schema hash, tool order hash, or replay hash when transcript content is unchanged.
 

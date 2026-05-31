@@ -100,6 +100,10 @@ the local log root and must never become provider transcript inputs.
 - Pre-tool safety hook denial -> append the same bounded `tool_execution` trace
   row used by other tool failures with `status=failed` and
   `error_kind=tool_denied_by_hook`; do not execute the underlying tool.
+- Interrupted tool execution -> append the same bounded failed
+  `tool_execution` trace row with `error_kind=tool_interrupted`, emit
+  `tool.failed`, and re-raise the interrupt so turn-level interruption handling
+  remains responsible for suspended-state recovery.
 - Runtime turn is finalized as interrupted -> append a `turn_interrupted`
   runtime trace row and warning-level workspace log entry with bounded
   `session_id`, `turn_id`, `stop_reason`, `suspend_reason`, `saved_state`, and
