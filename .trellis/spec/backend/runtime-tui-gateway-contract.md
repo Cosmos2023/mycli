@@ -430,6 +430,9 @@
 - JSON-RPC error response for a TUI-originated request -> reject
   `GatewayClient.send(...)` with code, message, and method; RuntimeApp renders
   the failure as a local error row.
+- Scripted Node smoke clients must reduce expected request failures through the
+  same `request.failed` state action before dumping state, so no-pending or
+  wrong-decision approval errors remain testable as visible TUI diagnostics.
 - User interrupt while a turn is running -> emit `turn.interrupted`, then
   `turn.status` with `state=interrupted`, `terminal=true`, and a bounded
   `message`, then `status.update` with `interrupted`.

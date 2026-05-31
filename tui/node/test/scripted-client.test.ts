@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runScriptedClient } from "../src/smoke/scriptedClient.ts";
 
 test("scripted client still shuts down after commands", async () => {
@@ -85,4 +88,80 @@ test("scripted client handles local theme command without command.run", async ()
   const commandRuns = messages.filter((message) => message.method === "command.run");
   assert.equal(commandRuns.length, 1);
   assert.equal(commandRuns[0]?.params?.command, "/quit");
+});
+
+test("scripted client records approval request failures in dumped state", async () => {
+  const originalStdin = process.stdin;
+  const originalStdout = process.stdout;
+  const originalDump = process.env.MYCLI_NODE_TUI_STATE_DUMP;
+  const tempDir = await mkdtemp(join(tmpdir(), "mycli-scripted-error-"));
+  const dumpPath = join(tempDir, "state.json");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const messages: Array<{ id: string; method: string }> = [];
+  output.on("data", (chunk) => {
+    const text = chunk.toString("utf8");
+    for (const rawLine of text.split("\n")) {
+      if (!rawLine.trim()) {
+        continue;
+      }
+      const message = JSON.parse(rawLine) as { id: string; method: string };
+      messages.push(message);
+      if (message.method === "session.bootstrap") {
+        input.write(`{"jsonrpc":"2.0","id":"${message.id}","result":{"ok":true}}\n`);
+      }
+      if (message.method === "approval.respond") {
+        input.write(
+          [
+            `{"jsonrpc":"2.0","id":"${message.id}","error":`,
+            '{"code":"decision_not_pending","message":"No pending decision."}}\n',
+          ].join(""),
+        );
+      }
+      if (message.method === "shutdown") {
+        input.write(`{"jsonrpc":"2.0","id":"${message.id}","result":{"ok":true}}\n`);
+      }
+    }
+  });
+  Object.defineProperty(process, "stdin", { value: input, configurable: true });
+  Object.defineProperty(process, "stdout", { value: output, configurable: true });
+  process.env.MYCLI_NODE_TUI_STATE_DUMP = dumpPath;
+  try {
+    await runScriptedClient(
+      JSON.stringify([
+        {
+          type: "approval.respond_raw",
+          decision_id: "missing_decision",
+          choice: "reject",
+          expect_error: true,
+        },
+      ]),
+    );
+  } finally {
+    Object.defineProperty(process, "stdin", { value: originalStdin, configurable: true });
+    Object.defineProperty(process, "stdout", { value: originalStdout, configurable: true });
+    if (originalDump === undefined) {
+      delete process.env.MYCLI_NODE_TUI_STATE_DUMP;
+    } else {
+      process.env.MYCLI_NODE_TUI_STATE_DUMP = originalDump;
+    }
+  }
+
+  try {
+    assert.equal(messages.some((message) => message.method === "approval.respond"), true);
+    const state = JSON.parse(await readFile(dumpPath, "utf8")) as {
+      transcript: Array<{ type: string; text: string; metadata: Record<string, unknown> }>;
+    };
+    const errors = state.transcript.filter((item) => item.type === "error");
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]?.text, "No pending decision.");
+    assert.deepEqual(errors[0]?.metadata, {
+      code: "decision_not_pending",
+      message: "No pending decision.",
+      method: "approval.respond",
+      source: "request",
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

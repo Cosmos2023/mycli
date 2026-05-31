@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/05-31-05-31-scripted-approval-request-error-smoke/prd.md", "reason": "Verify implementation against acceptance criteria"}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Verify request failure remains TUI-visible"}

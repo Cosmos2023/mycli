@@ -1,4 +1,4 @@
-import { GatewayClient } from "../protocol/client.ts";
+import { GatewayClient, GatewayRequestError } from "../protocol/client.ts";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
 import { initialState, reduceShellState } from "../state/reducer.ts";
 
@@ -6,6 +6,12 @@ type ScriptedState = ReturnType<typeof initialState>;
 
 type ScriptedAction =
   | { type: "approval.respond"; choice: string }
+  | {
+      type: "approval.respond_raw";
+      decision_id: string;
+      choice: string;
+      expect_error?: boolean;
+    }
   | { type: "clarify.respond"; response: string }
   | { type: "turn.submit_interrupt"; message: string };
 
@@ -108,6 +114,10 @@ function isScriptedAction(item: unknown): item is ScriptedAction {
   if (type === "approval.respond") {
     return typeof (item as Record<string, unknown>).choice === "string";
   }
+  if (type === "approval.respond_raw") {
+    const record = item as Record<string, unknown>;
+    return typeof record.decision_id === "string" && typeof record.choice === "string";
+  }
   if (type === "clarify.respond") {
     return typeof (item as Record<string, unknown>).response === "string";
   }
@@ -145,10 +155,16 @@ async function runScriptedAction(
   }
   if (action.type === "approval.respond") {
     const decisionId = pendingId(state.pendingApproval, "decision_id", "approval.respond");
-    const result = await client.send("approval.respond", {
-      decision_id: decisionId,
-      choice: action.choice,
-    });
+    const result = await sendForScriptedState(
+      client,
+      getState,
+      "approval.respond",
+      {
+        decision_id: decisionId,
+        choice: action.choice,
+      },
+      false,
+    );
     const clientTurnId = stringField(result, "client_turn_id", "approval.respond");
     await client.waitForEvent(
       "turn.completed",
@@ -157,17 +173,71 @@ async function runScriptedAction(
     await waitForTerminalStatus(client, clientTurnId);
     return;
   }
+  if (action.type === "approval.respond_raw") {
+    await sendForScriptedState(
+      client,
+      getState,
+      "approval.respond",
+      {
+        decision_id: action.decision_id,
+        choice: action.choice,
+      },
+      action.expect_error === true,
+    );
+    return;
+  }
   const requestId = pendingId(state.pendingClarification, "request_id", "clarify.respond");
-  const result = await client.send("clarify.respond", {
-    request_id: requestId,
-    response: action.response,
-  });
+  const result = await sendForScriptedState(
+    client,
+    getState,
+    "clarify.respond",
+    {
+      request_id: requestId,
+      response: action.response,
+    },
+    false,
+  );
   const clientTurnId = stringField(result, "client_turn_id", "clarify.respond");
   await client.waitForEvent(
     "turn.completed",
     (event) => event.params?.client_turn_id === clientTurnId,
   );
   await waitForTerminalStatus(client, clientTurnId);
+}
+
+async function sendForScriptedState(
+  client: GatewayClient,
+  getState: () => ScriptedState,
+  method: string,
+  params: Record<string, unknown>,
+  expectError: boolean,
+): Promise<Record<string, unknown>> {
+  try {
+    return await client.send(method, params);
+  } catch (error: unknown) {
+    const gatewayError =
+      error instanceof GatewayRequestError
+        ? error
+        : new GatewayRequestError({
+            code: "request_failed",
+            message: error instanceof Error ? error.message : "Request failed.",
+            method,
+          });
+    const state = getState();
+    Object.assign(
+      state,
+      reduceShellState(state, {
+        type: "request.failed",
+        method: gatewayError.method || method,
+        code: gatewayError.code,
+        message: gatewayError.message,
+      }),
+    );
+    if (expectError) {
+      return {};
+    }
+    throw error;
+  }
 }
 
 async function waitForInterruptedStatus(
