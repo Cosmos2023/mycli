@@ -68,6 +68,9 @@ the local log root and must never become provider transcript inputs.
   `provider_event_count`, text/tool/completed event counts, `text_bytes`,
   `success`, and optional failure kind/message. These diagnostics are local
   observability only and must not alter provider-visible transcript content.
+- Doctor may summarize `model_stream_diagnostics` trace rows with bounded
+  counters and failure-kind counts. It must not print raw trace payloads or
+  provider failure messages because those can contain sensitive upstream text.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.

@@ -119,6 +119,16 @@ Questions to answer:
   - Existing trace files that cannot be opened/read -> `traces=failed`.
   - Trace doctor output must report counts and bounded file/line references, not
     raw trace payload content.
+- Stream diagnostics check:
+  - Missing `~/.mycli/traces/` or no `model_stream_diagnostics` trace rows ->
+    `stream_diagnostics=ok` with `no stream diagnostics found`; doctor must not
+    create the trace directory.
+  - Successful stream diagnostics rows -> `stream_diagnostics=ok` with bounded
+    stream count, failure count, max TTFB, max elapsed time, and total text
+    bytes.
+  - Failed stream diagnostics rows -> `stream_diagnostics=warning` with bounded
+    failure-kind counts. Doctor must not print raw trace payloads or
+    `failure_message` values.
 - Redaction diagnostics check:
   - `logs_redaction` scans `agent.log`, `errors.log`, `model-events.jsonl`,
     `model-raw/<session>/*.json`, and bounded `traces/*.jsonl` files for
@@ -173,6 +183,8 @@ Questions to answer:
   and non-writable cases.
 - Unit test trace doctor cases for missing directory, valid trace files, invalid
   rows, and bounded scan reporting.
+- Unit test stream diagnostics doctor cases for missing directory, no stream
+  rows, successful summary, and failed-summary redaction.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,

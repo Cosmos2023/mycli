@@ -1624,6 +1624,9 @@ def test_doctor_service_reports_missing_trace_directory_as_ok_without_creating_i
     check = next(check for check in report.checks if check.name == "traces")
     assert check.status is DoctorStatus.OK
     assert check.message == "trace directory not created yet"
+    stream_check = next(check for check in report.checks if check.name == "stream_diagnostics")
+    assert stream_check.status is DoctorStatus.OK
+    assert stream_check.message == "no stream diagnostics found"
     assert not (home / ".mycli" / "traces").exists()
 
 
@@ -1658,6 +1661,163 @@ def test_doctor_service_reports_valid_trace_files_as_ok(tmp_path: Path) -> None:
     assert check.status is DoctorStatus.OK
     assert check.message == "1 trace file(s), 2 valid row(s)"
     assert check.detail == str(traces)
+
+
+def test_doctor_service_reports_no_stream_diagnostics_rows_as_ok(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}}),
+                json.dumps({"kind": "tool_execution", "turn_id": "turn-1", "payload": {}}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "stream_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no stream diagnostics found"
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_summarizes_successful_stream_diagnostics(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "model_stream_diagnostics",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "success": True,
+                            "ttfb_ms": 12,
+                            "elapsed_ms": 50,
+                            "text_bytes": 20,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "model_stream_diagnostics",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "success": True,
+                            "ttfb_ms": 30,
+                            "elapsed_ms": 40,
+                            "text_bytes": 8,
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "stream_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == (
+        "2 stream diagnostic(s), failures=0 "
+        "max_ttfb_ms=30 max_elapsed_ms=50 text_bytes=28"
+    )
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_warns_for_failed_stream_diagnostics_without_failure_message(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-streamfailuresecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "model_stream_diagnostics",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "success": False,
+                            "ttfb_ms": 12,
+                            "elapsed_ms": 50,
+                            "text_bytes": 20,
+                            "failure_kind": "invalid_stream_event_shape",
+                            "failure_message": f"provider leaked {secret}",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "model_stream_diagnostics",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "success": False,
+                            "ttfb_ms": 14,
+                            "elapsed_ms": 60,
+                            "text_bytes": 0,
+                            "failure_kind": "invalid_stream_event_shape",
+                            "failure_message": "another raw provider message",
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "stream_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == (
+        "2 stream diagnostic(s), failures=2 "
+        "max_ttfb_ms=14 max_elapsed_ms=60 text_bytes=20"
+    )
+    assert check.detail == "failure_kinds: invalid_stream_event_shape=2"
+    assert secret not in rendered
+    assert "provider leaked" not in rendered
+    assert "another raw provider message" not in rendered
 
 
 def test_doctor_service_fails_trace_redaction_scan_without_printing_secret(

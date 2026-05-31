@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -90,6 +91,17 @@ class _LogRedactionScanResult:
     leaks: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _StreamDiagnosticsSummary:
+    stream_count: int
+    failure_count: int
+    max_ttfb_ms: int | None
+    max_elapsed_ms: int | None
+    text_bytes: int
+    failure_kinds: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
 class DoctorStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -154,6 +166,7 @@ class DoctorService:
             self._check_logs_redaction,
             self._check_storage_layout,
             self._check_traces,
+            self._check_stream_diagnostics,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -405,6 +418,88 @@ class DoctorService:
                 "traces",
                 DoctorStatus.OK,
                 f"{len(inspected_paths)} trace file(s), {total_valid_rows} valid row(s){suffix}",
+                detail=str(traces_dir),
+            ),
+        )
+
+    def _check_stream_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "stream_diagnostics",
+                    DoctorStatus.OK,
+                    "no stream diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "stream_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "stream_diagnostics",
+                    DoctorStatus.OK,
+                    "no stream diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_stream_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "stream_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.stream_count == 0:
+            return (
+                DoctorCheck(
+                    "stream_diagnostics",
+                    DoctorStatus.OK,
+                    f"no stream diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        message = (
+            f"{summary.stream_count} stream diagnostic(s), "
+            f"failures={summary.failure_count} "
+            f"max_ttfb_ms={_format_optional_int(summary.max_ttfb_ms)} "
+            f"max_elapsed_ms={_format_optional_int(summary.max_elapsed_ms)} "
+            f"text_bytes={summary.text_bytes}"
+            f"{suffix}"
+        )
+        if summary.failure_count:
+            return (
+                DoctorCheck(
+                    "stream_diagnostics",
+                    DoctorStatus.WARNING,
+                    message,
+                    detail=f"failure_kinds: {_format_failure_kind_counts(summary.failure_kinds)}",
+                ),
+            )
+        return (
+            DoctorCheck(
+                "stream_diagnostics",
+                DoctorStatus.OK,
+                message,
                 detail=str(traces_dir),
             ),
         )
@@ -710,20 +805,110 @@ def _inspect_trace_file(path: Path) -> tuple[int, tuple[int, ...]]:
             if not line.strip():
                 continue
             try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                invalid_lines.append(line_number)
-                continue
-            if not isinstance(payload, dict):
-                invalid_lines.append(line_number)
-                continue
-            try:
-                RuntimeTraceEvent.from_dict(payload)
-            except (KeyError, TypeError, ValueError):
+                _parse_trace_event_line(line)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 invalid_lines.append(line_number)
                 continue
             valid_count += 1
     return valid_count, tuple(invalid_lines)
+
+
+def _summarize_stream_diagnostics(paths: Iterable[Path]) -> _StreamDiagnosticsSummary:
+    stream_count = 0
+    failure_count = 0
+    max_ttfb_ms: int | None = None
+    max_elapsed_ms: int | None = None
+    text_bytes = 0
+    failure_kinds: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "model_stream_diagnostics":
+                        continue
+                    stream_count += 1
+                    ttfb_ms = _optional_non_negative_int(event.payload.get("ttfb_ms"))
+                    elapsed_ms = _optional_non_negative_int(event.payload.get("elapsed_ms"))
+                    event_text_bytes = _optional_non_negative_int(event.payload.get("text_bytes"))
+                    if ttfb_ms is not None:
+                        max_ttfb_ms = ttfb_ms if max_ttfb_ms is None else max(max_ttfb_ms, ttfb_ms)
+                    if elapsed_ms is not None:
+                        max_elapsed_ms = (
+                            elapsed_ms
+                            if max_elapsed_ms is None
+                            else max(max_elapsed_ms, elapsed_ms)
+                        )
+                    if event_text_bytes is not None:
+                        text_bytes += event_text_bytes
+                    if event.payload.get("success") is False:
+                        failure_count += 1
+                        failure_kinds[_safe_failure_kind(event.payload.get("failure_kind"))] += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_failure_kinds = tuple(
+        sorted(failure_kinds.items(), key=lambda item: (-item[1], item[0]))
+    )
+    return _StreamDiagnosticsSummary(
+        stream_count=stream_count,
+        failure_count=failure_count,
+        max_ttfb_ms=max_ttfb_ms,
+        max_elapsed_ms=max_elapsed_ms,
+        text_bytes=text_bytes,
+        failure_kinds=ordered_failure_kinds,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _parse_trace_event_line(line: str) -> RuntimeTraceEvent:
+    payload = json.loads(line)
+    if not isinstance(payload, dict):
+        raise ValueError("trace row must be a JSON object")
+    return RuntimeTraceEvent.from_dict(payload)
+
+
+def _optional_non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value >= 0:
+        return int(value)
+    return None
+
+
+def _format_optional_int(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return str(value)
+
+
+def _safe_failure_kind(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "unknown"
+    normalized = value.strip()[:80]
+    if _contains_probable_secret(normalized):
+        return "redacted"
+    if re.fullmatch(r"[A-Za-z0-9_.:-]+", normalized) is None:
+        return "other"
+    return normalized
+
+
+def _format_failure_kind_counts(failure_kinds: tuple[tuple[str, int], ...]) -> str:
+    if not failure_kinds:
+        return "unknown=0"
+    parts = [f"{kind}={count}" for kind, count in failure_kinds[:_TRACE_DETAIL_LIMIT]]
+    if len(failure_kinds) > _TRACE_DETAIL_LIMIT:
+        parts.append("...")
+    return ", ".join(parts)
 
 
 def _scan_diagnostics_for_secret_leaks(
@@ -819,7 +1004,7 @@ def _json_secret_references(path: Path) -> tuple[str, ...]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except json.JSONDecodeError:
-        return _text_secret_line_numbers(path)
+        return tuple(str(line_number) for line_number in _text_secret_line_numbers(path))
     matches = list(_iter_json_secret_references(payload))
     return tuple(matches[:_LOG_REDACTION_DETAIL_LIMIT])
 
