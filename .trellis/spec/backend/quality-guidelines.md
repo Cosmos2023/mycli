@@ -133,6 +133,19 @@ Questions to answer:
   - Failed stream diagnostics rows -> `stream_diagnostics=warning` with bounded
     failure-kind counts. Doctor must not print raw trace payloads or
     `failure_message` values.
+- Approval diagnostics check:
+  - Missing `~/.mycli/traces/` or no approval diagnostic trace rows ->
+    `approval_diagnostics=ok` with `no approval diagnostics found`; doctor must
+    not create the trace directory.
+  - Approval diagnostic rows include `approval_resolution`,
+    `approval_allowance`, and `approval_auto_allowed`.
+  - Successful approval diagnostics -> `approval_diagnostics=ok` with bounded
+    total, per-kind counts, and `approval_resolution` result counts.
+  - Problem approval-resolution results such as `no_pending_decision`,
+    `invalid_choice`, `allow_session_unavailable`, `missing_suspended_turn`, or
+    unknown non-empty results -> `approval_diagnostics=warning` with bounded
+    result counts. Doctor must not print raw trace payloads, command patterns,
+    reasons, user text, headers, or secret-like values.
 - Redaction diagnostics check:
   - `logs_redaction` scans `agent.log`, `errors.log`, `model-events.jsonl`,
     `model-raw/<session>/*.json`, and bounded `traces/*.jsonl` files for
@@ -189,6 +202,8 @@ Questions to answer:
   rows, and bounded scan reporting.
 - Unit test stream diagnostics doctor cases for missing directory, no stream
   rows, successful summary, and failed-summary redaction.
+- Unit test approval diagnostics doctor cases for missing directory, no approval
+  rows, successful summary, and warning-summary redaction.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,

@@ -71,6 +71,10 @@ the local log root and must never become provider transcript inputs.
 - Doctor may summarize `model_stream_diagnostics` trace rows with bounded
   counters and failure-kind counts. It must not print raw trace payloads or
   provider failure messages because those can contain sensitive upstream text.
+- Doctor may summarize approval diagnostic trace rows with bounded counts for
+  `approval_resolution`, `approval_allowance`, and `approval_auto_allowed`.
+  It may expose `approval_resolution` result counts, but must not print raw
+  command patterns, reasons, user text, headers, or secret-like values.
 - Secret-bearing text and JSON fields must be redacted before disk write.
   Common sensitive keys include `authorization`, `api_key`, `token`, `secret`,
   and `password`.
@@ -163,6 +167,8 @@ the local log root and must never become provider transcript inputs.
   behavior.
 - Integration/runtime test proving `model_stream_diagnostics` reaches runtime
   trace and workspace logs for a streaming turn.
+- Doctor unit tests for approval diagnostics summaries, including warning rows
+  that include raw command patterns or secret-like reason payloads.
 - Full request-shape/cache tests must continue passing when logs change.
 
 ### 7. Wrong vs Correct

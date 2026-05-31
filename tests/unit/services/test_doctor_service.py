@@ -1695,6 +1695,180 @@ def test_doctor_service_reports_no_stream_diagnostics_rows_as_ok(tmp_path: Path)
     assert check.detail == str(traces)
 
 
+def test_doctor_service_reports_missing_approval_diagnostics_as_ok(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "approval_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no approval diagnostics found"
+
+
+def test_doctor_service_reports_no_approval_diagnostics_rows_as_ok(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps({"kind": "status", "turn_id": "turn-1", "payload": {}}),
+                json.dumps({"kind": "tool_execution", "turn_id": "turn-1", "payload": {}}),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "approval_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no approval diagnostics found"
+    assert check.detail == str(traces)
+
+
+def test_doctor_service_summarizes_successful_approval_diagnostics(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "approval_resolution",
+                        "turn_id": "turn-1",
+                        "payload": {"result": "approved", "choice": "1"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "approval_resolution",
+                        "turn_id": "turn-2",
+                        "payload": {"result": "rejected", "choice": "2"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "approval_allowance",
+                        "turn_id": "turn-3",
+                        "payload": {"command_pattern": "git push"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "approval_auto_allowed",
+                        "turn_id": "turn-4",
+                        "payload": {"source": "session_allowance"},
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "approval_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == (
+        "4 approval diagnostic(s), resolutions=2 allowances=1 auto_allowed=1"
+    )
+    assert check.detail == "resolution_results: approved=1, rejected=1"
+
+
+def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-approvalsecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "approval_resolution",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "result": "invalid_choice",
+                            "choice": "999",
+                            "reason": f"raw provider text {secret}",
+                            "command_pattern": "git push --force",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "approval_resolution",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "result": "missing_suspended_turn",
+                            "choice": "1",
+                            "command_pattern": "git push --force",
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "approval_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == (
+        "2 approval diagnostic(s), resolutions=2 allowances=0 auto_allowed=0"
+    )
+    assert check.detail == "warning_results: invalid_choice=1, missing_suspended_turn=1"
+    assert secret not in rendered
+    assert "raw provider text" not in rendered
+    assert "git push --force" not in rendered
+
+
 def test_doctor_service_summarizes_successful_stream_diagnostics(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

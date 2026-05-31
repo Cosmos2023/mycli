@@ -76,6 +76,7 @@ _RUNTIME_CONTRACT_REQUIRED_STREAMS = {
     "tool.start",
     "turn.status",
 }
+_SUCCESSFUL_APPROVAL_RESULTS = frozenset({"approved", "rejected"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +100,17 @@ class _StreamDiagnosticsSummary:
     max_elapsed_ms: int | None
     text_bytes: int
     failure_kinds: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ApprovalDiagnosticsSummary:
+    approval_count: int
+    resolution_count: int
+    allowance_count: int
+    auto_allowed_count: int
+    resolution_results: tuple[tuple[str, int], ...]
+    warning_results: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
 
 
@@ -167,6 +179,7 @@ class DoctorService:
             self._check_storage_layout,
             self._check_traces,
             self._check_stream_diagnostics,
+            self._check_approval_diagnostics,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -501,6 +514,88 @@ class DoctorService:
                 DoctorStatus.OK,
                 message,
                 detail=str(traces_dir),
+            ),
+        )
+
+    def _check_approval_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "approval_diagnostics",
+                    DoctorStatus.OK,
+                    "no approval diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "approval_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "approval_diagnostics",
+                    DoctorStatus.OK,
+                    "no approval diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_approval_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "approval_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.approval_count == 0:
+            return (
+                DoctorCheck(
+                    "approval_diagnostics",
+                    DoctorStatus.OK,
+                    f"no approval diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        message = (
+            f"{summary.approval_count} approval diagnostic(s), "
+            f"resolutions={summary.resolution_count} "
+            f"allowances={summary.allowance_count} "
+            f"auto_allowed={summary.auto_allowed_count}"
+            f"{suffix}"
+        )
+        detail = f"resolution_results: {_format_count_pairs(summary.resolution_results)}"
+        if summary.warning_results:
+            return (
+                DoctorCheck(
+                    "approval_diagnostics",
+                    DoctorStatus.WARNING,
+                    message,
+                    detail=f"warning_results: {_format_count_pairs(summary.warning_results)}",
+                ),
+            )
+        return (
+            DoctorCheck(
+                "approval_diagnostics",
+                DoctorStatus.OK,
+                message,
+                detail=detail,
             ),
         )
 
@@ -868,6 +963,54 @@ def _summarize_stream_diagnostics(paths: Iterable[Path]) -> _StreamDiagnosticsSu
     )
 
 
+def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosticsSummary:
+    resolution_count = 0
+    allowance_count = 0
+    auto_allowed_count = 0
+    resolution_results: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind == "approval_resolution":
+                        resolution_count += 1
+                        resolution_results[
+                            _safe_approval_result(event.payload.get("result"))
+                        ] += 1
+                    elif event.kind == "approval_allowance":
+                        allowance_count += 1
+                    elif event.kind == "approval_auto_allowed":
+                        auto_allowed_count += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_results = tuple(
+        sorted(resolution_results.items(), key=lambda item: (-item[1], item[0]))
+    )
+    warning_results = tuple(
+        (result, count)
+        for result, count in ordered_results
+        if result not in _SUCCESSFUL_APPROVAL_RESULTS
+    )
+    return _ApprovalDiagnosticsSummary(
+        approval_count=resolution_count + allowance_count + auto_allowed_count,
+        resolution_count=resolution_count,
+        allowance_count=allowance_count,
+        auto_allowed_count=auto_allowed_count,
+        resolution_results=ordered_results,
+        warning_results=warning_results,
+        unreadable=tuple(unreadable),
+    )
+
+
 def _parse_trace_event_line(line: str) -> RuntimeTraceEvent:
     payload = json.loads(line)
     if not isinstance(payload, dict):
@@ -902,11 +1045,31 @@ def _safe_failure_kind(value: object) -> str:
     return normalized
 
 
+def _safe_approval_result(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "unknown"
+    normalized = value.strip()[:80]
+    if _contains_probable_secret(normalized):
+        return "redacted"
+    if re.fullmatch(r"[A-Za-z0-9_.:-]+", normalized) is None:
+        return "other"
+    return normalized
+
+
 def _format_failure_kind_counts(failure_kinds: tuple[tuple[str, int], ...]) -> str:
     if not failure_kinds:
         return "unknown=0"
     parts = [f"{kind}={count}" for kind, count in failure_kinds[:_TRACE_DETAIL_LIMIT]]
     if len(failure_kinds) > _TRACE_DETAIL_LIMIT:
+        parts.append("...")
+    return ", ".join(parts)
+
+
+def _format_count_pairs(counts: tuple[tuple[str, int], ...]) -> str:
+    if not counts:
+        return "none"
+    parts = [f"{name}={count}" for name, count in counts[:_TRACE_DETAIL_LIMIT]]
+    if len(counts) > _TRACE_DETAIL_LIMIT:
         parts.append("...")
     return ", ".join(parts)
 
