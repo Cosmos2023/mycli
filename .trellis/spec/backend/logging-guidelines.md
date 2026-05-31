@@ -88,6 +88,9 @@ the local log root and must never become provider transcript inputs.
   and info-level workspace log entry with bounded `result`, `choice`,
   `tool_name`, `call_id`, `decision_id`, `command_pattern`, and `reason` when a
   decision is available.
+- Pre-tool safety hook denial -> append the same bounded `tool_execution` trace
+  row used by other tool failures with `status=failed` and
+  `error_kind=tool_denied_by_hook`; do not execute the underlying tool.
 - Runtime turn is finalized as interrupted -> append a `turn_interrupted`
   runtime trace row and warning-level workspace log entry with bounded
   `session_id`, `turn_id`, `stop_reason`, `suspend_reason`, `saved_state`, and

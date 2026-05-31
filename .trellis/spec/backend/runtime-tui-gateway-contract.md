@@ -369,6 +369,10 @@
   `waiting_approval`.
 - Tool execution starts -> emit `tool.start` during the running turn before the
   local tool is executed.
+- Pre-tool hook denial -> emit `tool.start`, `tool.progress(stage=executing)`,
+  and `tool.failed` with `success=false` and bounded error metadata. The
+  underlying tool must not execute, but the attempted call remains visible to
+  TUI and extension clients.
 - Tool execution enters the local execution phase -> emit `tool.progress` with
   `stage=executing` during the running turn after `tool.start` and before a
   terminal tool lifecycle event.

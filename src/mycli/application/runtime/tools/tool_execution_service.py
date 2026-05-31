@@ -201,6 +201,15 @@ class ToolExecutionService:
         )
         for hook_result in hook_results:
             if hook_result.action is HookAction.DENY:
+                self._record_tool_start(
+                    normalized_call=normalized_call,
+                    turn_id=turn_id,
+                    activity_events=activity_events,
+                    turn_items=turn_items,
+                    metadata=metadata,
+                    provider_id=provider_id,
+                    lifecycle_sink=lifecycle_sink,
+                )
                 denied_result = ToolResult(
                     success=False,
                     summary=f"Tool denied: {hook_result.message or normalized_call.name}",
@@ -237,22 +246,14 @@ class ToolExecutionService:
         turn_metadata = dict(metadata or {})
         turn_metadata["arguments"] = normalized_call.arguments
         turn_metadata["provider_id"] = provider_id
-        start_event = self._tool_activity_event(normalized_call, phase="start")
-        activity_events.append(start_event)
-        self._notify_lifecycle_sink(
-            lifecycle_sink,
-            self._tool_lifecycle_start_event(call=normalized_call, context=start_event.message),
-        )
-        self._append_turn_item(
+        self._record_tool_start(
+            normalized_call=normalized_call,
             turn_id=turn_id,
+            activity_events=activity_events,
             turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.TOOL_CALL,
-                text=start_event.message,
-                tool_name=normalized_call.name,
-                call_id=normalized_call.call_id,
-                metadata=turn_metadata,
-            ),
+            metadata=metadata,
+            provider_id=provider_id,
+            lifecycle_sink=lifecycle_sink,
         )
         if record_assistant_call:
             self._record_assistant_tool_call(
@@ -661,6 +662,38 @@ class ToolExecutionService:
             ),
         )
         return next_plan_state
+
+    def _record_tool_start(
+        self,
+        *,
+        normalized_call: ToolCall,
+        turn_id: str,
+        activity_events: list[ActivityEvent],
+        turn_items: list[TurnItem],
+        metadata: dict[str, object] | None,
+        provider_id: str | None,
+        lifecycle_sink: ToolLifecycleSink | None,
+    ) -> None:
+        turn_metadata = dict(metadata or {})
+        turn_metadata["arguments"] = normalized_call.arguments
+        turn_metadata["provider_id"] = provider_id
+        start_event = self._tool_activity_event(normalized_call, phase="start")
+        activity_events.append(start_event)
+        self._notify_lifecycle_sink(
+            lifecycle_sink,
+            self._tool_lifecycle_start_event(call=normalized_call, context=start_event.message),
+        )
+        self._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.TOOL_CALL,
+                text=start_event.message,
+                tool_name=normalized_call.name,
+                call_id=normalized_call.call_id,
+                metadata=turn_metadata,
+            ),
+        )
 
     def _notify_lifecycle_sink(
         self,

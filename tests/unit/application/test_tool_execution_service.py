@@ -232,6 +232,67 @@ def test_tool_execution_service_denies_tool_before_execution(tmp_path: Path) -> 
     assert "Tool denied:" in conversation.messages[-1].content
 
 
+def test_tool_execution_service_emits_lifecycle_and_trace_for_denied_tool(
+    tmp_path: Path,
+) -> None:
+    hook_manager = HookManager()
+    hook_manager.register(
+        HookPoint.PRE_TOOL_USE,
+        lambda ctx: HookResult(action=HookAction.DENY, message="blocked by safety"),
+    )
+    service, fake_tool = _service(tmp_path, hook_manager=hook_manager)
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((10.0, 10.25)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+        lifecycle_sink=events.append,
+    )
+
+    assert fake_tool.seen_arguments == []
+    assert [event.kind for event in events] == ["tool_start", "tool_progress", "tool_failed"]
+    assert events[0].metadata == {
+        "tool_id": "call_read_1",
+        "call_id": "call_read_1",
+        "name": "read_file",
+        "context": "read_file",
+        "args_preview": "path=README.md",
+    }
+    failed = events[-1]
+    assert failed.tool_name == "read_file"
+    assert failed.metadata["tool_id"] == "call_read_1"
+    assert failed.metadata["call_id"] == "call_read_1"
+    assert failed.metadata["success"] is False
+    assert failed.metadata["summary"] == "Tool denied: blocked by safety"
+    assert failed.metadata["error"] == "blocked by safety"
+    assert [item.type for item in turn_items] == [
+        TurnItemType.TOOL_CALL,
+        TurnItemType.TOOL_RESULT,
+    ]
+
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    tool_trace = next(event for event in trace if event.kind == "tool_execution")
+    assert tool_trace.payload["tool_name"] == "read_file"
+    assert tool_trace.payload["tool_call_id"] == "call_read_1"
+    assert tool_trace.payload["status"] == "failed"
+    assert tool_trace.payload["success"] is False
+    assert tool_trace.payload["error_kind"] == "tool_denied_by_hook"
+
+
 def test_tool_execution_service_records_skill_body_only_as_tool_result(tmp_path: Path) -> None:
     hook_manager = HookManager()
     skill_tool = FakeSkillTool()
