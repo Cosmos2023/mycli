@@ -370,6 +370,7 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
   },
   "tool.complete": {
     required: [
+      "client_turn_id",
       "tool_id",
       "call_id",
       "name",
@@ -393,6 +394,7 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
   },
   "tool.failed": {
     required: [
+      "client_turn_id",
       "tool_id",
       "call_id",
       "name",
@@ -418,11 +420,11 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
     ],
   },
   "tool.progress": {
-    required: ["tool_id", "call_id", "name", "stage", "message"],
+    required: ["client_turn_id", "tool_id", "call_id", "name", "stage", "message"],
     properties: ["args_preview", "call_id", "client_turn_id", "message", "name", "stage", "tool_id"],
   },
   "tool.start": {
-    required: ["tool_id", "call_id", "name", "context"],
+    required: ["client_turn_id", "tool_id", "call_id", "name", "context"],
     properties: ["args_preview", "call_id", "client_turn_id", "context", "name", "tool_id"],
   },
   "turn.completed": {

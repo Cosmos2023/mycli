@@ -158,6 +158,7 @@ _TOOL_COMPLETION_PROPERTIES = {
     "success": _BOOLEAN,
 }
 _TOOL_COMPLETION_REQUIRED = (
+    "client_turn_id",
     "tool_id",
     "call_id",
     "name",
@@ -304,7 +305,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "tool.progress": _schema(
         "tool.progress",
-        required=("tool_id", "call_id", "name", "stage", "message"),
+        required=("client_turn_id", "tool_id", "call_id", "name", "stage", "message"),
         properties={
             **_TOOL_LIFECYCLE_BASE,
             "stage": _STRING,
@@ -314,7 +315,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "tool.start": _schema(
         "tool.start",
-        required=("tool_id", "call_id", "name", "context"),
+        required=("client_turn_id", "tool_id", "call_id", "name", "context"),
         properties={**_TOOL_LIFECYCLE_BASE, "context": _STRING, "args_preview": _STRING},
     ),
     "turn.completed": _schema(

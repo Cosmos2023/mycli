@@ -90,6 +90,7 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "timestamp",
     ]
     assert schemas["tool.complete"]["required"] == [
+        "client_turn_id",
         "tool_id",
         "call_id",
         "name",

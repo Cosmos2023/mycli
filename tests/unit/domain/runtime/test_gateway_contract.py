@@ -125,3 +125,45 @@ def test_turn_status_schema_exposes_terminal_routing_contract() -> None:
     ]
     assert schema["properties"]["state"]["enum"] == list(TERMINAL_TURN_STATES)
     assert schema["properties"]["terminal"] == {"type": "boolean"}
+
+
+def test_tool_lifecycle_schemas_require_turn_correlation() -> None:
+    schemas = gateway_event_payload_schemas()
+
+    assert schemas["tool.start"]["required"] == [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "context",
+    ]
+    assert schemas["tool.progress"]["required"] == [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "stage",
+        "message",
+    ]
+    assert schemas["tool.complete"]["required"] == [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "duration_s",
+        "summary",
+        "summary_chars",
+        "summary_truncated",
+        "success",
+    ]
+    assert schemas["tool.failed"]["required"] == [
+        "client_turn_id",
+        "tool_id",
+        "call_id",
+        "name",
+        "duration_s",
+        "summary",
+        "summary_chars",
+        "summary_truncated",
+        "success",
+    ]

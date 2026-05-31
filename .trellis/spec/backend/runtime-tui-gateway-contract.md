@@ -183,6 +183,8 @@
     the runtime event boundary during process bootstrap.
 - Tool lifecycle notifications come from real tool execution, not model-side
   tool-call request streaming:
+  - All `tool.*` lifecycle payloads must include `client_turn_id` so clients
+    can correlate tool timeline rows with the active turn.
   - `tool.start` payload includes `client_turn_id`, `tool_id`, `call_id`,
     `name`, compact `context`, and optional bounded `args_preview`.
   - `tool.progress` payload includes `client_turn_id`, `tool_id`, `call_id`,
