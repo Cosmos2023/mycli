@@ -231,6 +231,7 @@ class DoctorService:
             self._check_turn_interrupt_diagnostics,
             self._check_turn_failure_diagnostics,
             self._check_tool_manifest,
+            self._check_tool_environment,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -1172,6 +1173,45 @@ class DoctorService:
                 DoctorStatus.OK,
                 f"{len(tools)} builtin tools across {len(toolsets)} toolsets",
                 detail="; ".join(detail_parts),
+            ),
+        )
+
+    def _check_tool_environment(self) -> Iterable[DoctorCheck]:
+        issues: list[str] = []
+        details: list[str] = []
+        shell = self._env.get("SHELL") or "/bin/bash"
+        shell_path = Path(shell).expanduser()
+        if shell_path.is_absolute():
+            if shell_path.exists() and _is_executable_file(shell_path):
+                details.append(f"shell={shell_path}")
+            else:
+                issues.append(f"shell not executable: {shell_path}")
+        else:
+            resolved_shell = self._which(shell)
+            if resolved_shell:
+                details.append(f"shell={resolved_shell}")
+            else:
+                issues.append(f"shell not found: {shell}")
+        git_path = self._which("git")
+        if git_path:
+            details.append(f"git={git_path}")
+        else:
+            issues.append("git not found")
+        if issues:
+            return (
+                DoctorCheck(
+                    "tool_environment",
+                    DoctorStatus.WARNING,
+                    f"tool environment issues: {_bounded_name_list(issues)}",
+                    detail="; ".join(details),
+                ),
+            )
+        return (
+            DoctorCheck(
+                "tool_environment",
+                DoctorStatus.OK,
+                "shell and git available",
+                detail="; ".join(details),
             ),
         )
 
@@ -2514,6 +2554,10 @@ def _format_row_references(references: tuple[str, ...]) -> str:
 
 def _is_writable(path: Path) -> bool:
     return path.exists() and path.is_dir() and path.stat().st_mode & 0o222 != 0
+
+
+def _is_executable_file(path: Path) -> bool:
+    return path.exists() and path.is_file() and path.stat().st_mode & 0o111 != 0
 
 
 __all__ = [

@@ -313,6 +313,9 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     tool_manifest = next(check for check in report.checks if check.name == "tool_manifest")
     assert tool_manifest.status is DoctorStatus.OK
     assert "builtin tools" in tool_manifest.message
+    tool_environment = next(check for check in report.checks if check.name == "tool_environment")
+    assert tool_environment.status is DoctorStatus.OK
+    assert tool_environment.message == "shell and git available"
 
 
 def test_doctor_service_validates_builtin_tool_manifest(tmp_path: Path) -> None:
@@ -334,6 +337,27 @@ def test_doctor_service_validates_builtin_tool_manifest(tmp_path: Path) -> None:
     assert check.status is DoctorStatus.OK
     assert "builtin tools" in check.message
     assert "toolsets" in check.detail
+
+
+def test_doctor_service_warns_for_missing_tool_environment(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={"SHELL": "missing-shell"},
+        which=lambda _command: None,
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "tool_environment")
+    assert check.status is DoctorStatus.WARNING
+    assert "shell not found" in check.message
+    assert "git not found" in check.message
 
 
 def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) -> None:

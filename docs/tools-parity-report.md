@@ -75,8 +75,11 @@ Commit: `2aa4e72 Expose git inspection as stable local tools`
   metadata.
 - Existing doctor tool-execution diagnostics continue to summarize failures
   without raw payload leakage.
+- Doctor now checks local tool environment availability for shell and git
+  without executing commands.
 
 Commit: `4dc4384 Align tool lifecycle diagnostics with expanded local tools`
+Commit: follow-up doctor tool environment check slice
 
 ### Smoke / Eval
 
@@ -90,7 +93,7 @@ Commit: `4dc4384 Align tool lifecycle diagnostics with expanded local tools`
   - shell verification with `Bash`
   - failed-tool diagnostics with `GitStatus`
 - Latest local smoke report:
-  `evaluation/runs/tool-smoke-20260601T154358Z.json`
+  `evaluation/runs/tool-smoke-20260601T154741Z.json`
 
 Commit: `18832f8 Add deterministic smoke coverage for local tools`
 
@@ -101,10 +104,10 @@ Latest verified commands:
 - `uv run ruff check src tests evaluation/tool_smoke.py`
 - `uv run mypy src/mycli`
 - `uv run pytest tests/unit tests/integration -q`
-  - Result: `1242 passed`
+  - Result: `1243 passed`
 - `uv run python evaluation/tool_smoke.py`
   - Result: exit code `0`
-  - Report: `evaluation/runs/tool-smoke-20260601T154358Z.json`
+  - Report: `evaluation/runs/tool-smoke-20260601T154741Z.json`
 
 ## Remaining Gaps Versus Hermes-agent
 
