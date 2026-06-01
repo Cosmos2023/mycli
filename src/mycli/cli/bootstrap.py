@@ -28,11 +28,13 @@ from mycli.tools.bash import BashTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.edit import EditTool
 from mycli.tools.file_snapshot import FileSnapshotStore
+from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
 from mycli.tools.glob import GlobTool
 from mycli.tools.grep import GrepTool
 from mycli.tools.kill_shell import KillShellTool
 from mycli.tools.lint import LintTool
 from mycli.tools.ls import LSTool
+from mycli.tools.patch import PatchTool
 from mycli.tools.plan import PlanTool
 from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
 from mycli.tools.read import ReadTool
@@ -111,6 +113,7 @@ def build_turn_service(
         [
             ReadTool(workspace_root, snapshot_store=snapshot_store),
             EditTool(workspace_root, snapshot_store=snapshot_store),
+            PatchTool(workspace_root, snapshot_store=snapshot_store),
             WriteTool(workspace_root),
             GrepTool(workspace_root),
             GlobTool(workspace_root),
@@ -121,6 +124,10 @@ def build_turn_service(
             WebSearchTool(),
             WebFetchTool(),
             LintTool(),
+            GitStatusTool(workspace_root),
+            GitDiffTool(workspace_root),
+            GitLogTool(workspace_root),
+            GitShowTool(workspace_root),
             AskUserQuestionTool(),
             PlanTool(),
             EnterPlanModeTool(workspace_root),

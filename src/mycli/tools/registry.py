@@ -84,6 +84,26 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "auto_allow",
         "capability_tags": ("dev", "diagnostics", "lint"),
     },
+    "GitStatus": {
+        "toolset": "dev",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("dev", "git", "status", "read_only"),
+    },
+    "GitDiff": {
+        "toolset": "dev",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("dev", "git", "diff", "read_only"),
+    },
+    "GitLog": {
+        "toolset": "dev",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("dev", "git", "history", "read_only"),
+    },
+    "GitShow": {
+        "toolset": "dev",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("dev", "git", "revision", "read_only"),
+    },
     "AskUserQuestion": {
         "toolset": "interaction",
         "approval_policy": "auto_allow",
@@ -317,6 +337,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
     from mycli.tools.file_snapshot import FileSnapshotStore
+    from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
     from mycli.tools.glob import GlobTool
     from mycli.tools.grep import GrepTool
     from mycli.tools.kill_shell import KillShellTool
@@ -346,6 +367,10 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         WebSearchTool(),
         WebFetchTool(),
         LintTool(),
+        GitStatusTool(workspace_root),
+        GitDiffTool(workspace_root),
+        GitLogTool(workspace_root),
+        GitShowTool(workspace_root),
         AskUserQuestionTool(),
         PlanTool(),
         EnterPlanModeTool(workspace_root),

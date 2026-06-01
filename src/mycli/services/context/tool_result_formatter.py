@@ -133,6 +133,10 @@ class ToolResultFormatter:
             rendered = self._render_shell_result(result)
             if rendered is not None:
                 return rendered
+        if tool_name in {"GitStatus", "GitDiff", "GitLog", "GitShow"}:
+            rendered = self._render_git_result(tool_name, result)
+            if rendered is not None:
+                return rendered
         rendered = self._render_diff_result(result)
         if rendered is not None:
             return rendered
@@ -306,6 +310,82 @@ class ToolResultFormatter:
             else:
                 parts.append("Output truncated: true")
         return parts
+
+    def _render_git_result(self, tool_name: str, result: ToolResult) -> str | None:
+        if tool_name == "GitStatus":
+            entries = result.raw_payload.get("entries")
+            if not isinstance(entries, list):
+                return None
+            parts = [result.summary]
+            branch = result.raw_payload.get("branch")
+            upstream = result.raw_payload.get("upstream")
+            if isinstance(branch, str) and branch:
+                parts.append(f"Branch: {branch}")
+            if isinstance(upstream, str) and upstream:
+                parts.append(f"Upstream: {upstream}")
+            for item in entries[:20]:
+                if isinstance(item, dict):
+                    status = item.get("status", "")
+                    path = item.get("path", "")
+                    parts.append(f"  {status} {path}")
+            if len(entries) > 20:
+                parts.append(f"  ... and {len(entries) - 20} more changed path(s).")
+            return "\n".join(parts)
+
+        if tool_name == "GitDiff":
+            diff = result.raw_payload.get("diff")
+            stat = result.raw_payload.get("stat")
+            shortstat = result.raw_payload.get("shortstat")
+            parts = [result.summary]
+            if isinstance(shortstat, str) and shortstat.strip():
+                parts.append(f"Shortstat: {shortstat.strip()}")
+            if isinstance(stat, str) and stat.strip():
+                parts.append(f"Stat:\n{stat.strip()[:500]}")
+            if isinstance(diff, str) and diff.strip():
+                lines = diff.rstrip().splitlines()
+                tail = lines[-40:] if len(lines) > 40 else lines
+                parts.append(f"Diff preview (last {len(tail)} of {len(lines)} lines):")
+                parts.append("\n".join(tail))
+            if result.raw_payload.get("truncated") is True:
+                parts.append("Diff truncated. Narrow path or increase specificity.")
+            return "\n".join(parts)
+
+        if tool_name == "GitLog":
+            commits = result.raw_payload.get("commits")
+            if not isinstance(commits, list):
+                return None
+            parts = [result.summary]
+            for item in commits[:20]:
+                if not isinstance(item, dict):
+                    continue
+                short_hash = item.get("short_hash", "")
+                subject = item.get("subject", "")
+                date = item.get("date", "")
+                parts.append(f"  {short_hash} {date} {subject}")
+            return "\n".join(parts)
+
+        if tool_name == "GitShow":
+            metadata = result.raw_payload.get("metadata")
+            content = result.raw_payload.get("content")
+            parts = [result.summary]
+            if isinstance(metadata, dict):
+                short_hash = metadata.get("short_hash")
+                subject = metadata.get("subject")
+                author = metadata.get("author")
+                date = metadata.get("date")
+                if isinstance(short_hash, str) and isinstance(subject, str):
+                    parts.append(f"Commit: {short_hash} {subject}")
+                if isinstance(author, str) and isinstance(date, str):
+                    parts.append(f"Author/date: {author} {date}")
+            if isinstance(content, str) and content.strip():
+                lines = content.rstrip().splitlines()
+                preview = lines[:40]
+                parts.append(f"Content preview ({len(preview)} of {len(lines)} lines):")
+                parts.append("\n".join(preview))
+            if result.raw_payload.get("truncated") is True:
+                parts.append("Git show output truncated. Narrow ref/path if needed.")
+            return "\n".join(parts)
+        return None
 
     def _render_diff_result(self, result: ToolResult) -> str | None:
         diff = result.raw_payload.get("diff")

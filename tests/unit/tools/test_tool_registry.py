@@ -48,6 +48,12 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     assert patch["toolset"] == "file"
     assert patch["risk_level"] == "medium"
     assert patch["approval_policy"] == "auto_allow_or_request"
+    git_status = next(tool for tool in tools if tool["name"] == "GitStatus")
+    assert git_status["id"] == "builtin:GitStatus"
+    assert git_status["toolset"] == "dev"
+    assert git_status["risk_level"] == "low"
+    assert git_status["approval_policy"] == "auto_allow"
+    assert "git" in git_status["capability_tags"]
 
 
 def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:
@@ -58,6 +64,7 @@ def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:
 
     assert toolsets["file"]["tool_count"] >= 3
     assert toolsets["terminal"]["tool_count"] >= 3
+    assert toolsets["dev"]["tool_count"] >= 5
     assert toolsets["workflow"]["tool_count"] >= 3
 
 
@@ -66,7 +73,7 @@ def test_builtin_tool_manifest_aligns_with_safety_policy(tmp_path: Path) -> None
     policy = SafetyPolicy(workspace_root=tmp_path)
     manifest_tools = {tool["name"]: tool for tool in registry.manifest()["tools"]}
 
-    for name in ("Read", "Grep", "Glob", "LS"):
+    for name in ("Read", "Grep", "Glob", "LS", "GitStatus", "GitDiff", "GitLog", "GitShow"):
         decision = policy.evaluate(ToolCall(name=name, arguments={"path": "."}, reason="test"))
         assert decision.kind.value == manifest_tools[name]["approval_policy"]
         assert decision.metadata["risk_level"] == manifest_tools[name]["risk_level"]

@@ -3,6 +3,7 @@ def test_all_tools_importable():
     from mycli.tools.bash import BashTool
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
+    from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
     from mycli.tools.glob import GlobTool
     from mycli.tools.grep import GrepTool
     from mycli.tools.kill_shell import KillShellTool
@@ -32,6 +33,10 @@ def test_all_tools_importable():
             WebSearchTool,
             WebFetchTool,
             LintTool,
+            GitStatusTool,
+            GitDiffTool,
+            GitLogTool,
+            GitShowTool,
             AskUserQuestionTool,
             PlanTool,
             EnterPlanModeTool,
@@ -59,6 +64,10 @@ def test_all_tools_registered():
         "WebSearch",
         "WebFetch",
         "Lint",
+        "GitStatus",
+        "GitDiff",
+        "GitLog",
+        "GitShow",
         "AskUserQuestion",
         "Plan",
         "Task",
