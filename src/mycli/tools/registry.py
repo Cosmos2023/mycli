@@ -29,6 +29,11 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "auto_allow_or_request",
         "capability_tags": ("file", "edit", "mutation", "snapshot_guard", "diff"),
     },
+    "Patch": {
+        "toolset": "file",
+        "approval_policy": "auto_allow_or_request",
+        "capability_tags": ("file", "patch", "mutation", "snapshot_guard", "diff"),
+    },
     "Write": {
         "toolset": "file",
         "approval_policy": "auto_allow_or_request",
@@ -317,6 +322,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.kill_shell import KillShellTool
     from mycli.tools.lint import LintTool
     from mycli.tools.ls import LSTool
+    from mycli.tools.patch import PatchTool
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
@@ -329,6 +335,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     return [
         ReadTool(workspace_root, snapshot_store=snapshot_store),
         EditTool(workspace_root, snapshot_store=snapshot_store),
+        PatchTool(workspace_root, snapshot_store=snapshot_store),
         WriteTool(workspace_root),
         GrepTool(workspace_root),
         GlobTool(workspace_root),

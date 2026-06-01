@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import re
 from pathlib import Path
 from typing import Any
@@ -8,15 +7,17 @@ from typing import Any
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.file_snapshot import FileSnapshotStore, build_file_snapshot
+from mycli.tools.file_mutation import (
+    backup_file,
+    contains_secret_like_content,
+    unified_diff,
+    validate_text_write_target,
+)
 from mycli.tools.path_utils import resolve_workspace_path
 
 
 LINE_NUMBER_PATTERN = re.compile(r"^\s*\d+\t", re.MULTILINE)
 MAX_EDIT_FILE_BYTES = 1_000_000
-_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
-    re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*=\s*['\"][^'\"]{8,}['\"]"),
-)
 
 
 class EditError(Exception):
@@ -62,16 +63,13 @@ def edit_file(
         else content.replace(old_string, new_string, 1)
     )
 
-    _backup(path, content)
+    backup_file(path, content)
     path.write_text(new_content)
-    diff = "\n".join(
-        difflib.unified_diff(
-            content.splitlines(),
-            new_content.splitlines(),
-            fromfile=f"{file_path}:before",
-            tofile=f"{file_path}:after",
-            lineterm="",
-        )
+    diff = unified_diff(
+        before=content,
+        after=new_content,
+        fromfile=f"{file_path}:before",
+        tofile=f"{file_path}:after",
     )
 
     return {
@@ -98,7 +96,7 @@ def _write_empty_old_string(path: Path, new_string: str) -> dict[str, str]:
             "or Write to overwrite the entire file."
         )
 
-    _backup(path, content)
+    backup_file(path, content)
     path.write_text(new_string)
     return {"status": "written", "file": str(path)}
 
@@ -113,7 +111,7 @@ def _write_full_content(path: Path, content: str) -> dict[str, str]:
     existing = path.read_text()
     if existing == content:
         return {"status": "unchanged", "file": str(path)}
-    _backup(path, existing)
+    backup_file(path, existing)
     path.write_text(content)
     return {"status": "overwritten", "file": str(path)}
 
@@ -123,13 +121,6 @@ def _preprocess(text: str, path: Path) -> str:
     if path.suffix.lower() not in {".md", ".mdx"}:
         text = text.rstrip(" \t\r")
     return text
-
-
-def _backup(path: Path, content: str) -> None:
-    backup_dir = path.parent / ".mycli_backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / f"{path.name}.bak"
-    backup_path.write_text(content)
 
 
 class EditTool:
@@ -188,7 +179,7 @@ class EditTool:
         return True, None
 
     def _contains_secret_like_content(self, value: str) -> bool:
-        return any(pattern.search(value) is not None for pattern in _SECRET_PATTERNS)
+        return contains_secret_like_content(value)
 
     def _validate_snapshot(self, target: Path) -> tuple[bool, str | None, str | None]:
         relative_path = target.resolve().relative_to(self._workspace_root.resolve()).as_posix()
@@ -218,6 +209,14 @@ class EditTool:
             if not raw_path:
                 raise ValueError("Edit requires file_path.")
             target = resolve_workspace_path(self._workspace_root, raw_path)
+            ok, error_kind, error_message = validate_text_write_target(target)
+            if not ok:
+                return ToolResult(
+                    success=False,
+                    summary=f"Failed to edit {raw_path}",
+                    error=error_message,
+                    raw_payload={"path": raw_path, "error_kind": error_kind},
+                )
             legacy_content = arguments.get("new_content")
             if isinstance(legacy_content, str):
                 payload = _write_full_content(target, legacy_content)
@@ -254,11 +253,12 @@ class EditTool:
                 )
             payload = edit_file(str(target), old_string, new_string, replace_all=replace_all)
         except (OSError, UnicodeDecodeError, ValueError, EditError) as exc:
+            error_kind = _edit_error_kind(exc)
             return ToolResult(
                 success=False,
                 summary=f"Failed to edit {raw_path}",
                 error=str(exc),
-                raw_payload={"path": raw_path},
+                raw_payload={"path": raw_path, "error_kind": error_kind},
             )
 
         return ToolResult(
@@ -269,3 +269,20 @@ class EditTool:
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
+
+
+def _edit_error_kind(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "no-op" in message:
+        return "no_op"
+    if "multiple matches" in message:
+        return "multiple_matches"
+    if "string not found" in message:
+        return "string_not_found"
+    if "does not exist" in message:
+        return "not_found"
+    if "directory" in message:
+        return "is_directory"
+    if isinstance(exc, UnicodeDecodeError):
+        return "invalid_encoding"
+    return "edit_failed"

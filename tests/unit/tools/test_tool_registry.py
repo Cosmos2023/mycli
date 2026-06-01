@@ -35,6 +35,7 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     assert len(ids) == len(set(ids))
     assert len(names) == len(set(names))
     assert "builtin:Read" in ids
+    assert "builtin:Patch" in ids
     read = next(tool for tool in tools if tool["name"] == "Read")
     assert read["toolset"] == "file"
     assert read["risk_level"] == "low"
@@ -43,6 +44,10 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     assert read["effects"] == {"filesystem": "read", "network": False, "process": False}
     assert read["availability"] == {"status": "available"}
     assert read["parameters"][0]["name"] == "file_path"
+    patch = next(tool for tool in tools if tool["name"] == "Patch")
+    assert patch["toolset"] == "file"
+    assert patch["risk_level"] == "medium"
+    assert patch["approval_policy"] == "auto_allow_or_request"
 
 
 def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:
@@ -77,3 +82,21 @@ def test_builtin_tool_manifest_aligns_with_safety_policy(tmp_path: Path) -> None
     )
     assert shell_decision.metadata["risk_level"] == manifest_tools["Bash"]["risk_level"]
     assert manifest_tools["Bash"]["approval_policy"] == "shell_safety_analysis"
+
+
+def test_patch_tool_reports_file_mutation_target(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    targets = registry.mutation_targets(
+        ToolCall(
+            name="Patch",
+            arguments={
+                "file_path": "app.py",
+                "old_string": "x",
+                "new_string": "y",
+            },
+            reason="patch",
+        )
+    )
+
+    assert targets == ("app.py",)

@@ -272,8 +272,19 @@ class ToolResultFormatter:
         diff = result.raw_payload.get("diff")
         if not isinstance(diff, str) or not diff:
             return None
+        path = result.raw_payload.get("path")
+        status = result.raw_payload.get("status")
+        matches = result.raw_payload.get("matches")
         preview = diff[:800]
-        return "\n".join([result.summary, f"Diff preview: {preview}"])
+        parts = [result.summary]
+        if isinstance(path, str) and path:
+            parts.append(f"Path: {path}")
+        if isinstance(status, str) and status:
+            parts.append(f"Status: {status}")
+        if isinstance(matches, int):
+            parts.append(f"Matches: {matches}")
+        parts.append(f"Diff preview: {preview}")
+        return "\n".join(parts)
 
     def _render_content_result(self, result: ToolResult, content: str) -> str:
         parts = [result.summary]

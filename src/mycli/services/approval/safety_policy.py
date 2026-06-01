@@ -47,7 +47,7 @@ class SafetyPolicy:
             "Task",
         }:
             return RiskLevel.LOW
-        if name in {"Edit", "Write", "KillShell"}:
+        if name in {"Edit", "Patch", "Write", "KillShell"}:
             return RiskLevel.MEDIUM
         if name == "Bash":
             return RiskLevel.HIGH
@@ -82,7 +82,7 @@ class SafetyPolicy:
                     policy="builtin_safe_tool",
                 ),
             )
-        if name in {"Edit", "Write"}:
+        if name in {"Edit", "Patch", "Write"}:
             boundary_decision = self._workspace_boundary_decision(call)
             if boundary_decision is not None:
                 return boundary_decision
@@ -273,6 +273,7 @@ def _canonical_tool_name(name: str) -> str:
         "read_file": "Read",
         "read_file_range": "Read",
         "edit_file": "Edit",
+        "patch_file": "Patch",
         "write_file": "Write",
         "search_text": "Grep",
         "list_directory": "LS",

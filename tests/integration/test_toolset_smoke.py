@@ -8,6 +8,7 @@ def test_all_tools_importable():
     from mycli.tools.kill_shell import KillShellTool
     from mycli.tools.lint import LintTool
     from mycli.tools.ls import LSTool
+    from mycli.tools.patch import PatchTool
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
@@ -20,6 +21,7 @@ def test_all_tools_importable():
         for tool in (
             ReadTool,
             EditTool,
+            PatchTool,
             WriteTool,
             GrepTool,
             GlobTool,
@@ -46,6 +48,7 @@ def test_all_tools_registered():
     expected = {
         "Read",
         "Edit",
+        "Patch",
         "Write",
         "Grep",
         "Glob",
