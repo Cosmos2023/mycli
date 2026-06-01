@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import requests  # type: ignore[import-untyped]
 
 from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 
 
 _fetch_cache: dict[str, dict[str, Any]] = {}
@@ -121,6 +121,9 @@ class WebFetchTool:
         ),
         risk_level="low",
     )
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(network=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         url = str(arguments.get("url") or "")

@@ -666,7 +666,10 @@ class TurnExecutor:
                 tools=tools,
             )
             request_budget = runtime._estimate_request_window_budget(request_shape)
-            request_needs_l4 = not l4_applied_before_request
+            request_needs_l4 = (
+                not l4_applied_before_request
+                and checkpoint_result.continue_reason is not ContinueReason.FORCE_ANSWER
+            )
             if request_needs_l4:
                 conversation_before_request_compaction = conversation_for_model
                 try:

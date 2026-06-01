@@ -1,3 +1,7 @@
+from pathlib import Path
+
+from mycli.domain.tooling.calls import ToolCall
+from mycli.services.approval.safety_policy import SafetyPolicy
 from mycli.tools.base import ToolParameter, ToolSpec
 from mycli.tools.registry import ToolRegistry
 
@@ -16,3 +20,60 @@ def test_tool_registry_validates_required_arguments_before_execution() -> None:
         assert "path" in str(exc)
     else:
         raise AssertionError("validate() should reject missing required arguments")
+
+
+def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    manifest = registry.manifest()
+
+    assert manifest["schema_version"] == 1
+    tools = manifest["tools"]
+    assert len(tools) == len(registry.list_names())
+    ids = [tool["id"] for tool in tools]
+    names = [tool["name"] for tool in tools]
+    assert len(ids) == len(set(ids))
+    assert len(names) == len(set(names))
+    assert "builtin:Read" in ids
+    read = next(tool for tool in tools if tool["name"] == "Read")
+    assert read["toolset"] == "file"
+    assert read["risk_level"] == "low"
+    assert read["approval_policy"] == "auto_allow"
+    assert "read" in read["capability_tags"]
+    assert read["effects"] == {"filesystem": "read", "network": False, "process": False}
+    assert read["availability"] == {"status": "available"}
+    assert read["parameters"][0]["name"] == "file_path"
+
+
+def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    manifest = registry.manifest()
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolsets"]}
+
+    assert toolsets["file"]["tool_count"] >= 3
+    assert toolsets["terminal"]["tool_count"] >= 3
+    assert toolsets["workflow"]["tool_count"] >= 3
+
+
+def test_builtin_tool_manifest_aligns_with_safety_policy(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+    policy = SafetyPolicy(workspace_root=tmp_path)
+    manifest_tools = {tool["name"]: tool for tool in registry.manifest()["tools"]}
+
+    for name in ("Read", "Grep", "Glob", "LS"):
+        decision = policy.evaluate(ToolCall(name=name, arguments={"path": "."}, reason="test"))
+        assert decision.kind.value == manifest_tools[name]["approval_policy"]
+        assert decision.metadata["risk_level"] == manifest_tools[name]["risk_level"]
+
+    write_decision = policy.evaluate(
+        ToolCall(name="Write", arguments={"file_path": "demo.txt", "content": "x"}, reason="test")
+    )
+    assert write_decision.metadata["risk_level"] == manifest_tools["Write"]["risk_level"]
+    assert manifest_tools["Write"]["approval_policy"] == "auto_allow_or_request"
+
+    shell_decision = policy.evaluate(
+        ToolCall(name="Bash", arguments={"command": "pwd"}, reason="test")
+    )
+    assert shell_decision.metadata["risk_level"] == manifest_tools["Bash"]["risk_level"]
+    assert manifest_tools["Bash"]["approval_policy"] == "shell_safety_analysis"

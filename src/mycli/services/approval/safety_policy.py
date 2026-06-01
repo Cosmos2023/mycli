@@ -278,6 +278,8 @@ def _canonical_tool_name(name: str) -> str:
         "list_directory": "LS",
         "run_shell": "Bash",
         "update_plan": "Plan",
+        "enter_plan_mode": "EnterPlanMode",
+        "exit_plan_mode": "ExitPlanMode",
     }.get(name, name)
 
 

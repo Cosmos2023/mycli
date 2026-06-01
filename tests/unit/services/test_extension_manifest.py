@@ -18,6 +18,7 @@ def test_extension_manifest_exposes_core_discovery_surfaces() -> None:
     assert capabilities["runtime.tui_gateway"]["status"] == "available"
     assert capabilities["approvals"]["status"] == "available"
     assert capabilities["sessions"]["status"] == "available"
+    assert capabilities["tools.manifest"]["status"] == "available"
     assert capabilities["extensions.lifecycle"]["status"] == "not_available"
     assert capabilities["acp.server"]["status"] == "not_available"
 
@@ -100,3 +101,16 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "summary_truncated",
         "success",
     ]
+
+
+def test_extension_manifest_exposes_builtin_tool_manifest() -> None:
+    manifest = ExtensionManifestService().manifest()
+
+    tool_manifest = manifest["tool_manifest"]
+    assert tool_manifest["schema_version"] == 1
+    tools = {tool["name"]: tool for tool in tool_manifest["tools"]}
+
+    assert tools["Read"]["id"] == "builtin:Read"
+    assert tools["Read"]["toolset"] == "file"
+    assert tools["Bash"]["approval_policy"] == "shell_safety_analysis"
+    assert "toolsets" in tool_manifest

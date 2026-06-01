@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from mycli.domain.runtime.gateway_contract import (
@@ -7,6 +8,7 @@ from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_RPC_METHODS,
     gateway_event_payload_schemas,
 )
+from mycli.tools.registry import ToolRegistry
 
 
 _RPC_DESCRIPTIONS = {
@@ -58,8 +60,13 @@ _EVENT_DESCRIPTIONS = {
 class ExtensionManifestService:
     """Builds the read-only integration discovery manifest."""
 
+    def __init__(self, *, tool_registry: ToolRegistry | None = None) -> None:
+        self._tool_registry = tool_registry
+
     def manifest(self) -> dict[str, Any]:
         payload_schemas = gateway_event_payload_schemas()
+        tool_registry = self._tool_registry or ToolRegistry(workspace_root=Path.cwd())
+        tool_manifest = tool_registry.manifest()
         return {
             "schema_version": 1,
             "agent": {
@@ -68,7 +75,13 @@ class ExtensionManifestService:
             },
             "rpc_methods": _described_entries(SUPPORTED_GATEWAY_RPC_METHODS, _RPC_DESCRIPTIONS),
             "event_streams": _event_stream_entries(payload_schemas),
+            "tool_manifest": tool_manifest,
             "capabilities": [
+                {
+                    "id": "tools.manifest",
+                    "status": "available",
+                    "description": "Read-only built-in local tool manifest with risk and schema metadata.",
+                },
                 {
                     "id": "runtime.trace.export",
                     "status": "available",

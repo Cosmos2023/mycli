@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.bash import _background_processes
 from mycli.tools.shell_registry import SHELL_REGISTRY
 
@@ -23,6 +23,9 @@ class KillShellTool:
         parameters=(ToolParameter(name="shell_id", type="string", required=True),),
         risk_level="medium",
     )
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         shell_id = str(arguments.get("shell_id") or arguments.get("bash_id") or "")

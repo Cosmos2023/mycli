@@ -4,7 +4,7 @@ import os
 from typing import Any, cast
 
 from mycli.domain.tooling.calls import ToolCall
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 
 
 def web_search(
@@ -74,6 +74,9 @@ class WebSearchTool:
         ),
         risk_level="low",
     )
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(network=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         query = str(arguments.get("query") or "")

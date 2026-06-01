@@ -19,6 +19,7 @@ from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.mcp.client import load_mcp_server_configs
 from mycli.services.storage_layout import MycliStorageLayout
+from mycli.tools.registry import ToolRegistry
 
 _TRACE_SCAN_LIMIT = 50
 _TRACE_DETAIL_LIMIT = 3
@@ -229,6 +230,7 @@ class DoctorService:
             self._check_tool_execution_diagnostics,
             self._check_turn_interrupt_diagnostics,
             self._check_turn_failure_diagnostics,
+            self._check_tool_manifest,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -1125,6 +1127,51 @@ class DoctorService:
                 DoctorStatus.OK,
                 "gateway manifest matches supported contract",
                 detail=f"{len(rpc_methods)} rpc method(s), {len(event_streams)} event stream(s)",
+            ),
+        )
+
+    def _check_tool_manifest(self) -> Iterable[DoctorCheck]:
+        registry = ToolRegistry(workspace_root=self._workspace_root)
+        manifest = registry.manifest()
+        issues = ToolRegistry.manifest_issues(manifest)
+        if issues:
+            return (
+                DoctorCheck(
+                    "tool_manifest",
+                    DoctorStatus.FAILED,
+                    f"tool manifest invalid: {_bounded_name_list(list(issues))}",
+                ),
+            )
+        tools = manifest.get("tools")
+        toolsets = manifest.get("toolsets")
+        if not isinstance(tools, list) or not isinstance(toolsets, list):
+            return (
+                DoctorCheck(
+                    "tool_manifest",
+                    DoctorStatus.FAILED,
+                    "tool manifest missing tools or toolsets",
+                ),
+            )
+        risk_counts: Counter[str] = Counter(
+            str(item["risk_level"])
+            for item in tools
+            if isinstance(item, dict) and isinstance(item.get("risk_level"), str)
+        )
+        toolset_counts: Counter[str] = Counter(
+            str(item["toolset"])
+            for item in tools
+            if isinstance(item, dict) and isinstance(item.get("toolset"), str)
+        )
+        detail_parts = [
+            f"toolsets: {_format_count_pairs(tuple(sorted(toolset_counts.items())))}",
+            f"risk_levels: {_format_count_pairs(tuple(sorted(risk_counts.items())))}",
+        ]
+        return (
+            DoctorCheck(
+                "tool_manifest",
+                DoctorStatus.OK,
+                f"{len(tools)} builtin tools across {len(toolsets)} toolsets",
+                detail="; ".join(detail_parts),
             ),
         )
 
