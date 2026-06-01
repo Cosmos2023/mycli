@@ -22,6 +22,9 @@ Hermes-agent was used as a maturity reference only; no Hermes code was copied.
 - Toolset registry foundation exposes toolset grouping, enablement, aliases,
   source composition, availability, and conflict diagnostics through
   `toolset_manifest`.
+- Built-in and contributed tool registrations can be rendered into one combined
+  manifest shape, including source, toolset, schema, risk, effects,
+  availability, and bounded contribution metadata.
 - Extension manifest exposes `toolsets.manifest` so future MCP/plugin/skills
   and subagent clients can inspect the same grouping surface without scraping
   human output.
@@ -123,6 +126,8 @@ Latest verified commands:
 - No plugin/MCP/ACP productized external tool ecosystem in this goal.
 - Toolset enable/disable is visible in the foundation manifest, but runtime
   enforcement and user-facing configuration are not yet productized.
+- Contributed tools are unified at the manifest/discovery layer only; dynamic
+  MCP/plugin/skills/subagent lifecycle remains a later phase.
 - No browser/computer-use/vision/image-generation tools.
 - No sandbox backends beyond local shell; Hermes supports richer terminal
   environments.

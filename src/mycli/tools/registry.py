@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionRegistration,
+    ToolContributionSource,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
 from mycli.tools.base import (
@@ -294,6 +298,69 @@ class ToolsetRegistry:
         return _DEFAULT_TOOLSET_ALIASES.get(toolset_id, ())
 
 
+def contributed_tool_manifest_entry(
+    registration: ToolContributionRegistration,
+) -> dict[str, object]:
+    descriptor = registration.descriptor
+    effect_profile = tool_effects_for_tool(registration.tool)
+    source = _contributed_manifest_source(descriptor.source)
+    return {
+        "id": descriptor.tool_id,
+        "name": descriptor.route_name,
+        "source": source,
+        "toolset": _contributed_toolset_for(source),
+        "description": descriptor.spec.description,
+        "parameters": [_parameter_manifest(parameter) for parameter in descriptor.spec.parameters],
+        "risk_level": descriptor.spec.risk_level,
+        "approval_policy": _approval_policy_for(spec=descriptor.spec, metadata={}),
+        "capability_tags": sorted(
+            {
+                "contributed",
+                source,
+                descriptor.scope.value,
+                descriptor.lifecycle_state.value,
+            }
+        ),
+        "effects": {
+            "filesystem": effect_profile.filesystem,
+            "network": effect_profile.network,
+            "process": effect_profile.process,
+        },
+        "availability": {"status": "available", "state": descriptor.lifecycle_state.value},
+        "usage_hint": None,
+        "contribution": {
+            "display_name": descriptor.display_name,
+            "scope": descriptor.scope.value,
+            "state": descriptor.lifecycle_state.value,
+            "origin": dict(descriptor.origin_metadata),
+        },
+    }
+
+
+def combined_tool_manifest(
+    *,
+    builtin_manifest: dict[str, object],
+    contributed_tools: tuple[ToolContributionRegistration, ...] = (),
+) -> dict[str, object]:
+    tools = builtin_manifest.get("tools")
+    entries = list(tools) if isinstance(tools, list) else []
+    entries.extend(contributed_tool_manifest_entry(registration) for registration in contributed_tools)
+    toolset_counts = Counter(
+        entry["toolset"]
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("toolset"), str)
+    )
+    return {
+        **builtin_manifest,
+        "source": "combined",
+        "toolsets": [
+            {"id": toolset, "tool_count": count}
+            for toolset, count in sorted(toolset_counts.items())
+        ],
+        "tools": entries,
+    }
+
+
 @dataclass(slots=True)
 class ToolRegistry:
     specs: dict[str, ToolSpec] | None = None
@@ -379,6 +446,14 @@ class ToolRegistry:
     ) -> ToolsetRegistry:
         return ToolsetRegistry.from_tool_manifest(self.manifest(), policies=policies)
 
+    @staticmethod
+    def toolset_registry_from_manifest(
+        manifest: dict[str, object],
+        *,
+        policies: dict[str, ToolsetPolicy] | None = None,
+    ) -> ToolsetRegistry:
+        return ToolsetRegistry.from_tool_manifest(manifest, policies=policies)
+
     def toolset_manifest(
         self,
         *,
@@ -416,7 +491,15 @@ class ToolRegistry:
             missing = sorted(required - set(item))
             if missing:
                 issues.append(f"{item.get('name', index)} missing {','.join(missing)}")
-            if item.get("source") not in {"builtin", "contributed", "mcp", "plugin", "skill", "subagent"}:
+            if item.get("source") not in {
+                "builtin",
+                "contributed",
+                "provider",
+                "mcp",
+                "plugin",
+                "skill",
+                "subagent",
+            }:
                 issues.append(f"{item.get('name', index)} source")
             tool_id = item.get("id")
             name = item.get("name")
@@ -594,3 +677,15 @@ def _capability_tags_for(*, spec: ToolSpec, metadata: dict[str, object]) -> list
     if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
         return sorted(set(value))
     return []
+
+
+def _contributed_manifest_source(source: ToolContributionSource) -> str:
+    if source is ToolContributionSource.PROVIDER:
+        return "provider"
+    return "contributed"
+
+
+def _contributed_toolset_for(source: str) -> str:
+    if source == "provider":
+        return "external"
+    return "runtime"

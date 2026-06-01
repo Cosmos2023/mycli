@@ -1,9 +1,57 @@
 from pathlib import Path
 
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionRegistration,
+    ToolContributionScope,
+    ToolContributionSource,
+)
+from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.approval.safety_policy import SafetyPolicy
-from mycli.tools.base import ToolParameter, ToolSpec
-from mycli.tools.registry import ToolRegistry, ToolsetPolicy, ToolsetRegistry
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.registry import (
+    ToolRegistry,
+    ToolsetPolicy,
+    ToolsetRegistry,
+    combined_tool_manifest,
+    contributed_tool_manifest_entry,
+)
+
+
+class FakeTool:
+    def __init__(self, name: str, description: str = "Fake tool") -> None:
+        self.spec = ToolSpec(
+            name=name,
+            description=description,
+            parameters=(ToolParameter(name="path", type="string", required=False),),
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        return ToolResult(success=True, summary=f"{self.spec.name} ok")
+
+
+def _contribution_registration(
+    tool: FakeTool,
+    *,
+    source: ToolContributionSource = ToolContributionSource.PROVIDER,
+) -> ToolContributionRegistration:
+    return ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
+            tool_id=f"{source.value}:{tool.spec.name}:thread",
+            display_name=tool.spec.name,
+            description=tool.spec.description,
+            route_key=ToolRouteKey.local(tool.spec.name),
+            source=source,
+            scope=ToolContributionScope.THREAD,
+            lifecycle_state=ToolContributionLifecycleState.EXPOSED,
+            spec=tool.spec,
+            origin_metadata={"provider_name": "fake-provider"},
+        ),
+        tool=tool,
+    )
 
 
 def test_tool_registry_validates_required_arguments_before_execution() -> None:
@@ -122,6 +170,37 @@ def test_toolset_registry_reports_alias_and_route_conflicts() -> None:
     } in conflicts
     assert {"type": "route_conflict", "route_name": "Read", "count": 2} in conflicts
     assert "conflicts" in registry.manifest_issues()
+
+
+def test_contributed_tool_manifest_entry_uses_same_tool_shape() -> None:
+    registration = _contribution_registration(FakeTool("daily_brief", "Prepare a brief"))
+
+    entry = contributed_tool_manifest_entry(registration)
+
+    assert entry["id"] == "provider:daily_brief:thread"
+    assert entry["name"] == "daily_brief"
+    assert entry["source"] == "provider"
+    assert entry["toolset"] == "external"
+    assert entry["parameters"][0]["name"] == "path"
+    assert entry["availability"] == {"status": "available", "state": "exposed"}
+    assert entry["contribution"]["scope"] == "thread"
+
+
+def test_combined_tool_manifest_includes_contributed_tools_and_toolsets(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+    registration = _contribution_registration(FakeTool("daily_brief", "Prepare a brief"))
+
+    manifest = combined_tool_manifest(
+        builtin_manifest=registry.manifest(),
+        contributed_tools=(registration,),
+    )
+
+    tools = {tool["name"]: tool for tool in manifest["tools"]}
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolsets"]}
+    assert manifest["source"] == "combined"
+    assert tools["Read"]["source"] == "builtin"
+    assert tools["daily_brief"]["source"] == "provider"
+    assert toolsets["external"]["tool_count"] == 1
 
 
 def test_builtin_tool_manifest_aligns_with_safety_policy(tmp_path: Path) -> None:

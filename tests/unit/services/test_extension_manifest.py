@@ -1,8 +1,47 @@
 from __future__ import annotations
 
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionRegistration,
+    ToolContributionScope,
+    ToolContributionSource,
+)
 from mycli.domain.runtime.gateway_contract import GATEWAY_ERROR_CODES
+from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.services.extensions import ExtensionManifestService
+from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+
+
+class FakeTool:
+    def __init__(self, name: str) -> None:
+        self.spec = ToolSpec(
+            name=name,
+            description="Fake contributed tool",
+            parameters=(ToolParameter(name="topic", type="string", required=False),),
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        return ToolResult(success=True, summary=f"{self.spec.name} ok")
+
+
+def _contribution_registration(name: str) -> ToolContributionRegistration:
+    tool = FakeTool(name)
+    return ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
+            tool_id=f"provider:{name}:thread",
+            display_name=name,
+            description=tool.spec.description,
+            route_key=ToolRouteKey.local(name),
+            source=ToolContributionSource.PROVIDER,
+            scope=ToolContributionScope.THREAD,
+            lifecycle_state=ToolContributionLifecycleState.EXPOSED,
+            spec=tool.spec,
+        ),
+        tool=tool,
+    )
 
 
 def test_extension_manifest_exposes_core_discovery_surfaces() -> None:
@@ -129,3 +168,18 @@ def test_extension_manifest_exposes_toolset_manifest() -> None:
     assert "Read" in toolsets["file"]["tools"]
     assert "files" in toolsets["file"]["aliases"]
     assert toolsets["terminal"]["sources"] == ["builtin"]
+
+
+def test_extension_manifest_unifies_builtin_and_contributed_tool_views() -> None:
+    manifest = ExtensionManifestService(
+        contributed_tools=(_contribution_registration("daily_brief"),)
+    ).manifest()
+
+    tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
+
+    assert tools["Read"]["source"] == "builtin"
+    assert tools["daily_brief"]["source"] == "provider"
+    assert tools["daily_brief"]["toolset"] == "external"
+    assert "daily_brief" in toolsets["external"]["tools"]
+    assert toolsets["external"]["sources"] == ["provider"]

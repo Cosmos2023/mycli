@@ -8,7 +8,8 @@ from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_RPC_METHODS,
     gateway_event_payload_schemas,
 )
-from mycli.tools.registry import ToolRegistry
+from mycli.domain.tooling.contributed_tools import ToolContributionRegistration
+from mycli.tools.registry import ToolRegistry, combined_tool_manifest
 
 
 _RPC_DESCRIPTIONS = {
@@ -60,14 +61,23 @@ _EVENT_DESCRIPTIONS = {
 class ExtensionManifestService:
     """Builds the read-only integration discovery manifest."""
 
-    def __init__(self, *, tool_registry: ToolRegistry | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tool_registry: ToolRegistry | None = None,
+        contributed_tools: tuple[ToolContributionRegistration, ...] = (),
+    ) -> None:
         self._tool_registry = tool_registry
+        self._contributed_tools = contributed_tools
 
     def manifest(self) -> dict[str, Any]:
         payload_schemas = gateway_event_payload_schemas()
         tool_registry = self._tool_registry or ToolRegistry(workspace_root=Path.cwd())
-        tool_manifest = tool_registry.manifest()
-        toolset_manifest = tool_registry.toolset_manifest()
+        tool_manifest = combined_tool_manifest(
+            builtin_manifest=tool_registry.manifest(),
+            contributed_tools=self._contributed_tools,
+        )
+        toolset_manifest = ToolRegistry.toolset_registry_from_manifest(tool_manifest).manifest()
         return {
             "schema_version": 1,
             "agent": {

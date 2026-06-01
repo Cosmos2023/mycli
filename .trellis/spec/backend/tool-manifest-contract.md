@@ -36,6 +36,8 @@ Each tool entry must include:
 
 - `id`: stable id, currently `builtin:<tool-name>`
 - `name`: route name used by the model/runtime
+- `source`: `builtin`, `contributed`, `provider`, `mcp`, `plugin`, `skill`,
+  or `subagent`
 - `toolset`: logical grouping such as `file`, `search`, `terminal`, `web`,
   `workflow`, `dev`, or `interaction`
 - `description`: provider-visible description
@@ -46,6 +48,8 @@ Each tool entry must include:
 - `capability_tags`: bounded machine-readable tags
 - `effects`: filesystem/network/process effect profile
 - `availability`: currently `{status: "available"}` for built-in tools
+- contributed-tool entries may include `contribution` metadata with bounded
+  display name, scope, lifecycle state, and origin fields.
 
 ## Contracts
 
@@ -63,6 +67,9 @@ Each tool entry must include:
   availability, alias, and conflict state without scraping human output.
 - `ToolRegistry.toolset_manifest()` must be read-only and must not alter
   `ToolRegistry.render_for_model()` ordering or provider-visible schema.
+- `combined_tool_manifest()` may merge built-in and contributed tool
+  registrations into the same manifest shape. This is a discovery view only;
+  it does not productize MCP/plugin/skills/subagent lifecycle.
 - Toolset entries include `id`, `enabled`, `aliases`, `sources`, `tool_count`,
   `tools`, and `availability`.
 - `ToolsetRegistry.manifest_issues()` reports malformed toolset rows and
@@ -82,6 +89,8 @@ Required tests for manifest changes:
   entries.
 - Toolset manifest shape, enablement, aliases, sources, conflict reporting, and
   representative toolset entries.
+- Combined manifest with at least one contributed registration preserving
+  builtin entries and contributed source/toolset metadata.
 - Extension manifest exposes `tool_manifest` and the `tools.manifest`
   capability.
 - Extension manifest exposes `toolset_manifest` and the `toolsets.manifest`
