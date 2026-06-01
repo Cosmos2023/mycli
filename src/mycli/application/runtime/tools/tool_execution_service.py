@@ -40,14 +40,20 @@ CONCURRENCY_SAFE_TOOLS = frozenset(
         "WebSearch",
         "WebFetch",
         "Lint",
+        "GitStatus",
+        "GitDiff",
+        "GitLog",
+        "GitShow",
     }
 )
 
 FILE_MUTATION_TOOLS = frozenset(
     {
         "Edit",
+        "Patch",
         "Write",
         "edit_file",
+        "patch_file",
         "write_file",
     }
 )
@@ -795,6 +801,9 @@ class ToolExecutionService:
         }
         if not result.success and result.error:
             metadata.update(self._lifecycle_text_metadata("error", result.error))
+            error_kind = result.raw_payload.get("error_kind")
+            if isinstance(error_kind, str) and error_kind:
+                metadata["error_kind"] = error_kind
         return RuntimeStreamEvent(
             kind="tool_complete" if result.success else "tool_failed",
             tool_name=call.name,
@@ -956,18 +965,24 @@ class ToolExecutionService:
         path = raw_path if isinstance(raw_path, str) and raw_path else None
         error_kind = result.raw_payload.get("error_kind")
         argument_keys = tuple(sorted(str(key) for key in call.arguments))
+        raw_payload_keys = tuple(sorted(str(key) for key in result.raw_payload))
         return {
             "tool_name": call.name,
+            "tool_id": self._tool_lifecycle_id(call),
             "tool_call_id": call.call_id or "",
             "arguments": call.arguments,
+            "argument_preview": self._trace_arguments_preview(call.arguments),
             "argument_count": len(argument_keys),
             "argument_keys": list(argument_keys),
             "summary": result.summary,
+            "result_summary": self._trace_preview(result.summary, max_chars=200),
+            "error_summary": self._trace_preview(result.error, max_chars=200),
             "success": result.success,
             "status": "succeeded" if result.success else "failed",
             "duration_ms": duration_ms,
             "path": path,
             "error_kind": error_kind if isinstance(error_kind, str) else None,
+            "raw_payload_keys": list(raw_payload_keys),
             "filesystem_effect": effect_profile.filesystem,
             "network_effect": effect_profile.network,
             "process_effect": effect_profile.process,
@@ -1342,6 +1357,31 @@ class ToolExecutionService:
         if len(normalized) <= max_chars:
             return normalized
         return normalized[: max_chars - 3] + "..."
+
+    def _trace_arguments_preview(self, arguments: dict[str, object]) -> str:
+        if not arguments:
+            return ""
+        parts: list[str] = []
+        for key in sorted(str(item) for item in arguments):
+            value = arguments.get(key)
+            parts.append(f"{key}={self._trace_argument_value(key, value)}")
+        return self._lifecycle_preview(" ".join(parts))
+
+    def _trace_argument_value(self, key: str, value: object) -> str:
+        lowered = key.lower()
+        if any(hint in lowered for hint in ("secret", "token", "password", "key", "auth")):
+            return "<redacted>"
+        if isinstance(value, str):
+            return self._lifecycle_preview(value)
+        if isinstance(value, bool | int | float):
+            return str(value)
+        if value is None:
+            return "null"
+        if isinstance(value, list):
+            return f"<list:{len(value)}>"
+        if isinstance(value, dict):
+            return f"<object:{len(value)}>"
+        return f"<{type(value).__name__}>"
 
     def _trace_text_metadata(
         self,

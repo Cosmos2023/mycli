@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from mycli.application.runtime.tools.tool_execution_service import ToolExecutionService
+from mycli.application.runtime.tools.tool_execution_service import (
+    CONCURRENCY_SAFE_TOOLS,
+    ToolExecutionService,
+)
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import InvokedSkillSnapshot, PlanState, RuntimeStreamEvent, TurnItemType
@@ -13,7 +16,7 @@ from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
 from mycli.services.tracing import TraceService
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.bash import BashTool
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_router import ToolRouter
@@ -537,6 +540,11 @@ def test_tool_execution_service_records_standard_tool_trace_payload(tmp_path: Pa
     assert trace.payload["error_kind"] is None
     assert trace.payload["argument_count"] == 1
     assert trace.payload["argument_keys"] == ["path"]
+    assert trace.payload["tool_id"] == "call_read_1"
+    assert trace.payload["argument_preview"] == "path=README.md"
+    assert trace.payload["result_summary"] == "Read README.md"
+    assert trace.payload["error_summary"] is None
+    assert trace.payload["raw_payload_keys"] == ["content", "path"]
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) -> None:
@@ -710,6 +718,9 @@ def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path
     assert trace.payload["error_kind"] == "tool_validation_error"
     assert trace.payload["argument_count"] == 1
     assert trace.payload["argument_keys"] == ["file_path"]
+    assert trace.payload["argument_preview"] == "file_path=notes.txt"
+    assert trace.payload["result_summary"] == "Tool Write could not run because its arguments were invalid."
+    assert "Missing required arguments: content" in str(trace.payload["error_summary"])
     assert trace.payload["filesystem_effect"] == "write"
     assert trace.payload["network_effect"] is False
     assert trace.payload["process_effect"] is False
@@ -895,8 +906,48 @@ def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) 
     assert failed.metadata["success"] is False
     assert isinstance(failed.metadata["error"], str)
     assert "Missing required arguments: content" in failed.metadata["error"]
+    assert failed.metadata["error_kind"] == "tool_validation_error"
     assert isinstance(failed.metadata["error_chars"], int)
     assert failed.metadata["error_truncated"] is False
+
+
+def test_tool_execution_service_classifies_git_tools_as_parallel_safe() -> None:
+    assert {"GitStatus", "GitDiff", "GitLog", "GitShow"}.issubset(CONCURRENCY_SAFE_TOOLS)
+
+
+def test_tool_execution_service_legacy_mutation_paths_include_patch(tmp_path: Path) -> None:
+    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
+
+    paths = service._legacy_mutation_paths(  # type: ignore[attr-defined]
+        ToolCall(
+            name="Patch",
+            arguments={"file_path": "app.py"},
+            reason="patch",
+        )
+    )
+
+    assert paths == ("app.py",)
+
+
+def test_tool_execution_service_trace_argument_preview_redacts_secret_values(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
+
+    payload = service._tool_execution_trace_payload(  # type: ignore[attr-defined]
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "deploy", "api_key": "secret-value"},
+            reason="deploy",
+            call_id="call_secret_1",
+        ),
+        result=ToolResult(success=True, summary="done", raw_payload={}),
+        duration_seconds=0.1,
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert "api_key=<redacted>" in payload["argument_preview"]
+    assert "secret-value" not in payload["argument_preview"]
 
 
 def test_tool_execution_service_marks_long_lifecycle_output_as_truncated(
