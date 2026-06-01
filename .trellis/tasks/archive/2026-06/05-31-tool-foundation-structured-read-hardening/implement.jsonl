@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/06-01-05-31-tool-foundation-structured-read-hardening/prd.md", "reason": "Task requirements and acceptance criteria"}
+{"file": ".trellis/tasks/06-01-05-31-tool-foundation-structured-read-hardening/research/hermes-tool-parity-notes.md", "reason": "Hermes comparison research"}
+{"file": "src/mycli/tools/read/csv_handler.py", "reason": "CSV/TSV Read now returns model-visible tabular content, offset/limit slices, snapshot metadata, and numeric profiles"}
+{"file": "src/mycli/tools/read/__init__.py", "reason": "ReadTool passes offset/limit to structured handlers and returns duplicate-read hints for unchanged ranges"}
+{"file": "src/mycli/services/context/tool_result_formatter.py", "reason": "Read evidence rendering now includes explicit File line for model-visible structured results"}
+{"file": "src/mycli/tools/bash.py", "reason": "Bash dedicated-tool reroutes now include actionable suggested arguments"}

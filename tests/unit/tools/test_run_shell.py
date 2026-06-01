@@ -89,6 +89,23 @@ def test_bash_tool_refuses_dedicated_read_command(tmp_path: Path) -> None:
     assert "Use Read instead" in result.error
 
 
+def test_bash_tool_reroute_includes_actionable_read_arguments(tmp_path: Path) -> None:
+    tool = BashTool(workspace_root=tmp_path)
+
+    result = tool.execute({"command": "head -100 data.csv"})
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "dedicated_tool_required"
+    assert result.raw_payload["reroute_tool"] == "Read"
+    assert result.raw_payload["suggested_arguments"] == {
+        "file_path": "data.csv",
+        "offset": 1,
+        "limit": 100,
+    }
+    assert "file_path=data.csv" in result.error
+    assert "limit=100" in result.error
+
+
 def test_bash_tool_refuses_denied_command(tmp_path: Path) -> None:
     tool = BashTool(workspace_root=tmp_path)
 

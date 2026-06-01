@@ -91,7 +91,7 @@ def read_file(
             handler = cast(
                 Callable[..., dict[str, Any]], getattr(handler_mod, "read_file")
             )
-            return handler(file_path, pages=pages)
+            return handler(file_path, offset=offset, limit=limit, pages=pages)
         except ImportError:
             return {
                 "error": (
@@ -166,6 +166,7 @@ class ReadTool:
     ) -> None:
         self._workspace_root = workspace_root
         self._snapshot_store = snapshot_store or FileSnapshotStore()
+        self._read_ranges: dict[tuple[str, int, int, str | None], FileSnapshot] = {}
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="read")
@@ -220,6 +221,30 @@ class ReadTool:
             self._snapshot_store.record(snapshot)
             payload["snapshot"] = snapshot.to_dict()
 
+        range_key = _read_range_key(
+            workspace_root=self._workspace_root,
+            target=target,
+            offset=offset,
+            limit=limit,
+            pages=cast(str | None, arguments.get("pages")),
+        )
+        if snapshot is not None and range_key is not None:
+            previous = self._read_ranges.get(range_key)
+            if previous is not None and _same_snapshot(previous, snapshot):
+                payload["dedup"] = True
+                payload["content"] = (
+                    f"{raw_path} was already read with offset={offset} "
+                    f"and limit={limit}; the file is unchanged. Use the "
+                    "previous content, choose a different offset/limit, or "
+                    "answer if you have enough information.\n"
+                )
+                return ToolResult(
+                    success=True,
+                    summary=f"Read {raw_path} (unchanged duplicate)",
+                    raw_payload={"path": raw_path, **payload},
+                )
+            self._read_ranges[range_key] = snapshot
+
         evidence: tuple[ToolEvidence, ...] = ()
         content = payload.get("content")
         if isinstance(content, str) and content:
@@ -257,6 +282,29 @@ def _strip_read_line_numbers(content: str) -> str:
         _, separator, text = line.partition("\t")
         lines.append(text if separator else line)
     return "\n".join(lines)
+
+
+def _read_range_key(
+    *,
+    workspace_root: Path,
+    target: Path,
+    offset: int,
+    limit: int,
+    pages: str | None,
+) -> tuple[str, int, int, str | None] | None:
+    root = workspace_root.resolve()
+    resolved = target.resolve()
+    if resolved != root and root not in resolved.parents:
+        return None
+    return (resolved.relative_to(root).as_posix(), offset, limit, pages)
+
+
+def _same_snapshot(left: FileSnapshot, right: FileSnapshot) -> bool:
+    return (
+        left.sha256 == right.sha256
+        and left.mtime_ns == right.mtime_ns
+        and left.size == right.size
+    )
 
 
 def _snapshot_from_read_payload(

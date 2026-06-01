@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/06-01-05-31-tool-foundation-structured-read-hardening/prd.md", "reason": "Acceptance criteria for verification"}
+{"file": "tests/unit/test_read_csv.py", "reason": "Covers CSV/TSV content visibility, offset/limit, and numeric profile generation"}
+{"file": "tests/unit/tools/test_read_only_tools.py", "reason": "Covers ReadTool model-visible CSV content, duplicate-read hints, and formatter output"}
+{"file": "tests/unit/tools/test_run_shell.py", "reason": "Covers actionable Bash reroute suggested arguments"}
+{"file": "evaluation/runs/03-weekly-data-summary-20260601T141033Z.json", "reason": "Real eval evidence: converged without loop_detected; remaining failures are exact phrase/number-format checks"}

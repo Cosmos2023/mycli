@@ -162,17 +162,24 @@ class BashTool:
                 },
             )
         if analysis.risk_level is ShellRiskLevel.ALLOW and analysis.reroute_tool is not None:
-            message = f"Use {analysis.reroute_tool} instead of Bash."
+            suggested_arguments = _suggested_tool_arguments(command_value)
+            message = _reroute_message(
+                tool_name=analysis.reroute_tool,
+                suggested_arguments=suggested_arguments,
+            )
+            raw_payload: dict[str, object] = {
+                "command": command_value,
+                "error_kind": "dedicated_tool_required",
+                "reroute_tool": analysis.reroute_tool,
+                "reroute_reason": message,
+            }
+            if suggested_arguments:
+                raw_payload["suggested_arguments"] = suggested_arguments
             return ToolResult(
                 success=False,
                 summary=f"Use {analysis.reroute_tool} instead of Bash",
                 error=message,
-                raw_payload={
-                    "command": command_value,
-                    "error_kind": "dedicated_tool_required",
-                    "reroute_tool": analysis.reroute_tool,
-                    "reroute_reason": message,
-                },
+                raw_payload=raw_payload,
             )
         payload = execute_bash(
             command_value,
@@ -198,3 +205,145 @@ class BashTool:
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
+
+
+def _suggested_tool_arguments(command: str) -> dict[str, object]:
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        return {}
+    if not args:
+        return {}
+    command_name = args[0]
+    if command_name == "cat":
+        file_path = _first_path_argument(args[1:])
+        return {"file_path": file_path} if file_path else {}
+    if command_name == "head":
+        return _suggest_head_arguments(args[1:])
+    if command_name == "tail":
+        return _suggest_tail_arguments(args[1:])
+    if command_name == "ls":
+        path = _first_path_argument(args[1:])
+        return {"path": path or "."}
+    if command_name in {"grep", "rg"}:
+        return _suggest_search_arguments(args[1:])
+    if command_name == "find":
+        return _suggest_glob_arguments(args[1:])
+    return {}
+
+
+def _suggest_head_arguments(args: list[str]) -> dict[str, object]:
+    limit = 10
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {"-n", "--lines"} and index + 1 < len(args):
+            parsed = _parse_positive_int(args[index + 1])
+            if parsed is not None:
+                limit = parsed
+            index += 2
+            continue
+        if arg.startswith("-") and arg[1:].isdigit():
+            limit = int(arg[1:])
+            index += 1
+            continue
+        if arg.startswith("--lines="):
+            parsed = _parse_positive_int(arg.partition("=")[2])
+            if parsed is not None:
+                limit = parsed
+            index += 1
+            continue
+        remaining.append(arg)
+        index += 1
+    file_path = _first_path_argument(remaining)
+    if not file_path:
+        return {}
+    return {"file_path": file_path, "offset": 1, "limit": limit}
+
+
+def _suggest_tail_arguments(args: list[str]) -> dict[str, object]:
+    lines = 10
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {"-n", "--lines"} and index + 1 < len(args):
+            parsed = _parse_positive_int(args[index + 1].lstrip("+"))
+            if parsed is not None:
+                lines = parsed
+            index += 2
+            continue
+        if arg.startswith("-") and arg[1:].isdigit():
+            lines = int(arg[1:])
+            index += 1
+            continue
+        if arg.startswith("--lines="):
+            parsed = _parse_positive_int(arg.partition("=")[2].lstrip("+"))
+            if parsed is not None:
+                lines = parsed
+            index += 1
+            continue
+        remaining.append(arg)
+        index += 1
+    file_path = _first_path_argument(remaining)
+    if not file_path:
+        return {}
+    return {
+        "file_path": file_path,
+        "note": f"Read supports offset/limit; use LS/Grep or a prior line count to choose the last {lines} lines.",
+    }
+
+
+def _suggest_search_arguments(args: list[str]) -> dict[str, object]:
+    positional = [arg for arg in args if not arg.startswith("-")]
+    if not positional:
+        return {}
+    suggested: dict[str, object] = {"query": positional[0]}
+    if len(positional) >= 2:
+        suggested["path"] = positional[1]
+    return suggested
+
+
+def _suggest_glob_arguments(args: list[str]) -> dict[str, object]:
+    path = "."
+    pattern = "*"
+    positional = [arg for arg in args if not arg.startswith("-")]
+    if positional:
+        path = positional[0]
+    for index, arg in enumerate(args):
+        if arg == "-name" and index + 1 < len(args):
+            pattern = args[index + 1]
+            break
+    return {"path": path, "pattern": pattern}
+
+
+def _first_path_argument(args: list[str]) -> str | None:
+    for arg in args:
+        if arg == "--":
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return None
+
+
+def _parse_positive_int(value: str) -> int | None:
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _reroute_message(
+    *,
+    tool_name: str,
+    suggested_arguments: dict[str, object],
+) -> str:
+    if not suggested_arguments:
+        return f"Use {tool_name} instead of Bash."
+    args_preview = " ".join(
+        f"{key}={value}" for key, value in suggested_arguments.items()
+    )
+    return f"Use {tool_name} instead of Bash with {args_preview}."

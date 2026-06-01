@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from mycli.domain.tools import ToolCall, ToolEvidence
+from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.tools.base import ToolResult
 from mycli.tools.grep import GrepTool
 from mycli.tools.ls import LSTool
@@ -109,6 +110,86 @@ def test_read_file_exposes_file_excerpt_evidence(tmp_path: Path) -> None:
     assert evidence.line_end == 2
     assert "hello world" in evidence.snippet
     assert "second line" in evidence.snippet
+
+
+def test_read_csv_exposes_model_visible_table_content(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "weekly_sales.csv").write_text(
+        "owner,region,weekly_revenue,new_deals\n"
+        "Lin,East,128000,5\n"
+        "Chen,South,42000,2\n",
+        encoding="utf-8",
+    )
+
+    tool = ReadTool(root)
+    result = tool.execute({"file_path": "weekly_sales.csv"})
+    rendered = ToolResultFormatter().format("Read", result)
+
+    assert result.success is True
+    assert result.evidence
+    assert "owner,region,weekly_revenue,new_deals" in rendered
+    assert "Chen,South,42000,2" in rendered
+    assert "File: weekly_sales.csv" in rendered
+
+
+def test_read_csv_offset_limit_is_model_visible(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "data.csv").write_text(
+        "name,score\nAlice,10\nBob,20\nCharlie,30\nDana,40\n",
+        encoding="utf-8",
+    )
+
+    tool = ReadTool(root)
+    result = tool.execute({"file_path": "data.csv", "offset": 3, "limit": 2})
+    rendered = ToolResultFormatter().format("Read", result)
+
+    assert result.success is True
+    assert "Bob,20" in rendered
+    assert "Charlie,30" in rendered
+    assert "Alice,10" not in rendered
+    assert result.raw_payload["shown_lines"] == 2
+    assert result.raw_payload["truncated"] is True
+
+
+def test_read_csv_numeric_profile_is_model_visible(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "weekly_sales.csv").write_text(
+        "owner,region,weekly_revenue,new_deals\n"
+        "Lin,East,128000,5\n"
+        "Chen,South,42000,2\n"
+        "Ho,West,131000,5\n",
+        encoding="utf-8",
+    )
+
+    tool = ReadTool(root)
+    result = tool.execute({"file_path": "weekly_sales.csv"})
+    rendered = ToolResultFormatter().format("Read", result)
+
+    assert result.success is True
+    assert result.raw_payload["numeric_summary"]["weekly_revenue"]["sum"] == 301000
+    assert "weekly_revenue: sum=301000" in rendered
+    assert "min=42000" in rendered
+    assert "owner=Chen" in rendered
+
+
+def test_repeated_unchanged_read_returns_dedup_hint(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("hello world\n", encoding="utf-8")
+
+    tool = ReadTool(root)
+    first = tool.execute({"file_path": "README.md"})
+    second = tool.execute({"file_path": "README.md"})
+    rendered = ToolResultFormatter().format("Read", second)
+
+    assert first.success is True
+    assert second.success is True
+    assert second.raw_payload["dedup"] is True
+    assert "already read" in rendered
+    assert "README.md" in rendered
 
 
 def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:

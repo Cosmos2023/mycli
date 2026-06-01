@@ -86,7 +86,11 @@ class ToolResultFormatter:
         *,
         snippet_max_chars: int = 800,
     ) -> str:
-        parts = [result.summary, "Evidence:"]
+        parts = [result.summary]
+        path = result.raw_payload.get("path")
+        if isinstance(path, str) and path:
+            parts.append(f"File: {path}")
+        parts.append("Evidence:")
         for evidence in result.evidence:
             parts.append(self._format_evidence_header(evidence))
             if evidence.snippet:
