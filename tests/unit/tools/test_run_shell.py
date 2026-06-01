@@ -3,7 +3,7 @@ from pathlib import Path
 from mycli.domain.runtime import RiskLevel
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
-from mycli.tools.bash import BashTool, derive_command_pattern
+from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
 
 
 def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:
@@ -19,6 +19,66 @@ def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:
 
     assert result.success is True
     assert result.raw_payload["output"].strip() == "ok"
+    assert result.raw_payload["exit_code"] == 0
+    assert result.raw_payload["stdout"].strip() == "ok"
+    assert result.raw_payload["stderr"] == ""
+    assert result.raw_payload["timed_out"] is False
+    assert isinstance(result.raw_payload["duration_ms"], int)
+    assert result.raw_payload["command_pattern"] == "python3 -c print('ok')"
+
+
+def test_shell_tool_executes_with_workspace_cwd(tmp_path: Path) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    tool = BashTool(workspace_root=tmp_path)
+
+    result = tool.execute({"command": "pwd", "cwd": "nested"})
+
+    assert result.success is True
+    assert result.raw_payload["cwd"] == str(nested.resolve())
+    assert str(nested.resolve()) in result.raw_payload["output"]
+
+
+def test_shell_tool_rejects_cwd_outside_workspace(tmp_path: Path) -> None:
+    tool = BashTool(workspace_root=tmp_path)
+
+    result = tool.execute({"command": "pwd", "cwd": "../outside"})
+
+    assert result.success is False
+    assert result.raw_payload["error_kind"] == "workspace_escape"
+
+
+def test_execute_bash_reports_nonzero_exit() -> None:
+    result = execute_bash(
+        "python3 -c \"import sys; sys.stderr.write('bad'); sys.exit(7)\""
+    )
+
+    assert result["exit_code"] == 7
+    assert result["error_kind"] == "nonzero_exit"
+    assert result["stderr"] == "bad"
+    assert "[stderr]" in result["output"]
+    assert result["timed_out"] is False
+
+
+def test_execute_bash_reports_timeout() -> None:
+    result = execute_bash(
+        "python3 -c \"import time; time.sleep(1)\"",
+        timeout=0,
+    )
+
+    assert result["exit_code"] == 143
+    assert result["error_kind"] == "timeout"
+    assert result["timed_out"] is True
+    assert result["timeout_seconds"] == 0
+
+
+def test_execute_bash_reports_truncation_metadata() -> None:
+    result = execute_bash("python3 -c \"print('x' * 20000)\"")
+
+    assert result["truncated"] is True
+    assert result["output_chars"] > 10_000
+    assert result["stdout_chars"] > 10_000
+    assert result["truncated_chars"] > 0
 
 
 def test_shell_tool_returns_error_when_args_are_missing(tmp_path: Path) -> None:

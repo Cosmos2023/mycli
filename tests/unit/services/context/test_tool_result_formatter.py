@@ -18,12 +18,49 @@ def test_run_shell_shows_tail() -> None:
     result = ToolResult(
         success=True,
         summary="Command exited with 0",
-        raw_payload={"stdout": "\n".join(lines), "stderr": ""},
+        raw_payload={
+            "exit_code": 0,
+            "stdout": "\n".join(lines),
+            "stderr": "",
+            "cwd": "/tmp/workspace",
+            "duration_ms": 12,
+            "command_pattern": "python3 -c",
+        },
     )
     output = formatter.format("Bash", result)
+    assert "Exit code: 0" in output
+    assert "Cwd: /tmp/workspace" in output
+    assert "Command pattern: python3 -c" in output
     assert "last 10 of 100 lines" in output
     assert "line 99" in output
     assert "命令执行完毕" in output
+
+
+def test_run_shell_failure_shows_diagnostics_and_tail() -> None:
+    formatter = ToolResultFormatter(run_shell_max_chars=1200)
+    result = ToolResult(
+        success=False,
+        summary="Command exited with 7",
+        error="bad",
+        raw_payload={
+            "exit_code": 7,
+            "stdout": "",
+            "stderr": "bad\nmore detail",
+            "output": "[stderr]\nbad\nmore detail\n[stdout]\n",
+            "cwd": "/tmp/workspace",
+            "duration_ms": 5,
+            "error_kind": "nonzero_exit",
+            "truncated": True,
+            "truncated_chars": 42,
+        },
+    )
+
+    output = formatter.format("Bash", result)
+
+    assert "Exit code: 7" in output
+    assert "Error kind: nonzero_exit" in output
+    assert "Output truncated: true (42 chars omitted)" in output
+    assert "bad" in output
 
 
 def test_search_text_includes_total_count_and_termination() -> None:

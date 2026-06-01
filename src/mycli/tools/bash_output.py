@@ -30,6 +30,8 @@ class BashOutputTool:
             )
         payload = SHELL_REGISTRY.read(shell_id)
         success = "error" not in payload
+        if not success:
+            payload.setdefault("error_kind", "shell_not_found")
         return ToolResult(
             success=success,
             summary=(

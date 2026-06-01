@@ -34,9 +34,12 @@ class KillShellTool:
                 success=False,
                 summary="Failed to kill shell",
                 error="KillShell requires shell_id.",
+                raw_payload={"error_kind": "missing_shell_id"},
             )
         payload = kill_shell(shell_id)
         success = "error" not in payload
+        if not success:
+            payload.setdefault("error_kind", "shell_not_found")
         return ToolResult(
             success=success,
             summary=f"Killed shell {shell_id}" if success else f"Failed to kill shell {shell_id}",

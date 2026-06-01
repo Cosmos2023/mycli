@@ -4,10 +4,12 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import time
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
 from mycli.tools.shell_safety import (
     ShellRiskLevel,
     analyze_shell_command,
@@ -50,8 +52,13 @@ def execute_bash(
     workdir: str | None = None,
     run_in_background: bool = False,
 ) -> dict[str, Any]:
+    effective_cwd = workdir or os.getcwd()
+    started = time.monotonic()
     if run_in_background:
-        return _run_background(command, timeout, workdir)
+        background_payload = _run_background(command, timeout, effective_cwd)
+        background_payload["cwd"] = effective_cwd
+        background_payload["duration_ms"] = _duration_ms(started)
+        return background_payload
 
     try:
         result = subprocess.run(
@@ -60,21 +67,57 @@ def execute_bash(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=workdir or os.getcwd(),
+            cwd=effective_cwd,
             executable=os.environ.get("SHELL", "/bin/bash"),
             check=False,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        stdout = _coerce_timeout_output(exc.stdout)
+        stderr = _coerce_timeout_output(exc.stderr)
+        output = _combine_output(stdout, stderr)
+        if not output:
+            output = f"[Command timed out after {timeout}s]"
+        output, output_meta = _truncate_output(output)
+        stdout, stdout_meta = _truncate_output(stdout)
+        stderr, stderr_meta = _truncate_output(stderr)
         return {
             "exit_code": 143,
-            "output": f"[Command timed out after {timeout}s]",
-            "truncated": False,
+            "stdout": stdout,
+            "stderr": stderr,
+            "output": output,
+            "timed_out": True,
+            "truncated": output_meta["truncated"],
+            "duration_ms": _duration_ms(started),
+            "cwd": effective_cwd,
+            "error_kind": "timeout",
+            "timeout_seconds": timeout,
+            "output_chars": output_meta["original_chars"],
+            "stdout_chars": stdout_meta["original_chars"],
+            "stderr_chars": stderr_meta["original_chars"],
+            "truncated_chars": output_meta["truncated_chars"],
         }
 
     output = _combine_output(result.stdout, result.stderr)
-    output, truncated = _truncate_output(output)
-
-    return {"exit_code": result.returncode, "output": output, "truncated": truncated}
+    output, output_meta = _truncate_output(output)
+    stdout, stdout_meta = _truncate_output(result.stdout)
+    stderr, stderr_meta = _truncate_output(result.stderr)
+    payload: dict[str, Any] = {
+        "exit_code": result.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "output": output,
+        "timed_out": False,
+        "truncated": output_meta["truncated"],
+        "duration_ms": _duration_ms(started),
+        "cwd": effective_cwd,
+        "output_chars": output_meta["original_chars"],
+        "stdout_chars": stdout_meta["original_chars"],
+        "stderr_chars": stderr_meta["original_chars"],
+        "truncated_chars": output_meta["truncated_chars"],
+    }
+    if result.returncode != 0:
+        payload["error_kind"] = "nonzero_exit"
+    return payload
 
 
 def _run_background(
@@ -99,9 +142,14 @@ def _combine_output(stdout: str, stderr: str) -> str:
     return stdout
 
 
-def _truncate_output(output: str) -> tuple[str, bool]:
+def _truncate_output(output: str) -> tuple[str, dict[str, int | bool]]:
+    original_chars = len(output)
     if len(output) <= OUTPUT_CHAR_LIMIT:
-        return output, False
+        return output, {
+            "truncated": False,
+            "original_chars": original_chars,
+            "truncated_chars": 0,
+        }
 
     omitted = len(output) - OUTPUT_CHAR_LIMIT
     truncated_output = (
@@ -110,7 +158,23 @@ def _truncate_output(output: str) -> tuple[str, bool]:
         f"{output[-OUTPUT_TAIL_CHARS:]}\n"
         "[Full output saved. Use Read to view the persisted file.]"
     )
-    return truncated_output, True
+    return truncated_output, {
+        "truncated": True,
+        "original_chars": original_chars,
+        "truncated_chars": omitted,
+    }
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
+
+
+def _coerce_timeout_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 class BashTool:
@@ -127,6 +191,7 @@ class BashTool:
                 items_schema={"type": "string"},
             ),
             ToolParameter(name="timeout", type="integer", required=False),
+            ToolParameter(name="cwd", type="string", required=False),
             ToolParameter(name="run_in_background", type="boolean", required=False),
         ),
         risk_level="high",
@@ -179,17 +244,21 @@ class BashTool:
                 success=False,
                 summary=f"Use {analysis.reroute_tool} instead of Bash",
                 error=message,
-                raw_payload=raw_payload,
+                raw_payload={
+                    **raw_payload,
+                    "command_pattern": analysis.command_pattern,
+                },
             )
+        cwd_result = self._resolve_cwd(arguments.get("cwd"))
+        if isinstance(cwd_result, ToolResult):
+            return cwd_result
         payload = execute_bash(
             command_value,
             timeout=int(arguments.get("timeout", 120)),
-            workdir=str(self._workspace_root),
+            workdir=str(cwd_result),
             run_in_background=bool(arguments.get("run_in_background", False)),
         )
-        if "output" in payload:
-            payload.setdefault("stdout", payload["output"])
-            payload.setdefault("stderr", "")
+        payload.setdefault("command_pattern", analysis.command_pattern)
         exit_code = payload.get("exit_code")
         success = exit_code == 0 or payload.get("status") == "running"
         return ToolResult(
@@ -205,6 +274,40 @@ class BashTool:
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
+
+    def _resolve_cwd(self, raw_cwd: object) -> Path | ToolResult:
+        if raw_cwd is None or raw_cwd == "":
+            return self._workspace_root.resolve()
+        if not isinstance(raw_cwd, str):
+            return ToolResult(
+                success=False,
+                summary="Invalid shell cwd",
+                error="Bash cwd must be a string path within the workspace.",
+                raw_payload={"error_kind": "invalid_cwd"},
+            )
+        try:
+            cwd = resolve_workspace_path(self._workspace_root, raw_cwd)
+            if not cwd.is_dir():
+                return ToolResult(
+                    success=False,
+                    summary="Invalid shell cwd",
+                    error=f"Bash cwd is not a directory: {raw_cwd}",
+                    raw_payload={
+                        "cwd": raw_cwd,
+                        "error_kind": "not_directory",
+                    },
+                )
+        except Exception as exc:
+            return ToolResult(
+                success=False,
+                summary="Invalid shell cwd",
+                error=str(exc),
+                raw_payload={
+                    "cwd": raw_cwd,
+                    "error_kind": classify_filesystem_error(exc),
+                },
+            )
+        return cwd
 
 
 def _suggested_tool_arguments(command: str) -> dict[str, object]:

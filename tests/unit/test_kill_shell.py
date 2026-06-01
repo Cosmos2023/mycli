@@ -1,5 +1,5 @@
 from mycli.tools.bash import _background_processes, execute_bash
-from mycli.tools.kill_shell import kill_shell
+from mycli.tools.kill_shell import KillShellTool, kill_shell
 
 
 class TestKillShell:
@@ -17,3 +17,16 @@ class TestKillShell:
         result = kill_shell("nosuchid")
 
         assert "error" in result
+        assert result["error_kind"] == "shell_not_found"
+
+    def test_kill_tool_reports_missing_shell_id(self):
+        result = KillShellTool().execute({})
+
+        assert result.success is False
+        assert result.raw_payload["error_kind"] == "missing_shell_id"
+
+    def test_kill_tool_reports_missing_shell(self):
+        result = KillShellTool().execute({"shell_id": "nosuchid"})
+
+        assert result.success is False
+        assert result.raw_payload["error_kind"] == "shell_not_found"

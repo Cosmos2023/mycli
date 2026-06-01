@@ -44,6 +44,10 @@ class ToolResultFormatter:
 
     def _render(self, tool_name: str, result: ToolResult) -> str:
         if not result.success:
+            if tool_name in {"run_shell", "Bash"}:
+                rendered = self._render_shell_result(result)
+                if rendered is not None:
+                    return rendered
             return self._render_failure(result)
         if result.evidence and tool_name in {"read_file", "read_file_range", "Read"}:
             notice = (
@@ -251,22 +255,57 @@ class ToolResultFormatter:
         return "\n".join(parts)
 
     def _render_shell_result(self, result: ToolResult) -> str | None:
+        if not result.raw_payload:
+            return None
+        metadata = self._render_shell_metadata(result)
         stdout = result.raw_payload.get("stdout")
         stderr = result.raw_payload.get("stderr")
-        output = stdout if isinstance(stdout, str) and stdout.strip() else stderr
+        combined = result.raw_payload.get("output")
+        output = combined if isinstance(combined, str) and combined.strip() else stdout
         if not isinstance(output, str) or not output.strip():
-            return result.summary
+            output = stderr
+        if not isinstance(output, str) or not output.strip():
+            return "\n".join([result.summary, *metadata])
         lines = output.rstrip().splitlines()
         tail = lines[-10:] if len(lines) > 10 else lines
         preview = _normalize_whitespace(output)[:240]
         parts = [
             result.summary,
+            *metadata,
             f"Stdout preview: {preview}",
             f"Output (last {len(tail)} of {len(lines)} lines):",
             "\n".join(tail),
             "[命令执行完毕。如果你已有足够信息，现在就可以回答。]",
         ]
         return "\n".join(parts)
+
+    def _render_shell_metadata(self, result: ToolResult) -> list[str]:
+        payload = result.raw_payload
+        parts: list[str] = []
+        exit_code = payload.get("exit_code")
+        if isinstance(exit_code, int):
+            parts.append(f"Exit code: {exit_code}")
+        cwd = payload.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            parts.append(f"Cwd: {cwd}")
+        error_kind = payload.get("error_kind")
+        if isinstance(error_kind, str) and error_kind:
+            parts.append(f"Error kind: {error_kind}")
+        command_pattern = payload.get("command_pattern")
+        if isinstance(command_pattern, str) and command_pattern:
+            parts.append(f"Command pattern: {command_pattern}")
+        duration_ms = payload.get("duration_ms")
+        if isinstance(duration_ms, int):
+            parts.append(f"Duration: {duration_ms}ms")
+        if payload.get("timed_out") is True:
+            parts.append("Timed out: true")
+        if payload.get("truncated") is True:
+            truncated_chars = payload.get("truncated_chars")
+            if isinstance(truncated_chars, int) and truncated_chars > 0:
+                parts.append(f"Output truncated: true ({truncated_chars} chars omitted)")
+            else:
+                parts.append("Output truncated: true")
+        return parts
 
     def _render_diff_result(self, result: ToolResult) -> str | None:
         diff = result.raw_payload.get("diff")

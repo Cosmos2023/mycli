@@ -27,3 +27,10 @@ def test_bash_output_reports_missing_shell() -> None:
 
     assert output.success is False
     assert output.raw_payload["error_kind"] == "shell_not_found"
+
+
+def test_bash_output_reports_missing_shell_id_argument() -> None:
+    output = BashOutputTool().execute({})
+
+    assert output.success is False
+    assert output.raw_payload["error_kind"] == "missing_shell_id"
