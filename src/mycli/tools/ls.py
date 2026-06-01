@@ -39,7 +39,15 @@ def ls(path: str) -> dict[str, Any]:
         elif entry.is_file():
             files.append(entry.name)
 
-    return {"dirs": dirs, "files": files, "hidden": hidden, "total": len(entries)}
+    return {
+        "dirs": dirs,
+        "files": files,
+        "hidden": hidden,
+        "dir_count": len(dirs),
+        "file_count": len(files),
+        "hidden_count": len(hidden),
+        "total": len(entries),
+    }
 
 
 class LSTool:
@@ -75,7 +83,7 @@ class LSTool:
         entries = [*payload["dirs"], *payload["files"], *payload.get("hidden", [])]
         return ToolResult(
             success=True,
-            summary=", ".join(entries),
+            summary=f"Listed {raw_path}: {payload['total']} entries ({', '.join(entries[:10])})",
             raw_payload={"path": raw_path, "entries": entries, **payload},
         )
 

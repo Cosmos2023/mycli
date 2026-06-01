@@ -117,6 +117,10 @@ class ToolResultFormatter:
             rendered = self._render_search_result(result)
             if rendered is not None:
                 return rendered
+        if tool_name == "Glob":
+            rendered = self._render_glob_result(result)
+            if rendered is not None:
+                return rendered
         if tool_name in {"list_directory", "LS"}:
             rendered = self._render_directory_result(result)
             if rendered is not None:
@@ -138,6 +142,45 @@ class ToolResultFormatter:
         matches = result.raw_payload.get("matches")
         if not isinstance(matches, list):
             return None
+        structured = result.raw_payload.get("structured_matches")
+        mode = result.raw_payload.get("mode")
+        if isinstance(structured, list) and mode == "files_with_matches":
+            parts = [result.summary, f"Files with matches ({len(structured)}):"]
+            for item in structured[: self._search_max_matches]:
+                if isinstance(item, dict) and isinstance(item.get("path"), str):
+                    parts.append(f"  {item['path']}")
+            if len(structured) > self._search_max_matches:
+                parts.append(
+                    f"  ... and {len(structured) - self._search_max_matches} more files. "
+                    "Narrow path/include if needed."
+                )
+            parts.append("[搜索完毕。如果你已有足够信息，现在就可以回答。]")
+            return "\n".join(parts)
+
+        if isinstance(structured, list):
+            parts = [result.summary, f"Matches ({len(structured)} total):"]
+            for item in structured[: self._search_max_matches]:
+                if not isinstance(item, dict):
+                    continue
+                path = item.get("path", "")
+                line = item.get("line_number", "")
+                text = item.get("line", "")
+                parts.append(f"  {path}:{line}: {text}")
+            if len(structured) > self._search_max_matches:
+                parts.append(
+                    f"  ... and {len(structured) - self._search_max_matches} more matches. "
+                    "Narrow your search if needed."
+                )
+            parts.append("[搜索完毕。如果你已有足够信息，现在就可以回答。]")
+            if result.evidence:
+                parts.append("Evidence:")
+                for evidence in result.evidence:
+                    parts.append(self._format_evidence_header(evidence))
+                    if evidence.snippet:
+                        snippet = _normalize_whitespace(evidence.snippet)
+                        parts.append(f"  snippet: {snippet[:800]}")
+            return "\n".join(parts)
+
         parts = [result.summary, f"Matches ({len(matches)} total):"]
         for item in matches[: self._search_max_matches]:
             if not isinstance(item, dict):
@@ -162,16 +205,49 @@ class ToolResultFormatter:
         return "\n".join(parts)
 
     def _render_directory_result(self, result: ToolResult) -> str | None:
-        entries = result.raw_payload.get("entries")
-        if not isinstance(entries, list):
+        dirs = result.raw_payload.get("dirs")
+        files = result.raw_payload.get("files")
+        hidden = result.raw_payload.get("hidden")
+        if not isinstance(dirs, list) or not isinstance(files, list) or not isinstance(hidden, list):
+            entries = result.raw_payload.get("entries")
+            if not isinstance(entries, list):
+                return None
+            display_entries = [str(entry) for entry in entries if isinstance(entry, str)]
+            parts = [result.summary, f"Total entries: {len(display_entries)}"]
+            preview = display_entries[:10]
+            if preview:
+                parts.append(f"Entries: {', '.join(preview)}")
+            if len(display_entries) > len(preview):
+                parts.append(f"... and {len(display_entries) - len(preview)} more entries.")
+            return "\n".join(parts)
+        dir_names = [f"{entry}/" for entry in dirs if isinstance(entry, str)]
+        file_names = [entry for entry in files if isinstance(entry, str)]
+        hidden_names = [entry for entry in hidden if isinstance(entry, str)]
+        total = result.raw_payload.get("total")
+        parts = [result.summary, f"Total entries: {total if isinstance(total, int) else len(dir_names) + len(file_names) + len(hidden_names)}"]
+        parts.append(f"Directories ({len(dir_names)}): {', '.join(dir_names[:10]) or 'none'}")
+        parts.append(f"Files ({len(file_names)}): {', '.join(file_names[:10]) or 'none'}")
+        parts.append(f"Hidden ({len(hidden_names)}): {', '.join(hidden_names[:10]) or 'none'}")
+        return "\n".join(parts)
+
+    def _render_glob_result(self, result: ToolResult) -> str | None:
+        files = result.raw_payload.get("files")
+        dirs = result.raw_payload.get("dirs")
+        if not isinstance(files, list) or not isinstance(dirs, list):
             return None
-        display_entries = [str(entry) for entry in entries if isinstance(entry, str)]
-        parts = [result.summary, f"Total entries: {len(display_entries)}"]
-        preview = display_entries[:10]
+        pattern = result.raw_payload.get("pattern")
+        pattern_text = pattern if isinstance(pattern, str) and pattern else "<unknown>"
+        file_names = [entry for entry in files if isinstance(entry, str)]
+        dir_names = [f"{entry}/" for entry in dirs if isinstance(entry, str)]
+        parts = [
+            result.summary,
+            f"Glob matches for {pattern_text}: files={len(file_names)} dirs={len(dir_names)}",
+        ]
+        preview = [*dir_names[:5], *file_names[:10]]
         if preview:
-            parts.append(f"Entries: {', '.join(preview)}")
-        if len(display_entries) > len(preview):
-            parts.append(f"... and {len(display_entries) - len(preview)} more entries.")
+            parts.append(f"Matches: {', '.join(preview)}")
+        if result.raw_payload.get("truncated") is True:
+            parts.append("Results truncated. Narrow the glob pattern or path.")
         return "\n".join(parts)
 
     def _render_shell_result(self, result: ToolResult) -> str | None:

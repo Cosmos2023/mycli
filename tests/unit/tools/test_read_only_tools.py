@@ -4,6 +4,7 @@ from mycli.domain.tools import ToolCall, ToolEvidence
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.tools.base import ToolResult
 from mycli.tools.grep import GrepTool
+from mycli.tools.glob import GlobTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
 from mycli.tools.registry import default_tools
@@ -262,6 +263,89 @@ def test_read_file_returns_structured_failure_for_missing_file(tmp_path: Path) -
     assert result.error is not None
     assert result.raw_payload["path"] == "missing.py"
     assert "not found" in result.error.lower()
+
+
+def test_ls_formatter_separates_directory_file_and_hidden_counts(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "src").mkdir()
+    (root / "README.md").write_text("hello\n", encoding="utf-8")
+    (root / ".env.example").write_text("TOKEN=\n", encoding="utf-8")
+
+    result = LSTool(root).execute({"path": "."})
+    rendered = ToolResultFormatter().format("LS", result)
+
+    assert result.success is True
+    assert result.raw_payload["dir_count"] == 1
+    assert result.raw_payload["file_count"] == 1
+    assert result.raw_payload["hidden_count"] == 1
+    assert "Directories (1): src/" in rendered
+    assert "Files (1): README.md" in rendered
+    assert "Hidden (1): .env.example" in rendered
+
+
+def test_glob_returns_formatter_visible_matches(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_app.py").write_text("def test_app(): pass\n", encoding="utf-8")
+
+    result = GlobTool(root).execute({"pattern": "**/*.py", "path": "."})
+    rendered = ToolResultFormatter().format("Glob", result)
+
+    assert result.success is True
+    assert result.raw_payload["file_count"] == 2
+    assert "Glob matches for **/*.py" in rendered
+    assert "src/app.py" in rendered
+    assert "tests/test_app.py" in rendered
+
+
+def test_grep_files_with_matches_is_model_visible(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("hello world\n", encoding="utf-8")
+    (root / "notes.md").write_text("hello again\n", encoding="utf-8")
+
+    result = GrepTool(root).execute({"pattern": "hello", "output_mode": "files_with_matches"})
+    rendered = ToolResultFormatter().format("Grep", result)
+
+    assert result.success is True
+    assert result.raw_payload["match_count"] == 2
+    assert "Files with matches (2):" in rendered
+    assert "README.md" in rendered
+    assert "notes.md" in rendered
+
+
+def test_grep_content_matches_are_structured_and_locatable(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("first\nhello world\n", encoding="utf-8")
+
+    result = GrepTool(root).execute({"pattern": "hello", "output_mode": "content"})
+    rendered = ToolResultFormatter().format("Grep", result)
+
+    assert result.success is True
+    structured = result.raw_payload["structured_matches"]
+    assert structured[0]["path"] == "README.md"
+    assert structured[0]["line_number"] == 2
+    assert "README.md:2: hello world" in rendered
+    assert result.evidence[0].path == "README.md"
+
+
+def test_grep_empty_results_are_actionable(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("hello world\n", encoding="utf-8")
+
+    result = GrepTool(root).execute({"pattern": "missing"})
+    rendered = ToolResultFormatter().format("Grep", result)
+
+    assert result.success is True
+    assert result.raw_payload["match_count"] == 0
+    assert "No matches found" in rendered
+    assert "try broader terms" in rendered
 
 
 def test_search_text_supports_path_and_glob_filters(tmp_path: Path) -> None:

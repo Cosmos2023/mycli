@@ -35,7 +35,11 @@ def glob(pattern: str, path: str | None = None) -> dict[str, Any]:
     return {
         "files": files,
         "dirs": dirs,
+        "entries": [*dirs, *files],
+        "file_count": len(files),
+        "dir_count": len(dirs),
         "count": len(shown_matches),
+        "total_matches": len(matches),
         "truncated": truncated,
     }
 

@@ -116,41 +116,94 @@ class GrepTool:
                 success=False,
                 summary=f"Failed to grep for {pattern}",
                 error=str(payload["error"]),
-                raw_payload=payload,
+                raw_payload={"query": pattern, "path": raw_path, "error_kind": "grep_error", **payload},
             )
+        structured_matches = self._structured_matches(
+            matches=payload.get("matches", []),
+            output_mode=str(payload.get("mode", "files_with_matches")),
+        )
+        match_count = int(payload.get("count", len(structured_matches)))
+        summary = (
+            f"No matches found for {pattern}; try broader terms, adjust path/include, or inspect files with LS/Glob"
+            if match_count == 0
+            else f"Found {match_count} matches for {pattern}"
+        )
         return ToolResult(
             success=True,
-            summary=f"Found {payload['count']} matches for {pattern}",
+            summary=summary,
             raw_payload={
                 "query": pattern,
                 "path": raw_path,
+                "match_count": match_count,
+                "structured_matches": structured_matches,
                 "matches": payload["matches"],
                 **payload,
             },
-            evidence=self._evidence(pattern, payload.get("matches", [])),
+            evidence=self._evidence(pattern, structured_matches),
         )
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
 
-    def _evidence(self, pattern: str, matches: object) -> tuple[ToolEvidence, ...]:
+    def _structured_matches(
+        self,
+        *,
+        matches: object,
+        output_mode: str,
+    ) -> list[dict[str, object]]:
         if not isinstance(matches, list):
-            return ()
-        evidence: list[ToolEvidence] = []
-        for index, match in enumerate(matches[:8], start=1):
+            return []
+        structured: list[dict[str, object]] = []
+        for match in matches:
             if not isinstance(match, str):
                 continue
-            if ":" not in match:
+            if output_mode == "files_with_matches":
+                structured.append(
+                    {
+                        "kind": "file",
+                        "path": self._display_path(match),
+                    }
+                )
                 continue
-            parts = match.split(":", 2)
-            if len(parts) >= 3 and parts[1].isdigit():
-                path, line_number, line = parts[0], int(parts[1]), parts[2]
-                display_path = self._display_path(path)
+            parsed = self._parse_content_match(match)
+            if parsed is not None:
+                structured.append(parsed)
+        return structured
+
+    def _parse_content_match(self, match: str) -> dict[str, object] | None:
+        parts = match.split(":", 2)
+        if len(parts) < 3 or not parts[1].isdigit():
+            return None
+        path, line_number, line = parts[0], int(parts[1]), parts[2]
+        return {
+            "kind": "line",
+            "path": self._display_path(path),
+            "line_number": line_number,
+            "line": line,
+        }
+
+    def _evidence(
+        self,
+        pattern: str,
+        structured_matches: object,
+    ) -> tuple[ToolEvidence, ...]:
+        if not isinstance(structured_matches, list):
+            return ()
+        evidence: list[ToolEvidence] = []
+        for index, match in enumerate(structured_matches[:8], start=1):
+            if not isinstance(match, dict):
+                continue
+            if match.get("kind") != "line":
+                continue
+            path = match.get("path")
+            line_number = match.get("line_number")
+            line = match.get("line")
+            if isinstance(path, str) and isinstance(line_number, int) and isinstance(line, str):
                 evidence.append(
                     ToolEvidence(
                         kind="search_match",
                         title=f'Match {index} for "{pattern}"',
-                        path=display_path,
+                        path=path,
                         line_start=line_number,
                         line_end=line_number,
                         snippet=line,
