@@ -1167,6 +1167,25 @@ class DoctorService:
             f"toolsets: {_format_count_pairs(tuple(sorted(toolset_counts.items())))}",
             f"risk_levels: {_format_count_pairs(tuple(sorted(risk_counts.items())))}",
         ]
+        toolset_registry = registry.toolset_registry()
+        toolset_issues = toolset_registry.manifest_issues()
+        if toolset_issues:
+            return (
+                DoctorCheck(
+                    "tool_manifest",
+                    DoctorStatus.FAILED,
+                    f"toolset manifest invalid: {_bounded_name_list(list(toolset_issues))}",
+                ),
+            )
+        toolset_manifest = toolset_registry.manifest()
+        summary = toolset_manifest.get("summary")
+        if isinstance(summary, dict):
+            detail_parts.append(
+                "toolset_registry: "
+                f"enabled={summary.get('enabled_toolsets', 0)} "
+                f"disabled={summary.get('disabled_toolsets', 0)} "
+                f"conflicts={summary.get('conflict_count', 0)}"
+            )
         return (
             DoctorCheck(
                 "tool_manifest",

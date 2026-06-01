@@ -6,6 +6,11 @@
 manifest is the source of truth for local tool ids, toolset grouping, provider
 schema metadata, risk policy metadata, effect profile, and availability.
 
+`ToolsetRegistry` exposes a second read-only manifest for extension
+foundation clients. It groups tools by toolset and reports enablement,
+aliases, sources, availability, and conflicts without changing the
+provider-visible tool schema.
+
 ## Scope / Trigger
 
 Apply this contract when changing:
@@ -53,8 +58,19 @@ Each tool entry must include:
 - `ExtensionManifestService.manifest()` includes `tool_manifest` so gateway and
   extension clients can discover local tools without scraping human `/tools`
   output.
+- `ExtensionManifestService.manifest()` includes `toolset_manifest` so gateway
+  and future MCP/plugin/skills/subagent clients can inspect toolset grouping,
+  availability, alias, and conflict state without scraping human output.
+- `ToolRegistry.toolset_manifest()` must be read-only and must not alter
+  `ToolRegistry.render_for_model()` ordering or provider-visible schema.
+- Toolset entries include `id`, `enabled`, `aliases`, `sources`, `tool_count`,
+  `tools`, and `availability`.
+- `ToolsetRegistry.manifest_issues()` reports malformed toolset rows and
+  alias/route conflicts. Conflicts are diagnostic-only in this foundation
+  slice; runtime enable/disable enforcement is a later productization step.
 - `DoctorService` includes a `tool_manifest` check that validates required
-  fields, uniqueness, risk levels, parameter shape, and availability.
+  fields, uniqueness, risk levels, parameter shape, availability, and
+  toolset manifest health.
 - Doctor output must remain bounded and must not print raw tool arguments,
   file contents, command strings, headers, or secret-like values.
 
@@ -64,7 +80,11 @@ Required tests for manifest changes:
 
 - Registry manifest shape, uniqueness, toolset counts, and representative
   entries.
+- Toolset manifest shape, enablement, aliases, sources, conflict reporting, and
+  representative toolset entries.
 - Extension manifest exposes `tool_manifest` and the `tools.manifest`
+  capability.
+- Extension manifest exposes `toolset_manifest` and the `toolsets.manifest`
   capability.
 - Doctor reports `tool_manifest=ok` for a valid built-in registry.
 - Safety policy remains aligned with manifest risk/approval metadata for core

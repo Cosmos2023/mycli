@@ -337,6 +337,7 @@ def test_doctor_service_validates_builtin_tool_manifest(tmp_path: Path) -> None:
     assert check.status is DoctorStatus.OK
     assert "builtin tools" in check.message
     assert "toolsets" in check.detail
+    assert "toolset_registry" in check.detail
 
 
 def test_doctor_service_warns_for_missing_tool_environment(tmp_path: Path) -> None:

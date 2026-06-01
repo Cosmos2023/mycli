@@ -19,8 +19,15 @@ Hermes-agent was used as a maturity reference only; no Hermes code was copied.
   policy, capability tags, effects, and availability.
 - Extension manifest exposes the tool manifest.
 - Doctor validates the manifest shape.
+- Toolset registry foundation exposes toolset grouping, enablement, aliases,
+  source composition, availability, and conflict diagnostics through
+  `toolset_manifest`.
+- Extension manifest exposes `toolsets.manifest` so future MCP/plugin/skills
+  and subagent clients can inspect the same grouping surface without scraping
+  human output.
 
 Commit: `acea17c Make built-in tools discoverable as a stable catalog`
+Follow-up: ToolsetRegistry extension foundation slice
 
 ### Read / List / Search
 
@@ -77,6 +84,8 @@ Commit: `2aa4e72 Expose git inspection as stable local tools`
   without raw payload leakage.
 - Doctor now checks local tool environment availability for shell and git
   without executing commands.
+- Doctor now includes toolset registry health in the `tool_manifest` check,
+  including bounded enabled/disabled/conflict counts.
 
 Commit: `4dc4384 Align tool lifecycle diagnostics with expanded local tools`
 Commit: follow-up doctor tool environment check slice
@@ -112,6 +121,8 @@ Latest verified commands:
 ## Remaining Gaps Versus Hermes-agent
 
 - No plugin/MCP/ACP productized external tool ecosystem in this goal.
+- Toolset enable/disable is visible in the foundation manifest, but runtime
+  enforcement and user-facing configuration are not yet productized.
 - No browser/computer-use/vision/image-generation tools.
 - No sandbox backends beyond local shell; Hermes supports richer terminal
   environments.

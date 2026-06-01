@@ -67,6 +67,7 @@ class ExtensionManifestService:
         payload_schemas = gateway_event_payload_schemas()
         tool_registry = self._tool_registry or ToolRegistry(workspace_root=Path.cwd())
         tool_manifest = tool_registry.manifest()
+        toolset_manifest = tool_registry.toolset_manifest()
         return {
             "schema_version": 1,
             "agent": {
@@ -76,11 +77,20 @@ class ExtensionManifestService:
             "rpc_methods": _described_entries(SUPPORTED_GATEWAY_RPC_METHODS, _RPC_DESCRIPTIONS),
             "event_streams": _event_stream_entries(payload_schemas),
             "tool_manifest": tool_manifest,
+            "toolset_manifest": toolset_manifest,
             "capabilities": [
                 {
                     "id": "tools.manifest",
                     "status": "available",
                     "description": "Read-only built-in local tool manifest with risk and schema metadata.",
+                },
+                {
+                    "id": "toolsets.manifest",
+                    "status": "available",
+                    "description": (
+                        "Read-only toolset grouping, availability, alias, and conflict "
+                        "manifest for extension clients."
+                    ),
                 },
                 {
                     "id": "runtime.trace.export",

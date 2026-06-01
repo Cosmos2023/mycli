@@ -3,7 +3,7 @@ from pathlib import Path
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.approval.safety_policy import SafetyPolicy
 from mycli.tools.base import ToolParameter, ToolSpec
-from mycli.tools.registry import ToolRegistry
+from mycli.tools.registry import ToolRegistry, ToolsetPolicy, ToolsetRegistry
 
 
 def test_tool_registry_validates_required_arguments_before_execution() -> None:
@@ -54,6 +54,7 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     assert git_status["risk_level"] == "low"
     assert git_status["approval_policy"] == "auto_allow"
     assert "git" in git_status["capability_tags"]
+    assert git_status["source"] == "builtin"
 
 
 def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:
@@ -66,6 +67,61 @@ def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:
     assert toolsets["terminal"]["tool_count"] >= 3
     assert toolsets["dev"]["tool_count"] >= 5
     assert toolsets["workflow"]["tool_count"] >= 3
+
+
+def test_toolset_registry_manifest_exposes_enablement_aliases_and_sources(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    manifest = registry.toolset_manifest(
+        policies={"web": ToolsetPolicy(enabled=False, aliases=("network",))}
+    )
+
+    assert manifest["schema_version"] == 1
+    assert manifest["source"] == "extension_foundation"
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolsets"]}
+    assert toolsets["file"]["enabled"] is True
+    assert "files" in toolsets["file"]["aliases"]
+    assert toolsets["file"]["sources"] == ["builtin"]
+    assert "Read" in toolsets["file"]["tools"]
+    assert toolsets["web"]["enabled"] is False
+    assert toolsets["web"]["aliases"] == ["network"]
+    assert manifest["summary"]["disabled_toolsets"] == 1
+    assert manifest["summary"]["conflict_count"] == 0
+
+
+def test_toolset_registry_reports_alias_and_route_conflicts() -> None:
+    entries = (
+        {
+            "id": "builtin:Read",
+            "name": "Read",
+            "source": "builtin",
+            "toolset": "file",
+        },
+        {
+            "id": "contributed:Read",
+            "name": "Read",
+            "source": "contributed",
+            "toolset": "external",
+        },
+    )
+    registry = ToolsetRegistry(
+        entries,
+        policies={
+            "file": ToolsetPolicy(aliases=("shared",)),
+            "external": ToolsetPolicy(aliases=("shared",)),
+        },
+    )
+
+    manifest = registry.manifest()
+    conflicts = manifest["conflicts"]
+
+    assert {
+        "type": "alias_conflict",
+        "alias": "shared",
+        "toolsets": ["external", "file"],
+    } in conflicts
+    assert {"type": "route_conflict", "route_name": "Read", "count": 2} in conflicts
+    assert "conflicts" in registry.manifest_issues()
 
 
 def test_builtin_tool_manifest_aligns_with_safety_policy(tmp_path: Path) -> None:

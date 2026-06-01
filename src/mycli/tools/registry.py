@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +132,168 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
 }
 
 
+_DEFAULT_TOOLSET_ALIASES: dict[str, tuple[str, ...]] = {
+    "dev": ("git", "lint"),
+    "file": ("files", "fs"),
+    "interaction": ("clarify", "user-input"),
+    "search": ("find",),
+    "terminal": ("shell",),
+    "workflow": ("planning", "delegation"),
+}
+
+
+@dataclass(slots=True, frozen=True)
+class ToolsetPolicy:
+    enabled: bool = True
+    aliases: tuple[str, ...] = ()
+    availability: dict[str, object] = field(default_factory=lambda: {"status": "available"})
+
+
+@dataclass(slots=True, frozen=True)
+class ToolsetRegistry:
+    tool_entries: tuple[dict[str, object], ...]
+    policies: dict[str, ToolsetPolicy] = field(default_factory=dict)
+
+    @classmethod
+    def from_tool_manifest(
+        cls,
+        manifest: dict[str, object],
+        *,
+        policies: dict[str, ToolsetPolicy] | None = None,
+    ) -> "ToolsetRegistry":
+        tools = manifest.get("tools")
+        entries = tuple(item for item in tools if isinstance(item, dict)) if isinstance(tools, list) else ()
+        return cls(tool_entries=entries, policies={} if policies is None else dict(policies))
+
+    def manifest(self) -> dict[str, object]:
+        grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
+        for entry in self.tool_entries:
+            toolset = entry.get("toolset")
+            if isinstance(toolset, str) and toolset:
+                grouped[toolset].append(entry)
+        toolsets = [
+            self._toolset_entry(toolset_id, tuple(sorted(entries, key=lambda item: str(item.get("name", "")))))
+            for toolset_id, entries in sorted(grouped.items())
+        ]
+        conflicts = self.conflicts()
+        return {
+            "schema_version": 1,
+            "source": "extension_foundation",
+            "toolsets": toolsets,
+            "conflicts": conflicts,
+            "summary": {
+                "toolset_count": len(toolsets),
+                "tool_count": len(self.tool_entries),
+                "enabled_toolsets": sum(1 for item in toolsets if item["enabled"] is True),
+                "disabled_toolsets": sum(1 for item in toolsets if item["enabled"] is False),
+                "conflict_count": len(conflicts),
+            },
+        }
+
+    def conflicts(self) -> list[dict[str, object]]:
+        issues: list[dict[str, object]] = []
+        alias_owners: dict[str, str] = {}
+        for toolset_id in sorted(self._toolset_ids()):
+            aliases = self._aliases_for(toolset_id)
+            for alias in aliases:
+                owner = alias_owners.get(alias)
+                if owner is not None and owner != toolset_id:
+                    issues.append(
+                        {
+                            "type": "alias_conflict",
+                            "alias": alias,
+                            "toolsets": sorted((owner, toolset_id)),
+                        }
+                    )
+                else:
+                    alias_owners[alias] = toolset_id
+        route_counts = Counter(
+            entry.get("name") for entry in self.tool_entries if isinstance(entry.get("name"), str)
+        )
+        for route_name, count in sorted(route_counts.items()):
+            if count > 1:
+                issues.append(
+                    {
+                        "type": "route_conflict",
+                        "route_name": route_name,
+                        "count": count,
+                    }
+                )
+        return issues
+
+    def manifest_issues(self) -> tuple[str, ...]:
+        manifest = self.manifest()
+        issues: list[str] = []
+        toolsets = manifest.get("toolsets")
+        if not isinstance(toolsets, list) or not toolsets:
+            issues.append("toolsets")
+            return tuple(issues)
+        required = {
+            "id",
+            "enabled",
+            "aliases",
+            "sources",
+            "tool_count",
+            "tools",
+            "availability",
+        }
+        for index, item in enumerate(toolsets):
+            if not isinstance(item, dict):
+                issues.append(f"toolsets[{index}]")
+                continue
+            missing = sorted(required - set(item))
+            if missing:
+                issues.append(f"{item.get('id', index)} missing {','.join(missing)}")
+            if not isinstance(item.get("enabled"), bool):
+                issues.append(f"{item.get('id', index)} enabled")
+            if not isinstance(item.get("aliases"), list):
+                issues.append(f"{item.get('id', index)} aliases")
+            if not isinstance(item.get("tools"), list):
+                issues.append(f"{item.get('id', index)} tools")
+            availability = item.get("availability")
+            if not isinstance(availability, dict) or not isinstance(availability.get("status"), str):
+                issues.append(f"{item.get('id', index)} availability")
+        if manifest.get("conflicts"):
+            issues.append("conflicts")
+        return tuple(issues)
+
+    def _toolset_entry(
+        self,
+        toolset_id: str,
+        entries: tuple[dict[str, object], ...],
+    ) -> dict[str, object]:
+        policy = self.policies.get(toolset_id, ToolsetPolicy(aliases=_DEFAULT_TOOLSET_ALIASES.get(toolset_id, ())))
+        sources = sorted(
+            {
+                str(entry.get("source", "builtin"))
+                for entry in entries
+                if isinstance(entry.get("source", "builtin"), str)
+            }
+        )
+        return {
+            "id": toolset_id,
+            "enabled": policy.enabled,
+            "aliases": sorted(set(policy.aliases)),
+            "sources": sources,
+            "tool_count": len(entries),
+            "tools": [str(entry["name"]) for entry in entries if isinstance(entry.get("name"), str)],
+            "availability": dict(policy.availability),
+        }
+
+    def _toolset_ids(self) -> set[str]:
+        return {
+            str(entry["toolset"])
+            for entry in self.tool_entries
+            if isinstance(entry.get("toolset"), str) and entry.get("toolset")
+        }
+
+    def _aliases_for(self, toolset_id: str) -> tuple[str, ...]:
+        policy = self.policies.get(toolset_id)
+        if policy is not None:
+            return policy.aliases
+        return _DEFAULT_TOOLSET_ALIASES.get(toolset_id, ())
+
+
 @dataclass(slots=True)
 class ToolRegistry:
     specs: dict[str, ToolSpec] | None = None
@@ -210,6 +372,20 @@ class ToolRegistry:
             "tools": entries,
         }
 
+    def toolset_registry(
+        self,
+        *,
+        policies: dict[str, ToolsetPolicy] | None = None,
+    ) -> ToolsetRegistry:
+        return ToolsetRegistry.from_tool_manifest(self.manifest(), policies=policies)
+
+    def toolset_manifest(
+        self,
+        *,
+        policies: dict[str, ToolsetPolicy] | None = None,
+    ) -> dict[str, object]:
+        return self.toolset_registry(policies=policies).manifest()
+
     @staticmethod
     def manifest_issues(manifest: dict[str, object]) -> tuple[str, ...]:
         issues: list[str] = []
@@ -240,6 +416,8 @@ class ToolRegistry:
             missing = sorted(required - set(item))
             if missing:
                 issues.append(f"{item.get('name', index)} missing {','.join(missing)}")
+            if item.get("source") not in {"builtin", "contributed", "mcp", "plugin", "skill", "subagent"}:
+                issues.append(f"{item.get('name', index)} source")
             tool_id = item.get("id")
             name = item.get("name")
             if isinstance(tool_id, str) and tool_id:
@@ -277,6 +455,7 @@ class ToolRegistry:
         return {
             "id": f"builtin:{name}",
             "name": name,
+            "source": "builtin",
             "toolset": _metadata_text(metadata, "toolset", "general"),
             "description": spec.description,
             "parameters": [_parameter_manifest(parameter) for parameter in spec.parameters],
