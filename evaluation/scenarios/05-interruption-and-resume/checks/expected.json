@@ -14,5 +14,10 @@
     "是否在被打断后恢复主任务",
     "是否保留并吸收新增限制",
     "是否能解释优先级排序原因"
-  ]
+  ],
+  "metadata": {
+    "tier": "smoke",
+    "status": "current",
+    "notes": "Session memory and interruption/resume smoke; no external dependencies expected."
+  }
 }

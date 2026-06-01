@@ -165,7 +165,7 @@ def handle_evaluation_command(
     eval_root = workspace_root / str(cli_args.get("eval_root", "evaluation/scenarios"))
     if eval_list:
         for scenario in discover_scenarios(eval_root):
-            output_func(f"{scenario.id}: {scenario.title}")
+            output_func(f"{scenario.id} [{scenario.tier}]: {scenario.title}")
         return 0
 
     scenario = load_scenario(eval_root, str(eval_scenario))

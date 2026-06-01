@@ -47,13 +47,21 @@ evaluation/
 
 ## 场景清单
 
-1. [01-boss-message-reply/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/01-boss-message-reply/task.md)
-2. [02-policy-and-doc-lookup/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/02-policy-and-doc-lookup/task.md)
-3. [03-weekly-data-summary/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/03-weekly-data-summary/task.md)
-4. [04-small-scope-modification/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/04-small-scope-modification/task.md)
-5. [05-interruption-and-resume/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/05-interruption-and-resume/task.md)
-6. [06-online-research-and-recommendation/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/06-online-research-and-recommendation/task.md)
-7. [07-composite-coordination/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/07-composite-coordination/task.md)
+| Scenario | Tier | Status | Purpose |
+| --- | --- | --- | --- |
+| [01-boss-message-reply/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/01-boss-message-reply/task.md) | smoke | current | Conversation style and multi-turn constraint memory. |
+| [02-policy-and-doc-lookup/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/02-policy-and-doc-lookup/task.md) | capability | needs-checker-refresh | Local document lookup and evidence citation. |
+| [03-weekly-data-summary/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/03-weekly-data-summary/task.md) | capability | needs-tool-strategy-refresh | Structured CSV/data analysis with tool evidence. |
+| [04-small-scope-modification/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/04-small-scope-modification/task.md) | capability | needs-approval-aware-runner | Local coding/edit task with approval-aware tool execution. |
+| [05-interruption-and-resume/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/05-interruption-and-resume/task.md) | smoke | current | Session memory, interruption, and recovery. |
+| [06-online-research-and-recommendation/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/06-online-research-and-recommendation/task.md) | stress | deferred-until-web-tools-stable | Real-time research, source citation, and timeout behavior. |
+| [07-composite-coordination/task.md](/Users/cosmos/Desktop/mycli/evaluation/scenarios/07-composite-coordination/task.md) | capability | needs-write-safety-refresh | Composite file coordination and JSON write safety. |
+
+Tier meanings:
+
+- `smoke`: suitable for quick real-API confidence checks.
+- `capability`: useful for targeted capability work, but not stable enough for default smoke gates.
+- `stress`: intentionally high-friction or environment-sensitive; run manually when working on that capability.
 
 ## 当前进度
 
@@ -65,6 +73,7 @@ evaluation/
   - 细化自动检查器
   - 为修改类任务加入真实执行脚本
   - 为联网调研类任务补更明确的评测运行说明
+  - 按 `metadata.tier` 区分 quick smoke、capability verification 和 stress tests
 
 ## 当前可用的执行入口
 
@@ -80,6 +89,7 @@ PYTHONPATH=src python3 -m mycli.cli.main --eval-scenario 04-small-scope-modifica
 
 - `--eval-list`
   - 列出当前所有场景
+  - 同时显示场景 tier，例如 `[smoke]`、`[capability]`、`[stress]`
   - 不依赖模型配置
 - `--eval-scenario`
   - 会按 `turn-01..05` 顺序执行单个场景

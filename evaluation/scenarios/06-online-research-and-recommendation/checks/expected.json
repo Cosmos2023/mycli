@@ -11,5 +11,10 @@
     "是否依赖实时检索而不是常识",
     "是否能根据新约束重排候选项",
     "是否正确区分事实和建议"
-  ]
+  ],
+  "metadata": {
+    "tier": "stress",
+    "status": "deferred-until-web-tools-stable",
+    "notes": "Real-time research is intentionally excluded from default smoke until WebSearch/WebFetch and source citation are stable."
+  }
 }

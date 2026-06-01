@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import import_module
 import json
@@ -27,6 +27,16 @@ class EvaluationScenario:
     turn_paths: tuple[Path, ...]
     expected_payload: dict[str, object]
 
+    @property
+    def metadata(self) -> dict[str, object]:
+        metadata = self.expected_payload.get("metadata")
+        return metadata if isinstance(metadata, dict) else {}
+
+    @property
+    def tier(self) -> str:
+        tier = self.metadata.get("tier")
+        return tier if isinstance(tier, str) and tier else "capability"
+
 
 @dataclass(slots=True, frozen=True)
 class EvaluationTurnResult:
@@ -35,6 +45,7 @@ class EvaluationTurnResult:
     assistant_message: str
     rendered_lines: tuple[str, ...] = ()
     tool_events: tuple["EvaluationToolEvent", ...] = ()
+    timeline: tuple["EvaluationTimelineEvent", ...] = ()
     turn_status: str | None = None
     stop_reason: str | None = None
 
@@ -44,6 +55,14 @@ class EvaluationToolEvent:
     event_type: str
     tool_name: str | None = None
     text: str | None = None
+    call_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class EvaluationTimelineEvent:
+    event_type: str
+    text: str | None = None
+    tool_name: str | None = None
     call_id: str | None = None
 
 
@@ -79,6 +98,15 @@ class EvaluationRunReport:
                     "rendered_lines": list(result.rendered_lines),
                     "turn_status": result.turn_status,
                     "stop_reason": result.stop_reason,
+                    "timeline": [
+                        {
+                            "event_type": event.event_type,
+                            "text": event.text,
+                            "tool_name": event.tool_name,
+                            "call_id": event.call_id,
+                        }
+                        for event in result.timeline
+                    ],
                     "tool_events": [
                         {
                             "event_type": event.event_type,
@@ -140,6 +168,7 @@ def run_evaluation_scenario(
     for turn_path in scenario.turn_paths:
         prompt = turn_path.read_text(encoding="utf-8")
         response = service.handle_user_turn(prompt)
+        turn = getattr(response, "turn", None)
         assistant_message = getattr(response, "assistant_message", "")
         rendered_lines: list[str] = []
         if isinstance(assistant_message, str) and assistant_message:
@@ -153,9 +182,10 @@ def run_evaluation_scenario(
                 prompt=prompt,
                 assistant_message=assistant_message if isinstance(assistant_message, str) else "",
                 rendered_lines=tuple(rendered_lines),
-                tool_events=_extract_tool_events(getattr(response, "turn", None)),
-                turn_status=_extract_turn_status(getattr(response, "turn", None)),
-                stop_reason=_extract_turn_stop_reason(getattr(response, "turn", None)),
+                tool_events=_extract_tool_events(turn),
+                timeline=_extract_timeline_events(turn, assistant_message),
+                turn_status=_extract_turn_status(turn),
+                stop_reason=_extract_turn_stop_reason(turn),
             )
         )
     checks = run_deterministic_checks(scenario, tuple(turn_results))
@@ -483,6 +513,7 @@ def write_evaluation_report(
     payload = report.to_dict()
     payload["session_id"] = session_id
     payload["scenario_dir"] = str(report_scenario.scenario_dir)
+    payload["metadata"] = report_scenario.metadata
     payload["written_at"] = timestamp
     report_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -561,7 +592,16 @@ def _check_expected_owner_map(
                 detail=f"未找到 `{tasks_path.name}`，无法检查 owner 映射",
             ),
         )
-    payload = json.loads(tasks_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(tasks_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return (
+            EvaluationCheckResult(
+                name="expected_owner_map",
+                passed=False,
+                detail=f"`{tasks_path.name}` 不是合法 JSON：{exc.msg}",
+            ),
+        )
     if not isinstance(payload, list):
         return (
             EvaluationCheckResult(
@@ -603,7 +643,16 @@ def _check_updated_fields(
     tasks_path = workspace_root / "tasks.json"
     if not tasks_path.exists():
         return ()
-    payload = json.loads(tasks_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(tasks_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return (
+            EvaluationCheckResult(
+                name="updated_fields",
+                passed=False,
+                detail=f"`{tasks_path.name}` 不是合法 JSON：{exc.msg}",
+            ),
+        )
     if not isinstance(payload, list):
         return ()
     results: list[EvaluationCheckResult] = []
@@ -736,6 +785,64 @@ def _extract_tool_events(turn: object) -> tuple[EvaluationToolEvent, ...]:
             )
         )
     return tuple(events)
+
+
+def _extract_timeline_events(
+    turn: object,
+    assistant_message: object,
+) -> tuple[EvaluationTimelineEvent, ...]:
+    events: list[EvaluationTimelineEvent] = []
+    if isinstance(turn, TurnRecord):
+        for item in turn.items:
+            if item.type is TurnItemType.USER_MESSAGE:
+                continue
+            _append_timeline_event(
+                events,
+                EvaluationTimelineEvent(
+                    event_type=item.type.value,
+                    text=item.text,
+                    tool_name=item.tool_name,
+                    call_id=item.call_id,
+                ),
+            )
+    if not any(event.event_type == TurnItemType.ASSISTANT_MESSAGE.value for event in events):
+        if isinstance(assistant_message, str) and assistant_message:
+            events.append(
+                EvaluationTimelineEvent(
+                    event_type=TurnItemType.ASSISTANT_MESSAGE.value,
+                    text=assistant_message,
+                )
+            )
+    return tuple(events)
+
+
+def _append_timeline_event(
+    events: list[EvaluationTimelineEvent],
+    event: EvaluationTimelineEvent,
+) -> None:
+    if not events or not _should_coalesce_timeline_event(events[-1], event):
+        events.append(event)
+        return
+    previous = events[-1]
+    events[-1] = replace(previous, text=f"{previous.text or ''}{event.text or ''}")
+
+
+def _should_coalesce_timeline_event(
+    previous: EvaluationTimelineEvent,
+    current: EvaluationTimelineEvent,
+) -> bool:
+    coalesced_types = {
+        TurnItemType.ASSISTANT_MESSAGE.value,
+        TurnItemType.REASONING.value,
+        TurnItemType.TOOL_EXPOSURE.value,
+        TurnItemType.WARNING.value,
+    }
+    return (
+        previous.event_type in coalesced_types
+        and previous.event_type == current.event_type
+        and previous.tool_name == current.tool_name
+        and previous.call_id == current.call_id
+    )
 
 
 def _extract_turn_status(turn: object) -> str | None:

@@ -28,5 +28,10 @@
     "是否精确定位修改点",
     "是否遵守不改接口和不加依赖的限制",
     "是否给出真实验证证据"
-  ]
+  ],
+  "metadata": {
+    "tier": "capability",
+    "status": "needs-approval-aware-runner",
+    "notes": "Coding objective remains valid; reliable eval needs approval handling or a safe-tool variant."
+  }
 }

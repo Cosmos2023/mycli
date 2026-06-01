@@ -18,5 +18,10 @@
     "是否能把数据结论迁移到周报文本",
     "是否能解释异常成立原因",
     "是否使用合适工具完成结构化分析"
-  ]
+  ],
+  "metadata": {
+    "tier": "capability",
+    "status": "needs-tool-strategy-refresh",
+    "notes": "Structured-data objective remains valid; scenario should require CSV/read tool evidence in the turn timeline."
+  }
 }

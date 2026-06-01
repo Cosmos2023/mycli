@@ -6,6 +6,7 @@ from pathlib import Path
 from mycli.domain.runtime import StopReason, TurnItem, TurnItemType, TurnRecord, TurnStatus
 from mycli.evaluation.runner import (
     EvaluationScenario,
+    EvaluationTimelineEvent,
     EvaluationToolEvent,
     EvaluationTurnResult,
     discover_scenarios,
@@ -51,6 +52,23 @@ def test_load_scenario_supports_numeric_prefix_lookup(tmp_path: Path) -> None:
     scenario = load_scenario(scenario_root, "01")
 
     assert scenario.id == "01-boss-message-reply"
+
+
+def test_load_scenario_exposes_metadata_tier(tmp_path: Path) -> None:
+    scenario_root = tmp_path / "scenarios"
+    scenario_dir = scenario_root / "01-boss-message-reply"
+    _write_text(scenario_dir / "task.md", "# 场景 01：老板消息回复助手\n")
+    _write_text(scenario_dir / "turns" / "turn-01.txt", "turn 1")
+    _write_json(
+        scenario_dir / "checks" / "expected.json",
+        {"scenario_id": "01", "metadata": {"tier": "smoke", "status": "current"}},
+    )
+    (scenario_dir / "fixtures").mkdir(parents=True)
+
+    scenario = load_scenario(scenario_root, "01")
+
+    assert scenario.tier == "smoke"
+    assert scenario.metadata["status"] == "current"
 
 
 def test_run_deterministic_checks_flags_banned_phrases() -> None:
@@ -251,6 +269,65 @@ def test_write_evaluation_report_persists_json_payload(tmp_path: Path) -> None:
     assert payload["turn_results"][0]["tool_events"][0]["tool_name"] == "read_file"
 
 
+def test_write_evaluation_report_includes_human_readable_timeline(tmp_path: Path) -> None:
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    scenario = EvaluationScenario(
+        id="01-boss-message-reply",
+        title="场景 01：老板消息回复助手",
+        scenario_dir=scenario_dir,
+        workspace_root=scenario_dir / "fixtures",
+        turn_paths=(Path("turn-01.txt"),),
+        expected_payload={},
+    )
+
+    report_path = write_evaluation_report(
+        output_root=tmp_path / "runs",
+        report_scenario=scenario,
+        session_id="eval-01-demo",
+        turn_results=(
+            EvaluationTurnResult(
+                turn_id="turn-01",
+                prompt="prompt",
+                assistant_message="answer",
+                rendered_lines=("answer", "stream fragment"),
+                turn_status=TurnStatus.COMPLETED.value,
+                stop_reason=StopReason.ASSISTANT_COMPLETED.value,
+                timeline=(
+                    EvaluationTimelineEvent(
+                        event_type=TurnItemType.REASONING.value,
+                        text="Inspecting request",
+                    ),
+                    EvaluationTimelineEvent(
+                        event_type=TurnItemType.ASSISTANT_MESSAGE.value,
+                        text="answer",
+                    ),
+                ),
+            ),
+        ),
+        checks=(),
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert payload["turn_results"][0]["assistant_message"] == "answer"
+    assert payload["turn_results"][0]["rendered_lines"] == ["answer", "stream fragment"]
+    assert payload["turn_results"][0]["timeline"] == [
+        {
+            "event_type": "reasoning",
+            "text": "Inspecting request",
+            "tool_name": None,
+            "call_id": None,
+        },
+        {
+            "event_type": "assistant_message",
+            "text": "answer",
+            "tool_name": None,
+            "call_id": None,
+        },
+    ]
+
+
 def test_run_deterministic_checks_handles_missing_fixed_package_gracefully(tmp_path: Path) -> None:
     scenario = EvaluationScenario(
         id="04-small-scope-modification",
@@ -270,6 +347,40 @@ def test_run_deterministic_checks_handles_missing_fixed_package_gracefully(tmp_p
 
     assert any(
         check.name == "expected_fixed_behavior" and not check.passed
+        for check in checks
+    )
+
+
+def test_run_deterministic_checks_reports_malformed_tasks_json(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "fixtures"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "tasks.json").write_text('[{"title": "首页文案定稿"', encoding="utf-8")
+    scenario = EvaluationScenario(
+        id="07-composite-coordination",
+        title="场景 07：复合型协同任务",
+        scenario_dir=tmp_path,
+        workspace_root=workspace_root,
+        turn_paths=(Path("turn-01.txt"),),
+        expected_payload={
+            "deterministic_checks": {
+                "expected_owner_map": {"首页文案定稿": "沈括"},
+                "must_update_fields": ["owner", "next_step"],
+            }
+        },
+    )
+
+    checks = run_deterministic_checks(scenario, ())
+
+    assert any(
+        check.name == "expected_owner_map"
+        and not check.passed
+        and "不是合法 JSON" in check.detail
+        for check in checks
+    )
+    assert any(
+        check.name == "updated_fields"
+        and not check.passed
+        and "不是合法 JSON" in check.detail
         for check in checks
     )
 
@@ -319,6 +430,14 @@ def test_run_evaluation_scenario_collects_tool_events_from_turn_record(tmp_path:
                                 tool_name="read_file",
                                 call_id="call_1",
                             ),
+                            TurnItem(
+                                type=TurnItemType.REASONING,
+                                text="final ",
+                            ),
+                            TurnItem(
+                                type=TurnItemType.REASONING,
+                                text="check",
+                            ),
                         ),
                     ),
                 },
@@ -338,6 +457,28 @@ def test_run_evaluation_scenario_collects_tool_events_from_turn_record(tmp_path:
             tool_name="read_file",
             text="Done: read_file",
             call_id="call_1",
+        ),
+    )
+    assert report.turn_results[0].timeline == (
+        EvaluationTimelineEvent(
+            event_type="tool_call",
+            tool_name="read_file",
+            text="Reading: README.md",
+            call_id="call_1",
+        ),
+        EvaluationTimelineEvent(
+            event_type="tool_result",
+            tool_name="read_file",
+            text="Done: read_file",
+            call_id="call_1",
+        ),
+        EvaluationTimelineEvent(
+            event_type="reasoning",
+            text="final check",
+        ),
+        EvaluationTimelineEvent(
+            event_type="assistant_message",
+            text="done",
         ),
     )
     assert report.turn_results[0].turn_status == "completed"

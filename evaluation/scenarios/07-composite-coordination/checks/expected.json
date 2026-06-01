@@ -16,5 +16,10 @@
     "是否做到了多文件综合",
     "是否在后续追问中保持上下文一致",
     "是否能把状态更新、沟通起草和优先级建议串起来"
-  ]
+  ],
+  "metadata": {
+    "tier": "capability",
+    "status": "needs-write-safety-refresh",
+    "notes": "Composite file coordination remains valid; checker must tolerate malformed edited JSON and report it as a failed check."
+  }
 }

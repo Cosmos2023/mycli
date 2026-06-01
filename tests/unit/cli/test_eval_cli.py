@@ -43,7 +43,7 @@ def test_handle_evaluation_command_lists_scenarios(monkeypatch, tmp_path: Path) 
     )
 
     assert exit_code == 0
-    assert any("01-boss-message-reply" in line for line in outputs)
+    assert any("01-boss-message-reply [capability]" in line for line in outputs)
 
 
 def test_handle_evaluation_command_runs_single_scenario(monkeypatch, tmp_path: Path) -> None:
