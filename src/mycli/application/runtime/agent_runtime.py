@@ -88,7 +88,7 @@ from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.subagents import SubAgentToolContributionProvider
-from mycli.services.plugins import load_enabled_plugins
+from mycli.services.plugins import PluginCommandRegistry, load_enabled_plugins
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
@@ -245,6 +245,7 @@ class AgentRuntime:
         self._hook_manager = HookManager()
         self._hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
         self._hook_config_discovery = HookConfigDiscovery(hooks=(), issues=())
+        self._plugin_command_registry = PluginCommandRegistry()
         self._model_turn_requester = ModelTurnRequester(
             model_adapter=model_adapter,
             normalize_tool_call=self._normalize_tool_call,
@@ -312,6 +313,7 @@ class AgentRuntime:
             home_dir=home_dir,
             hook_manager=self._hook_manager,
             tool_registry=self._tool_registry,
+            command_registry=self._plugin_command_registry,
             env=dict(os.environ),
         )
         self._checkpoint = TurnCheckpoint(
@@ -746,6 +748,29 @@ class AgentRuntime:
             for issue in loaded.issues:
                 lines.append(f"plugin_issue {issue.safe_line()}")
         return tuple(lines) or ("no hooks registered",)
+
+    def inspect_plugin_commands(self) -> tuple[str, ...]:
+        lines = [
+            (
+                f"{entry['id']} plugin={entry['plugin_id']} "
+                f"name={entry['name']} kind={entry['kind']}"
+            )
+            for entry in self._plugin_command_registry.list_entries()
+        ]
+        lines.extend(f"plugin_command_issue {issue}" for issue in self._plugin_command_registry.issues())
+        return tuple(lines) or ("no plugin commands registered",)
+
+    def run_plugin_command(
+        self,
+        plugin_id: str,
+        command_name: str,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
+        return self._plugin_command_registry.execute(
+            plugin_id,
+            command_name,
+            dict(arguments),
+        ).to_dict()
 
     def close(self) -> None:
         if self._closed:

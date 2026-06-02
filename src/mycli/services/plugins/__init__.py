@@ -1,7 +1,13 @@
+from mycli.services.plugins.commands import (
+    PluginCommandRegistry,
+    PluginCommandResult,
+    PluginCommandSpec,
+)
 from mycli.services.plugins.config import PluginEnablement, load_plugin_enablement
 from mycli.services.plugins.discovery import PluginDiscovery, discover_plugins
 from mycli.services.plugins.manifest import (
     PluginCandidate,
+    PluginCommandDeclaration,
     PluginIssue,
     PluginLoadStatus,
     PluginManifest,
@@ -22,6 +28,10 @@ from mycli.services.plugins.runtime import (
 __all__ = [
     "LoadedPlugin",
     "PluginCandidate",
+    "PluginCommandDeclaration",
+    "PluginCommandRegistry",
+    "PluginCommandResult",
+    "PluginCommandSpec",
     "PluginContext",
     "PluginDiscovery",
     "PluginEnablement",

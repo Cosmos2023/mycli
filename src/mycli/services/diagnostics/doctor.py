@@ -23,7 +23,7 @@ from mycli.services.hooks.builtin import permission_guard
 from mycli.services.mcp.diagnostics import discover_mcp_servers
 from mycli.services.skills import SkillRegistry
 from mycli.services.subagents import inspect_subagent_profiles
-from mycli.services.plugins import PluginLoadStatus, load_enabled_plugins
+from mycli.services.plugins import PluginCommandRegistry, PluginLoadStatus, load_enabled_plugins
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
 
@@ -1011,7 +1011,7 @@ class DoctorService:
             )
         node_tui_root = _node_tui_source_root()
         if node_tui_root.exists():
-            checks.append(DoctorCheck("node_tui", DoctorStatus.OK, f"source present {node_tui_root}"))
+            checks.append(DoctorCheck("node_tui", DoctorStatus.OK, "source present tui/node"))
             dependency_config = _node_tui_dependency_config(node_tui_root)
             missing_markers = [
                 marker
@@ -1024,7 +1024,7 @@ class DoctorService:
                         "node_tui_dependencies",
                         DoctorStatus.OK,
                         "required Node TUI dependencies present",
-                        detail=str(node_tui_root / "node_modules"),
+                        detail="tui/node/node_modules",
                     )
                 )
             else:
@@ -1055,7 +1055,7 @@ class DoctorService:
                 DoctorCheck(
                     "node_tui",
                     DoctorStatus.WARNING,
-                    f"missing source {node_tui_root}",
+                    "missing source tui/node",
                 )
             )
         for command in ("node", "npm"):
@@ -1395,11 +1395,13 @@ class DoctorService:
         )
 
     def _check_plugins(self) -> Iterable[DoctorCheck]:
+        command_registry = PluginCommandRegistry()
         state = load_enabled_plugins(
             workspace_root=self._workspace_root,
             home_dir=self._home_dir,
             hook_manager=HookManager(),
             tool_registry=ToolRegistry(workspace_root=self._workspace_root),
+            command_registry=command_registry,
             env=dict(self._env),
         )
         plugin_count = len(state.discovery.selected)
@@ -1408,13 +1410,14 @@ class DoctorService:
         loaded = sum(1 for item in state.loaded if item.status is PluginLoadStatus.LOADED)
         disabled = sum(1 for item in state.loaded if item.status is PluginLoadStatus.DISABLED)
         errored = sum(1 for item in state.loaded if item.status is PluginLoadStatus.ERROR)
-        issue_lines = [issue.safe_line() for issue in state.issues]
+        issue_lines = [issue.safe_line() for issue in state.issues] + list(command_registry.issues())
         status = DoctorStatus.FAILED if errored else DoctorStatus.WARNING if issue_lines or disabled else DoctorStatus.OK
         detail_parts = [
             f"discovered={plugin_count}",
             f"loaded={loaded}",
             f"disabled={disabled}",
             f"errors={errored}",
+            f"commands={len(command_registry.list_entries())}",
         ]
         if issue_lines:
             detail_parts.append(f"issues={_bounded_name_list(issue_lines)}")

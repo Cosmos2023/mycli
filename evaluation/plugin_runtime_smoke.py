@@ -7,7 +7,7 @@ import tempfile
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.hooks import HookContext, HookManager, HookPoint
-from mycli.services.plugins import load_enabled_plugins
+from mycli.services.plugins import PluginCommandRegistry, load_enabled_plugins
 from mycli.tools.registry import ToolRegistry
 
 
@@ -32,6 +32,12 @@ def main() -> int:
                     "  - DemoTool",
                     "provides_hooks:",
                     "  - pre_tool_use",
+                    "provides_commands:",
+                    "  - id: DemoCommand",
+                    "    description: Demo smoke command",
+                    "    kind: slash",
+                    "    args_schema:",
+                    "      type: object",
                     "requires_env: []",
                 ]
             )
@@ -50,6 +56,7 @@ def main() -> int:
                     "        return HookResult(action=HookAction.DENY, message='plugin denied')",
                     "    ctx.register_hook('pre_tool_use', hook, name='plugin:demo:hook')",
                     "    ctx.register_tool('DemoTool', {'description': 'Demo smoke tool'}, lambda args: {'summary': 'plugin tool ok'}, {'toolset': 'plugin'})",
+                    "    ctx.register_command('DemoCommand', {'description': 'Demo smoke command'}, lambda args: {'summary': 'plugin command ok', 'content': args.get('name', 'world')})",
                 ]
             )
             + "\n",
@@ -87,6 +94,8 @@ def main() -> int:
             and enabled_marker
             and enabled_state["hook_actions"] == ["deny"]
             and enabled_state["tool_summary"] == "plugin tool ok"
+            and enabled_state["command_summary"] == "plugin command ok"
+            and enabled_state["command_content"] == "codex"
             and disabled_state["loaded_statuses"] == ["disabled"]
             and not disabled_marker
         )
@@ -103,17 +112,20 @@ def main() -> int:
 def _load(*, workspace: Path, home: Path, execute: bool = False) -> dict[str, object]:
     manager = HookManager()
     registry = ToolRegistry(workspace_root=workspace)
+    command_registry = PluginCommandRegistry()
     state = load_enabled_plugins(
         workspace_root=workspace,
         home_dir=home,
         hook_manager=manager,
         tool_registry=registry,
+        command_registry=command_registry,
         env={},
     )
     payload: dict[str, object] = {
         "loaded_statuses": [item.status.value for item in state.loaded],
         "registered_hooks": [list(item.registered_hooks) for item in state.loaded],
         "registered_tools": [list(item.registered_tools) for item in state.loaded],
+        "registered_commands": [list(item.registered_commands) for item in state.loaded],
     }
     if execute:
         payload["hook_actions"] = [
@@ -121,6 +133,9 @@ def _load(*, workspace: Path, home: Path, execute: bool = False) -> dict[str, ob
             for result in manager.execute(HookPoint.PRE_TOOL_USE, HookContext(hook_point=HookPoint.PRE_TOOL_USE))
         ]
         payload["tool_summary"] = registry.execute(ToolCall(name="DemoTool", arguments={}, reason="smoke")).summary
+        command_result = command_registry.execute("demo", "DemoCommand", {"name": "codex"})
+        payload["command_summary"] = command_result.summary
+        payload["command_content"] = command_result.content
     return payload
 
 

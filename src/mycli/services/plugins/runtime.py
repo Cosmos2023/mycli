@@ -7,6 +7,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
+from mycli.services.plugins.commands import PluginCommandRegistry
 from mycli.services.plugins.config import PluginEnablement
 from mycli.services.plugins.discovery import PluginDiscovery, discover_plugins
 from mycli.services.plugins.manifest import PluginCandidate, PluginIssue, PluginLoadStatus
@@ -20,6 +21,7 @@ class LoadedPlugin:
     status: PluginLoadStatus
     registered_hooks: tuple[str, ...] = ()
     registered_tools: tuple[str, ...] = ()
+    registered_commands: tuple[str, ...] = ()
     issues: tuple[PluginIssue, ...] = ()
 
     @property
@@ -45,8 +47,10 @@ class PluginContext:
     plugin_id: str
     hook_manager: HookManager
     tool_registry: ToolRegistry
+    command_registry: PluginCommandRegistry | None = None
     registered_hooks: list[str] = field(default_factory=list)
     registered_tools: list[str] = field(default_factory=list)
+    registered_commands: list[str] = field(default_factory=list)
 
     def register_hook(self, hook_point: str | HookPoint, callback: Callable[..., Any], name: str | None = None) -> None:
         point = hook_point if isinstance(hook_point, HookPoint) else HookPoint(str(hook_point))
@@ -82,6 +86,25 @@ class PluginContext:
         )
         self.registered_tools.append(name)
 
+    def register_command(
+        self,
+        name: str,
+        schema: dict[str, Any],
+        handler: Callable[[dict[str, Any]], Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if self.command_registry is None:
+            return
+        command_id = self.command_registry.register(
+            plugin_id=self.plugin_id,
+            name=name,
+            schema=schema,
+            handler=handler,
+            metadata=metadata,
+        )
+        if command_id is not None:
+            self.registered_commands.append(command_id)
+
 
 def load_enabled_plugins(
     *,
@@ -89,6 +112,7 @@ def load_enabled_plugins(
     home_dir: Path,
     hook_manager: HookManager,
     tool_registry: ToolRegistry,
+    command_registry: PluginCommandRegistry | None = None,
     env: dict[str, str],
 ) -> PluginRuntimeState:
     discovery = discover_plugins(workspace_root=workspace_root, home_dir=home_dir)
@@ -99,6 +123,7 @@ def load_enabled_plugins(
             enablement=discovery.enablement,
             hook_manager=hook_manager,
             tool_registry=tool_registry,
+            command_registry=command_registry,
             env=env,
         ))
     return PluginRuntimeState(discovery=discovery, loaded=tuple(loaded))
@@ -110,6 +135,7 @@ def _load_candidate(
     enablement: PluginEnablement,
     hook_manager: HookManager,
     tool_registry: ToolRegistry,
+    command_registry: PluginCommandRegistry | None,
     env: dict[str, str],
 ) -> LoadedPlugin:
     issues = list(candidate.issues)
@@ -135,6 +161,7 @@ def _load_candidate(
         plugin_id=candidate.plugin_id,
         hook_manager=hook_manager,
         tool_registry=tool_registry,
+        command_registry=command_registry,
     )
     try:
         register(ctx)
@@ -146,6 +173,7 @@ def _load_candidate(
         status=PluginLoadStatus.LOADED,
         registered_hooks=tuple(ctx.registered_hooks),
         registered_tools=tuple(ctx.registered_tools),
+        registered_commands=tuple(ctx.registered_commands),
         issues=tuple(issues),
     )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint
-from mycli.services.plugins import discover_plugins, load_enabled_plugins
+from mycli.services.plugins import PluginCommandRegistry, discover_plugins, load_enabled_plugins
 from mycli.services.plugins.management import PluginManagementService
 from mycli.tools.registry import ToolRegistry
 
@@ -26,6 +26,7 @@ def test_plugin_discovery_parses_manifest_and_enablement(tmp_path: Path) -> None
     assert candidate.manifest.name == "Demo Plugin"
     assert candidate.manifest.provides_tools == ("DemoTool",)
     assert candidate.manifest.provides_hooks == ("pre_tool_use",)
+    assert candidate.manifest.provides_commands[0].name == "DemoCommand"
 
 
 def test_plugin_discovery_reports_bad_manifest_and_duplicate(tmp_path: Path) -> None:
@@ -102,6 +103,75 @@ def register(ctx):
     assert manifest_entry["id"] == "plugin:demo:DemoTool"
 
 
+def test_plugin_runtime_registers_and_executes_command(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body="""
+def register(ctx):
+    ctx.register_command(
+        'DemoCommand',
+        {'description': 'Demo command', 'args_schema': {'type': 'object'}},
+        lambda args: {'ok': True, 'summary': 'hello ' + args.get('name', 'world'), 'content': 'done'},
+        {'kind': 'slash'}
+    )
+""".strip(),
+    )
+    command_registry = PluginCommandRegistry()
+
+    state = load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=ToolRegistry(workspace_root=workspace),
+        command_registry=command_registry,
+        env={},
+    )
+
+    assert state.loaded[0].registered_commands == ("plugin:demo:DemoCommand",)
+    entries = command_registry.list_entries(plugin_id="demo")
+    assert entries[0]["id"] == "plugin:demo:DemoCommand"
+    result = command_registry.execute("demo", "DemoCommand", {"name": "codex"})
+    assert result.ok is True
+    assert result.summary == "hello codex"
+    assert result.content == "done"
+
+
+def test_plugin_command_registry_reports_duplicate_and_handler_failure(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body="""
+def register(ctx):
+    def explode(args):
+        raise RuntimeError('secret should not show')
+    ctx.register_command('DemoCommand', {'description': 'first'}, explode)
+    ctx.register_command('DemoCommand', {'description': 'second'}, lambda args: 'second')
+""".strip(),
+    )
+    command_registry = PluginCommandRegistry()
+
+    state = load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=ToolRegistry(workspace_root=workspace),
+        command_registry=command_registry,
+        env={},
+    )
+
+    assert state.loaded[0].registered_commands == ("plugin:demo:DemoCommand",)
+    assert "duplicate command id" in "\n".join(command_registry.issues())
+    result = command_registry.execute("demo", "DemoCommand", {})
+    assert result.ok is False
+    assert result.error == "RuntimeError"
+    assert "secret should not show" not in result.summary
+
+
 def test_plugin_runtime_reports_load_failure_and_missing_env(tmp_path: Path) -> None:
     workspace, home = _workspace_home(tmp_path)
     _write_config(workspace, enabled=["demo"])
@@ -139,6 +209,7 @@ def test_plugin_management_service_lists_and_inspects_json_shape(tmp_path: Path)
     assert listed.plugins[0].plugin_id == "demo"
     assert listed.plugins[0].load_status == "loaded"
     assert inspected.to_dict()["plugin"]["provided_tools"] == ["DemoTool"]  # type: ignore[index]
+    assert inspected.to_dict()["plugin"]["provided_commands"][0]["name"] == "DemoCommand"  # type: ignore[index]
 
 
 def test_doctor_reports_plugin_diagnostics(tmp_path: Path) -> None:
@@ -151,6 +222,7 @@ def test_doctor_reports_plugin_diagnostics(tmp_path: Path) -> None:
     plugins = next(check for check in report.checks if check.name == "plugins")
     assert plugins.status is DoctorStatus.OK
     assert "loaded=1" in (plugins.detail or "")
+    assert "commands=1" in (plugins.detail or "")
 
 
 def _workspace_home(tmp_path: Path) -> tuple[Path, Path]:
@@ -207,10 +279,23 @@ def _write_plugin_dir(
                 "  - DemoTool",
                 "provides_hooks:",
                 "  - pre_tool_use",
+                "provides_commands:",
+                "  - id: DemoCommand",
+                "    description: Demo command",
+                "    kind: slash",
+                "    args_schema:",
+                "      type: object",
                 requires_block.rstrip(),
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    path.joinpath("__init__.py").write_text(register_body or "def register(ctx):\n    pass\n", encoding="utf-8")
+    path.joinpath("__init__.py").write_text(
+        register_body
+        or (
+            "def register(ctx):\n"
+            "    ctx.register_command('DemoCommand', {'description': 'Demo command'}, lambda args: {'summary': 'demo command ok'})\n"
+        ),
+        encoding="utf-8",
+    )

@@ -1198,6 +1198,12 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
                 "acp.server not_available",
             )
 
+        def inspect_plugin_commands(self) -> tuple[str, ...]:
+            return ("plugin:demo:DemoCommand plugin=demo name=DemoCommand kind=slash",)
+
+        def run_plugin_command(self, plugin_id: str, command_name: str, raw_args: str = "") -> tuple[str, ...]:
+            return (f"ok {plugin_id}:{command_name} {raw_args or '{}'}",)
+
         def inspect_trace(self) -> tuple[str, ...]:
             return ("tool_execution search_text",)
 
@@ -1288,6 +1294,12 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/bashes")) == ["[bash] no background shells"]
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
+    assert list(handler("/plugin")) == [
+        "[plugin] plugin:demo:DemoCommand plugin=demo name=DemoCommand kind=slash"
+    ]
+    assert list(handler('/plugin demo DemoCommand {"name":"codex"}')) == [
+        '[plugin] ok demo:DemoCommand {"name":"codex"}'
+    ]
     assert list(handler("/extensions")) == [
         f"[extension] {extension_summary}",
         "[extension] rpc extension.manifest",

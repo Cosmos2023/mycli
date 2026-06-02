@@ -88,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluation scenario root directory",
     )
     parser.add_argument("--json", action="store_true", dest="json_output", help="Render utility output as JSON")
+    parser.add_argument("--json-args", default=None, help=argparse.SUPPRESS)
     parser.add_argument("command", nargs="?", choices=["doctor", "hooks", "plugins"], help="Run a utility command")
     parser.add_argument("utility_args", nargs="*", help=argparse.SUPPRESS)
     return parser
@@ -204,7 +205,12 @@ def handle_plugins_command(
         home_dir=home or Path.home(),
         env=dict(env or os.environ),
     )
-    response = _dispatch_plugins_command(service, args)
+    json_args_value = cli_args.get("json_args")
+    response = _dispatch_plugins_command(
+        service,
+        args,
+        json_args=str(json_args_value) if isinstance(json_args_value, str) else None,
+    )
     if bool(cli_args.get("json_output")):
         output_func(json.dumps(response.to_dict(), sort_keys=True))
     else:
@@ -216,12 +222,14 @@ def handle_plugins_command(
 def _dispatch_plugins_command(
     service: PluginManagementService,
     args: list[str],
+    *,
+    json_args: str | None = None,
 ) -> PluginManagementResponse:
     if not args:
         return PluginManagementResponse(
             ok=False,
             action="usage",
-            message="usage: mycli plugins list|inspect [plugin_id] [--json]",
+            message="usage: mycli plugins list|inspect|run [plugin_id] [command] [--json-args JSON] [--json]",
         )
     action = args[0]
     target = args[1] if len(args) > 1 else ""
@@ -229,10 +237,31 @@ def _dispatch_plugins_command(
         return service.list_plugins()
     if action == "inspect" and target and len(args) == 2:
         return service.inspect_plugin(target)
+    if action == "run" and len(args) >= 3:
+        raw_json_args = json_args or "{}"
+        if "--json-args" in args:
+            index = args.index("--json-args")
+            if index + 1 >= len(args):
+                return PluginManagementResponse(ok=False, action="run", message="--json-args requires a value")
+            raw_json_args = args[index + 1]
+            args = args[:index] + args[index + 2:]
+        if len(args) != 3:
+            return PluginManagementResponse(
+                ok=False,
+                action="run",
+                message="usage: mycli plugins run <plugin_id> <command_name> [--json-args JSON] [--json]",
+            )
+        try:
+            parsed_args = json.loads(raw_json_args)
+        except json.JSONDecodeError:
+            return PluginManagementResponse(ok=False, action="run", message="invalid JSON arguments")
+        if not isinstance(parsed_args, dict):
+            return PluginManagementResponse(ok=False, action="run", message="JSON arguments must be an object")
+        return service.run_command(args[1], args[2], parsed_args)
     return PluginManagementResponse(
         ok=False,
         action=action,
-        message="usage: mycli plugins list|inspect [plugin_id] [--json]",
+        message="usage: mycli plugins list|inspect|run [plugin_id] [command] [--json-args JSON] [--json]",
     )
 
 
@@ -250,16 +279,23 @@ def render_plugin_management_response(response: PluginManagementResponse) -> tup
 def _render_plugin_row(row: PluginManagementRow) -> tuple[str, ...]:
     tools = ",".join(row.provided_tools) if row.provided_tools else "none"
     hooks = ",".join(row.provided_hooks) if row.provided_hooks else "none"
+    commands = ",".join(_plugin_command_label(command) for command in row.provided_commands) if row.provided_commands else "none"
     lines = [
         f"plugin {row.plugin_id}",
         f"  source={row.source} name={row.name} version={row.version or 'unknown'} kind={row.kind}",
         f"  enabled={str(row.enabled).lower()} load_status={row.load_status}",
         f"  provided_tools={tools}",
         f"  provided_hooks={hooks}",
+        f"  provided_commands={commands}",
         f"  path={row.path}",
     ]
     lines.extend(f"  issue={issue}" for issue in row.issues)
     return tuple(lines)
+
+
+def _plugin_command_label(command: dict[str, object]) -> str:
+    value = command.get("id") or command.get("name")
+    return str(value) if value else "unknown"
 
 
 def _dispatch_hooks_command(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
@@ -20,6 +21,22 @@ class PluginLoadStatus(StrEnum):
 
 
 @dataclass(slots=True, frozen=True)
+class PluginCommandDeclaration:
+    name: str
+    description: str = ""
+    kind: str = "command"
+    args_schema: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "kind": self.kind,
+            "args_schema": dict(self.args_schema or {}),
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class PluginManifest:
     plugin_id: str
     name: str
@@ -28,6 +45,7 @@ class PluginManifest:
     kind: str = "standalone"
     provides_tools: tuple[str, ...] = ()
     provides_hooks: tuple[str, ...] = ()
+    provides_commands: tuple[PluginCommandDeclaration, ...] = ()
     requires_env: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -39,6 +57,7 @@ class PluginManifest:
             "kind": self.kind,
             "provides_tools": list(self.provides_tools),
             "provides_hooks": list(self.provides_hooks),
+            "provides_commands": [command.to_dict() for command in self.provides_commands],
             "requires_env": list(self.requires_env),
         }
 
@@ -88,11 +107,13 @@ def parse_plugin_manifest(*, plugin_id: str, source: PluginSource, path: Path) -
     kind = _string(payload.get("kind")) or "standalone"
     provides_tools = _string_tuple(payload.get("provides_tools"))
     provides_hooks = _string_tuple(payload.get("provides_hooks"))
+    provides_commands = _command_tuple(payload.get("provides_commands"))
     requires_env = _requires_env(payload.get("requires_env"))
     issues: list[PluginIssue] = []
     for key, value in (
         ("provides_tools", payload.get("provides_tools")),
         ("provides_hooks", payload.get("provides_hooks")),
+        ("provides_commands", payload.get("provides_commands")),
         ("requires_env", payload.get("requires_env")),
     ):
         if value is not None and not isinstance(value, list):
@@ -108,6 +129,7 @@ def parse_plugin_manifest(*, plugin_id: str, source: PluginSource, path: Path) -
         kind=kind,
         provides_tools=provides_tools,
         provides_hooks=provides_hooks,
+        provides_commands=provides_commands,
         requires_env=requires_env,
     )
     return manifest, tuple(issues)
@@ -137,6 +159,29 @@ def _requires_env(value: object) -> tuple[str, ...]:
             if isinstance(name, str) and name.strip():
                 names.append(name.strip())
     return tuple(names)
+
+
+def _command_tuple(value: object) -> tuple[PluginCommandDeclaration, ...]:
+    if not isinstance(value, list):
+        return ()
+    commands: list[PluginCommandDeclaration] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            commands.append(PluginCommandDeclaration(name=item.strip()))
+        elif isinstance(item, dict):
+            raw_name = item.get("id") or item.get("name")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                continue
+            raw_schema = item.get("args_schema") or item.get("input_schema")
+            commands.append(
+                PluginCommandDeclaration(
+                    name=raw_name.strip(),
+                    description=str(item.get("description") or ""),
+                    kind=str(item.get("kind") or "command"),
+                    args_schema=dict(raw_schema) if isinstance(raw_schema, dict) else {},
+                )
+            )
+    return tuple(commands)
 
 
 def _safe_message(message: str) -> str:

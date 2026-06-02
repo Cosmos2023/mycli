@@ -311,6 +311,7 @@ class MycliTuiApp(App[int]):
             "/sessions",
             "/tools",
             "/hooks",
+            "/plugin",
             "/bashes",
             "/changes",
             "/undo",

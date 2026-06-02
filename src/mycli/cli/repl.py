@@ -21,6 +21,7 @@ def handle_slash_command(command: str) -> str:
                 "/logs",
                 "/tools",
                 "/hooks",
+                "/plugin",
                 "/toolsets",
                 "/bashes",
                 "/changes",
@@ -68,6 +69,17 @@ def build_command_handler(
             return [f"[memory] {line}" for line in service.inspect_memory()]
         if command == "/extensions":
             return [f"[extension] {line}" for line in service.inspect_extensions()]
+        if command == "/plugin":
+            return [f"[plugin] {line}" for line in service.inspect_plugin_commands()]
+        if command.startswith("/plugin "):
+            parts = command.split(maxsplit=3)
+            if len(parts) < 3:
+                return ["[plugin] usage: /plugin <plugin_id> <command_name> [json-args]"]
+            raw_args = parts[3] if len(parts) > 3 else ""
+            return [
+                f"[plugin] {line}"
+                for line in service.run_plugin_command(parts[1], parts[2], raw_args)
+            ]
         if command == "/plan":
             return [f"[plan] {line}" for line in service.inspect_plan()]
         if command.startswith("/subagents"):

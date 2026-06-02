@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -836,6 +837,42 @@ class TurnService:
             if status is not None:
                 lines.append(f"{capability_id} {status}")
 
+        return tuple(lines)
+
+    def inspect_plugin_commands(self) -> tuple[str, ...]:
+        inspect = getattr(self._runtime, "inspect_plugin_commands", None)
+        if callable(inspect):
+            return tuple(inspect())
+        return ("plugin command diagnostics not available",)
+
+    def run_plugin_command(
+        self,
+        plugin_id: str,
+        command_name: str,
+        raw_args: str = "",
+    ) -> tuple[str, ...]:
+        arguments: dict[str, object] = {}
+        if raw_args.strip():
+            try:
+                parsed = json.loads(raw_args)
+            except json.JSONDecodeError:
+                return ("plugin command arguments must be a JSON object",)
+            if not isinstance(parsed, dict):
+                return ("plugin command arguments must be a JSON object",)
+            arguments = dict(parsed)
+        run = getattr(self._runtime, "run_plugin_command", None)
+        if not callable(run):
+            return ("plugin command runtime not available",)
+        result = cast(dict[str, object], run(plugin_id, command_name, arguments))
+        ok = result.get("ok") is True
+        summary = _string_value(result, "summary", default="plugin command completed")
+        lines = [f"{'ok' if ok else 'error'} {plugin_id}:{command_name} {summary}"]
+        content = _string_value(result, "content", default="")
+        if content:
+            lines.append(content)
+        error = _string_value(result, "error", default="")
+        if error:
+            lines.append(f"error={error}")
         return tuple(lines)
 
     def undo_last_file_change(self) -> str:
