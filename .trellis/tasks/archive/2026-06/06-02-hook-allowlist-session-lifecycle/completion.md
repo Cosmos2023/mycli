@@ -33,9 +33,9 @@
 
 ## Final Test Result
 
-- Full Python unit/integration: `1284 passed`
+- Full Python unit/integration: `1286 passed`
 - Hook smoke output:
-  `evaluation/runs/hook-smoke-20260602T143054Z.json`
+  `evaluation/runs/hook-smoke-20260602T144104Z.json`
 
 ## Remaining Risks
 
