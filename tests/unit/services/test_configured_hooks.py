@@ -134,6 +134,33 @@ def test_configured_hook_callback_timeout_and_error_do_not_deny(tmp_path: Path) 
     assert traces[0]["message"] == "timeout"
 
 
+def test_configured_hook_callback_nonzero_exit_maps_to_error(tmp_path: Path) -> None:
+    script = tmp_path / "fail.py"
+    script.write_text(
+        "import sys\nprint('api_key=sk-secret')\nsys.exit(7)\n",
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, command=["python3", str(script)])
+    HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
+    traces = []
+    callback = ConfiguredHookCallback(
+        spec=spec,
+        workspace_root=tmp_path,
+        monotonic=iter((1.0, 1.1)).__next__,
+        allowlist_status=HookAllowlist(home_dir=tmp_path / "home").status_for,
+        trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
+    )
+
+    result = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
+
+    assert result.action is HookAction.ERROR
+    assert result.message == "configured hook failed"
+    assert traces[0]["status"] == "error"
+    assert traces[0]["action"] == "error"
+    assert traces[0]["exit_code"] == 7
+    assert traces[0]["message"] == "redacted"
+
+
 def test_configured_hook_callback_requires_allowlist_before_execution(tmp_path: Path) -> None:
     marker = tmp_path / "executed.txt"
     script = tmp_path / "hook.py"

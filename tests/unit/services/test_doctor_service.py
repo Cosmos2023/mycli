@@ -420,6 +420,44 @@ def test_doctor_service_reports_hook_allowlist_status(tmp_path: Path) -> None:
     assert "allowlist_missing" in hooks.detail
 
 
+def test_doctor_service_warns_for_inherit_safe_hook_env_policy(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.mkdir()
+    script = tmp_path / "hook.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    (workspace / ".mycli" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": [
+                    {
+                        "id": "repo-hook",
+                        "hook_point": "pre_tool_use",
+                        "command": ["python3", str(script)],
+                        "env_policy": "inherit_safe",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    hooks = next(check for check in report.checks if check.name == "hooks")
+    assert hooks.status is DoctorStatus.WARNING
+    assert hooks.detail is not None
+    assert "env_policy=inherit_safe" in hooks.detail
+    assert "allowlist_missing" in hooks.detail
+
+
 def test_doctor_service_reports_malformed_hook_allowlist(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
