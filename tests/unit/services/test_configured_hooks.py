@@ -109,6 +109,7 @@ def test_configured_hook_callback_maps_allow_deny_modify_and_trace(tmp_path: Pat
     assert modified.modified_args == {"path": "changed.md"}
     assert allowed.action is HookAction.ALLOW
     assert [trace["action"] for trace in traces] == ["deny", "modify", "allow"]
+    assert all(str(trace["execution_id"]).startswith("hookexec_") for trace in traces)
     assert all("stdout" not in trace for trace in traces)
 
 

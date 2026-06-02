@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ _MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 @dataclass(slots=True, frozen=True)
 class ConfiguredHookRunSummary:
+    execution_id: str
     hook_id: str
     hook_name: str
     hook_point: str
@@ -38,6 +40,7 @@ class ConfiguredHookRunSummary:
 
     def safe_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
+            "execution_id": self.execution_id,
             "hook_id": self.hook_id,
             "hook_name": self.hook_name,
             "hook_point": self.hook_point,
@@ -74,6 +77,7 @@ class ConfiguredHookCallback:
         )
         if not allowlist_status.allowed:
             summary = ConfiguredHookRunSummary(
+                execution_id=_execution_id(self.spec, ctx),
                 hook_id=self.spec.hook_id,
                 hook_name=self.spec.name,
                 hook_point=self.spec.hook_point.value,
@@ -99,6 +103,7 @@ class ConfiguredHookCallback:
         except subprocess.TimeoutExpired:
             duration_ms = _duration_ms(self.monotonic, started_at)
             summary = ConfiguredHookRunSummary(
+                execution_id=_execution_id(self.spec, ctx),
                 hook_id=self.spec.hook_id,
                 hook_name=self.spec.name,
                 hook_point=self.spec.hook_point.value,
@@ -112,6 +117,7 @@ class ConfiguredHookCallback:
         except OSError as exc:
             duration_ms = _duration_ms(self.monotonic, started_at)
             summary = ConfiguredHookRunSummary(
+                execution_id=_execution_id(self.spec, ctx),
                 hook_id=self.spec.hook_id,
                 hook_name=self.spec.name,
                 hook_point=self.spec.hook_point.value,
@@ -128,6 +134,7 @@ class ConfiguredHookCallback:
         stderr = _bounded_text(completed.stderr)
         result, summary = _result_from_completed_process(
             spec=self.spec,
+            execution_id=_execution_id(self.spec, ctx),
             stdout=stdout,
             stderr=stderr,
             exit_code=completed.returncode,
@@ -140,6 +147,7 @@ class ConfiguredHookCallback:
 def _result_from_completed_process(
     *,
     spec: ConfiguredHookSpec,
+    execution_id: str,
     stdout: str,
     stderr: str,
     exit_code: int,
@@ -147,6 +155,7 @@ def _result_from_completed_process(
 ) -> tuple[HookResult, ConfiguredHookRunSummary]:
     if exit_code != 0:
         summary = ConfiguredHookRunSummary(
+            execution_id=execution_id,
             hook_id=spec.hook_id,
             hook_name=spec.name,
             hook_point=spec.hook_point.value,
@@ -163,6 +172,7 @@ def _result_from_completed_process(
         payload = json.loads(stdout) if stdout.strip() else {}
     except json.JSONDecodeError:
         summary = ConfiguredHookRunSummary(
+            execution_id=execution_id,
             hook_id=spec.hook_id,
             hook_name=spec.name,
             hook_point=spec.hook_point.value,
@@ -176,15 +186,28 @@ def _result_from_completed_process(
         )
         return HookResult(action=HookAction.ERROR, message="configured hook output invalid"), summary
     if not isinstance(payload, dict):
-        return _invalid_action_result(spec=spec, duration_ms=duration_ms, stdout=stdout, stderr=stderr)
+        return _invalid_action_result(
+            spec=spec,
+            execution_id=execution_id,
+            duration_ms=duration_ms,
+            stdout=stdout,
+            stderr=stderr,
+        )
     raw_action = payload.get("action", HookAction.ALLOW.value)
     try:
         action = HookAction(str(raw_action))
     except ValueError:
-        return _invalid_action_result(spec=spec, duration_ms=duration_ms, stdout=stdout, stderr=stderr)
+        return _invalid_action_result(
+            spec=spec,
+            execution_id=execution_id,
+            duration_ms=duration_ms,
+            stdout=stdout,
+            stderr=stderr,
+        )
     message = str(payload.get("message") or "")
     modified_args = _modified_args(payload.get("modified_args")) if action is HookAction.MODIFY else None
     summary = ConfiguredHookRunSummary(
+        execution_id=execution_id,
         hook_id=spec.hook_id,
         hook_name=spec.name,
         hook_point=spec.hook_point.value,
@@ -202,11 +225,13 @@ def _result_from_completed_process(
 def _invalid_action_result(
     *,
     spec: ConfiguredHookSpec,
+    execution_id: str,
     duration_ms: int,
     stdout: str,
     stderr: str,
 ) -> tuple[HookResult, ConfiguredHookRunSummary]:
     summary = ConfiguredHookRunSummary(
+        execution_id=execution_id,
         hook_id=spec.hook_id,
         hook_name=spec.name,
         hook_point=spec.hook_point.value,
@@ -242,6 +267,19 @@ def _hook_payload(ctx: HookContext) -> dict[str, object]:
         "session_id": ctx.session_id,
         "metadata_keys": metadata_keys,
     }
+
+
+def _execution_id(spec: ConfiguredHookSpec, ctx: HookContext) -> str:
+    parts = (
+        spec.source.value,
+        spec.hook_id,
+        spec.hook_point.value,
+        str(ctx.session_id or ""),
+        str(ctx.metadata.get("turn_id") or ""),
+        str(ctx.tool_name or ""),
+    )
+    digest = hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:16]
+    return f"hookexec_{digest}"
 
 
 def _hook_env(spec: ConfiguredHookSpec) -> dict[str, str]:
