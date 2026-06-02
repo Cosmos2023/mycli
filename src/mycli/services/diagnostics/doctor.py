@@ -17,7 +17,7 @@ from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
-from mycli.services.mcp.client import load_mcp_server_configs
+from mycli.services.mcp.diagnostics import discover_mcp_servers
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
 
@@ -1057,15 +1057,21 @@ class DoctorService:
 
     def _check_mcp(self) -> Iterable[DoctorCheck]:
         try:
-            configs = load_mcp_server_configs(self._workspace_root, environ=self._env)
+            diagnostics = discover_mcp_servers(self._workspace_root, environ=self._env)
         except Exception as exc:
             return (DoctorCheck("mcp", DoctorStatus.FAILED, f"mcp config invalid: {exc}"),)
-        enabled_count = sum(1 for config in configs.values() if config.enabled)
+        status = DoctorStatus.WARNING if diagnostics.failure_count else DoctorStatus.OK
+        message = (
+            f"mcp: {diagnostics.configured_count} configured, "
+            f"{diagnostics.enabled_count} enabled, "
+            f"{diagnostics.tool_count} tools discovered"
+        )
         return (
             DoctorCheck(
                 "mcp",
-                DoctorStatus.OK,
-                f"mcp: {len(configs)} configured, {enabled_count} enabled",
+                status,
+                message,
+                detail=diagnostics.safe_detail(),
             ),
         )
 

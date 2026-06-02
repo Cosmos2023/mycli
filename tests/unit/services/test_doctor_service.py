@@ -12,6 +12,7 @@ from mycli.services.diagnostics.doctor import (
     DoctorStatus,
     render_doctor_report,
 )
+from mycli.services.mcp.diagnostics import McpDiscoveryDiagnostics, McpServerDiagnostic
 
 
 NODE_TUI_MARKERS = (
@@ -280,6 +281,25 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     node_tui = tmp_path / "repo" / "tui" / "node"
     _create_node_tui_dependencies(node_tui)
     monkeypatch.setattr(doctor_module, "_node_tui_source_root", lambda: node_tui)
+    monkeypatch.setattr(
+        doctor_module,
+        "discover_mcp_servers",
+        lambda *_args, **_kwargs: McpDiscoveryDiagnostics(
+            configured_count=1,
+            enabled_count=1,
+            disabled_count=0,
+            tool_count=1,
+            servers=(
+                McpServerDiagnostic(
+                    server_name="demo",
+                    transport="stdio",
+                    enabled=True,
+                    status="ok",
+                    tool_count=1,
+                ),
+            ),
+        ),
+    )
 
     report = DoctorService(
         workspace_root=workspace,
@@ -295,7 +315,8 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "sk-do-not-print" not in rendered
     assert "provider=deepseek" in rendered
     assert "api_key: present" in rendered
-    assert "mcp: 1 configured, 1 enabled" in rendered
+    assert "mcp: 1 configured, 1 enabled, 1 tools discovered" in rendered
+    assert "demo:ok:tools=1" in rendered
     assert "storage_layout" in rendered
     assert "Summary:" in rendered
     logs_redaction = next(check for check in report.checks if check.name == "logs_redaction")
@@ -359,6 +380,65 @@ def test_doctor_service_warns_for_missing_tool_environment(tmp_path: Path) -> No
     assert check.status is DoctorStatus.WARNING
     assert "shell not found" in check.message
     assert "git not found" in check.message
+
+
+def test_doctor_service_warns_for_mcp_discovery_failure_without_leaking_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    (workspace / ".mycli" / "mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[servers.bad]",
+                'command = "python"',
+                'args = ["server.py", "--token", "sk-do-not-print"]',
+                'env = { API_KEY = "sk-also-hidden" }',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        doctor_module,
+        "discover_mcp_servers",
+        lambda *_args, **_kwargs: McpDiscoveryDiagnostics(
+            configured_count=1,
+            enabled_count=1,
+            disabled_count=0,
+            tool_count=0,
+            servers=(
+                McpServerDiagnostic(
+                    server_name="bad",
+                    transport="stdio",
+                    enabled=True,
+                    status="failed",
+                    failure_kind="TimeoutError",
+                    failure_message="timed out",
+                ),
+            ),
+        ),
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+    check = next(check for check in report.checks if check.name == "mcp")
+
+    assert check.status is DoctorStatus.WARNING
+    assert "bad:failed:TimeoutError" in rendered
+    assert "server.py" not in rendered
+    assert "--token" not in rendered
+    assert "sk-do-not-print" not in rendered
+    assert "sk-also-hidden" not in rendered
 
 
 def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) -> None:

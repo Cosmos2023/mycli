@@ -418,16 +418,19 @@ def _read_framed_json(stream: IO[bytes], *, timeout_seconds: float) -> JsonObjec
     selector = selectors.DefaultSelector()
     selector.register(stream, selectors.EVENT_READ)
     try:
-        header = bytearray()
-        while b"\r\n\r\n" not in header and b"\n\n" not in header:
+        buffer = bytearray()
+        while b"\r\n\r\n" not in buffer and b"\n\n" not in buffer:
             if not selector.select(timeout=timeout_seconds):
                 raise TimeoutError("Timed out waiting for MCP stdio response header.")
-            chunk = stream.readline()
+            chunk = os.read(stream.fileno(), 4096)
             if not chunk:
                 raise RuntimeError("MCP stdio server closed stdout before sending a response.")
-            header.extend(chunk)
+            buffer.extend(chunk)
+        header_bytes, separator, body = bytes(buffer).partition(b"\r\n\r\n")
+        if not separator:
+            header_bytes, separator, body = bytes(buffer).partition(b"\n\n")
         headers: dict[str, str] = {}
-        for line in bytes(header).decode("ascii", errors="replace").splitlines():
+        for line in header_bytes.decode("ascii", errors="replace").splitlines():
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
@@ -435,7 +438,13 @@ def _read_framed_json(stream: IO[bytes], *, timeout_seconds: float) -> JsonObjec
         length = int(headers.get("content-length", "0"))
         if length <= 0:
             raise RuntimeError("MCP stdio response missing Content-Length.")
-        body = stream.read(length)
+        while len(body) < length:
+            if not selector.select(timeout=timeout_seconds):
+                raise TimeoutError("Timed out waiting for MCP stdio response body.")
+            chunk = os.read(stream.fileno(), length - len(body))
+            if not chunk:
+                break
+            body += chunk
         if len(body) != length:
             raise RuntimeError("MCP stdio response body ended before Content-Length bytes.")
         return _decode_json(body)

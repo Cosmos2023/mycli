@@ -44,6 +44,25 @@ def _contribution_registration(name: str) -> ToolContributionRegistration:
     )
 
 
+def _mcp_contribution_registration(server: str, tool_name: str) -> ToolContributionRegistration:
+    route_name = f"mcp.{server}.{tool_name}"
+    tool = FakeTool(route_name)
+    return ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
+            tool_id=f"mcp:{server}:{tool_name}",
+            display_name=route_name,
+            description=tool.spec.description,
+            route_key=ToolRouteKey(namespace=f"mcp.{server}", name=tool_name),
+            source=ToolContributionSource.PROVIDER,
+            scope=ToolContributionScope.THREAD,
+            lifecycle_state=ToolContributionLifecycleState.DECLARED,
+            spec=tool.spec,
+            origin_metadata={"server": server, "tool": tool_name},
+        ),
+        tool=tool,
+    )
+
+
 def test_extension_manifest_exposes_core_discovery_surfaces() -> None:
     manifest = ExtensionManifestService().manifest()
 
@@ -183,3 +202,19 @@ def test_extension_manifest_unifies_builtin_and_contributed_tool_views() -> None
     assert tools["daily_brief"]["toolset"] == "external"
     assert "daily_brief" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["provider"]
+
+
+def test_extension_manifest_marks_mcp_origin_contributed_tools_as_mcp() -> None:
+    manifest = ExtensionManifestService(
+        contributed_tools=(_mcp_contribution_registration("local", "echo"),)
+    ).manifest()
+
+    tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
+    entry = tools["mcp.local.echo"]
+
+    assert entry["source"] == "mcp"
+    assert entry["toolset"] == "external"
+    assert entry["contribution"]["origin"] == {"server": "local", "tool": "echo"}
+    assert "mcp.local.echo" in toolsets["external"]["tools"]
+    assert toolsets["external"]["sources"] == ["mcp"]

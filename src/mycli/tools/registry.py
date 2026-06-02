@@ -303,7 +303,7 @@ def contributed_tool_manifest_entry(
 ) -> dict[str, object]:
     descriptor = registration.descriptor
     effect_profile = tool_effects_for_tool(registration.tool)
-    source = _contributed_manifest_source(descriptor.source)
+    source = _contributed_manifest_source(descriptor)
     return {
         "id": descriptor.tool_id,
         "name": descriptor.route_name,
@@ -679,13 +679,24 @@ def _capability_tags_for(*, spec: ToolSpec, metadata: dict[str, object]) -> list
     return []
 
 
-def _contributed_manifest_source(source: ToolContributionSource) -> str:
+def _contributed_manifest_source(descriptor: object) -> str:
+    source = getattr(descriptor, "source", None)
+    tool_id = getattr(descriptor, "tool_id", "")
+    origin_metadata = getattr(descriptor, "origin_metadata", {})
+    if (
+        isinstance(tool_id, str)
+        and tool_id.startswith("mcp:")
+        and isinstance(origin_metadata, dict)
+        and isinstance(origin_metadata.get("server"), str)
+        and isinstance(origin_metadata.get("tool"), str)
+    ):
+        return "mcp"
     if source is ToolContributionSource.PROVIDER:
         return "provider"
     return "contributed"
 
 
 def _contributed_toolset_for(source: str) -> str:
-    if source == "provider":
+    if source in {"mcp", "provider"}:
         return "external"
     return "runtime"

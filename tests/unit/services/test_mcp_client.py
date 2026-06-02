@@ -193,19 +193,22 @@ from __future__ import annotations
 import json
 import sys
 
-headers = {}
 while True:
-    line = sys.stdin.buffer.readline()
-    if line in {b"\\r\\n", b"\\n", b""}:
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if line in {b"\\r\\n", b"\\n", b""}:
+            break
+        key, value = line.decode("ascii").strip().split(":", 1)
+        headers[key.lower()] = value.strip()
+    if not headers:
         break
-    key, value = line.decode("ascii").strip().split(":", 1)
-    headers[key.lower()] = value.strip()
-body = sys.stdin.buffer.read(int(headers["content-length"]))
-request = json.loads(body)
-response = {"jsonrpc": "2.0", "id": request["id"], "result": {"ok": request["method"]}}
-payload = json.dumps(response).encode("utf-8")
-sys.stdout.buffer.write(f"Content-Length: {len(payload)}\\r\\n\\r\\n".encode("ascii") + payload)
-sys.stdout.buffer.flush()
+    body = sys.stdin.buffer.read(int(headers["content-length"]))
+    request = json.loads(body)
+    response = {"jsonrpc": "2.0", "id": request["id"], "result": {"ok": request["method"]}}
+    payload = json.dumps(response).encode("utf-8")
+    sys.stdout.buffer.write(f"Content-Length: {len(payload)}\\r\\n\\r\\n".encode("ascii") + payload)
+    sys.stdout.buffer.flush()
 """.lstrip(),
         encoding="utf-8",
     )

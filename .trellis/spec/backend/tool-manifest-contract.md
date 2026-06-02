@@ -69,7 +69,15 @@ Each tool entry must include:
   `ToolRegistry.render_for_model()` ordering or provider-visible schema.
 - `combined_tool_manifest()` may merge built-in and contributed tool
   registrations into the same manifest shape. This is a discovery view only;
-  it does not productize MCP/plugin/skills/subagent lifecycle.
+  it does not productize plugin/skills/subagent lifecycle.
+- MCP-origin contributed registrations use stable `mcp:<server>:<tool>` tool ids
+  and `origin_metadata.server` / `origin_metadata.tool`; the combined manifest
+  renders those entries with `source="mcp"` and `toolset="external"` even though
+  they flow through the generic provider contribution path.
+- MCP discovery diagnostics may start configured local stdio servers through
+  the MCP client path. Human-facing doctor output must remain bounded to server
+  names, transport kind, counts, status, and failure kind; it must not include
+  command args, env values, headers, raw tool arguments, or secret-like values.
 - Toolset entries include `id`, `enabled`, `aliases`, `sources`, `tool_count`,
   `tools`, and `availability`.
 - `ToolsetRegistry.manifest_issues()` reports malformed toolset rows and
@@ -91,6 +99,8 @@ Required tests for manifest changes:
   representative toolset entries.
 - Combined manifest with at least one contributed registration preserving
   builtin entries and contributed source/toolset metadata.
+- Combined manifest with at least one MCP-origin contributed registration
+  rendered as `source=mcp`, `toolset=external`.
 - Extension manifest exposes `tool_manifest` and the `tools.manifest`
   capability.
 - Extension manifest exposes `toolset_manifest` and the `toolsets.manifest`
@@ -102,6 +112,7 @@ Required tests for manifest changes:
 
 ## Non-goals
 
-This manifest does not productize MCP, ACP, skills, subagents, browser, or
-computer-use. Those capabilities may have foundation code elsewhere, but this
-contract only stabilizes built-in local tools.
+This manifest does not productize ACP, skills, subagents, browser, or
+computer-use. MCP remains a minimum local stdio tool lifecycle foundation here;
+hosted MCP auth, OAuth, SSE, plugin marketplace, and user-facing MCP management
+remain out of scope.

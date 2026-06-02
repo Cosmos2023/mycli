@@ -93,6 +93,26 @@ Commit: `2aa4e72 Expose git inspection as stable local tools`
 Commit: `4dc4384 Align tool lifecycle diagnostics with expanded local tools`
 Commit: follow-up doctor tool environment check slice
 
+### MCP Tool Lifecycle Foundation
+
+- Local stdio MCP servers can be configured through `.mycli/mcp_servers.toml`.
+- MCP discovery now reports bounded per-server diagnostics: configured/enabled
+  counts, disabled servers, discovered tool counts, failure kind, and safe
+  server summaries.
+- Doctor reports MCP discovery health without printing command args, env
+  values, raw tool arguments, headers, or secret-like values.
+- MCP tools are converted into `ToolContributionRegistration` through the
+  existing contribution path and rendered into the combined manifest as
+  `source=mcp`, `toolset=external`.
+- Extension manifest and toolset manifest can expose MCP-origin contributed
+  tools without scraping human output.
+- Deterministic provider-free MCP smoke verifies config loading, stdio
+  discovery, tool call, extension manifest entry, toolset manifest entry, and
+  doctor diagnostics:
+  `uv run python evaluation/mcp_smoke.py`
+
+Commit: pending MCP lifecycle foundation slice
+
 ### Smoke / Eval
 
 - Added deterministic provider-free smoke harness:
@@ -124,10 +144,13 @@ Latest verified commands:
 ## Remaining Gaps Versus Hermes-agent
 
 - No plugin/MCP/ACP productized external tool ecosystem in this goal.
+- MCP has a local stdio lifecycle foundation, but not a full productized
+  ecosystem.
 - Toolset enable/disable is visible in the foundation manifest, but runtime
   enforcement and user-facing configuration are not yet productized.
-- Contributed tools are unified at the manifest/discovery layer only; dynamic
-  MCP/plugin/skills/subagent lifecycle remains a later phase.
+- Contributed tools are unified at the manifest/discovery layer. MCP local
+  stdio tools have a deterministic discovery/call smoke, while hosted MCP,
+  plugin, skills, and subagent lifecycle remain later phases.
 - No browser/computer-use/vision/image-generation tools.
 - No sandbox backends beyond local shell; Hermes supports richer terminal
   environments.
@@ -144,7 +167,8 @@ Latest verified commands:
 The local tools foundation is now coherent enough to use as a base for the next
 stage. Recommended order:
 
-1. MCP productization on top of the manifest and lifecycle contracts.
+1. MCP productization beyond local stdio: auth, SSE, user-facing management,
+   refresh, and remote server failure UX.
 2. Skills productization after MCP/tool discovery is stable.
 3. Subagent/multi-agent orchestration once tool state and file history are
    stable across concurrent actors.
