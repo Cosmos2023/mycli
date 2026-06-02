@@ -113,6 +113,27 @@ Commit: follow-up doctor tool environment check slice
 
 Commit: pending MCP lifecycle foundation slice
 
+### Skills Tool Lifecycle Foundation
+
+- Skill discovery now supports built-in, user/local, and repo skill
+  directories.
+- Skill metadata includes source kind, dependencies, guardrails, trigger hints,
+  availability, and path provenance.
+- Skill diagnostics report loaded counts, source counts, duplicate names, and
+  malformed skill files without printing skill bodies.
+- Doctor reports skill catalog health with bounded diagnostics.
+- Local skills can be exposed as skill-origin contributed tools through
+  `SkillToolContributionProvider`.
+- Combined manifest and extension manifest render skill-origin tools as
+  `source=skill`, `toolset=external`.
+- Runtime lifecycle coverage proves skill tools pass through
+  `ToolOrchestrator`, `ToolContributionRegistry`, and `ToolRouter`.
+- Deterministic provider-free skill smoke verifies discovery, invocation,
+  extension manifest, toolset manifest, lifecycle, and doctor diagnostics:
+  `uv run python evaluation/skill_smoke.py`
+
+Commit: pending skills lifecycle foundation slice
+
 ### Smoke / Eval
 
 - Added deterministic provider-free smoke harness:
@@ -146,11 +167,14 @@ Latest verified commands:
 - No plugin/MCP/ACP productized external tool ecosystem in this goal.
 - MCP has a local stdio lifecycle foundation, but not a full productized
   ecosystem.
+- Skills have a local discovery/invocation/diagnostics foundation, but not a
+  full productized marketplace/sync/management surface.
 - Toolset enable/disable is visible in the foundation manifest, but runtime
   enforcement and user-facing configuration are not yet productized.
 - Contributed tools are unified at the manifest/discovery layer. MCP local
   stdio tools have a deterministic discovery/call smoke, while hosted MCP,
-  plugin, skills, and subagent lifecycle remain later phases.
+  plugin and subagent lifecycle remain later phases; skills still need
+  marketplace/sync/management productization.
 - No browser/computer-use/vision/image-generation tools.
 - No sandbox backends beyond local shell; Hermes supports richer terminal
   environments.
@@ -169,7 +193,8 @@ stage. Recommended order:
 
 1. MCP productization beyond local stdio: auth, SSE, user-facing management,
    refresh, and remote server failure UX.
-2. Skills productization after MCP/tool discovery is stable.
+2. Skills productization beyond local discovery: install/sync/list/view/manage
+   UX, richer activation policy, and bundled skill library expansion.
 3. Subagent/multi-agent orchestration once tool state and file history are
    stable across concurrent actors.
 4. ACP only after runtime contract, TUI gateway, and external tool manifests

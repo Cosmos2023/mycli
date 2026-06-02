@@ -281,6 +281,7 @@ class AgentRuntime:
         self._skill_registry = skill_registry or SkillRegistry(
             builtin_root=Path(__file__).resolve().parents[2] / "prompts" / "skills",
             user_root=home_dir / ".mycli" / "skills",
+            repo_root=config.workspace_root / ".mycli" / "skills",
         )
         self._tool_registry.register(SkillTool(self._skill_registry))
         self._trace_service = trace_service or TraceService(home_dir=home_dir)

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import cast
 
 from mycli.application.runtime import AgentRuntime
+from mycli.application.runtime.tools import ToolContributionProvider
 from mycli.application.turn_service import TurnService
 from mycli.config.settings import resolve_config
 from mycli.domain.providers import ProtocolId
@@ -23,6 +24,7 @@ from mycli.services.mcp import (
     McpToolContributionProvider,
     load_mcp_server_configs,
 )
+from mycli.services.skills import SkillRegistry, SkillToolContributionProvider
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.bash import BashTool
 from mycli.tools.bash_output import BashOutputTool
@@ -134,15 +136,24 @@ def build_turn_service(
             ExitPlanModeTool(workspace_root),
         ]
     )
-    contributed_tool_providers = _build_mcp_tool_providers(
-        workspace_root,
-        env=env_vars,
+    skill_registry = SkillRegistry(
+        builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",
+        user_root=home_dir / ".mycli" / "skills",
+        repo_root=workspace_root / ".mycli" / "skills",
+    )
+    contributed_tool_providers: tuple[ToolContributionProvider, ...] = (
+        *_build_mcp_tool_providers(
+            workspace_root,
+            env=env_vars,
+        ),
+        SkillToolContributionProvider(skill_registry),
     )
     runtime = AgentRuntime(
         model_adapter=model_adapter,
         tool_registry=tool_registry,
         config=config,
         home_dir=home_dir,
+        skill_registry=skill_registry,
         workspace_log_service=workspace_log_service,
         contributed_tool_providers=contributed_tool_providers,
     )

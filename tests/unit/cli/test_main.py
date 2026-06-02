@@ -50,6 +50,8 @@ from mycli.domain.tools import ToolCall
 from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.services.extensions import ExtensionManifestService
+from mycli.services.mcp import McpToolContributionProvider
+from mycli.services.skills import SkillToolContributionProvider
 
 
 def test_build_parser_uses_mycli_prog_name() -> None:
@@ -354,9 +356,44 @@ def test_build_turn_service_passes_cli_env_to_mcp_config_loader(tmp_path: Path) 
         },
     )
 
-    provider = service._runtime._contributed_tool_providers[0]
+    provider = next(
+        provider
+        for provider in service._runtime._contributed_tool_providers
+        if isinstance(provider, McpToolContributionProvider)
+    )
     client = provider.adapter._clients["fs"]
     assert client.config.env["TOKEN"] == "from-cli-env"
+
+
+def test_build_turn_service_includes_repo_skill_contribution_provider(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    skill_dir = workspace / ".mycli" / "skills"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "repo-skill.md").write_text(
+        "---\n"
+        'name = "repo-skill"\n'
+        'description = "Repo skill"\n'
+        'trigger_hints = ["repo"]\n'
+        "---\n"
+        "Use repo guidance.\n",
+        encoding="utf-8",
+    )
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+
+    provider = next(
+        provider
+        for provider in service._runtime._contributed_tool_providers
+        if isinstance(provider, SkillToolContributionProvider)
+    )
+    assert provider.registry.get_metadata("repo-skill") is not None
 
 
 def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path: Path) -> None:

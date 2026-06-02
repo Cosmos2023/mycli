@@ -74,6 +74,10 @@ Each tool entry must include:
   and `origin_metadata.server` / `origin_metadata.tool`; the combined manifest
   renders those entries with `source="mcp"` and `toolset="external"` even though
   they flow through the generic provider contribution path.
+- Skill-origin contributed registrations use stable `skill:<name>` tool ids and
+  `origin_metadata.skill`; the combined manifest renders those entries with
+  `source="skill"` and `toolset="external"` even though they flow through the
+  generic provider contribution path.
 - MCP discovery diagnostics may start configured local stdio servers through
   the MCP client path. Human-facing doctor output must remain bounded to server
   names, transport kind, counts, status, and failure kind; it must not include
@@ -101,6 +105,8 @@ Required tests for manifest changes:
   builtin entries and contributed source/toolset metadata.
 - Combined manifest with at least one MCP-origin contributed registration
   rendered as `source=mcp`, `toolset=external`.
+- Combined manifest with at least one skill-origin contributed registration
+  rendered as `source=skill`, `toolset=external`.
 - Extension manifest exposes `tool_manifest` and the `tools.manifest`
   capability.
 - Extension manifest exposes `toolset_manifest` and the `toolsets.manifest`
@@ -112,7 +118,9 @@ Required tests for manifest changes:
 
 ## Non-goals
 
-This manifest does not productize ACP, skills, subagents, browser, or
-computer-use. MCP remains a minimum local stdio tool lifecycle foundation here;
-hosted MCP auth, OAuth, SSE, plugin marketplace, and user-facing MCP management
-remain out of scope.
+This manifest does not productize ACP, subagents, browser, or computer-use.
+MCP remains a minimum local stdio tool lifecycle foundation here; hosted MCP
+auth, OAuth, SSE, plugin marketplace, and user-facing MCP management remain out
+of scope. Skills remain a local discovery/invocation/diagnostics foundation;
+skill marketplace, sync, install, and subagent skill orchestration remain out
+of scope.

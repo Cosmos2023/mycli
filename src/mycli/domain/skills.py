@@ -9,6 +9,8 @@ class SkillMetadata:
     description: str
     trigger_hints: tuple[str, ...]
     source_path: str
+    source_kind: str = "unknown"
+    availability: str = "available"
     env_dependencies: tuple[str, ...] = field(default_factory=tuple)
     workspace_dependencies: tuple[str, ...] = field(default_factory=tuple)
     guardrails: tuple[str, ...] = field(default_factory=tuple)
@@ -21,6 +23,7 @@ class SkillDefinition:
     trigger_hints: tuple[str, ...]
     body: str
     source_path: str
+    source_kind: str = "unknown"
     env_dependencies: tuple[str, ...] = field(default_factory=tuple)
     workspace_dependencies: tuple[str, ...] = field(default_factory=tuple)
     guardrails: tuple[str, ...] = field(default_factory=tuple)

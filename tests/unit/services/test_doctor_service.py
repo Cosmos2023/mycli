@@ -317,6 +317,7 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "api_key: present" in rendered
     assert "mcp: 1 configured, 1 enabled, 1 tools discovered" in rendered
     assert "demo:ok:tools=1" in rendered
+    assert "skills:" in rendered
     assert "storage_layout" in rendered
     assert "Summary:" in rendered
     logs_redaction = next(check for check in report.checks if check.name == "logs_redaction")
@@ -439,6 +440,42 @@ def test_doctor_service_warns_for_mcp_discovery_failure_without_leaking_config(
     assert "--token" not in rendered
     assert "sk-do-not-print" not in rendered
     assert "sk-also-hidden" not in rendered
+
+
+def test_doctor_service_warns_for_skill_catalog_issues_without_leaking_body(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    skill_dir = workspace / ".mycli" / "skills"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "review.md").write_text(
+        "---\n"
+        'name = "code-review"\n'
+        'description = "Repo review"\n'
+        "---\n"
+        "SECRET SKILL BODY SHOULD NOT LEAK\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "broken.md").write_text("not frontmatter", encoding="utf-8")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+    check = next(check for check in report.checks if check.name == "skills")
+
+    assert check.status is DoctorStatus.WARNING
+    assert "skills:" in check.message
+    assert "invalid_skill:broken.md" in rendered
+    assert "SECRET SKILL BODY" not in rendered
 
 
 def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) -> None:

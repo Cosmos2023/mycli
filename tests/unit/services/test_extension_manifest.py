@@ -63,6 +63,25 @@ def _mcp_contribution_registration(server: str, tool_name: str) -> ToolContribut
     )
 
 
+def _skill_contribution_registration(skill_name: str) -> ToolContributionRegistration:
+    route_name = f"skill.{skill_name}"
+    tool = FakeTool(route_name)
+    return ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
+            tool_id=f"skill:{skill_name}",
+            display_name=route_name,
+            description=tool.spec.description,
+            route_key=ToolRouteKey(namespace="skill", name=skill_name),
+            source=ToolContributionSource.PROVIDER,
+            scope=ToolContributionScope.THREAD,
+            lifecycle_state=ToolContributionLifecycleState.DECLARED,
+            spec=tool.spec,
+            origin_metadata={"skill": skill_name, "source_kind": "repo"},
+        ),
+        tool=tool,
+    )
+
+
 def test_extension_manifest_exposes_core_discovery_surfaces() -> None:
     manifest = ExtensionManifestService().manifest()
 
@@ -78,6 +97,7 @@ def test_extension_manifest_exposes_core_discovery_surfaces() -> None:
     assert capabilities["sessions"]["status"] == "available"
     assert capabilities["tools.manifest"]["status"] == "available"
     assert capabilities["toolsets.manifest"]["status"] == "available"
+    assert capabilities["skills"]["status"] == "available"
     assert capabilities["extensions.lifecycle"]["status"] == "not_available"
     assert capabilities["acp.server"]["status"] == "not_available"
 
@@ -87,7 +107,7 @@ def test_extension_manifest_does_not_productize_foundation_only_capabilities() -
 
     capabilities = {capability["id"]: capability for capability in manifest["capabilities"]}
 
-    for capability_id in ("mcp.tools", "skills", "subagents"):
+    for capability_id in ("mcp.tools", "subagents"):
         capability = capabilities[capability_id]
         assert capability["status"] == "foundation_only"
         assert "product" in capability["description"].lower()
@@ -218,3 +238,19 @@ def test_extension_manifest_marks_mcp_origin_contributed_tools_as_mcp() -> None:
     assert entry["contribution"]["origin"] == {"server": "local", "tool": "echo"}
     assert "mcp.local.echo" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["mcp"]
+
+
+def test_extension_manifest_marks_skill_origin_contributed_tools_as_skill() -> None:
+    manifest = ExtensionManifestService(
+        contributed_tools=(_skill_contribution_registration("code-review"),)
+    ).manifest()
+
+    tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
+    entry = tools["skill.code-review"]
+
+    assert entry["source"] == "skill"
+    assert entry["toolset"] == "external"
+    assert entry["contribution"]["origin"] == {"skill": "code-review", "source_kind": "repo"}
+    assert "skill.code-review" in toolsets["external"]["tools"]
+    assert toolsets["external"]["sources"] == ["skill"]

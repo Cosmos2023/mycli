@@ -132,10 +132,10 @@ class ExtensionManifestService:
                 },
                 {
                     "id": "skills",
-                    "status": "foundation_only",
+                    "status": "available",
                     "description": (
-                        "Skill registry and invocation foundations exist, but the extension "
-                        "manifest does not expose skills as a stable product capability."
+                        "Local skill discovery, invocation, manifest, and diagnostics "
+                        "foundation for extension clients."
                     ),
                 },
                 {
