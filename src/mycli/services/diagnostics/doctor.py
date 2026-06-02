@@ -19,6 +19,7 @@ from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.mcp.diagnostics import discover_mcp_servers
 from mycli.services.skills import SkillRegistry
+from mycli.services.subagents import inspect_subagent_profiles
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
 
@@ -234,6 +235,7 @@ class DoctorService:
             self._check_tool_manifest,
             self._check_tool_environment,
             self._check_skills,
+            self._check_subagents,
             self._check_file_history,
             self._check_tui,
             self._check_runtime_contract,
@@ -1093,6 +1095,22 @@ class DoctorService:
         return (
             DoctorCheck(
                 "skills",
+                status,
+                message,
+                detail=diagnostics.safe_detail(),
+            ),
+        )
+
+    def _check_subagents(self) -> Iterable[DoctorCheck]:
+        diagnostics = inspect_subagent_profiles()
+        status = DoctorStatus.WARNING if diagnostics.issue_count else DoctorStatus.OK
+        message = (
+            f"subagents: {diagnostics.profile_count} profiles, "
+            f"{diagnostics.available_count} available"
+        )
+        return (
+            DoctorCheck(
+                "subagents",
                 status,
                 message,
                 detail=diagnostics.safe_detail(),

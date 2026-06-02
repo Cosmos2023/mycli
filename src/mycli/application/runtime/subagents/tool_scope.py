@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mycli.application.runtime.subagents.profiles import GLOBAL_CHILD_DENYLIST
+from mycli.domain.subagent_profiles import GLOBAL_CHILD_DENYLIST
 from mycli.domain.subagents import SubAgentProfile
 
 

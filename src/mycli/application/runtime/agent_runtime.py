@@ -77,6 +77,7 @@ from mycli.services.planning import PlanModeService, PlanningService
 from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
+from mycli.services.subagents import SubAgentToolContributionProvider
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
@@ -386,6 +387,19 @@ class AgentRuntime:
             session_service=self._session_service,
         )
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
+        self._contributed_tool_providers = (
+            *self._contributed_tool_providers,
+            SubAgentToolContributionProvider(service=self._sub_agent_service),
+        )
+        self._tool_orchestrator = ToolOrchestrator(
+            session_id=config.session_id,
+            tool_registry=self._tool_registry,
+            tool_exposure_planner=self._tool_exposure_planner,
+            contributed_tool_registry=self._contributed_tool_registry,
+            contributed_tool_providers=self._contributed_tool_providers,
+            trace_service=self._trace_service,
+            append_turn_item=self._append_turn_item,
+        )
         self._assistant_block_consumer = AssistantBlockConsumer(
             session_id=config.session_id,
             session_service=self._session_service,

@@ -698,12 +698,19 @@ def _contributed_manifest_source(descriptor: object) -> str:
         and isinstance(origin_metadata.get("skill"), str)
     ):
         return "skill"
+    if (
+        isinstance(tool_id, str)
+        and tool_id.startswith("subagent:")
+        and isinstance(origin_metadata, dict)
+        and isinstance(origin_metadata.get("profile"), str)
+    ):
+        return "subagent"
     if source is ToolContributionSource.PROVIDER:
         return "provider"
     return "contributed"
 
 
 def _contributed_toolset_for(source: str) -> str:
-    if source in {"mcp", "provider", "skill"}:
+    if source in {"mcp", "provider", "skill", "subagent"}:
         return "external"
     return "runtime"

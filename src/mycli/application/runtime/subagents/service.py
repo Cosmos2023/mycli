@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
-from mycli.application.runtime.subagents.profiles import get_sub_agent_profile
+from mycli.domain.subagent_profiles import get_sub_agent_profile
 from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
 from mycli.domain.runtime import HistoryItem, HistoryItemType

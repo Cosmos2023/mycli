@@ -318,6 +318,9 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "mcp: 1 configured, 1 enabled, 1 tools discovered" in rendered
     assert "demo:ok:tools=1" in rendered
     assert "skills:" in rendered
+    assert "subagents: 3 profiles" in rendered
+    assert "explore:tools=Read,Grep,Glob,LS:denied=6" in rendered
+    assert "You are a read-only exploration sub-agent" not in rendered
     assert "storage_layout" in rendered
     assert "Summary:" in rendered
     logs_redaction = next(check for check in report.checks if check.name == "logs_redaction")

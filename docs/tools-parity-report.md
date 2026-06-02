@@ -134,6 +134,26 @@ Commit: pending MCP lifecycle foundation slice
 
 Commit: pending skills lifecycle foundation slice
 
+### Subagent / Task Tool Lifecycle Foundation
+
+- Existing `Task` runtime delegation remains available as the generic built-in
+  workflow tool.
+- Sub-agent profiles are now exposed as profile-specific contributed tools via
+  `SubAgentToolContributionProvider`, with routes such as `subagent.explore`.
+- Combined manifest and extension manifest render subagent-origin tools as
+  `source=subagent`, `toolset=external`.
+- Doctor reports subagent profile diagnostics with bounded safe detail: profile
+  names, default tool names, denied-tool counts, and budget shape. It does not
+  print delegated task descriptions or full profile prompts.
+- Runtime lifecycle coverage proves subagent tools pass through
+  `ToolOrchestrator`, `ToolContributionRegistry`, and `ToolRouter`.
+- Deterministic provider-free subagent smoke verifies profile discovery,
+  invocation, extension manifest, toolset manifest, lifecycle, and doctor
+  diagnostics:
+  `uv run python evaluation/subagent_smoke.py`
+
+Commit: pending subagent lifecycle foundation slice
+
 ### Smoke / Eval
 
 - Added deterministic provider-free smoke harness:
@@ -172,9 +192,9 @@ Latest verified commands:
 - Toolset enable/disable is visible in the foundation manifest, but runtime
   enforcement and user-facing configuration are not yet productized.
 - Contributed tools are unified at the manifest/discovery layer. MCP local
-  stdio tools have a deterministic discovery/call smoke, while hosted MCP,
-  plugin and subagent lifecycle remain later phases; skills still need
-  marketplace/sync/management productization.
+  stdio tools, skills, and subagent profiles have deterministic lifecycle
+  smoke coverage, while hosted MCP and plugin lifecycle remain later phases;
+  skills still need marketplace/sync/management productization.
 - No browser/computer-use/vision/image-generation tools.
 - No sandbox backends beyond local shell; Hermes supports richer terminal
   environments.
@@ -195,7 +215,7 @@ stage. Recommended order:
    refresh, and remote server failure UX.
 2. Skills productization beyond local discovery: install/sync/list/view/manage
    UX, richer activation policy, and bundled skill library expansion.
-3. Subagent/multi-agent orchestration once tool state and file history are
-   stable across concurrent actors.
+3. Subagent/multi-agent orchestration beyond the local profile lifecycle:
+   concurrent actor state, file locks, richer child profiles, and TUI UX.
 4. ACP only after runtime contract, TUI gateway, and external tool manifests
    are stable enough to publish.

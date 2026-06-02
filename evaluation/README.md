@@ -91,6 +91,7 @@ PYTHONPATH=src python3 -m mycli.cli.main --eval-scenario 04-small-scope-modifica
 uv run python evaluation/tool_smoke.py
 uv run python evaluation/mcp_smoke.py
 uv run python evaluation/skill_smoke.py
+uv run python evaluation/subagent_smoke.py
 ```
 
 其中 `mcp_smoke.py` 会创建临时本地 stdio MCP server，验证 config loading、
@@ -98,6 +99,9 @@ tool discovery、MCP tool call、extension manifest、toolset manifest 和 docto
 diagnostics。
 `skill_smoke.py` 会创建临时 builtin/repo/user skill 目录，验证 skill discovery、
 runtime invocation、extension manifest、toolset manifest 和 doctor diagnostics。
+`subagent_smoke.py` 会用 fake local sub-agent service 验证 subagent profile
+contributed tools、runtime invocation、extension manifest、toolset manifest 和
+doctor diagnostics。
 
 说明：
 

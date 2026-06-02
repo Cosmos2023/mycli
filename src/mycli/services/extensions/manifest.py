@@ -140,10 +140,10 @@ class ExtensionManifestService:
                 },
                 {
                     "id": "subagents",
-                    "status": "foundation_only",
+                    "status": "available",
                     "description": (
-                        "Sub-agent runtime foundations exist, but multi-agent product "
-                        "surfaces are not part of the stable extension contract."
+                        "Local sub-agent profile discovery, invocation, manifest, and "
+                        "diagnostics foundation for extension clients."
                     ),
                 },
                 {
