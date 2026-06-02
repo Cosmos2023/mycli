@@ -17,7 +17,7 @@ from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
-from mycli.services.hooks import HookConfigRegistry, HookManager, HookPoint
+from mycli.services.hooks import HookAllowlist, HookConfigRegistry, HookManager, HookPoint
 from mycli.services.hooks.config import HookEnvPolicy
 from mycli.services.hooks.builtin import permission_guard
 from mycli.services.mcp.diagnostics import discover_mcp_servers
@@ -1341,11 +1341,15 @@ class DoctorService:
             )
         problems = [issue.safe_line() for issue in discovery.issues]
         warnings: list[str] = []
+        allowlist = HookAllowlist(home_dir=self._home_dir)
         for spec in discovery.hooks:
             if not spec.enabled:
                 warnings.append(f"{spec.name}: disabled")
             if spec.env_policy is HookEnvPolicy.INHERIT_SAFE:
                 warnings.append(f"{spec.name}: env_policy=inherit_safe")
+            allowlist_status = allowlist.status_for(spec)
+            if not allowlist_status.allowed:
+                warnings.append(f"{spec.name}: allowlist={allowlist_status.reason}")
             for command_part in spec.command:
                 command_path = Path(command_part).expanduser()
                 if not command_path.is_absolute():
@@ -1355,6 +1359,7 @@ class DoctorService:
                     break
                 if command_part == spec.command[0] and not _is_executable_file(command_path):
                     warnings.append(f"{spec.name}: command not executable")
+        warnings.extend(f"hook_allowlist: {issue}" for issue in allowlist.issues)
         if problems:
             return (
                 DoctorCheck(
@@ -1371,6 +1376,13 @@ class DoctorService:
         ]
         if warnings:
             detail_parts.append(f"warnings={_bounded_name_list(warnings)}")
+        if discovery.hooks:
+            allowlist_lines = [
+                allowlist.status_for(spec).safe_line(spec) for spec in discovery.hooks
+            ]
+            detail_parts.append(f"allowlist={_bounded_name_list(allowlist_lines)}")
+        if allowlist.issues:
+            detail_parts.append(f"allowlist_issues={_bounded_name_list(list(allowlist.issues))}")
         return (
             DoctorCheck(
                 "hooks",

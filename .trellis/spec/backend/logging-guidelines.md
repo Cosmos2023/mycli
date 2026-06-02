@@ -116,6 +116,11 @@ the local log root and must never become provider transcript inputs.
   diagnostic errors, and allowlisted `error_kind` counts. It must not print raw
   tool arguments, stdout, stderr, summaries, file contents, local paths, user
   text, headers, or secret-like values.
+- Configured local hooks append `hook_execution` trace rows with bounded
+  payload fields: `hook_id`, `hook_name`, `hook_point`, `status`, `action`,
+  `duration_ms`, optional `exit_code`, output character counts, and sanitized
+  message. These rows must not include raw hook stdin, raw tool arguments, file
+  content, inherited environment, full stdout/stderr, or full command output.
 - Doctor may summarize `turn_failed` trace rows with bounded total,
   `stop_reason`, and `phase` counts. It must not print raw exception messages,
   tracebacks, provider payloads, user text, tool output, headers, or

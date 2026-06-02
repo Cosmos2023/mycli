@@ -70,10 +70,15 @@ class HookManager:
                 self._record_summary(summary)
                 continue
             results.append(result)
+            status = (
+                HookExecutionStatus.ERROR
+                if result.action is HookAction.ERROR
+                else HookExecutionStatus.OK
+            )
             summary = HookExecutionSummary(
                 hook_point=point,
                 hook_name=hook_name,
-                status=HookExecutionStatus.OK,
+                status=status,
                 action=result.action,
                 message=result.message,
             )

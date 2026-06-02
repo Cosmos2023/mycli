@@ -5,8 +5,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Callable
 
+from mycli.services.hooks.allowlist import HookAllowlistStatus
 from mycli.services.hooks.config import (
     ConfiguredHookSpec,
     HookEnvPolicy,
@@ -60,11 +61,29 @@ class ConfiguredHookCallback:
     workspace_root: Path
     monotonic: Any
     trace_sink: Any | None = None
+    allowlist_status: Callable[[ConfiguredHookSpec], HookAllowlistStatus] | None = None
 
     def __call__(self, ctx: HookContext) -> HookResult:
         if not self.spec.enabled or not self.spec.matches_tool(ctx.tool_name):
             return HookResult(action=HookAction.ALLOW)
         started_at = float(self.monotonic())
+        allowlist_status = (
+            self.allowlist_status(self.spec)
+            if self.allowlist_status is not None
+            else HookAllowlistStatus(allowed=True, reason="not_configured", digest="")
+        )
+        if not allowlist_status.allowed:
+            summary = ConfiguredHookRunSummary(
+                hook_id=self.spec.hook_id,
+                hook_name=self.spec.name,
+                hook_point=self.spec.hook_point.value,
+                status="error",
+                action=HookAction.ERROR.value,
+                duration_ms=_duration_ms(self.monotonic, started_at),
+                message=f"not allowlisted: {allowlist_status.reason}",
+            )
+            _emit_trace(self.trace_sink, ctx, summary)
+            return HookResult(action=HookAction.ERROR, message="configured hook not allowlisted")
         try:
             completed = subprocess.run(
                 list(self.spec.command),
@@ -84,12 +103,12 @@ class ConfiguredHookCallback:
                 hook_name=self.spec.name,
                 hook_point=self.spec.hook_point.value,
                 status="error",
-                action=None,
+                action=HookAction.ERROR.value,
                 duration_ms=duration_ms,
                 message="timeout",
             )
             _emit_trace(self.trace_sink, ctx, summary)
-            return HookResult(action=HookAction.ALLOW, message="configured hook timed out")
+            return HookResult(action=HookAction.ERROR, message="configured hook timed out")
         except OSError as exc:
             duration_ms = _duration_ms(self.monotonic, started_at)
             summary = ConfiguredHookRunSummary(
@@ -97,12 +116,12 @@ class ConfiguredHookCallback:
                 hook_name=self.spec.name,
                 hook_point=self.spec.hook_point.value,
                 status="error",
-                action=None,
+                action=HookAction.ERROR.value,
                 duration_ms=duration_ms,
                 message=exc.__class__.__name__,
             )
             _emit_trace(self.trace_sink, ctx, summary)
-            return HookResult(action=HookAction.ALLOW, message="configured hook failed")
+            return HookResult(action=HookAction.ERROR, message="configured hook failed")
 
         duration_ms = _duration_ms(self.monotonic, started_at)
         stdout = _bounded_text(completed.stdout)
@@ -132,14 +151,14 @@ def _result_from_completed_process(
             hook_name=spec.name,
             hook_point=spec.hook_point.value,
             status="error",
-            action=None,
+            action=HookAction.ERROR.value,
             duration_ms=duration_ms,
             exit_code=exit_code,
             stdout_chars=len(stdout),
             stderr_chars=len(stderr),
             message=stderr or stdout or f"exit={exit_code}",
         )
-        return HookResult(action=HookAction.ALLOW, message="configured hook failed"), summary
+        return HookResult(action=HookAction.ERROR, message="configured hook failed"), summary
     try:
         payload = json.loads(stdout) if stdout.strip() else {}
     except json.JSONDecodeError:
@@ -148,14 +167,14 @@ def _result_from_completed_process(
             hook_name=spec.name,
             hook_point=spec.hook_point.value,
             status="error",
-            action=None,
+            action=HookAction.ERROR.value,
             duration_ms=duration_ms,
             exit_code=exit_code,
             stdout_chars=len(stdout),
             stderr_chars=len(stderr),
             message="stdout was not JSON",
         )
-        return HookResult(action=HookAction.ALLOW, message="configured hook output invalid"), summary
+        return HookResult(action=HookAction.ERROR, message="configured hook output invalid"), summary
     if not isinstance(payload, dict):
         return _invalid_action_result(spec=spec, duration_ms=duration_ms, stdout=stdout, stderr=stderr)
     raw_action = payload.get("action", HookAction.ALLOW.value)
@@ -192,14 +211,14 @@ def _invalid_action_result(
         hook_name=spec.name,
         hook_point=spec.hook_point.value,
         status="error",
-        action=None,
+        action=HookAction.ERROR.value,
         duration_ms=duration_ms,
         exit_code=0,
         stdout_chars=len(stdout),
         stderr_chars=len(stderr),
         message="unsupported hook action",
     )
-    return HookResult(action=HookAction.ALLOW, message="configured hook output invalid"), summary
+    return HookResult(action=HookAction.ERROR, message="configured hook output invalid"), summary
 
 
 def _modified_args(value: object) -> dict[str, Any] | None:

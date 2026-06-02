@@ -67,7 +67,14 @@ from mycli.services.context.compaction import (
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.file_history import FileHistoryService
-from mycli.services.hooks import HookConfigDiscovery, HookManager, HookPoint, register_configured_hooks
+from mycli.services.hooks.allowlist import HookAllowlist
+from mycli.services.hooks import (
+    HookConfigDiscovery,
+    HookContext,
+    HookManager,
+    HookPoint,
+    register_configured_hooks,
+)
 from mycli.services.hooks.builtin import permission_guard
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
@@ -221,6 +228,7 @@ class AgentRuntime:
         self._model_adapter = model_adapter
         self._tool_registry = tool_registry
         self._config = config
+        self._home_dir = home_dir
         self._recovery_sleep = time.sleep
         self._monotonic = time.monotonic
         self._approval_service = approval_service or ApprovalService(
@@ -448,6 +456,8 @@ class AgentRuntime:
             workspace_log_service=self._workspace_log_service,
         )
         self._recover_plan_mode_anchor()
+        self._closed = False
+        self._execute_session_hook(HookPoint.SESSION_START)
 
     @classmethod
     def for_tests(
@@ -712,9 +722,30 @@ class AgentRuntime:
 
     def inspect_hooks(self) -> tuple[str, ...]:
         lines = [snapshot.safe_line() for snapshot in self._hook_manager.snapshot()]
-        for issue in self._hook_config_discovery.issues:
-            lines.append(f"config_issue {issue.safe_line()}")
+        allowlist = HookAllowlist(home_dir=self._home_dir)
+        for spec in self._hook_config_discovery.hooks:
+            lines.append(allowlist.status_for(spec).safe_line(spec))
+        for config_issue in self._hook_config_discovery.issues:
+            lines.append(f"config_issue {config_issue.safe_line()}")
+        for allowlist_issue in allowlist.issues:
+            lines.append(f"allowlist_issue {allowlist_issue}")
         return tuple(lines) or ("no hooks registered",)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._execute_session_hook(HookPoint.SESSION_END)
+
+    def _execute_session_hook(self, hook_point: HookPoint) -> None:
+        self._hook_manager.execute_with_summary(
+            hook_point,
+            HookContext(
+                hook_point=hook_point,
+                session_id=self._config.session_id,
+                metadata={"turn_id": hook_point.value},
+            ),
+        )
 
     def extension_manifest(self) -> dict[str, object]:
         contributed_tools = tuple(

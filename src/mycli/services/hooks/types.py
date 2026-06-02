@@ -19,6 +19,7 @@ class HookAction(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     MODIFY = "modify"
+    ERROR = "error"
 
 
 class HookExecutionStatus(StrEnum):

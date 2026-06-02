@@ -116,6 +116,11 @@ class TurnService:
         assert self._tool_registry is not None
         return tuple(self._tool_registry.list_names())
 
+    def close(self) -> None:
+        close = getattr(self._runtime, "close", None)
+        if callable(close):
+            close()
+
     def inspect_logs(self) -> tuple[str, ...]:
         log_service = getattr(self._runtime, "_workspace_log_service", None)
         if log_service is None:

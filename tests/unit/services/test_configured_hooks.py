@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from mycli.services.hooks.allowlist import HookAllowlist, HookAllowlistEntry, command_digest
 from mycli.services.hooks.config import ConfiguredHookSpec, HookConfigRegistry
 from mycli.services.hooks.runner import ConfiguredHookCallback
 from mycli.services.hooks.types import HookAction, HookContext, HookPoint
@@ -88,11 +89,13 @@ def test_configured_hook_callback_maps_allow_deny_modify_and_trace(tmp_path: Pat
         encoding="utf-8",
     )
     spec = _spec(tmp_path, command=["python3", str(script)])
+    HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
         spec=spec,
         workspace_root=tmp_path,
         monotonic=iter((10.0, 10.1, 10.2, 10.3, 10.4, 10.5)).__next__,
+        allowlist_status=HookAllowlist(home_dir=tmp_path / "home").status_for,
         trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
     )
 
@@ -113,19 +116,55 @@ def test_configured_hook_callback_timeout_and_error_do_not_deny(tmp_path: Path) 
     slow_script = tmp_path / "slow.py"
     slow_script.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
     spec = _spec(tmp_path, command=["python3", str(slow_script)], timeout_seconds=0.01)
+    HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
         spec=spec,
         workspace_root=tmp_path,
         monotonic=iter((1.0, 1.2)).__next__,
+        allowlist_status=HookAllowlist(home_dir=tmp_path / "home").status_for,
         trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
     )
 
     result = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
 
-    assert result.action is HookAction.ALLOW
+    assert result.action is HookAction.ERROR
     assert traces[0]["status"] == "error"
+    assert traces[0]["action"] == "error"
     assert traces[0]["message"] == "timeout"
+
+
+def test_configured_hook_callback_requires_allowlist_before_execution(tmp_path: Path) -> None:
+    marker = tmp_path / "executed.txt"
+    script = tmp_path / "hook.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+                "print(json.dumps({'action':'deny','message':'should not run'}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, command=["python3", str(script)])
+    traces = []
+    callback = ConfiguredHookCallback(
+        spec=spec,
+        workspace_root=tmp_path,
+        monotonic=iter((1.0, 1.1)).__next__,
+        allowlist_status=HookAllowlist(home_dir=tmp_path / "home").status_for,
+        trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
+    )
+
+    result = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
+
+    assert result.action is HookAction.ERROR
+    assert result.message == "configured hook not allowlisted"
+    assert not marker.exists()
+    assert traces[0]["status"] == "error"
+    assert traces[0]["action"] == "error"
+    assert traces[0]["message"] == "not allowlisted: allowlist_missing"
 
 
 def test_configured_hook_callback_redacts_secret_messages(tmp_path: Path) -> None:
@@ -135,11 +174,13 @@ def test_configured_hook_callback_redacts_secret_messages(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     spec = _spec(tmp_path, command=["python3", str(script)])
+    HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
         spec=spec,
         workspace_root=tmp_path,
         monotonic=iter((1.0, 1.1)).__next__,
+        allowlist_status=HookAllowlist(home_dir=tmp_path / "home").status_for,
         trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
     )
 
@@ -148,6 +189,46 @@ def test_configured_hook_callback_redacts_secret_messages(tmp_path: Path) -> Non
     assert result.action is HookAction.DENY
     assert result.message == "redacted"
     assert traces[0]["message"] == "redacted"
+
+
+def test_hook_allowlist_statuses_and_parse_issues(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    spec = _spec(tmp_path, command=["python3", str(tmp_path / "hook.py")])
+    allowlist = HookAllowlist(home_dir=home)
+
+    missing = allowlist.status_for(spec)
+    assert missing.allowed is False
+    assert missing.reason == "allowlist_missing"
+    assert missing.digest == command_digest(spec.command)
+
+    allowlist.write_allowed((spec,))
+    matched = HookAllowlist(home_dir=home).status_for(spec)
+    assert matched.allowed is True
+    assert matched.reason == "matched"
+
+    (home / ".mycli" / "hook-allowlist.json").write_text(
+        json.dumps(
+            {
+                "allowed": [
+                    HookAllowlistEntry(
+                        source=spec.source,
+                        hook_id=spec.hook_id,
+                        hook_point=spec.hook_point,
+                        command_digest="sha256:" + "0" * 64,
+                    ).to_dict()
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    mismatch = HookAllowlist(home_dir=home).status_for(spec)
+    assert mismatch.allowed is False
+    assert mismatch.reason == "entry_missing_or_digest_mismatch"
+
+    (home / ".mycli" / "hook-allowlist.json").write_text("{bad", encoding="utf-8")
+    malformed = HookAllowlist(home_dir=home)
+    assert malformed.issues
+    assert malformed.status_for(spec).reason == "entry_missing_or_digest_mismatch"
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

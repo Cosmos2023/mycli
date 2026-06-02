@@ -211,6 +211,17 @@ Questions to answer:
   `event_streams[].payload_schema` required fields, property names, or enum
   values -> Node protocol tests fail. Keep this as a test-time cross-language
   check, not a hot-path validator.
+- Hook config diagnostics:
+  - Missing repo/user hook config -> `hooks=ok` when built-in hooks are present.
+  - Malformed repo/user `.mycli/hooks.json` -> `hooks=failed` with bounded
+    config issue text.
+  - Missing absolute script/command path in configured hooks ->
+    `hooks=failed`.
+  - Configured hook uses `env_policy=inherit_safe`, is disabled, lacks an
+    allowlist entry, has a digest mismatch, or has a malformed
+    `~/.mycli/hook-allowlist.json` -> `hooks=warning`.
+  - Hook diagnostics must not print raw tool args, hook stdin payloads, full
+    command output, inherited environment values, or secrets.
 
 #### 5. Good/Base/Bad Cases
 - Good: `uv run mycli doctor` reports local health, redacts API keys, and exits
@@ -249,6 +260,8 @@ Questions to answer:
   redaction.
 - Unit test Node TUI dependency marker OK and missing-warning cases without
   creating `node_modules`.
+- Unit test hook config diagnostics for missing/malformed config, allowlist
+  missing/mismatch/malformed, and configured command path checks.
 - Unit test session maintenance cleanup for workspace-scoped empty sessions,
   runtime-state protection, lineage protection, bounded apply limits, and CLI
   routing through `/session-maintenance --apply-empty`.

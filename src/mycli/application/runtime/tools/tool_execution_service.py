@@ -31,6 +31,7 @@ from mycli.services.hooks import (
     HookExecutionSummary,
     HookManager,
     HookPoint,
+    HookResult,
 )
 from mycli.services.security import InjectionGuard
 from mycli.tools.routing.tool_router import ToolRouter
@@ -598,37 +599,6 @@ class ToolExecutionService:
                 response_id=response_id,
                 metadata=metadata,
             )
-        next_plan_state = self._apply_tool_effects(
-            call=normalized_call,
-            result_summary=result.summary,
-            result_payload=result.raw_payload,
-            plan_state=plan_state,
-        )
-        tool_transcript_content = self._context_manager.render_tool_result(
-            result,
-            tool_name=normalized_call.name,
-        )
-        guarded_tool_transcript_content = (
-            tool_transcript_content
-            if normalized_call.name == "Skill"
-            else self._injection_guard.guard_tool_output(tool_transcript_content)
-        )
-        self._record_skill_invocation(
-            tool_name=normalized_call.name,
-            result=result,
-            turn_id=turn_id,
-        )
-        self._record_tool_message(
-            conversation,
-            tool_name=normalized_call.name,
-            content=guarded_tool_transcript_content,
-            success=result.success,
-            summary=result.summary,
-            error=result.error,
-            raw_payload=result.raw_payload,
-            evidence=result.evidence,
-            tool_call_id=normalized_call.call_id,
-        )
         post_hook_execution = self._hook_manager.execute_with_summary(
             HookPoint.POST_TOOL_USE,
             HookContext(
@@ -644,6 +614,38 @@ class ToolExecutionService:
             ),
         )
         combined_hook_summaries = (*hook_summaries, *post_hook_execution.summaries)
+        result = _apply_post_hook_results(result, post_hook_execution.results)
+        next_plan_state = self._apply_tool_effects(
+            call=normalized_call,
+            result_summary=result.summary,
+            result_payload=result.raw_payload,
+            plan_state=plan_state,
+        )
+        tool_transcript_content = self._context_manager.render_tool_result(
+            result,
+            tool_name=normalized_call.name,
+        )
+        guarded_tool_transcript_content = (
+            tool_transcript_content
+            if normalized_call.name == "Skill"
+            else self._injection_guard.guard_tool_output(tool_transcript_content)
+        )
+        self._record_tool_message(
+            conversation,
+            tool_name=normalized_call.name,
+            content=guarded_tool_transcript_content,
+            success=result.success,
+            summary=result.summary,
+            error=result.error,
+            raw_payload=result.raw_payload,
+            evidence=result.evidence,
+            tool_call_id=normalized_call.call_id,
+        )
+        self._record_skill_invocation(
+            tool_name=normalized_call.name,
+            result=result,
+            turn_id=turn_id,
+        )
         finish_event = self._tool_activity_event(
             normalized_call,
             phase="finish",
@@ -1440,3 +1442,57 @@ class ToolExecutionService:
             "snippet": evidence.snippet,
             "metadata": dict(evidence.metadata),
         }
+
+
+def _apply_post_hook_results(
+    result: ToolResult,
+    hook_results: tuple[HookResult, ...],
+) -> ToolResult:
+    updated = result
+    for hook_result in hook_results:
+        action = hook_result.action
+        message = hook_result.message
+        modified_args = hook_result.modified_args
+        if action is HookAction.DENY:
+            updated = ToolResult(
+                success=False,
+                summary=f"Tool result denied by hook: {message or updated.summary}",
+                artifacts=updated.artifacts,
+                raw_payload={
+                    **updated.raw_payload,
+                    "error_kind": "tool_denied_by_post_hook",
+                },
+                evidence=updated.evidence,
+                error=message or "tool result denied by hook",
+            )
+        elif action is HookAction.MODIFY and isinstance(modified_args, dict):
+            updated = _with_post_hook_modifications(updated, modified_args)
+    return updated
+
+
+def _with_post_hook_modifications(
+    result: ToolResult,
+    modified_args: dict[str, object],
+) -> ToolResult:
+    summary = result.summary
+    error = result.error
+    raw_payload = dict(result.raw_payload)
+    raw_changes = modified_args.get("raw_payload")
+    if isinstance(raw_changes, dict):
+        for key, value in raw_changes.items():
+            if isinstance(key, str) and key:
+                raw_payload[key] = value
+    summary_value = modified_args.get("summary")
+    if isinstance(summary_value, str) and summary_value.strip():
+        summary = summary_value.strip()
+    error_value = modified_args.get("error")
+    if isinstance(error_value, str):
+        error = error_value.strip() or None
+    return ToolResult(
+        success=result.success,
+        summary=summary,
+        artifacts=result.artifacts,
+        raw_payload=raw_payload,
+        evidence=result.evidence,
+        error=error,
+    )

@@ -9,8 +9,9 @@ from mycli.application.turn_service import TurnService
 from mycli.cli.repl import build_command_handler
 from mycli.domain.runtime import AgentConfig
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
-from mycli.services.hooks import HookContext, HookManager, HookPoint
+from mycli.services.hooks import HookAllowlist, HookContext, HookManager, HookPoint
 from mycli.services.hooks.builtin import permission_guard
+from mycli.services.hooks.config import HookConfigRegistry
 from mycli.services.hooks.setup import register_configured_hooks
 from mycli.services.tracing import TraceService
 
@@ -20,12 +21,28 @@ RUNS_ROOT = REPO_ROOT / "evaluation" / "runs"
 
 
 class FakeRuntime:
-    def __init__(self, workspace_root: Path, hook_manager: HookManager) -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        home_dir: Path,
+        hook_manager: HookManager,
+    ) -> None:
         self._config = AgentConfig(workspace_root=workspace_root, session_id="hook-smoke")
+        self._home_dir = home_dir
         self._hook_manager = hook_manager
+        self._hook_config_discovery = HookConfigRegistry(
+            workspace_root=workspace_root,
+            home_dir=home_dir,
+        ).discover()
 
     def inspect_hooks(self) -> tuple[str, ...]:
-        return tuple(snapshot.safe_line() for snapshot in self._hook_manager.snapshot())
+        lines = [snapshot.safe_line() for snapshot in self._hook_manager.snapshot()]
+        allowlist = HookAllowlist(home_dir=self._home_dir)
+        lines.extend(
+            allowlist.status_for(spec).safe_line(spec)
+            for spec in self._hook_config_discovery.hooks
+        )
+        return tuple(lines)
 
 
 def main() -> int:
@@ -40,6 +57,8 @@ def main() -> int:
         workspace.joinpath(".mycli").mkdir(parents=True)
         home.mkdir()
         hook_script = root / "configured_hook.py"
+        session_hook_script = root / "session_hook.py"
+        session_marker = root / "session-hooks.jsonl"
         hook_script.write_text(
             "\n".join(
                 [
@@ -53,6 +72,18 @@ def main() -> int:
             ),
             encoding="utf-8",
         )
+        session_hook_script.write_text(
+            "\n".join(
+                [
+                    "import json, os, sys",
+                    "from pathlib import Path",
+                    "payload = json.load(sys.stdin)",
+                    f"Path({str(session_marker)!r}).open('a', encoding='utf-8').write(json.dumps({{'hook_point': payload['hook_point'], 'hook_id': os.environ['MYCLI_HOOK_ID']}}) + '\\n')",
+                    "print(json.dumps({'action':'allow'}))",
+                ]
+            ),
+            encoding="utf-8",
+        )
         (workspace / ".mycli" / "hooks.json").write_text(
             json.dumps(
                 {
@@ -62,6 +93,16 @@ def main() -> int:
                             "hook_point": "pre_tool_use",
                             "command": ["python3", str(hook_script)],
                             "matcher": {"tool_name": "Write"},
+                        },
+                        {
+                            "id": "session-start",
+                            "hook_point": "session_start",
+                            "command": ["python3", str(session_hook_script)],
+                        },
+                        {
+                            "id": "session-end",
+                            "hook_point": "session_end",
+                            "command": ["python3", str(session_hook_script)],
                         }
                     ]
                 }
@@ -69,6 +110,30 @@ def main() -> int:
             encoding="utf-8",
         )
 
+        initial_discovery = HookConfigRegistry(
+            workspace_root=workspace,
+            home_dir=home,
+        ).discover()
+        blocked_hook_manager = HookManager()
+        blocked_trace_service = TraceService(home_dir=home)
+        blocked_discovery = register_configured_hooks(
+            manager=blocked_hook_manager,
+            workspace_root=workspace,
+            home_dir=home,
+            trace_service=blocked_trace_service,
+            session_id="hook-smoke-blocked",
+        )
+        blocked_execution = blocked_hook_manager.execute_with_summary(
+            HookPoint.PRE_TOOL_USE,
+            HookContext(
+                hook_point=HookPoint.PRE_TOOL_USE,
+                tool_name="Write",
+                tool_args={"path": "notes.txt", "content": "hello"},
+                session_id="hook-smoke-blocked",
+                metadata={"turn_id": "turn_blocked"},
+            ),
+        )
+        HookAllowlist(home_dir=home).write_allowed(initial_discovery.hooks)
         hook_manager = HookManager()
         hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
 
@@ -90,11 +155,27 @@ def main() -> int:
                 metadata={"turn_id": "turn_1"},
             ),
         )
+        hook_manager.execute_with_summary(
+            HookPoint.SESSION_START,
+            HookContext(
+                hook_point=HookPoint.SESSION_START,
+                session_id="hook-smoke",
+                metadata={"turn_id": "session_start"},
+            ),
+        )
+        hook_manager.execute_with_summary(
+            HookPoint.SESSION_END,
+            HookContext(
+                hook_point=HookPoint.SESSION_END,
+                session_id="hook-smoke",
+                metadata={"turn_id": "session_end"},
+            ),
+        )
 
         service = TurnService(
             config=AgentConfig(workspace_root=workspace, session_id="hook-smoke"),
             home_dir=home,
-            runtime=FakeRuntime(workspace, hook_manager),
+            runtime=FakeRuntime(workspace, home, hook_manager),
         )
         slash_lines = tuple(build_command_handler(service)("/hooks"))
         doctor = DoctorService(
@@ -106,27 +187,52 @@ def main() -> int:
         ).run()
         doctor_hook = next(check for check in doctor.checks if check.name == "hooks")
         summaries = tuple(summary.safe_payload() for summary in execution.summaries)
+        blocked_summaries = tuple(summary.safe_payload() for summary in blocked_execution.summaries)
         snapshots = tuple(snapshot.safe_line() for snapshot in hook_manager.snapshot())
         traces = tuple(event.to_dict() for event in trace_service.load("hook-smoke"))
+        blocked_traces = tuple(
+            event.to_dict()
+            for event in blocked_trace_service.load("hook-smoke-blocked")
+        )
+        session_lines = (
+            tuple(json.loads(line) for line in session_marker.read_text(encoding="utf-8").splitlines())
+            if session_marker.exists()
+            else ()
+        )
         success = (
             [summary["action"] for summary in summaries if "action" in summary] == [
                 "allow",
                 "deny",
             ]
-            and len(discovery.hooks) == 1
+            and [summary["action"] for summary in blocked_summaries if "action" in summary] == [
+                "error",
+            ]
+            and len(discovery.hooks) == 3
+            and len(blocked_discovery.hooks) == 3
             and any("permission_guard" in line for line in slash_lines)
             and any("configured:repo:configured-deny-write" in line for line in slash_lines)
             and any("configured:repo:configured-deny-write" in line and "denies=1" in line for line in slash_lines)
+            and any("allowlist=allowed" in line for line in slash_lines)
             and any(event["kind"] == "hook_execution" for event in traces)
+            and any(
+                event["kind"] == "hook_execution"
+                and event["payload"].get("action") == "error"
+                for event in blocked_traces
+            )
+            and [line["hook_point"] for line in session_lines] == ["session_start", "session_end"]
             and doctor_hook.status is DoctorStatus.OK
         )
         report.update(
             {
                 "success": success,
                 "checks": {
+                    "initial_hooks": [hook.name for hook in initial_discovery.hooks],
+                    "blocked_execution_summaries": blocked_summaries,
                     "execution_summaries": summaries,
                     "snapshots": snapshots,
                     "trace": traces,
+                    "blocked_trace": blocked_traces,
+                    "session_lines": session_lines,
                     "slash_lines": slash_lines,
                     "doctor_status": doctor_hook.status.value,
                     "doctor_message": doctor_hook.message,

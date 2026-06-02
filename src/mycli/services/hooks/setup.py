@@ -5,6 +5,7 @@ from time import monotonic
 from typing import Callable
 
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
+from mycli.services.hooks.allowlist import HookAllowlist
 from mycli.services.hooks.config import HookConfigDiscovery, HookConfigRegistry
 from mycli.services.hooks.manager import HookManager
 from mycli.services.hooks.runner import ConfiguredHookCallback, ConfiguredHookRunSummary
@@ -22,11 +23,13 @@ def register_configured_hooks(
     monotonic_provider: Callable[[], float] = monotonic,
 ) -> HookConfigDiscovery:
     discovery = HookConfigRegistry(workspace_root=workspace_root, home_dir=home_dir).discover()
+    allowlist = HookAllowlist(home_dir=home_dir)
     for spec in discovery.hooks:
         callback = ConfiguredHookCallback(
             spec=spec,
             workspace_root=workspace_root,
             monotonic=monotonic_provider,
+            allowlist_status=allowlist.status_for,
             trace_sink=_trace_sink(
                 trace_service=trace_service,
                 session_id=session_id,

@@ -17,6 +17,7 @@ from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import (
     HookAction,
+    HookAllowlist,
     HookContext,
     HookManager,
     HookPoint,
@@ -375,6 +376,15 @@ def test_tool_execution_service_runs_configured_pre_tool_hook(
         trace_service=trace_service,
         session_id="demo",
     )
+    HookAllowlist(home_dir=home).write_allowed(discovery.hooks)
+    hook_manager = HookManager()
+    discovery = register_configured_hooks(
+        manager=hook_manager,
+        workspace_root=workspace,
+        home_dir=home,
+        trace_service=trace_service,
+        session_id="demo",
+    )
     service, fake_tool = _service(tmp_path, hook_manager=hook_manager)
     router = service._test_router  # type: ignore[attr-defined]
 
@@ -410,6 +420,185 @@ def test_tool_execution_service_runs_configured_pre_tool_hook(
             "status": "ok",
             "action": "deny",
             "message": "configured block",
+        }
+    ]
+
+
+def test_tool_execution_service_applies_post_tool_modify_and_deny(
+    tmp_path: Path,
+) -> None:
+    hook_manager = HookManager()
+
+    def post_hook(ctx: HookContext) -> HookResult:
+        assert ctx.metadata["success"] is True
+        return HookResult(
+            action=HookAction.MODIFY,
+            modified_args={
+                "summary": "post hook summary",
+                "raw_payload": {"post_hook": "seen"},
+            },
+        )
+
+    hook_manager.register(HookPoint.POST_TOOL_USE, post_hook, name="post_modifier")
+    trace_service = TraceService(home_dir=tmp_path / "home")
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=hook_manager,
+        trace_service=trace_service,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert fake_tool.seen_arguments == [{"path": "README.md"}]
+    tool_result = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert tool_result.metadata["summary"] == "post hook summary"
+    assert tool_result.metadata["raw_payload"]["post_hook"] == "seen"
+    assert "post hook summary" in conversation.messages[-1].content
+    trace = next(event for event in trace_service.load("demo") if event.kind == "tool_execution")
+    assert trace.payload["hook_summaries"] == [
+        {
+            "hook_point": "post_tool_use",
+            "hook_name": "post_modifier",
+            "status": "ok",
+            "action": "modify",
+        }
+    ]
+
+    deny_manager = HookManager()
+    deny_manager.register(
+        HookPoint.POST_TOOL_USE,
+        lambda ctx: HookResult(action=HookAction.DENY, message="bad result"),
+        name="post_deny",
+    )
+    deny_trace = TraceService(home_dir=tmp_path / "deny_home")
+    deny_service, _ = _service(
+        tmp_path,
+        hook_manager=deny_manager,
+        trace_service=deny_trace,
+    )
+    deny_router = deny_service._test_router  # type: ignore[attr-defined]
+    deny_turn_items = []
+    deny_conversation = Conversation(session_id="demo")
+
+    deny_service.execute_tool_call(
+        conversation=deny_conversation,
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_2",
+        ),
+        tool_router=deny_router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_2",
+        activity_events=[],
+        turn_items=deny_turn_items,
+    )
+
+    denied_result = next(item for item in deny_turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert denied_result.metadata["success"] is False
+    assert denied_result.metadata["error_kind"] == "tool_denied_by_post_hook"
+    assert "Tool result denied by hook" in deny_conversation.messages[-1].content
+
+
+def test_tool_execution_service_skips_non_allowlisted_configured_hook(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.mkdir()
+    marker = tmp_path / "executed.txt"
+    hook_script = tmp_path / "deny_read.py"
+    hook_script.write_text(
+        "\n".join(
+            [
+                "import json",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+                "print(json.dumps({'action':'deny','message':'configured block'}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".mycli" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": [
+                    {
+                        "id": "deny-read",
+                        "hook_point": "pre_tool_use",
+                        "command": ["python3", str(hook_script)],
+                        "matcher": {"tool_name": "read_file"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    hook_manager = HookManager()
+    trace_service = TraceService(home_dir=home)
+    discovery = register_configured_hooks(
+        manager=hook_manager,
+        workspace_root=workspace,
+        home_dir=home,
+        trace_service=trace_service,
+        session_id="demo",
+    )
+    service, fake_tool = _service(tmp_path, hook_manager=hook_manager, trace_service=trace_service)
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert discovery.issues == ()
+    assert fake_tool.seen_arguments == [{"path": "README.md"}]
+    assert not marker.exists()
+    loaded = trace_service.load("demo")
+    hook_trace = next(event for event in loaded if event.kind == "hook_execution")
+    tool_trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert hook_trace.payload["hook_id"] == "deny-read"
+    assert hook_trace.payload["status"] == "error"
+    assert hook_trace.payload["action"] == "error"
+    assert hook_trace.payload["message"] == "not allowlisted: allowlist_missing"
+    assert tool_trace.payload["status"] == "succeeded"
+    assert tool_trace.payload["hook_summaries"] == [
+        {
+            "hook_point": "pre_tool_use",
+            "hook_name": "configured:repo:deny-read",
+            "status": "error",
+            "action": "error",
+            "message": "configured hook not allowlisted",
         }
     ]
 

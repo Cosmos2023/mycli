@@ -38,6 +38,7 @@ from mycli.domain.runtime import (
 )
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.trace_service import TraceService
+from mycli.services.hooks import HookAllowlist, HookConfigRegistry
 from mycli.application.runtime.tools.contributed_tool_provider import ToolContributionProvider
 from mycli.domain.tools import ToolCall
 from mycli.memory.service import MemoryService
@@ -1175,6 +1176,69 @@ def test_agent_runtime_registers_skill_tool_from_skill_registry(tmp_path: Path) 
     )
 
     assert "Skill" in runtime._tool_registry.list_names()
+
+
+def test_agent_runtime_executes_session_lifecycle_configured_hooks(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.mkdir()
+    marker = tmp_path / "session-hooks.jsonl"
+    script = tmp_path / "session_hook.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os, sys",
+                "from pathlib import Path",
+                "payload = json.load(sys.stdin)",
+                f"Path({str(marker)!r}).open('a', encoding='utf-8').write(json.dumps({{'hook_point': payload['hook_point'], 'hook_id': os.environ['MYCLI_HOOK_ID']}}) + '\\n')",
+                "print(json.dumps({'action':'allow','message':'ok'}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".mycli" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": [
+                    {
+                        "id": "session-start",
+                        "hook_point": "session_start",
+                        "command": ["python3", str(script)],
+                    },
+                    {
+                        "id": "session-end",
+                        "hook_point": "session_end",
+                        "command": ["python3", str(script)],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    discovery = HookConfigRegistry(workspace_root=workspace, home_dir=home).discover()
+    HookAllowlist(home_dir=home).write_allowed(discovery.hooks)
+    trace_service = TraceService(home_dir=home)
+
+    runtime = AgentRuntime(
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([LSTool(workspace)]),
+        config=AgentConfig(workspace_root=workspace, session_id="hook-session"),
+        home_dir=home,
+        trace_service=trace_service,
+    )
+    runtime.close()
+    runtime.close()
+
+    lines = [json.loads(line) for line in marker.read_text(encoding="utf-8").splitlines()]
+    assert lines == [
+        {"hook_point": "session_start", "hook_id": "session-start"},
+        {"hook_point": "session_end", "hook_id": "session-end"},
+    ]
+    traces = [event for event in trace_service.load("hook-session") if event.kind == "hook_execution"]
+    assert [event.turn_id for event in traces] == ["session_start", "session_end"]
+    assert [event.payload["hook_id"] for event in traces] == ["session-start", "session-end"]
+    assert all(event.payload["action"] == "allow" for event in traces)
 
 
 class CapturingResponsesClient:

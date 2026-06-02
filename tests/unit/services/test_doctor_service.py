@@ -383,6 +383,64 @@ def test_doctor_service_reports_configured_hook_diagnostics(tmp_path: Path) -> N
     assert "configured:repo:missing" in hooks.message
 
 
+def test_doctor_service_reports_hook_allowlist_status(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.mkdir()
+    script = tmp_path / "hook.py"
+    script.write_text("print('{}')\n", encoding="utf-8")
+    (workspace / ".mycli" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": [
+                    {
+                        "id": "repo-hook",
+                        "hook_point": "pre_tool_use",
+                        "command": ["python3", str(script)],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    hooks = next(check for check in report.checks if check.name == "hooks")
+    assert hooks.status is DoctorStatus.WARNING
+    assert hooks.detail is not None
+    assert "configured:repo:repo-hook" in hooks.detail
+    assert "allowlist_missing" in hooks.detail
+
+
+def test_doctor_service_reports_malformed_hook_allowlist(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.joinpath(".mycli").mkdir(parents=True)
+    (home / ".mycli" / "hook-allowlist.json").write_text("{bad", encoding="utf-8")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    hooks = next(check for check in report.checks if check.name == "hooks")
+    assert hooks.status is DoctorStatus.WARNING
+    assert hooks.detail is not None
+    assert "allowlist not parseable" in hooks.detail
+
+
 def test_doctor_service_validates_builtin_tool_manifest(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"

@@ -238,88 +238,93 @@ def main(
     if eval_exit_code is not None:
         return eval_exit_code
     service = build_turn_service(args, cwd=cwd, home=home, env=env)
-    force_plain_after_node_failure = False
-    if should_use_node_tui(args, env):
-        try:
-            return run_node_tui(service, cwd=cwd or Path.cwd(), env=env or dict(os.environ))
-        except NodeTuiProcessError as exc:
-            fallback = _node_tui_fallback(env)
-            if fallback == "plain":
-                output_func(str(exc))
-                force_plain_after_node_failure = True
-            elif fallback == "textual" and should_use_tui(args):
-                output_func(str(exc))
-                return run_tui(service, input_func=input_func, output_func=output_func)
-            else:
-                output_func(str(exc))
-                return 2
-    if should_use_tui(args) and not force_plain_after_node_failure:
-        return run_tui(service, input_func=input_func, output_func=output_func)
-
-    def emit_stream_event(event: RuntimeStreamEvent) -> None:
-        for line in render_runtime_stream_event(event):
-            output_func(line)
-
-    def render_options() -> RenderOptions:
-        config = service._config
-        view_mode = getattr(config, "view_mode", ViewMode.DEFAULT)
-        return RenderOptions(
-            view_mode=view_mode,
-            show_statusline=bool(getattr(config, "statusline_enabled", True)),
-            diff_max_lines=240 if view_mode is ViewMode.VERBOSE else 80,
-        )
-
-    def handle_user_message(raw: str) -> list[str]:
-        response = service.handle_user_turn(raw, stream_sink=emit_stream_event)
-        options = render_options()
-        rendered: list[str] = render_activity_lines(response, options=options)
-        rendered.extend(render_error_lines(response))
-        rendered.extend(render_progress_lines(response, options=options))
-        rendered.extend(f"[plan] {step}" for step in response.plan_steps)
-        if response.pending_decision is not None:
-            rendered.extend(render_pending_decision(response.pending_decision))
-        rendered.append(response.assistant_message)
-        return rendered
-
-    def resolve_pending_decision(choice: str) -> list[str]:
-        response = service.resolve_pending_decision(choice)
-        options = render_options()
-        progress_lines = (
-            list(response.progress_updates)
-            if options.view_mode is ViewMode.DEFAULT
-            else render_progress_lines(response, options=options)
-        )
-        return [
-            *render_activity_lines(response, options=options),
-            *render_stream_lines(response, options=options),
-            *render_error_lines(response),
-            *progress_lines,
-            response.assistant_message,
-        ]
-
-    workspace_root = getattr(service._config, "workspace_root", cwd or Path.cwd())
-    cleanup_autocomplete = install_path_autocomplete(workspace_root=workspace_root)
     try:
-        run_repl(
-            handle_user_message,
-            session_id=service._config.session_id,
-            decision_handler=resolve_pending_decision,
-            pending_decision_provider=lambda: (
-                service._session_service.load_pending_decision(service._config.session_id)
-                is not None
-            ),
-            command_handler=build_command_handler(service),
-            statusline_provider=lambda: (
-                service.inspect_status()
-                if getattr(service._config, "statusline_enabled", True)
-                else ()
-            ),
-            input_func=input_func,
-            output_func=output_func,
-        )
+        force_plain_after_node_failure = False
+        if should_use_node_tui(args, env):
+            try:
+                return run_node_tui(service, cwd=cwd or Path.cwd(), env=env or dict(os.environ))
+            except NodeTuiProcessError as exc:
+                fallback = _node_tui_fallback(env)
+                if fallback == "plain":
+                    output_func(str(exc))
+                    force_plain_after_node_failure = True
+                elif fallback == "textual" and should_use_tui(args):
+                    output_func(str(exc))
+                    return run_tui(service, input_func=input_func, output_func=output_func)
+                else:
+                    output_func(str(exc))
+                    return 2
+        if should_use_tui(args) and not force_plain_after_node_failure:
+            return run_tui(service, input_func=input_func, output_func=output_func)
+
+        def emit_stream_event(event: RuntimeStreamEvent) -> None:
+            for line in render_runtime_stream_event(event):
+                output_func(line)
+
+        def render_options() -> RenderOptions:
+            config = service._config
+            view_mode = getattr(config, "view_mode", ViewMode.DEFAULT)
+            return RenderOptions(
+                view_mode=view_mode,
+                show_statusline=bool(getattr(config, "statusline_enabled", True)),
+                diff_max_lines=240 if view_mode is ViewMode.VERBOSE else 80,
+            )
+
+        def handle_user_message(raw: str) -> list[str]:
+            response = service.handle_user_turn(raw, stream_sink=emit_stream_event)
+            options = render_options()
+            rendered: list[str] = render_activity_lines(response, options=options)
+            rendered.extend(render_error_lines(response))
+            rendered.extend(render_progress_lines(response, options=options))
+            rendered.extend(f"[plan] {step}" for step in response.plan_steps)
+            if response.pending_decision is not None:
+                rendered.extend(render_pending_decision(response.pending_decision))
+            rendered.append(response.assistant_message)
+            return rendered
+
+        def resolve_pending_decision(choice: str) -> list[str]:
+            response = service.resolve_pending_decision(choice)
+            options = render_options()
+            progress_lines = (
+                list(response.progress_updates)
+                if options.view_mode is ViewMode.DEFAULT
+                else render_progress_lines(response, options=options)
+            )
+            return [
+                *render_activity_lines(response, options=options),
+                *render_stream_lines(response, options=options),
+                *render_error_lines(response),
+                *progress_lines,
+                response.assistant_message,
+            ]
+
+        workspace_root = getattr(service._config, "workspace_root", cwd or Path.cwd())
+        cleanup_autocomplete = install_path_autocomplete(workspace_root=workspace_root)
+        try:
+            run_repl(
+                handle_user_message,
+                session_id=service._config.session_id,
+                decision_handler=resolve_pending_decision,
+                pending_decision_provider=lambda: (
+                    service._session_service.load_pending_decision(service._config.session_id)
+                    is not None
+                ),
+                command_handler=build_command_handler(service),
+                statusline_provider=lambda: (
+                    service.inspect_status()
+                    if getattr(service._config, "statusline_enabled", True)
+                    else ()
+                ),
+                input_func=input_func,
+                output_func=output_func,
+            )
+        finally:
+            cleanup_autocomplete()
+        return 0
     finally:
-        cleanup_autocomplete()
-    return 0
+        close = getattr(service, "close", None)
+        if callable(close):
+            close()
 
 
 if __name__ == "__main__":
