@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import json
 import os
 from pathlib import Path
 import shutil
@@ -40,6 +41,11 @@ from mycli.evaluation.runner import (
     write_evaluation_report,
 )
 from mycli.services.diagnostics.doctor import DoctorService, render_doctor_report
+from mycli.services.hooks.management import (
+    HookManagementResponse,
+    HookManagementRow,
+    HookManagementService,
+)
 
 __all__ = [
     "build_command_handler",
@@ -47,6 +53,7 @@ __all__ = [
     "build_turn_service",
     "handle_doctor_command",
     "handle_evaluation_command",
+    "handle_hooks_command",
     "handle_slash_command",
     "main",
     "run_repl",
@@ -74,7 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="evaluation/scenarios",
         help="Evaluation scenario root directory",
     )
-    parser.add_argument("command", nargs="?", choices=["doctor"], help="Run a utility command")
+    parser.add_argument("--json", action="store_true", dest="json_output", help="Render utility output as JSON")
+    parser.add_argument("command", nargs="?", choices=["doctor", "hooks"], help="Run a utility command")
+    parser.add_argument("utility_args", nargs="*", help=argparse.SUPPRESS)
     return parser
 
 
@@ -145,6 +154,83 @@ def handle_doctor_command(
     for line in render_doctor_report(report):
         output_func(line)
     return 1 if report.failed_count else 0
+
+
+def handle_hooks_command(
+    cli_args: dict[str, object],
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    output_func: Callable[[str], Any] = print,
+) -> int | None:
+    if cli_args.get("command") != "hooks":
+        return None
+    utility_args = cli_args.get("utility_args", [])
+    args = [str(item) for item in utility_args] if isinstance(utility_args, list) else []
+    json_output = bool(cli_args.get("json_output"))
+    service = HookManagementService(
+        workspace_root=cwd or Path.cwd(),
+        home_dir=home or Path.home(),
+    )
+    response = _dispatch_hooks_command(service, args)
+    if json_output:
+        output_func(json.dumps(response.to_dict(), sort_keys=True))
+    else:
+        for line in render_hook_management_response(response):
+            output_func(line)
+    return 0 if response.ok else 1
+
+
+def _dispatch_hooks_command(
+    service: HookManagementService,
+    args: list[str],
+) -> HookManagementResponse:
+    if not args:
+        return HookManagementResponse(
+            ok=False,
+            action="usage",
+            message="usage: mycli hooks list|inspect|approve|revoke [identity] [--json]",
+        )
+    action = args[0]
+    target = args[1] if len(args) > 1 else ""
+    if action == "list" and len(args) == 1:
+        return service.list_hooks()
+    if action == "inspect" and target and len(args) == 2:
+        return service.inspect_hook(target)
+    if action == "approve" and target and len(args) == 2:
+        return service.approve_hook(target)
+    if action == "revoke" and target and len(args) == 2:
+        return service.revoke_hook(target)
+    return HookManagementResponse(
+        ok=False,
+        action=action,
+        message="usage: mycli hooks list|inspect|approve|revoke [identity] [--json]",
+    )
+
+
+def render_hook_management_response(response: HookManagementResponse) -> tuple[str, ...]:
+    lines = [f"mycli hooks {response.action}: {response.message}"]
+    rows = response.hooks or ((response.hook,) if response.hook is not None else ())
+    for row in rows:
+        if row is not None:
+            lines.extend(_render_hook_row(row))
+    for issue in response.config_issues:
+        lines.append(f"config_issue: {issue}")
+    for issue in response.allowlist_issues:
+        lines.append(f"allowlist_issue: {issue}")
+    return tuple(lines)
+
+
+def _render_hook_row(row: HookManagementRow) -> tuple[str, ...]:
+    return (
+        f"hook {row.identity}",
+        f"  source={row.source} hook_id={row.hook_id} hook_point={row.hook_point}",
+        f"  enabled={str(row.enabled).lower()} timeout_seconds={row.timeout_seconds:g}",
+        f"  working_directory={row.working_directory} env_policy={row.env_policy}",
+        f"  command_digest={row.command_digest}",
+        f"  allowlist_status={row.allowlist_status} reason={row.allowlist_reason}",
+        f"  config_path={row.config_path}",
+    )
 
 
 def handle_evaluation_command(
@@ -234,6 +320,14 @@ def main(
     )
     if doctor_exit_code is not None:
         return doctor_exit_code
+    hooks_exit_code = handle_hooks_command(
+        args,
+        cwd=cwd,
+        home=home,
+        output_func=output_func,
+    )
+    if hooks_exit_code is not None:
+        return hooks_exit_code
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
     if eval_exit_code is not None:
         return eval_exit_code

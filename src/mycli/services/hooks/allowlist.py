@@ -81,6 +81,10 @@ class HookAllowlist:
     def issues(self) -> tuple[str, ...]:
         return self._issues
 
+    @property
+    def entries(self) -> tuple[HookAllowlistEntry, ...]:
+        return self._entries
+
     def status_for(self, spec: ConfiguredHookSpec) -> HookAllowlistStatus:
         digest = command_digest(spec.command)
         for entry in self._entries:
@@ -112,6 +116,39 @@ class HookAllowlist:
             encoding="utf-8",
         )
 
+    def approve(self, spec: ConfiguredHookSpec) -> HookAllowlistEntry:
+        if self._issues:
+            raise ValueError("; ".join(self._issues))
+        digest = command_digest(spec.command)
+        approved = HookAllowlistEntry(
+            source=spec.source,
+            hook_id=spec.hook_id,
+            hook_point=spec.hook_point,
+            command_digest=digest,
+            approved_at=datetime.now(UTC).isoformat(),
+        )
+        entries = [
+            entry
+            for entry in self._entries
+            if not _same_hook_identity(entry, spec)
+        ]
+        entries.append(approved)
+        self._write_entries(tuple(entries))
+        self._entries = tuple(entries)
+        self._issues = ()
+        return approved
+
+    def revoke(self, spec: ConfiguredHookSpec) -> bool:
+        if self._issues:
+            raise ValueError("; ".join(self._issues))
+        entries = tuple(entry for entry in self._entries if not _same_hook_identity(entry, spec))
+        removed = len(entries) != len(self._entries)
+        if removed or self._path.exists():
+            self._write_entries(entries)
+        self._entries = entries
+        self._issues = ()
+        return removed
+
     def _load(self) -> tuple[tuple[HookAllowlistEntry, ...], tuple[str, ...]]:
         if not self._path.exists():
             return (), ()
@@ -134,7 +171,22 @@ class HookAllowlist:
             entries.append(parsed)
         return tuple(entries), tuple(issues)
 
+    def _write_entries(self, entries: tuple[HookAllowlistEntry, ...]) -> None:
+        ensure_parent(self._path)
+        self._path.write_text(
+            json.dumps({"allowed": [entry.to_dict() for entry in entries]}, indent=2),
+            encoding="utf-8",
+        )
+
 
 def command_digest(command: tuple[str, ...]) -> str:
     canonical = "\0".join(command)
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _same_hook_identity(entry: HookAllowlistEntry, spec: ConfiguredHookSpec) -> bool:
+    return (
+        entry.source is spec.source
+        and entry.hook_id == spec.hook_id
+        and entry.hook_point is spec.hook_point
+    )
