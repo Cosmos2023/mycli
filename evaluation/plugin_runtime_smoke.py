@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.services.plugins.management import PluginManagementService
 from mycli.services.hooks import HookContext, HookManager, HookPoint
 from mycli.services.plugins import PluginCommandRegistry, load_enabled_plugins
 from mycli.tools.registry import ToolRegistry
@@ -70,6 +71,13 @@ def main() -> int:
 
         _write_config(workspace, enabled=["demo"])
         enabled_state = _load(workspace=workspace, home=home, execute=True)
+        management_service = PluginManagementService(workspace_root=workspace, home_dir=home, env={})
+        inspect_payload = management_service.inspect_plugin("demo").to_dict()
+        run_payload = management_service.run_command(
+            "demo",
+            "DemoCommand",
+            {"name": "codex"},
+        ).to_dict()
         enabled_marker = marker.exists()
         marker.unlink(missing_ok=True)
 
@@ -83,6 +91,8 @@ def main() -> int:
             "default_loaded_statuses": default_loaded,
             "default_marker_exists": default_marker,
             "enabled": enabled_state,
+            "inspect": inspect_payload,
+            "run": run_payload,
             "enabled_marker_exists": enabled_marker,
             "disabled": disabled_state,
             "disabled_marker_exists": disabled_marker,
@@ -96,6 +106,8 @@ def main() -> int:
             and enabled_state["tool_summary"] == "plugin tool ok"
             and enabled_state["command_summary"] == "plugin command ok"
             and enabled_state["command_content"] == "codex"
+            and inspect_payload["plugin"]["provided_commands"][0]["id"] == "plugin:demo:DemoCommand"
+            and run_payload["command_result"]["summary"] == "plugin command ok"
             and disabled_state["loaded_statuses"] == ["disabled"]
             and not disabled_marker
         )

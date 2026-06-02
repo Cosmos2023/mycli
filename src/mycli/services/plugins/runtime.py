@@ -98,7 +98,7 @@ class PluginContext:
         command_id = self.command_registry.register(
             plugin_id=self.plugin_id,
             name=name,
-            schema=schema,
+            schema=schema if isinstance(schema, dict) else {},
             handler=handler,
             metadata=metadata,
         )

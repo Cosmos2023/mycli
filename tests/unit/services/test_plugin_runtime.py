@@ -172,6 +172,20 @@ def register(ctx):
     assert "secret should not show" not in result.summary
 
 
+def test_plugin_command_registry_reports_invalid_schema(tmp_path: Path) -> None:
+    registry = PluginCommandRegistry()
+
+    command_id = registry.register(
+        plugin_id="demo",
+        name="BadCommand",
+        schema="not-object",  # type: ignore[arg-type]
+        handler=lambda args: "unreachable",
+    )
+
+    assert command_id is None
+    assert registry.issues() == ("demo:BadCommand: invalid command schema",)
+
+
 def test_plugin_runtime_reports_load_failure_and_missing_env(tmp_path: Path) -> None:
     workspace, home = _workspace_home(tmp_path)
     _write_config(workspace, enabled=["demo"])
