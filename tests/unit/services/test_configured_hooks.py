@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from mycli.services.hooks.config import ConfiguredHookSpec, HookConfigRegistry
+from mycli.services.hooks.runner import ConfiguredHookCallback
+from mycli.services.hooks.types import HookAction, HookContext, HookPoint
+
+
+def test_hook_config_registry_discovers_repo_and_user_hooks(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.joinpath(".mycli").mkdir(parents=True)
+    user_script = tmp_path / "user.py"
+    repo_script = tmp_path / "repo.py"
+    _write_json(
+        home / ".mycli" / "hooks.json",
+        {
+            "hooks": [
+                {
+                    "id": "user-session",
+                    "hook_point": "session_start",
+                    "command": ["python3", str(user_script)],
+                }
+            ]
+        },
+    )
+    _write_json(
+        workspace / ".mycli" / "hooks.json",
+        {
+            "hooks": [
+                {
+                    "id": "repo-read",
+                    "hook_point": "pre_tool_use",
+                    "command": ["python3", str(repo_script)],
+                    "matcher": {"tool_name": "Read"},
+                    "timeout_seconds": 3,
+                    "working_directory": "config",
+                    "env_policy": "inherit_safe",
+                }
+            ]
+        },
+    )
+
+    discovery = HookConfigRegistry(workspace_root=workspace, home_dir=home).discover()
+
+    assert discovery.issues == ()
+    assert [hook.name for hook in discovery.hooks] == [
+        "configured:user:user-session",
+        "configured:repo:repo-read",
+    ]
+    assert discovery.hooks[1].hook_point is HookPoint.PRE_TOOL_USE
+    assert discovery.hooks[1].matches_tool("Read") is True
+    assert discovery.hooks[1].matches_tool("Write") is False
+
+
+def test_hook_config_registry_reports_invalid_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.mkdir()
+    (workspace / ".mycli" / "hooks.json").write_text("{bad json", encoding="utf-8")
+
+    discovery = HookConfigRegistry(workspace_root=workspace, home_dir=home).discover()
+
+    assert discovery.hooks == ()
+    assert len(discovery.issues) == 1
+    assert "not parseable" in discovery.issues[0].safe_line()
+
+
+def test_configured_hook_callback_maps_allow_deny_modify_and_trace(tmp_path: Path) -> None:
+    script = tmp_path / "hook.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, sys",
+                "payload = json.load(sys.stdin)",
+                "if payload['tool_name'] == 'Write':",
+                "    print(json.dumps({'action': 'deny', 'message': 'blocked'}))",
+                "elif payload['tool_name'] == 'Read':",
+                "    print(json.dumps({'action': 'modify', 'modified_args': {'path': 'changed.md'}}))",
+                "else:",
+                "    print(json.dumps({'action': 'allow'}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, command=["python3", str(script)])
+    traces = []
+    callback = ConfiguredHookCallback(
+        spec=spec,
+        workspace_root=tmp_path,
+        monotonic=iter((10.0, 10.1, 10.2, 10.3, 10.4, 10.5)).__next__,
+        trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
+    )
+
+    denied = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Write"))
+    modified = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
+    allowed = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Bash"))
+
+    assert denied.action is HookAction.DENY
+    assert denied.message == "blocked"
+    assert modified.action is HookAction.MODIFY
+    assert modified.modified_args == {"path": "changed.md"}
+    assert allowed.action is HookAction.ALLOW
+    assert [trace["action"] for trace in traces] == ["deny", "modify", "allow"]
+    assert all("stdout" not in trace for trace in traces)
+
+
+def test_configured_hook_callback_timeout_and_error_do_not_deny(tmp_path: Path) -> None:
+    slow_script = tmp_path / "slow.py"
+    slow_script.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
+    spec = _spec(tmp_path, command=["python3", str(slow_script)], timeout_seconds=0.01)
+    traces = []
+    callback = ConfiguredHookCallback(
+        spec=spec,
+        workspace_root=tmp_path,
+        monotonic=iter((1.0, 1.2)).__next__,
+        trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
+    )
+
+    result = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
+
+    assert result.action is HookAction.ALLOW
+    assert traces[0]["status"] == "error"
+    assert traces[0]["message"] == "timeout"
+
+
+def test_configured_hook_callback_redacts_secret_messages(tmp_path: Path) -> None:
+    script = tmp_path / "secret.py"
+    script.write_text(
+        "import json\nprint(json.dumps({'action':'deny','message':'api_key=sk-secret'}))\n",
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, command=["python3", str(script)])
+    traces = []
+    callback = ConfiguredHookCallback(
+        spec=spec,
+        workspace_root=tmp_path,
+        monotonic=iter((1.0, 1.1)).__next__,
+        trace_sink=lambda ctx, summary: traces.append(summary.safe_payload()),
+    )
+
+    result = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
+
+    assert result.action is HookAction.DENY
+    assert result.message == "redacted"
+    assert traces[0]["message"] == "redacted"
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _spec(
+    tmp_path: Path,
+    *,
+    command: list[str],
+    timeout_seconds: float = 2.0,
+) -> ConfiguredHookSpec:
+    config_dir = tmp_path / ".mycli"
+    config_dir.mkdir(exist_ok=True)
+    config = config_dir / "hooks.json"
+    _write_json(
+        config,
+        {
+            "hooks": [
+                {
+                    "id": "demo",
+                    "hook_point": "pre_tool_use",
+                    "command": command,
+                    "timeout_seconds": timeout_seconds,
+                }
+            ]
+        },
+    )
+    discovery = HookConfigRegistry(workspace_root=tmp_path, home_dir=tmp_path / "home").discover()
+    assert discovery.issues == ()
+    return discovery.hooks[0]

@@ -17,7 +17,8 @@ from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
-from mycli.services.hooks import HookManager, HookPoint
+from mycli.services.hooks import HookConfigRegistry, HookManager, HookPoint
+from mycli.services.hooks.config import HookEnvPolicy
 from mycli.services.hooks.builtin import permission_guard
 from mycli.services.mcp.diagnostics import discover_mcp_servers
 from mycli.services.skills import SkillRegistry
@@ -1314,11 +1315,18 @@ class DoctorService:
     def _check_hooks(self) -> Iterable[DoctorCheck]:
         manager = HookManager()
         manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        discovery = HookConfigRegistry(
+            workspace_root=self._workspace_root,
+            home_dir=self._home_dir,
+        ).discover()
         snapshots = manager.snapshot()
         if not snapshots:
             return (DoctorCheck("hooks", DoctorStatus.FAILED, "no hooks registered"),)
-        hook_points = sorted({snapshot.hook_point.value for snapshot in snapshots})
-        hook_names = sorted({snapshot.hook_name for snapshot in snapshots})
+        hook_points = sorted(
+            {snapshot.hook_point.value for snapshot in snapshots}
+            | {spec.hook_point.value for spec in discovery.hooks}
+        )
+        hook_names = sorted({snapshot.hook_name for snapshot in snapshots} | {spec.name for spec in discovery.hooks})
         missing_required = [
             name for name in ("permission_guard",) if name not in hook_names
         ]
@@ -1331,12 +1339,44 @@ class DoctorService:
                     detail=f"points={', '.join(hook_points)}",
                 ),
             )
+        problems = [issue.safe_line() for issue in discovery.issues]
+        warnings: list[str] = []
+        for spec in discovery.hooks:
+            if not spec.enabled:
+                warnings.append(f"{spec.name}: disabled")
+            if spec.env_policy is HookEnvPolicy.INHERIT_SAFE:
+                warnings.append(f"{spec.name}: env_policy=inherit_safe")
+            for command_part in spec.command:
+                command_path = Path(command_part).expanduser()
+                if not command_path.is_absolute():
+                    continue
+                if not command_path.exists():
+                    problems.append(f"{spec.name}: missing command path")
+                    break
+                if command_part == spec.command[0] and not _is_executable_file(command_path):
+                    warnings.append(f"{spec.name}: command not executable")
+        if problems:
+            return (
+                DoctorCheck(
+                    "hooks",
+                    DoctorStatus.FAILED,
+                    f"hook config invalid: {_bounded_name_list(problems)}",
+                    detail=f"registered={len(snapshots)}",
+                ),
+            )
+        status = DoctorStatus.WARNING if warnings else DoctorStatus.OK
+        detail_parts = [
+            f"points={', '.join(hook_points)}",
+            f"hooks={', '.join(hook_names)}",
+        ]
+        if warnings:
+            detail_parts.append(f"warnings={_bounded_name_list(warnings)}")
         return (
             DoctorCheck(
                 "hooks",
-                DoctorStatus.OK,
-                f"hooks: {len(snapshots)} registered",
-                detail=f"points={', '.join(hook_points)} hooks={', '.join(hook_names)}",
+                status,
+                f"hooks: {len(snapshots) + len(discovery.hooks)} registered, configured={len(discovery.hooks)}",
+                detail="; ".join(detail_parts),
             ),
         )
 

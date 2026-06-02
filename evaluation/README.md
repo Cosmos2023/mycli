@@ -107,7 +107,33 @@ doctor diagnostics。
 `tool_management_smoke.py` 会验证 combined manifest、toolset manifest、
 `/tools` 和 `/toolsets` 的人类输出保持一致。
 `hook_smoke.py` 会验证内置 hook 注册快照、`/hooks` 人类输出和 doctor hook
-diagnostics。
+diagnostics；当前还会创建临时 `.mycli/hooks.json`，验证配置 hook 的执行和
+`hook_execution` trace。
+
+## Hook smoke config shape
+
+Provider-free hook smoke 使用的本地配置形状如下：
+
+```json
+{
+  "hooks": [
+    {
+      "id": "configured-deny-write",
+      "hook_point": "pre_tool_use",
+      "command": ["python3", "/path/to/hook.py"],
+      "enabled": true,
+      "timeout_seconds": 2.0,
+      "working_directory": "workspace",
+      "env_policy": "minimal",
+      "matcher": {"tool_name": "Write"}
+    }
+  ]
+}
+```
+
+支持的配置位置是 repo `<workspace>/.mycli/hooks.json` 和 user
+`<home>/.mycli/hooks.json`。Hook stdin 是安全 JSON payload，不包含原始工具参数
+或文件内容；stdout 可返回 `allow`、`deny` 或 `modify` JSON action。
 
 说明：
 

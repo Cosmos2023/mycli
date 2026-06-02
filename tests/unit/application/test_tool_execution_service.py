@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -14,7 +15,14 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolRouteKey, ToolRouteSource
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
-from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
+from mycli.services.hooks import (
+    HookAction,
+    HookContext,
+    HookManager,
+    HookPoint,
+    HookResult,
+    register_configured_hooks,
+)
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.bash import BashTool
@@ -195,6 +203,7 @@ def _service(
     *,
     hook_manager: HookManager,
     registry: ToolRegistry | None = None,
+    trace_service: TraceService | None = None,
     file_history: FileHistoryService | None = None,
     record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
     write_diagnostics_runner: Callable[[tuple[str, ...]], dict[str, object]] | None = None,
@@ -211,7 +220,7 @@ def _service(
     service = ToolExecutionService(
         session_id="demo",
         context_manager=ContextManager(),
-        trace_service=TraceService(home_dir=tmp_path / "home"),
+        trace_service=trace_service or TraceService(home_dir=tmp_path / "home"),
         append_turn_item=append_turn_item,
         append_lifecycle_events=lambda **_: None,
         apply_tool_effects=lambda **kwargs: kwargs["plan_state"],
@@ -326,6 +335,81 @@ def test_tool_execution_service_emits_lifecycle_and_trace_for_denied_tool(
             "status": "ok",
             "action": "deny",
             "message": "blocked by safety",
+        }
+    ]
+
+
+def test_tool_execution_service_runs_configured_pre_tool_hook(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    home.mkdir()
+    hook_script = tmp_path / "deny_read.py"
+    hook_script.write_text(
+        "import json\nprint(json.dumps({'action':'deny','message':'configured block'}))\n",
+        encoding="utf-8",
+    )
+    (workspace / ".mycli" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": [
+                    {
+                        "id": "deny-read",
+                        "hook_point": "pre_tool_use",
+                        "command": ["python3", str(hook_script)],
+                        "matcher": {"tool_name": "read_file"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    hook_manager = HookManager()
+    trace_service = TraceService(home_dir=home)
+    discovery = register_configured_hooks(
+        manager=hook_manager,
+        workspace_root=workspace,
+        home_dir=home,
+        trace_service=trace_service,
+        session_id="demo",
+    )
+    service, fake_tool = _service(tmp_path, hook_manager=hook_manager)
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert discovery.issues == ()
+    assert fake_tool.seen_arguments == []
+    loaded = trace_service.load("demo")
+    hook_trace = next(event for event in loaded if event.kind == "hook_execution")
+    tool_trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert hook_trace.turn_id == "turn_1"
+    assert hook_trace.payload["hook_id"] == "deny-read"
+    assert hook_trace.payload["action"] == "deny"
+    assert tool_trace.payload["error_kind"] == "tool_denied_by_hook"
+    assert tool_trace.payload["hook_summaries"] == [
+        {
+            "hook_point": "pre_tool_use",
+            "hook_name": "configured:repo:deny-read",
+            "status": "ok",
+            "action": "deny",
+            "message": "configured block",
         }
     ]
 

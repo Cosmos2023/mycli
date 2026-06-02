@@ -1164,7 +1164,10 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             )
 
         def inspect_hooks(self) -> tuple[str, ...]:
-            return ("pre_tool_use permission_guard enabled=true calls=0 errors=0",)
+            return (
+                "pre_tool_use permission_guard enabled=true calls=0 errors=0",
+                "pre_tool_use configured:repo:deny-read enabled=true calls=1 errors=0",
+            )
 
         def inspect_toolsets(self) -> tuple[str, ...]:
             return (
@@ -1277,6 +1280,7 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     ]
     assert list(handler("/hooks")) == [
         "[hook] pre_tool_use permission_guard enabled=true calls=0 errors=0",
+        "[hook] pre_tool_use configured:repo:deny-read enabled=true calls=1 errors=0",
     ]
     assert list(handler("/toolsets")) == [
         "[toolset] file enabled=true sources=builtin tools=Read,Write conflicts=0",

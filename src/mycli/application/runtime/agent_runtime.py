@@ -67,7 +67,7 @@ from mycli.services.context.compaction import (
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.file_history import FileHistoryService
-from mycli.services.hooks import HookManager, HookPoint
+from mycli.services.hooks import HookConfigDiscovery, HookManager, HookPoint, register_configured_hooks
 from mycli.services.hooks.builtin import permission_guard
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
@@ -234,6 +234,7 @@ class AgentRuntime:
         self._observability_service = observability_service or ObservabilityService()
         self._hook_manager = HookManager()
         self._hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        self._hook_config_discovery = HookConfigDiscovery(hooks=(), issues=())
         self._model_turn_requester = ModelTurnRequester(
             model_adapter=model_adapter,
             normalize_tool_call=self._normalize_tool_call,
@@ -288,6 +289,14 @@ class AgentRuntime:
         )
         self._tool_registry.register(SkillTool(self._skill_registry))
         self._trace_service = trace_service or TraceService(home_dir=home_dir)
+        self._hook_config_discovery = register_configured_hooks(
+            manager=self._hook_manager,
+            workspace_root=config.workspace_root,
+            home_dir=home_dir,
+            trace_service=self._trace_service,
+            session_id=config.session_id,
+            monotonic_provider=self._monotonic,
+        )
         self._checkpoint = TurnCheckpoint(
             max_tool_calls_per_turn=config.max_tool_calls_per_turn,
             max_tokens_per_turn=config.max_prompt_tokens,
@@ -702,9 +711,10 @@ class AgentRuntime:
         return self._sub_agent_service.inspect_transcript(child_session_id)
 
     def inspect_hooks(self) -> tuple[str, ...]:
-        return tuple(snapshot.safe_line() for snapshot in self._hook_manager.snapshot()) or (
-            "no hooks registered",
-        )
+        lines = [snapshot.safe_line() for snapshot in self._hook_manager.snapshot()]
+        for issue in self._hook_config_discovery.issues:
+            lines.append(f"config_issue {issue.safe_line()}")
+        return tuple(lines) or ("no hooks registered",)
 
     def extension_manifest(self) -> dict[str, object]:
         contributed_tools = tuple(

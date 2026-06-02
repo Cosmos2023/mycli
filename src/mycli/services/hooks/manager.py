@@ -29,12 +29,15 @@ class HookExecution:
 class HookManager:
     def __init__(self) -> None:
         self._hooks: dict[HookPoint, list[HookCallback]] = defaultdict(list)
+        self._names: dict[int, str] = {}
         self._state: dict[tuple[HookPoint, str], HookRegistrationSnapshot] = {}
         self._last_execution_summary: tuple[HookExecutionSummary, ...] = ()
 
-    def register(self, point: HookPoint, callback: HookCallback) -> None:
+    def register(self, point: HookPoint, callback: HookCallback, *, name: str | None = None) -> None:
         self._hooks[point].append(callback)
-        key = (point, _hook_name(callback))
+        hook_name = name or _hook_name(callback)
+        self._names[id(callback)] = hook_name
+        key = (point, hook_name)
         self._state.setdefault(
             key,
             HookRegistrationSnapshot(
@@ -52,7 +55,7 @@ class HookManager:
         results: list[HookResult] = []
         summaries: list[HookExecutionSummary] = []
         for callback in self._hooks.get(point, []):
-            hook_name = _hook_name(callback)
+            hook_name = self._names.get(id(callback), _hook_name(callback))
             try:
                 result = callback(ctx)
             except Exception as exc:  # pragma: no cover - exercised by focused tests

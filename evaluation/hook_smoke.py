@@ -9,8 +9,10 @@ from mycli.application.turn_service import TurnService
 from mycli.cli.repl import build_command_handler
 from mycli.domain.runtime import AgentConfig
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
-from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
+from mycli.services.hooks import HookContext, HookManager, HookPoint
 from mycli.services.hooks.builtin import permission_guard
+from mycli.services.hooks.setup import register_configured_hooks
+from mycli.services.tracing import TraceService
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,18 +37,49 @@ def main() -> int:
         root = Path(tmp)
         workspace = root / "workspace"
         home = root / "home"
-        workspace.mkdir()
+        workspace.joinpath(".mycli").mkdir(parents=True)
         home.mkdir()
+        hook_script = root / "configured_hook.py"
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "payload = json.load(sys.stdin)",
+                    "if payload.get('tool_name') == 'Write':",
+                    "    print(json.dumps({'action':'deny','message':'configured block'}))",
+                    "else:",
+                    "    print(json.dumps({'action':'allow'}))",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (workspace / ".mycli" / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": [
+                        {
+                            "id": "configured-deny-write",
+                            "hook_point": "pre_tool_use",
+                            "command": ["python3", str(hook_script)],
+                            "matcher": {"tool_name": "Write"},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
 
         hook_manager = HookManager()
         hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
 
-        def deny_write(ctx: HookContext) -> HookResult:
-            if ctx.tool_name == "Write":
-                return HookResult(action=HookAction.DENY, message="blocked by hook smoke")
-            return HookResult(action=HookAction.ALLOW)
-
-        hook_manager.register(HookPoint.PRE_TOOL_USE, deny_write)
+        trace_service = TraceService(home_dir=home)
+        discovery = register_configured_hooks(
+            manager=hook_manager,
+            workspace_root=workspace,
+            home_dir=home,
+            trace_service=trace_service,
+            session_id="hook-smoke",
+        )
         execution = hook_manager.execute_with_summary(
             HookPoint.PRE_TOOL_USE,
             HookContext(
@@ -54,6 +87,7 @@ def main() -> int:
                 tool_name="Write",
                 tool_args={"path": "notes.txt", "content": "hello"},
                 session_id="hook-smoke",
+                metadata={"turn_id": "turn_1"},
             ),
         )
 
@@ -73,13 +107,17 @@ def main() -> int:
         doctor_hook = next(check for check in doctor.checks if check.name == "hooks")
         summaries = tuple(summary.safe_payload() for summary in execution.summaries)
         snapshots = tuple(snapshot.safe_line() for snapshot in hook_manager.snapshot())
+        traces = tuple(event.to_dict() for event in trace_service.load("hook-smoke"))
         success = (
             [summary["action"] for summary in summaries if "action" in summary] == [
                 "allow",
                 "deny",
             ]
+            and len(discovery.hooks) == 1
             and any("permission_guard" in line for line in slash_lines)
-            and any("deny_write" in line and "denies=1" in line for line in slash_lines)
+            and any("configured:repo:configured-deny-write" in line for line in slash_lines)
+            and any("configured:repo:configured-deny-write" in line and "denies=1" in line for line in slash_lines)
+            and any(event["kind"] == "hook_execution" for event in traces)
             and doctor_hook.status is DoctorStatus.OK
         )
         report.update(
@@ -88,6 +126,7 @@ def main() -> int:
                 "checks": {
                     "execution_summaries": summaries,
                     "snapshots": snapshots,
+                    "trace": traces,
                     "slash_lines": slash_lines,
                     "doctor_status": doctor_hook.status.value,
                     "doctor_message": doctor_hook.message,

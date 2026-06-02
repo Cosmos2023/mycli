@@ -209,6 +209,7 @@ class ToolExecutionService:
                 tool_name=normalized_call.name,
                 tool_args=dict(normalized_call.arguments),
                 session_id=self._session_id,
+                metadata={"turn_id": turn_id},
             ),
         )
         pre_hook_summaries = pre_hook_execution.summaries
@@ -636,6 +637,7 @@ class ToolExecutionService:
                 tool_args=dict(normalized_call.arguments),
                 session_id=self._session_id,
                 metadata={
+                    "turn_id": turn_id,
                     "result_summary": result.summary[:200],
                     "success": result.success,
                 },
