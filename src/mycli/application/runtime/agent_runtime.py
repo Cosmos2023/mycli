@@ -8,6 +8,7 @@ import time
 from mycli.domain.conversation import Conversation, Message, Role
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionLifecycleEvent,
+    ToolContributionRegistration,
 )
 from mycli.domain.runtime import (
     ActivityEvent,
@@ -77,6 +78,7 @@ from mycli.services.planning import PlanModeService, PlanningService
 from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
+from mycli.services.extensions import ExtensionManifestService
 from mycli.services.subagents import SubAgentToolContributionProvider
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
@@ -698,6 +700,21 @@ class AgentRuntime:
 
     def inspect_subagent_transcript(self, child_session_id: str) -> tuple[str, ...]:
         return self._sub_agent_service.inspect_transcript(child_session_id)
+
+    def extension_manifest(self) -> dict[str, object]:
+        contributed_tools = tuple(
+            item
+            for item in self._runtime_contributed_tools(
+                user_message="",
+                conversation=Conversation(session_id=self._config.session_id),
+                plan_state=self._session_service.load_plan_state(self._config.session_id),
+            )
+            if isinstance(item, ToolContributionRegistration)
+        )
+        return ExtensionManifestService(
+            tool_registry=self._tool_registry,
+            contributed_tools=contributed_tools,
+        ).manifest()
 
     def _append_tool_exposure_turn_item(
         self,

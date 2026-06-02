@@ -510,6 +510,56 @@ def test_gateway_extension_manifest_returns_service_manifest(tmp_path: Path) -> 
     }
 
 
+def test_gateway_extension_manifest_can_include_runtime_contributed_tools(tmp_path: Path) -> None:
+    from mycli.domain.tooling.contributed_tools import (
+        ToolContributionDescriptor,
+        ToolContributionLifecycleState,
+        ToolContributionRegistration,
+        ToolContributionScope,
+        ToolContributionSource,
+    )
+    from mycli.domain.tool_exposure import ToolRouteKey
+    from mycli.services.extensions import ExtensionManifestService
+    from mycli.tools.base import ToolResult, ToolSpec
+
+    class FakeTool:
+        spec = ToolSpec(name="skill.review", description="Load review skill")
+
+        def execute(self, arguments: dict[str, object]) -> ToolResult:
+            del arguments
+            return ToolResult(success=True, summary="ok")
+
+    class RuntimeManifestService(FakeService):
+        def extension_manifest(self) -> dict[str, object]:
+            tool = FakeTool()
+            registration = ToolContributionRegistration(
+                descriptor=ToolContributionDescriptor(
+                    tool_id="skill:review",
+                    display_name="skill.review",
+                    description=tool.spec.description,
+                    route_key=ToolRouteKey(namespace="skill", name="review"),
+                    source=ToolContributionSource.PROVIDER,
+                    scope=ToolContributionScope.THREAD,
+                    lifecycle_state=ToolContributionLifecycleState.EXPOSED,
+                    spec=tool.spec,
+                    origin_metadata={"skill": "review"},
+                ),
+                tool=tool,
+            )
+            return ExtensionManifestService(contributed_tools=(registration,)).manifest()
+
+    gateway = NodeTuiGateway(service=RuntimeManifestService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="extension.manifest", params={})
+    )
+
+    assert response.result is not None
+    tools = {tool["name"]: tool for tool in response.result["tool_manifest"]["tools"]}
+    assert tools["skill.review"]["source"] == "skill"
+    assert tools["skill.review"]["toolset"] == "external"
+
+
 def test_extension_manifest_advertises_only_supported_gateway_methods() -> None:
     from mycli.services.extensions import ExtensionManifestService
 

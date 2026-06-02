@@ -154,6 +154,25 @@ Commit: pending skills lifecycle foundation slice
 
 Commit: pending subagent lifecycle foundation slice
 
+### Extension / Tool Management Surface Foundation
+
+- `/tools` now renders from the same extension manifest used by gateway clients
+  instead of hand-formatting local tool specs only.
+- Tool rows include route name, source, toolset, risk, availability, and
+  approval policy for built-in and contributed tools.
+- `/toolsets` reports toolset enablement, sources, tool names, and conflict
+  counts from the toolset manifest.
+- `AgentRuntime.extension_manifest()` returns a live read-only manifest that
+  includes visible contributed tools such as skill and subagent routes.
+- Doctor includes `tool_manifest_runtime`, a read-only consistency check that
+  validates extension manifest tool and toolset surfaces against runtime-visible
+  local tools.
+- Deterministic provider-free management smoke verifies machine manifest data
+  and human slash-command output:
+  `uv run python evaluation/tool_management_smoke.py`
+
+Commit: pending tool management surface foundation slice
+
 ### Smoke / Eval
 
 - Added deterministic provider-free smoke harness:

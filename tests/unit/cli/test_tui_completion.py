@@ -20,6 +20,7 @@ def test_slash_command_candidates_include_required_and_tui_only_commands() -> No
     assert "/mark <name>" in candidates
     assert "/release-notes" in candidates
     assert "/tools" in candidates
+    assert "/toolsets" in candidates
     assert "/bashes" in candidates
     assert "/changes" in candidates
     assert "/undo" in candidates

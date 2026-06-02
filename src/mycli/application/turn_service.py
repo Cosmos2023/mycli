@@ -227,13 +227,47 @@ class TurnService:
         return tuple(lines or ("no skills available",))
 
     def inspect_tools(self) -> tuple[str, ...]:
-        specs = getattr(self._tool_registry, "specs", None)
-        if not isinstance(specs, dict):
-            return tuple(self._available_tool_names())
-        return tuple(
-            f"{spec.name} [{spec.risk_level}]: {spec.description}"
-            for spec in specs.values()
-        )
+        manifest = self.extension_manifest()
+        tool_manifest = _mapping_value(manifest, "tool_manifest")
+        tools = _list_value(tool_manifest, "tools")
+        lines: list[str] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = _string_value(tool, "name", default="unknown")
+            source = _string_value(tool, "source", default="unknown")
+            toolset = _string_value(tool, "toolset", default="unknown")
+            risk = _string_value(tool, "risk_level", default="unknown")
+            approval = _string_value(tool, "approval_policy", default="unknown")
+            availability = _mapping_value(tool, "availability")
+            status = _string_value(availability, "status", default="unknown")
+            lines.append(
+                f"{name} source={source} toolset={toolset} "
+                f"risk={risk} availability={status} approval={approval}"
+            )
+        return tuple(lines or ("no tools available",))
+
+    def inspect_toolsets(self) -> tuple[str, ...]:
+        manifest = self.extension_manifest()
+        toolset_manifest = _mapping_value(manifest, "toolset_manifest")
+        toolsets = _list_value(toolset_manifest, "toolsets")
+        conflicts = _list_value(toolset_manifest, "conflicts")
+        lines: list[str] = []
+        for toolset in toolsets:
+            if not isinstance(toolset, dict):
+                continue
+            toolset_id = _string_value(toolset, "id", default="unknown")
+            enabled = str(toolset.get("enabled") is True).lower()
+            sources = ",".join(_string_items(_list_value(toolset, "sources"))) or "none"
+            tools = ",".join(_string_items(_list_value(toolset, "tools"))) or "none"
+            related_conflicts = [
+                item for item in conflicts if _conflict_mentions_toolset(item, toolset_id)
+            ]
+            lines.append(
+                f"{toolset_id} enabled={enabled} sources={sources} "
+                f"tools={tools} conflicts={len(related_conflicts)}"
+            )
+        return tuple(lines or ("no toolsets available",))
 
     def inspect_bashes(self) -> tuple[str, ...]:
         from mycli.tools.shell_registry import SHELL_REGISTRY
@@ -756,6 +790,9 @@ class TurnService:
         return rows
 
     def extension_manifest(self) -> dict[str, object]:
+        runtime_manifest = getattr(self._runtime, "extension_manifest", None)
+        if callable(runtime_manifest):
+            return cast(dict[str, object], runtime_manifest())
         return self._extension_manifest_service.manifest()
 
     def inspect_extensions(self) -> tuple[str, ...]:
@@ -841,6 +878,17 @@ def _list_value(source: dict[str, object], key: str) -> list[object]:
     if isinstance(value, list):
         return value
     return []
+
+
+def _string_items(values: list[object]) -> tuple[str, ...]:
+    return tuple(str(value) for value in values if isinstance(value, str) and value)
+
+
+def _conflict_mentions_toolset(conflict: object, toolset_id: str) -> bool:
+    if not isinstance(conflict, dict):
+        return False
+    toolsets = conflict.get("toolsets")
+    return isinstance(toolsets, list) and toolset_id in _string_items(toolsets)
 
 
 def _named_entries(entries: list[object], *, key: str) -> set[str]:

@@ -1158,7 +1158,14 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             return ("repository-analysis: Inspect repos",)
 
         def inspect_tools(self) -> tuple[str, ...]:
-            return ("read_file [low]: Read a file",)
+            return (
+                "Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
+            )
+
+        def inspect_toolsets(self) -> tuple[str, ...]:
+            return (
+                "file enabled=true sources=builtin tools=Read,Write conflicts=0",
+            )
 
         def inspect_bashes(self) -> tuple[str, ...]:
             return ("no background shells",)
@@ -1261,7 +1268,12 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
 
     assert list(handler("/plan")) == ["[plan] in_progress: Inspect runtime entrypoints"]
     assert list(handler("/skills")) == ["[skill] repository-analysis: Inspect repos"]
-    assert list(handler("/tools")) == ["[tool] read_file [low]: Read a file"]
+    assert list(handler("/tools")) == [
+        "[tool] Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
+    ]
+    assert list(handler("/toolsets")) == [
+        "[toolset] file enabled=true sources=builtin tools=Read,Write conflicts=0",
+    ]
     assert list(handler("/bashes")) == ["[bash] no background shells"]
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]

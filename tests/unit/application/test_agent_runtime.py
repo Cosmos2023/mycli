@@ -353,6 +353,26 @@ def test_runtime_registers_bound_task_tool(tmp_path: Path) -> None:
     assert getattr(task_tool, "_service", None) is runtime._sub_agent_service
 
 
+def test_runtime_extension_manifest_exposes_live_subagent_contributed_tools(
+    tmp_path: Path,
+) -> None:
+    adapter = SearchThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    manifest = runtime.extension_manifest()
+    tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
+    toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
+
+    assert tools["Task"]["source"] == "builtin"
+    assert tools["subagent.explore"]["source"] == "subagent"
+    assert tools["subagent.explore"]["toolset"] == "external"
+    assert "subagent.explore" in toolsets["external"]["tools"]
+
+
 class InspectThenDoneAdapter:
     def __init__(self) -> None:
         self.calls = 0

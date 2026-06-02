@@ -233,6 +233,7 @@ class DoctorService:
             self._check_turn_interrupt_diagnostics,
             self._check_turn_failure_diagnostics,
             self._check_tool_manifest,
+            self._check_tool_manifest_runtime,
             self._check_tool_environment,
             self._check_skills,
             self._check_subagents,
@@ -1240,6 +1241,70 @@ class DoctorService:
                 DoctorStatus.OK,
                 f"{len(tools)} builtin tools across {len(toolsets)} toolsets",
                 detail="; ".join(detail_parts),
+            ),
+        )
+
+    def _check_tool_manifest_runtime(self) -> Iterable[DoctorCheck]:
+        registry = ToolRegistry(workspace_root=self._workspace_root)
+        builtin_manifest = registry.manifest()
+        extension_manifest = ExtensionManifestService(tool_registry=registry).manifest()
+        tool_manifest = extension_manifest.get("tool_manifest")
+        toolset_manifest = extension_manifest.get("toolset_manifest")
+        if not isinstance(tool_manifest, dict) or not isinstance(toolset_manifest, dict):
+            return (
+                DoctorCheck(
+                    "tool_manifest_runtime",
+                    DoctorStatus.FAILED,
+                    "extension manifest missing tool_manifest or toolset_manifest",
+                ),
+            )
+        issues = list(ToolRegistry.manifest_issues(tool_manifest))
+        toolset_issues = list(ToolRegistry.toolset_registry_from_manifest(
+            tool_manifest
+        ).manifest_issues())
+        if issues or toolset_issues:
+            return (
+                DoctorCheck(
+                    "tool_manifest_runtime",
+                    DoctorStatus.FAILED,
+                    "extension manifest tool surfaces invalid: "
+                    f"{_bounded_name_list([*issues, *toolset_issues])}",
+                ),
+            )
+        builtin_tools_payload = builtin_manifest.get("tools")
+        builtin_tool_rows = builtin_tools_payload if isinstance(builtin_tools_payload, list) else []
+        extension_tools_payload = tool_manifest.get("tools")
+        extension_tool_rows = (
+            extension_tools_payload if isinstance(extension_tools_payload, list) else []
+        )
+        builtin_tools = {
+            str(tool["name"])
+            for tool in builtin_tool_rows
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        }
+        extension_tools = {
+            str(tool["name"])
+            for tool in extension_tool_rows
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        }
+        missing = sorted(builtin_tools - extension_tools)
+        if missing:
+            return (
+                DoctorCheck(
+                    "tool_manifest_runtime",
+                    DoctorStatus.FAILED,
+                    f"extension manifest missing runtime tools: {_bounded_name_list(missing)}",
+                ),
+            )
+        return (
+            DoctorCheck(
+                "tool_manifest_runtime",
+                DoctorStatus.OK,
+                "extension manifest matches runtime-visible tools",
+                detail=(
+                    f"builtin_tools={len(builtin_tools)} "
+                    f"extension_tools={len(extension_tools)}"
+                ),
             ),
         )
 
