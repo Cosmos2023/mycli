@@ -121,6 +121,7 @@ def test_help_lists_sessions_command() -> None:
     assert "/extensions" in output
     assert "/trace-jsonl" in output
     assert "/logs" in output
+    assert "/hooks" in output
 
 
 def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> None:
@@ -1162,6 +1163,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
                 "Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
             )
 
+        def inspect_hooks(self) -> tuple[str, ...]:
+            return ("pre_tool_use permission_guard enabled=true calls=0 errors=0",)
+
         def inspect_toolsets(self) -> tuple[str, ...]:
             return (
                 "file enabled=true sources=builtin tools=Read,Write conflicts=0",
@@ -1270,6 +1274,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/skills")) == ["[skill] repository-analysis: Inspect repos"]
     assert list(handler("/tools")) == [
         "[tool] Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
+    ]
+    assert list(handler("/hooks")) == [
+        "[hook] pre_tool_use permission_guard enabled=true calls=0 errors=0",
     ]
     assert list(handler("/toolsets")) == [
         "[toolset] file enabled=true sources=builtin tools=Read,Write conflicts=0",

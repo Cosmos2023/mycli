@@ -23,6 +23,7 @@ _SLASH_COMMANDS: tuple[str, ...] = (
     "/search <query>",
     "/quit",
     "/tools",
+    "/hooks",
     "/toolsets",
     "/bashes",
     "/changes",

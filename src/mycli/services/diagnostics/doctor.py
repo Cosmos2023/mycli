@@ -17,6 +17,8 @@ from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
+from mycli.services.hooks import HookManager, HookPoint
+from mycli.services.hooks.builtin import permission_guard
 from mycli.services.mcp.diagnostics import discover_mcp_servers
 from mycli.services.skills import SkillRegistry
 from mycli.services.subagents import inspect_subagent_profiles
@@ -233,6 +235,7 @@ class DoctorService:
             self._check_turn_interrupt_diagnostics,
             self._check_turn_failure_diagnostics,
             self._check_tool_manifest,
+            self._check_hooks,
             self._check_tool_manifest_runtime,
             self._check_tool_environment,
             self._check_skills,
@@ -1305,6 +1308,35 @@ class DoctorService:
                     f"builtin_tools={len(builtin_tools)} "
                     f"extension_tools={len(extension_tools)}"
                 ),
+            ),
+        )
+
+    def _check_hooks(self) -> Iterable[DoctorCheck]:
+        manager = HookManager()
+        manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        snapshots = manager.snapshot()
+        if not snapshots:
+            return (DoctorCheck("hooks", DoctorStatus.FAILED, "no hooks registered"),)
+        hook_points = sorted({snapshot.hook_point.value for snapshot in snapshots})
+        hook_names = sorted({snapshot.hook_name for snapshot in snapshots})
+        missing_required = [
+            name for name in ("permission_guard",) if name not in hook_names
+        ]
+        if missing_required:
+            return (
+                DoctorCheck(
+                    "hooks",
+                    DoctorStatus.FAILED,
+                    f"missing required hook(s): {', '.join(missing_required)}",
+                    detail=f"points={', '.join(hook_points)}",
+                ),
+            )
+        return (
+            DoctorCheck(
+                "hooks",
+                DoctorStatus.OK,
+                f"hooks: {len(snapshots)} registered",
+                detail=f"points={', '.join(hook_points)} hooks={', '.join(hook_names)}",
             ),
         )
 

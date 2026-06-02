@@ -25,7 +25,13 @@ from mycli.domain.tooling.exposure import ToolExposure
 from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
-from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint
+from mycli.services.hooks import (
+    HookAction,
+    HookContext,
+    HookExecutionSummary,
+    HookManager,
+    HookPoint,
+)
 from mycli.services.security import InjectionGuard
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
@@ -196,7 +202,7 @@ class ToolExecutionService:
             tool_router=tool_router,
             tool_exposure=tool_exposure,
         )
-        hook_results = self._hook_manager.execute(
+        pre_hook_execution = self._hook_manager.execute_with_summary(
             HookPoint.PRE_TOOL_USE,
             HookContext(
                 hook_point=HookPoint.PRE_TOOL_USE,
@@ -205,7 +211,8 @@ class ToolExecutionService:
                 session_id=self._session_id,
             ),
         )
-        for hook_result in hook_results:
+        pre_hook_summaries = pre_hook_execution.summaries
+        for hook_result in pre_hook_execution.results:
             if hook_result.action is HookAction.DENY:
                 self._record_tool_start(
                     normalized_call=normalized_call,
@@ -240,6 +247,7 @@ class ToolExecutionService:
                     record_assistant_call=record_assistant_call,
                     execution_started_at=execution_started_at,
                     effect_profile=effect_profile,
+                    hook_summaries=pre_hook_summaries,
                     lifecycle_sink=lifecycle_sink,
                 )
             if hook_result.action is HookAction.MODIFY and hook_result.modified_args:
@@ -299,6 +307,7 @@ class ToolExecutionService:
                 record_assistant_call=False,
                 execution_started_at=execution_started_at,
                 effect_profile=effect_profile,
+                hook_summaries=pre_hook_summaries,
                 lifecycle_sink=lifecycle_sink,
             )
             raise
@@ -338,6 +347,7 @@ class ToolExecutionService:
                 record_assistant_call=False,
                 execution_started_at=execution_started_at,
                 effect_profile=effect_profile,
+                hook_summaries=pre_hook_summaries,
                 lifecycle_sink=lifecycle_sink,
             )
         finally:
@@ -572,6 +582,7 @@ class ToolExecutionService:
         record_assistant_call: bool,
         execution_started_at: float,
         effect_profile: ToolEffectProfile,
+        hook_summaries: tuple[HookExecutionSummary, ...] = (),
         lifecycle_sink: ToolLifecycleSink | None = None,
     ) -> PlanState:
         self._notify_lifecycle_sink(
@@ -617,7 +628,7 @@ class ToolExecutionService:
             evidence=result.evidence,
             tool_call_id=normalized_call.call_id,
         )
-        self._hook_manager.execute(
+        post_hook_execution = self._hook_manager.execute_with_summary(
             HookPoint.POST_TOOL_USE,
             HookContext(
                 hook_point=HookPoint.POST_TOOL_USE,
@@ -630,6 +641,7 @@ class ToolExecutionService:
                 },
             ),
         )
+        combined_hook_summaries = (*hook_summaries, *post_hook_execution.summaries)
         finish_event = self._tool_activity_event(
             normalized_call,
             phase="finish",
@@ -688,6 +700,7 @@ class ToolExecutionService:
                     result=result,
                     duration_seconds=duration_seconds,
                     effect_profile=effect_profile,
+                    hook_summaries=combined_hook_summaries,
                 ),
             ),
         )
@@ -959,6 +972,7 @@ class ToolExecutionService:
         result: ToolResult,
         duration_seconds: float,
         effect_profile: ToolEffectProfile,
+        hook_summaries: tuple[HookExecutionSummary, ...] = (),
     ) -> dict[str, object]:
         duration_ms = max(0, int(round(duration_seconds * 1000)))
         raw_path = result.raw_payload.get("path") or call.arguments.get("file_path") or call.arguments.get("path")
@@ -986,6 +1000,9 @@ class ToolExecutionService:
             "filesystem_effect": effect_profile.filesystem,
             "network_effect": effect_profile.network,
             "process_effect": effect_profile.process,
+            "hook_summaries": [
+                summary.safe_payload() for summary in hook_summaries
+            ],
             **self._trace_text_metadata("stdout", result.raw_payload.get("stdout")),
             **self._trace_text_metadata("stderr", result.raw_payload.get("stderr")),
             **self._write_diagnostics_trace_payload(result.raw_payload),

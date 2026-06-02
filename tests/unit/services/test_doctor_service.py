@@ -321,6 +321,7 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     assert "subagents: 3 profiles" in rendered
     assert "explore:tools=Read,Grep,Glob,LS:denied=6" in rendered
     assert "You are a read-only exploration sub-agent" not in rendered
+    assert "hooks: 1 registered" in rendered
     assert "tool_manifest_runtime: extension manifest matches runtime-visible tools" in rendered
     assert "storage_layout" in rendered
     assert "Summary:" in rendered
@@ -339,6 +340,9 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     tool_manifest = next(check for check in report.checks if check.name == "tool_manifest")
     assert tool_manifest.status is DoctorStatus.OK
     assert "builtin tools" in tool_manifest.message
+    hooks = next(check for check in report.checks if check.name == "hooks")
+    assert hooks.status is DoctorStatus.OK
+    assert hooks.detail == "points=pre_tool_use hooks=permission_guard"
     tool_environment = next(check for check in report.checks if check.name == "tool_environment")
     assert tool_environment.status is DoctorStatus.OK
     assert tool_environment.message == "shell and git available"

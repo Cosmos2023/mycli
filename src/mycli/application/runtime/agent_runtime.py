@@ -701,6 +701,11 @@ class AgentRuntime:
     def inspect_subagent_transcript(self, child_session_id: str) -> tuple[str, ...]:
         return self._sub_agent_service.inspect_transcript(child_session_id)
 
+    def inspect_hooks(self) -> tuple[str, ...]:
+        return tuple(snapshot.safe_line() for snapshot in self._hook_manager.snapshot()) or (
+            "no hooks registered",
+        )
+
     def extension_manifest(self) -> dict[str, object]:
         contributed_tools = tuple(
             item

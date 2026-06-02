@@ -319,6 +319,15 @@ def test_tool_execution_service_emits_lifecycle_and_trace_for_denied_tool(
     assert tool_trace.payload["status"] == "failed"
     assert tool_trace.payload["success"] is False
     assert tool_trace.payload["error_kind"] == "tool_denied_by_hook"
+    assert tool_trace.payload["hook_summaries"] == [
+        {
+            "hook_point": "pre_tool_use",
+            "hook_name": "<lambda>",
+            "status": "ok",
+            "action": "deny",
+            "message": "blocked by safety",
+        }
+    ]
 
 
 def test_tool_execution_service_records_skill_body_only_as_tool_result(tmp_path: Path) -> None:
@@ -545,6 +554,46 @@ def test_tool_execution_service_records_standard_tool_trace_payload(tmp_path: Pa
     assert trace.payload["result_summary"] == "Read README.md"
     assert trace.payload["error_summary"] is None
     assert trace.payload["raw_payload_keys"] == ["content", "path"]
+    assert trace.payload["hook_summaries"] == []
+
+
+def test_tool_execution_service_records_hook_error_trace_summary(tmp_path: Path) -> None:
+    hook_manager = HookManager()
+
+    def crashy(ctx: HookContext) -> HookResult:
+        raise RuntimeError("api_key=sk-secret")
+
+    hook_manager.register(HookPoint.PRE_TOOL_USE, crashy)
+    service, fake_tool = _service(tmp_path, hook_manager=hook_manager)
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == [{"path": "README.md"}]
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    trace = next(event for event in loaded if event.kind == "tool_execution")
+    assert trace.payload["hook_summaries"] == [
+        {
+            "hook_point": "pre_tool_use",
+            "hook_name": "crashy",
+            "status": "error",
+            "message": "RuntimeError",
+        }
+    ]
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) -> None:

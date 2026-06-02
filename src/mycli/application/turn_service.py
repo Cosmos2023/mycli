@@ -247,6 +247,12 @@ class TurnService:
             )
         return tuple(lines or ("no tools available",))
 
+    def inspect_hooks(self) -> tuple[str, ...]:
+        inspect = getattr(self._runtime, "inspect_hooks", None)
+        if callable(inspect):
+            return tuple(inspect())
+        return ("hook diagnostics not available",)
+
     def inspect_toolsets(self) -> tuple[str, ...]:
         manifest = self.extension_manifest()
         toolset_manifest = _mapping_value(manifest, "toolset_manifest")

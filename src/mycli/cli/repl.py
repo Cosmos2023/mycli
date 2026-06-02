@@ -20,6 +20,7 @@ def handle_slash_command(command: str) -> str:
                 "/trace-jsonl",
                 "/logs",
                 "/tools",
+                "/hooks",
                 "/toolsets",
                 "/bashes",
                 "/changes",
@@ -55,6 +56,8 @@ def build_command_handler(
             return [f"[skill] {line}" for line in service.inspect_skills()]
         if command == "/tools":
             return [f"[tool] {line}" for line in service.inspect_tools()]
+        if command == "/hooks":
+            return [f"[hook] {line}" for line in service.inspect_hooks()]
         if command == "/toolsets":
             return [f"[toolset] {line}" for line in service.inspect_toolsets()]
         if command == "/bashes":

@@ -310,6 +310,7 @@ class MycliTuiApp(App[int]):
             "/resume <session>",
             "/sessions",
             "/tools",
+            "/hooks",
             "/bashes",
             "/changes",
             "/undo",

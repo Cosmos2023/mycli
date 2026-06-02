@@ -93,6 +93,7 @@ uv run python evaluation/mcp_smoke.py
 uv run python evaluation/skill_smoke.py
 uv run python evaluation/subagent_smoke.py
 uv run python evaluation/tool_management_smoke.py
+uv run python evaluation/hook_smoke.py
 ```
 
 其中 `mcp_smoke.py` 会创建临时本地 stdio MCP server，验证 config loading、
@@ -105,6 +106,8 @@ contributed tools、runtime invocation、extension manifest、toolset manifest �
 doctor diagnostics。
 `tool_management_smoke.py` 会验证 combined manifest、toolset manifest、
 `/tools` 和 `/toolsets` 的人类输出保持一致。
+`hook_smoke.py` 会验证内置 hook 注册快照、`/hooks` 人类输出和 doctor hook
+diagnostics。
 
 说明：
 

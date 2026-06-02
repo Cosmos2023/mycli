@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from mycli.services.hooks.manager import HookManager
-from mycli.services.hooks.types import HookAction, HookContext, HookPoint, HookResult
+from mycli.services.hooks.types import (
+    HookAction,
+    HookContext,
+    HookExecutionStatus,
+    HookPoint,
+    HookResult,
+)
 
 
 class TestHookManager:
@@ -74,3 +80,54 @@ class TestHookManager:
             HookContext(hook_point=HookPoint.PRE_TOOL_USE),
         )
         assert len(results) == 0
+
+    def test_snapshot_records_execution_state(self) -> None:
+        manager = HookManager()
+
+        def allow_hook(ctx: HookContext) -> HookResult:
+            return HookResult(action=HookAction.ALLOW, message="allowed")
+
+        def modify_hook(ctx: HookContext) -> HookResult:
+            return HookResult(action=HookAction.MODIFY, modified_args={"path": "new.md"})
+
+        manager.register(HookPoint.PRE_TOOL_USE, allow_hook)
+        manager.register(HookPoint.PRE_TOOL_USE, modify_hook)
+
+        execution = manager.execute_with_summary(
+            HookPoint.PRE_TOOL_USE,
+            HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"),
+        )
+
+        assert [result.action for result in execution.results] == [
+            HookAction.ALLOW,
+            HookAction.MODIFY,
+        ]
+        assert [summary.safe_payload()["hook_name"] for summary in execution.summaries] == [
+            "allow_hook",
+            "modify_hook",
+        ]
+        snapshot = manager.snapshot()
+        assert [item.hook_name for item in snapshot] == ["allow_hook", "modify_hook"]
+        assert snapshot[0].call_count == 1
+        assert snapshot[0].last_status is HookExecutionStatus.OK
+        assert snapshot[1].modify_count == 1
+
+    def test_snapshot_records_error_without_leaking_message(self) -> None:
+        manager = HookManager()
+
+        def crashy(ctx: HookContext) -> HookResult:
+            raise RuntimeError("token=sk-secret")
+
+        manager.register(HookPoint.PRE_TOOL_USE, crashy)
+
+        execution = manager.execute_with_summary(
+            HookPoint.PRE_TOOL_USE,
+            HookContext(hook_point=HookPoint.PRE_TOOL_USE),
+        )
+
+        assert execution.results == ()
+        assert execution.summaries[0].status is HookExecutionStatus.ERROR
+        assert execution.summaries[0].safe_payload()["message"] == "RuntimeError"
+        snapshot = manager.snapshot()
+        assert snapshot[0].error_count == 1
+        assert "sk-secret" not in snapshot[0].safe_line()
