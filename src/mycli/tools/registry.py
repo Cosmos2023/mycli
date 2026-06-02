@@ -531,14 +531,16 @@ class ToolRegistry:
         spec: ToolSpec,
         executor: SchemaTool | None,
     ) -> dict[str, object]:
-        metadata = _BUILTIN_TOOL_METADATA.get(name, {})
+        metadata = _tool_metadata(name=name, executor=executor)
         effect_profile = (
             tool_effects_for_tool(executor) if executor is not None else ToolEffectProfile()
         )
+        source = _metadata_text(metadata, "source", "builtin")
+        tool_id = _metadata_text(metadata, "id", f"{source}:{name}" if source != "builtin" else f"builtin:{name}")
         return {
-            "id": f"builtin:{name}",
+            "id": tool_id,
             "name": name,
-            "source": "builtin",
+            "source": source,
             "toolset": _metadata_text(metadata, "toolset", "general"),
             "description": spec.description,
             "parameters": [_parameter_manifest(parameter) for parameter in spec.parameters],
@@ -659,6 +661,16 @@ def _metadata_text(metadata: dict[str, object], key: str, fallback: str) -> str:
     if isinstance(value, str) and value:
         return value
     return fallback
+
+
+def _tool_metadata(*, name: str, executor: SchemaTool | None) -> dict[str, object]:
+    metadata = dict(_BUILTIN_TOOL_METADATA.get(name, {}))
+    if executor is None:
+        return metadata
+    extra = getattr(executor, "manifest_metadata", None)
+    if isinstance(extra, dict):
+        metadata.update(extra)
+    return metadata
 
 
 def _approval_policy_for(*, spec: ToolSpec, metadata: dict[str, object]) -> str:

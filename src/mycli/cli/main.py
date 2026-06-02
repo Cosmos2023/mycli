@@ -46,6 +46,11 @@ from mycli.services.hooks.management import (
     HookManagementRow,
     HookManagementService,
 )
+from mycli.services.plugins import (
+    PluginManagementResponse,
+    PluginManagementRow,
+    PluginManagementService,
+)
 
 __all__ = [
     "build_command_handler",
@@ -54,6 +59,7 @@ __all__ = [
     "handle_doctor_command",
     "handle_evaluation_command",
     "handle_hooks_command",
+    "handle_plugins_command",
     "handle_slash_command",
     "main",
     "run_repl",
@@ -82,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluation scenario root directory",
     )
     parser.add_argument("--json", action="store_true", dest="json_output", help="Render utility output as JSON")
-    parser.add_argument("command", nargs="?", choices=["doctor", "hooks"], help="Run a utility command")
+    parser.add_argument("command", nargs="?", choices=["doctor", "hooks", "plugins"], help="Run a utility command")
     parser.add_argument("utility_args", nargs="*", help=argparse.SUPPRESS)
     return parser
 
@@ -179,6 +185,81 @@ def handle_hooks_command(
         for line in render_hook_management_response(response):
             output_func(line)
     return 0 if response.ok else 1
+
+
+def handle_plugins_command(
+    cli_args: dict[str, object],
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    env: dict[str, str] | None = None,
+    output_func: Callable[[str], Any] = print,
+) -> int | None:
+    if cli_args.get("command") != "plugins":
+        return None
+    utility_args = cli_args.get("utility_args", [])
+    args = [str(item) for item in utility_args] if isinstance(utility_args, list) else []
+    service = PluginManagementService(
+        workspace_root=cwd or Path.cwd(),
+        home_dir=home or Path.home(),
+        env=dict(env or os.environ),
+    )
+    response = _dispatch_plugins_command(service, args)
+    if bool(cli_args.get("json_output")):
+        output_func(json.dumps(response.to_dict(), sort_keys=True))
+    else:
+        for line in render_plugin_management_response(response):
+            output_func(line)
+    return 0 if response.ok else 1
+
+
+def _dispatch_plugins_command(
+    service: PluginManagementService,
+    args: list[str],
+) -> PluginManagementResponse:
+    if not args:
+        return PluginManagementResponse(
+            ok=False,
+            action="usage",
+            message="usage: mycli plugins list|inspect [plugin_id] [--json]",
+        )
+    action = args[0]
+    target = args[1] if len(args) > 1 else ""
+    if action == "list" and len(args) == 1:
+        return service.list_plugins()
+    if action == "inspect" and target and len(args) == 2:
+        return service.inspect_plugin(target)
+    return PluginManagementResponse(
+        ok=False,
+        action=action,
+        message="usage: mycli plugins list|inspect [plugin_id] [--json]",
+    )
+
+
+def render_plugin_management_response(response: PluginManagementResponse) -> tuple[str, ...]:
+    lines = [f"mycli plugins {response.action}: {response.message}"]
+    rows = response.plugins or ((response.plugin,) if response.plugin is not None else ())
+    for row in rows:
+        if row is not None:
+            lines.extend(_render_plugin_row(row))
+    for issue in response.issues:
+        lines.append(f"plugin_issue: {issue}")
+    return tuple(lines)
+
+
+def _render_plugin_row(row: PluginManagementRow) -> tuple[str, ...]:
+    tools = ",".join(row.provided_tools) if row.provided_tools else "none"
+    hooks = ",".join(row.provided_hooks) if row.provided_hooks else "none"
+    lines = [
+        f"plugin {row.plugin_id}",
+        f"  source={row.source} name={row.name} version={row.version or 'unknown'} kind={row.kind}",
+        f"  enabled={str(row.enabled).lower()} load_status={row.load_status}",
+        f"  provided_tools={tools}",
+        f"  provided_hooks={hooks}",
+        f"  path={row.path}",
+    ]
+    lines.extend(f"  issue={issue}" for issue in row.issues)
+    return tuple(lines)
 
 
 def _dispatch_hooks_command(
@@ -328,6 +409,15 @@ def main(
     )
     if hooks_exit_code is not None:
         return hooks_exit_code
+    plugins_exit_code = handle_plugins_command(
+        args,
+        cwd=cwd,
+        home=home,
+        env=env,
+        output_func=output_func,
+    )
+    if plugins_exit_code is not None:
+        return plugins_exit_code
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
     if eval_exit_code is not None:
         return eval_exit_code

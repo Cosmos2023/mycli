@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 from threading import Lock
 import time
@@ -87,6 +88,7 @@ from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.subagents import SubAgentToolContributionProvider
+from mycli.services.plugins import load_enabled_plugins
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
@@ -304,6 +306,13 @@ class AgentRuntime:
             trace_service=self._trace_service,
             session_id=config.session_id,
             monotonic_provider=self._monotonic,
+        )
+        self._plugin_runtime_state = load_enabled_plugins(
+            workspace_root=config.workspace_root,
+            home_dir=home_dir,
+            hook_manager=self._hook_manager,
+            tool_registry=self._tool_registry,
+            env=dict(os.environ),
         )
         self._checkpoint = TurnCheckpoint(
             max_tool_calls_per_turn=config.max_tool_calls_per_turn,
@@ -729,6 +738,13 @@ class AgentRuntime:
             lines.append(f"config_issue {config_issue.safe_line()}")
         for allowlist_issue in allowlist.issues:
             lines.append(f"allowlist_issue {allowlist_issue}")
+        for loaded in self._plugin_runtime_state.loaded:
+            if loaded.registered_hooks:
+                lines.extend(
+                    f"plugin_hook {loaded.plugin_id} {hook}" for hook in loaded.registered_hooks
+                )
+            for issue in loaded.issues:
+                lines.append(f"plugin_issue {issue.safe_line()}")
         return tuple(lines) or ("no hooks registered",)
 
     def close(self) -> None:

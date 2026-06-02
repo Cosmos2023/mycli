@@ -23,6 +23,7 @@ from mycli.services.hooks.builtin import permission_guard
 from mycli.services.mcp.diagnostics import discover_mcp_servers
 from mycli.services.skills import SkillRegistry
 from mycli.services.subagents import inspect_subagent_profiles
+from mycli.services.plugins import PluginLoadStatus, load_enabled_plugins
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
 
@@ -237,6 +238,7 @@ class DoctorService:
             self._check_turn_failure_diagnostics,
             self._check_tool_manifest,
             self._check_hooks,
+            self._check_plugins,
             self._check_tool_manifest_runtime,
             self._check_tool_environment,
             self._check_skills,
@@ -1388,6 +1390,39 @@ class DoctorService:
                 "hooks",
                 status,
                 f"hooks: {len(snapshots) + len(discovery.hooks)} registered, configured={len(discovery.hooks)}",
+                detail="; ".join(detail_parts),
+            ),
+        )
+
+    def _check_plugins(self) -> Iterable[DoctorCheck]:
+        state = load_enabled_plugins(
+            workspace_root=self._workspace_root,
+            home_dir=self._home_dir,
+            hook_manager=HookManager(),
+            tool_registry=ToolRegistry(workspace_root=self._workspace_root),
+            env=dict(self._env),
+        )
+        plugin_count = len(state.discovery.selected)
+        if plugin_count == 0 and not state.issues:
+            return (DoctorCheck("plugins", DoctorStatus.OK, "plugins: 0 discovered"),)
+        loaded = sum(1 for item in state.loaded if item.status is PluginLoadStatus.LOADED)
+        disabled = sum(1 for item in state.loaded if item.status is PluginLoadStatus.DISABLED)
+        errored = sum(1 for item in state.loaded if item.status is PluginLoadStatus.ERROR)
+        issue_lines = [issue.safe_line() for issue in state.issues]
+        status = DoctorStatus.FAILED if errored else DoctorStatus.WARNING if issue_lines or disabled else DoctorStatus.OK
+        detail_parts = [
+            f"discovered={plugin_count}",
+            f"loaded={loaded}",
+            f"disabled={disabled}",
+            f"errors={errored}",
+        ]
+        if issue_lines:
+            detail_parts.append(f"issues={_bounded_name_list(issue_lines)}")
+        return (
+            DoctorCheck(
+                "plugins",
+                status,
+                f"plugins: {plugin_count} discovered, loaded={loaded}",
                 detail="; ".join(detail_parts),
             ),
         )

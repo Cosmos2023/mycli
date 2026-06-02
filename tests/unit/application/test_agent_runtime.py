@@ -1241,6 +1241,61 @@ def test_agent_runtime_executes_session_lifecycle_configured_hooks(tmp_path: Pat
     assert all(event.payload["action"] == "allow" for event in traces)
 
 
+def test_agent_runtime_loads_enabled_plugin_hooks_and_tools(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    plugin = workspace / ".mycli" / "plugins" / "demo"
+    plugin.mkdir(parents=True)
+    (home / ".mycli" / "plugins").mkdir(parents=True)
+    (workspace / ".mycli" / "config.toml").write_text(
+        "[plugins]\nenabled = [\"demo\"]\n",
+        encoding="utf-8",
+    )
+    plugin.joinpath("plugin.yaml").write_text(
+        "\n".join(
+            [
+                "name: Demo Plugin",
+                "version: '1.0'",
+                "kind: standalone",
+                "provides_tools:",
+                "  - DemoTool",
+                "provides_hooks:",
+                "  - session_start",
+                "requires_env: []",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    marker = tmp_path / "plugin-session-start.txt"
+    plugin.joinpath("__init__.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "from mycli.services.hooks import HookAction, HookResult",
+                "def register(ctx):",
+                "    def session_start(context):",
+                f"        Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "        return HookResult(action=HookAction.ALLOW)",
+                "    ctx.register_hook('session_start', session_start, name='plugin:demo:session_start')",
+                "    ctx.register_tool('DemoTool', {'description': 'Demo tool'}, lambda args: {'summary': 'demo ok'}, {'toolset': 'plugin'})",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=workspace,
+        home_dir=home,
+        model_adapter=BlockInspectThenDoneAdapter(),
+    )
+
+    assert marker.read_text(encoding="utf-8") == "ran"
+    assert "DemoTool" in runtime._tool_registry.list_names()
+    assert any("plugin_hook demo session_start:plugin:demo:session_start" in line for line in runtime.inspect_hooks())
+
+
 class CapturingResponsesClient:
     def __init__(self) -> None:
         self.captured_input_items: list[dict[str, object]] = []
