@@ -35,7 +35,7 @@ Work proceeds in this order unless a blocker forces a local prerequisite. Avoid 
 | 3 | Subagent Context Sharing / Fork P1 | Done | Let child agents inherit stable context without polluting parent transcript. |
 | 4 | MCP Usability P1 | Done | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
 | 5 | Real Task Evaluation P1 | Done | Validate the agent on realistic multi-tool workflows. |
-| 6 | Consolidation / Main Merge Decision | Next | Run gates, update parity report, and decide whether to merge. |
+| 6 | Consolidation / Main Merge Decision | Done | Run gates, update parity report, and decide whether to merge. |
 
 ## Slice Details
 
@@ -250,6 +250,34 @@ Append one entry per completed slice.
   it validates foundation wiring and report shape, not live model reasoning
   quality under real API latency/cost.
 - Next recommended slice: Consolidation / Main Merge Decision.
+
+### 2026-06-04 - Consolidation / Main Merge Decision
+
+- Branch: `feature/mycli-context-management-p1`
+- Commit: this slice commit
+- Changed scope: final roadmap status, full gate evidence, final
+  Hermes-like foundation report, parity estimate, remaining gap summary, and
+  main merge risk assessment.
+- Tests:
+  - `uv run pytest tests/unit tests/integration -q` -> `1355 passed`
+  - `uv run ruff check src tests evaluation`
+  - `uv run mypy src/mycli`
+  - `PATH="/Users/cosmos/Desktop/mycli/.worktrees/mycli-context-management-p1/.venv/bin:$PATH" npm test` from `tui/node` -> `137 passed`
+  - `npm run typecheck` from `tui/node`
+- Smoke/evaluation:
+  - `uv run python evaluation/tool_smoke.py`
+  - `uv run python evaluation/context_smoke.py`
+  - `uv run python evaluation/real_task_smoke.py`
+  - `uv run python evaluation/mcp_smoke.py`
+  - `uv run python evaluation/subagent_smoke.py`
+  - `uv run python evaluation/hook_smoke.py`
+- Parity impact: the roadmap phase now has end-to-end verification evidence
+  and a final merge decision artifact instead of per-slice-only evidence.
+- Remaining risks: Node TUI tests need `python3` to resolve to the project
+  uv environment for Python manifest parity checks; live API real-task quality
+  still needs separate provider-backed evaluation.
+- Next recommended slice: choose the next phase explicitly; do not merge to
+  `main` without user approval.
 
 Template:
 
