@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline index for Context Management P1 implementation."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Session summary persistence and resume/rehydration must respect session DB contracts."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Context diagnostics and trace rows must stay bounded and non-provider-visible."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor diagnostics must be read-only and bounded."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Trace/gateway diagnostics must preserve runtime contract boundaries."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guides for cross-layer context changes."}
+{"file": ".trellis/tasks/06-03-context-management-p1/research/hermes-context-management.md", "reason": "Hermes context-management reference and mycli current-state notes."}

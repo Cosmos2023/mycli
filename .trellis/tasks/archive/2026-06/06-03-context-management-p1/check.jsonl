@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline index for final verification."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify session summary persistence and DB boundaries."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify trace/doctor diagnostics are bounded and redacted."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor diagnostics are read-only and quality gates pass."}
+{"file": ".trellis/tasks/06-03-context-management-p1/prd.md", "reason": "Acceptance criteria for Context Management P1."}

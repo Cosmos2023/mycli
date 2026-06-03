@@ -2891,14 +2891,20 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
     response = runtime.handle_user_turn("inspect this repo")
 
     assert response.assistant_message == "Memory captured"
-    contextual_user_content = "\n".join(
+    user_messages = [
         str(getattr(message, "content", ""))
         for message in adapter.seen_messages[0]
         if getattr(message, "role", None) == "user"
-    )
+    ]
+    contextual_user_content = "\n".join(user_messages)
     assert "concise" in contextual_user_content
     assert "src/mycli/cli/main.py" in contextual_user_content
-    assert "Inspected the repo root" not in contextual_user_content
+    assert "<memory-context>" in contextual_user_content
+    assert "Inspected the repo root" in contextual_user_content
+    current_request_messages = [
+        message for message in user_messages if message == "inspect this repo"
+    ]
+    assert current_request_messages == ["inspect this repo"]
 
 
 def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:

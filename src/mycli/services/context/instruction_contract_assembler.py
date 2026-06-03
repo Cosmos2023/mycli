@@ -125,12 +125,14 @@ class InstructionContractAssembler:
         kind: InstructionFragmentKind,
         include_in_memory: bool,
     ) -> InstructionFragment:
+        metadata = dict(section.metadata)
+        metadata.setdefault("cache_class", section.cache_class.value)
         return InstructionFragment(
             kind=kind,
             title=section.title,
             content=section.content,
             source=section.source,
-            metadata=dict(section.metadata),
+            metadata=metadata,
             include_in_memory=include_in_memory,
         )
 
@@ -142,12 +144,14 @@ class InstructionContractAssembler:
         include_in_memory: bool,
         prefix: str,
     ) -> InstructionFragment:
+        metadata = dict(section.metadata)
+        metadata.setdefault("cache_class", section.cache_class.value)
         return InstructionFragment(
             kind=kind,
             title=section.title,
             content=f"{prefix}\n{section.content}",
             source=section.source,
-            metadata=dict(section.metadata),
+            metadata=metadata,
             include_in_memory=include_in_memory,
         )
 
@@ -169,6 +173,7 @@ class InstructionContractAssembler:
 
     def _tool_exposure_fragment(self, section: TurnContextSection) -> InstructionFragment:
         metadata = dict(section.metadata)
+        metadata.setdefault("cache_class", section.cache_class.value)
         return InstructionFragment(
             kind=InstructionFragmentKind.TOOL_EXPOSURE,
             title=section.title,

@@ -62,6 +62,7 @@ from mycli.domain.runtime.protocol import (
 )
 from mycli.domain.runtime.turn_context import (
     TurnContext as TurnContext,
+    TurnContextCacheClass as TurnContextCacheClass,
     TurnContextSection as TurnContextSection,
     TurnContextSectionType as TurnContextSectionType,
 )
@@ -227,6 +228,8 @@ class ExecutionContext:
     compaction_rehydration: CompactionRehydrationContext = field(
         default_factory=CompactionRehydrationContext
     )
+    context_file_content: str = ""
+    context_file_diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -318,6 +321,7 @@ __all__ = [
     "SuspendedTurn",
     "TurnItem",
     "TurnContext",
+    "TurnContextCacheClass",
     "TurnContextSection",
     "TurnContextSectionType",
     "TurnItemType",

@@ -3311,6 +3311,68 @@ def test_doctor_service_reports_node_tui_dependency_status(
     assert dependency_check.message == "required Node TUI dependencies present"
 
 
+def test_doctor_service_reports_context_diagnostics_without_raw_content(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    _create_sessions_db(home / ".mycli" / "sessions.db")
+    (workspace / ".mycli.md").write_text("Project context safe text.", encoding="utf-8")
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "context_diagnostics",
+                        "turn_id": "turn_1",
+                        "payload": {
+                            "estimated_context_tokens": 123,
+                            "context_file": {
+                                "blocked": False,
+                                "truncated": True,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "context_summary_persistence",
+                        "turn_id": "turn_1",
+                        "payload": {
+                            "persisted_count": 2,
+                            "duplicate_skipped_count": 1,
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "context")
+    rendered = "\n".join(render_doctor_report(report))
+    assert check.status is DoctorStatus.OK
+    assert "context source=.mycli" in check.message
+    assert "context_trace_rows=1" in check.message
+    assert "summary_persisted=2" in check.message
+    assert "max_estimated_context_tokens=123" in str(check.detail)
+    assert "summary_duplicates_skipped=1" in str(check.detail)
+    assert "Project context safe text" not in rendered
+
+
 def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

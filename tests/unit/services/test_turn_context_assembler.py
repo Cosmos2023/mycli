@@ -23,6 +23,7 @@ from mycli.domain.runtime import (
     PlanStatus,
     RehydratedFile,
     TurnContextSectionType,
+    TurnContextCacheClass,
 )
 from mycli.domain.tool_exposure import (
     ToolExposure,
@@ -141,6 +142,19 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         "tool_exposure",
         "user_request",
     ]
+    assert turn_context.debug_summary()["cache_classes"] == {
+        "base_instructions": "static",
+        "workspace_instructions": "static",
+        "environment_context": "dynamic",
+        "conversation_context": "dynamic",
+        "compaction_rehydration": "dynamic",
+        "memory": "dynamic",
+        "plan": "dynamic",
+        "runtime_reminders": "ephemeral",
+        "skill_catalog": "static",
+        "tool_exposure": "static",
+        "user_request": "ephemeral",
+    }
 
 
 def test_turn_context_assembler_keeps_empty_sections_but_marks_them_disabled() -> None:
@@ -309,6 +323,7 @@ def test_turn_context_assembler_renders_added_tool_as_plain_tool() -> None:
 
     assert tool_section.content == "Available tools: daily_brief"
     assert tool_section.metadata == {"tool_names": ["daily_brief"]}
+    assert tool_section.cache_class is TurnContextCacheClass.STATIC
 
 
 def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is_sparse() -> None:
@@ -366,6 +381,9 @@ def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is
     )
 
     assert workspace_section.enabled is True
+    assert workspace_section.cache_class is TurnContextCacheClass.STATIC
+    assert "<workspace-context>" in workspace_section.content
+    assert "not the current user request" in workspace_section.content
     assert "Follow AGENTS.md" in workspace_section.content
     assert conversation_section.enabled is True
     assert "先检查仓库结构" in conversation_section.content
@@ -488,6 +506,8 @@ def test_turn_context_assembler_filters_memory_values_already_present_in_replay(
     )
 
     assert memory_section.enabled is True
+    assert "<memory-context>" in memory_section.content
+    assert "not new user input" in memory_section.content
     assert "Project uses a src layout." in memory_section.content
     assert "I found README.md and pyproject.toml." not in memory_section.content
 
@@ -521,7 +541,38 @@ def test_turn_context_assembler_disables_memory_when_all_records_are_replay_dupl
     )
 
     assert memory_section.enabled is False
-    assert memory_section.content == "Memory: none"
+    assert memory_section.content == ""
+
+
+def test_turn_context_assembler_fences_compaction_rehydration() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            compaction_rehydration=CompactionRehydrationContext(
+                files=(
+                    RehydratedFile(
+                        path="src/app.py",
+                        content="print('ok')",
+                        token_count=3,
+                        truncated=False,
+                    ),
+                )
+            ),
+        ),
+    )
+
+    section = next(
+        item
+        for item in turn_context.sections
+        if item.type is TurnContextSectionType.COMPACTION_REHYDRATION
+    )
+
+    assert section.enabled is True
+    assert section.cache_class is TurnContextCacheClass.DYNAMIC
+    assert "<compaction-rehydration>" in section.content
+    assert "not the current user request" in section.content
+    assert "src/app.py" in section.content
 
 
 def test_turn_context_assembler_renders_plan_as_compact_action_state() -> None:

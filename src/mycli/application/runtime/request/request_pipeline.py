@@ -9,6 +9,7 @@ from mycli.domain.runtime import (
     RuntimeItem,
     RuntimeTraceEvent,
     TurnContext,
+    stable_hash,
 )
 from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
 from mycli.prompts.react import build_react_prompt
@@ -102,8 +103,56 @@ class RequestPipeline:
                 ],
             },
         )
+        self._trace_context_diagnostics(
+            turn_id=turn_id,
+            context=context,
+            turn_context=turn_context,
+        )
         return contract
 
+    def _trace_context_diagnostics(
+        self,
+        *,
+        turn_id: str,
+        context: ExecutionContext,
+        turn_context: TurnContext,
+    ) -> None:
+        enabled_sections = turn_context.enabled_sections()
+        section_lengths = {
+            section.type.value: len(section.content) for section in enabled_sections
+        }
+        cache_classes = {
+            section.type.value: section.cache_class.value for section in enabled_sections
+        }
+        cache_boundary = "|".join(
+            f"{section.type.value}:{section.cache_class.value}:{len(section.content)}"
+            for section in enabled_sections
+        )
+        summary_count = sum(
+            1
+            for record in context.memory_records
+            if getattr(record.kind, "value", str(record.kind)) == "session_summary"
+        )
+        payload = {
+            "section_count": len(enabled_sections),
+            "section_lengths": section_lengths,
+            "cache_classes": cache_classes,
+            "cache_zone_fingerprint": stable_hash(cache_boundary),
+            "estimated_context_chars": sum(section_lengths.values()),
+            "estimated_context_tokens": max(1, sum(section_lengths.values()) // 4),
+            "context_file": _bounded_context_file_diagnostics(
+                context.context_file_diagnostics
+            ),
+            "session_summary_count": summary_count,
+        }
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="context_diagnostics",
+                turn_id=turn_id,
+                payload=payload,
+            ),
+        )
     def build_and_trace_request_shape(
         self,
         *,
@@ -176,3 +225,15 @@ class RequestPipeline:
         )
         self._previous_request_shape = request_shape
         return diagnostic
+
+
+def _bounded_context_file_diagnostics(value: dict[str, object]) -> dict[str, object]:
+    return {
+        "selected_source": value.get("selected_source"),
+        "path_present": bool(value.get("path")),
+        "truncated": value.get("truncated") is True,
+        "blocked": value.get("blocked") is True,
+        "original_length": value.get("original_length", 0),
+        "rendered_length": value.get("rendered_length", 0),
+        "issues": value.get("issues", ()),
+    }
