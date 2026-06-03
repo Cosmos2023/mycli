@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from mycli.domain.subagents import SubAgentResult
+from mycli.services.subagents.tool_result_payload import (
+    subagent_tool_artifacts,
+    subagent_tool_payload,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import SchemaTool, ToolParameter, ToolResult, ToolSpec
 
@@ -71,15 +75,9 @@ class TaskTool(SchemaTool):
         return ToolResult(
             success=result.status == "completed",
             summary=f"Sub-agent {agent_type} completed with status {result.status}.",
+            artifacts=subagent_tool_artifacts(result),
             error=result.error,
-            raw_payload={
-                "kind": "sub_agent_report",
-                "status": result.status,
-                "child_session_id": result.child_session_id,
-                "tool_calls": result.tool_calls,
-                "report": result.report,
-                "content": result.report,
-            },
+            raw_payload=subagent_tool_payload(profile=agent_type, result=result),
         )
 
     def run(self, call: ToolCall) -> ToolResult:

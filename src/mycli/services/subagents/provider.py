@@ -16,6 +16,10 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
+from mycli.services.subagents.tool_result_payload import (
+    subagent_tool_artifacts,
+    subagent_tool_payload,
+)
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
 
@@ -64,16 +68,9 @@ class _SubAgentContributionTool:
         return ToolResult(
             success=result.status == "completed",
             summary=f"Sub-agent {self.profile.name} completed with status {result.status}.",
+            artifacts=subagent_tool_artifacts(result),
             error=result.error,
-            raw_payload={
-                "kind": "sub_agent_report",
-                "profile": self.profile.name,
-                "status": result.status,
-                "child_session_id": result.child_session_id,
-                "tool_calls": result.tool_calls,
-                "report": result.report,
-                "content": result.report,
-            },
+            raw_payload=subagent_tool_payload(profile=self.profile.name, result=result),
         )
 
     def run(self, call: ToolCall) -> ToolResult:
