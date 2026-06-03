@@ -46,7 +46,16 @@ def test_task_tool_delegates_to_bound_service() -> None:
 
     assert result.success is True
     assert result.summary == "Sub-agent explore completed with status completed."
+    assert result.artifacts["child_session_id"] == "demo:sub:turn_1:abcd1234"
     assert result.raw_payload["child_session_id"] == "demo:sub:turn_1:abcd1234"
+    assert result.raw_payload["run_id"] == "demo:sub:turn_1:abcd1234"
+    assert result.raw_payload["trace"] == {
+        "run_id": "demo:sub:turn_1:abcd1234",
+        "child_session_id": "demo:sub:turn_1:abcd1234",
+        "status": "completed",
+        "tool_calls": 1,
+    }
+    assert result.raw_payload["artifacts"]["subagent_report"] == result.raw_payload["report"]
     assert result.raw_payload["content"] == result.raw_payload["report"]
     assert service.calls == [
             {

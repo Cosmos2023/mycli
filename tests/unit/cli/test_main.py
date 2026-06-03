@@ -14,6 +14,7 @@ from mycli.cli.main import (
     build_parser,
     build_turn_service,
     handle_mcp_command,
+    handle_subagents_command,
     handle_slash_command,
     main,
     render_activity_lines,
@@ -79,6 +80,67 @@ def test_build_parser_accepts_mcp_command() -> None:
 
     assert args.command == "mcp"
     assert args.utility_args == ["list"]
+
+
+def test_build_parser_accepts_subagents_command() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["subagents", "inspect", "explore"])
+
+    assert args.command == "subagents"
+    assert args.utility_args == ["inspect", "explore"]
+
+
+def test_subagents_command_is_provider_free_and_renders_json(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    profiles = workspace / ".mycli" / "subagents"
+    profiles.mkdir(parents=True)
+    home.mkdir()
+    profiles.joinpath("analyst.toml").write_text(
+        "\n".join(
+            [
+                'id = "analyst"',
+                'instruction = "Analyze docs."',
+                'allowed_tools = ["Read"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output: list[str] = []
+
+    exit_code = handle_subagents_command(
+        {"command": "subagents", "utility_args": ["inspect", "analyst"], "json_output": True},
+        cwd=workspace,
+        home=home,
+        output_func=output.append,
+    )
+
+    payload = json.loads(output[0])
+    assert exit_code == 0
+    assert payload["profile"]["profile_id"] == "analyst"
+    assert payload["profile"]["allowed_tools"] == ["Read"]
+
+
+def test_subagents_command_reports_human_issues(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    profiles = workspace / ".mycli" / "subagents"
+    profiles.mkdir(parents=True)
+    home.mkdir()
+    profiles.joinpath("broken.toml").write_text("enabled = true\n", encoding="utf-8")
+    output: list[str] = []
+
+    exit_code = handle_subagents_command(
+        {"command": "subagents", "utility_args": ["list"], "json_output": False},
+        cwd=workspace,
+        home=home,
+        output_func=output.append,
+    )
+
+    rendered = "\n".join(output)
+    assert exit_code == 1
+    assert "subagent broken" in rendered
+    assert "subagent_issue:" in rendered
 
 
 def test_mcp_list_command_is_provider_free_and_redacts_failures(tmp_path: Path) -> None:

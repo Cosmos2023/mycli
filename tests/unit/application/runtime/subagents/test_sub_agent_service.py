@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.domain.runtime import HistoryItem, HistoryItemType
-from mycli.domain.subagents import SubAgentResult
+from mycli.domain.subagents import SubAgentProfile, SubAgentResult
 
 
 class FakeLoop:
@@ -159,6 +159,40 @@ def test_service_rejects_unknown_profile_with_xml_report() -> None:
 
     assert result.status == "failed"
     assert "Unknown sub-agent profile" in result.report
+
+
+def test_service_uses_injected_profile_lookup() -> None:
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="Configured profile ran.",
+            child_session_id="ignored",
+            tool_calls=1,
+        )
+    )
+    profile = SubAgentProfile(
+        name="analyst",
+        system_prompt="Analyze safely.",
+        default_tools=("Read", "Grep"),
+        denied_tools=("Bash",),
+    )
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read", "Grep", "Bash"),
+        child_loop=loop,
+        profile_lookup=lambda profile_id: profile if profile_id == "analyst" else None,
+    )
+
+    result = service.run_task(
+        description="Analyze docs",
+        agent_type="analyst",
+        allowed_tools=("Read", "Grep", "Bash"),
+    )
+
+    assert result.status == "completed"
+    assert loop.calls[0]["profile"].name == "analyst"
+    assert loop.calls[0]["tool_names"] == ("Read", "Grep")
 
 
 def test_service_truncates_long_report_body() -> None:

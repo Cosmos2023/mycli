@@ -311,15 +311,15 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     rendered = "\n".join(render_doctor_report(report))
 
     assert report.failed_count == 0
-    assert report.warning_count == 0
+    assert report.warning_count == 0, rendered
     assert "sk-do-not-print" not in rendered
     assert "provider=deepseek" in rendered
     assert "api_key: present" in rendered
     assert "mcp: 1 configured, 1 enabled, 1 tools discovered" in rendered
     assert "demo:ok:tools=1" in rendered
     assert "skills:" in rendered
-    assert "subagents: 3 profiles" in rendered
-    assert "explore:tools=Read,Grep,Glob,LS:denied=6" in rendered
+    assert "subagents: 3 profiles, 3 enabled, 0 disabled" in rendered
+    assert "explore:builtin:enabled:tools=Read,Grep,Glob,LS:denied=6" in rendered
     assert "You are a read-only exploration sub-agent" not in rendered
     assert "hooks: 1 registered, configured=0" in rendered
     assert "tool_manifest_runtime: extension manifest matches runtime-visible tools" in rendered
@@ -346,6 +346,37 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
     tool_environment = next(check for check in report.checks if check.name == "tool_environment")
     assert tool_environment.status is DoctorStatus.OK
     assert tool_environment.message == "shell and git available"
+
+
+def test_doctor_service_reports_configured_subagent_diagnostics(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    profiles = workspace / ".mycli" / "subagents"
+    profiles.mkdir(parents=True)
+    home.mkdir()
+    profiles.joinpath("risky.toml").write_text(
+        "\n".join(
+            [
+                'id = "risky"',
+                'instruction = "Run risky checks."',
+                'allowed_tools = ["Read", "Bash", "MissingTool"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+        import_checker=lambda _module: False,
+    ).run()
+
+    subagents = next(check for check in report.checks if check.name == "subagents")
+    assert subagents.status is DoctorStatus.WARNING
+    assert "4 profiles" in subagents.message
+    assert "high-risk tools" in (subagents.detail or "")
 
 
 def test_doctor_service_reports_configured_hook_diagnostics(tmp_path: Path) -> None:
