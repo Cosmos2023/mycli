@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 SubAgentStatus = str
@@ -46,6 +47,38 @@ class SubAgentBudget:
         ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"Sub-agent {field_name} must be positive.")
+
+
+@dataclass(slots=True, frozen=True)
+class SubAgentContextSnapshot:
+    baseline_fragments: tuple[str, ...] = ()
+    memory_fence: str = ""
+    session_summary: str = ""
+    tool_names: tuple[str, ...] = ()
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "baseline_fragments",
+            tuple(fragment.strip() for fragment in self.baseline_fragments if fragment.strip()),
+        )
+        object.__setattr__(self, "memory_fence", self.memory_fence.strip())
+        object.__setattr__(self, "session_summary", self.session_summary.strip())
+        object.__setattr__(
+            self,
+            "tool_names",
+            tuple(dict.fromkeys(tool.strip() for tool in self.tool_names if tool.strip())),
+        )
+        object.__setattr__(self, "diagnostics", dict(self.diagnostics))
+
+    def has_content(self) -> bool:
+        return bool(
+            self.baseline_fragments
+            or self.memory_fence
+            or self.session_summary
+            or self.tool_names
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -122,6 +155,7 @@ class SubAgentResult:
     child_session_id: str
     tool_calls: int
     error: str | None = None
+    context_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", _non_blank(self.status, "status"))
@@ -132,6 +166,7 @@ class SubAgentResult:
         )
         if self.tool_calls < 0:
             raise ValueError("Sub-agent tool_calls cannot be negative.")
+        object.__setattr__(self, "context_diagnostics", dict(self.context_diagnostics))
 
 
 @dataclass(slots=True, frozen=True)
@@ -147,6 +182,7 @@ class SubAgentRunSummary:
     started_at: str | None = None
     completed_at: str | None = None
     error: str | None = None
+    context_diagnostics: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_result(
@@ -169,11 +205,13 @@ class SubAgentRunSummary:
             started_at=started_at,
             completed_at=completed_at,
             error=result.error,
+            context_diagnostics=dict(result.context_diagnostics),
         )
 
 
 __all__ = [
     "SubAgentBudget",
+    "SubAgentContextSnapshot",
     "SubAgentInvocation",
     "SubAgentMode",
     "SubAgentProfile",

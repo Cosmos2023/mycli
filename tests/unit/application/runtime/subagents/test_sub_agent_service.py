@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from mycli.application.runtime.subagents.service import SubAgentService
-from mycli.domain.runtime import HistoryItem, HistoryItemType
-from mycli.domain.subagents import SubAgentProfile, SubAgentResult
+from mycli.domain.runtime import BaselineFragment, ContextBaseline, HistoryItem, HistoryItemType
+from mycli.domain.runtime.tracing import RuntimeTraceEvent
+from mycli.domain.subagents import SubAgentContextSnapshot, SubAgentProfile, SubAgentResult
 
 
 class FakeLoop:
@@ -73,6 +74,14 @@ class FakeHistorySessionService:
 
     def append_history_items(self, session_id: str, items: tuple[HistoryItem, ...]) -> None:
         self.appended.append((session_id, items))
+
+
+class FakeTraceService:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, RuntimeTraceEvent]] = []
+
+    def append(self, session_id: str, event: RuntimeTraceEvent) -> None:
+        self.events.append((session_id, event))
 
 
 def test_service_resolves_scope_runs_loop_and_wraps_xml() -> None:
@@ -193,6 +202,99 @@ def test_service_uses_injected_profile_lookup() -> None:
     assert result.status == "completed"
     assert loop.calls[0]["profile"].name == "analyst"
     assert loop.calls[0]["tool_names"] == ("Read", "Grep")
+
+
+def test_service_builds_bounded_fork_context_without_parent_transcript_leak() -> None:
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="Configured profile ran.",
+            child_session_id="ignored",
+            tool_calls=1,
+        )
+    )
+    baseline = ContextBaseline(
+        thread_id="demo",
+        fragments=(
+            BaselineFragment(
+                id="developer:1",
+                kind="workspace_instructions",
+                title="Workspace instructions",
+                content="Use pathlib. Do not leak parent transcript.",
+                source="context_file",
+            ),
+        ),
+    )
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read", "Grep", "Bash"),
+        child_loop=loop,
+        context_baseline_provider=lambda: baseline,
+        memory_fence_provider=lambda: "Parent memory: prefers direct reports.",
+        session_summary_provider=lambda: "Parent summary: subagent P1 slice.",
+    )
+
+    result = service.run_task(
+        description="Analyze docs",
+        agent_type="explore",
+        allowed_tools=("Read", "Grep", "Bash"),
+    )
+
+    snapshot = loop.calls[0]["context_snapshot"]
+    assert isinstance(snapshot, SubAgentContextSnapshot)
+    assert snapshot.tool_names == ("Read", "Grep")
+    assert snapshot.baseline_fragments == ("Use pathlib. Do not leak parent transcript.",)
+    assert snapshot.diagnostics["baseline_fragment_count"] == 1
+    assert snapshot.diagnostics["tool_names"] == ["Read", "Grep"]
+    assert snapshot.diagnostics["baseline_content_hash"]
+    assert result.context_diagnostics["tool_count"] == 2
+    assert "Parent memory" not in result.report
+
+
+def test_service_traces_fork_context_diagnostics_without_raw_content() -> None:
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="done",
+            child_session_id="ignored",
+            tool_calls=0,
+        )
+    )
+    trace = FakeTraceService()
+    baseline = ContextBaseline(
+        thread_id="demo",
+        fragments=(
+            BaselineFragment(
+                id="developer:1",
+                kind="workspace_instructions",
+                title="Workspace",
+                content="SECRET_PARENT_CONTEXT_SHOULD_NOT_BE_IN_TRACE",
+            ),
+        ),
+    )
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+        context_baseline_provider=lambda: baseline,
+        trace_service=trace,
+    )
+
+    service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+    )
+
+    assert trace.events[0][0] == "demo"
+    event = trace.events[0][1]
+    assert event.kind == "subagent_context_fork"
+    assert event.turn_id == "turn_1"
+    assert event.payload["baseline_fragment_count"] == 1
+    assert event.payload["tool_names"] == ["Read"]
+    assert "SECRET_PARENT_CONTEXT" not in str(event.payload)
 
 
 def test_service_truncates_long_report_body() -> None:

@@ -29,6 +29,11 @@ class FakeSubAgentService:
             report='<sub-agent-report agent="explore" status="completed">ok</sub-agent-report>',
             child_session_id="demo:sub:turn_1:abcd1234",
             tool_calls=1,
+            context_diagnostics={
+                "baseline_fragment_count": 1,
+                "tool_count": 2,
+                "content_hash": "abc123",
+            },
         )
 
 
@@ -54,7 +59,13 @@ def test_task_tool_delegates_to_bound_service() -> None:
         "child_session_id": "demo:sub:turn_1:abcd1234",
         "status": "completed",
         "tool_calls": 1,
+        "context": {
+            "baseline_fragment_count": 1,
+            "tool_count": 2,
+            "content_hash": "abc123",
+        },
     }
+    assert result.artifacts["context_diagnostics"]["content_hash"] == "abc123"
     assert result.raw_payload["artifacts"]["subagent_report"] == result.raw_payload["report"]
     assert result.raw_payload["content"] == result.raw_payload["report"]
     assert service.calls == [

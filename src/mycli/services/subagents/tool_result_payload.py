@@ -7,6 +7,7 @@ def subagent_tool_artifacts(result: SubAgentResult) -> dict[str, object]:
     return {
         "subagent_report": result.report,
         "child_session_id": result.child_session_id,
+        "context_diagnostics": dict(result.context_diagnostics),
     }
 
 
@@ -25,6 +26,7 @@ def subagent_tool_payload(
             "child_session_id": result.child_session_id,
             "status": result.status,
             "tool_calls": result.tool_calls,
+            "context": dict(result.context_diagnostics),
         },
         "status": result.status,
         "child_session_id": result.child_session_id,

@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
-from mycli.domain.subagents import SubAgentBudget, SubAgentInvocation, SubAgentProfile
+from mycli.domain.subagents import (
+    SubAgentBudget,
+    SubAgentContextSnapshot,
+    SubAgentInvocation,
+    SubAgentProfile,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolResult
 
@@ -55,6 +60,9 @@ class FakeTranscriptRecorder:
 
     def record_system_text(self, text: str) -> None:
         self.events.append(("system", text))
+
+    def record_reference_text(self, text: str, metadata: dict[str, object]) -> None:
+        self.events.append(("reference", (text, metadata)))
 
     def record_user_text(self, text: str) -> None:
         self.events.append(("user", text))
@@ -228,3 +236,44 @@ def test_child_loop_records_transcript_events() -> None:
         "tool_result",
         "final",
     ]
+
+
+def test_child_loop_injects_fork_context_as_reference_before_task() -> None:
+    requester = FakeRequester([FakeTurn(text="Done.")])
+    recorder = FakeTranscriptRecorder()
+    loop = SubAgentChildLoop(requester=requester, executor=FakeExecutor())
+    snapshot = SubAgentContextSnapshot(
+        baseline_fragments=("Workspace rules: stay in repo.",),
+        memory_fence="Known preference: concise reports.",
+        session_summary="Parent is hardening subagent context.",
+        tool_names=("Read", "Grep"),
+        diagnostics={
+            "baseline_fragment_count": 1,
+            "tool_count": 2,
+            "content_hash": "abc123",
+        },
+    )
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=2),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read", "Grep"),
+        context_snapshot=snapshot,
+        transcript=recorder,
+    )
+
+    assert result.status == "completed"
+    messages = requester.seen_messages[0]
+    assert [message["role"] for message in messages] == ["system", "system", "user"]
+    assert "Inherited parent context" in str(messages[1]["content"])
+    assert "not the current user request" in str(messages[1]["content"])
+    assert "Workspace rules: stay in repo." in str(messages[1]["content"])
+    assert messages[2]["content"] == "Find files"
+    assert recorder.events[1][0] == "reference"
+    assert recorder.events[1][1][1]["content_hash"] == "abc123"

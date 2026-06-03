@@ -32,8 +32,8 @@ Work proceeds in this order unless a blocker forces a local prerequisite. Avoid 
 | --- | --- | --- | --- |
 | 1 | Provider / Cache Policy P1 | Done | Turn context cache metadata into provider request-shape behavior. |
 | 2 | Context Budget / Eviction P1 | Done | Manage whole-turn context size, not only conversation compaction. |
-| 3 | Subagent Context Sharing / Fork P1 | Next | Let child agents inherit stable context without polluting parent transcript. |
-| 4 | MCP Usability P1 | Pending | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
+| 3 | Subagent Context Sharing / Fork P1 | Done | Let child agents inherit stable context without polluting parent transcript. |
+| 4 | MCP Usability P1 | Next | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
 | 5 | Real Task Evaluation P1 | Pending | Validate the agent on realistic multi-tool workflows. |
 | 6 | Consolidation / Main Merge Decision | Pending | Run gates, update parity report, and decide whether to merge. |
 
@@ -182,6 +182,28 @@ Append one entry per completed slice.
 - Remaining risks: trimming is deterministic and provider-free, not semantic
   LLM summarization; full provider tokenizer fidelity is still absent.
 - Next recommended slice: Subagent Context Sharing / Fork P1.
+
+### 2026-06-04 - Subagent Context Sharing / Fork P1
+
+- Branch: `feature/mycli-context-management-p1`
+- Commit: this slice commit
+- Changed scope: subagent fork context snapshot domain model, child prompt
+  reference-context injection, child transcript inherited-context rows,
+  parent-bounded context diagnostics, `subagent_context_fork` trace events,
+  Task tool payload diagnostics, and provider-free subagent smoke.
+- Tests:
+  - `uv run pytest tests/unit/application/runtime/subagents/test_child_loop.py tests/unit/application/runtime/subagents/test_sub_agent_service.py tests/unit/tools/test_task_tool.py -q`
+  - `uv run pytest tests/unit/application/test_subagent_tool_lifecycle.py tests/unit/application/test_agent_runtime.py tests/unit/application/test_turn_service_subagents.py tests/unit/services/test_extension_manifest.py tests/unit/services/test_subagent_registry.py tests/unit/services/test_doctor_service.py -q -k 'subagent or manifest or doctor'`
+  - `uv run pytest tests/unit/services/test_request_shape_builder.py tests/unit/services/test_cache_shape_diagnostics.py tests/unit/domain/runtime/test_request_shape.py tests/unit/services/test_request_shape_payload_formatter.py tests/unit/services/test_section_budget.py tests/unit/services/test_turn_context_assembler.py -q`
+  - `uv run ruff check src/mycli/domain/subagents.py src/mycli/application/runtime/subagents src/mycli/application/runtime/agent_runtime.py src/mycli/services/subagents/tool_result_payload.py tests/unit/application/runtime/subagents tests/unit/tools/test_task_tool.py evaluation/subagent_smoke.py`
+- Smoke/evaluation: `uv run python evaluation/subagent_smoke.py`
+- Parity impact: child agents now receive a bounded inherited parent-context
+  reference bundle with stable baseline fragments, optional memory/session
+  fences, selected tool scope, and bounded diagnostics while keeping child
+  transcript independent from parent history.
+- Remaining risks: fork context is deterministic reference transfer, not yet
+  semantic child-specific summarization or provider-level cache controls.
+- Next recommended slice: MCP Usability P1.
 
 Template:
 

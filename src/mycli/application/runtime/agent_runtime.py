@@ -329,6 +329,7 @@ class AgentRuntime:
         self._instruction_contract_assembler = InstructionContractAssembler()
         self._request_shape_builder = RequestShapeBuilder()
         self._request_shape_payload_formatter = RequestShapePayloadFormatter()
+        self._current_context_baseline: ContextBaseline | None = None
         self._tool_exposure_planner = ToolExposurePlanner(tool_registry=self._tool_registry)
         self._contributed_tool_registry = ToolContributionRegistry()
         self._contributed_tool_providers = tuple(contributed_tool_providers)
@@ -419,6 +420,8 @@ class AgentRuntime:
                 workspace_root=config.workspace_root,
                 home_dir=home_dir,
             ).get_profile,
+            context_baseline_provider=self._inherited_subagent_context_baseline,
+            trace_service=self._trace_service,
             session_service=self._session_service,
         )
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
@@ -1525,7 +1528,18 @@ class AgentRuntime:
         self,
         contract: InstructionContract | None,
     ) -> ContextBaseline | None:
-        return self._event_ledger.context_baseline_from_contract(contract)
+        baseline = self._event_ledger.context_baseline_from_contract(contract)
+        if baseline is not None:
+            self._current_context_baseline = baseline
+        return baseline
+
+    def _inherited_subagent_context_baseline(self) -> ContextBaseline | None:
+        if self._current_context_baseline is not None:
+            return self._current_context_baseline
+        snapshot = self._session_service.load_runtime_snapshot(self._config.session_id)
+        if snapshot is None:
+            return None
+        return snapshot.context_baseline
 
     def _model_continuation_state(self) -> object | None:
         getter = getattr(self._model_adapter, "get_continuation_state", None)

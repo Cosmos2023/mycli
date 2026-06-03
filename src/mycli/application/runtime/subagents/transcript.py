@@ -25,6 +25,17 @@ class SubAgentTranscriptRecorder:
     def record_system_text(self, text: str) -> None:
         self._append(HistoryItemType.USER_MESSAGE, text=text, metadata={"role": "system"})
 
+    def record_reference_text(self, text: str, metadata: dict[str, object]) -> None:
+        self._append(
+            HistoryItemType.CONTEXT_BASELINE_UPDATE,
+            text=text,
+            metadata={
+                "role": "system",
+                "reference_kind": "subagent_fork_context",
+                **metadata,
+            },
+        )
+
     def record_user_text(self, text: str) -> None:
         self._append(HistoryItemType.USER_MESSAGE, text=text)
 

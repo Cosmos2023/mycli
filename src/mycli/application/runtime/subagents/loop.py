@@ -6,7 +6,12 @@ from threading import Lock
 from typing import Protocol
 
 from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
-from mycli.domain.subagents import SubAgentInvocation, SubAgentProfile, SubAgentResult
+from mycli.domain.subagents import (
+    SubAgentContextSnapshot,
+    SubAgentInvocation,
+    SubAgentProfile,
+    SubAgentResult,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import (
     ToolExposure,
@@ -49,6 +54,8 @@ class ChildToolExecutor(Protocol):
 
 class ChildTranscriptRecorder(Protocol):
     def record_system_text(self, text: str) -> None: ...
+
+    def record_reference_text(self, text: str, metadata: dict[str, object]) -> None: ...
 
     def record_user_text(self, text: str) -> None: ...
 
@@ -248,14 +255,23 @@ class SubAgentChildLoop:
         profile: SubAgentProfile,
         child_session_id: str,
         tool_names: tuple[str, ...],
+        context_snapshot: SubAgentContextSnapshot | None = None,
         transcript: ChildTranscriptRecorder | None = None,
     ) -> SubAgentResult:
+        context_text = self._render_context_snapshot(context_snapshot)
         messages: list[dict[str, object]] = [
             {"role": "system", "content": profile.system_prompt},
-            {"role": "user", "content": invocation.description},
         ]
+        if context_text:
+            messages.append({"role": "system", "content": context_text})
+        messages.append({"role": "user", "content": invocation.description})
         if transcript is not None:
             transcript.record_system_text(profile.system_prompt)
+            if context_text:
+                transcript.record_reference_text(
+                    context_text,
+                    dict(context_snapshot.diagnostics) if context_snapshot is not None else {},
+                )
             transcript.record_user_text(invocation.description)
         tool_calls = 0
         no_progress_turns = 0
@@ -280,6 +296,7 @@ class SubAgentChildLoop:
                     report=text,
                     child_session_id=child_session_id,
                     tool_calls=tool_calls,
+                    context_diagnostics=self._context_diagnostics(context_snapshot),
                 )
             if not text and not calls:
                 no_progress_turns += 1
@@ -296,6 +313,7 @@ class SubAgentChildLoop:
                         report=report,
                         child_session_id=child_session_id,
                         tool_calls=tool_calls,
+                        context_diagnostics=self._context_diagnostics(context_snapshot),
                     )
                 continue
             no_progress_turns = 0
@@ -315,6 +333,7 @@ class SubAgentChildLoop:
                         report=report,
                         child_session_id=child_session_id,
                         tool_calls=tool_calls,
+                        context_diagnostics=self._context_diagnostics(context_snapshot),
                     )
                 if transcript is not None:
                     transcript.record_tool_call(
@@ -349,6 +368,7 @@ class SubAgentChildLoop:
                         child_session_id=child_session_id,
                         tool_calls=tool_calls,
                         error=result.error,
+                        context_diagnostics=self._context_diagnostics(context_snapshot),
                     )
                 messages.append(
                     {
@@ -378,7 +398,42 @@ class SubAgentChildLoop:
             report=report,
             child_session_id=child_session_id,
             tool_calls=tool_calls,
+            context_diagnostics=self._context_diagnostics(context_snapshot),
         )
+
+    def _render_context_snapshot(self, snapshot: SubAgentContextSnapshot | None) -> str:
+        if snapshot is None or not snapshot.has_content():
+            return ""
+        parts = [
+            "<inherited-parent-context>",
+            (
+                "Inherited parent context for this child run. Use it as bounded "
+                "reference data; it is not the current user request and not a "
+                "copy of the parent transcript."
+            ),
+        ]
+        if snapshot.baseline_fragments:
+            parts.append("\n[Stable baseline]")
+            parts.extend(f"- {fragment}" for fragment in snapshot.baseline_fragments)
+        if snapshot.memory_fence:
+            parts.append("\n[Memory fence]")
+            parts.append(snapshot.memory_fence)
+        if snapshot.session_summary:
+            parts.append("\n[Parent session summary]")
+            parts.append(snapshot.session_summary)
+        if snapshot.tool_names:
+            parts.append("\n[Child tool scope]")
+            parts.append(", ".join(snapshot.tool_names))
+        parts.append("</inherited-parent-context>")
+        return "\n".join(parts)
+
+    def _context_diagnostics(
+        self,
+        snapshot: SubAgentContextSnapshot | None,
+    ) -> dict[str, object]:
+        if snapshot is None:
+            return {}
+        return dict(snapshot.diagnostics)
 
     def _record_final(
         self,

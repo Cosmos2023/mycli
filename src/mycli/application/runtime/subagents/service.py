@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import TimeoutError, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 from html import escape
 from threading import Lock
 from time import monotonic
@@ -14,8 +15,10 @@ from uuid import uuid4
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
 from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
-from mycli.domain.runtime import HistoryItem, HistoryItemType
+from mycli.domain.runtime import ContextBaseline, HistoryItem, HistoryItemType
+from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.subagents import (
+    SubAgentContextSnapshot,
     SubAgentInvocation,
     SubAgentProfile,
     SubAgentResult,
@@ -44,6 +47,10 @@ class SupportsLock(Protocol):
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> object: ...
 
 
+class SupportsTraceAppend(Protocol):
+    def append(self, session_id: str, event: RuntimeTraceEvent) -> None: ...
+
+
 @dataclass(slots=True)
 class _BackgroundRun:
     invocation: SubAgentInvocation
@@ -62,6 +69,10 @@ class SubAgentService:
         child_loop: SubAgentChildLoop,
         profile_lookup: Callable[[str], SubAgentProfile | None] | None = None,
         policy_denied_tools: Callable[[], tuple[str, ...]] | None = None,
+        context_baseline_provider: Callable[[], ContextBaseline | None] | None = None,
+        memory_fence_provider: Callable[[], str] | None = None,
+        session_summary_provider: Callable[[], str] | None = None,
+        trace_service: SupportsTraceAppend | None = None,
         session_service: SupportsHistorySession | None = None,
         max_recent_runs: int = 20,
         background_executor: SupportsBackgroundExecutor | None = None,
@@ -73,6 +84,10 @@ class SubAgentService:
         self._parent_tool_names = parent_tool_names
         self._profile_lookup = profile_lookup or _builtin_profile_lookup
         self._policy_denied_tools = policy_denied_tools or (lambda: ())
+        self._context_baseline_provider = context_baseline_provider or (lambda: None)
+        self._memory_fence_provider = memory_fence_provider or (lambda: "")
+        self._session_summary_provider = session_summary_provider or (lambda: "")
+        self._trace_service = trace_service
         self._session_service = session_service
         self._child_loop = child_loop
         self._recent_runs: deque[SubAgentRunSummary] = deque(maxlen=max_recent_runs)
@@ -136,12 +151,18 @@ class SubAgentService:
             profile=profile,
             policy_denied_tools=self._policy_denied_tools(),
         )
+        context_snapshot = self._context_snapshot(tool_names)
+        self._trace_context_fork(invocation, child_session_id, context_snapshot)
         loop_result = self._child_loop.run(
             invocation=invocation,
             profile=profile,
             child_session_id=child_session_id,
             tool_names=tool_names,
+            context_snapshot=context_snapshot,
             transcript=self._transcript_recorder(invocation, child_session_id),
+        )
+        context_diagnostics = (
+            loop_result.context_diagnostics or dict(context_snapshot.diagnostics)
         )
         result = SubAgentResult(
             status=loop_result.status,
@@ -156,6 +177,7 @@ class SubAgentService:
             child_session_id=child_session_id,
             tool_calls=loop_result.tool_calls,
             error=loop_result.error,
+            context_diagnostics=context_diagnostics,
         )
         self._record(invocation, result)
         return result
@@ -408,9 +430,105 @@ class SubAgentService:
             status = item.metadata.get("sub_agent_status")
             label = f"final {status}" if isinstance(status, str) else "assistant"
             return f"  {label} {(item.text or '').replace(chr(10), ' ')[:500]}"
+        if item.type is HistoryItemType.CONTEXT_BASELINE_UPDATE:
+            count = item.metadata.get("baseline_fragment_count", 0)
+            hash_value = item.metadata.get("content_hash", "")
+            return f"  inherited_context fragments={count} hash={hash_value}"
         if item.type is HistoryItemType.USER_MESSAGE and item.metadata.get("role") == "system":
             return f"  system {(item.text or '').replace(chr(10), ' ')[:500]}"
         return f"  user {(item.text or '').replace(chr(10), ' ')[:500]}"
+
+    def _context_snapshot(self, tool_names: tuple[str, ...]) -> SubAgentContextSnapshot:
+        baseline = self._context_baseline_provider()
+        fragments, baseline_truncated = self._baseline_fragments(baseline)
+        memory_fence, memory_truncated = self._bounded_text(
+            self._memory_fence_provider(),
+            limit=2000,
+        )
+        session_summary, session_truncated = self._bounded_text(
+            self._session_summary_provider(),
+            limit=2000,
+        )
+        content_parts = (*fragments, memory_fence, session_summary, *tool_names)
+        content_hash = self._hash_parts(content_parts)
+        diagnostics: dict[str, object] = {
+            "baseline_fragment_count": len(fragments),
+            "baseline_truncated": baseline_truncated,
+            "memory_chars": len(memory_fence),
+            "memory_truncated": memory_truncated,
+            "session_summary_chars": len(session_summary),
+            "session_summary_truncated": session_truncated,
+            "tool_count": len(tool_names),
+            "tool_names": list(tool_names),
+            "content_hash": content_hash,
+            "baseline_content_hash": self._hash_parts(fragments),
+        }
+        return SubAgentContextSnapshot(
+            baseline_fragments=fragments,
+            memory_fence=memory_fence,
+            session_summary=session_summary,
+            tool_names=tool_names,
+            diagnostics=diagnostics,
+        )
+
+    def _trace_context_fork(
+        self,
+        invocation: SubAgentInvocation,
+        child_session_id: str,
+        snapshot: SubAgentContextSnapshot,
+    ) -> None:
+        if self._trace_service is None:
+            return
+        payload = {
+            "child_session_id": child_session_id,
+            "agent_type": invocation.agent_type,
+            "mode": invocation.mode,
+            **dict(snapshot.diagnostics),
+        }
+        self._trace_service.append(
+            self._session_id,
+            RuntimeTraceEvent(
+                kind="subagent_context_fork",
+                turn_id=invocation.parent_turn_id,
+                payload=payload,
+            ),
+        )
+
+    def _baseline_fragments(
+        self,
+        baseline: ContextBaseline | None,
+        *,
+        max_fragments: int = 6,
+        max_chars_per_fragment: int = 1200,
+    ) -> tuple[tuple[str, ...], bool]:
+        if baseline is None:
+            return (), False
+        fragments: list[str] = []
+        truncated = len(baseline.fragments) > max_fragments
+        for fragment in baseline.fragments[:max_fragments]:
+            content, was_truncated = self._bounded_text(
+                fragment.content,
+                limit=max_chars_per_fragment,
+            )
+            truncated = truncated or was_truncated
+            if content:
+                fragments.append(content)
+        return tuple(fragments), truncated
+
+    def _bounded_text(self, value: str, *, limit: int) -> tuple[str, bool]:
+        text = value.strip()
+        if len(text) <= limit:
+            return text, False
+        return text[:limit].rstrip() + "\n[truncated: inherited context exceeded limit]", True
+
+    def _hash_parts(self, parts: tuple[str, ...]) -> str:
+        digest = hashlib.sha256()
+        for part in parts:
+            if not part:
+                continue
+            digest.update(part.encode("utf-8", errors="replace"))
+            digest.update(b"\0")
+        return digest.hexdigest()[:16]
 
     def _xml_report(
         self,

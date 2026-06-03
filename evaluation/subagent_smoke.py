@@ -8,7 +8,7 @@ import tempfile
 from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.cli.main import handle_subagents_command
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState
+from mycli.domain.runtime import BaselineFragment, ContextBaseline, PlanState
 from mycli.domain.subagents import SubAgentResult
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
 from mycli.services.extensions import ExtensionManifestService
@@ -70,6 +70,20 @@ def main() -> int:
             parent_tool_names=lambda: ("Read", "Grep", "Bash", "Task"),
             child_loop=loop,
             profile_lookup=registry.get_profile,
+            context_baseline_provider=lambda: ContextBaseline(
+                thread_id="smoke",
+                fragments=(
+                    BaselineFragment(
+                        id="developer:1",
+                        kind="workspace_instructions",
+                        title="Workspace",
+                        content="Use repo-local docs and keep reports concise.",
+                        source="smoke",
+                    ),
+                ),
+            ),
+            memory_fence_provider=lambda: "Preference: cite inspected files.",
+            session_summary_provider=lambda: "Parent session is evaluating subagent fork context.",
         )
         task_result = TaskTool(service=service).execute(
             {
@@ -116,6 +130,8 @@ def main() -> int:
                     and task_result.success is True
                     and disabled_result.success is False
                     and loop.calls[0]["tool_names"] == ("Read", "Grep")
+                    and loop.calls[0]["context_snapshot"].diagnostics["tool_count"] == 2
+                    and task_result.raw_payload["trace"]["context"]["baseline_fragment_count"] == 1
                     and tools["subagent.analyst"]["source"] == "subagent"
                     and tools["subagent.analyst"]["risk_level"] == "medium"
                     and subagent_check.status is DoctorStatus.OK
@@ -128,6 +144,7 @@ def main() -> int:
                     "task_summary": task_result.summary,
                     "disabled_success": disabled_result.success,
                     "tool_names": loop.calls[0]["tool_names"],
+                    "context_diagnostics": task_result.raw_payload["trace"]["context"],
                     "manifest_source": tools["subagent.analyst"]["source"],
                     "doctor_status": subagent_check.status.value,
                     "doctor_message": subagent_check.message,
