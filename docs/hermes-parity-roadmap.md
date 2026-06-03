@@ -31,8 +31,8 @@ Work proceeds in this order unless a blocker forces a local prerequisite. Avoid 
 | Order | Slice | Status | Purpose |
 | --- | --- | --- | --- |
 | 1 | Provider / Cache Policy P1 | Done | Turn context cache metadata into provider request-shape behavior. |
-| 2 | Context Budget / Eviction P1 | Next | Manage whole-turn context size, not only conversation compaction. |
-| 3 | Subagent Context Sharing / Fork P1 | Pending | Let child agents inherit stable context without polluting parent transcript. |
+| 2 | Context Budget / Eviction P1 | Done | Manage whole-turn context size, not only conversation compaction. |
+| 3 | Subagent Context Sharing / Fork P1 | Next | Let child agents inherit stable context without polluting parent transcript. |
 | 4 | MCP Usability P1 | Pending | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
 | 5 | Real Task Evaluation P1 | Pending | Validate the agent on realistic multi-tool workflows. |
 | 6 | Consolidation / Main Merge Decision | Pending | Run gates, update parity report, and decide whether to merge. |
@@ -163,6 +163,25 @@ Append one entry per completed slice.
 - Remaining risks: provider-specific paid prompt-cache controls are still not
   implemented; context over-budget eviction remains the next slice.
 - Next recommended slice: Context Budget / Eviction P1.
+
+### 2026-06-04 - Context Budget / Eviction P1
+
+- Branch: `feature/mycli-context-management-p1`
+- Commit: this slice commit
+- Changed scope: section-level turn context budgeter, runtime context assembly
+  trimming, context budget trace diagnostics, doctor context-budget summary, and
+  provider-free oversized-context smoke.
+- Tests:
+  - `uv run pytest tests/unit/services/test_section_budget.py tests/unit/services/test_turn_context_assembler.py tests/unit/services/test_request_shape_builder.py tests/unit/services/test_cache_shape_diagnostics.py tests/unit/domain/runtime/test_request_shape.py tests/unit/services/test_request_shape_payload_formatter.py -q`
+  - `uv run pytest tests/unit/application/test_agent_runtime.py -q -k 'request_shape or cache_shape_diagnostic or context_budget'`
+  - `uv run pytest tests/unit/services/test_doctor_service.py -q`
+- Smoke/evaluation: `uv run python evaluation/context_smoke.py`
+- Parity impact: oversized workspace/memory/conversation/rehydration sections are
+  now trimmed before provider request construction, while current user request,
+  tool exposure, and base instructions stay preserved.
+- Remaining risks: trimming is deterministic and provider-free, not semantic
+  LLM summarization; full provider tokenizer fidelity is still absent.
+- Next recommended slice: Subagent Context Sharing / Fork P1.
 
 Template:
 

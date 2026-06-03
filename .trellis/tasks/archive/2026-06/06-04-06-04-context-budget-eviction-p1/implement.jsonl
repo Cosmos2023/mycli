@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Defines context section metadata, cache classes, bounded diagnostics, and provider-free smoke requirements."}
+{"file": "docs/hermes-parity-roadmap.md", "reason": "Roadmap source of truth for Context Budget / Eviction P1 scope and acceptance."}
+{"file": ".trellis/tasks/06-04-06-04-context-budget-eviction-p1/prd.md", "reason": "Current slice requirements and acceptance criteria."}
+{"file": ".trellis/tasks/06-04-06-04-context-budget-eviction-p1/notes.md", "reason": "Research notes from existing context budget/compaction implementation."}

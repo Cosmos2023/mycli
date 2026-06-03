@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from dataclasses import replace
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.domain.conversation import Conversation, Message
@@ -3023,6 +3024,36 @@ def test_agent_runtime_traces_cache_shape_diagnostic_from_provider_usage(
     assert snapshot.cache_miss_tokens == 400
     assert snapshot.cache_hit_rate == 2000 / 2400
     assert snapshot.budget_curve
+
+
+def test_agent_runtime_traces_context_budget_trimming_for_oversized_context(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".mycli.md").write_text("workspace " * 2000, encoding="utf-8")
+    adapter = UsageMetadataAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._config = replace(runtime._config, max_prompt_tokens=350)
+
+    runtime.handle_user_turn("inspect oversized context")
+
+    loaded = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    diagnostics = [
+        event for event in loaded if event.kind == "context_budget_diagnostic"
+    ]
+
+    assert diagnostics
+    payload = diagnostics[-1].payload
+    assert payload["before_tokens"] > payload["after_tokens"]
+    assert payload["trimmed_section_count"] >= 1
+    assert payload["estimated_saved_tokens"] > 0
+    assert any(
+        item["section_type"] == "workspace_instructions"
+        for item in payload["trimmed_sections"]
+    )
 
 
 def test_agent_runtime_records_provider_input_tokens_for_budget_curve(

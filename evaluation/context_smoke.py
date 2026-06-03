@@ -9,7 +9,7 @@ from mycli.domain.memory import MemoryKind, MemoryRecord
 from mycli.domain.runtime import AgentConfig, ExecutionContext, PlanState
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.memory.service import MemoryService
-from mycli.services.context import ContextFileLoader, TurnContextAssembler
+from mycli.services.context import ContextFileLoader, TurnContextAssembler, TurnContextBudgeter
 from mycli.services.diagnostics.doctor import DoctorService
 from mycli.services.tracing import TraceService
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
@@ -74,6 +74,32 @@ def main() -> int:
             context=context,
             workspace_instructions=loaded.content,
         )
+        oversized_context = ExecutionContext(
+            config=AgentConfig(
+                workspace_root=workspace,
+                session_id="context-smoke",
+                max_prompt_tokens=120,
+            ),
+            memory_records=(
+                MemoryRecord(
+                    kind=MemoryKind.PROJECT_NOTE,
+                    key="oversized",
+                    value="memory detail " * 400,
+                ),
+            ),
+            context_file_content="workspace detail " * 400,
+            context_file_diagnostics=loaded.diagnostics.to_dict(),
+            plan_state=PlanState(),
+        )
+        oversized_turn_context = TurnContextAssembler().assemble(
+            user_message="keep this exact request",
+            context=oversized_context,
+            workspace_instructions=oversized_context.context_file_content,
+        )
+        trimmed_turn_context, budget_diagnostic = TurnContextBudgeter().apply(
+            turn_context=oversized_turn_context,
+            max_tokens=oversized_context.config.max_prompt_tokens,
+        )
         trace = TraceService(home)
         trace.append(
             "context-smoke",
@@ -100,6 +126,14 @@ def main() -> int:
                 },
             ),
         )
+        trace.append(
+            "context-smoke",
+            RuntimeTraceEvent(
+                kind="context_budget_diagnostic",
+                turn_id="turn_1",
+                payload=budget_diagnostic.to_dict(),
+            ),
+        )
         report = DoctorService(
             workspace_root=workspace,
             home_dir=home,
@@ -116,6 +150,11 @@ def main() -> int:
         memory_section = next(
             section for section in turn_context.sections if section.type.value == "memory"
         )
+        trimmed_user_request = next(
+            section
+            for section in trimmed_turn_context.sections
+            if section.type.value == "user_request"
+        )
         payload = {
             "scenario": "context-smoke",
             "timestamp": timestamp,
@@ -126,6 +165,11 @@ def main() -> int:
             "memory_cache_class": memory_section.cache_class.value,
             "doctor_context_status": context_check.status.value,
             "doctor_context_message": context_check.message,
+            "budget_trimmed_section_count": budget_diagnostic.trimmed_section_count,
+            "budget_saved_tokens": budget_diagnostic.estimated_saved_tokens,
+            "trimmed_user_request_preserved": (
+                trimmed_user_request.content == "Current user request: keep this exact request"
+            ),
         }
         ok = (
             payload["selected_source"] == ".mycli"
@@ -135,6 +179,10 @@ def main() -> int:
             and payload["memory_cache_class"] == "dynamic"
             and payload["doctor_context_status"] == "ok"
             and "context_trace_rows=1" in context_check.message
+            and payload["budget_trimmed_section_count"] >= 1
+            and payload["budget_saved_tokens"] > 0
+            and payload["trimmed_user_request_preserved"] is True
+            and "context_budget_rows=1" in context_check.message
         )
         payload["ok"] = ok
         output_dir = Path(__file__).resolve().parent / "runs"

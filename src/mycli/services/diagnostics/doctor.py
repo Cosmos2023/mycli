@@ -171,11 +171,14 @@ class _TurnInterruptDiagnosticsSummary:
 class _ContextDiagnosticsSummary:
     context_count: int
     cache_shape_count: int
+    budget_count: int
     summary_persistence_count: int
     blocked_count: int
     truncated_count: int
     max_estimated_context_tokens: int
     max_estimated_cacheable_prefix_tokens: int
+    max_estimated_budget_saved_tokens: int
+    trimmed_context_section_count: int
     missing_cache_metadata_count: int
     persisted_summary_count: int
     duplicate_summary_count: int
@@ -1008,6 +1011,7 @@ class DoctorService:
             f"session_summaries={summary_count} "
             f"context_trace_rows={trace_summary.context_count} "
             f"cache_shape_rows={trace_summary.cache_shape_count} "
+            f"context_budget_rows={trace_summary.budget_count} "
             f"summary_persisted={trace_summary.persisted_summary_count}"
         )
         detail_parts = [
@@ -1017,6 +1021,11 @@ class DoctorService:
                 "max_estimated_cacheable_prefix_tokens="
                 f"{trace_summary.max_estimated_cacheable_prefix_tokens}"
             ),
+            (
+                "max_estimated_budget_saved_tokens="
+                f"{trace_summary.max_estimated_budget_saved_tokens}"
+            ),
+            f"trimmed_context_sections={trace_summary.trimmed_context_section_count}",
             f"missing_cache_metadata={trace_summary.missing_cache_metadata_count}",
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
@@ -1984,11 +1993,14 @@ def _summarize_context_diagnostics(
 ) -> _ContextDiagnosticsSummary:
     context_count = 0
     cache_shape_count = 0
+    budget_count = 0
     summary_persistence_count = 0
     blocked_count = 0
     truncated_count = 0
     max_estimated_context_tokens = 0
     max_estimated_cacheable_prefix_tokens = 0
+    max_estimated_budget_saved_tokens = 0
+    trimmed_context_section_count = 0
     missing_cache_metadata_count = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
@@ -2041,6 +2053,20 @@ def _summarize_context_diagnostics(
                                 missing_cache_metadata_count += 1
                         else:
                             missing_cache_metadata_count += 1
+                    elif event.kind == "context_budget_diagnostic":
+                        budget_count += 1
+                        saved_tokens = _optional_non_negative_int(
+                            event.payload.get("estimated_saved_tokens")
+                        )
+                        if saved_tokens is not None:
+                            max_estimated_budget_saved_tokens = max(
+                                max_estimated_budget_saved_tokens,
+                                saved_tokens,
+                            )
+                        trimmed_count = _optional_non_negative_int(
+                            event.payload.get("trimmed_section_count")
+                        )
+                        trimmed_context_section_count += trimmed_count or 0
                     elif event.kind == "context_summary_persistence":
                         summary_persistence_count += 1
                         persisted = _optional_non_negative_int(
@@ -2057,11 +2083,14 @@ def _summarize_context_diagnostics(
     return _ContextDiagnosticsSummary(
         context_count=context_count,
         cache_shape_count=cache_shape_count,
+        budget_count=budget_count,
         summary_persistence_count=summary_persistence_count,
         blocked_count=blocked_count,
         truncated_count=truncated_count,
         max_estimated_context_tokens=max_estimated_context_tokens,
         max_estimated_cacheable_prefix_tokens=max_estimated_cacheable_prefix_tokens,
+        max_estimated_budget_saved_tokens=max_estimated_budget_saved_tokens,
+        trimmed_context_section_count=trimmed_context_section_count,
         missing_cache_metadata_count=missing_cache_metadata_count,
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,

@@ -5,6 +5,11 @@ from mycli.services.context.context_files import (
     LoadedContextFile,
 )
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
+from mycli.services.context.section_budget import (
+    SectionBudgetDiagnostic,
+    SectionBudgetTrim,
+    TurnContextBudgeter,
+)
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 
@@ -15,6 +20,9 @@ __all__ = [
     "InstructionContractAssembler",
     "LoadedContextFile",
     "ManagedContext",
+    "SectionBudgetDiagnostic",
+    "SectionBudgetTrim",
     "TokenCounter",
     "TurnContextAssembler",
+    "TurnContextBudgeter",
 ]

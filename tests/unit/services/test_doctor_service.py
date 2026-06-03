@@ -3369,6 +3369,30 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "kind": "context_budget_diagnostic",
+                        "turn_id": "turn_1",
+                        "payload": {
+                            "target_tokens": 1000,
+                            "before_tokens": 1500,
+                            "after_tokens": 900,
+                            "remaining_tokens": 100,
+                            "trimmed_section_count": 2,
+                            "estimated_saved_tokens": 600,
+                            "trimmed_sections": [
+                                {
+                                    "section_type": "memory",
+                                    "reason": "memory_over_budget",
+                                    "original_chars": 1000,
+                                    "trimmed_chars": 300,
+                                    "original_tokens": 250,
+                                    "trimmed_tokens": 75,
+                                }
+                            ],
+                        },
+                    }
+                ),
             )
         ),
         encoding="utf-8",
@@ -3388,9 +3412,12 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
     assert "context source=.mycli" in check.message
     assert "context_trace_rows=1" in check.message
     assert "cache_shape_rows=1" in check.message
+    assert "context_budget_rows=1" in check.message
     assert "summary_persisted=2" in check.message
     assert "max_estimated_context_tokens=123" in str(check.detail)
     assert "max_estimated_cacheable_prefix_tokens=456" in str(check.detail)
+    assert "max_estimated_budget_saved_tokens=600" in str(check.detail)
+    assert "trimmed_context_sections=2" in str(check.detail)
     assert "missing_cache_metadata=0" in str(check.detail)
     assert "summary_duplicates_skipped=1" in str(check.detail)
     assert "Project context safe text" not in rendered

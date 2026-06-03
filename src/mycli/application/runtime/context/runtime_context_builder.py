@@ -7,15 +7,18 @@ from mycli.domain.runtime import (
     CompactionRehydrationContext,
     ExecutionContext,
     PlanState,
+    RuntimeTraceEvent,
     TurnContext,
 )
 from mycli.domain.tooling.exposure import ToolExposure
 from mycli.memory.service import MemoryService
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.context_files import ContextFileLoader
+from mycli.services.context.section_budget import TurnContextBudgeter
 from mycli.services.context.skill_catalog import render_skill_catalog
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.services.skills import SkillRegistry
+from mycli.services.tracing import TraceService
 from mycli.state.session_service import SessionService
 from mycli.tools.registry import ToolRegistry
 from mycli.utils.workspace_logger import WorkspaceLogService
@@ -34,6 +37,8 @@ class RuntimeContextBuilder:
         tool_registry: ToolRegistry,
         workspace_log_service: WorkspaceLogService,
         context_file_loader: ContextFileLoader | None = None,
+        trace_service: TraceService | None = None,
+        turn_context_budgeter: TurnContextBudgeter | None = None,
     ) -> None:
         self._config = config
         self._session_service = session_service
@@ -44,6 +49,8 @@ class RuntimeContextBuilder:
         self._tool_registry = tool_registry
         self._workspace_log_service = workspace_log_service
         self._context_file_loader = context_file_loader or ContextFileLoader()
+        self._trace_service = trace_service
+        self._turn_context_budgeter = turn_context_budgeter or TurnContextBudgeter()
 
     def set_config(self, config: AgentConfig) -> None:
         self._config = config
@@ -105,6 +112,7 @@ class RuntimeContextBuilder:
     def assemble_turn_context(
         self,
         *,
+        turn_id: str,
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
@@ -125,6 +133,10 @@ class RuntimeContextBuilder:
             context=context,
             workspace_instructions=context.context_file_content or None,
         )
+        turn_context, budget_diagnostic = self._turn_context_budgeter.apply(
+            turn_context=turn_context,
+            max_tokens=self._config.max_prompt_tokens,
+        )
         summary = turn_context.debug_summary()
         self._workspace_log_service.log(
             level=LogLevel.INFO,
@@ -136,6 +148,21 @@ class RuntimeContextBuilder:
                 "section_order": summary["section_order"],
                 "cache_classes": summary["cache_classes"],
                 "context_file": context.context_file_diagnostics,
+                "budget": {
+                    "target_tokens": budget_diagnostic.target_tokens,
+                    "before_tokens": budget_diagnostic.before_tokens,
+                    "after_tokens": budget_diagnostic.after_tokens,
+                    "trimmed_section_count": budget_diagnostic.trimmed_section_count,
+                },
             },
         )
+        if self._trace_service is not None:
+            self._trace_service.append(
+                self._config.session_id,
+                RuntimeTraceEvent(
+                    kind="context_budget_diagnostic",
+                    turn_id=turn_id,
+                    payload=budget_diagnostic.to_dict(),
+                ),
+            )
         return context, turn_context

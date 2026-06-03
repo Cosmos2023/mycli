@@ -476,6 +476,7 @@ class AgentRuntime:
             skill_registry=self._skill_registry,
             tool_registry=self._tool_registry,
             workspace_log_service=self._workspace_log_service,
+            trace_service=self._trace_service,
         )
         self._recover_plan_mode_anchor()
         self._closed = False
@@ -676,6 +677,7 @@ class AgentRuntime:
     ) -> tuple[ExecutionContext, TurnContext]:
         self._runtime_context_builder.set_config(self._config)
         return self._runtime_context_builder.assemble_turn_context(
+            turn_id=getattr(self, "_current_turn_id", "turn_unknown"),
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
