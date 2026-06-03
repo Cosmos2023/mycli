@@ -74,6 +74,49 @@ class EvaluationCheckResult:
 
 
 @dataclass(slots=True, frozen=True)
+class EvaluationToolTimelineEntry:
+    turn_id: str
+    event_type: str
+    tool_name: str | None = None
+    text: str | None = None
+    call_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class EvaluationApprovalSummary:
+    turn_id: str
+    event_type: str
+    tool_name: str | None = None
+    text: str | None = None
+    call_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class EvaluationContextDiagnostic:
+    turn_id: str
+    event_type: str
+    text: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class EvaluationFailure:
+    kind: str
+    name: str
+    detail: str
+    turn_id: str | None = None
+    tool_name: str | None = None
+    call_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class EvaluationScore:
+    value: int
+    passed_checks: int
+    total_checks: int
+    failure_count: int
+
+
+@dataclass(slots=True, frozen=True)
 class EvaluationRunReport:
     scenario_id: str
     scenario_title: str
@@ -85,11 +128,137 @@ class EvaluationRunReport:
     def failed_checks(self) -> tuple[EvaluationCheckResult, ...]:
         return tuple(check for check in self.checks if not check.passed)
 
+    @property
+    def final_answer(self) -> str:
+        for result in reversed(self.turn_results):
+            if result.assistant_message.strip():
+                return result.assistant_message
+        return ""
+
+    @property
+    def tool_timeline(self) -> tuple[EvaluationToolTimelineEntry, ...]:
+        entries: list[EvaluationToolTimelineEntry] = []
+        for result in self.turn_results:
+            for event in result.tool_events:
+                entries.append(
+                    EvaluationToolTimelineEntry(
+                        turn_id=result.turn_id,
+                        event_type=event.event_type,
+                        tool_name=event.tool_name,
+                        text=event.text,
+                        call_id=event.call_id,
+                    )
+                )
+        return tuple(entries)
+
+    @property
+    def approvals(self) -> tuple[EvaluationApprovalSummary, ...]:
+        approvals: list[EvaluationApprovalSummary] = []
+        for result in self.turn_results:
+            for event in result.timeline:
+                if event.event_type not in _APPROVAL_EVENT_TYPES:
+                    continue
+                approvals.append(
+                    EvaluationApprovalSummary(
+                        turn_id=result.turn_id,
+                        event_type=event.event_type,
+                        tool_name=event.tool_name,
+                        text=event.text,
+                        call_id=event.call_id,
+                    )
+                )
+        return tuple(approvals)
+
+    @property
+    def context_diagnostics(self) -> tuple[EvaluationContextDiagnostic, ...]:
+        diagnostics: list[EvaluationContextDiagnostic] = []
+        for result in self.turn_results:
+            for event in result.timeline:
+                if event.event_type not in _CONTEXT_DIAGNOSTIC_EVENT_TYPES:
+                    continue
+                diagnostics.append(
+                    EvaluationContextDiagnostic(
+                        turn_id=result.turn_id,
+                        event_type=event.event_type,
+                        text=event.text,
+                    )
+                )
+        return tuple(diagnostics)
+
+    @property
+    def failures(self) -> tuple[EvaluationFailure, ...]:
+        return _derive_failures(self.turn_results, self.checks)
+
+    @property
+    def score(self) -> EvaluationScore:
+        passed_checks = sum(1 for check in self.checks if check.passed)
+        total_checks = len(self.checks)
+        if total_checks:
+            value = round((passed_checks / total_checks) * 100)
+        else:
+            value = 100
+        failures = self.failures
+        if failures:
+            value = max(0, value - _runtime_failure_penalty(failures))
+        return EvaluationScore(
+            value=value,
+            passed_checks=passed_checks,
+            total_checks=total_checks,
+            failure_count=len(failures),
+        )
+
     def to_dict(self) -> dict[str, object]:
+        score = self.score
         return {
             "scenario_id": self.scenario_id,
             "scenario_title": self.scenario_title,
             "workspace_root": str(self.workspace_root),
+            "final_answer": self.final_answer,
+            "tool_timeline": [
+                {
+                    "turn_id": event.turn_id,
+                    "event_type": event.event_type,
+                    "tool_name": event.tool_name,
+                    "text": event.text,
+                    "call_id": event.call_id,
+                }
+                for event in self.tool_timeline
+            ],
+            "approvals": [
+                {
+                    "turn_id": event.turn_id,
+                    "event_type": event.event_type,
+                    "tool_name": event.tool_name,
+                    "text": event.text,
+                    "call_id": event.call_id,
+                }
+                for event in self.approvals
+            ],
+            "context_diagnostics": [
+                {
+                    "turn_id": event.turn_id,
+                    "event_type": event.event_type,
+                    "text": event.text,
+                }
+                for event in self.context_diagnostics
+            ],
+            "failures": [
+                {
+                    "kind": failure.kind,
+                    "name": failure.name,
+                    "detail": failure.detail,
+                    "turn_id": failure.turn_id,
+                    "tool_name": failure.tool_name,
+                    "call_id": failure.call_id,
+                }
+                for failure in self.failures
+            ],
+            "score": {
+                "value": score.value,
+                "passed_checks": score.passed_checks,
+                "total_checks": score.total_checks,
+                "failure_count": score.failure_count,
+            },
             "turn_results": [
                 {
                     "turn_id": result.turn_id,
@@ -477,15 +646,26 @@ def run_deterministic_checks(
 
 
 def render_evaluation_report(report: EvaluationRunReport) -> list[str]:
+    score = report.score
+    final_preview = _preview_text(report.final_answer, limit=160)
     lines = [
         f"[eval] scenario: {report.scenario_id}",
         f"[eval] title: {report.scenario_title}",
         f"[eval] workspace: {report.workspace_root}",
         f"[eval] turns: {len(report.turn_results)}",
+        f"[eval] score: {score.value}/100",
+        f"[eval] final_answer: {final_preview or '(empty)'}",
+        f"[eval] tool_timeline: {len(report.tool_timeline)} events",
+        f"[eval] approvals: {len(report.approvals)} events",
+        f"[eval] context_diagnostics: {len(report.context_diagnostics)} events",
+        f"[eval] failures: {len(report.failures)}",
     ]
     passed = sum(1 for check in report.checks if check.passed)
     failed = len(report.checks) - passed
     lines.append(f"[eval] checks: {passed} passed, {failed} failed")
+    for failure in report.failures:
+        location = f" turn={failure.turn_id}" if failure.turn_id else ""
+        lines.append(f"[eval] FAILURE {failure.kind}:{failure.name}{location}: {failure.detail}")
     for check in report.checks:
         status = "PASS" if check.passed else "FAIL"
         lines.append(f"[eval] {status} {check.name}: {check.detail}")
@@ -855,6 +1035,135 @@ def _extract_turn_stop_reason(turn: object) -> str | None:
     if not isinstance(turn, TurnRecord) or turn.stop_reason is None:
         return None
     return turn.stop_reason.value
+
+
+_APPROVAL_EVENT_TYPES = frozenset(
+    {
+        TurnItemType.APPROVAL_REQUEST.value,
+        TurnItemType.APPROVAL_RESOLUTION.value,
+        "approval_allowance",
+        "approval_auto_allowed",
+        "approval_resolution",
+    }
+)
+
+_CONTEXT_DIAGNOSTIC_EVENT_TYPES = frozenset(
+    {
+        "context_diagnostics",
+        "cache_shape_diagnostic",
+        "context_budget_diagnostic",
+        "subagent_context_fork",
+    }
+)
+
+_FAILED_TURN_STATUSES = frozenset(
+    {
+        "failed",
+        "interrupted",
+        "rejected",
+    }
+)
+
+_FAILED_STOP_REASONS = frozenset(
+    {
+        "runtime_error",
+        "model_error",
+        "context_window_exceeded",
+        "retry_exhausted",
+        "transport_failed",
+        "auth_failed",
+        "rate_limited",
+        "approval_rejected",
+    }
+)
+
+_TOOL_FAILURE_MARKERS = frozenset(
+    {
+        "failed",
+        "failure",
+        "error",
+        "denied",
+        "rejected",
+        "approval_required",
+        "not_git_repository",
+        "validation",
+        "timeout",
+        "失败",
+        "错误",
+        "拒绝",
+    }
+)
+
+
+def _derive_failures(
+    turn_results: tuple[EvaluationTurnResult, ...],
+    checks: tuple[EvaluationCheckResult, ...],
+) -> tuple[EvaluationFailure, ...]:
+    failures: list[EvaluationFailure] = []
+    for check in checks:
+        if not check.passed:
+            failures.append(
+                EvaluationFailure(
+                    kind="check",
+                    name=check.name,
+                    detail=check.detail,
+                )
+            )
+    for result in turn_results:
+        if result.turn_status in _FAILED_TURN_STATUSES:
+            failures.append(
+                EvaluationFailure(
+                    kind="turn",
+                    name=result.turn_status or "unknown_status",
+                    detail=f"Turn ended with status `{result.turn_status}`",
+                    turn_id=result.turn_id,
+                )
+            )
+        if result.stop_reason in _FAILED_STOP_REASONS:
+            failures.append(
+                EvaluationFailure(
+                    kind="turn_stop",
+                    name=result.stop_reason or "unknown_stop_reason",
+                    detail=f"Turn stopped because `{result.stop_reason}`",
+                    turn_id=result.turn_id,
+                )
+            )
+        for event in result.tool_events:
+            if event.event_type != TurnItemType.TOOL_RESULT.value:
+                continue
+            text = event.text or ""
+            lowered = text.lower()
+            if not any(marker in lowered for marker in _TOOL_FAILURE_MARKERS):
+                continue
+            failures.append(
+                EvaluationFailure(
+                    kind="tool",
+                    name=event.tool_name or "unknown_tool",
+                    detail=_preview_text(text, limit=240),
+                    turn_id=result.turn_id,
+                    tool_name=event.tool_name,
+                    call_id=event.call_id,
+                )
+            )
+    return tuple(failures)
+
+
+def _runtime_failure_penalty(failures: tuple[EvaluationFailure, ...]) -> int:
+    penalty = 0
+    for failure in failures:
+        if failure.kind == "check":
+            continue
+        penalty += 10
+    return min(50, penalty)
+
+
+def _preview_text(text: str | None, *, limit: int) -> str:
+    if not text:
+        return ""
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 1]}…"
 
 
 class _sys_path_prepended:

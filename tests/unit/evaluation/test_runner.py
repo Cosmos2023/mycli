@@ -5,12 +5,15 @@ from pathlib import Path
 
 from mycli.domain.runtime import StopReason, TurnItem, TurnItemType, TurnRecord, TurnStatus
 from mycli.evaluation.runner import (
+    EvaluationCheckResult,
+    EvaluationRunReport,
     EvaluationScenario,
     EvaluationTimelineEvent,
     EvaluationToolEvent,
     EvaluationTurnResult,
     discover_scenarios,
     load_scenario,
+    render_evaluation_report,
     run_deterministic_checks,
     run_evaluation_scenario,
     write_evaluation_report,
@@ -326,6 +329,128 @@ def test_write_evaluation_report_includes_human_readable_timeline(tmp_path: Path
             "call_id": None,
         },
     ]
+    assert payload["final_answer"] == "answer"
+    assert payload["score"] == {
+        "value": 100,
+        "passed_checks": 0,
+        "total_checks": 0,
+        "failure_count": 0,
+    }
+    assert payload["failures"] == []
+
+
+def test_report_summary_extracts_tools_approvals_context_and_failures(
+    tmp_path: Path,
+) -> None:
+    report = EvaluationRunReport(
+        scenario_id="real-task",
+        scenario_title="Real Task",
+        workspace_root=tmp_path,
+        turn_results=(
+            EvaluationTurnResult(
+                turn_id="turn-01",
+                prompt="prompt",
+                assistant_message="final answer",
+                rendered_lines=("final answer",),
+                turn_status=TurnStatus.COMPLETED.value,
+                stop_reason=StopReason.ASSISTANT_COMPLETED.value,
+                tool_events=(
+                    EvaluationToolEvent(
+                        event_type=TurnItemType.TOOL_CALL.value,
+                        tool_name="Read",
+                        text="Reading README.md",
+                        call_id="call_read",
+                    ),
+                    EvaluationToolEvent(
+                        event_type=TurnItemType.TOOL_RESULT.value,
+                        tool_name="Bash",
+                        text="failed: command timed out",
+                        call_id="call_bash",
+                    ),
+                ),
+                timeline=(
+                    EvaluationTimelineEvent(
+                        event_type=TurnItemType.APPROVAL_REQUEST.value,
+                        text="Approval required for Bash",
+                        tool_name="Bash",
+                        call_id="call_bash",
+                    ),
+                    EvaluationTimelineEvent(
+                        event_type="context_budget_diagnostic",
+                        text="trimmed_section_count=2",
+                    ),
+                ),
+            ),
+        ),
+        checks=(
+            EvaluationCheckResult(
+                name="expected_value:demo",
+                passed=False,
+                detail="missing demo",
+            ),
+            EvaluationCheckResult(
+                name="runtime:turns_converged",
+                passed=True,
+                detail="ok",
+            ),
+        ),
+    )
+
+    payload = report.to_dict()
+
+    assert payload["final_answer"] == "final answer"
+    assert payload["tool_timeline"] == [
+        {
+            "turn_id": "turn-01",
+            "event_type": "tool_call",
+            "tool_name": "Read",
+            "text": "Reading README.md",
+            "call_id": "call_read",
+        },
+        {
+            "turn_id": "turn-01",
+            "event_type": "tool_result",
+            "tool_name": "Bash",
+            "text": "failed: command timed out",
+            "call_id": "call_bash",
+        },
+    ]
+    assert payload["approvals"][0]["event_type"] == "approval_request"
+    assert payload["context_diagnostics"][0]["event_type"] == "context_budget_diagnostic"
+    assert payload["score"]["passed_checks"] == 1
+    assert payload["score"]["total_checks"] == 2
+    assert payload["score"]["failure_count"] == 2
+    assert payload["score"]["value"] == 40
+    assert {failure["kind"] for failure in payload["failures"]} == {"check", "tool"}
+
+
+def test_render_evaluation_report_includes_readable_summary(tmp_path: Path) -> None:
+    report = EvaluationRunReport(
+        scenario_id="real-task",
+        scenario_title="Real Task",
+        workspace_root=tmp_path,
+        turn_results=(
+            EvaluationTurnResult(
+                turn_id="turn-01",
+                prompt="prompt",
+                assistant_message="A" * 240,
+                rendered_lines=("A" * 240,),
+                turn_status=TurnStatus.FAILED.value,
+                stop_reason=StopReason.RUNTIME_ERROR.value,
+            ),
+        ),
+        checks=(),
+    )
+
+    lines = render_evaluation_report(report)
+
+    assert "[eval] score: 80/100" in lines
+    assert any(line.startswith("[eval] final_answer: ") and line.endswith("…") for line in lines)
+    assert "[eval] tool_timeline: 0 events" in lines
+    assert "[eval] approvals: 0 events" in lines
+    assert "[eval] context_diagnostics: 0 events" in lines
+    assert "[eval] failures: 2" in lines
+    assert any("FAILURE turn:failed" in line for line in lines)
 
 
 def test_run_deterministic_checks_handles_missing_fixed_package_gracefully(tmp_path: Path) -> None:

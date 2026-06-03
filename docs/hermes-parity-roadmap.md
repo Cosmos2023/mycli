@@ -34,8 +34,8 @@ Work proceeds in this order unless a blocker forces a local prerequisite. Avoid 
 | 2 | Context Budget / Eviction P1 | Done | Manage whole-turn context size, not only conversation compaction. |
 | 3 | Subagent Context Sharing / Fork P1 | Done | Let child agents inherit stable context without polluting parent transcript. |
 | 4 | MCP Usability P1 | Done | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
-| 5 | Real Task Evaluation P1 | Next | Validate the agent on realistic multi-tool workflows. |
-| 6 | Consolidation / Main Merge Decision | Pending | Run gates, update parity report, and decide whether to merge. |
+| 5 | Real Task Evaluation P1 | Done | Validate the agent on realistic multi-tool workflows. |
+| 6 | Consolidation / Main Merge Decision | Next | Run gates, update parity report, and decide whether to merge. |
 
 ## Slice Details
 
@@ -224,6 +224,32 @@ Append one entry per completed slice.
 - Remaining risks: MCP remains local stdio/HTTP foundation only; hosted auth,
   OAuth, SSE management, and remote-agent/ACP surfaces remain out of scope.
 - Next recommended slice: Real Task Evaluation P1.
+
+### 2026-06-04 - Real Task Evaluation P1
+
+- Branch: `feature/mycli-context-management-p1`
+- Commit: this slice commit
+- Changed scope: evaluation report model now exposes top-level final answer,
+  compact tool timeline, approval events, context diagnostics, normalized
+  failures, and deterministic score; provider-free `real_task_smoke.py` covers
+  repo onboarding/doc lookup, data summary, small code edit/tool-heavy flow,
+  subagent delegated analysis, MCP-backed lookup, and resume/context
+  continuity; evaluation README documents the new report shape.
+- Tests:
+  - `uv run pytest tests/unit/evaluation/test_runner.py tests/unit/cli/test_eval_cli.py -q`
+  - `uv run ruff check src/mycli/evaluation evaluation tests/unit/evaluation tests/unit/cli/test_eval_cli.py`
+- Smoke/evaluation:
+  - `uv run python evaluation/real_task_smoke.py`
+  - `uv run python evaluation/tool_smoke.py`
+  - `uv run python evaluation/mcp_smoke.py`
+  - `uv run python evaluation/subagent_smoke.py`
+- Parity impact: evaluation output is now readable enough to judge real
+  multi-tool local-agent behavior without manually reconstructing streamed
+  events or raw turn records.
+- Remaining risks: the new real-task smoke is provider-free and deterministic;
+  it validates foundation wiring and report shape, not live model reasoning
+  quality under real API latency/cost.
+- Next recommended slice: Consolidation / Main Merge Decision.
 
 Template:
 

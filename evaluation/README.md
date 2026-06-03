@@ -89,12 +89,31 @@ PYTHONPATH=src python3 -m mycli.cli.main --eval-scenario 04-small-scope-modifica
 
 ```bash
 uv run python evaluation/tool_smoke.py
+uv run python evaluation/real_task_smoke.py
 uv run python evaluation/mcp_smoke.py
 uv run python evaluation/skill_smoke.py
 uv run python evaluation/subagent_smoke.py
 uv run python evaluation/tool_management_smoke.py
 uv run python evaluation/hook_smoke.py
 ```
+
+`real_task_smoke.py` is the provider-free foundation smoke for realistic
+multi-tool workflows. It composes repo onboarding/doc lookup, data summary,
+small code edit/tool-heavy execution, subagent delegated analysis, MCP-backed
+lookup, and resume/long-task continuity signals into the same readable report
+shape used by real evaluation runs.
+
+Real evaluation JSON reports now include these top-level readability fields:
+
+- `final_answer`: the final assistant answer from the last non-empty turn.
+- `tool_timeline`: compact tool call/result events grouped by turn.
+- `approvals`: approval request/resolution events when present.
+- `context_diagnostics`: context/cache/budget/subagent-context diagnostic
+  events when present.
+- `failures`: normalized failed checks, failed turns, and failed tool-result
+  evidence.
+- `score`: deterministic 0-100 score based on check pass ratio plus runtime
+  failure penalties.
 
 其中 `mcp_smoke.py` 会创建临时本地 stdio MCP server，验证 config loading、
 tool discovery、MCP tool call、extension manifest、toolset manifest 和 doctor
