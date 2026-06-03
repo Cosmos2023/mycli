@@ -13,6 +13,7 @@ from mycli.cli.main import (
     build_command_handler,
     build_parser,
     build_turn_service,
+    handle_mcp_command,
     handle_slash_command,
     main,
     render_activity_lines,
@@ -70,6 +71,82 @@ def test_build_parser_accepts_doctor_command() -> None:
     args = parser.parse_args(["doctor"])
 
     assert args.command == "doctor"
+
+
+def test_build_parser_accepts_mcp_command() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["mcp", "list"])
+
+    assert args.command == "mcp"
+    assert args.utility_args == ["list"]
+
+
+def test_mcp_list_command_is_provider_free_and_redacts_failures(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_dir = workspace / ".mycli"
+    config_dir.mkdir()
+    config_dir.joinpath("mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[servers.disabled]",
+                'transport = "stdio"',
+                'command = "python"',
+                "enabled = false",
+                "",
+                "[servers.broken]",
+                'transport = "stdio"',
+                'command = "/missing/mcp-secret-token-value"',
+                "timeout_seconds = 0.1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output: list[str] = []
+
+    exit_code = handle_mcp_command(
+        {"command": "mcp", "utility_args": ["list"], "json_output": False},
+        cwd=workspace,
+        env={},
+        output_func=output.append,
+    )
+
+    rendered = "\n".join(output)
+    assert exit_code == 1
+    assert "mcp server disabled" in rendered
+    assert "mcp server broken" in rendered
+    assert "secret-token-value" not in rendered
+
+
+def test_mcp_inspect_command_renders_json(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_dir = workspace / ".mycli"
+    config_dir.mkdir()
+    config_dir.joinpath("mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[servers.disabled]",
+                'transport = "stdio"',
+                'command = "python"',
+                "enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output: list[str] = []
+
+    exit_code = handle_mcp_command(
+        {"command": "mcp", "utility_args": ["inspect", "disabled"], "json_output": True},
+        cwd=workspace,
+        env={},
+        output_func=output.append,
+    )
+
+    payload = json.loads(output[0])
+    assert exit_code == 0
+    assert payload["server"]["server_id"] == "disabled"
+    assert payload["server"]["status"] == "disabled"
 
 
 def test_main_runs_doctor_without_leaking_api_key(tmp_path: Path) -> None:

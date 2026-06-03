@@ -15,6 +15,12 @@ from mycli.services.mcp.diagnostics import (
     McpServerDiagnostic,
     discover_configured_mcp_servers,
     discover_mcp_servers,
+    redact_mcp_diagnostic_text,
+)
+from mycli.services.mcp.management import (
+    McpManagementResponse,
+    McpManagementRow,
+    McpManagementService,
 )
 from mycli.services.mcp.resource_adapter import McpResourceAdapter
 from mycli.services.mcp.tool_adapter import McpToolAdapter
@@ -27,6 +33,9 @@ __all__ = [
     "McpResourceAdapter",
     "McpResourceContent",
     "McpResourceDescriptor",
+    "McpManagementResponse",
+    "McpManagementRow",
+    "McpManagementService",
     "McpServerConfig",
     "McpServerDiagnostic",
     "McpToolAdapter",
@@ -36,4 +45,5 @@ __all__ = [
     "discover_configured_mcp_servers",
     "discover_mcp_servers",
     "load_mcp_server_configs",
+    "redact_mcp_diagnostic_text",
 ]

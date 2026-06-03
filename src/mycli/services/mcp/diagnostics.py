@@ -3,10 +3,16 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from mycli.services.mcp.client import McpClient, McpServerConfig, load_mcp_server_configs
 
 MCP_DIAGNOSTIC_MESSAGE_LIMIT = 120
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"(?i)(api[_-]?key|token|secret|authorization|bearer)(\s*[:=]\s*)([^,\s;]+)"),
+    re.compile(r"(?i)\b[^\s,;]*(?:api[_-]?key|token|secret)[^\s,;]*\b"),
+)
 
 ClientFactory = Callable[[McpServerConfig], McpClient]
 
@@ -126,7 +132,18 @@ def discover_configured_mcp_servers(
 
 
 def _bounded_message(exc: Exception) -> str:
-    message = str(exc).replace("\n", " ").strip()
+    message = redact_mcp_diagnostic_text(exc).replace("\n", " ").strip()
     if len(message) <= MCP_DIAGNOSTIC_MESSAGE_LIMIT:
         return message
     return f"{message[: MCP_DIAGNOSTIC_MESSAGE_LIMIT - 3]}..."
+
+
+def redact_mcp_diagnostic_text(value: object) -> str:
+    """Return a display string without obvious secret-like values."""
+    text = str(value)
+    text = _SECRET_PATTERNS[0].sub("[REDACTED]", text)
+    text = _SECRET_PATTERNS[1].sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        text,
+    )
+    return _SECRET_PATTERNS[2].sub("[REDACTED]", text)

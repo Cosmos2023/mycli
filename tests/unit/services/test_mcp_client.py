@@ -153,6 +153,67 @@ def test_mcp_tool_adapter_exposes_stubs_then_hydrates_full_schema_on_demand() ->
     assert result.success is True
     assert result.summary == '{"ok": true}'
     assert result.raw_payload["server"] == "fs"
+    assert registration.descriptor.spec.risk_level == "medium"
+    assert registration.descriptor.origin_metadata["approval_policy"] == "auto_allow_or_request"
+
+
+def test_mcp_tool_adapter_truncates_long_tool_output() -> None:
+    long_text = "x" * 13000
+    transport = FakeTransport(
+        {
+            "initialize": {"protocolVersion": "2025-03-26"},
+            "tools/list": {
+                "tools": [
+                    {
+                        "name": "long",
+                        "description": "Long output",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            },
+            "tools/call": {"content": [{"type": "text", "text": long_text}]},
+        }
+    )
+    client = McpClient(McpServerConfig(name="fs", transport="stdio", command="mcp"), transport=transport)
+    adapter = McpToolAdapter({"fs": client})
+
+    registration = adapter.list_tool_stubs()[0]
+    result = registration.tool.execute({})
+
+    assert result.success is True
+    assert len(result.summary) <= 4000
+    assert "[truncated" in result.summary
+    assert result.raw_payload["truncated"] is True
+    assert len(result.raw_payload["content"][0]["text"]) <= 12000
+
+
+def test_mcp_tool_adapter_returns_failed_tool_result_for_call_failure() -> None:
+    transport = FakeTransport(
+        {
+            "initialize": {"protocolVersion": "2025-03-26"},
+            "tools/list": {
+                "tools": [
+                    {
+                        "name": "explode",
+                        "description": "Explodes",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            },
+            "tools/call": JsonRpcError(code=-32000, message="api_key=sk-secret-token-value"),
+        }
+    )
+    client = McpClient(McpServerConfig(name="fs", transport="stdio", command="mcp"), transport=transport)
+    adapter = McpToolAdapter({"fs": client})
+
+    registration = adapter.list_tool_stubs()[0]
+    result = registration.tool.execute({})
+
+    assert result.success is False
+    assert result.summary == "MCP tool failed: JsonRpcError"
+    assert result.raw_payload["error_kind"] == "JsonRpcError"
+    assert "sk-secret-token-value" not in result.error
+    assert "[REDACTED]" in (result.error or "")
 
 
 def test_mcp_resource_adapter_lists_and_reads_resources() -> None:
