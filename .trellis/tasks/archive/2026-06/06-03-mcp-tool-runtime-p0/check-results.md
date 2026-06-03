@@ -3,7 +3,7 @@
 ## Verification
 
 - `uv run pytest tests/unit/services/test_mcp_client.py tests/unit/services/test_mcp_diagnostics.py tests/unit/application/test_mcp_tool_lifecycle.py tests/unit/cli/test_main.py tests/unit/services/test_extension_manifest.py tests/unit/services/test_mcp_provider.py -q`
-  - Result: 96 passed
+  - Result: 97 passed
 - `uv run python evaluation/mcp_smoke.py`
   - Result: passed
 - `uv run ruff check src tests evaluation/mcp_smoke.py`
