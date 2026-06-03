@@ -13,7 +13,11 @@ from mycli.domain.tooling.contributed_tools import (
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.services.mcp.client import McpClient, McpToolDescriptor
-from mycli.tools.base import ToolResult, ToolSpec
+from mycli.services.mcp.diagnostics import redact_mcp_diagnostic_text
+from mycli.tools.base import ToolEffectProfile, ToolResult, ToolSpec
+
+MCP_TOOL_SUMMARY_LIMIT = 4000
+MCP_TOOL_RAW_TEXT_LIMIT = 12000
 
 
 @dataclass(slots=True)
@@ -23,21 +27,41 @@ class _McpSchemaTool:
     spec: ToolSpec
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        result = self.client.call_tool(self.descriptor.name, arguments)
+        try:
+            result = self.client.call_tool(self.descriptor.name, arguments)
+        except Exception as exc:
+            error = _truncate_text(redact_mcp_diagnostic_text(exc), MCP_TOOL_SUMMARY_LIMIT)
+            return ToolResult(
+                success=False,
+                summary=f"MCP tool failed: {type(exc).__name__}",
+                raw_payload={
+                    "server": self.descriptor.server_name,
+                    "tool": self.descriptor.name,
+                    "error_kind": type(exc).__name__,
+                    "error": error,
+                },
+                error=error,
+            )
+        summary = _truncate_text(result.text or "MCP tool returned no content.", MCP_TOOL_SUMMARY_LIMIT)
+        raw_content, raw_truncated = _bounded_content(result.content)
         return ToolResult(
             success=not result.is_error,
-            summary=result.text or "MCP tool returned no content.",
+            summary=summary,
             raw_payload={
                 "server": self.descriptor.server_name,
                 "tool": self.descriptor.name,
-                "content": list(result.content),
+                "content": raw_content,
                 "is_error": result.is_error,
+                "truncated": raw_truncated or summary != result.text,
             },
-            error=result.text if result.is_error else None,
+            error=summary if result.is_error else None,
         )
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="unknown", network=True, process=True)
 
 
 class McpToolAdapter:
@@ -100,6 +124,8 @@ class McpToolAdapter:
                     "server": descriptor.server_name,
                     "tool": descriptor.name,
                     "deferred_schema": not hydrate,
+                    "risk_level": "medium",
+                    "approval_policy": "auto_allow_or_request",
                 },
             ),
             tool=tool,
@@ -110,4 +136,29 @@ class McpToolAdapter:
             name=descriptor.route_name,
             description=descriptor.description or f"MCP tool {descriptor.route_name}",
             parameters=descriptor.tool_parameters() if hydrate else (),
+            risk_level="medium",
         )
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    omitted = len(value) - limit + 24
+    suffix = f"... [truncated {omitted} chars]"
+    return f"{value[: max(0, limit - len(suffix))]}{suffix}"
+
+
+def _bounded_content(content: tuple[dict[str, Any], ...]) -> tuple[list[dict[str, Any]], bool]:
+    bounded: list[dict[str, Any]] = []
+    truncated = False
+    for item in content:
+        bounded_item: dict[str, Any] = {}
+        for key, value in item.items():
+            if isinstance(value, str):
+                bounded_value = _truncate_text(value, MCP_TOOL_RAW_TEXT_LIMIT)
+                truncated = truncated or bounded_value != value
+                bounded_item[key] = bounded_value
+            else:
+                bounded_item[key] = value
+        bounded.append(bounded_item)
+    return bounded, truncated

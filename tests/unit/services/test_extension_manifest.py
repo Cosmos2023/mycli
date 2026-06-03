@@ -260,6 +260,8 @@ def test_extension_manifest_marks_mcp_origin_contributed_tools_as_mcp() -> None:
 
     assert entry["source"] == "mcp"
     assert entry["toolset"] == "external"
+    assert entry["risk_level"] == "low"
+    assert entry["approval_policy"] == "auto_allow"
     assert entry["contribution"]["origin"] == {"server": "local", "tool": "echo"}
     assert "mcp.local.echo" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["mcp"]

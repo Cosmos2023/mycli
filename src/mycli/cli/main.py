@@ -46,6 +46,11 @@ from mycli.services.hooks.management import (
     HookManagementRow,
     HookManagementService,
 )
+from mycli.services.mcp import (
+    McpManagementResponse,
+    McpManagementRow,
+    McpManagementService,
+)
 from mycli.services.plugins import (
     PluginManagementResponse,
     PluginManagementRow,
@@ -59,6 +64,7 @@ __all__ = [
     "handle_doctor_command",
     "handle_evaluation_command",
     "handle_hooks_command",
+    "handle_mcp_command",
     "handle_plugins_command",
     "handle_slash_command",
     "main",
@@ -89,7 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", dest="json_output", help="Render utility output as JSON")
     parser.add_argument("--json-args", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("command", nargs="?", choices=["doctor", "hooks", "plugins"], help="Run a utility command")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["doctor", "hooks", "plugins", "mcp"],
+        help="Run a utility command",
+    )
     parser.add_argument("utility_args", nargs="*", help=argparse.SUPPRESS)
     return parser
 
@@ -217,6 +228,77 @@ def handle_plugins_command(
         for line in render_plugin_management_response(response):
             output_func(line)
     return 0 if response.ok else 1
+
+
+def handle_mcp_command(
+    cli_args: dict[str, object],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    output_func: Callable[[str], Any] = print,
+) -> int | None:
+    if cli_args.get("command") != "mcp":
+        return None
+    utility_args = cli_args.get("utility_args", [])
+    args = [str(item) for item in utility_args] if isinstance(utility_args, list) else []
+    service = McpManagementService(
+        workspace_root=cwd or Path.cwd(),
+        env=dict(env or os.environ),
+    )
+    response = _dispatch_mcp_command(service, args)
+    if bool(cli_args.get("json_output")):
+        output_func(json.dumps(response.to_dict(), sort_keys=True))
+    else:
+        for line in render_mcp_management_response(response):
+            output_func(line)
+    return 0 if response.ok else 1
+
+
+def _dispatch_mcp_command(
+    service: McpManagementService,
+    args: list[str],
+) -> McpManagementResponse:
+    if not args:
+        return McpManagementResponse(
+            ok=False,
+            action="usage",
+            message="usage: mycli mcp list|inspect [server_id] [--json]",
+        )
+    action = args[0]
+    target = args[1] if len(args) > 1 else ""
+    if action == "list" and len(args) == 1:
+        return service.list_servers()
+    if action == "inspect" and target and len(args) == 2:
+        return service.inspect_server(target)
+    return McpManagementResponse(
+        ok=False,
+        action=action,
+        message="usage: mycli mcp list|inspect [server_id] [--json]",
+    )
+
+
+def render_mcp_management_response(response: McpManagementResponse) -> tuple[str, ...]:
+    lines = [f"mycli mcp {response.action}: {response.message}"]
+    rows = response.servers or ((response.server,) if response.server is not None else ())
+    for row in rows:
+        if row is not None:
+            lines.extend(_render_mcp_row(row))
+    for issue in response.issues:
+        lines.append(f"mcp_issue: {issue}")
+    return tuple(lines)
+
+
+def _render_mcp_row(row: McpManagementRow) -> tuple[str, ...]:
+    lines = [
+        f"mcp server {row.server_id}",
+        f"  transport={row.transport} enabled={str(row.enabled).lower()} status={row.status}",
+        f"  tool_count={row.tool_count} timeout_seconds={row.timeout_seconds}",
+    ]
+    if row.failure_kind:
+        lines.append(f"  failure_kind={row.failure_kind}")
+    if row.failure_message:
+        lines.append(f"  failure_message={row.failure_message}")
+    return tuple(lines)
 
 
 def _dispatch_plugins_command(
@@ -454,6 +536,14 @@ def main(
     )
     if plugins_exit_code is not None:
         return plugins_exit_code
+    mcp_exit_code = handle_mcp_command(
+        args,
+        cwd=cwd,
+        env=env,
+        output_func=output_func,
+    )
+    if mcp_exit_code is not None:
+        return mcp_exit_code
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
     if eval_exit_code is not None:
         return eval_exit_code

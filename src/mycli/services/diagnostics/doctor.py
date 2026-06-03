@@ -20,7 +20,7 @@ from mycli.services.extensions import ExtensionManifestService
 from mycli.services.hooks import HookAllowlist, HookConfigRegistry, HookManager, HookPoint
 from mycli.services.hooks.config import HookEnvPolicy
 from mycli.services.hooks.builtin import permission_guard
-from mycli.services.mcp.diagnostics import discover_mcp_servers
+from mycli.services.mcp.diagnostics import discover_mcp_servers, redact_mcp_diagnostic_text
 from mycli.services.skills import SkillRegistry
 from mycli.services.subagents import inspect_subagent_profiles
 from mycli.services.plugins import PluginCommandRegistry, PluginLoadStatus, load_enabled_plugins
@@ -1070,7 +1070,13 @@ class DoctorService:
         try:
             diagnostics = discover_mcp_servers(self._workspace_root, environ=self._env)
         except Exception as exc:
-            return (DoctorCheck("mcp", DoctorStatus.FAILED, f"mcp config invalid: {exc}"),)
+            return (
+                DoctorCheck(
+                    "mcp",
+                    DoctorStatus.FAILED,
+                    f"mcp config invalid: {redact_mcp_diagnostic_text(exc)}",
+                ),
+            )
         status = DoctorStatus.WARNING if diagnostics.failure_count else DoctorStatus.OK
         message = (
             f"mcp: {diagnostics.configured_count} configured, "

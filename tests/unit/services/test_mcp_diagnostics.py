@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mycli.services.mcp.client import McpServerConfig, McpToolDescriptor
-from mycli.services.mcp.diagnostics import discover_configured_mcp_servers
+from mycli.services.mcp.diagnostics import discover_configured_mcp_servers, redact_mcp_diagnostic_text
 
 
 class FakeClient:
@@ -66,3 +66,17 @@ def test_mcp_discovery_failure_messages_are_bounded() -> None:
     assert server.failure_kind == "RuntimeError"
     assert server.failure_message is not None
     assert len(server.failure_message) <= 120
+
+
+def test_mcp_discovery_failure_messages_are_redacted() -> None:
+    diagnostics = discover_configured_mcp_servers(
+        {
+            "broken": McpServerConfig(name="broken", transport="stdio", command="mcp"),
+        },
+        client_factory=FakeClient,
+    )
+
+    message = diagnostics.servers[0].failure_message or ""
+
+    assert "secret-token-value" not in message
+    assert "[REDACTED]" in redact_mcp_diagnostic_text("api_key=sk-secret-value token=secret-token-value")

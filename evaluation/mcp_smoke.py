@@ -31,8 +31,9 @@ def main() -> int:
         workspace.mkdir()
         home.mkdir()
         server = workspace / "fake_mcp_server.py"
+        disabled_marker = workspace / "disabled-started.txt"
         _write_fake_mcp_server(server)
-        _write_mcp_config(workspace, server)
+        _write_mcp_config(workspace, server, disabled_marker=disabled_marker)
 
         configs = load_mcp_server_configs(workspace)
         diagnostics = discover_mcp_servers(workspace)
@@ -56,27 +57,41 @@ def main() -> int:
         mcp_check = next(check for check in doctor_report.checks if check.name == "mcp")
         tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
         toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
+        broken = next(server for server in diagnostics.servers if server.server_name == "broken")
+        disabled = next(server for server in diagnostics.servers if server.server_name == "disabled")
 
         report.update(
             {
                 "success": (
                     configs["local"].command == sys.executable
-                    and diagnostics.failure_count == 0
+                    and diagnostics.failure_count == 1
                     and diagnostics.tool_count == 1
+                    and disabled.status == "disabled"
+                    and not disabled_marker.exists()
+                    and broken.status == "failed"
+                    and "secret-token-value" not in (broken.failure_message or "")
                     and stubs[0].descriptor.route_name == "mcp.local.echo"
                     and call_result.success
                     and call_result.summary == "echo:hello"
                     and tools["mcp.local.echo"]["source"] == "mcp"
+                    and tools["mcp.local.echo"]["risk_level"] == "medium"
+                    and tools["mcp.local.echo"]["approval_policy"] == "auto_allow_or_request"
                     and "mcp.local.echo" in toolsets["external"]["tools"]
-                    and mcp_check.status is DoctorStatus.OK
+                    and mcp_check.status is DoctorStatus.WARNING
                     and "1 tools discovered" in mcp_check.message
                 ),
                 "checks": {
                     "config_loaded": configs["local"].command == sys.executable,
-                    "discovery_ok": diagnostics.failure_count == 0 and diagnostics.tool_count == 1,
+                    "discovery_ok": diagnostics.failure_count == 1 and diagnostics.tool_count == 1,
+                    "disabled_not_started": disabled.status == "disabled" and not disabled_marker.exists(),
+                    "broken_status": broken.status,
+                    "broken_failure_kind": broken.failure_kind,
+                    "broken_failure_message": broken.failure_message,
                     "registration_route": stubs[0].descriptor.route_name,
                     "runtime_call_summary": call_result.summary,
                     "manifest_source": tools["mcp.local.echo"]["source"],
+                    "manifest_risk_level": tools["mcp.local.echo"]["risk_level"],
+                    "manifest_approval_policy": tools["mcp.local.echo"]["approval_policy"],
                     "toolset_sources": toolsets["external"]["sources"],
                     "doctor_status": mcp_check.status.value,
                     "doctor_message": mcp_check.message,
@@ -95,7 +110,7 @@ def main() -> int:
     return 0 if report["success"] else 1
 
 
-def _write_mcp_config(workspace: Path, server: Path) -> None:
+def _write_mcp_config(workspace: Path, server: Path, *, disabled_marker: Path) -> None:
     config_dir = workspace / ".mycli"
     config_dir.mkdir()
     (config_dir / "mcp_servers.toml").write_text(
@@ -106,6 +121,17 @@ def _write_mcp_config(workspace: Path, server: Path) -> None:
                 f'command = "{sys.executable}"',
                 f'args = ["{server}"]',
                 "timeout_seconds = 3",
+                "",
+                "[servers.disabled]",
+                'transport = "stdio"',
+                f'command = "{sys.executable}"',
+                f'args = ["-c", "from pathlib import Path; Path({str(disabled_marker)!r}).write_text(\\"started\\")"]',
+                "enabled = false",
+                "",
+                "[servers.broken]",
+                'transport = "stdio"',
+                'command = "/missing/mcp-secret-token-value"',
+                "timeout_seconds = 0.1",
             ]
         ),
         encoding="utf-8",
