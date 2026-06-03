@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from mycli.services.mcp.client import McpServerConfig, McpToolDescriptor
-from mycli.services.mcp.diagnostics import discover_configured_mcp_servers, redact_mcp_diagnostic_text
+from mycli.services.mcp.diagnostics import (
+    classify_mcp_failure,
+    discover_configured_mcp_servers,
+    redact_mcp_diagnostic_text,
+)
 
 
 class FakeClient:
@@ -47,7 +51,7 @@ def test_mcp_discovery_diagnostics_reports_success_disabled_and_failure() -> Non
     assert diagnostics.tool_count == 1
     assert diagnostics.failure_count == 1
     assert diagnostics.safe_detail() == (
-        "broken:failed:RuntimeError, disabled:disabled, ok:ok:tools=1"
+        "broken:failed:execution_error:RuntimeError, disabled:disabled, ok:ok:tools=1"
     )
     assert FakeClient.closed_configs == ["broken", "ok"]
 
@@ -64,6 +68,7 @@ def test_mcp_discovery_failure_messages_are_bounded() -> None:
 
     assert server.status == "failed"
     assert server.failure_kind == "RuntimeError"
+    assert server.failure_category == "execution_error"
     assert server.failure_message is not None
     assert len(server.failure_message) <= 120
 
@@ -80,3 +85,9 @@ def test_mcp_discovery_failure_messages_are_redacted() -> None:
 
     assert "secret-token-value" not in message
     assert "[REDACTED]" in redact_mcp_diagnostic_text("api_key=sk-secret-value token=secret-token-value")
+
+
+def test_mcp_failure_classification_is_actionable() -> None:
+    assert classify_mcp_failure(FileNotFoundError("missing")) == "server_startup"
+    assert classify_mcp_failure(TimeoutError("slow")) == "timeout"
+    assert classify_mcp_failure(RuntimeError("MCP HTTP request failed with status 500")) == "transport_error"

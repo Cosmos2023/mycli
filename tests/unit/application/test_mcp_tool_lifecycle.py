@@ -85,7 +85,7 @@ def test_mcp_provider_tool_flows_through_orchestrator_registry_and_router(
     ]
 
     assert result.success is True
-    assert result.summary == "echo:hello"
+    assert result.summary == "MCP local.echo ok: echo:hello"
     assert planned.exposure.callable_tool_names() == ("mcp.local.echo",)
     assert lifecycle_states == [
         ToolContributionLifecycleState.DECLARED,

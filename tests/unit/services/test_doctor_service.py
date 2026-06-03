@@ -587,6 +587,7 @@ def test_doctor_service_warns_for_mcp_discovery_failure_without_leaking_config(
                     transport="stdio",
                     enabled=True,
                     status="failed",
+                    failure_category="timeout",
                     failure_kind="TimeoutError",
                     failure_message="timed out",
                 ),
@@ -605,7 +606,7 @@ def test_doctor_service_warns_for_mcp_discovery_failure_without_leaking_config(
     check = next(check for check in report.checks if check.name == "mcp")
 
     assert check.status is DoctorStatus.WARNING
-    assert "bad:failed:TimeoutError" in rendered
+    assert "bad:failed:timeout:TimeoutError" in rendered
     assert "server.py" not in rendered
     assert "--token" not in rendered
     assert "sk-do-not-print" not in rendered

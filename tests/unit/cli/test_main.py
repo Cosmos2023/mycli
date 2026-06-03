@@ -177,6 +177,7 @@ def test_mcp_list_command_is_provider_free_and_redacts_failures(tmp_path: Path) 
     assert exit_code == 1
     assert "mcp server disabled" in rendered
     assert "mcp server broken" in rendered
+    assert "failure_category=server_startup" in rendered
     assert "secret-token-value" not in rendered
 
 
@@ -209,6 +210,7 @@ def test_mcp_inspect_command_renders_json(tmp_path: Path) -> None:
     assert exit_code == 0
     assert payload["server"]["server_id"] == "disabled"
     assert payload["server"]["status"] == "disabled"
+    assert payload["server"]["failure_category"] is None
 
 
 def test_main_runs_doctor_without_leaking_api_key(tmp_path: Path) -> None:

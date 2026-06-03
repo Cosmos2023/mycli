@@ -21,6 +21,7 @@ class McpManagementRow:
     status: str
     tool_count: int
     timeout_seconds: float | None
+    failure_category: str | None = None
     failure_kind: str | None = None
     failure_message: str | None = None
 
@@ -33,6 +34,7 @@ class McpManagementRow:
             "tool_count": self.tool_count,
             "timeout_seconds": self.timeout_seconds,
         }
+        payload["failure_category"] = self.failure_category
         if self.failure_kind:
             payload["failure_kind"] = self.failure_kind
         if self.failure_message:
@@ -135,6 +137,7 @@ def _row_for(server: McpServerDiagnostic) -> McpManagementRow:
         status=server.status,
         tool_count=server.tool_count,
         timeout_seconds=server.timeout_seconds,
+        failure_category=server.failure_category,
         failure_kind=server.failure_kind,
         failure_message=server.failure_message,
     )

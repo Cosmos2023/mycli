@@ -377,6 +377,8 @@ def _render_mcp_row(row: McpManagementRow) -> tuple[str, ...]:
         f"  tool_count={row.tool_count} timeout_seconds={row.timeout_seconds}",
     ]
     if row.failure_kind:
+        if row.failure_category:
+            lines.append(f"  failure_category={row.failure_category}")
         lines.append(f"  failure_kind={row.failure_kind}")
     if row.failure_message:
         lines.append(f"  failure_message={row.failure_message}")

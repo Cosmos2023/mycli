@@ -151,10 +151,16 @@ def test_mcp_tool_adapter_exposes_stubs_then_hydrates_full_schema_on_demand() ->
     assert [parameter.name for parameter in hydrated.parameters] == ["query", "limit"]
     assert hydrated.parameters[0].required is True
     assert result.success is True
-    assert result.summary == '{"ok": true}'
+    assert result.summary == 'MCP fs.search ok: {"ok": true}'
     assert result.raw_payload["server"] == "fs"
+    assert result.raw_payload["status"] == "ok"
+    assert result.raw_payload["content_summary"]["item_count"] == 1
+    assert result.raw_payload["content_summary"]["types"] == ["json"]
     assert registration.descriptor.spec.risk_level == "medium"
     assert registration.descriptor.origin_metadata["approval_policy"] == "auto_allow_or_request"
+    assert registration.descriptor.origin_metadata["transport"] == "stdio"
+    assert registration.descriptor.origin_metadata["failure_semantics"] == "mcp_local_tool"
+    assert registration.descriptor.origin_metadata["result_summary_policy"] == "bounded_model_summary"
 
 
 def test_mcp_tool_adapter_truncates_long_tool_output() -> None:
@@ -210,10 +216,44 @@ def test_mcp_tool_adapter_returns_failed_tool_result_for_call_failure() -> None:
     result = registration.tool.execute({})
 
     assert result.success is False
-    assert result.summary == "MCP tool failed: JsonRpcError"
-    assert result.raw_payload["error_kind"] == "JsonRpcError"
+    assert result.summary == "MCP fs.explode failed: protocol_error"
+    assert result.raw_payload["error_kind"] == "protocol_error"
+    assert result.raw_payload["exception_type"] == "JsonRpcError"
     assert "sk-secret-token-value" not in result.error
     assert "[REDACTED]" in (result.error or "")
+
+
+def test_mcp_tool_adapter_maps_mcp_is_error_to_local_tool_failure() -> None:
+    transport = FakeTransport(
+        {
+            "initialize": {"protocolVersion": "2025-03-26"},
+            "tools/list": {
+                "tools": [
+                    {
+                        "name": "validate",
+                        "description": "Validate input",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            },
+            "tools/call": {
+                "content": [{"type": "text", "text": "validation failed"}],
+                "isError": True,
+            },
+        }
+    )
+    client = McpClient(McpServerConfig(name="fs", transport="stdio", command="mcp"), transport=transport)
+    adapter = McpToolAdapter({"fs": client})
+
+    registration = adapter.list_tool_stubs()[0]
+    result = registration.tool.execute({})
+
+    assert result.success is False
+    assert result.summary == "MCP fs.validate error: validation failed"
+    assert result.error == result.summary
+    assert result.raw_payload["status"] == "error"
+    assert result.raw_payload["error_kind"] == "mcp_tool_error"
+    assert result.raw_payload["content_summary"]["types"] == ["text"]
 
 
 def test_mcp_resource_adapter_lists_and_reads_resources() -> None:

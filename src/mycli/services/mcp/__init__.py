@@ -13,6 +13,7 @@ from mycli.services.mcp.client import (
 from mycli.services.mcp.diagnostics import (
     McpDiscoveryDiagnostics,
     McpServerDiagnostic,
+    classify_mcp_failure,
     discover_configured_mcp_servers,
     discover_mcp_servers,
     redact_mcp_diagnostic_text,
@@ -42,6 +43,7 @@ __all__ = [
     "McpToolCallResult",
     "McpToolContributionProvider",
     "McpToolDescriptor",
+    "classify_mcp_failure",
     "discover_configured_mcp_servers",
     "discover_mcp_servers",
     "load_mcp_server_configs",

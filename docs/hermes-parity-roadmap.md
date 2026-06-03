@@ -33,8 +33,8 @@ Work proceeds in this order unless a blocker forces a local prerequisite. Avoid 
 | 1 | Provider / Cache Policy P1 | Done | Turn context cache metadata into provider request-shape behavior. |
 | 2 | Context Budget / Eviction P1 | Done | Manage whole-turn context size, not only conversation compaction. |
 | 3 | Subagent Context Sharing / Fork P1 | Done | Let child agents inherit stable context without polluting parent transcript. |
-| 4 | MCP Usability P1 | Next | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
-| 5 | Real Task Evaluation P1 | Pending | Validate the agent on realistic multi-tool workflows. |
+| 4 | MCP Usability P1 | Done | Move MCP from P0 smokeable to reliable local tool ecosystem entry. |
+| 5 | Real Task Evaluation P1 | Next | Validate the agent on realistic multi-tool workflows. |
 | 6 | Consolidation / Main Merge Decision | Pending | Run gates, update parity report, and decide whether to merge. |
 
 ## Slice Details
@@ -204,6 +204,26 @@ Append one entry per completed slice.
 - Remaining risks: fork context is deterministic reference transfer, not yet
   semantic child-specific summarization or provider-level cache controls.
 - Next recommended slice: MCP Usability P1.
+
+### 2026-06-04 - MCP Usability P1
+
+- Branch: `feature/mycli-context-management-p1`
+- Commit: this slice commit
+- Changed scope: MCP discovery failure taxonomy, doctor/CLI failure-category
+  rendering, contributed manifest origin metadata, model-friendly MCP result
+  summaries, local-tool-aligned MCP failure payloads, and provider-free MCP
+  smoke.
+- Tests:
+  - `uv run pytest tests/unit/services/test_mcp_client.py tests/unit/services/test_mcp_diagnostics.py tests/unit/services/test_mcp_provider.py tests/unit/application/test_mcp_tool_lifecycle.py tests/unit/cli/test_main.py tests/unit/services/test_doctor_service.py tests/unit/services/test_extension_manifest.py -q -k 'mcp or manifest or doctor'`
+  - `uv run ruff check src/mycli/services/mcp src/mycli/cli/main.py evaluation/mcp_smoke.py tests/unit/services/test_mcp_client.py tests/unit/services/test_mcp_diagnostics.py tests/unit/services/test_mcp_provider.py tests/unit/application/test_mcp_tool_lifecycle.py tests/unit/cli/test_main.py tests/unit/services/test_doctor_service.py`
+- Smoke/evaluation: `uv run python evaluation/mcp_smoke.py`
+- Parity impact: MCP servers and tools now report stable actionable failure
+  categories, MCP tool results expose bounded content summaries, manifest
+  entries carry stable local MCP metadata, and tool-level `isError` maps to
+  normal local tool failure semantics.
+- Remaining risks: MCP remains local stdio/HTTP foundation only; hosted auth,
+  OAuth, SSE management, and remote-agent/ACP surfaces remain out of scope.
+- Next recommended slice: Real Task Evaluation P1.
 
 Template:
 

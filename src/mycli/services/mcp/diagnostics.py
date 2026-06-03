@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-from mycli.services.mcp.client import McpClient, McpServerConfig, load_mcp_server_configs
+from mycli.services.mcp.client import JsonRpcError, McpClient, McpServerConfig, load_mcp_server_configs
 
 MCP_DIAGNOSTIC_MESSAGE_LIMIT = 120
 _SECRET_PATTERNS = (
@@ -24,6 +24,7 @@ class McpServerDiagnostic:
     enabled: bool
     status: str
     tool_count: int = 0
+    failure_category: str | None = None
     failure_kind: str | None = None
     failure_message: str | None = None
     timeout_seconds: float | None = None
@@ -32,6 +33,8 @@ class McpServerDiagnostic:
         summary = f"{self.server_name}:{self.status}"
         if self.status == "ok":
             summary = f"{summary}:tools={self.tool_count}"
+        if self.failure_category:
+            summary = f"{summary}:{self.failure_category}"
         if self.failure_kind:
             summary = f"{summary}:{self.failure_kind}"
         return summary
@@ -101,6 +104,7 @@ def discover_configured_mcp_servers(
                     transport=config.transport,
                     enabled=True,
                     status="failed",
+                    failure_category=classify_mcp_failure(exc),
                     failure_kind=type(exc).__name__,
                     failure_message=_bounded_message(exc),
                     timeout_seconds=config.timeout_seconds,
@@ -136,6 +140,25 @@ def _bounded_message(exc: Exception) -> str:
     if len(message) <= MCP_DIAGNOSTIC_MESSAGE_LIMIT:
         return message
     return f"{message[: MCP_DIAGNOSTIC_MESSAGE_LIMIT - 3]}..."
+
+
+def classify_mcp_failure(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "server_startup"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, JsonRpcError):
+        return "protocol_error"
+    message = str(exc).lower()
+    if "timed out" in message or "timeout" in message:
+        return "timeout"
+    if "no such file" in message or "not found" in message or "permission denied" in message:
+        return "server_startup"
+    if "http request failed" in message or "connection" in message or "transport" in message:
+        return "transport_error"
+    if "schema" in message or "inputschema" in message or "input_schema" in message:
+        return "schema_error"
+    return "execution_error"
 
 
 def redact_mcp_diagnostic_text(value: object) -> str:
