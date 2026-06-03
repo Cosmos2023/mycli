@@ -3349,6 +3349,26 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_1",
+                        "payload": {
+                            "cache_boundary": {
+                                "fragment_ids": [
+                                    "stable:system",
+                                    "stable:workspace_instructions",
+                                ],
+                                "hash": "abc123",
+                                "estimated_tokens": 456,
+                            },
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                            },
+                        },
+                    }
+                ),
             )
         ),
         encoding="utf-8",
@@ -3367,10 +3387,58 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
     assert check.status is DoctorStatus.OK
     assert "context source=.mycli" in check.message
     assert "context_trace_rows=1" in check.message
+    assert "cache_shape_rows=1" in check.message
     assert "summary_persisted=2" in check.message
     assert "max_estimated_context_tokens=123" in str(check.detail)
+    assert "max_estimated_cacheable_prefix_tokens=456" in str(check.detail)
+    assert "missing_cache_metadata=0" in str(check.detail)
     assert "summary_duplicates_skipped=1" in str(check.detail)
     assert "Project context safe text" not in rendered
+
+
+def test_doctor_service_warns_when_cache_shape_metadata_is_missing(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    _create_sessions_db(home / ".mycli" / "sessions.db")
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "cache_shape_diagnostic",
+                "turn_id": "turn_1",
+                "payload": {
+                    "cache_boundary": {"estimated_tokens": 12},
+                    "metadata": {
+                        "fragment_metadata_complete": False,
+                        "missing_fragment_metadata": ["stable:workspace_instructions"],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "context")
+    rendered = "\n".join(render_doctor_report(report))
+
+    assert check.status is DoctorStatus.WARNING
+    assert "cache_shape_rows=1" in check.message
+    assert "missing_cache_metadata=1" in str(check.detail)
+    assert "stable:workspace_instructions" not in rendered
 
 
 def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(

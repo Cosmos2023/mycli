@@ -173,6 +173,40 @@ class RequestShape:
     def provider_runtime_item_hashes(self) -> tuple[str, ...]:
         return tuple(item.content_hash for item in self.provider_runtime_items)
 
+    def cacheable_prefix_fragment_ids(self) -> tuple[str, ...]:
+        ids: list[str] = []
+        for fragment in self.fragments:
+            if fragment.stability is not FragmentStability.STABLE:
+                break
+            ids.append(fragment.id)
+        return tuple(ids)
+
+    def cacheable_prefix_hash(self) -> str:
+        return stable_hash(
+            "\n".join(
+                self.fragment_hashes()[fragment_id]
+                for fragment_id in self.cacheable_prefix_fragment_ids()
+            )
+        )
+
+    def estimated_cacheable_prefix_chars(self) -> int:
+        prefix_ids = set(self.cacheable_prefix_fragment_ids())
+        return sum(
+            fragment.char_length for fragment in self.fragments if fragment.id in prefix_ids
+        )
+
+    def fragment_metadata_summary(self) -> dict[str, dict[str, object]]:
+        return {
+            fragment.id: {
+                "kind": fragment.kind.value,
+                "stability": fragment.stability.value,
+                "source": fragment.metadata.get("source"),
+                "cache_class": fragment.metadata.get("cache_class"),
+                "section_hash": fragment.metadata.get("section_hash"),
+            }
+            for fragment in self.fragments
+        }
+
     def summary(self) -> dict[str, object]:
         return {
             "provider": self.provider,
@@ -184,6 +218,10 @@ class RequestShape:
             "replay_hash": self.replay_hash,
             "volatile_hash": self.volatile_hash,
             "fragment_hashes": self.fragment_hashes(),
+            "fragment_metadata": self.fragment_metadata_summary(),
+            "cacheable_prefix_fragment_ids": self.cacheable_prefix_fragment_ids(),
+            "cacheable_prefix_hash": self.cacheable_prefix_hash(),
+            "estimated_cacheable_prefix_chars": self.estimated_cacheable_prefix_chars(),
             "provider_message_hashes": self.provider_message_hashes(),
             "provider_runtime_item_hashes": self.provider_runtime_item_hashes(),
             "fragment_lengths": {

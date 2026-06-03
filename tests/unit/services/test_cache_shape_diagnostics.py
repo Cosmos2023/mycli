@@ -24,6 +24,10 @@ def _shape(*, fragment_content: str, second_message: str = "same") -> RequestSha
                 kind=RequestFragmentKind.INTENT,
                 content=fragment_content,
                 stability=FragmentStability.VOLATILE,
+                metadata={
+                    "cache_class": "ephemeral",
+                    "section_hash": "intent-hash",
+                },
             ),
         ),
         provider_messages=(
@@ -68,6 +72,60 @@ def test_diagnostic_normalizes_nested_cached_token_usage() -> None:
     assert payload["cache_hit_tokens"] == 64
     assert payload["cache_miss_tokens"] == 36
     assert payload["cache_hit_ratio"] == 0.64
+
+
+def test_diagnostic_reports_cache_boundary_and_metadata_completeness() -> None:
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable system",
+        fragments=(
+            RequestFragment(
+                id="stable:system",
+                kind=RequestFragmentKind.STABLE,
+                content="stable system",
+                stability=FragmentStability.STABLE,
+                metadata={
+                    "cache_class": "static",
+                    "section_hash": "system-hash",
+                    "source": "system_prompt",
+                },
+            ),
+            RequestFragment(
+                id="stable:workspace_instructions",
+                kind=RequestFragmentKind.STABLE,
+                content="workspace rules",
+                stability=FragmentStability.STABLE,
+                metadata={
+                    "cache_class": "static",
+                    "section_hash": "workspace-hash",
+                    "source": ".mycli.md",
+                },
+            ),
+            RequestFragment(
+                id="intent:current",
+                kind=RequestFragmentKind.INTENT,
+                content="current task",
+                stability=FragmentStability.VOLATILE,
+                metadata={
+                    "cache_class": "ephemeral",
+                    "section_hash": "intent-hash",
+                },
+            ),
+        ),
+    )
+
+    payload = CacheShapeDiagnostics().build(current=shape).to_dict()
+
+    assert payload["cache_boundary"] == {
+        "fragment_ids": ("stable:system", "stable:workspace_instructions"),
+        "hash": shape.cacheable_prefix_hash(),
+        "estimated_chars": len("stable system") + len("workspace rules"),
+        "estimated_tokens": 7,
+    }
+    assert payload["metadata"]["fragment_metadata_complete"] is True
+    assert payload["metadata"]["missing_fragment_metadata"] == ()
 
 
 def test_diagnostic_finds_first_changed_fragment() -> None:

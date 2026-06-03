@@ -170,10 +170,13 @@ class _TurnInterruptDiagnosticsSummary:
 @dataclass(frozen=True, slots=True)
 class _ContextDiagnosticsSummary:
     context_count: int
+    cache_shape_count: int
     summary_persistence_count: int
     blocked_count: int
     truncated_count: int
     max_estimated_context_tokens: int
+    max_estimated_cacheable_prefix_tokens: int
+    missing_cache_metadata_count: int
     persisted_summary_count: int
     duplicate_summary_count: int
     unreadable: tuple[str, ...]
@@ -993,6 +996,8 @@ class DoctorService:
         status = DoctorStatus.OK
         if diagnostics.blocked or trace_summary.blocked_count:
             status = DoctorStatus.WARNING
+        if trace_summary.missing_cache_metadata_count:
+            status = DoctorStatus.WARNING
         if trace_summary.unreadable:
             status = DoctorStatus.FAILED
         source = diagnostics.selected_source or "none"
@@ -1002,11 +1007,17 @@ class DoctorService:
             f"truncated={str(diagnostics.truncated).lower()} "
             f"session_summaries={summary_count} "
             f"context_trace_rows={trace_summary.context_count} "
+            f"cache_shape_rows={trace_summary.cache_shape_count} "
             f"summary_persisted={trace_summary.persisted_summary_count}"
         )
         detail_parts = [
             f"issues={_bounded_name_list(list(diagnostics.issues)) if diagnostics.issues else 'none'}",
             f"max_estimated_context_tokens={trace_summary.max_estimated_context_tokens}",
+            (
+                "max_estimated_cacheable_prefix_tokens="
+                f"{trace_summary.max_estimated_cacheable_prefix_tokens}"
+            ),
+            f"missing_cache_metadata={trace_summary.missing_cache_metadata_count}",
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
         if trace_summary.unreadable:
@@ -1972,10 +1983,13 @@ def _summarize_context_diagnostics(
     paths: Iterable[Path],
 ) -> _ContextDiagnosticsSummary:
     context_count = 0
+    cache_shape_count = 0
     summary_persistence_count = 0
     blocked_count = 0
     truncated_count = 0
     max_estimated_context_tokens = 0
+    max_estimated_cacheable_prefix_tokens = 0
+    missing_cache_metadata_count = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
     unreadable: list[str] = []
@@ -2006,6 +2020,27 @@ def _summarize_context_diagnostics(
                                 max_estimated_context_tokens,
                                 tokens,
                             )
+                    elif event.kind == "cache_shape_diagnostic":
+                        cache_shape_count += 1
+                        cache_boundary = event.payload.get("cache_boundary")
+                        if isinstance(cache_boundary, dict):
+                            tokens = _optional_non_negative_int(
+                                cache_boundary.get("estimated_tokens")
+                            )
+                            if tokens is not None:
+                                max_estimated_cacheable_prefix_tokens = max(
+                                    max_estimated_cacheable_prefix_tokens,
+                                    tokens,
+                                )
+                        metadata = event.payload.get("metadata")
+                        if isinstance(metadata, dict):
+                            missing = metadata.get("missing_fragment_metadata")
+                            if isinstance(missing, (list, tuple)):
+                                missing_cache_metadata_count += len(missing)
+                            elif metadata.get("fragment_metadata_complete") is False:
+                                missing_cache_metadata_count += 1
+                        else:
+                            missing_cache_metadata_count += 1
                     elif event.kind == "context_summary_persistence":
                         summary_persistence_count += 1
                         persisted = _optional_non_negative_int(
@@ -2021,10 +2056,13 @@ def _summarize_context_diagnostics(
 
     return _ContextDiagnosticsSummary(
         context_count=context_count,
+        cache_shape_count=cache_shape_count,
         summary_persistence_count=summary_persistence_count,
         blocked_count=blocked_count,
         truncated_count=truncated_count,
         max_estimated_context_tokens=max_estimated_context_tokens,
+        max_estimated_cacheable_prefix_tokens=max_estimated_cacheable_prefix_tokens,
+        missing_cache_metadata_count=missing_cache_metadata_count,
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,
         unreadable=tuple(unreadable),

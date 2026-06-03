@@ -134,6 +134,113 @@ def test_request_shape_builder_preserves_context_section_metadata(
     assert fragment.metadata["instruction_fragment_kind"] == "memory"
 
 
+def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefix(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="runtime_reminders",
+                    title="Runtime reminders",
+                    content="Runtime reminders: current turn only",
+                    metadata={"cache_class": "ephemeral"},
+                ),
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content="Memory: stable enough for this task",
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="workspace_instructions",
+                    title="Workspace",
+                    content="<workspace-context>Use pytest.</workspace-context>",
+                    source=".mycli.md",
+                    metadata={"cache_class": "static"},
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="previous request"),
+            ),
+            current_user_request="current request",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    fragment_ids = [fragment.id for fragment in shape.fragments]
+    assert fragment_ids == [
+        "stable:system",
+        "stable:tool_schema",
+        "stable:workspace_instructions",
+        "replay:conversation",
+        "retrieved_memory",
+        "intent:current",
+        "volatile:runtime_reminders",
+    ]
+    assert shape.fragments[2].stability is FragmentStability.STABLE
+    assert shape.fragments[4].stability is FragmentStability.REPLAY
+    assert shape.fragments[6].stability is FragmentStability.VOLATILE
+    assert shape.cacheable_prefix_fragment_ids() == (
+        "stable:system",
+        "stable:tool_schema",
+        "stable:workspace_instructions",
+    )
+    assert shape.estimated_cacheable_prefix_chars() > len("Stable system rules.")
+    assert shape.fragments[2].metadata["source"] == ".mycli.md"
+    assert shape.fragments[2].metadata["section_hash"]
+    assert [message.content for message in shape.provider_messages] == [
+        "Stable system rules.",
+        "<workspace-context>Use pytest.</workspace-context>",
+        "previous request",
+        "Memory: stable enough for this task",
+        "Current user request: current request",
+        "Runtime reminders: current turn only",
+    ]
+
+
+def test_request_shape_builder_keeps_cacheable_prefix_stable_for_new_user_request(
+    tmp_path: Path,
+) -> None:
+    builder = RequestShapeBuilder()
+    config = AgentConfig(
+        workspace_root=tmp_path,
+        protocol=ProtocolId.ANTHROPIC_MESSAGES,
+    )
+
+    def contract(user_request: str) -> InstructionContract:
+        return InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="workspace_instructions",
+                    title="Workspace",
+                    content="<workspace-context>Use pytest.</workspace-context>",
+                    source=".mycli.md",
+                    metadata={"cache_class": "static"},
+                ),
+                InstructionFragment(
+                    kind="runtime_reminders",
+                    title="Runtime reminders",
+                    content=f"Runtime reminders for {user_request}",
+                    metadata={"cache_class": "ephemeral"},
+                ),
+            ),
+            current_user_request=user_request,
+        )
+
+    first = builder.build(config=config, contract=contract("first task"), tools=(_tool("Read"),))
+    second = builder.build(config=config, contract=contract("second task"), tools=(_tool("Read"),))
+
+    assert first.cacheable_prefix_hash() == second.cacheable_prefix_hash()
+    assert first.volatile_hash != second.volatile_hash
+
+
 def test_request_shape_builder_changes_tool_schema_hash_for_parameter_changes(
     tmp_path: Path,
 ) -> None:
@@ -491,14 +598,16 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "assistant",
         "tool",
         "user",
+        "user",
     ]
     assert [message.content for message in shape.provider_messages] == [
         "Stable system rules.",
-        "Runtime reminders: use compact answers\nAvailable skills:\n- code-review: Review code",
+        "Available skills:\n- code-review: Review code",
         "inspect README",
         "I will read README.",
         "README contents",
         "summarize the result",
+        "Runtime reminders: use compact answers",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
@@ -507,9 +616,10 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "assistant",
         "tool",
         "user",
+        "user",
     ]
     assert shape.provider_runtime_items[-1].blocks == (
-        RuntimeBlock(type="text", text="summarize the result"),
+        RuntimeBlock(type="text", text="Runtime reminders: use compact answers"),
     )
     assert all(message.role != "developer" for message in shape.provider_messages)
     assert all(item.role != "developer" for item in shape.provider_runtime_items)
@@ -780,17 +890,22 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
 
     assert "volatile:context" not in fragments
     assert fragments["volatile:environment_context"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["volatile:environment_context"].stability is FragmentStability.REPLAY
     assert fragments["retrieved_memory"].kind is RequestFragmentKind.RETRIEVED_MEMORY
+    assert fragments["retrieved_memory"].stability is FragmentStability.REPLAY
     assert fragments["volatile:plan"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["volatile:plan"].stability is FragmentStability.REPLAY
     assert fragments["volatile:runtime_reminders"].kind is RequestFragmentKind.VOLATILE
-    assert shape.provider_messages[-1].content == "\n".join(
+    assert fragments["volatile:runtime_reminders"].stability is FragmentStability.VOLATILE
+    assert shape.provider_messages[-3].content == "\n".join(
         [
             "Workspace root: /tmp/demo",
             "Memory: prefers concise replies",
             "Current plan: inspect",
-            "Runtime reminders: use compact answers",
         ]
     )
+    assert shape.provider_messages[-2].content == "Current user request: inspect"
+    assert shape.provider_messages[-1].content == "Runtime reminders: use compact answers"
 
 
 def test_request_shape_builder_uses_replayed_current_user_request_without_duplicate_intent_message(

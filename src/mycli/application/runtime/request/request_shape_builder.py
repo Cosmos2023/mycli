@@ -35,7 +35,7 @@ class RequestShapeBuilder:
         normalized_tools = self._normalized_tools(tools)
         tool_schema = self._tool_schema_content(normalized_tools)
         tool_order = "\n".join(tool["name"] for tool in normalized_tools)
-        volatile_context = self._render_volatile_context(contract)
+        contextual_fragments = self._contextual_fragments(contract)
         intent_content = f"Current user request: {contract.current_user_request}"
 
         fragments = (
@@ -44,13 +44,24 @@ class RequestShapeBuilder:
                 kind=RequestFragmentKind.STABLE,
                 content=contract.base_instructions,
                 stability=FragmentStability.STABLE,
+                metadata={
+                    "source": "system_prompt",
+                    "cache_class": "static",
+                    "section_hash": stable_hash(contract.base_instructions),
+                },
             ),
             RequestFragment(
                 id="stable:tool_schema",
                 kind=RequestFragmentKind.STABLE,
                 content=tool_schema,
                 stability=FragmentStability.STABLE,
+                metadata={
+                    "source": "tool_schema",
+                    "cache_class": "static",
+                    "section_hash": stable_hash(tool_schema),
+                },
             ),
+            *self._stable_contextual_fragments(contextual_fragments),
             RequestFragment(
                 id="replay:conversation",
                 kind=RequestFragmentKind.REPLAY,
@@ -59,13 +70,19 @@ class RequestShapeBuilder:
                 ),
                 stability=FragmentStability.REPLAY,
             ),
+            *self._dynamic_contextual_fragments(contextual_fragments),
             RequestFragment(
                 id="intent:current",
                 kind=RequestFragmentKind.INTENT,
                 content=intent_content,
                 stability=FragmentStability.VOLATILE,
+                metadata={
+                    "source": "user_message",
+                    "cache_class": "ephemeral",
+                    "section_hash": stable_hash(intent_content),
+                },
             ),
-            *self._contextual_fragments(contract),
+            *self._ephemeral_contextual_fragments(contextual_fragments),
         )
         return RequestShape(
             provider=str(config.provider),
@@ -79,13 +96,11 @@ class RequestShapeBuilder:
                 config=config,
                 contract=contract,
                 intent_content=intent_content,
-                volatile_context=volatile_context,
             ),
             provider_runtime_items=self._provider_runtime_items(
                 config=config,
                 contract=contract,
                 intent_content=intent_content,
-                volatile_context=volatile_context,
             ),
         )
 
@@ -95,12 +110,24 @@ class RequestShapeBuilder:
         config: AgentConfig,
         contract: InstructionContract,
         intent_content: str,
-        volatile_context: str,
     ) -> tuple[ProviderMessageShape, ...]:
         if self._uses_transcript_only_messages(config):
             return self._transcript_provider_messages(contract)
         if self._uses_responses_delta_input(config):
             return self._responses_provider_messages(contract)
+
+        stable_context = self._render_context_by_cache_class(
+            contract,
+            cache_classes={"static"},
+        )
+        dynamic_context = self._render_context_by_cache_class(
+            contract,
+            cache_classes={"dynamic"},
+        )
+        ephemeral_context = self._render_context_by_cache_class(
+            contract,
+            cache_classes={"ephemeral"},
+        )
 
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
@@ -111,14 +138,18 @@ class RequestShapeBuilder:
         )
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
+        if stable_context:
+            messages.append(ProviderMessageShape(role="user", content=stable_context))
         for message in self._replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
+        if dynamic_context:
+            messages.append(ProviderMessageShape(role="user", content=dynamic_context))
         if intent_content and not self._replay_contains_current_user_request(contract):
             messages.append(ProviderMessageShape(role="user", content=intent_content))
-        if volatile_context:
-            messages.append(ProviderMessageShape(role="user", content=volatile_context))
+        if ephemeral_context:
+            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         return tuple(messages)
 
     def _uses_transcript_only_messages(self, config: AgentConfig) -> bool:
@@ -131,7 +162,18 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderMessageShape, ...]:
-        delta_context = self._render_responses_delta_context(contract)
+        static_context = self._render_responses_delta_context(
+            contract,
+            cache_classes={"static"},
+        )
+        dynamic_context = self._render_responses_delta_context(
+            contract,
+            cache_classes={"dynamic"},
+        )
+        ephemeral_context = self._render_responses_delta_context(
+            contract,
+            cache_classes={"ephemeral"},
+        )
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
@@ -141,10 +183,14 @@ class RequestShapeBuilder:
         )
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
+        if static_context:
+            messages.append(ProviderMessageShape(role="user", content=static_context))
         for message in self._replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
+        if dynamic_context:
+            messages.append(ProviderMessageShape(role="user", content=dynamic_context))
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -154,8 +200,8 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
-        if delta_context:
-            messages.append(ProviderMessageShape(role="user", content=delta_context))
+        if ephemeral_context:
+            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         return tuple(messages)
 
     def _transcript_provider_messages(
@@ -164,11 +210,15 @@ class RequestShapeBuilder:
     ) -> tuple[ProviderMessageShape, ...]:
         stable_context = self._render_transcript_delta_context(
             contract,
-            include_kinds={"runtime_reminders", "skill_catalog"},
+            cache_classes={"static"},
         )
-        rehydration_context = self._render_transcript_delta_context(
+        dynamic_context = self._render_transcript_delta_context(
             contract,
-            include_kinds={"compaction_rehydration"},
+            cache_classes={"dynamic"},
+        )
+        ephemeral_context = self._render_transcript_delta_context(
+            contract,
+            cache_classes={"ephemeral"},
         )
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
@@ -179,8 +229,8 @@ class RequestShapeBuilder:
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
-        if rehydration_context:
-            messages.append(ProviderMessageShape(role="user", content=rehydration_context))
+        if dynamic_context:
+            messages.append(ProviderMessageShape(role="user", content=dynamic_context))
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -190,6 +240,8 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
+        if ephemeral_context:
+            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         return tuple(messages)
 
     def _provider_runtime_items(
@@ -198,12 +250,24 @@ class RequestShapeBuilder:
         config: AgentConfig,
         contract: InstructionContract,
         intent_content: str,
-        volatile_context: str,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
         if self._uses_transcript_only_messages(config):
             return self._transcript_provider_runtime_items(contract)
         if self._uses_responses_delta_input(config):
             return self._responses_provider_runtime_items(contract)
+
+        stable_context = self._render_context_by_cache_class(
+            contract,
+            cache_classes={"static"},
+        )
+        dynamic_context = self._render_context_by_cache_class(
+            contract,
+            cache_classes={"dynamic"},
+        )
+        ephemeral_context = self._render_context_by_cache_class(
+            contract,
+            cache_classes={"ephemeral"},
+        )
 
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
@@ -222,10 +286,24 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=developer_content),),
                 )
             )
+        if stable_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=stable_context),),
+                )
+            )
         for message in self._chat_completions_replay_messages(contract):
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        if dynamic_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=dynamic_context),),
+                )
+            )
         if intent_content and not self._replay_contains_current_user_request(contract):
             items.append(
                 ProviderRuntimeItemShape(
@@ -233,11 +311,11 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=intent_content),),
                 )
             )
-        if volatile_context:
+        if ephemeral_context:
             items.append(
                 ProviderRuntimeItemShape(
                     role="user",
-                    blocks=(RuntimeBlock(type="text", text=volatile_context),),
+                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
                 )
         )
         return tuple(items)
@@ -246,7 +324,18 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
-        delta_context = self._render_responses_delta_context(contract)
+        static_context = self._render_responses_delta_context(
+            contract,
+            cache_classes={"static"},
+        )
+        dynamic_context = self._render_responses_delta_context(
+            contract,
+            cache_classes={"dynamic"},
+        )
+        ephemeral_context = self._render_responses_delta_context(
+            contract,
+            cache_classes={"ephemeral"},
+        )
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
                 role="system",
@@ -264,10 +353,24 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=developer_content),),
                 )
             )
+        if static_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=static_context),),
+                )
+            )
         for message in self._replay_messages(contract):
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        if dynamic_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=dynamic_context),),
+                )
+            )
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -277,11 +380,11 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
                 )
             )
-        if delta_context:
+        if ephemeral_context:
             items.append(
                 ProviderRuntimeItemShape(
                     role="user",
-                    blocks=(RuntimeBlock(type="text", text=delta_context),),
+                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
                 )
             )
         return tuple(items)
@@ -292,11 +395,15 @@ class RequestShapeBuilder:
     ) -> tuple[ProviderRuntimeItemShape, ...]:
         stable_context = self._render_transcript_delta_context(
             contract,
-            include_kinds={"runtime_reminders", "skill_catalog"},
+            cache_classes={"static"},
         )
-        rehydration_context = self._render_transcript_delta_context(
+        dynamic_context = self._render_transcript_delta_context(
             contract,
-            include_kinds={"compaction_rehydration"},
+            cache_classes={"dynamic"},
+        )
+        ephemeral_context = self._render_transcript_delta_context(
+            contract,
+            cache_classes={"ephemeral"},
         )
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
@@ -315,11 +422,11 @@ class RequestShapeBuilder:
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
-        if rehydration_context:
+        if dynamic_context:
             items.append(
                 ProviderRuntimeItemShape(
                     role="user",
-                    blocks=(RuntimeBlock(type="text", text=rehydration_context),),
+                    blocks=(RuntimeBlock(type="text", text=dynamic_context),),
                 )
             )
         if contract.current_user_request and not self._replay_contains_current_user_request(
@@ -329,6 +436,13 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
+                )
+            )
+        if ephemeral_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
                 )
             )
         return tuple(items)
@@ -369,10 +483,16 @@ class RequestShapeBuilder:
             for message in contract.conversation_messages
         )
 
-    def _render_volatile_context(self, contract: InstructionContract) -> str:
+    def _render_context_by_cache_class(
+        self,
+        contract: InstructionContract,
+        *,
+        cache_classes: set[str],
+    ) -> str:
         return self._join_content(
             self._contextual_section_content(section, contract)
-            for section in contract.contextual_user_sections
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) in cache_classes
         )
 
     def _developer_section_content(self, section: InstructionFragment) -> str:
@@ -383,10 +503,16 @@ class RequestShapeBuilder:
             "equal toolset. Tool execution safety is enforced by the runtime."
         )
 
-    def _render_responses_delta_context(self, contract: InstructionContract) -> str:
+    def _render_responses_delta_context(
+        self,
+        contract: InstructionContract,
+        *,
+        cache_classes: set[str],
+    ) -> str:
         return self._join_content(
             self._contextual_section_content(section, contract)
-            for section in contract.contextual_user_sections
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) in cache_classes
             if self._responses_contextual_section_is_model_visible(section)
         )
 
@@ -394,13 +520,13 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
         *,
-        include_kinds: set[str] | None = None,
+        cache_classes: set[str],
     ) -> str:
         return self._join_content(
             self._contextual_section_content(section, contract)
-            for section in contract.contextual_user_sections
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) in cache_classes
             if self._transcript_contextual_section_is_model_visible(section)
-            and (include_kinds is None or str(section.kind) in include_kinds)
         )
 
     def _transcript_contextual_section_is_model_visible(
@@ -439,21 +565,99 @@ class RequestShapeBuilder:
             index = seen.get(base_id, 0)
             seen[base_id] = index + 1
             fragment_id = base_id if index == 0 else f"{base_id}:{index + 1}"
+            cache_class = self._cache_class(section)
+            stability = self._fragment_stability(cache_class)
             fragments.append(
                 RequestFragment(
                     id=fragment_id,
                     kind=kind,
                     content=content,
-                    stability=FragmentStability.VOLATILE,
+                    stability=stability,
                     metadata={
                         "title": section.title,
                         "source": section.source,
+                        "cache_class": cache_class,
                         "instruction_fragment_kind": str(section.kind),
+                        "section_hash": stable_hash(content),
                         **dict(section.metadata),
                     },
                 )
             )
         return tuple(fragments)
+
+    def _stable_contextual_fragments(
+        self,
+        fragments: tuple[RequestFragment, ...],
+    ) -> tuple[RequestFragment, ...]:
+        return tuple(
+            fragment for fragment in fragments if fragment.stability is FragmentStability.STABLE
+        )
+
+    def _dynamic_contextual_fragments(
+        self,
+        fragments: tuple[RequestFragment, ...],
+    ) -> tuple[RequestFragment, ...]:
+        return tuple(
+            fragment for fragment in fragments if fragment.stability is FragmentStability.REPLAY
+        )
+
+    def _ephemeral_contextual_fragments(
+        self,
+        fragments: tuple[RequestFragment, ...],
+    ) -> tuple[RequestFragment, ...]:
+        return tuple(
+            fragment for fragment in fragments if fragment.stability is FragmentStability.VOLATILE
+        )
+
+    def _provider_visible_contextual_sections(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[InstructionFragment, ...]:
+        return tuple(
+            sorted(
+                contract.contextual_user_sections,
+                key=lambda section: (
+                    self._cache_class_order(self._cache_class(section)),
+                    self._section_kind_order(str(section.kind)),
+                ),
+            )
+        )
+
+    def _cache_class(self, section: InstructionFragment) -> str:
+        value = section.metadata.get("cache_class")
+        if value in {"static", "dynamic", "ephemeral"}:
+            return str(value)
+        section_kind = str(section.kind)
+        if section_kind in {"tool_exposure", "workspace_instructions", "skill_catalog"}:
+            return "static"
+        if section_kind in {"runtime_reminders", "user_request"}:
+            return "ephemeral"
+        return "dynamic"
+
+    def _cache_class_order(self, cache_class: str) -> int:
+        return {"static": 0, "dynamic": 1, "ephemeral": 2}.get(cache_class, 1)
+
+    def _section_kind_order(self, section_kind: str) -> int:
+        order = {
+            "tool_exposure": 0,
+            "workspace_instructions": 1,
+            "skill_catalog": 2,
+            "environment_context": 10,
+            "conversation_context": 11,
+            "compaction_rehydration": 12,
+            "memory": 13,
+            "plan": 14,
+            "runtime_reminders": 20,
+            "user_request": 21,
+        }
+        return order.get(section_kind, 50)
+
+    def _fragment_stability(self, cache_class: str) -> FragmentStability:
+        if cache_class == "static":
+            return FragmentStability.STABLE
+        if cache_class == "dynamic":
+            return FragmentStability.REPLAY
+        return FragmentStability.VOLATILE
 
     def _contextual_section_content(
         self,
@@ -497,6 +701,8 @@ class RequestShapeBuilder:
             return "retrieved_memory", RequestFragmentKind.RETRIEVED_MEMORY
         if normalized == "tool_exposure":
             return "stable:tool_exposure", RequestFragmentKind.STABLE
+        if normalized in {"workspace_instructions", "skill_catalog"}:
+            return f"stable:{normalized}", RequestFragmentKind.STABLE
         return f"volatile:{normalized}", RequestFragmentKind.VOLATILE
 
     def _normalized_tools(

@@ -18,6 +18,9 @@ class RequestShapeDiagnostic:
     volatile_hash: str
     fragment_hashes: dict[str, str]
     provider_message_hashes: tuple[str, ...]
+    cacheable_prefix_fragment_ids: tuple[str, ...]
+    cacheable_prefix_hash: str
+    estimated_cacheable_prefix_chars: int
     fragment_lengths: dict[str, int]
     provider_message_lengths: tuple[int, ...]
     first_changed_fragment_id: str | None = None
@@ -46,6 +49,12 @@ class RequestShapeDiagnostic:
             "volatile_hash": self.volatile_hash,
             "fragment_hashes": self.fragment_hashes,
             "provider_message_hashes": self.provider_message_hashes,
+            "cache_boundary": {
+                "fragment_ids": self.cacheable_prefix_fragment_ids,
+                "hash": self.cacheable_prefix_hash,
+                "estimated_chars": self.estimated_cacheable_prefix_chars,
+                "estimated_tokens": max(1, self.estimated_cacheable_prefix_chars // 4),
+            },
             "fragment_lengths": self.fragment_lengths,
             "provider_message_lengths": self.provider_message_lengths,
             "first_changed_fragment_id": self.first_changed_fragment_id,
@@ -83,6 +92,13 @@ class CacheShapeDiagnostics:
             provider_message_hashes=self._str_tuple(
                 current_summary["provider_message_hashes"]
             ),
+            cacheable_prefix_fragment_ids=self._str_tuple(
+                current_summary.get("cacheable_prefix_fragment_ids")
+            ),
+            cacheable_prefix_hash=str(current_summary.get("cacheable_prefix_hash") or ""),
+            estimated_cacheable_prefix_chars=self._int_value(
+                current_summary.get("estimated_cacheable_prefix_chars")
+            ),
             fragment_lengths=self._int_dict(current_summary["fragment_lengths"]),
             provider_message_lengths=self._int_tuple(
                 current_summary["provider_message_lengths"]
@@ -98,7 +114,7 @@ class CacheShapeDiagnostics:
             prompt_tokens=self._prompt_tokens(usage_payload),
             cache_hit_tokens=self._cache_hit_tokens(usage_payload),
             cache_miss_tokens=self._cache_miss_tokens(usage_payload),
-            metadata={} if metadata is None else dict(metadata),
+            metadata=self._metadata(current_summary, metadata),
         )
 
     def _first_changed_fragment_id(
@@ -203,3 +219,42 @@ class CacheShapeDiagnostics:
             for item in value
             if isinstance(item, int) and not isinstance(item, bool)
         )
+
+    def _int_value(self, value: object) -> int:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return 0
+
+    def _metadata(
+        self,
+        current_summary: dict[str, object],
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {} if metadata is None else dict(metadata)
+        fragment_metadata = current_summary.get("fragment_metadata")
+        result["fragment_metadata_complete"] = self._fragment_metadata_complete(
+            fragment_metadata
+        )
+        result["missing_fragment_metadata"] = self._missing_fragment_metadata(
+            fragment_metadata
+        )
+        return result
+
+    def _fragment_metadata_complete(self, value: object) -> bool:
+        return not self._missing_fragment_metadata(value)
+
+    def _missing_fragment_metadata(self, value: object) -> tuple[str, ...]:
+        if not isinstance(value, dict):
+            return ("<all>",)
+        missing: list[str] = []
+        for fragment_id, metadata in value.items():
+            if not isinstance(metadata, dict):
+                missing.append(str(fragment_id))
+                continue
+            if not metadata.get("cache_class") or not metadata.get("section_hash"):
+                missing.append(str(fragment_id))
+        return tuple(missing)
