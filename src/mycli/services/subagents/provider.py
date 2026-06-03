@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import PlanState
 from mycli.domain.subagents import SubAgentProfile, SubAgentResult
-from mycli.domain.subagent_profiles import list_sub_agent_profiles
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
@@ -83,6 +83,7 @@ class _SubAgentContributionTool:
 @dataclass(slots=True)
 class SubAgentToolContributionProvider:
     service: SupportsSubAgentTaskService
+    list_profiles: Callable[[], tuple[SubAgentProfile, ...]] | None = None
 
     def provide(
         self,
@@ -92,7 +93,8 @@ class SubAgentToolContributionProvider:
         plan_state: PlanState,
     ) -> tuple[ToolContributionRegistration, ...]:
         del user_message, conversation, plan_state
-        return tuple(self._registration(profile) for profile in list_sub_agent_profiles())
+        profiles = self.list_profiles() if self.list_profiles is not None else _builtin_profiles()
+        return tuple(self._registration(profile) for profile in profiles)
 
     def _registration(self, profile: SubAgentProfile) -> ToolContributionRegistration:
         route_name = f"subagent.{profile.name}"
@@ -139,6 +141,8 @@ class SubAgentToolContributionProvider:
                     "availability": "available",
                     "max_turns": profile.budget.max_turns,
                     "max_tool_calls": profile.budget.max_tool_calls,
+                    "risk_level": "medium",
+                    "approval_policy": "auto_allow_or_request",
                 },
             ),
             tool=_SubAgentContributionTool(
@@ -157,3 +161,9 @@ def _coerce_allowed_tools(value: object, *, fallback: tuple[str, ...]) -> tuple[
         tools = tuple(str(item).strip() for item in value if str(item).strip())
         return tools or fallback
     return fallback
+
+
+def _builtin_profiles() -> tuple[SubAgentProfile, ...]:
+    from mycli.domain.subagent_profiles import list_sub_agent_profiles
+
+    return tuple(list_sub_agent_profiles())

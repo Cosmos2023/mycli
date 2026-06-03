@@ -87,7 +87,7 @@ from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
 from mycli.services.extensions import ExtensionManifestService
-from mycli.services.subagents import SubAgentToolContributionProvider
+from mycli.services.subagents import SubAgentProfileRegistry, SubAgentToolContributionProvider
 from mycli.services.plugins import PluginCommandRegistry, load_enabled_plugins
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
@@ -414,12 +414,22 @@ class AgentRuntime:
             turn_id_provider=lambda: getattr(self, "_current_turn_id", "turn_unknown"),
             parent_tool_names=lambda: tuple(self._tool_registry.list_names()),
             child_loop=self._sub_agent_child_loop,
+            profile_lookup=SubAgentProfileRegistry(
+                workspace_root=config.workspace_root,
+                home_dir=home_dir,
+            ).get_profile,
             session_service=self._session_service,
         )
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
         self._contributed_tool_providers = (
             *self._contributed_tool_providers,
-            SubAgentToolContributionProvider(service=self._sub_agent_service),
+            SubAgentToolContributionProvider(
+                service=self._sub_agent_service,
+                list_profiles=SubAgentProfileRegistry(
+                    workspace_root=config.workspace_root,
+                    home_dir=home_dir,
+                ).list_profiles,
+            ),
         )
         self._tool_orchestrator = ToolOrchestrator(
             session_id=config.session_id,

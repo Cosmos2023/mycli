@@ -17,6 +17,8 @@ def test_builtin_profiles_are_stable_and_conservative() -> None:
         "Lint",
     )
     assert "Bash" not in get_sub_agent_profile("executor").default_tools
+    assert "Write" not in get_sub_agent_profile("executor").default_tools
+    assert "Edit" not in get_sub_agent_profile("executor").default_tools
     assert "Task" in get_sub_agent_profile("executor").denied_tools
 
 

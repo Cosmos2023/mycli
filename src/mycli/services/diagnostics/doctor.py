@@ -22,7 +22,7 @@ from mycli.services.hooks.config import HookEnvPolicy
 from mycli.services.hooks.builtin import permission_guard
 from mycli.services.mcp.diagnostics import discover_mcp_servers, redact_mcp_diagnostic_text
 from mycli.services.skills import SkillRegistry
-from mycli.services.subagents import inspect_subagent_profiles
+from mycli.services.subagents import inspect_configured_subagent_profiles
 from mycli.services.plugins import PluginCommandRegistry, PluginLoadStatus, load_enabled_plugins
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
@@ -1115,18 +1115,23 @@ class DoctorService:
         )
 
     def _check_subagents(self) -> Iterable[DoctorCheck]:
-        diagnostics = inspect_subagent_profiles()
+        diagnostics = inspect_configured_subagent_profiles(
+            workspace_root=self._workspace_root,
+            home_dir=self._home_dir,
+            known_tools=tuple(ToolRegistry(workspace_root=self._workspace_root).list_names()),
+        )
         status = DoctorStatus.WARNING if diagnostics.issue_count else DoctorStatus.OK
         message = (
             f"subagents: {diagnostics.profile_count} profiles, "
-            f"{diagnostics.available_count} available"
+            f"{diagnostics.available_count} enabled, "
+            f"{diagnostics.disabled_count} disabled"
         )
         return (
             DoctorCheck(
                 "subagents",
                 status,
                 message,
-                detail=diagnostics.safe_detail(),
+                detail=diagnostics.safe_detail() if not diagnostics.issues else "; ".join(diagnostics.issues[:3]),
             ),
         )
 

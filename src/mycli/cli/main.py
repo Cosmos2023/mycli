@@ -56,6 +56,12 @@ from mycli.services.plugins import (
     PluginManagementRow,
     PluginManagementService,
 )
+from mycli.services.subagents import (
+    SubAgentManagementResponse,
+    SubAgentManagementRow,
+    SubAgentManagementService,
+)
+from mycli.tools.registry import ToolRegistry
 
 __all__ = [
     "build_command_handler",
@@ -66,6 +72,7 @@ __all__ = [
     "handle_hooks_command",
     "handle_mcp_command",
     "handle_plugins_command",
+    "handle_subagents_command",
     "handle_slash_command",
     "main",
     "run_repl",
@@ -98,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["doctor", "hooks", "plugins", "mcp"],
+        choices=["doctor", "hooks", "plugins", "mcp", "subagents"],
         help="Run a utility command",
     )
     parser.add_argument("utility_args", nargs="*", help=argparse.SUPPRESS)
@@ -252,6 +259,81 @@ def handle_mcp_command(
         for line in render_mcp_management_response(response):
             output_func(line)
     return 0 if response.ok else 1
+
+
+def handle_subagents_command(
+    cli_args: dict[str, object],
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    output_func: Callable[[str], Any] = print,
+) -> int | None:
+    if cli_args.get("command") != "subagents":
+        return None
+    workspace_root = cwd or Path.cwd()
+    utility_args = cli_args.get("utility_args", [])
+    args = [str(item) for item in utility_args] if isinstance(utility_args, list) else []
+    service = SubAgentManagementService(
+        workspace_root=workspace_root,
+        home_dir=home or Path.home(),
+        known_tools=tuple(ToolRegistry(workspace_root=workspace_root).list_names()),
+    )
+    response = _dispatch_subagents_command(service, args)
+    if bool(cli_args.get("json_output")):
+        output_func(json.dumps(response.to_dict(), sort_keys=True))
+    else:
+        for line in render_subagent_management_response(response):
+            output_func(line)
+    return 0 if response.ok else 1
+
+
+def _dispatch_subagents_command(
+    service: SubAgentManagementService,
+    args: list[str],
+) -> SubAgentManagementResponse:
+    if not args:
+        return SubAgentManagementResponse(
+            ok=False,
+            action="usage",
+            message="usage: mycli subagents list|inspect [profile_id] [--json]",
+        )
+    action = args[0]
+    target = args[1] if len(args) > 1 else ""
+    if action == "list" and len(args) == 1:
+        return service.list_profiles()
+    if action == "inspect" and target and len(args) == 2:
+        return service.inspect_profile(target)
+    return SubAgentManagementResponse(
+        ok=False,
+        action=action,
+        message="usage: mycli subagents list|inspect [profile_id] [--json]",
+    )
+
+
+def render_subagent_management_response(response: SubAgentManagementResponse) -> tuple[str, ...]:
+    lines = [f"mycli subagents {response.action}: {response.message}"]
+    rows = response.profiles or ((response.profile,) if response.profile is not None else ())
+    for row in rows:
+        if row is not None:
+            lines.extend(_render_subagent_row(row))
+    for issue in response.issues:
+        lines.append(f"subagent_issue: {issue}")
+    return tuple(lines)
+
+
+def _render_subagent_row(row: SubAgentManagementRow) -> tuple[str, ...]:
+    allowed = ",".join(row.allowed_tools) if row.allowed_tools else "none"
+    denied = ",".join(row.denied_tools) if row.denied_tools else "none"
+    high_risk = ",".join(row.high_risk_tools) if row.high_risk_tools else "none"
+    lines = [
+        f"subagent {row.profile_id}",
+        f"  source={row.source} enabled={str(row.enabled).lower()} status={row.status}",
+        f"  allowed_tools={allowed}",
+        f"  denied_tools={denied}",
+        f"  high_risk_tools={high_risk} model={row.model or 'inherit'}",
+    ]
+    lines.extend(f"  issue={issue}" for issue in row.issues)
+    return tuple(lines)
 
 
 def _dispatch_mcp_command(
@@ -544,6 +626,14 @@ def main(
     )
     if mcp_exit_code is not None:
         return mcp_exit_code
+    subagents_exit_code = handle_subagents_command(
+        args,
+        cwd=cwd,
+        home=home,
+        output_func=output_func,
+    )
+    if subagents_exit_code is not None:
+        return subagents_exit_code
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
     if eval_exit_code is not None:
         return eval_exit_code

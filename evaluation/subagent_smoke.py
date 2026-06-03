@@ -5,51 +5,31 @@ import json
 from pathlib import Path
 import tempfile
 
-from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
-from mycli.application.runtime.tools.tool_orchestrator import ToolOrchestrator
+from mycli.application.runtime.subagents.service import SubAgentService
+from mycli.cli.main import handle_subagents_command
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import PlanState
 from mycli.domain.subagents import SubAgentResult
-from mycli.domain.tooling.calls import ToolCall
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
 from mycli.services.extensions import ExtensionManifestService
-from mycli.services.subagents import SubAgentToolContributionProvider
-from mycli.services.tracing import TraceService
-from mycli.tools.registry import ToolRegistry
-from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
+from mycli.services.subagents import SubAgentProfileRegistry, SubAgentToolContributionProvider
+from mycli.tools.task import TaskTool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO_ROOT / "evaluation" / "runs"
 
 
-class FakeSubAgentService:
+class FakeChildLoop:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def run_task(
-        self,
-        *,
-        description: str,
-        agent_type: str,
-        allowed_tools: tuple[str, ...],
-        mode: str = "sync",
-    ) -> SubAgentResult:
-        self.calls.append(
-            {
-                "description": description,
-                "agent_type": agent_type,
-                "allowed_tools": allowed_tools,
-                "mode": mode,
-            }
-        )
+    def run(self, **kwargs) -> SubAgentResult:
+        self.calls.append(kwargs)
         return SubAgentResult(
             status="completed",
-            report=(
-                f'<sub-agent-report agent="{agent_type}" status="completed" '
-                'child_session_id="subagent-smoke:sub:turn_1:abcd1234">ok</sub-agent-report>'
-            ),
-            child_session_id="subagent-smoke:sub:turn_1:abcd1234",
+            report="profile completed",
+            child_session_id=str(kwargs["child_session_id"]),
             tool_calls=1,
         )
 
@@ -60,90 +40,95 @@ def main() -> int:
         "created_at": datetime.now(tz=UTC).isoformat(),
     }
     with tempfile.TemporaryDirectory(prefix="mycli-subagent-smoke-") as tmp:
-        root = Path(tmp)
-        workspace = root / "workspace"
-        home = root / "home"
-        workspace.mkdir()
+        workspace = Path(tmp) / "workspace"
+        home = Path(tmp) / "home"
+        profile_dir = workspace / ".mycli" / "subagents"
+        profile_dir.mkdir(parents=True)
         home.mkdir()
+        _write_profiles(profile_dir)
 
-        service = FakeSubAgentService()
-        provider = SubAgentToolContributionProvider(service=service)
-        registrations = provider.provide(
-            user_message="map docs",
-            conversation=Conversation(session_id="subagent-smoke"),
-            plan_state=PlanState(),
+        registry = SubAgentProfileRegistry(workspace_root=workspace, home_dir=home)
+        discovery = registry.discover()
+        list_output: list[str] = []
+        inspect_output: list[str] = []
+        list_code = handle_subagents_command(
+            {"command": "subagents", "utility_args": ["list"], "json_output": True},
+            cwd=workspace,
+            home=home,
+            output_func=list_output.append,
         )
-        manifest = ExtensionManifestService(contributed_tools=registrations).manifest()
-        tool_registry = ToolRegistry(specs={}, executors={})
-        contribution_registry = ToolContributionRegistry()
-        orchestrator = ToolOrchestrator(
-            session_id="subagent-smoke",
-            tool_registry=tool_registry,
-            tool_exposure_planner=ToolExposurePlanner(tool_registry=tool_registry),
-            contributed_tool_registry=contribution_registry,
-            contributed_tool_providers=(provider,),
-            trace_service=TraceService(root / "traces"),
-            append_turn_item=lambda **_kwargs: None,
+        inspect_code = handle_subagents_command(
+            {"command": "subagents", "utility_args": ["inspect", "analyst"], "json_output": True},
+            cwd=workspace,
+            home=home,
+            output_func=inspect_output.append,
         )
-        planned = orchestrator.plan_tool_exposure(
-            user_message="map docs",
-            conversation=Conversation(session_id="subagent-smoke"),
-            plan_state=PlanState(),
+        loop = FakeChildLoop()
+        service = SubAgentService(
+            session_id="smoke",
+            turn_id_provider=lambda: "turn_1",
+            parent_tool_names=lambda: ("Read", "Grep", "Bash", "Task"),
+            child_loop=loop,
+            profile_lookup=registry.get_profile,
         )
-        router = orchestrator.build_tool_router(planned)
-        result = router.execute(
-            ToolCall(
-                name="subagent.explore",
-                arguments={
-                    "description": "Map docs and tests",
-                    "allowed_tools": ["Read", "Grep"],
-                },
-                reason="Subagent smoke",
-            ),
-            exposure=planned.exposure,
+        task_result = TaskTool(service=service).execute(
+            {
+                "description": "Analyze docs",
+                "agent_type": "analyst",
+                "allowed_tools": ["Read", "Grep", "Bash"],
+            }
         )
-        lifecycle = [event.state.value for event in (*planned.lifecycle_events, *router.pop_lifecycle_events())]
-        doctor = DoctorService(
+        disabled_result = TaskTool(service=service).execute(
+            {
+                "description": "Should fail",
+                "agent_type": "disabled",
+                "allowed_tools": ["Read"],
+            }
+        )
+        provider = SubAgentToolContributionProvider(service=service, list_profiles=registry.list_profiles)
+        manifest = ExtensionManifestService(
+            contributed_tools=provider.provide(
+                user_message="delegate",
+                conversation=Conversation(session_id="smoke"),
+                plan_state=PlanState(),
+            )
+        ).manifest()
+        tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
+        doctor_report = DoctorService(
             workspace_root=workspace,
             home_dir=home,
             env={},
             which=lambda _command: None,
             import_checker=lambda _module: False,
         ).run()
-        subagent_check = next(check for check in doctor.checks if check.name == "subagents")
-        tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
-        toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
+        subagent_check = next(check for check in doctor_report.checks if check.name == "subagents")
+        listed = json.loads(list_output[0])
+        inspected = json.loads(inspect_output[0])
+
         report.update(
             {
                 "success": (
-                    tools["subagent.explore"]["source"] == "subagent"
-                    and "subagent.explore" in toolsets["external"]["tools"]
-                    and result.success
-                    and result.summary == "Sub-agent explore completed with status completed."
-                    and service.calls
-                    and service.calls[0]["agent_type"] == "explore"
-                    and lifecycle
-                    == [
-                        "declared",
-                        "declared",
-                        "declared",
-                        "exposed",
-                        "exposed",
-                        "exposed",
-                        "invoked",
-                        "completed",
-                    ]
+                    list_code == 0
+                    and inspect_code == 0
+                    and discovery.enabled_count >= 1
+                    and listed["ok"] is True
+                    and inspected["profile"]["profile_id"] == "analyst"
+                    and task_result.success is True
+                    and disabled_result.success is False
+                    and loop.calls[0]["tool_names"] == ("Read", "Grep")
+                    and tools["subagent.analyst"]["source"] == "subagent"
+                    and tools["subagent.analyst"]["risk_level"] == "medium"
                     and subagent_check.status is DoctorStatus.OK
-                    and "3 profiles" in subagent_check.message
-                    and "Map docs and tests" not in (subagent_check.detail or "")
                 ),
                 "checks": {
-                    "manifest_source": tools["subagent.explore"]["source"],
-                    "route": "subagent.explore",
-                    "toolset_sources": toolsets["external"]["sources"],
-                    "runtime_summary": result.summary,
-                    "service_call": service.calls[0] if service.calls else {},
-                    "lifecycle": lifecycle,
+                    "list_code": list_code,
+                    "inspect_code": inspect_code,
+                    "enabled_count": discovery.enabled_count,
+                    "task_success": task_result.success,
+                    "task_summary": task_result.summary,
+                    "disabled_success": disabled_result.success,
+                    "tool_names": loop.calls[0]["tool_names"],
+                    "manifest_source": tools["subagent.analyst"]["source"],
                     "doctor_status": subagent_check.status.value,
                     "doctor_message": subagent_check.message,
                     "doctor_detail": subagent_check.detail,
@@ -159,6 +144,32 @@ def main() -> int:
     )
     print(output_path)
     return 0 if report["success"] else 1
+
+
+def _write_profiles(profile_dir: Path) -> None:
+    profile_dir.joinpath("analyst.toml").write_text(
+        "\n".join(
+            [
+                'id = "analyst"',
+                'instruction = "Analyze docs safely."',
+                'allowed_tools = ["Read", "Grep"]',
+                'denied_tools = ["Bash"]',
+                "enabled = true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    profile_dir.joinpath("disabled.toml").write_text(
+        "\n".join(
+            [
+                'id = "disabled"',
+                'instruction = "Disabled profile."',
+                'allowed_tools = ["Read"]',
+                "enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

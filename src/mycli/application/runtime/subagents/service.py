@@ -12,12 +12,12 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
-from mycli.domain.subagent_profiles import get_sub_agent_profile
 from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
 from mycli.domain.runtime import HistoryItem, HistoryItemType
 from mycli.domain.subagents import (
     SubAgentInvocation,
+    SubAgentProfile,
     SubAgentResult,
     SubAgentRunSummary,
 )
@@ -60,6 +60,7 @@ class SubAgentService:
         turn_id_provider: Callable[[], str],
         parent_tool_names: Callable[[], tuple[str, ...]],
         child_loop: SubAgentChildLoop,
+        profile_lookup: Callable[[str], SubAgentProfile | None] | None = None,
         policy_denied_tools: Callable[[], tuple[str, ...]] | None = None,
         session_service: SupportsHistorySession | None = None,
         max_recent_runs: int = 20,
@@ -70,6 +71,7 @@ class SubAgentService:
         self._session_id = session_id
         self._turn_id_provider = turn_id_provider
         self._parent_tool_names = parent_tool_names
+        self._profile_lookup = profile_lookup or _builtin_profile_lookup
         self._policy_denied_tools = policy_denied_tools or (lambda: ())
         self._session_service = session_service
         self._child_loop = child_loop
@@ -110,7 +112,7 @@ class SubAgentService:
         invocation: SubAgentInvocation,
         child_session_id: str,
     ) -> SubAgentResult:
-        profile = get_sub_agent_profile(invocation.agent_type)
+        profile = self._profile_lookup(invocation.agent_type)
         if profile is None:
             result = SubAgentResult(
                 status="failed",
@@ -436,3 +438,9 @@ class SubAgentService:
 
 
 __all__ = ["SubAgentService"]
+
+
+def _builtin_profile_lookup(profile_id: str) -> SubAgentProfile | None:
+    from mycli.domain.subagent_profiles import get_sub_agent_profile
+
+    return get_sub_agent_profile(profile_id)
