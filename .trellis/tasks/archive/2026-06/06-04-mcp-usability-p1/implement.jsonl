@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline index for active contracts."}
+{"file": ".trellis/spec/backend/tool-manifest-contract.md", "reason": "MCP contributed tools must preserve manifest source/toolset metadata and bounded doctor diagnostics."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor diagnostics and redaction requirements apply to MCP health checks."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Cross-layer and code reuse guide index for service/runtime/CLI/test changes."}
+{"file": ".trellis/tasks/06-04-mcp-usability-p1/research/mcp-usability-research.md", "reason": "Task-specific research on current MCP P0 implementation and P1 gaps."}

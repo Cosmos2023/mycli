@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/tool-manifest-contract.md", "reason": "Verify manifest metadata and MCP doctor diagnostics remain compatible."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor and CLI diagnostics remain read-only, bounded, and redacted."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Check cross-layer consistency across MCP client, diagnostics, CLI, manifest, and tests."}
+{"file": ".trellis/tasks/06-04-mcp-usability-p1/prd.md", "reason": "Acceptance criteria for this slice."}
