@@ -47,7 +47,7 @@ def test_memory_service_queries_records_across_scopes(tmp_path: Path) -> None:
     assert records[0].value == "src/mycli/cli/main.py"
 
 
-def test_memory_service_does_not_auto_inject_session_summaries_into_runtime_context(
+def test_memory_service_rehydrates_session_summaries_into_runtime_context(
     tmp_path: Path,
 ) -> None:
     service = MemoryService(
@@ -62,10 +62,11 @@ def test_memory_service_does_not_auto_inject_session_summaries_into_runtime_cont
         session_id="demo",
     )
 
-    assert [record.kind for record in records] == [MemoryKind.PREFERENCE]
-    assert "Assistant answer from the previous turn" not in {
-        record.value for record in records
-    }
+    assert [record.kind for record in records] == [
+        MemoryKind.PREFERENCE,
+        MemoryKind.SESSION_SUMMARY,
+    ]
+    assert records[-1].value == "Assistant answer from the previous turn"
 
 
 def test_memory_service_ranks_lexical_matches_beyond_substrings(tmp_path: Path) -> None:

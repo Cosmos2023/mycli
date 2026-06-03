@@ -623,6 +623,11 @@ class TurnExecutor:
             ).get("decision") == "summarize"
             if conversation_for_model is not conversation:
                 conversation = conversation_for_model
+            if l4_applied_before_request:
+                runtime._persist_compaction_summaries(
+                    turn_id=turn_id,
+                    conversation=conversation_for_model,
+                )
             runtime._record_context_window_metrics()
             runtime._record_l4_decision_metric(
                 runtime._compaction_pipeline.llm_summarization.last_cost_metrics
@@ -699,6 +704,10 @@ class TurnExecutor:
                 )
                 runtime._record_l4_decision_metric(
                     runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+                )
+                runtime._persist_compaction_summaries(
+                    turn_id=turn_id,
+                    conversation=conversation_for_model,
                 )
                 conversation = conversation_for_model
                 compaction_rehydration = runtime._build_compaction_rehydration_context(
@@ -862,6 +871,10 @@ class TurnExecutor:
                                 )
                                 runtime._record_l4_decision_metric(
                                     runtime._compaction_pipeline.llm_summarization.last_cost_metrics
+                                )
+                                runtime._persist_compaction_summaries(
+                                    turn_id=turn_id,
+                                    conversation=reactive_compacted,
                                 )
                                 carryover_runtime_reminders = tuple(
                                     dict.fromkeys(

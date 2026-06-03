@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
 from mycli.domain.tooling.exposure import ToolExposure
 from mycli.memory.service import MemoryService
 from mycli.services.context.context_manager import ContextManager
+from mycli.services.context.context_files import ContextFileLoader
 from mycli.services.context.skill_catalog import render_skill_catalog
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.services.skills import SkillRegistry
@@ -32,6 +33,7 @@ class RuntimeContextBuilder:
         skill_registry: SkillRegistry,
         tool_registry: ToolRegistry,
         workspace_log_service: WorkspaceLogService,
+        context_file_loader: ContextFileLoader | None = None,
     ) -> None:
         self._config = config
         self._session_service = session_service
@@ -41,6 +43,7 @@ class RuntimeContextBuilder:
         self._skill_registry = skill_registry
         self._tool_registry = tool_registry
         self._workspace_log_service = workspace_log_service
+        self._context_file_loader = context_file_loader or ContextFileLoader()
 
     def set_config(self, config: AgentConfig) -> None:
         self._config = config
@@ -74,6 +77,9 @@ class RuntimeContextBuilder:
             if tool_exposure is not None
             else tuple(self._tool_registry.list_names())
         )
+        loaded_context = self._context_file_loader.load(
+            workspace_root=self._config.workspace_root,
+        )
         return ExecutionContext(
             config=self._config,
             memory_records=self._memory_service.collect_runtime_context(
@@ -92,6 +98,8 @@ class RuntimeContextBuilder:
             compaction_rehydration=(
                 compaction_rehydration or CompactionRehydrationContext()
             ),
+            context_file_content=loaded_context.content,
+            context_file_diagnostics=loaded_context.diagnostics.to_dict(),
         )
 
     def assemble_turn_context(
@@ -115,6 +123,7 @@ class RuntimeContextBuilder:
         turn_context = self._turn_context_assembler.assemble(
             user_message=user_message,
             context=context,
+            workspace_instructions=context.context_file_content or None,
         )
         summary = turn_context.debug_summary()
         self._workspace_log_service.log(
@@ -125,6 +134,8 @@ class RuntimeContextBuilder:
                 "session_id": self._config.session_id,
                 "enabled_sections": summary["enabled_sections"],
                 "section_order": summary["section_order"],
+                "cache_classes": summary["cache_classes"],
+                "context_file": context.context_file_diagnostics,
             },
         )
         return context, turn_context

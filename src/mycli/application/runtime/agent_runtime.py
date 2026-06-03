@@ -40,6 +40,7 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    stable_hash,
 )
 from mycli.domain.logging import LogLevel
 from mycli.domain.subagents import SubAgentRunSummary
@@ -1254,6 +1255,46 @@ class AgentRuntime:
         self._observability_service.metrics.record_l4_decision(
             decision=decision,
             source=source if isinstance(source, str) else None,
+        )
+
+    def _persist_compaction_summaries(
+        self,
+        *,
+        turn_id: str,
+        conversation: Conversation,
+    ) -> None:
+        existing = {
+            stable_hash(summary)
+            for summary in self._memory_service.load_session_summaries(
+                self._config.session_id
+            )
+        }
+        persisted = 0
+        skipped = 0
+        for message in conversation.messages:
+            if message.role != "assistant" or not message.metadata.get("compaction"):
+                continue
+            summary = message.content.strip()
+            if not summary:
+                continue
+            digest = stable_hash(summary)
+            if digest in existing:
+                skipped += 1
+                continue
+            self._memory_service.append_session_summary(self._config.session_id, summary)
+            existing.add(digest)
+            persisted += 1
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="context_summary_persistence",
+                turn_id=turn_id,
+                payload={
+                    "persisted_count": persisted,
+                    "duplicate_skipped_count": skipped,
+                    "session_summary_count": len(existing),
+                },
+            ),
         )
 
     def _build_compaction_rehydration_context(

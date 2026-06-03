@@ -449,6 +449,7 @@ class RequestShapeBuilder:
                         "title": section.title,
                         "source": section.source,
                         "instruction_fragment_kind": str(section.kind),
+                        **dict(section.metadata),
                     },
                 )
             )

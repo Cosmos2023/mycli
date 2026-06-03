@@ -19,6 +19,12 @@ class TurnContextSectionType(StrEnum):
     USER_REQUEST = "user_request"
 
 
+class TurnContextCacheClass(StrEnum):
+    STATIC = "static"
+    DYNAMIC = "dynamic"
+    EPHEMERAL = "ephemeral"
+
+
 @dataclass(slots=True, frozen=True)
 class TurnContextSection:
     type: TurnContextSectionType
@@ -27,6 +33,7 @@ class TurnContextSection:
     enabled: bool = True
     source: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    cache_class: TurnContextCacheClass = TurnContextCacheClass.DYNAMIC
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,4 +52,7 @@ class TurnContext:
             "section_order": [section.type.value for section in self.sections],
             "enabled_sections": enabled_sections,
             "disabled_sections": disabled_sections,
+            "cache_classes": {
+                section.type.value: section.cache_class.value for section in self.sections
+            },
         }

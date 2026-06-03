@@ -20,6 +20,7 @@ from mycli.services.extensions import ExtensionManifestService
 from mycli.services.hooks import HookAllowlist, HookConfigRegistry, HookManager, HookPoint
 from mycli.services.hooks.config import HookEnvPolicy
 from mycli.services.hooks.builtin import permission_guard
+from mycli.services.context.context_files import ContextFileLoader
 from mycli.services.mcp.diagnostics import discover_mcp_servers, redact_mcp_diagnostic_text
 from mycli.services.skills import SkillRegistry
 from mycli.services.subagents import inspect_configured_subagent_profiles
@@ -166,6 +167,18 @@ class _TurnInterruptDiagnosticsSummary:
     unreadable: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _ContextDiagnosticsSummary:
+    context_count: int
+    summary_persistence_count: int
+    blocked_count: int
+    truncated_count: int
+    max_estimated_context_tokens: int
+    persisted_summary_count: int
+    duplicate_summary_count: int
+    unreadable: tuple[str, ...]
+
+
 class DoctorStatus(StrEnum):
     OK = "ok"
     WARNING = "warning"
@@ -230,6 +243,7 @@ class DoctorService:
             self._check_logs_redaction,
             self._check_storage_layout,
             self._check_traces,
+            self._check_context,
             self._check_stream_diagnostics,
             self._check_approval_diagnostics,
             self._check_clarification_diagnostics,
@@ -964,6 +978,45 @@ class DoctorService:
                     f"stop_reasons: {_format_count_pairs(summary.stop_reasons)}; "
                     f"phases: {_format_count_pairs(summary.phases)}"
                 ),
+            ),
+        )
+
+    def _check_context(self) -> Iterable[DoctorCheck]:
+        loaded = ContextFileLoader().load(workspace_root=self._workspace_root)
+        diagnostics = loaded.diagnostics
+        summary_count = _session_summary_count(self._layout.sessions_db_path)
+        trace_summary = _summarize_context_diagnostics(
+            sorted(self._layout.traces_dir.glob("*.jsonl"))[:_TRACE_SCAN_LIMIT]
+            if self._layout.traces_dir.exists() and self._layout.traces_dir.is_dir()
+            else ()
+        )
+        status = DoctorStatus.OK
+        if diagnostics.blocked or trace_summary.blocked_count:
+            status = DoctorStatus.WARNING
+        if trace_summary.unreadable:
+            status = DoctorStatus.FAILED
+        source = diagnostics.selected_source or "none"
+        message = (
+            f"context source={source} "
+            f"blocked={str(diagnostics.blocked).lower()} "
+            f"truncated={str(diagnostics.truncated).lower()} "
+            f"session_summaries={summary_count} "
+            f"context_trace_rows={trace_summary.context_count} "
+            f"summary_persisted={trace_summary.persisted_summary_count}"
+        )
+        detail_parts = [
+            f"issues={_bounded_name_list(list(diagnostics.issues)) if diagnostics.issues else 'none'}",
+            f"max_estimated_context_tokens={trace_summary.max_estimated_context_tokens}",
+            f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
+        ]
+        if trace_summary.unreadable:
+            detail_parts.append(f"unreadable={_bounded_name_list(list(trace_summary.unreadable))}")
+        return (
+            DoctorCheck(
+                "context",
+                status,
+                message,
+                detail="; ".join(detail_parts),
             ),
         )
 
@@ -1913,6 +1966,85 @@ def _summarize_turn_interrupt_diagnostics(
         sources=ordered_sources,
         unreadable=tuple(unreadable),
     )
+
+
+def _summarize_context_diagnostics(
+    paths: Iterable[Path],
+) -> _ContextDiagnosticsSummary:
+    context_count = 0
+    summary_persistence_count = 0
+    blocked_count = 0
+    truncated_count = 0
+    max_estimated_context_tokens = 0
+    persisted_summary_count = 0
+    duplicate_summary_count = 0
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind == "context_diagnostics":
+                        context_count += 1
+                        context_file = event.payload.get("context_file")
+                        if isinstance(context_file, dict):
+                            if context_file.get("blocked") is True:
+                                blocked_count += 1
+                            if context_file.get("truncated") is True:
+                                truncated_count += 1
+                        tokens = _optional_non_negative_int(
+                            event.payload.get("estimated_context_tokens")
+                        )
+                        if tokens is not None:
+                            max_estimated_context_tokens = max(
+                                max_estimated_context_tokens,
+                                tokens,
+                            )
+                    elif event.kind == "context_summary_persistence":
+                        summary_persistence_count += 1
+                        persisted = _optional_non_negative_int(
+                            event.payload.get("persisted_count")
+                        )
+                        duplicates = _optional_non_negative_int(
+                            event.payload.get("duplicate_skipped_count")
+                        )
+                        persisted_summary_count += persisted or 0
+                        duplicate_summary_count += duplicates or 0
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    return _ContextDiagnosticsSummary(
+        context_count=context_count,
+        summary_persistence_count=summary_persistence_count,
+        blocked_count=blocked_count,
+        truncated_count=truncated_count,
+        max_estimated_context_tokens=max_estimated_context_tokens,
+        persisted_summary_count=persisted_summary_count,
+        duplicate_summary_count=duplicate_summary_count,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _session_summary_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM session_summaries"
+            ).fetchone()
+    except sqlite3.Error:
+        return 0
+    if row is None:
+        return 0
+    value = row[0]
+    return value if isinstance(value, int) else 0
 
 
 def _parse_trace_event_line(line: str) -> RuntimeTraceEvent:

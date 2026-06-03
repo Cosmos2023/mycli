@@ -72,6 +72,7 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
     ]
     assert contract.current_user_request == "inspect this repo with $repository-analysis"
     assert contract.contextual_user_sections[0].include_in_memory is False
+    assert contract.contextual_user_sections[0].metadata["cache_class"] == "static"
     assert "这是本轮的工作区/项目说明。" in contract.contextual_user_sections[0].content
     reminder_fragment = next(
         fragment
@@ -166,6 +167,7 @@ def test_instruction_contract_assembler_emits_compaction_rehydration_fragment() 
         if item.kind == "compaction_rehydration"
     )
     assert fragment.include_in_memory is False
+    assert fragment.metadata["cache_class"] == "dynamic"
     assert "[Compaction file rehydration]" in fragment.content
 
 

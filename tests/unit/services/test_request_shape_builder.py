@@ -104,6 +104,36 @@ def test_request_shape_builder_keeps_stable_hashes_when_volatile_context_changes
     assert first.volatile_hash != second.volatile_hash
 
 
+def test_request_shape_builder_preserves_context_section_metadata(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content="<memory-context>reference only</memory-context>",
+                    source="memory",
+                    metadata={
+                        "cache_class": "dynamic",
+                        "record_count": 1,
+                    },
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(),
+    )
+
+    fragment = next(item for item in shape.fragments if item.id == "retrieved_memory")
+    assert fragment.metadata["cache_class"] == "dynamic"
+    assert fragment.metadata["record_count"] == 1
+    assert fragment.metadata["instruction_fragment_kind"] == "memory"
+
+
 def test_request_shape_builder_changes_tool_schema_hash_for_parameter_changes(
     tmp_path: Path,
 ) -> None:

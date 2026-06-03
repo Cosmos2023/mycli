@@ -245,7 +245,10 @@ class MemoryService:
                 kinds=(MemoryKind.PROJECT_NOTE,),
                 limit=5,
             )
-        return preference_records + project_records
+        session_summary_records = self._session_summary_records(session_id)
+        return self._deduplicate(
+            (*preference_records, *project_records, *session_summary_records)
+        )
 
     def _rank_records(
         self,
