@@ -143,10 +143,10 @@ def test_mcp_tool_adapter_exposes_stubs_then_hydrates_full_schema_on_demand() ->
 
     stubs = adapter.list_tool_stubs()
     registration = stubs[0]
-    hydrated = adapter.load_tool_schema("mcp.fs.search")
+    hydrated = adapter.load_tool_schema("mcp_fs_search")
     result = registration.tool.execute({"query": "needle"})
 
-    assert registration.descriptor.route_name == "mcp.fs.search"
+    assert registration.descriptor.route_name == "mcp_fs_search"
     assert registration.descriptor.spec.parameters == ()
     assert [parameter.name for parameter in hydrated.parameters] == ["query", "limit"]
     assert hydrated.parameters[0].required is True

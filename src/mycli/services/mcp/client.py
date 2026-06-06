@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, IO, Literal, Protocol
 
+from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.tools.base import ToolParameter
 
 JsonObject = dict[str, Any]
@@ -69,11 +70,15 @@ class McpToolDescriptor:
 
     @property
     def route_namespace(self) -> str:
-        return f"mcp.{self.server_name}"
+        return provider_safe_tool_name("mcp", self.server_name)
 
     @property
     def route_name(self) -> str:
-        return f"{self.route_namespace}.{self.name}"
+        return provider_safe_tool_name("mcp", self.server_name, self.name)
+
+    @property
+    def legacy_route_name(self) -> str:
+        return f"mcp.{self.server_name}.{self.name}"
 
     def tool_parameters(self) -> tuple[ToolParameter, ...]:
         properties = self.input_schema.get("properties")

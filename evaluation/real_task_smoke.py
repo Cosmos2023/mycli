@@ -367,8 +367,8 @@ def _mcp_backed_lookup(root: Path) -> dict[str, Any]:
             turn_status=TurnStatus.COMPLETED.value,
             stop_reason=StopReason.ASSISTANT_COMPLETED.value,
             tool_events=(
-                _tool_event(TurnItemType.TOOL_CALL.value, "mcp.local.echo", "Call MCP echo", "mcp_echo"),
-                _tool_event(TurnItemType.TOOL_RESULT.value, "mcp.local.echo", result.summary, "mcp_echo"),
+                _tool_event(TurnItemType.TOOL_CALL.value, "mcp_local_echo", "Call MCP echo", "mcp_echo"),
+                _tool_event(TurnItemType.TOOL_RESULT.value, "mcp_local_echo", result.summary, "mcp_echo"),
             ),
         ),
         "checks": (

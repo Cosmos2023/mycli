@@ -13,6 +13,7 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
+from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.services.skills.registry import SkillRegistry
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
@@ -66,7 +67,8 @@ class SkillToolContributionProvider:
         del user_message, conversation, plan_state
         registrations: list[ToolContributionRegistration] = []
         for metadata in self.registry.list_metadata():
-            route_name = f"skill.{metadata.name}"
+            legacy_route_name = f"skill.{metadata.name}"
+            route_name = provider_safe_tool_name("skill", metadata.name)
             spec = ToolSpec(
                 name=route_name,
                 description=f"Load skill instructions: {metadata.description}",
@@ -86,7 +88,7 @@ class SkillToolContributionProvider:
                         tool_id=f"skill:{metadata.name}",
                         display_name=route_name,
                         description=metadata.description,
-                        route_key=ToolRouteKey(namespace="skill", name=metadata.name),
+                        route_key=ToolRouteKey.local(route_name),
                         source=ToolContributionSource.PROVIDER,
                         scope=ToolContributionScope.THREAD,
                         lifecycle_state=ToolContributionLifecycleState.DECLARED,
@@ -96,6 +98,7 @@ class SkillToolContributionProvider:
                             "source_kind": metadata.source_kind,
                             "availability": metadata.availability,
                             "trigger_hints": list(metadata.trigger_hints),
+                            "legacy_route_name": legacy_route_name,
                         },
                     ),
                     tool=_SkillContributionTool(

@@ -298,7 +298,7 @@ def test_tool_exposure_keeps_callable_and_namespaced_routes_stable() -> None:
         ),
         contributed=(
             ToolExposureEntry(
-                route_key=ToolRouteKey(namespace="mcp.github", name="search_code"),
+                route_key=ToolRouteKey.local("mcp_github_search_code"),
                 kind=ToolExposureKind.CONTRIBUTED,
                 source=ToolRouteSource.PROVIDER,
                 spec=ToolSpec(name="search_code", description="Search remote code"),
@@ -309,7 +309,7 @@ def test_tool_exposure_keeps_callable_and_namespaced_routes_stable() -> None:
     assert exposure.callable_tool_names() == (
         "list_directory",
         "edit_file",
-        "mcp.github.search_code",
+        "mcp_github_search_code",
     )
 
 

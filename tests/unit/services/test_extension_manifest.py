@@ -10,6 +10,7 @@ from mycli.domain.tooling.contributed_tools import (
 )
 from mycli.domain.runtime.gateway_contract import GATEWAY_ERROR_CODES
 from mycli.domain.tool_exposure import ToolRouteKey
+from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.services.extensions import ExtensionManifestService
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
@@ -45,52 +46,63 @@ def _contribution_registration(name: str) -> ToolContributionRegistration:
 
 
 def _mcp_contribution_registration(server: str, tool_name: str) -> ToolContributionRegistration:
-    route_name = f"mcp.{server}.{tool_name}"
+    legacy_route_name = f"mcp.{server}.{tool_name}"
+    route_name = provider_safe_tool_name("mcp", server, tool_name)
     tool = FakeTool(route_name)
     return ToolContributionRegistration(
         descriptor=ToolContributionDescriptor(
             tool_id=f"mcp:{server}:{tool_name}",
             display_name=route_name,
             description=tool.spec.description,
-            route_key=ToolRouteKey(namespace=f"mcp.{server}", name=tool_name),
+            route_key=ToolRouteKey.local(route_name),
             source=ToolContributionSource.PROVIDER,
             scope=ToolContributionScope.THREAD,
             lifecycle_state=ToolContributionLifecycleState.DECLARED,
             spec=tool.spec,
-            origin_metadata={"server": server, "tool": tool_name},
+            origin_metadata={
+                "server": server,
+                "tool": tool_name,
+                "legacy_route_name": legacy_route_name,
+            },
         ),
         tool=tool,
     )
 
 
 def _skill_contribution_registration(skill_name: str) -> ToolContributionRegistration:
-    route_name = f"skill.{skill_name}"
+    legacy_route_name = f"skill.{skill_name}"
+    route_name = provider_safe_tool_name("skill", skill_name)
     tool = FakeTool(route_name)
     return ToolContributionRegistration(
         descriptor=ToolContributionDescriptor(
             tool_id=f"skill:{skill_name}",
             display_name=route_name,
             description=tool.spec.description,
-            route_key=ToolRouteKey(namespace="skill", name=skill_name),
+            route_key=ToolRouteKey.local(route_name),
             source=ToolContributionSource.PROVIDER,
             scope=ToolContributionScope.THREAD,
             lifecycle_state=ToolContributionLifecycleState.DECLARED,
             spec=tool.spec,
-            origin_metadata={"skill": skill_name, "source_kind": "repo"},
+            origin_metadata={
+                "skill": skill_name,
+                "source_kind": "repo",
+                "legacy_route_name": legacy_route_name,
+            },
         ),
         tool=tool,
     )
 
 
 def _subagent_contribution_registration(profile_name: str) -> ToolContributionRegistration:
-    route_name = f"subagent.{profile_name}"
+    legacy_route_name = f"subagent.{profile_name}"
+    route_name = provider_safe_tool_name("subagent", profile_name)
     tool = FakeTool(route_name)
     return ToolContributionRegistration(
         descriptor=ToolContributionDescriptor(
             tool_id=f"subagent:{profile_name}",
             display_name=route_name,
             description=tool.spec.description,
-            route_key=ToolRouteKey(namespace="subagent", name=profile_name),
+            route_key=ToolRouteKey.local(route_name),
             source=ToolContributionSource.PROVIDER,
             scope=ToolContributionScope.THREAD,
             lifecycle_state=ToolContributionLifecycleState.DECLARED,
@@ -100,6 +112,7 @@ def _subagent_contribution_registration(profile_name: str) -> ToolContributionRe
                 "default_tools": ["Read", "Grep"],
                 "denied_tools": ["Task"],
                 "availability": "available",
+                "legacy_route_name": legacy_route_name,
             },
         ),
         tool=tool,
@@ -256,14 +269,16 @@ def test_extension_manifest_marks_mcp_origin_contributed_tools_as_mcp() -> None:
 
     tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
-    entry = tools["mcp.local.echo"]
+    entry = tools["mcp_local_echo"]
 
     assert entry["source"] == "mcp"
     assert entry["toolset"] == "external"
     assert entry["risk_level"] == "low"
     assert entry["approval_policy"] == "auto_allow"
-    assert entry["contribution"]["origin"] == {"server": "local", "tool": "echo"}
-    assert "mcp.local.echo" in toolsets["external"]["tools"]
+    assert entry["contribution"]["origin"]["server"] == "local"
+    assert entry["contribution"]["origin"]["tool"] == "echo"
+    assert entry["contribution"]["origin"]["legacy_route_name"] == "mcp.local.echo"
+    assert "mcp_local_echo" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["mcp"]
 
 
@@ -274,12 +289,14 @@ def test_extension_manifest_marks_skill_origin_contributed_tools_as_skill() -> N
 
     tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
-    entry = tools["skill.code-review"]
+    entry = tools["skill_code_review"]
 
     assert entry["source"] == "skill"
     assert entry["toolset"] == "external"
-    assert entry["contribution"]["origin"] == {"skill": "code-review", "source_kind": "repo"}
-    assert "skill.code-review" in toolsets["external"]["tools"]
+    assert entry["contribution"]["origin"]["skill"] == "code-review"
+    assert entry["contribution"]["origin"]["source_kind"] == "repo"
+    assert entry["contribution"]["origin"]["legacy_route_name"] == "skill.code-review"
+    assert "skill_code_review" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["skill"]
 
 
@@ -290,11 +307,11 @@ def test_extension_manifest_marks_subagent_origin_contributed_tools_as_subagent(
 
     tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
-    entry = tools["subagent.explore"]
+    entry = tools["subagent_explore"]
 
     assert entry["source"] == "subagent"
     assert entry["toolset"] == "external"
     assert entry["contribution"]["origin"]["profile"] == "explore"
     assert entry["contribution"]["origin"]["availability"] == "available"
-    assert "subagent.explore" in toolsets["external"]["tools"]
+    assert "subagent_explore" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["subagent"]

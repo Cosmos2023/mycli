@@ -132,8 +132,8 @@ def main() -> int:
                     and loop.calls[0]["tool_names"] == ("Read", "Grep")
                     and loop.calls[0]["context_snapshot"].diagnostics["tool_count"] == 2
                     and task_result.raw_payload["trace"]["context"]["baseline_fragment_count"] == 1
-                    and tools["subagent.analyst"]["source"] == "subagent"
-                    and tools["subagent.analyst"]["risk_level"] == "medium"
+                    and tools["subagent_analyst"]["source"] == "subagent"
+                    and tools["subagent_analyst"]["risk_level"] == "medium"
                     and subagent_check.status is DoctorStatus.OK
                 ),
                 "checks": {
@@ -145,7 +145,7 @@ def main() -> int:
                     "disabled_success": disabled_result.success,
                     "tool_names": loop.calls[0]["tool_names"],
                     "context_diagnostics": task_result.raw_payload["trace"]["context"],
-                    "manifest_source": tools["subagent.analyst"]["source"],
+                    "manifest_source": tools["subagent_analyst"]["source"],
                     "doctor_status": subagent_check.status.value,
                     "doctor_message": subagent_check.message,
                     "doctor_detail": subagent_check.detail,

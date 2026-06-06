@@ -279,6 +279,40 @@ Append one entry per completed slice.
 - Next recommended slice: choose the next phase explicitly; do not merge to
   `main` without user approval.
 
+### 2026-06-04 - Chat Transcript Cache Shape Correction
+
+- Branch: `feature/mycli-context-management-p1`
+- Commit: pending
+- Changed scope: restored the chat-completions provider request shape toward
+  the Hermes-style contract: base instructions, tool-use guidance, workspace
+  instructions, environment facts, skill catalog, memory, plan, and compaction
+  rehydration are folded into the first `system` snapshot; replay/history starts
+  immediately after that; only the current user message is appended when it is
+  not already present in replay. Runtime reminders remain diagnostic-only for
+  the chat-completions provider path so they do not mutate the system snapshot
+  every turn.
+- Tests:
+  - `uv run pytest tests/unit/services/test_request_shape_builder.py -q`
+  - `uv run pytest tests/unit/services/test_request_shape_payload_formatter.py tests/unit/domain/runtime/test_request_shape.py tests/unit/services/test_cache_shape_diagnostics.py -q`
+  - `uv run pytest tests/unit/application/test_agent_runtime.py -q`
+  - `uv run pytest tests/unit/test_compaction_transcript_validity.py tests/unit/services/test_turn_context_assembler.py -q`
+  - `uv run pytest tests/unit/infrastructure/test_openai_client.py -q -k 'chat or message or tool'`
+  - `uv run ruff check src/mycli/application/runtime/request tests/unit/services/test_request_shape_builder.py`
+- Smoke/evaluation:
+  - `uv run python evaluation/context_smoke.py`
+  - `uv run python -m mycli.cli.main --eval-scenario 07`
+- Parity impact: provider-visible chat transcript shape is now a single system
+  snapshot plus append-only transcript, instead of inserting contextual user
+  messages before and after replay. This is closer to Hermes' stable system
+  prompt plus conversation-history model.
+- Remaining risks: the live scenario 07 infrastructure completed but scored
+  `43/100`, with failures in task-quality CSV owner/next-step updates rather
+  than request construction. The trace did not expose provider usage tokens for
+  this run, so cache-hit token improvement still needs a provider run/report
+  that records usage.
+- Next recommended slice: analyze live evaluation quality failures separately;
+  do not mix task-strategy tuning into request-shape cache correction.
+
 Template:
 
 ```text

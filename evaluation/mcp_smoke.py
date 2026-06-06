@@ -71,19 +71,19 @@ def main() -> int:
                     and broken.status == "failed"
                     and broken.failure_category == "server_startup"
                     and "secret-token-value" not in (broken.failure_message or "")
-                    and stubs[0].descriptor.route_name == "mcp.local.echo"
+                    and stubs[0].descriptor.route_name == "mcp_local_echo"
                     and call_result.success
                     and call_result.summary == "MCP local.echo ok: echo:hello"
                     and call_result.raw_payload["content_summary"]["types"] == ["text"]
-                    and tools["mcp.local.echo"]["source"] == "mcp"
-                    and tools["mcp.local.echo"]["risk_level"] == "medium"
-                    and tools["mcp.local.echo"]["approval_policy"] == "auto_allow_or_request"
-                    and tools["mcp.local.echo"]["contribution"]["origin"]["transport"] == "stdio"
-                    and tools["mcp.local.echo"]["contribution"]["origin"][
+                    and tools["mcp_local_echo"]["source"] == "mcp"
+                    and tools["mcp_local_echo"]["risk_level"] == "medium"
+                    and tools["mcp_local_echo"]["approval_policy"] == "auto_allow_or_request"
+                    and tools["mcp_local_echo"]["contribution"]["origin"]["transport"] == "stdio"
+                    and tools["mcp_local_echo"]["contribution"]["origin"][
                         "result_summary_policy"
                     ]
                     == "bounded_model_summary"
-                    and "mcp.local.echo" in toolsets["external"]["tools"]
+                    and "mcp_local_echo" in toolsets["external"]["tools"]
                     and mcp_check.status is DoctorStatus.WARNING
                     and "1 tools discovered" in mcp_check.message
                 ),
@@ -98,10 +98,10 @@ def main() -> int:
                     "registration_route": stubs[0].descriptor.route_name,
                     "runtime_call_summary": call_result.summary,
                     "runtime_content_summary": call_result.raw_payload["content_summary"],
-                    "manifest_source": tools["mcp.local.echo"]["source"],
-                    "manifest_risk_level": tools["mcp.local.echo"]["risk_level"],
-                    "manifest_approval_policy": tools["mcp.local.echo"]["approval_policy"],
-                    "manifest_origin": tools["mcp.local.echo"]["contribution"]["origin"],
+                    "manifest_source": tools["mcp_local_echo"]["source"],
+                    "manifest_risk_level": tools["mcp_local_echo"]["risk_level"],
+                    "manifest_approval_policy": tools["mcp_local_echo"]["approval_policy"],
+                    "manifest_origin": tools["mcp_local_echo"]["contribution"]["origin"],
                     "toolset_sources": toolsets["external"]["sources"],
                     "doctor_status": mcp_check.status.value,
                     "doctor_message": mcp_check.message,

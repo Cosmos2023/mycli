@@ -117,6 +117,10 @@ scope for this phase.
   but not fully productized as user-facing runtime configuration.
 - Real-task evaluation is provider-free and deterministic; live model quality
   should still be measured with API-backed runs before broad release.
+- Latest API-backed scenario 07 completed all model requests after the chat
+  transcript cache-shape correction, but scored `43/100` due to task-quality
+  failures in owner/next-step CSV updates. Treat this as a separate evaluation
+  quality issue, not a request-construction failure.
 
 ## Main Merge Risk
 

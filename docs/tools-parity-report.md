@@ -139,7 +139,7 @@ Commit: pending skills lifecycle foundation slice
 - Existing `Task` runtime delegation remains available as the generic built-in
   workflow tool.
 - Sub-agent profiles are now exposed as profile-specific contributed tools via
-  `SubAgentToolContributionProvider`, with routes such as `subagent.explore`.
+  `SubAgentToolContributionProvider`, with routes such as `subagent_explore`.
 - Combined manifest and extension manifest render subagent-origin tools as
   `source=subagent`, `toolset=external`.
 - Doctor reports subagent profile diagnostics with bounded safe detail: profile

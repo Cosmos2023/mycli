@@ -47,5 +47,5 @@ def test_mcp_tool_contribution_provider_returns_hydrated_thread_tools() -> None:
         plan_state=PlanState(),
     )
 
-    assert registrations[0].descriptor.route_name == "mcp.fs.search"
+    assert registrations[0].descriptor.route_name == "mcp_fs_search"
     assert registrations[0].descriptor.spec.parameters[0].name == "query"

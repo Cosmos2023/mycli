@@ -37,6 +37,7 @@ class RequestShapeBuilder:
         tool_order = "\n".join(tool["name"] for tool in normalized_tools)
         contextual_fragments = self._contextual_fragments(contract)
         intent_content = f"Current user request: {contract.current_user_request}"
+        stable_system = self._stable_system_for_shape(config, contract)
 
         fragments = (
             RequestFragment(
@@ -88,7 +89,7 @@ class RequestShapeBuilder:
             provider=str(config.provider),
             protocol=str(config.protocol),
             model=config.model,
-            stable_system=contract.base_instructions,
+            stable_system=stable_system,
             tool_schema_hash=stable_hash(tool_schema),
             tool_order_hash=stable_hash(tool_order),
             fragments=fragments,
@@ -208,40 +209,44 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderMessageShape, ...]:
-        stable_context = self._render_transcript_delta_context(
-            contract,
-            cache_classes={"static"},
-        )
-        dynamic_context = self._render_transcript_delta_context(
-            contract,
-            cache_classes={"dynamic"},
-        )
-        ephemeral_context = self._render_transcript_delta_context(
-            contract,
-            cache_classes={"ephemeral"},
-        )
         messages: list[ProviderMessageShape] = [
-            ProviderMessageShape(role="system", content=contract.base_instructions),
+            ProviderMessageShape(
+                role="system",
+                content=self._transcript_stable_system_content(contract),
+            ),
         ]
-        if stable_context:
-            messages.append(ProviderMessageShape(role="user", content=stable_context))
         for message in self._chat_completions_replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
+                provider_message = self._with_current_user_ephemeral_injection(
+                    provider_message,
+                    contract=contract,
+                    source_content=message.content,
+                )
                 messages.append(provider_message)
-        if dynamic_context:
-            messages.append(ProviderMessageShape(role="user", content=dynamic_context))
+        compaction_rehydration = self._transcript_compaction_rehydration_context(contract)
+        if compaction_rehydration:
+            messages.append(
+                ProviderMessageShape(
+                    role="assistant",
+                    content=compaction_rehydration,
+                    metadata={
+                        "ephemeral_context": {
+                            "kind": "compaction_rehydration",
+                            "source": "provider_transcript_projection",
+                        }
+                    },
+                )
+            )
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
             messages.append(
                 ProviderMessageShape(
                     role="user",
-                    content=contract.current_user_request,
+                    content=self._current_user_api_content(contract),
                 )
             )
-        if ephemeral_context:
-            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         return tuple(messages)
 
     def _provider_runtime_items(
@@ -393,40 +398,43 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[ProviderRuntimeItemShape, ...]:
-        stable_context = self._render_transcript_delta_context(
-            contract,
-            cache_classes={"static"},
-        )
-        dynamic_context = self._render_transcript_delta_context(
-            contract,
-            cache_classes={"dynamic"},
-        )
-        ephemeral_context = self._render_transcript_delta_context(
-            contract,
-            cache_classes={"ephemeral"},
-        )
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
                 role="system",
-                blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
+                blocks=(
+                    RuntimeBlock(
+                        type="text",
+                        text=self._transcript_stable_system_content(contract),
+                    ),
+                ),
             )
         ]
-        if stable_context:
-            items.append(
-                ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=stable_context),),
-                )
-            )
-        for message in self._replay_messages(contract):
+        for message in self._chat_completions_replay_messages(contract):
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
+                blocks = self._with_current_user_ephemeral_runtime_blocks(
+                    message=message,
+                    blocks=blocks,
+                    contract=contract,
+                )
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
-        if dynamic_context:
+        compaction_rehydration = self._transcript_compaction_rehydration_context(contract)
+        if compaction_rehydration:
             items.append(
                 ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=dynamic_context),),
+                    role="assistant",
+                    blocks=(
+                        RuntimeBlock(
+                            type="text",
+                            text=compaction_rehydration,
+                            metadata={
+                                "ephemeral_context": {
+                                    "kind": "compaction_rehydration",
+                                    "source": "provider_transcript_projection",
+                                }
+                            },
+                        ),
+                    ),
                 )
             )
         if contract.current_user_request and not self._replay_contains_current_user_request(
@@ -435,14 +443,12 @@ class RequestShapeBuilder:
             items.append(
                 ProviderRuntimeItemShape(
                     role="user",
-                    blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
-                )
-            )
-        if ephemeral_context:
-            items.append(
-                ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
+                    blocks=(
+                        RuntimeBlock(
+                            type="text",
+                            text=self._current_user_api_content(contract),
+                        ),
+                    ),
                 )
             )
         return tuple(items)
@@ -481,6 +487,135 @@ class RequestShapeBuilder:
             message.role == "user"
             and message.content == contract.current_user_request
             for message in contract.conversation_messages
+        )
+
+    def _stable_system_for_shape(
+        self,
+        config: AgentConfig,
+        contract: InstructionContract,
+    ) -> str:
+        if self._uses_transcript_only_messages(config):
+            return self._transcript_stable_system_content(contract)
+        return contract.base_instructions
+
+    def _transcript_stable_system_content(
+        self,
+        contract: InstructionContract,
+    ) -> str:
+        developer_content = self._join_content(
+            self._developer_section_content(section)
+            for section in contract.developer_sections
+        )
+        return self._join_content(
+            (
+                contract.base_instructions,
+                developer_content,
+                self._render_transcript_system_context(contract),
+            )
+        )
+
+    def _render_transcript_system_context(
+        self,
+        contract: InstructionContract,
+    ) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._transcript_system_section_is_model_visible(section)
+        )
+
+    def _transcript_system_section_is_model_visible(
+        self,
+        section: InstructionFragment,
+    ) -> bool:
+        return str(section.kind) in {
+            "environment_context",
+            "memory",
+            "plan",
+            "skill_catalog",
+            "workspace_instructions",
+        }
+
+    def _current_user_api_content(self, contract: InstructionContract) -> str:
+        return self._join_content(
+            (
+                contract.current_user_request,
+                self._current_turn_ephemeral_context(contract),
+            )
+        )
+
+    def _current_turn_ephemeral_context(self, contract: InstructionContract) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) == "ephemeral"
+            if self._chat_ephemeral_section_is_model_visible(section)
+        )
+
+    def _chat_ephemeral_section_is_model_visible(
+        self,
+        section: InstructionFragment,
+    ) -> bool:
+        return str(section.kind) == "runtime_reminders"
+
+    def _transcript_compaction_rehydration_context(
+        self,
+        contract: InstructionContract,
+    ) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if str(section.kind) == "compaction_rehydration"
+        )
+
+    def _with_current_user_ephemeral_injection(
+        self,
+        provider_message: ProviderMessageShape,
+        *,
+        contract: InstructionContract,
+        source_content: str,
+    ) -> ProviderMessageShape:
+        if provider_message.role != "user":
+            return provider_message
+        if source_content != contract.current_user_request:
+            return provider_message
+        injected_content = self._current_user_api_content(contract)
+        if injected_content == provider_message.content:
+            return provider_message
+        metadata = dict(provider_message.metadata)
+        metadata["ephemeral_injection"] = {
+            "applied": True,
+            "source": "current_user_api_copy",
+        }
+        return ProviderMessageShape(
+            role=provider_message.role,
+            content=injected_content,
+            metadata=metadata,
+        )
+
+    def _with_current_user_ephemeral_runtime_blocks(
+        self,
+        *,
+        message: Message,
+        blocks: tuple[RuntimeBlock, ...],
+        contract: InstructionContract,
+    ) -> tuple[RuntimeBlock, ...]:
+        if message.role != "user" or message.content != contract.current_user_request:
+            return blocks
+        injected_content = self._current_user_api_content(contract)
+        if not injected_content:
+            return blocks
+        return (
+            RuntimeBlock(
+                type="text",
+                text=injected_content,
+                metadata={
+                    "ephemeral_injection": {
+                        "applied": True,
+                        "source": "current_user_api_copy",
+                    }
+                },
+            ),
         )
 
     def _render_context_by_cache_class(
@@ -529,16 +664,6 @@ class RequestShapeBuilder:
             if self._transcript_contextual_section_is_model_visible(section)
         )
 
-    def _transcript_contextual_section_is_model_visible(
-        self,
-        section: InstructionFragment,
-    ) -> bool:
-        return str(section.kind) in {
-            "compaction_rehydration",
-            "runtime_reminders",
-            "skill_catalog",
-        }
-
     def _responses_contextual_section_is_model_visible(
         self,
         section: InstructionFragment,
@@ -550,6 +675,12 @@ class RequestShapeBuilder:
             "skill_catalog",
             "workspace_instructions",
         }
+
+    def _transcript_contextual_section_is_model_visible(
+        self,
+        section: InstructionFragment,
+    ) -> bool:
+        return self._responses_contextual_section_is_model_visible(section)
 
     def _contextual_fragments(
         self,

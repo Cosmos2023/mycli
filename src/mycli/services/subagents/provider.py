@@ -16,6 +16,7 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
+from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.services.subagents.tool_result_payload import (
     subagent_tool_artifacts,
     subagent_tool_payload,
@@ -94,7 +95,8 @@ class SubAgentToolContributionProvider:
         return tuple(self._registration(profile) for profile in profiles)
 
     def _registration(self, profile: SubAgentProfile) -> ToolContributionRegistration:
-        route_name = f"subagent.{profile.name}"
+        legacy_route_name = f"subagent.{profile.name}"
+        route_name = provider_safe_tool_name("subagent", profile.name)
         spec = ToolSpec(
             name=route_name,
             description=f"Run the {profile.name} sub-agent profile for a bounded delegated task.",
@@ -126,7 +128,7 @@ class SubAgentToolContributionProvider:
                 tool_id=f"subagent:{profile.name}",
                 display_name=route_name,
                 description=spec.description,
-                route_key=ToolRouteKey(namespace="subagent", name=profile.name),
+                route_key=ToolRouteKey.local(route_name),
                 source=ToolContributionSource.PROVIDER,
                 scope=ToolContributionScope.THREAD,
                 lifecycle_state=ToolContributionLifecycleState.DECLARED,
@@ -140,6 +142,7 @@ class SubAgentToolContributionProvider:
                     "max_tool_calls": profile.budget.max_tool_calls,
                     "risk_level": "medium",
                     "approval_policy": "auto_allow_or_request",
+                    "legacy_route_name": legacy_route_name,
                 },
             ),
             tool=_SubAgentContributionTool(

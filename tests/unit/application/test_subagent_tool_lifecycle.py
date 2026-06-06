@@ -66,7 +66,7 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
     router = orchestrator.build_tool_router(planned)
     result = router.execute(
         ToolCall(
-            name="subagent.explore",
+            name="subagent_explore",
             arguments={
                 "description": "Map repository docs",
                 "allowed_tools": ["Read", "Grep"],
@@ -96,9 +96,9 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
         }
     ]
     assert planned.exposure.callable_tool_names() == (
-        "subagent.executor",
-        "subagent.explore",
-        "subagent.review",
+        "subagent_executor",
+        "subagent_explore",
+        "subagent_review",
     )
     assert lifecycle_states == [
         ToolContributionLifecycleState.DECLARED,

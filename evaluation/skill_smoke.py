@@ -67,7 +67,7 @@ def main() -> int:
         router = orchestrator.build_tool_router(planned)
         result = router.execute(
             ToolCall(
-                name="skill.data-helper",
+                name="skill_data_helper",
                 arguments={"reason": "Need CSV analysis guardrails"},
                 reason="Skill smoke",
             ),
@@ -89,8 +89,8 @@ def main() -> int:
                 "success": (
                     diagnostics.loaded_count == 2
                     and diagnostics.issue_count == 1
-                    and tools["skill.data-helper"]["source"] == "skill"
-                    and "skill.data-helper" in toolsets["external"]["tools"]
+                    and tools["skill_data_helper"]["source"] == "skill"
+                    and "skill_data_helper" in toolsets["external"]["tools"]
                     and result.success
                     and result.summary == "Activated skill: data-helper"
                     and lifecycle == ["declared", "declared", "exposed", "exposed", "invoked", "completed"]
@@ -100,8 +100,8 @@ def main() -> int:
                 "checks": {
                     "loaded_count": diagnostics.loaded_count,
                     "issue_count": diagnostics.issue_count,
-                    "manifest_source": tools["skill.data-helper"]["source"],
-                    "route": "skill.data-helper",
+                    "manifest_source": tools["skill_data_helper"]["source"],
+                    "route": "skill_data_helper",
                     "toolset_sources": toolsets["external"]["sources"],
                     "runtime_summary": result.summary,
                     "lifecycle": lifecycle,
