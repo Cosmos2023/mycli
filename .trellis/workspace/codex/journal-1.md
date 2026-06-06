@@ -81,6 +81,61 @@ Completed Provider Adapter / Replay Hardening P6 and archived the Trellis task. 
 - Start P7a: Compact Cheap Pruning / Tail Protection Foundation.
 
 
+## Session 5: Prefix cache context assembly P7a
+
+**Date**: 2026-06-06
+**Task**: Prefix cache context assembly P7a
+**Branch**: `feature/mycli-prefix-cache-context-assembly-p1`
+
+### Summary
+
+Completed Compact Cheap Pruning / Tail Protection Foundation P7a and archived
+the Trellis task. The existing compaction pipeline now prunes old dynamic replay
+deterministically before context-window analysis and L4 summarization, while
+protecting the frozen prefix, append-only content, and newest tail groups.
+
+### Main Changes
+
+- Added `CheapPruning` to `src/mycli/services/context/compaction/pipeline.py`.
+- Integrated cheap pruning into `CompactionPipeline.apply()` before analyzer and
+  LLM summarization.
+- Added semantic tail protection for assistant tool-call / tool-result groups
+  and shared `response_id` groups.
+- Added deterministic duplicate old tool-result back-references and bounded
+  old tool-result summaries.
+- Added recursive tool-call argument truncation that preserves dict/list
+  structure.
+- Updated `.trellis/spec/backend/context-management-contract.md` with the P7a
+  cheap pruning contract.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e198435` | chore(task): start prefix cache context assembly p7a |
+| `b6acda3` | Prune dynamic replay before compact summaries |
+| `34d4d71` | chore(task): archive prefix cache context assembly p7a |
+
+### Testing
+
+- [OK] `uv run pytest tests/unit/services/context/compaction/test_pipeline.py -q` (`17 passed`)
+- [OK] `uv run pytest tests/unit/services/context/compaction tests/unit/test_compaction_transcript_validity.py tests/unit/test_compaction_sealed_guard.py tests/unit/services/test_cache_stability_regressions.py tests/unit/services/test_request_shape_builder.py -q` (`81 passed`)
+- [OK] `uv run ruff check .`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run python evaluation/provider_cache_policy_smoke.py`
+- [OK] `uv run python evaluation/context_smoke.py`
+- [OK] `uv run python evaluation/plugin_runtime_smoke.py`
+- [OK] `uv run python evaluation/hook_smoke.py`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Start P7b: Canonical Compact Summary / Rehydration Lifecycle.
+
+
 ## Session 4: Prefix cache context assembly P5
 
 **Date**: 2026-06-06
