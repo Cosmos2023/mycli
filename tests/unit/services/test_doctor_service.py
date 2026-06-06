@@ -3073,6 +3073,80 @@ def test_doctor_service_summarizes_turn_interrupt_diagnostics_without_raw_payloa
     assert "raw user text" not in rendered
 
 
+def test_doctor_service_summarizes_session_continuity_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-continuitysecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "session_continuity",
+                        "turn_id": "resume-branch",
+                        "payload": {
+                            "action": "resume",
+                            "result": "resolved",
+                            "requested_session_id": "default",
+                            "resolved_session_id": "branch",
+                            "lineage_switched": True,
+                            "message_count": 3,
+                            "fork_point": 2,
+                            "pending_decision": True,
+                            "pending_clarification": False,
+                            "raw_user_text": f"do not print {secret}",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "session_continuity",
+                        "turn_id": "fork-branch",
+                        "payload": {
+                            "action": "fork",
+                            "result": "created",
+                            "requested_session_id": "default",
+                            "resolved_session_id": "branch",
+                            "lineage_switched": True,
+                            "message_count": 2,
+                            "fork_point": 2,
+                            "pending_decision": False,
+                            "pending_clarification": False,
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "session_continuity")
+    assert check.status is DoctorStatus.OK
+    assert (
+        check.message
+        == "continuity_events=2 resume=1 fork=1 lineage_switched=2 pending=1"
+    )
+    assert check.detail == "results: created=1, resolved=1"
+    assert secret not in rendered
+    assert "do not print" not in rendered
+
+
 def test_doctor_service_reports_no_turn_failure_diagnostics_rows_as_ok(
     tmp_path: Path,
 ) -> None:

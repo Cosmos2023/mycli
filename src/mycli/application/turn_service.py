@@ -334,10 +334,26 @@ class TurnService:
         try:
             conversation = self._session_service.resume_conversation(target_session_id)
         except KeyError:
+            self._trace_session_continuity(
+                action="resume",
+                result="not_found",
+                requested_session_id=target_session_id,
+                resolved_session_id=target_session_id,
+                message_count=0,
+                fork_point=None,
+            )
             return (f"session not found: {target_session_id}",)
         self._backfill_history_from_conversation(conversation)
         resolved_session_id = conversation.session_id
         self._activate_session(resolved_session_id)
+        self._trace_session_continuity(
+            action="resume",
+            result="resolved",
+            requested_session_id=target_session_id,
+            resolved_session_id=resolved_session_id,
+            message_count=len(conversation.messages),
+            fork_point=conversation.fork_point,
+        )
         return (
             f"resumed {resolved_session_id}",
             f"messages={len(conversation.messages)}",
@@ -362,13 +378,63 @@ class TurnService:
                 fork_point=fork_point,
             )
         except (KeyError, ValueError) as exc:
+            self._trace_session_continuity(
+                action="fork",
+                result="failed",
+                requested_session_id=source,
+                resolved_session_id=target,
+                message_count=0,
+                fork_point=fork_point,
+            )
             return (str(exc),)
         self._backfill_history_from_conversation(conversation)
         self._activate_session(target)
+        self._trace_session_continuity(
+            action="fork",
+            result="created",
+            requested_session_id=source,
+            resolved_session_id=target,
+            message_count=len(conversation.messages),
+            fork_point=conversation.fork_point,
+        )
         return (
             f"forked {source} -> {target}",
             f"fork_point={conversation.fork_point}",
             f"messages={len(conversation.messages)}",
+        )
+
+    def _trace_session_continuity(
+        self,
+        *,
+        action: str,
+        result: str,
+        requested_session_id: str,
+        resolved_session_id: str,
+        message_count: int,
+        fork_point: int | None,
+    ) -> None:
+        pending_decision = self._session_service.load_pending_decision(resolved_session_id)
+        suspended = self._session_service.load_suspended_turn(resolved_session_id)
+        payload = {
+            "action": action,
+            "result": result,
+            "requested_session_id": requested_session_id,
+            "resolved_session_id": resolved_session_id,
+            "lineage_switched": requested_session_id != resolved_session_id,
+            "message_count": max(0, message_count),
+            "fork_point": fork_point,
+            "pending_decision": pending_decision is not None,
+            "pending_clarification": bool(
+                suspended is not None and suspended.pending_clarification is not None
+            ),
+        }
+        self._trace_service.append(
+            resolved_session_id,
+            RuntimeTraceEvent(
+                kind="session_continuity",
+                turn_id=f"session_{action}",
+                payload=payload,
+            ),
         )
 
     def _activate_session(self, session_id: str) -> None:

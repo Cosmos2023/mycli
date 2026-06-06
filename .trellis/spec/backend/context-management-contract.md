@@ -260,6 +260,125 @@ section = TurnContextSection(
 )
 ```
 
+## Scenario: Resume/Fork Runtime Continuity And Compact Boundary Guard
+
+### 1. Scope / Trigger
+
+- Trigger: changes to `/resume`, `/fork`, conversation lineage composition,
+  pending approval/clarification recovery, compact rehydration classification,
+  or session continuity diagnostics.
+- The flow crosses `TurnService`, `SessionService`, SQLite lineage storage,
+  runtime trace, doctor diagnostics, request-shape cache boundaries, and
+  compact/rehydration read paths.
+
+### 2. Signatures
+
+- Resume:
+  `TurnService.resume_session(session_id: str | None = None) -> tuple[str, ...]`
+- Fork:
+  `TurnService.fork_session(source_session_id, new_session_id, fork_point) -> tuple[str, ...]`
+- Session continuity trace:
+  `RuntimeTraceEvent(kind="session_continuity", ...)`
+- Doctor check:
+  `DoctorCheck.name == "session_continuity"`
+- Protected compact boundary modules:
+  `src/mycli/domain/runtime/compaction_rehydration.py`
+  `src/mycli/services/context/compaction.py`
+  `src/mycli/services/context/compaction/rehydration.py`
+  `src/mycli/services/context/compaction/pipeline.py`
+
+### 3. Contracts
+
+- Resuming an ancestor session resolves to the current branch tip before
+  resolving pending approval or pending clarification state.
+- Forking creates a child transcript at the requested fork point. Later child
+  appends must not mutate the parent transcript/history.
+- `session_continuity` trace payloads may contain only bounded metadata:
+  `action`, `result`, `requested_session_id`, `resolved_session_id`,
+  `lineage_switched`, `message_count`, `fork_point`, `pending_decision`, and
+  `pending_clarification`.
+- `session_continuity` trace payloads must not contain raw user prompts, raw
+  tool output, provider payload bodies, provider-private reasoning content,
+  headers, or secrets.
+- Doctor summarizes session continuity from trace rows using bounded counts
+  only. It must not print raw trace payloads or session transcript content.
+- Compact/rehydration implementation is a protected boundary for Codex
+  alignment runtime-kernel phases. Runtime continuity work may add read-only
+  regression tests, but must not rewrite compact rehydration behavior.
+- Compaction rehydration remains dynamic context in request-shape fragments.
+  Changing only compaction rehydration text must not change the stable prefix
+  hash or `prompt_cache_key`.
+- Provider-private reasoning state must remain filtered before compacted or
+  rehydrated context becomes model-visible.
+
+### 4. Validation & Error Matrix
+
+- Resume `root` with newest child `branch` -> active runtime session becomes
+  `branch`; pending approval/clarification resolution happens on `branch`.
+- Resume missing session -> bounded `session_continuity` trace with
+  `result=not_found`; no raw request text.
+- Fork `root` at message index `N` -> child contains the prefix through `N`;
+  parent remains unchanged after child-only appends.
+- Trace directory missing or without continuity rows -> doctor reports OK with
+  `no session continuity diagnostics found`.
+- Valid continuity rows -> doctor reports event/action/lineage/pending counts
+  and bounded result counts.
+- Continuity trace rows with extra raw fields -> doctor ignores those fields and
+  must not render their values.
+- Compact rehydration text changes -> request-shape stable prefix hash remains
+  unchanged and rehydration fragment metadata keeps `cache_class=dynamic`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `/resume default` reports `resumed branch`, writes a
+  `session_continuity` row to the branch trace, and pending approval resolves
+  against branch state.
+- Good: doctor says
+  `continuity_events=2 resume=1 fork=1 lineage_switched=2 pending=1`.
+- Base: no resume/fork activity leaves doctor at OK/no diagnostics.
+- Bad: rebuilding provider transcript from trace payloads.
+- Bad: printing raw user text from a malformed `session_continuity` row.
+- Bad: modifying compact rehydration implementation to satisfy runtime
+  continuity tests.
+
+### 6. Tests Required
+
+- Integration test root-to-tip pending approval resume.
+- Integration test root-to-tip pending clarification resume.
+- Unit test fork child updates do not pollute parent transcript/history.
+- Unit test `session_continuity` doctor summary redacts raw payload fields.
+- Cache stability regression proving compaction rehydration stays dynamic and
+  does not affect stable prefix hash or `prompt_cache_key`.
+- Compact boundary diff audit before completion:
+  `git diff -- src/mycli/domain/runtime/compaction_rehydration.py src/mycli/services/context/compaction.py src/mycli/services/context/compaction/rehydration.py src/mycli/services/context/compaction/pipeline.py`
+  must be empty for runtime-continuity-only work.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+event.payload["user_message"] = suspended.user_message
+trace_summary = json.dumps(event.payload)
+```
+
+#### Correct
+
+```python
+RuntimeTraceEvent(
+    kind="session_continuity",
+    turn_id="session_resume",
+    payload={
+        "action": "resume",
+        "result": "resolved",
+        "lineage_switched": True,
+        "message_count": len(conversation.messages),
+        "pending_decision": pending_decision is not None,
+        "pending_clarification": pending_clarification is not None,
+    },
+)
+```
+
 ## Scenario: Canonical Timeline Persistence Contract
 
 ### 1. Scope / Trigger

@@ -382,6 +382,24 @@ def test_turn_service_resumes_root_to_tip_before_resolving_pending_approval(
     assert resolved.assistant_message == "Push finished"
     assert fresh_runtime._session_service.load_pending_decision("branch") is None
     assert fresh_runtime._session_service.load_pending_decision("default") is None
+    trace_events = fresh_runtime._trace_service.load("branch")
+    continuity = next(
+        event
+        for event in trace_events
+        if event.kind == "session_continuity"
+        and event.payload.get("action") == "resume"
+    )
+    assert continuity.payload == {
+        "action": "resume",
+        "result": "resolved",
+        "requested_session_id": "default",
+        "resolved_session_id": "branch",
+        "lineage_switched": True,
+        "message_count": 3,
+        "fork_point": 2,
+        "pending_decision": True,
+        "pending_clarification": False,
+    }
 
 
 def test_turn_service_resumes_root_to_tip_before_resolving_pending_clarification(

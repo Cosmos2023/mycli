@@ -174,6 +174,18 @@ def test_dynamic_rehydration_changes_do_not_affect_stable_prefix_hash(
         first.provider_request_policy.prompt_cache_key
         == second.provider_request_policy.prompt_cache_key
     )
+    first_rehydration = next(
+        fragment
+        for fragment in first.fragments
+        if fragment.metadata.get("instruction_fragment_kind") == "compaction_rehydration"
+    )
+    second_rehydration = next(
+        fragment
+        for fragment in second.fragments
+        if fragment.metadata.get("instruction_fragment_kind") == "compaction_rehydration"
+    )
+    assert first_rehydration.metadata["cache_class"] == "dynamic"
+    assert second_rehydration.metadata["cache_class"] == "dynamic"
 
 
 def test_anthropic_wire_cache_control_does_not_enter_canonical_timeline(

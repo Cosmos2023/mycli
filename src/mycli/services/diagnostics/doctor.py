@@ -222,6 +222,17 @@ class _TurnInterruptDiagnosticsSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class _SessionContinuityDiagnosticsSummary:
+    event_count: int
+    resume_count: int
+    fork_count: int
+    lineage_switched_count: int
+    pending_count: int
+    results: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _ContextDiagnosticsSummary:
     context_count: int
     request_shape_count: int
@@ -335,6 +346,7 @@ class DoctorService:
             self._check_tool_execution_diagnostics,
             self._check_tool_lifecycle_diagnostics,
             self._check_turn_interrupt_diagnostics,
+            self._check_session_continuity_diagnostics,
             self._check_turn_failure_diagnostics,
             self._check_tool_manifest,
             self._check_hooks,
@@ -1166,6 +1178,77 @@ class DoctorService:
                     f"{suffix}"
                 ),
                 detail=f"sources: {_format_count_pairs(summary.sources)}",
+            ),
+        )
+
+    def _check_session_continuity_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "session_continuity",
+                    DoctorStatus.OK,
+                    "no session continuity diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "session_continuity",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "session_continuity",
+                    DoctorStatus.OK,
+                    "no session continuity diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_session_continuity_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "session_continuity",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.event_count == 0:
+            return (
+                DoctorCheck(
+                    "session_continuity",
+                    DoctorStatus.OK,
+                    f"no session continuity diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        return (
+            DoctorCheck(
+                "session_continuity",
+                DoctorStatus.OK,
+                (
+                    f"continuity_events={summary.event_count} "
+                    f"resume={summary.resume_count} "
+                    f"fork={summary.fork_count} "
+                    f"lineage_switched={summary.lineage_switched_count} "
+                    f"pending={summary.pending_count}"
+                    f"{suffix}"
+                ),
+                detail=f"results: {_format_count_pairs(summary.results)}",
             ),
         )
 
@@ -2450,6 +2533,61 @@ def _summarize_turn_interrupt_diagnostics(
         request_count=request_count,
         finalized_count=finalized_count,
         sources=ordered_sources,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _summarize_session_continuity_diagnostics(
+    paths: Iterable[Path],
+) -> _SessionContinuityDiagnosticsSummary:
+    event_count = 0
+    resume_count = 0
+    fork_count = 0
+    lineage_switched_count = 0
+    pending_count = 0
+    results: Counter[str] = Counter()
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "session_continuity":
+                        continue
+                    event_count += 1
+                    payload = event.payload
+                    action = _safe_diagnostic_result(payload.get("action"))
+                    if action == "resume":
+                        resume_count += 1
+                    elif action == "fork":
+                        fork_count += 1
+                    results[_safe_diagnostic_result(payload.get("result"))] += 1
+                    if payload.get("lineage_switched") is True:
+                        lineage_switched_count += 1
+                    if (
+                        payload.get("pending_decision") is True
+                        or payload.get("pending_clarification") is True
+                    ):
+                        pending_count += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    ordered_results = tuple(
+        sorted(results.items(), key=lambda item: (-item[1], item[0]))
+    )
+    return _SessionContinuityDiagnosticsSummary(
+        event_count=event_count,
+        resume_count=resume_count,
+        fork_count=fork_count,
+        lineage_switched_count=lineage_switched_count,
+        pending_count=pending_count,
+        results=ordered_results,
         unreadable=tuple(unreadable),
     )
 

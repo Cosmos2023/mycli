@@ -111,6 +111,43 @@ def test_session_service_forks_conversation_at_requested_point(tmp_path: Path) -
     assert [message.content for message in loaded.messages] == ["one", "two"]
 
 
+def test_session_service_fork_child_updates_do_not_pollute_parent_transcript(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    source = Conversation(
+        session_id="root",
+        messages=[
+            Message(role="user", content="one"),
+            Message(role="assistant", content="two"),
+            Message(role="user", content="root tail"),
+        ],
+    )
+    service.save_conversation(source)
+
+    branch = service.fork_conversation("root", "branch", fork_point=2)
+    branch.append(Message(role="user", content="branch-only request"))
+    branch.append(Message(role="assistant", content="branch-only answer"))
+    service.save_conversation(branch)
+
+    loaded_parent = service.load_conversation("root")
+    loaded_branch = service.load_conversation("branch")
+
+    assert [message.content for message in loaded_parent.messages] == [
+        "one",
+        "two",
+        "root tail",
+    ]
+    assert [message.content for message in loaded_branch.messages] == [
+        "one",
+        "two",
+        "branch-only request",
+        "branch-only answer",
+    ]
+    assert loaded_branch.parent_id == "root"
+    assert loaded_branch.fork_point == 2
+
+
 def test_session_service_rewinds_conversation_in_place(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     conversation = Conversation(
