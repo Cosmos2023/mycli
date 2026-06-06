@@ -335,3 +335,52 @@ Completed Provider Cache Policy Runtime Adoption P4: provider profile/config cac
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Prefix Cache Context Assembly P8 Completion
+
+**Date**: 2026-06-06
+**Task**: Prefix Cache Context Assembly P8 Completion
+**Branch**: `feature/mycli-prefix-cache-context-assembly-p1`
+
+### Summary
+
+Completed and archived Prefix Cache Context Assembly P8, clarified staged roadmap goals, and verified the full P5-P8 cache/context assembly goal with local quality gates and smokes.
+
+### Main Changes
+
+- Completed P8 Recovery / Productized Observability implementation in `b8f2b76`.
+- Archived P8 task in `1ba7666`; completion artifact is `.trellis/tasks/archive/2026-06/06-06-prefix-cache-context-assembly-p8/completion.md`.
+- Clarified `docs/prefix-cache-context-assembly-goals.md` with current-branch phased execution guidance and final completion status.
+- Final verification passed:
+  - `uv run ruff check .` -> passed
+  - `uv run mypy src/mycli` -> passed, 274 source files
+  - `uv run pytest -q` -> 1423 passed
+  - `uv run python evaluation/provider_cache_policy_smoke.py` -> passed with P8 recovery fields
+  - `uv run python evaluation/context_smoke.py` -> ok=true
+  - `uv run python evaluation/subagent_smoke.py` -> success=true
+  - `uv run python evaluation/mcp_smoke.py` -> success=true
+  - `uv run python evaluation/plugin_runtime_smoke.py` -> ok=true
+  - `uv run python evaluation/hook_smoke.py` -> success=true
+- Remaining deferred gaps: live provider telemetry, provider-specific deterministic schema repair defaults, full memory/background maintenance/multimodal envelope, provider-specific compact engines, and `/responses/compact` default integration.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b8f2b76` | (see git log) |
+| `605ce18` | (see git log) |
+| `319829e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
