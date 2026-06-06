@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-06-07
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~462 | Active |
+| `journal-1.md` | ~540 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-06-07 | Codex alignment P12 resume/fork continuity | `62a245c`, `e8181d6` | `feature/mycli-codex-alignment-p9-runtime-kernel` |
 | 6 | 2026-06-07 | Codex alignment P11 skill context injection | `19a4b26` | `feature/mycli-codex-alignment-p9-runtime-kernel` |
 | 5 | 2026-06-07 | Codex alignment P10 tool runtime lifecycle | `28dec4f` | `feature/mycli-codex-alignment-p9-runtime-kernel` |
 | 4 | 2026-06-06 | Prefix Cache Context Assembly P8 Completion | `b8f2b76`, `605ce18`, `319829e` | `feature/mycli-prefix-cache-context-assembly-p1` |

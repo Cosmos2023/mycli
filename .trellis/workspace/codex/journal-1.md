@@ -480,3 +480,65 @@ Stabilized skill context injection around the default Skill tool, added bounded 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Codex alignment P12 resume/fork continuity
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P12 resume/fork continuity
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Completed P12 resume/fork continuity diagnostics and compact boundary guard tests.
+
+### Main Changes
+
+Completed P12 from docs/parity/codex-alignment-phases-p9-p13.md.
+
+Key work:
+- Added bounded session_continuity trace events for /resume and /fork.
+- Added doctor session_continuity diagnostics that summarize resume/fork, lineage switching, pending state, and result counts without rendering raw trace payload fields.
+- Added regression coverage that root-to-tip resume happens before pending approval resolution.
+- Added regression coverage that fork child appends do not pollute the parent transcript/history.
+- Extended cache stability regression to assert compaction rehydration fragments remain dynamic while stable prefix hash and prompt_cache_key stay stable.
+- Updated context-management-contract with P12 resume/fork continuity and compact protected boundary rules.
+
+Verification:
+- uv run ruff check src tests evaluation
+- uv run mypy src/mycli
+- uv run pytest -q
+- uv run python evaluation/context_smoke.py
+- uv run python evaluation/subagent_smoke.py
+- uv run python evaluation/mcp_smoke.py
+- uv run python evaluation/plugin_runtime_smoke.py
+- uv run python evaluation/hook_smoke.py
+- uv run python evaluation/provider_cache_policy_smoke.py
+- Compact boundary diff audit returned empty for compaction_rehydration.py and services/context/compaction*.py.
+
+Boundary note:
+- P12 did not edit compact/rehydration implementation files and did not mimic Codex compact rehydration.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `62a245c` | (see git log) |
+| `e8181d6` | (see git log) |
+
+### Testing
+
+- [OK] `uv run ruff check src tests evaluation`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q` (`1460 passed`)
+- [OK] context/subagent/MCP/plugin/hook/provider-cache smoke scripts
+- [OK] compact/rehydration diff audit: no compact files changed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
