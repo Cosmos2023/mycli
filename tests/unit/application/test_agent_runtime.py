@@ -2618,6 +2618,25 @@ class SkillCaptureAdapter:
         )()
 
 
+class SkillToolSchemaCaptureAdapter:
+    def __init__(self) -> None:
+        self.seen_tools: list[list[object]] = []
+
+    def next_action(self, *, messages, tools):
+        del messages
+        self.seen_tools.append(list(tools))
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": "Tool schema captured",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
 class SkillThenAnswerAdapter:
     def __init__(self) -> None:
         self.seen_messages: list[list[object]] = []
@@ -2751,6 +2770,52 @@ def test_agent_runtime_exposes_skill_catalog_without_auto_loading_body(tmp_path:
     )
     assert "repository-analysis: Inspect repos" in first_request_text
     assert "Inspect repositories before answering." not in first_request_text
+
+
+def test_agent_runtime_keeps_provider_tool_schema_stable_when_skills_change(
+    tmp_path: Path,
+) -> None:
+    builtin_dir = tmp_path / "builtin-skills"
+    user_dir = tmp_path / "home" / ".mycli" / "skills"
+    builtin_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    (builtin_dir / "code-review.md").write_text(
+        '---\nname = "code-review"\ndescription = "Review code"\n---\nReview body.\n',
+        encoding="utf-8",
+    )
+    adapter = SkillToolSchemaCaptureAdapter()
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools([PlanTool()]),
+        config=AgentConfig(workspace_root=tmp_path),
+        home_dir=tmp_path / "home",
+        skill_registry=SkillRegistry(builtin_root=builtin_dir, user_root=user_dir),
+    )
+
+    runtime.handle_user_turn("first turn")
+    first_tool_names = tuple(sorted(getattr(tool, "name", "") for tool in adapter.seen_tools[0]))
+
+    (user_dir / "repo-analysis.md").write_text(
+        '---\nname = "repo-analysis"\ndescription = "Analyze repo"\n---\nRepo body.\n',
+        encoding="utf-8",
+    )
+    adapter_after_add = SkillToolSchemaCaptureAdapter()
+    runtime_after_add = AgentRuntime(
+        model_adapter=adapter_after_add,
+        tool_registry=ToolRegistry.from_tools([PlanTool()]),
+        config=AgentConfig(workspace_root=tmp_path),
+        home_dir=tmp_path / "home-after",
+        skill_registry=SkillRegistry(builtin_root=builtin_dir, user_root=user_dir),
+    )
+
+    runtime_after_add.handle_user_turn("second turn")
+    second_tool_names = tuple(
+        sorted(getattr(tool, "name", "") for tool in adapter_after_add.seen_tools[0])
+    )
+
+    assert first_tool_names == second_tool_names
+    assert "Skill" in second_tool_names
+    assert all(not name.startswith("skill_") for name in second_tool_names)
 
 
 def test_agent_runtime_keeps_explicit_skill_mentions_as_plain_user_text(tmp_path: Path) -> None:

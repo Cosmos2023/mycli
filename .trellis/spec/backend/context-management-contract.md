@@ -138,6 +138,103 @@
   boundaries, provider projection metadata, and compact policy metadata.
 - Runtime/trace tests for context diagnostics and summary persistence when
   compaction summaries are produced.
+
+---
+
+## Scenario: Skill Catalog And Explicit Context Injection
+
+### 1. Scope / Trigger
+
+- Trigger: changes to skill discovery, skill catalog rendering, `Skill` tool
+  execution, skill activation diagnostics, or provider-visible tool exposure.
+- The flow crosses skill registry, runtime context assembly, tool execution,
+  turn ledger/history, trace diagnostics, and provider-facing request shape.
+
+### 2. Signatures
+
+- Stable activation tool: `SkillTool.spec.name == "Skill"`.
+- Catalog renderer: `render_skill_catalog(skill_registry: SkillRegistry) -> str`.
+- Activation trace: `RuntimeTraceEvent(kind="skill_activation", ...)`.
+- Persistent activation snapshot:
+  `SessionService.record_invoked_skill_snapshot(session_id, InvokedSkillSnapshot)`.
+- Legacy explicit provider: `SkillToolContributionProvider(registry)`.
+
+### 3. Contracts
+
+- Default runtime registers one stable `Skill` tool. Adding/removing unactivated
+  skills must not create provider-visible `skill_*` tool schemas.
+- `SkillToolContributionProvider` is compatibility-only and must be injected
+  explicitly by tests or callers that need legacy per-skill tool exposure.
+- `skill_catalog` is static catalog context: it may list skill names and
+  descriptions, but must not include full skill bodies.
+- Skill bodies enter model-visible context only after an explicit successful
+  `Skill` tool call.
+- Successful skill activation appends a replayable `skill_instructions` user
+  message and a `SKILL_INSTRUCTIONS` turn item with:
+  - `cache_class="dynamic"`
+  - `durability="persistent"`
+  - `scope="transcript"`
+  - `model_visible=True`
+  - `replayable=True`
+- Successful skill activation persists an `InvokedSkillSnapshot` so later
+  continuity can survive source-file deletion. This contract records the
+  snapshot; it does not modify compact/rehydration implementation.
+- `skill_activation` trace rows may contain only bounded metadata:
+  `skill_name`, `tool_name`, `tool_call_id`, `description_present`,
+  `source_path_present`, `content_chars`, `body_digest`, `replayable`,
+  `cache_class`, `durability`, and optional `source_kind`.
+- `skill_activation` trace rows must not include raw skill bodies, raw user
+  prompts, raw tool output, headers, secrets, or provider payload bodies.
+
+### 4. Validation & Error Matrix
+
+- No skills -> empty catalog and no `skill_catalog` section.
+- New unactivated skill -> catalog may change, provider-visible tool schema
+  remains stable.
+- Explicit `SkillToolContributionProvider` injection -> legacy per-skill
+  provider-safe route names continue to work.
+- Successful `Skill` call -> dynamic replayable skill instruction and bounded
+  `skill_activation` trace.
+- Unknown/missing skill -> failed tool result without skill instruction replay
+  or activation snapshot.
+- Deleted source after activation -> existing persisted skill instruction and
+  invoked skill snapshot remain available through existing history/snapshot
+  paths.
+
+### 5. Good/Base/Bad Cases
+
+- Good: catalog says `- code-review: Review code`; the body appears only after
+  `Skill({"skill_name": "code-review"})` succeeds.
+- Base: adding `repo-analysis` changes catalog text but not the provider tool
+  list, which still includes `Skill` instead of `skill_repo_analysis`.
+- Bad: registering `SkillToolContributionProvider` by default in bootstrap.
+- Bad: writing raw skill body into `skill_activation` trace or doctor output.
+
+### 6. Tests Required
+
+- Unit test normal runtime exposes `Skill`, not one provider-visible tool per
+  skill.
+- Unit test adding an unactivated skill does not change provider-visible skill
+  tool schema.
+- Unit test explicit legacy `SkillToolContributionProvider` still routes
+  provider-safe and dotted legacy names.
+- Unit test successful skill activation records replayable transcript,
+  `SKILL_INSTRUCTIONS` turn item, invoked skill snapshot, and bounded
+  `skill_activation` trace.
+- Unit test deleted source still leaves existing cached invoked-skill snapshot
+  and history available without editing compact/rehydration implementation.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+Expose every discovered skill as a provider-visible tool during normal runtime
+startup.
+
+#### Correct
+
+Expose one stable `Skill` tool, render a catalog of names/descriptions, and
+inject detailed skill instructions only after explicit activation.
 - Doctor tests for bounded context diagnostics and raw-content redaction.
 - Provider-free `evaluation/context_smoke.py`, including stable prefix hash
   stability when only ephemeral/current intent changes.

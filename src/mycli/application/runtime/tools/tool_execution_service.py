@@ -750,6 +750,7 @@ class ToolExecutionService:
             tool_name=normalized_call.name,
             result=result,
             turn_id=turn_id,
+            call_id=normalized_call.call_id,
         )
         finish_event = self._tool_activity_event(
             normalized_call,
@@ -1152,6 +1153,7 @@ class ToolExecutionService:
     def _record_skill_invocation(
         self,
         *,
+        call_id: str | None = None,
         tool_name: str,
         result: ToolResult,
         turn_id: str,
@@ -1167,9 +1169,10 @@ class ToolExecutionService:
         body = content.strip() if isinstance(content, str) else ""
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest() if body else None
         source_path = result.raw_payload.get("source_path")
+        skill_name = skill_name.strip()
         self._record_invoked_skill(
             InvokedSkillSnapshot(
-                name=skill_name.strip(),
+                name=skill_name,
                 description=str(result.raw_payload.get("description") or ""),
                 source_path=source_path if isinstance(source_path, str) else None,
                 body_digest=digest,
@@ -1177,6 +1180,50 @@ class ToolExecutionService:
                 invoked_at=datetime.now(UTC),
                 last_turn_id=turn_id,
             )
+        )
+        self._trace_skill_activation(
+            turn_id=turn_id,
+            skill_name=skill_name,
+            call_id=call_id,
+            result=result,
+            body=body,
+            body_digest=digest,
+            source_path=source_path if isinstance(source_path, str) else None,
+        )
+
+    def _trace_skill_activation(
+        self,
+        *,
+        turn_id: str,
+        skill_name: str,
+        call_id: str | None,
+        result: ToolResult,
+        body: str,
+        body_digest: str | None,
+        source_path: str | None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "skill_name": skill_name,
+            "tool_name": "Skill",
+            "tool_call_id": call_id or "",
+            "description_present": bool(str(result.raw_payload.get("description") or "").strip()),
+            "source_path_present": bool(source_path),
+            "content_chars": len(body),
+            "body_digest": body_digest,
+            "replayable": bool(body),
+            "cache_class": "dynamic",
+            "durability": "persistent",
+        }
+        source_kind = result.raw_payload.get("source_kind")
+        if isinstance(source_kind, str) and source_kind.strip():
+            payload["source_kind"] = source_kind.strip()
+        self._trace_service.append(
+            self._session_id,
+            RuntimeTraceEvent(
+                kind="skill_activation",
+                turn_id=turn_id,
+                payload=payload,
+            ),
         )
 
     def _record_skill_instruction_message(

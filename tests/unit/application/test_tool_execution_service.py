@@ -1027,6 +1027,17 @@ def test_tool_execution_service_records_successful_skill_invocation(tmp_path: Pa
     assert recorded[0].cached_body_excerpt == "Find correctness bugs first."
     assert recorded[0].last_turn_id == "turn_1"
 
+    traces = TraceService(home_dir=tmp_path / "home").load("demo")
+    activation = next(event for event in traces if event.kind == "skill_activation")
+    assert activation.turn_id == "turn_1"
+    assert activation.payload["skill_name"] == "code-review"
+    assert activation.payload["tool_call_id"] == "call_skill"
+    assert activation.payload["content_chars"] == len("Find correctness bugs first.")
+    assert activation.payload["body_digest"] == recorded[0].body_digest
+    assert activation.payload["replayable"] is True
+    assert "content" not in activation.payload
+    assert "Find correctness bugs first" not in json.dumps(activation.payload)
+
 
 def test_tool_execution_service_applies_modified_args(tmp_path: Path) -> None:
     hook_manager = HookManager()
