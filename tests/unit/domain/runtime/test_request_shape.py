@@ -286,3 +286,30 @@ def test_provider_request_policy_capability_can_disable_anthropic_cache_control(
     assert policy.anthropic_cache_control_breakpoints == ()
     assert policy.wire_cache_hint_enabled is False
     assert "cache_control" not in policy.wire_only_hints
+
+
+def test_deepseek_provider_request_policy_reports_automatic_prefix_cache_strategy() -> None:
+    policy = ProviderRequestPolicyShape.for_request_shape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-chat",
+        system_hash="system",
+        tool_schema_hash="tools",
+        cacheable_prefix_hash="stable-prefix",
+        lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+        capability=ProviderCachePolicyCapability(
+            prompt_cache_key_enabled=False,
+            cache_control_enabled=False,
+            wire_hints_supported=False,
+            provider_family="deepseek",
+            cache_strategy="automatic_prefix_cache",
+        ),
+    )
+
+    payload = policy.to_dict()
+
+    assert policy.prompt_cache_key is None
+    assert policy.anthropic_cache_control_breakpoints == ()
+    assert payload["wire_hint_state"] == "unsupported"
+    assert payload["provider_family"] == "deepseek"
+    assert payload["cache_strategy"] == "automatic_prefix_cache"

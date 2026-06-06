@@ -19,6 +19,8 @@ COMPATIBLE_PROFILE = ProviderProfile(
     cache_policy_capability=ProviderCachePolicyCapability(
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,
+        provider_family="compatible",
+        cache_strategy="prompt_cache_key",
     ),
 )
 
@@ -52,10 +54,15 @@ def profile_for_provider(provider: ProviderId) -> ProviderProfile:
 def resolve_provider_cache_policy_capability(
     *,
     provider: ProviderId,
+    base_url: str | None = None,
     override: ProviderCachePolicyCapability | None = None,
 ) -> ProviderCachePolicyCapability:
     if override is not None:
         return override
+    if provider is ProviderId.ANTHROPIC and base_url is not None:
+        inferred_provider = infer_provider_from_base_url(base_url)
+        if inferred_provider is not ProviderId.ANTHROPIC:
+            provider = inferred_provider
     profile = profile_for_provider(provider)
     capability = profile.cache_policy_capability
     if isinstance(capability, ProviderCachePolicyCapability):

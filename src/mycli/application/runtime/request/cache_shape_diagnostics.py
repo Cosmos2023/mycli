@@ -305,6 +305,8 @@ class CacheShapeDiagnostics:
             "wire_only": policy.get("wire_only"),
             "wire_hint_state": policy.get("wire_hint_state")
             or self._wire_hint_state(policy),
+            "provider_family": policy.get("provider_family"),
+            "cache_strategy": policy.get("cache_strategy"),
             "wire_cache_hint_enabled": policy.get("wire_cache_hint_enabled"),
             "prompt_cache_key_hash": policy.get("prompt_cache_key_hash"),
             "prompt_cache_key_preview": policy.get("prompt_cache_key_preview"),

@@ -20,6 +20,8 @@ from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO_ROOT / "evaluation" / "runs"
+SKILL_ROUTE = "skill-data-helper"
+LEGACY_SKILL_ROUTE = "skill.data-helper"
 
 
 def main() -> int:
@@ -67,9 +69,17 @@ def main() -> int:
         router = orchestrator.build_tool_router(planned)
         result = router.execute(
             ToolCall(
-                name="skill.data-helper",
+                name=SKILL_ROUTE,
                 arguments={"reason": "Need CSV analysis guardrails"},
                 reason="Skill smoke",
+            ),
+            exposure=planned.exposure,
+        )
+        legacy_result = router.execute(
+            ToolCall(
+                name=LEGACY_SKILL_ROUTE,
+                arguments={"reason": "Legacy dotted route compatibility"},
+                reason="Skill smoke legacy route",
             ),
             exposure=planned.exposure,
         )
@@ -89,21 +99,33 @@ def main() -> int:
                 "success": (
                     diagnostics.loaded_count == 2
                     and diagnostics.issue_count == 1
-                    and tools["skill.data-helper"]["source"] == "skill"
-                    and "skill.data-helper" in toolsets["external"]["tools"]
+                    and tools[SKILL_ROUTE]["source"] == "skill"
+                    and SKILL_ROUTE in toolsets["external"]["tools"]
                     and result.success
+                    and legacy_result.success
                     and result.summary == "Activated skill: data-helper"
-                    and lifecycle == ["declared", "declared", "exposed", "exposed", "invoked", "completed"]
+                    and lifecycle == [
+                        "declared",
+                        "declared",
+                        "exposed",
+                        "exposed",
+                        "invoked",
+                        "completed",
+                        "invoked",
+                        "completed",
+                    ]
                     and skill_check.status is DoctorStatus.WARNING
                     and "SECRET" not in (skill_check.detail or "")
                 ),
                 "checks": {
                     "loaded_count": diagnostics.loaded_count,
                     "issue_count": diagnostics.issue_count,
-                    "manifest_source": tools["skill.data-helper"]["source"],
-                    "route": "skill.data-helper",
+                    "manifest_source": tools[SKILL_ROUTE]["source"],
+                    "route": SKILL_ROUTE,
+                    "legacy_route": LEGACY_SKILL_ROUTE,
                     "toolset_sources": toolsets["external"]["sources"],
                     "runtime_summary": result.summary,
+                    "legacy_runtime_summary": legacy_result.summary,
                     "lifecycle": lifecycle,
                     "doctor_status": skill_check.status.value,
                     "doctor_message": skill_check.message,

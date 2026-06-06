@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 from mycli.domain.logging import ModelLogContext
@@ -12,6 +13,14 @@ from mycli.llms.adapters.base import (
     ModelMessage,
     ModelToolDefinition,
 )
+
+_ANTHROPIC_CACHE_CONTROL_LIMIT = 4
+
+
+@dataclass(slots=True)
+class _AnthropicSerializationState:
+    seen_tool_use_ids: set[str] = field(default_factory=set)
+    tool_use_id_by_runtime_id: dict[str, str] = field(default_factory=dict)
 
 
 class AnthropicMessagesClientProtocol(Protocol):
@@ -116,8 +125,9 @@ class AnthropicMessagesModelAdapter:
         items: list[RuntimeItem],
     ) -> tuple[str | list[dict[str, object]] | None, list[dict[str, object]]]:
         system_parts: list[dict[str, object]] = []
-        system_has_cache_control = False
         messages: list[dict[str, object]] = []
+        cache_control_enabled = self._cache_control_enabled(items)
+        state = _AnthropicSerializationState()
         for item in items:
             if item.role in {"system", "developer"}:
                 for block in item.blocks:
@@ -127,39 +137,72 @@ class AnthropicMessagesModelAdapter:
                         "type": "text",
                         "text": block.text,
                     }
-                    if self._item_has_anthropic_breakpoint(item, "system_static"):
-                        system_block["cache_control"] = {"type": "ephemeral"}
-                        system_has_cache_control = True
                     system_parts.append(system_block)
                 continue
-            content = self._content_blocks_for_item(item)
+            content = self._content_blocks_for_item(item, state)
             if content:
-                messages.append(
-                    {"role": self._anthropic_role(item.role), "content": content}
+                self._append_message(
+                    messages,
+                    {"role": self._anthropic_role(item.role), "content": content},
                 )
+        if cache_control_enabled:
+            self._apply_system_and_three_cache_control(
+                system_parts=system_parts,
+                messages=messages,
+            )
         system: str | list[dict[str, object]] | None
         if not system_parts:
             system = None
-        elif system_has_cache_control:
+        elif cache_control_enabled and self._has_cache_control(system_parts):
             system = system_parts
         else:
             system = "\n\n".join(str(block["text"]) for block in system_parts)
         return system, messages
 
+    def _append_message(
+        self,
+        messages: list[dict[str, object]],
+        message: dict[str, object],
+    ) -> None:
+        if self._is_tool_result_message(message) and messages:
+            previous = messages[-1]
+            if self._is_tool_result_message(previous):
+                previous_content = previous.get("content")
+                content = message.get("content")
+                if isinstance(previous_content, list) and isinstance(content, list):
+                    previous_content.extend(content)
+                    return
+        messages.append(message)
+
+    def _is_tool_result_message(self, message: dict[str, object]) -> bool:
+        if message.get("role") != "user":
+            return False
+        content = message.get("content")
+        return (
+            isinstance(content, list)
+            and len(content) > 0
+            and all(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content
+            )
+        )
+
     def _anthropic_role(self, role: RuntimeRole) -> str:
         return "user" if role == "tool" else role
 
-    def _content_blocks_for_item(self, item: RuntimeItem) -> list[dict[str, object]]:
+    def _content_blocks_for_item(
+        self,
+        item: RuntimeItem,
+        state: _AnthropicSerializationState,
+    ) -> list[dict[str, object]]:
         content: list[dict[str, object]] = []
         for block in item.blocks:
             if block.type == "text" and block.text:
                 text_block: dict[str, object] = {"type": "text", "text": block.text}
-                if self._item_has_anthropic_breakpoint(item, "dynamic_boundary"):
-                    text_block["cache_control"] = {"type": "ephemeral"}
                 content.append(text_block)
                 continue
             if block.type == "tool_call":
-                tool_use_id = self._tool_use_id(block)
+                tool_use_id = self._unique_tool_use_id(block, state)
                 content.append(
                     {
                         "type": "tool_use",
@@ -173,7 +216,7 @@ class AnthropicMessagesModelAdapter:
                 content.append(
                     {
                         "type": "tool_result",
-                        "tool_use_id": block.call_id,
+                        "tool_use_id": self._tool_result_use_id(block, state),
                         "content": block.text or "",
                     }
                 )
@@ -212,6 +255,104 @@ class AnthropicMessagesModelAdapter:
                 "call_id": block.call_id,
             },
         )
+
+    def _unique_tool_use_id(
+        self,
+        block: RuntimeBlock,
+        state: _AnthropicSerializationState,
+    ) -> str:
+        preferred_id = self._tool_use_id(block)
+        tool_use_id = preferred_id
+        if tool_use_id in state.seen_tool_use_ids:
+            suffix = 2
+            while True:
+                candidate = deterministic_provider_id(
+                    "toolu",
+                    {
+                        "preferred_id": preferred_id,
+                        "name": block.tool_name,
+                        "arguments": block.tool_arguments or {},
+                        "call_id": block.call_id,
+                        "provider_id": block.provider_id,
+                        "duplicate_ordinal": suffix,
+                    },
+                )
+                if candidate not in state.seen_tool_use_ids:
+                    tool_use_id = candidate
+                    break
+                suffix += 1
+        state.seen_tool_use_ids.add(tool_use_id)
+        if block.call_id:
+            state.tool_use_id_by_runtime_id[block.call_id] = tool_use_id
+        if block.provider_id:
+            state.tool_use_id_by_runtime_id.setdefault(block.provider_id, tool_use_id)
+        return tool_use_id
+
+    def _tool_result_use_id(
+        self,
+        block: RuntimeBlock,
+        state: _AnthropicSerializationState,
+    ) -> str:
+        if block.call_id and block.call_id in state.tool_use_id_by_runtime_id:
+            return state.tool_use_id_by_runtime_id[block.call_id]
+        if block.provider_id and block.provider_id in state.tool_use_id_by_runtime_id:
+            return state.tool_use_id_by_runtime_id[block.provider_id]
+        if block.provider_id:
+            return block.provider_id
+        return block.call_id or "toolu_missing"
+
+    def _cache_control_enabled(self, items: list[RuntimeItem]) -> bool:
+        for item in items:
+            if self._item_has_anthropic_breakpoint(item, "system_static"):
+                return True
+            if self._item_has_anthropic_breakpoint(item, "dynamic_boundary"):
+                return True
+            if self._item_has_anthropic_breakpoint(item, "long_context_1"):
+                return True
+            if self._item_has_anthropic_breakpoint(item, "long_context_2"):
+                return True
+        return False
+
+    def _apply_system_and_three_cache_control(
+        self,
+        *,
+        system_parts: list[dict[str, object]],
+        messages: list[dict[str, object]],
+    ) -> None:
+        applied = 0
+        if system_parts:
+            self._apply_cache_control_to_block(system_parts[-1])
+            applied += 1
+        remaining = _ANTHROPIC_CACHE_CONTROL_LIMIT - applied
+        if remaining <= 0:
+            return
+        candidates = [
+            block
+            for message in messages
+            if (block := self._last_cacheable_content_block(message)) is not None
+        ]
+        for block in candidates[-remaining:]:
+            self._apply_cache_control_to_block(block)
+
+    def _last_cacheable_content_block(
+        self,
+        message: dict[str, object],
+    ) -> dict[str, object] | None:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return None
+        for block in reversed(content):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in {"text", "tool_use", "tool_result"}:
+                return block
+        return None
+
+    def _apply_cache_control_to_block(self, block: dict[str, object]) -> None:
+        block["cache_control"] = {"type": "ephemeral"}
+
+    def _has_cache_control(self, blocks: list[dict[str, object]]) -> bool:
+        return any(block.get("cache_control") is not None for block in blocks)
 
     def _item_has_anthropic_breakpoint(
         self,

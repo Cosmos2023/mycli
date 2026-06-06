@@ -1025,6 +1025,170 @@ def test_openai_chat_client_serializes_native_tool_request_and_parses_tool_call(
     }
 
 
+def test_openai_chat_client_uses_wire_safe_tool_names_and_restores_canonical_names(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_skill_review_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "skill_code-review",
+                                    "arguments": '{"skill_name":"code-review"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+    )
+
+    payload = client.complete(
+        [{"role": "user", "content": "review the current diff"}],
+        tools=[
+            {
+                "name": "skill.code-review",
+                "description": "Load the code-review skill",
+                "parameters": [{"name": "skill_name", "type": "string"}],
+            }
+        ],
+    )
+
+    sent_tool = sdk_client.chat_completions.calls[0]["tools"][0]
+    assert sent_tool["function"]["name"] == "skill_code-review"
+    assert payload["tool_call"] == {
+        "id": "call_skill_review_1",
+        "name": "skill.code-review",
+        "arguments": {"skill_name": "code-review"},
+        "reason": "model requested tool",
+    }
+
+
+def test_openai_chat_client_disambiguates_colliding_wire_safe_tool_names(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": "done",
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    client.complete(
+        [{"role": "user", "content": "inspect"}],
+        tools=[
+            {
+                "name": "skill.review",
+                "description": "Load review skill",
+                "parameters": [],
+            },
+            {
+                "name": "skill_review",
+                "description": "Run review tool",
+                "parameters": [],
+            },
+        ],
+    )
+
+    wire_names = [
+        tool["function"]["name"]
+        for tool in sdk_client.chat_completions.calls[0]["tools"]
+    ]
+    assert len(wire_names) == len(set(wire_names))
+    assert all("." not in name for name in wire_names)
+    assert all(name.startswith("skill_review_") for name in wire_names)
+
+
+def test_openai_chat_client_rewrites_replayed_assistant_tool_call_names(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": "done",
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+    )
+
+    client.complete(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_skill_review_1",
+                        "type": "function",
+                        "function": {
+                            "name": "skill.code-review",
+                            "arguments": '{"skill_name":"code-review"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_skill_review_1",
+                "content": "Activated skill: code-review",
+            },
+            {"role": "user", "content": "continue"},
+        ],
+        tools=[],
+    )
+
+    replayed_call = sdk_client.chat_completions.calls[0]["messages"][0]["tool_calls"][0]
+    assert replayed_call["function"]["name"] == "skill_code-review"
+
+
 def test_openai_chat_client_repairs_python_literal_native_tool_arguments(
     monkeypatch,
 ) -> None:

@@ -641,6 +641,13 @@ class ToolExecutionService:
             evidence=result.evidence,
             tool_call_id=normalized_call.call_id,
         )
+        self._record_skill_instruction_message(
+            conversation,
+            tool_name=normalized_call.name,
+            result=result,
+            turn_id=turn_id,
+            turn_items=turn_items,
+        )
         self._record_skill_invocation(
             tool_name=normalized_call.name,
             result=result,
@@ -968,6 +975,87 @@ class ToolExecutionService:
                 last_turn_id=turn_id,
             )
         )
+
+    def _record_skill_instruction_message(
+        self,
+        conversation: Conversation,
+        *,
+        tool_name: str,
+        result: ToolResult,
+        turn_id: str,
+        turn_items: list[TurnItem],
+    ) -> None:
+        if tool_name != "Skill" or not result.success:
+            return
+        skill_name = result.raw_payload.get("skill_name")
+        content = result.raw_payload.get("content")
+        if not isinstance(skill_name, str) or not skill_name.strip():
+            return
+        if not isinstance(content, str) or not content.strip():
+            return
+        description = result.raw_payload.get("description")
+        source_path = result.raw_payload.get("source_path")
+        rendered = self._render_skill_instruction_reference(
+            skill_name=skill_name.strip(),
+            description=description if isinstance(description, str) else "",
+            source_path=source_path if isinstance(source_path, str) else "",
+            content=content.strip(),
+        )
+        metadata = {
+            "kind": "skill_instructions",
+            "skill_name": skill_name.strip(),
+            "source_path": source_path if isinstance(source_path, str) else None,
+            "cache_class": "dynamic",
+            "durability": "persistent",
+            "scope": "transcript",
+            "model_visible": True,
+            "replayable": True,
+        }
+        conversation.append(
+            Message(
+                role="user",
+                content=rendered,
+                metadata=metadata,
+            )
+        )
+        self._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.SKILL_INSTRUCTIONS,
+                text=rendered,
+                tool_name=tool_name,
+                metadata=metadata,
+            ),
+        )
+
+    def _render_skill_instruction_reference(
+        self,
+        *,
+        skill_name: str,
+        description: str,
+        source_path: str,
+        content: str,
+    ) -> str:
+        lines = [
+            "<skill_instructions>",
+            "This is a loaded skill reference for future work in this conversation; "
+            "it is not the current user request.",
+            f"<name>{skill_name}</name>",
+        ]
+        if description:
+            lines.append(f"<description>{description}</description>")
+        if source_path:
+            lines.append(f"<path>{source_path}</path>")
+        lines.extend(
+            [
+                "<content>",
+                content,
+                "</content>",
+                "</skill_instructions>",
+            ]
+        )
+        return "\n".join(lines)
 
     def _tool_execution_trace_payload(
         self,

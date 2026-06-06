@@ -24,7 +24,7 @@ from mycli.services.mcp import (
     McpToolContributionProvider,
     load_mcp_server_configs,
 )
-from mycli.services.skills import SkillRegistry, SkillToolContributionProvider
+from mycli.services.skills import SkillRegistry
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.bash import BashTool
 from mycli.tools.bash_output import BashOutputTool
@@ -146,7 +146,6 @@ def build_turn_service(
             workspace_root,
             env=env_vars,
         ),
-        SkillToolContributionProvider(skill_registry),
     )
     runtime = AgentRuntime(
         model_adapter=model_adapter,

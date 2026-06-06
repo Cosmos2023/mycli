@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
@@ -70,6 +73,75 @@ class ModelClient(Protocol):
         """Return the next model decision for the current ReAct step."""
 
 
+_CHAT_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+_CHAT_TOOL_NAME_INVALID_PATTERN = re.compile(r"[^a-zA-Z0-9_-]+")
+_CHAT_TOOL_NAME_MAX_LENGTH = 64
+
+
+@dataclass(slots=True, frozen=True)
+class _ToolNameAliases:
+    canonical_to_wire: dict[str, str]
+    wire_to_canonical: dict[str, str]
+
+    @classmethod
+    def from_names(cls, names: Iterable[str]) -> _ToolNameAliases:
+        canonical_names = tuple(dict.fromkeys(names))
+        if not canonical_names:
+            return cls(canonical_to_wire={}, wire_to_canonical={})
+
+        bases = {name: _wire_tool_name_base(name) for name in canonical_names}
+        base_counts: dict[str, int] = {}
+        for base in bases.values():
+            base_counts[base] = base_counts.get(base, 0) + 1
+
+        canonical_to_wire: dict[str, str] = {}
+        wire_to_canonical: dict[str, str] = {}
+        for canonical_name in canonical_names:
+            base = bases[canonical_name]
+            needs_suffix = (
+                base_counts[base] > 1
+                or len(base) > _CHAT_TOOL_NAME_MAX_LENGTH
+            )
+            wire_name = (
+                _wire_tool_name_with_hash(base, canonical_name)
+                if needs_suffix
+                else base
+            )
+            canonical_to_wire[canonical_name] = wire_name
+            wire_to_canonical[wire_name] = canonical_name
+
+        return cls(
+            canonical_to_wire=canonical_to_wire,
+            wire_to_canonical=wire_to_canonical,
+        )
+
+    @classmethod
+    def from_tools(cls, tools: list[dict[str, object]] | None) -> _ToolNameAliases:
+        return cls.from_names(str(tool["name"]) for tool in tools or [])
+
+    def wire_name(self, canonical_name: str) -> str:
+        return self.canonical_to_wire.get(canonical_name, canonical_name)
+
+    def canonical_name(self, wire_name: str) -> str:
+        return self.wire_to_canonical.get(wire_name, wire_name)
+
+
+def _wire_tool_name_base(canonical_name: str) -> str:
+    stripped = canonical_name.strip()
+    if _CHAT_TOOL_NAME_PATTERN.fullmatch(stripped) and len(stripped) <= _CHAT_TOOL_NAME_MAX_LENGTH:
+        return stripped
+    sanitized = _CHAT_TOOL_NAME_INVALID_PATTERN.sub("_", stripped).strip("_")
+    return sanitized or "tool"
+
+
+def _wire_tool_name_with_hash(base: str, canonical_name: str) -> str:
+    digest = hashlib.sha256(canonical_name.encode("utf-8")).hexdigest()[:8]
+    suffix = f"_{digest}"
+    prefix_length = _CHAT_TOOL_NAME_MAX_LENGTH - len(suffix)
+    prefix = base[:prefix_length].rstrip("_-") or "tool"
+    return f"{prefix}{suffix}"
+
+
 def _build_openai_sdk_client(*, api_key: str, base_url: str) -> OpenAI:
     return OpenAI(
         api_key=api_key,
@@ -131,7 +203,10 @@ class OpenAIChatClient:
     def _normalize_tool_definitions(
         self,
         tools: list[dict[str, object]],
+        *,
+        aliases: _ToolNameAliases | None = None,
     ) -> list[dict[str, object]]:
+        tool_name_aliases = aliases or _ToolNameAliases.from_tools(tools)
         normalized_tools: list[dict[str, object]] = []
         for tool in tools:
             raw_parameters = tool.get("parameters", [])
@@ -158,7 +233,7 @@ class OpenAIChatClient:
                 {
                     "type": "function",
                     "function": {
-                        "name": str(tool["name"]),
+                        "name": tool_name_aliases.wire_name(str(tool["name"])),
                         "description": str(tool["description"]),
                         "parameters": {
                             "type": "object",
@@ -176,8 +251,24 @@ class OpenAIChatClient:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
+        payload_body, _tool_name_aliases = self._chat_payload_body_with_tool_aliases(
+            messages,
+            tools,
+        )
+        return payload_body
+
+    def _chat_payload_body_with_tool_aliases(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+    ) -> tuple[dict[str, object], _ToolNameAliases]:
         prompt_cache_key = self._prompt_cache_key_from_messages(messages)
-        adapted_messages = self._provider_adapter.adapt_messages(messages)
+        tool_name_aliases = _ToolNameAliases.from_names(
+            self._tool_names_for_wire_aliases(messages=messages, tools=tools)
+        )
+        adapted_messages = self._provider_adapter.adapt_messages(
+            self._messages_with_wire_tool_names(messages, tool_name_aliases)
+        )
         payload_body: dict[str, object] = {
             "model": self._model,
             "messages": adapted_messages,
@@ -187,15 +278,21 @@ class OpenAIChatClient:
         if prompt_cache_key:
             payload_body["prompt_cache_key"] = prompt_cache_key
         if tools:
-            payload_body["tools"] = self._normalize_tool_definitions(tools)
+            payload_body["tools"] = self._normalize_tool_definitions(
+                tools,
+                aliases=tool_name_aliases,
+            )
             if self._tool_choice is not None:
                 payload_body["tool_choice"] = self._tool_choice
-        return self._provider_adapter.adapt_request_body(
-            payload_body,
-            settings=ChatProviderSettings(
-                thinking_enabled=self._thinking_enabled,
-                thinking_effort=self._thinking_effort,
+        return (
+            self._provider_adapter.adapt_request_body(
+                payload_body,
+                settings=ChatProviderSettings(
+                    thinking_enabled=self._thinking_enabled,
+                    thinking_effort=self._thinking_effort,
+                ),
             ),
+            tool_name_aliases,
         )
 
     def _prompt_cache_key_from_messages(
@@ -214,12 +311,90 @@ class OpenAIChatClient:
                 return value
         return None
 
+    def _tool_names_for_wire_aliases(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None,
+    ) -> Iterable[str]:
+        for tool in tools or []:
+            yield str(tool["name"])
+        for message in messages:
+            raw_tool_calls = message.get("tool_calls")
+            if not isinstance(raw_tool_calls, list):
+                continue
+            for raw_tool_call in raw_tool_calls:
+                if not isinstance(raw_tool_call, dict):
+                    continue
+                raw_function = raw_tool_call.get("function")
+                if not isinstance(raw_function, dict):
+                    continue
+                raw_name = raw_function.get("name")
+                if isinstance(raw_name, str) and raw_name.strip():
+                    yield raw_name
+
+    def _messages_with_wire_tool_names(
+        self,
+        messages: list[dict[str, object]],
+        aliases: _ToolNameAliases,
+    ) -> list[dict[str, object]]:
+        if not aliases.canonical_to_wire:
+            return messages
+
+        aliased_messages: list[dict[str, object]] = []
+        for message in messages:
+            aliased_message = dict(message)
+            raw_tool_calls = aliased_message.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                aliased_message["tool_calls"] = [
+                    self._tool_call_with_wire_name(raw_tool_call, aliases)
+                    for raw_tool_call in raw_tool_calls
+                ]
+            aliased_messages.append(aliased_message)
+        return aliased_messages
+
+    def _tool_call_with_wire_name(
+        self,
+        raw_tool_call: object,
+        aliases: _ToolNameAliases,
+    ) -> object:
+        if not isinstance(raw_tool_call, dict):
+            return raw_tool_call
+        aliased_tool_call = dict(raw_tool_call)
+        raw_function = aliased_tool_call.get("function")
+        if not isinstance(raw_function, dict):
+            return aliased_tool_call
+        function_payload = dict(raw_function)
+        raw_name = function_payload.get("name")
+        if isinstance(raw_name, str):
+            function_payload["name"] = aliases.wire_name(raw_name)
+        aliased_tool_call["function"] = function_payload
+        return aliased_tool_call
+
+    def _decoded_tool_call_with_canonical_name(
+        self,
+        payload: dict[str, object],
+        aliases: _ToolNameAliases,
+    ) -> dict[str, object]:
+        raw_name = payload.get("name")
+        if not isinstance(raw_name, str):
+            return payload
+        canonical_name = aliases.canonical_name(raw_name)
+        if canonical_name == raw_name:
+            return payload
+        decoded_payload = dict(payload)
+        decoded_payload["name"] = canonical_name
+        return decoded_payload
+
     def complete(
         self,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
-        payload_body = self._chat_payload_body(messages, tools)
+        payload_body, tool_name_aliases = self._chat_payload_body_with_tool_aliases(
+            messages,
+            tools,
+        )
         request_path = self._log_request(
             url=f"{self._base_url}/chat/completions",
             payload_body=payload_body,
@@ -284,9 +459,12 @@ class OpenAIChatClient:
         raw_tool_calls = message.get("tool_calls")
         if isinstance(raw_tool_calls, list) and raw_tool_calls:
             tool_call_payloads = [
-                _decode_native_tool_call(
-                    cast("dict[str, object]", raw_tool_call),
-                    provider_metadata=provider_metadata,
+                self._decoded_tool_call_with_canonical_name(
+                    _decode_native_tool_call(
+                        cast("dict[str, object]", raw_tool_call),
+                        provider_metadata=provider_metadata,
+                    ),
+                    tool_name_aliases,
                 )
                 for raw_tool_call in raw_tool_calls
                 if isinstance(raw_tool_call, dict)
@@ -363,7 +541,10 @@ class OpenAIChatClient:
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
     ) -> Iterator[ModelEvent]:
-        payload_body = self._chat_payload_body(input_items, tools)
+        payload_body, tool_name_aliases = self._chat_payload_body_with_tool_aliases(
+            input_items,
+            tools,
+        )
         payload_body["stream"] = True
         payload_body["stream_options"] = {"include_usage": True}
         request_path = self._log_request(
@@ -372,7 +553,10 @@ class OpenAIChatClient:
         )
         try:
             stream = cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
-            yield from self._events_from_chat_stream(stream)
+            yield from self._events_from_chat_stream(
+                stream,
+                tool_name_aliases=tool_name_aliases,
+            )
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
@@ -414,7 +598,13 @@ class OpenAIChatClient:
             request_path=request_path,
         )
 
-    def _events_from_chat_stream(self, stream: object) -> Iterator[ModelEvent]:
+    def _events_from_chat_stream(
+        self,
+        stream: object,
+        *,
+        tool_name_aliases: _ToolNameAliases | None = None,
+    ) -> Iterator[ModelEvent]:
+        aliases = tool_name_aliases or _ToolNameAliases.from_tools(None)
         response_id: str | None = None
         usage: dict[str, object] | None = None
         tool_call_states: dict[int, dict[str, str]] = {}
@@ -458,6 +648,7 @@ class OpenAIChatClient:
                     yield from self._stream_tool_call_events(
                         tool_call_states,
                         response_id=response_id,
+                        aliases=aliases,
                     )
                     emitted_tool_calls = True
 
@@ -465,6 +656,7 @@ class OpenAIChatClient:
             yield from self._stream_tool_call_events(
                 tool_call_states,
                 response_id=response_id,
+                aliases=aliases,
             )
         yield ModelEvent(
             type=ModelEventType.TURN_COMPLETED,
@@ -506,6 +698,7 @@ class OpenAIChatClient:
         tool_call_states: dict[int, dict[str, str]],
         *,
         response_id: str | None,
+        aliases: _ToolNameAliases,
     ) -> Iterator[ModelEvent]:
         for index in sorted(tool_call_states):
             state = tool_call_states[index]
@@ -517,7 +710,10 @@ class OpenAIChatClient:
                     "arguments": state["arguments"],
                 },
             }
-            decoded = _decode_native_tool_call(raw_tool_call, provider_metadata={})
+            decoded = self._decoded_tool_call_with_canonical_name(
+                _decode_native_tool_call(raw_tool_call, provider_metadata={}),
+                aliases,
+            )
             raw_arguments = decoded.get("arguments", {})
             raw_metadata = decoded.get("metadata")
             metadata = raw_metadata if isinstance(raw_metadata, dict) else {}

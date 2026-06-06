@@ -290,6 +290,8 @@ def test_diagnostic_reports_unsupported_provider_request_policy_state() -> None:
                 prompt_cache_key_enabled=False,
                 cache_control_enabled=False,
                 wire_hints_supported=False,
+                provider_family="deepseek",
+                cache_strategy="automatic_prefix_cache",
             ),
         ),
     )
@@ -301,6 +303,8 @@ def test_diagnostic_reports_unsupported_provider_request_policy_state() -> None:
     assert isinstance(policy, dict)
     assert policy["wire_cache_hint_enabled"] is False
     assert policy["wire_hint_state"] == "unsupported"
+    assert policy["provider_family"] == "deepseek"
+    assert policy["cache_strategy"] == "automatic_prefix_cache"
 
 
 def test_diagnostic_finds_first_changed_fragment() -> None:

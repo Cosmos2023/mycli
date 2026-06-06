@@ -192,6 +192,7 @@ class _ContextDiagnosticsSummary:
     wire_hint_disabled_by_policy_count: int
     wire_hint_enabled_but_missing_count: int
     wire_hint_unsupported_count: int
+    automatic_prefix_cache_count: int
     prompt_cache_key_hash_count: int
     anthropic_cache_control_breakpoint_count: int
     max_provider_cached_tokens: int
@@ -1079,6 +1080,7 @@ class DoctorService:
                 f"{trace_summary.wire_hint_enabled_but_missing_count}"
             ),
             f"wire_hint_unsupported={trace_summary.wire_hint_unsupported_count}",
+            f"automatic_prefix_cache={trace_summary.automatic_prefix_cache_count}",
             f"prompt_cache_key_hashes={trace_summary.prompt_cache_key_hash_count}",
             (
                 "anthropic_cache_control_breakpoints="
@@ -2090,6 +2092,7 @@ def _summarize_context_diagnostics(
     wire_hint_disabled_by_policy_count = 0
     wire_hint_enabled_but_missing_count = 0
     wire_hint_unsupported_count = 0
+    automatic_prefix_cache_count = 0
     prompt_cache_key_hash_count = 0
     anthropic_cache_control_breakpoint_count = 0
     max_provider_cached_tokens = 0
@@ -2197,6 +2200,11 @@ def _summarize_context_diagnostics(
                                     wire_cache_hint_missing_count += 1
                                 if policy.get("prompt_cache_key_hash"):
                                     prompt_cache_key_hash_count += 1
+                                if (
+                                    policy.get("cache_strategy")
+                                    == "automatic_prefix_cache"
+                                ):
+                                    automatic_prefix_cache_count += 1
                                 breakpoint_count = _optional_non_negative_int(
                                     policy.get(
                                         "anthropic_cache_control_breakpoint_count"
@@ -2315,6 +2323,7 @@ def _summarize_context_diagnostics(
         wire_hint_disabled_by_policy_count=wire_hint_disabled_by_policy_count,
         wire_hint_enabled_but_missing_count=wire_hint_enabled_but_missing_count,
         wire_hint_unsupported_count=wire_hint_unsupported_count,
+        automatic_prefix_cache_count=automatic_prefix_cache_count,
         prompt_cache_key_hash_count=prompt_cache_key_hash_count,
         anthropic_cache_control_breakpoint_count=anthropic_cache_control_breakpoint_count,
         max_provider_cached_tokens=max_provider_cached_tokens,

@@ -101,7 +101,18 @@ class ContextManager:
                     Message(
                         role="user",
                         content=item.text or "",
-                        blocks=(() if not item.text else (RuntimeBlock(type="text", text=item.text),)),
+                        blocks=(
+                            ()
+                            if not item.text
+                            else (
+                                RuntimeBlock(
+                                    type="text",
+                                    text=item.text,
+                                    metadata=dict(item.metadata),
+                                ),
+                            )
+                        ),
+                        metadata=dict(item.metadata),
                     )
                 )
                 index += 1
@@ -127,6 +138,9 @@ class ContextManager:
                 index += 1
             elif item.type is HistoryItemType.REASONING:
                 index += 1
+            elif item.type is HistoryItemType.SKILL_INSTRUCTIONS:
+                messages.append(self._skill_instruction_message(item))
+                index += 1
             elif item.type is HistoryItemType.TOOL_CALL:
                 index = self._append_tool_call_batch(
                     messages=messages,
@@ -139,6 +153,26 @@ class ContextManager:
             else:
                 index += 1
         return tuple(messages)
+
+    def _skill_instruction_message(self, item: HistoryItem) -> Message:
+        content = item.text or ""
+        metadata = dict(item.metadata)
+        return Message(
+            role="user",
+            content=content,
+            blocks=(
+                ()
+                if not content
+                else (
+                    RuntimeBlock(
+                        type="text",
+                        text=content,
+                        metadata=metadata,
+                    ),
+                )
+            ),
+            metadata=metadata,
+        )
 
     def _append_tool_call_batch(
         self,

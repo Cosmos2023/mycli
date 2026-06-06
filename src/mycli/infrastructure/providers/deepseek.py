@@ -20,6 +20,8 @@ DEEPSEEK_PROFILE = ProviderProfile(
         prompt_cache_key_enabled=False,
         cache_control_enabled=False,
         wire_hints_supported=False,
+        provider_family="deepseek",
+        cache_strategy="automatic_prefix_cache",
     ),
 )
 

@@ -14,6 +14,7 @@ from mycli.domain.runtime import (
 from mycli.infrastructure.providers import (
     infer_provider_from_base_url,
     profile_for_provider,
+    resolve_provider_cache_policy_capability,
     validate_provider_protocol,
 )
 
@@ -110,6 +111,9 @@ def _provider_cache_policy_override(
             if cache_control_enabled is None
             else cache_control_enabled
         ),
+        wire_hints_supported=default_capability.wire_hints_supported,
+        provider_family=default_capability.provider_family,
+        cache_strategy=default_capability.cache_strategy,
     )
 
 
@@ -401,6 +405,14 @@ def resolve_config(
         project_config=project_config,
         user_config=user_config,
     )
+    if cache_policy_capability is None:
+        resolved_cache_policy_capability = resolve_provider_cache_policy_capability(
+            provider=provider,
+            base_url=api_base_url,
+        )
+        profile_capability = profile.cache_policy_capability
+        if resolved_cache_policy_capability != profile_capability:
+            cache_policy_capability = resolved_cache_policy_capability
 
     return AgentConfig(
         workspace_root=cwd,

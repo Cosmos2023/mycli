@@ -66,7 +66,7 @@ class SkillToolContributionProvider:
         del user_message, conversation, plan_state
         registrations: list[ToolContributionRegistration] = []
         for metadata in self.registry.list_metadata():
-            route_name = f"skill.{metadata.name}"
+            route_name = f"skill-{metadata.name}"
             spec = ToolSpec(
                 name=route_name,
                 description=f"Load skill instructions: {metadata.description}",
@@ -86,7 +86,7 @@ class SkillToolContributionProvider:
                         tool_id=f"skill:{metadata.name}",
                         display_name=route_name,
                         description=metadata.description,
-                        route_key=ToolRouteKey(namespace="skill", name=metadata.name),
+                        route_key=ToolRouteKey.local(route_name),
                         source=ToolContributionSource.PROVIDER,
                         scope=ToolContributionScope.THREAD,
                         lifecycle_state=ToolContributionLifecycleState.DECLARED,

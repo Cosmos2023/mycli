@@ -173,6 +173,8 @@ class ProviderCachePolicyCapability:
     prompt_cache_key_enabled: bool = True
     cache_control_enabled: bool = True
     wire_hints_supported: bool = True
+    provider_family: str = "compatible"
+    cache_strategy: str = "wire_hints"
 
 
 @dataclass(slots=True, frozen=True)
@@ -184,6 +186,8 @@ class ProviderRequestPolicyShape:
     anthropic_cache_control_breakpoints: tuple[str, ...] = ()
     wire_only_hints: tuple[str, ...] = ()
     wire_hint_state: str = "disabled_by_policy"
+    provider_family: str = "compatible"
+    cache_strategy: str = "wire_hints"
     wire_only: bool = True
 
     @classmethod
@@ -234,6 +238,8 @@ class ProviderRequestPolicyShape:
             anthropic_cache_control_breakpoints=breakpoints,
             wire_only_hints=tuple(wire_only_hints),
             wire_hint_state=wire_hint_state,
+            provider_family=capability.provider_family,
+            cache_strategy=capability.cache_strategy,
         )
 
     @staticmethod
@@ -274,7 +280,12 @@ class ProviderRequestPolicyShape:
         lane: ProviderProjectionLane,
     ) -> tuple[str, ...]:
         if lane is ProviderProjectionLane.ANTHROPIC_MESSAGES:
-            return ("system_static", "dynamic_boundary")
+            return (
+                "system_static",
+                "dynamic_boundary",
+                "long_context_1",
+                "long_context_2",
+            )
         return ()
 
     @staticmethod
@@ -306,6 +317,8 @@ class ProviderRequestPolicyShape:
             "lane": self.lane.value,
             "wire_only": self.wire_only,
             "wire_hint_state": self.wire_hint_state,
+            "provider_family": self.provider_family,
+            "cache_strategy": self.cache_strategy,
             "wire_cache_hint_enabled": self.wire_cache_hint_enabled,
             "prompt_cache_key_hash": self.prompt_cache_key_hash,
             "prompt_cache_key_preview": self.prompt_cache_key_preview,

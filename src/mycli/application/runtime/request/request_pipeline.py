@@ -163,6 +163,7 @@ class RequestPipeline:
     ) -> RequestShape:
         cache_policy_capability = resolve_provider_cache_policy_capability(
             provider=self._config.provider,
+            base_url=self._config.api_base_url,
             override=self._config.cache_policy_capability,
         )
         shape = self._request_shape_builder.build(

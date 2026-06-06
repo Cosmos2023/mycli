@@ -370,9 +370,9 @@ def test_runtime_extension_manifest_exposes_live_subagent_contributed_tools(
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
 
     assert tools["Task"]["source"] == "builtin"
-    assert tools["subagent.explore"]["source"] == "subagent"
-    assert tools["subagent.explore"]["toolset"] == "external"
-    assert "subagent.explore" in toolsets["external"]["tools"]
+    assert tools["subagent-explore"]["source"] == "subagent"
+    assert tools["subagent-explore"]["toolset"] == "external"
+    assert "subagent-explore" in toolsets["external"]["tools"]
 
 
 class InspectThenDoneAdapter:
@@ -2694,6 +2694,25 @@ def test_agent_runtime_continues_same_turn_with_skill_tool_result(tmp_path: Path
         and "Find correctness bugs first." in str(item.metadata.get("transcript_content", ""))
         for item in response.turn.items
     )
+    assert any(
+        item.type is TurnItemType.SKILL_INSTRUCTIONS
+        and item.metadata.get("skill_name") == "code-review"
+        for item in response.turn.items
+    )
+    stored_conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    skill_messages = [
+        message
+        for message in stored_conversation.messages
+        if message.metadata.get("kind") == "skill_instructions"
+    ]
+    assert len(skill_messages) == 1
+    assert skill_messages[0].role == "user"
+    assert skill_messages[0].metadata["skill_name"] == "code-review"
+    assert skill_messages[0].metadata["cache_class"] == "dynamic"
+    assert skill_messages[0].metadata["durability"] == "persistent"
+    assert skill_messages[0].metadata["scope"] == "transcript"
+    assert "not the current user request" in skill_messages[0].content
+    assert "Find correctness bugs first." in skill_messages[0].content
 
 
 def test_agent_runtime_exposes_skill_catalog_without_auto_loading_body(tmp_path: Path) -> None:

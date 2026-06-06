@@ -603,7 +603,9 @@ def test_tool_execution_service_skips_non_allowlisted_configured_hook(
     ]
 
 
-def test_tool_execution_service_records_skill_body_only_as_tool_result(tmp_path: Path) -> None:
+def test_tool_execution_service_persists_successful_skill_instructions(
+    tmp_path: Path,
+) -> None:
     hook_manager = HookManager()
     skill_tool = FakeSkillTool()
     registry = ToolRegistry.from_tools([skill_tool])
@@ -638,11 +640,33 @@ def test_tool_execution_service_records_skill_body_only_as_tool_result(tmp_path:
     )
 
     tool_result = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    skill_instruction = conversation.messages[-1]
     assert tool_result.tool_name == "Skill"
     assert tool_result.call_id == "call_skill"
     assert tool_result.metadata["transcript_content"] == "Find correctness bugs first."
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
-    assert conversation.messages[-1].content == "Find correctness bugs first."
+    skill_instruction_item = next(
+        item for item in turn_items if item.type is TurnItemType.SKILL_INSTRUCTIONS
+    )
+    assert skill_instruction_item.metadata["kind"] == "skill_instructions"
+    assert skill_instruction_item.tool_name == "Skill"
+    assert skill_instruction.role == "user"
+    assert skill_instruction.metadata == {
+        "kind": "skill_instructions",
+        "skill_name": "code-review",
+        "source_path": "/tmp/code-review.md",
+        "cache_class": "dynamic",
+        "durability": "persistent",
+        "scope": "transcript",
+        "model_visible": True,
+        "replayable": True,
+    }
+    assert "<skill_instructions>" in skill_instruction.content
+    assert "<name>code-review</name>" in skill_instruction.content
+    assert "<description>Review code</description>" in skill_instruction.content
+    assert "<path>/tmp/code-review.md</path>" in skill_instruction.content
+    assert "Find correctness bugs first." in skill_instruction.content
+    assert "not the current user request" in skill_instruction.content
 
 
 def test_tool_execution_service_records_successful_skill_invocation(tmp_path: Path) -> None:

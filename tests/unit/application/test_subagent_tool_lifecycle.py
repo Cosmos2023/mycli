@@ -63,15 +63,31 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
         conversation=Conversation(session_id="subagent-session"),
         plan_state=PlanState(),
     )
+    registration = planned.contributed_tools["subagent-explore"]
+    assert registration.descriptor.route_name == "subagent-explore"
+    assert registration.descriptor.display_name == "subagent-explore"
+    assert registration.descriptor.spec.name == "subagent-explore"
+
     router = orchestrator.build_tool_router(planned)
     result = router.execute(
         ToolCall(
-            name="subagent.explore",
+            name="subagent-explore",
             arguments={
                 "description": "Map repository docs",
                 "allowed_tools": ["Read", "Grep"],
             },
             reason="Verify subagent provider route",
+        ),
+        exposure=planned.exposure,
+    )
+    legacy_result = router.execute(
+        ToolCall(
+            name="subagent.explore",
+            arguments={
+                "description": "Map repository docs again",
+                "allowed_tools": ["Read"],
+            },
+            reason="Verify old route alias",
         ),
         exposure=planned.exposure,
     )
@@ -82,6 +98,7 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
     ]
 
     assert result.success is True
+    assert legacy_result.success is True
     assert result.summary == "Sub-agent explore completed with status completed."
     assert result.artifacts["child_session_id"] == "demo:sub:turn_1:abcd1234"
     assert result.raw_payload["run_id"] == "demo:sub:turn_1:abcd1234"
@@ -93,16 +110,24 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
             "agent_type": "explore",
             "allowed_tools": ("Read", "Grep"),
             "mode": "sync",
-        }
+        },
+        {
+            "description": "Map repository docs again",
+            "agent_type": "explore",
+            "allowed_tools": ("Read",),
+            "mode": "sync",
+        },
     ]
     assert planned.exposure.callable_tool_names() == (
-        "subagent.executor",
-        "subagent.explore",
-        "subagent.review",
+        "subagent-executor",
+        "subagent-explore",
+        "subagent-review",
     )
     assert lifecycle_states == [
         ToolContributionLifecycleState.DECLARED,
         ToolContributionLifecycleState.EXPOSED,
+        ToolContributionLifecycleState.INVOKED,
+        ToolContributionLifecycleState.COMPLETED,
         ToolContributionLifecycleState.INVOKED,
         ToolContributionLifecycleState.COMPLETED,
     ]

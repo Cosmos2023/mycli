@@ -15,6 +15,8 @@ ANTHROPIC_PROFILE = ProviderProfile(
     cache_policy_capability=ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,
         cache_control_enabled=True,
+        provider_family="anthropic",
+        cache_strategy="cache_control",
     ),
 )
 

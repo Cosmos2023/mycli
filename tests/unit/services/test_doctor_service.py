@@ -3748,6 +3748,8 @@ def test_doctor_service_reports_cache_policy_validation_states(
                                 "provider_request_policy": {
                                     "wire_hint_state": "unsupported",
                                     "wire_cache_hint_enabled": False,
+                                    "provider_family": "deepseek",
+                                    "cache_strategy": "automatic_prefix_cache",
                                 },
                             },
                         },
@@ -3774,6 +3776,7 @@ def test_doctor_service_reports_cache_policy_validation_states(
     assert "wire_hint_disabled_by_policy=1" in str(check.detail)
     assert "wire_hint_enabled_but_missing=1" in str(check.detail)
     assert "wire_hint_unsupported=1" in str(check.detail)
+    assert "automatic_prefix_cache=1" in str(check.detail)
     assert "cache_usage_telemetry_missing=1" in str(check.detail)
     assert "max_provider_cached_tokens=25" in str(check.detail)
     assert "hash-enabled" not in rendered

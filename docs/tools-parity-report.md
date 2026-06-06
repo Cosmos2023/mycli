@@ -122,12 +122,20 @@ Commit: pending MCP lifecycle foundation slice
 - Skill diagnostics report loaded counts, source counts, duplicate names, and
   malformed skill files without printing skill bodies.
 - Doctor reports skill catalog health with bounded diagnostics.
-- Local skills can be exposed as skill-origin contributed tools through
-  `SkillToolContributionProvider`.
-- Combined manifest and extension manifest render skill-origin tools as
-  `source=skill`, `toolset=external`.
-- Runtime lifecycle coverage proves skill tools pass through
-  `ToolOrchestrator`, `ToolContributionRegistry`, and `ToolRouter`.
+- Default runtime exposes one stable built-in `Skill` tool plus the skill
+  catalog, matching the Codex/Hermes style instead of registering every skill as
+  a separate provider-visible tool.
+- Successful `Skill` calls persist the loaded skill instructions into the
+  conversation transcript as fenced `skill_instructions` context, so later turns
+  and compaction replay keep model-visible skill guidance.
+- `SkillToolContributionProvider` remains a legacy/non-default contribution
+  surface for manifest and lifecycle compatibility, but default runtime assembly
+  does not inject per-skill contributed tools.
+- Combined manifest and extension manifest can still render explicitly supplied
+  skill-origin tools as `source=skill`, `toolset=external`.
+- Runtime lifecycle coverage proves legacy skill contributed tools can pass
+  through `ToolOrchestrator`, `ToolContributionRegistry`, and `ToolRouter`
+  without making that the default provider schema.
 - Deterministic provider-free skill smoke verifies discovery, invocation,
   extension manifest, toolset manifest, lifecycle, and doctor diagnostics:
   `uv run python evaluation/skill_smoke.py`
@@ -139,7 +147,7 @@ Commit: pending skills lifecycle foundation slice
 - Existing `Task` runtime delegation remains available as the generic built-in
   workflow tool.
 - Sub-agent profiles are now exposed as profile-specific contributed tools via
-  `SubAgentToolContributionProvider`, with routes such as `subagent.explore`.
+  `SubAgentToolContributionProvider`, with routes such as `subagent-explore`.
 - Combined manifest and extension manifest render subagent-origin tools as
   `source=subagent`, `toolset=external`.
 - Doctor reports subagent profile diagnostics with bounded safe detail: profile

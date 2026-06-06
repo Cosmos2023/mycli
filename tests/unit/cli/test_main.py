@@ -53,7 +53,6 @@ from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.mcp import McpToolContributionProvider
-from mycli.services.skills import SkillToolContributionProvider
 
 
 def test_build_parser_uses_mycli_prog_name() -> None:
@@ -507,7 +506,9 @@ def test_build_turn_service_passes_cli_env_to_mcp_config_loader(tmp_path: Path) 
     assert client.config.env["TOKEN"] == "from-cli-env"
 
 
-def test_build_turn_service_includes_repo_skill_contribution_provider(tmp_path: Path) -> None:
+def test_build_turn_service_uses_stable_skill_tool_without_skill_contributions(
+    tmp_path: Path,
+) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
@@ -530,12 +531,12 @@ def test_build_turn_service_includes_repo_skill_contribution_provider(tmp_path: 
         env={"MYCLI_API_KEY": "test-key"},
     )
 
-    provider = next(
-        provider
+    assert all(
+        provider.__class__.__name__ != "SkillToolContributionProvider"
         for provider in service._runtime._contributed_tool_providers
-        if isinstance(provider, SkillToolContributionProvider)
     )
-    assert provider.registry.get_metadata("repo-skill") is not None
+    tool_names = service._runtime._tool_registry.list_names()
+    assert "Skill" in tool_names
 
 
 def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path: Path) -> None:

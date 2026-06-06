@@ -471,8 +471,15 @@ trace.append(
   - OpenAI Responses / OpenAI Chat: `prompt_cache_key` enabled,
     `cache_control` disabled.
   - Anthropic Messages: `cache_control` enabled, `prompt_cache_key` disabled.
+  - Anthropic Messages transport pointed at a DeepSeek base URL:
+    `cache_control` disabled by default because DeepSeek's Anthropic-compatible
+    API ignores Anthropic `cache_control`; cache telemetry there reflects
+    DeepSeek's automatic prefix cache rather than wire hints.
   - DeepSeek / unsupported compatible lanes: both disabled with
     `wire_hints_supported=false` unless a profile explicitly advertises support.
+    DeepSeek profiles must still declare `provider_family=deepseek` and
+    `cache_strategy=automatic_prefix_cache` so trace/doctor do not confuse
+    missing wire hints with missing cache capability.
   - Compatible OpenAI-style endpoints may disable `prompt_cache_key` through
     config/profile when the upstream endpoint rejects the field.
 - Normal `RequestPipeline` request assembly must pass the resolved capability to
@@ -481,7 +488,9 @@ trace.append(
 - OpenAI Responses and OpenAI-compatible Chat Completions use
   `prompt_cache_key` only as a request-level wire option.
 - Anthropic Messages uses `cache_control: {"type": "ephemeral"}` only on
-  serialized payload content-block copies.
+  serialized payload content-block copies. The default Anthropic policy is
+  `system_and_3`: mark the final system block, then mark the last cacheable
+  content block of the latest three non-system messages.
 - Provider cache hints must not be written into canonical conversation messages,
   request fragments, persisted transcripts, or runtime history.
 - `RequestShape.summary()` may expose bounded policy diagnostics, including
@@ -507,7 +516,9 @@ trace.append(
   - `ProviderCachePolicyCapability` gates request-level `prompt_cache_key` and
     Anthropic `cache_control` independently. Default capability preserves safe
     P2 behavior; compatible or legacy provider paths may disable unsupported
-    hints without changing canonical fragments.
+    hints without changing canonical fragments. It also carries the bounded
+    diagnostic fields `provider_family` and `cache_strategy`; these are
+    provider-policy labels, not raw provider payload.
   - `ProviderPayloadSnapshot` summarizes provider lane, message/runtime item
     counts, request-option hint presence, sanitized provider-private field
     counts, Anthropic cache-control block counts, and bounded prompt-cache-key
@@ -540,14 +551,18 @@ trace.append(
 - Config/profile disables `prompt_cache_key` -> the request policy reports
   `wire_hint_state=disabled_by_policy`, runtime metadata has no full
   `prompt_cache_key`, and doctor does not fail.
+- DeepSeek automatic prefix cache -> request policy reports
+  `wire_hint_state=unsupported`, `provider_family=deepseek`, and
+  `cache_strategy=automatic_prefix_cache`; doctor should count this separately
+  from wire-hint failures.
 - Policy says a hint should be emitted but provider metadata lacks a hint ->
   doctor reports `enabled_but_missing` with bounded remediation and no raw
   payload.
 - Provider/lane is unsupported -> doctor reports `unsupported` as bounded
   policy state rather than printing raw request data.
 - Anthropic system has no cache breakpoint -> keep legacy string system payload.
-- Anthropic system has cache breakpoint -> serialize system as text blocks with
-  block-level `cache_control`.
+- Anthropic system has cache breakpoint -> serialize system as text blocks and
+  put block-level `cache_control` on the final system block.
 - Chat message contains provider-private fields -> outgoing provider messages
   exclude those fields.
 - Trace payload includes full `prompt_cache_key` -> invalid; only hash/preview
@@ -561,8 +576,9 @@ trace.append(
 
 - Good: Responses payload has `prompt_cache_key` beside `model`, while input
   items contain no cache hint fields.
-- Good: Anthropic payload has `cache_control` on system/static and dynamic
-  boundary block copies, while `RequestShape.summary()` has no `cache_control`.
+- Good: Anthropic payload has `cache_control` on the final system block and the
+  latest three non-system cacheable content-block copies, while
+  `RequestShape.summary()` has no `cache_control`.
 - Base: A legacy/fake Responses client without `prompt_cache_key` support still
   receives normal `input_items` and `tools`.
 - Bad: Persisting `cache_control` in `RuntimeBlock.metadata`.

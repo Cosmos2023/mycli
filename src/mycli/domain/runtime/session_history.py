@@ -12,6 +12,7 @@ class HistoryItemType(StrEnum):
     USER_MESSAGE = "user_message"
     ASSISTANT_MESSAGE = "assistant_message"
     REASONING = "reasoning"
+    SKILL_INSTRUCTIONS = "skill_instructions"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     APPROVAL_REQUEST = "approval_request"

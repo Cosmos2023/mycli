@@ -209,6 +209,158 @@ def test_anthropic_adapter_adds_wire_only_cache_control_breakpoints() -> None:
     assert "cache_control" not in dynamic_block.metadata
 
 
+def test_anthropic_adapter_applies_system_and_three_cache_control_on_wire_copy() -> None:
+    client = FakeAnthropicMessagesClient(
+        {
+            "id": "msg_123",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Ready."}],
+            "stop_reason": "end_turn",
+        }
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+    system_block = RuntimeBlock(type="text", text="System rules.")
+    developer_block = RuntimeBlock(type="text", text="Developer rules.")
+    dynamic_block = RuntimeBlock(type="text", text="Dynamic context " * 8)
+    replay_block = RuntimeBlock(type="text", text="Conversation replay " * 8)
+    current_request_block = RuntimeBlock(
+        type="text",
+        text="Current user request: keep this as the final tail.",
+    )
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="system",
+                blocks=(system_block,),
+                metadata={
+                    "provider_request_policy": {
+                        "anthropic_cache_control_breakpoints": (
+                            "system_static",
+                            "dynamic_boundary",
+                            "long_context_1",
+                            "long_context_2",
+                        )
+                    }
+                },
+            ),
+            RuntimeItem(
+                role="developer",
+                blocks=(developer_block,),
+                metadata={"anthropic_cache_control_breakpoint": "system_static"},
+            ),
+            RuntimeItem(
+                role="user",
+                blocks=(dynamic_block,),
+                metadata={"anthropic_cache_control_breakpoint": "dynamic_boundary"},
+            ),
+            RuntimeItem(role="assistant", blocks=(RuntimeBlock(type="text", text="ok"),)),
+            RuntimeItem(role="user", blocks=(replay_block,)),
+            RuntimeItem(role="user", blocks=(current_request_block,)),
+        ],
+        tools=[],
+    )
+
+    cache_control_blocks = []
+    assert isinstance(client.captured_system, list)
+    cache_control_blocks.extend(
+        block
+        for block in client.captured_system
+        if isinstance(block, dict) and "cache_control" in block
+    )
+    cache_control_blocks.extend(
+        block
+        for message in client.captured_messages
+        for block in message["content"]
+        if "cache_control" in block
+    )
+
+    assert len(cache_control_blocks) == 4
+    assert cache_control_blocks[0]["text"] == "Developer rules."
+    assert cache_control_blocks[1]["text"] == "ok"
+    assert cache_control_blocks[2]["text"] == replay_block.text
+    assert cache_control_blocks[3]["text"] == current_request_block.text
+    assert "cache_control" not in client.captured_messages[0]["content"][0]
+    assert "cache_control" not in client.captured_system[0]
+    assert "cache_control" not in current_request_block.metadata
+
+
+def test_anthropic_adapter_keeps_system_and_last_three_non_system_cache_points() -> None:
+    client = FakeAnthropicMessagesClient(
+        {
+            "id": "msg_123",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Ready."}],
+            "stop_reason": "end_turn",
+        }
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="system",
+                blocks=(RuntimeBlock(type="text", text="System rules."),),
+                metadata={
+                    "provider_request_policy": {
+                        "anthropic_cache_control_breakpoints": (
+                            "system_static",
+                            "dynamic_boundary",
+                            "long_context_1",
+                            "long_context_2",
+                        )
+                    }
+                },
+            ),
+            RuntimeItem(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="old replay"),),
+                metadata={"cache_class": "dynamic"},
+            ),
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="Read",
+                        tool_arguments={"path": "README.md"},
+                        call_id="call_read_1",
+                        provider_id="toolu_read_1",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="README contents",
+                        call_id="call_read_1",
+                        provider_id="toolu_read_1",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="Current user request: continue"),),
+                metadata={"cache_class": "ephemeral"},
+            ),
+        ],
+        tools=[],
+    )
+
+    assert isinstance(client.captured_system, list)
+    assert client.captured_system[0]["cache_control"] == {"type": "ephemeral"}
+    wire_messages = client.captured_messages
+    assert "cache_control" not in wire_messages[0]["content"][0]
+    assert wire_messages[1]["content"][0]["type"] == "tool_use"
+    assert wire_messages[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert wire_messages[2]["content"][0]["type"] == "tool_result"
+    assert wire_messages[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert wire_messages[3]["content"][0]["text"] == "Current user request: continue"
+    assert wire_messages[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_anthropic_adapter_serializes_prior_tool_use_and_tool_result() -> None:
     client = FakeAnthropicMessagesClient(
         {
@@ -271,6 +423,165 @@ def test_anthropic_adapter_serializes_prior_tool_use_and_tool_result() -> None:
             ],
         },
     ]
+
+
+def test_anthropic_adapter_groups_adjacent_tool_results_after_multi_tool_use() -> None:
+    client = FakeAnthropicMessagesClient(
+        {"id": "msg_1", "content": [{"type": "text", "text": "ok"}]}
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="Glob",
+                        tool_arguments={"pattern": "*.md"},
+                        call_id="call_1",
+                        provider_id="toolu_1",
+                    ),
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="LS",
+                        tool_arguments={"path": "."},
+                        call_id="call_2",
+                        provider_id="toolu_2",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="glob result",
+                        call_id="call_1",
+                        provider_id="toolu_1",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="ls result",
+                        call_id="call_2",
+                        provider_id="toolu_2",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="Continue."),),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Glob",
+                    "input": {"pattern": "*.md"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "LS",
+                    "input": {"path": "."},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "glob result",
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_2",
+                    "content": "ls result",
+                },
+            ],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "Continue."}]},
+    ]
+
+
+def test_anthropic_adapter_rewrites_duplicate_tool_use_ids_and_results() -> None:
+    client = FakeAnthropicMessagesClient(
+        {"id": "msg_1", "content": [{"type": "text", "text": "ok"}]}
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="Glob",
+                        tool_arguments={"pattern": "*.md"},
+                        call_id="call_a",
+                        provider_id="toolu_duplicate",
+                    ),
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="LS",
+                        tool_arguments={"path": "."},
+                        call_id="call_b",
+                        provider_id="toolu_duplicate",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="glob result",
+                        call_id="call_a",
+                        provider_id="toolu_duplicate",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="ls result",
+                        call_id="call_b",
+                        provider_id="toolu_duplicate",
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assistant_content = client.captured_messages[0]["content"]
+    result_content = client.captured_messages[1]["content"]
+    first_id = assistant_content[0]["id"]
+    second_id = assistant_content[1]["id"]
+
+    assert first_id == "toolu_duplicate"
+    assert second_id != "toolu_duplicate"
+    assert str(second_id).startswith("toolu_")
+    assert len({first_id, second_id}) == 2
+    assert [block["tool_use_id"] for block in result_content] == [first_id, second_id]
 
 
 def test_anthropic_adapter_maps_tool_use_to_runtime_tool_call() -> None:

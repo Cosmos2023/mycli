@@ -319,7 +319,7 @@ def main() -> int:
             and payload["dry_run_prompt_cache_key_hash_stable"] is True
             and payload["dry_run_first_changed_cache_class"] == "ephemeral"
             and payload["dry_run_wire_hint_state"] == "enabled_and_emitted"
-            and payload["anthropic_snapshot_cache_control_blocks"] == 2
+            and payload["anthropic_snapshot_cache_control_blocks"] == 4
             and payload["anthropic_cache_usage_telemetry_status"] == "present"
             and payload["anthropic_provider_cached_tokens"] == 80
             and payload["dry_run_recovery_counts"] == {

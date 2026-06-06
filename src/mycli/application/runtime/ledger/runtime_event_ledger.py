@@ -31,6 +31,7 @@ class RuntimeEventLedger:
     _PROVIDER_TRANSCRIPT_TURN_ITEM_TYPES = {
         TurnItemType.USER_MESSAGE,
         TurnItemType.ASSISTANT_MESSAGE,
+        TurnItemType.SKILL_INSTRUCTIONS,
         TurnItemType.TOOL_CALL,
         TurnItemType.TOOL_RESULT,
     }
@@ -243,6 +244,8 @@ class RuntimeEventLedger:
     ) -> HistoryItemType | None:
         if item.type not in self._PROVIDER_TRANSCRIPT_TURN_ITEM_TYPES:
             return None
+        if item.type is TurnItemType.SKILL_INSTRUCTIONS:
+            return HistoryItemType.SKILL_INSTRUCTIONS
         return HistoryItemType(item.type.value)
 
     def _continuation_state_payload(self) -> dict[str, object]:

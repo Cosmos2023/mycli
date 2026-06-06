@@ -14,6 +14,8 @@ QWEN_PROFILE = ProviderProfile(
     cache_policy_capability=ProviderCachePolicyCapability(
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,
+        provider_family="qwen",
+        cache_strategy="prompt_cache_key",
     ),
 )
 

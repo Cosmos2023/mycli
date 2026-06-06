@@ -111,7 +111,7 @@ def test_provider_payload_snapshot_counts_anthropic_cache_control_blocks(
     payload = snapshot.to_dict()
 
     assert payload["lane"] == "anthropic_messages"
-    assert payload["anthropic_cache_control_block_count"] == 2
+    assert payload["anthropic_cache_control_block_count"] == 4
     assert payload["request_option_hints"]["cache_control"] is True
     assert "private anthropic text" not in str(payload)
 

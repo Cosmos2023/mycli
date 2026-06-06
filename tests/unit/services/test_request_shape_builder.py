@@ -371,6 +371,12 @@ def test_request_shape_builder_marks_anthropic_cache_policy_on_wire_items(
             base_instructions="Stable system rules.",
             contextual_user_sections=(
                 InstructionFragment(
+                    kind="workspace_instructions",
+                    title="Workspace",
+                    content="<workspace>static</workspace>",
+                    metadata={"cache_class": "static"},
+                ),
+                InstructionFragment(
                     kind="compaction_rehydration",
                     title="Compaction rehydration",
                     content="<compaction>summary</compaction>",
@@ -386,13 +392,24 @@ def test_request_shape_builder_marks_anthropic_cache_policy_on_wire_items(
     assert shape.provider_request_policy.anthropic_cache_control_breakpoints == (
         "system_static",
         "dynamic_boundary",
+        "long_context_1",
+        "long_context_2",
     )
     assert shape.provider_runtime_items[0].metadata[
         "anthropic_cache_control_breakpoint"
     ] == "system_static"
-    assert any(
-        item.metadata.get("anthropic_cache_control_breakpoint") == "dynamic_boundary"
+    assert shape.provider_runtime_items[1].metadata["cache_class"] == "static"
+    assert (
+        "anthropic_cache_control_breakpoint"
+        not in shape.provider_runtime_items[1].metadata
+    )
+    dynamic_item = next(
+        item
         for item in shape.provider_runtime_items
+        if item.metadata.get("cache_class") == "dynamic"
+    )
+    assert dynamic_item.metadata["anthropic_cache_control_breakpoint"] == (
+        "dynamic_boundary"
     )
 
 
@@ -1471,7 +1488,41 @@ def test_request_pipeline_resolves_cache_policy_capability_from_runtime_config(
     assert shape.provider_request_policy.prompt_cache_key is None
     assert shape.provider_request_policy.wire_cache_hint_enabled is False
 
+
+def test_request_pipeline_disables_cache_control_for_deepseek_anthropic_endpoint(
+    tmp_path: Path,
+) -> None:
+    pipeline = RequestPipeline(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.ANTHROPIC,
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+            model="deepseek-v4-flash",
+            api_base_url="https://api.deepseek.com/anthropic",
+        ),
+        instruction_contract_assembler=InstructionContractAssembler(),
+        request_shape_builder=RequestShapeBuilder(),
+        request_shape_payload_formatter=RequestShapePayloadFormatter(),
+        trace_service=TraceService(home_dir=tmp_path / "home"),
+        workspace_log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+
+    shape = pipeline.build_and_trace_request_shape(
+        turn_id="turn_deepseek_anthropic_policy",
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            current_user_request="inspect",
+        ),
+        tools=[],
+    )
+
+    assert shape.provider_request_policy is not None
+    assert shape.provider_request_policy.anthropic_cache_control_breakpoints == ()
+    assert shape.provider_request_policy.wire_hint_state == "unsupported"
+
     diagnostic = CacheShapeDiagnostics().build(current=shape).to_dict()
     policy = diagnostic["metadata"]["provider_request_policy"]
     assert isinstance(policy, dict)
-    assert policy["wire_hint_state"] == "disabled_by_policy"
+    assert policy["wire_hint_state"] == "unsupported"
+    assert policy["provider_family"] == "deepseek"
+    assert policy["cache_strategy"] == "automatic_prefix_cache"

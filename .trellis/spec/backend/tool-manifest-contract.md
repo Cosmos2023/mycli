@@ -74,10 +74,20 @@ Each tool entry must include:
   and `origin_metadata.server` / `origin_metadata.tool`; the combined manifest
   renders those entries with `source="mcp"` and `toolset="external"` even though
   they flow through the generic provider contribution path.
+- Default runtime skill invocation uses the built-in stable `Skill` tool plus
+  the model-visible skill catalog. Individual skills must not be registered as
+  provider-visible default tools, because adding/removing a skill would mutate
+  the stable tool schema and degrade prefix-cache stability.
+- Successful `Skill` invocations append the loaded skill instructions as a
+  persistent, model-visible transcript message with bounded metadata
+  (`kind=skill_instructions`, `cache_class=dynamic`,
+  `durability=persistent`, `scope=transcript`). The message must be fenced as a
+  loaded skill reference, not rendered as the current user request.
 - Skill-origin contributed registrations use stable `skill:<name>` tool ids and
-  `origin_metadata.skill`; the combined manifest renders those entries with
-  `source="skill"` and `toolset="external"` even though they flow through the
-  generic provider contribution path.
+  `origin_metadata.skill` only for legacy/non-default discovery surfaces. The
+  combined manifest may render those entries with `source="skill"` and
+  `toolset="external"` when such registrations are explicitly supplied, but
+  default runtime assembly must not inject per-skill contributed tools.
 - MCP discovery diagnostics may start configured local stdio servers through
   the MCP client path. Human-facing doctor output must remain bounded to server
   names, transport kind, counts, status, and failure kind; it must not include

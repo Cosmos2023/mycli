@@ -54,6 +54,7 @@ class ToolRouter:
         ]
 
     def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResult:
+        call = self._canonical_call(call, exposure=exposure)
         allowed_names = set(exposure.callable_tool_names())
         if call.name not in allowed_names:
             rendered = ", ".join(sorted(allowed_names)) or "none"
@@ -87,6 +88,7 @@ class ToolRouter:
         *,
         exposure: ToolExposure,
     ) -> tuple[str, ...] | None:
+        call = self._canonical_call(call, exposure=exposure)
         allowed_names = set(exposure.callable_tool_names())
         if call.name not in allowed_names:
             rendered = ", ".join(sorted(allowed_names)) or "none"
@@ -107,6 +109,7 @@ class ToolRouter:
         *,
         exposure: ToolExposure,
     ) -> ToolEffectProfile:
+        call = self._canonical_call(call, exposure=exposure)
         allowed_names = set(exposure.callable_tool_names())
         if call.name not in allowed_names:
             rendered = ", ".join(sorted(allowed_names)) or "none"
@@ -117,6 +120,19 @@ class ToolRouter:
         if contributed_tool is not None:
             return tool_effects_for_tool(contributed_tool.tool)
         return self._tool_registry.effect_profile(call)
+
+    def _canonical_call(self, call: ToolCall, *, exposure: ToolExposure) -> ToolCall:
+        if call.name in exposure.callable_tool_names():
+            return call
+        canonical_name = _legacy_contributed_tool_name(call.name)
+        if canonical_name == call.name or canonical_name not in exposure.callable_tool_names():
+            return call
+        return ToolCall(
+            name=canonical_name,
+            arguments=call.arguments,
+            reason=call.reason,
+            call_id=call.call_id,
+        )
 
     def pop_lifecycle_events(self) -> tuple[ToolContributionLifecycleEvent, ...]:
         events = tuple(self._lifecycle_events)
@@ -133,3 +149,11 @@ class ToolRouter:
         event = self._contributed_tool_registry.transition(tool_id, state)
         if event is not None:
             self._lifecycle_events.append(event)
+
+
+def _legacy_contributed_tool_name(name: str) -> str:
+    if name.startswith("skill."):
+        return "skill-" + name.removeprefix("skill.")
+    if name.startswith("subagent."):
+        return "subagent-" + name.removeprefix("subagent.")
+    return name

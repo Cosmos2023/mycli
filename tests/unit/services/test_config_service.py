@@ -151,6 +151,8 @@ def test_resolve_config_reads_provider_cache_policy_overrides(tmp_path: Path) ->
     assert config.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,
         cache_control_enabled=False,
+        provider_family="compatible",
+        cache_strategy="prompt_cache_key",
     )
 
 
@@ -183,6 +185,8 @@ def test_resolve_config_env_cache_policy_overrides_project_file(
     assert config.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,
+        provider_family="compatible",
+        cache_strategy="prompt_cache_key",
     )
 
 
@@ -565,6 +569,39 @@ def test_resolve_config_uses_anthropic_defaults_for_explicit_provider(
     assert config.protocol is ProtocolId.ANTHROPIC_MESSAGES
     assert config.model == "claude-sonnet-4-6"
     assert config.api_base_url == "https://api.anthropic.com"
+
+
+def test_resolve_config_disables_ignored_cache_control_for_deepseek_anthropic_endpoint(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "deepseek-anthropic-demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "anthropic",
+            "MYCLI_PROTOCOL": "anthropic_messages",
+            "MYCLI_BASE_URL": "https://api.deepseek.com/anthropic",
+            "MYCLI_MODEL": "deepseek-v4-flash",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.ANTHROPIC
+    assert config.protocol is ProtocolId.ANTHROPIC_MESSAGES
+    assert config.api_base_url == "https://api.deepseek.com/anthropic"
+    assert config.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+        wire_hints_supported=False,
+        provider_family="deepseek",
+        cache_strategy="automatic_prefix_cache",
+    )
 
 
 def test_resolve_config_infers_qwen_provider_and_defaults_to_responses(

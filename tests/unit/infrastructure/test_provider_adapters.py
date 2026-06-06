@@ -53,19 +53,27 @@ def test_provider_profiles_declare_safe_cache_policy_capabilities() -> None:
     assert OPENAI_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,
+        provider_family="openai",
+        cache_strategy="prompt_cache_key",
     )
     assert QWEN_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,
+        provider_family="qwen",
+        cache_strategy="prompt_cache_key",
     )
     assert DEEPSEEK_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,
         cache_control_enabled=False,
         wire_hints_supported=False,
+        provider_family="deepseek",
+        cache_strategy="automatic_prefix_cache",
     )
     assert ANTHROPIC_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,
         cache_control_enabled=True,
+        provider_family="anthropic",
+        cache_strategy="cache_control",
     )
 
 
@@ -90,7 +98,39 @@ def test_deepseek_profile_resolves_unsupported_wire_hint_capability() -> None:
         prompt_cache_key_enabled=False,
         cache_control_enabled=False,
         wire_hints_supported=False,
+        provider_family="deepseek",
+        cache_strategy="automatic_prefix_cache",
     )
+
+
+def test_anthropic_deepseek_base_url_disables_ignored_cache_control_by_default() -> None:
+    resolved = resolve_provider_cache_policy_capability(
+        provider=ProviderId.ANTHROPIC,
+        base_url="https://api.deepseek.com/anthropic",
+    )
+
+    assert resolved == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+        wire_hints_supported=False,
+        provider_family="deepseek",
+        cache_strategy="automatic_prefix_cache",
+    )
+
+
+def test_anthropic_deepseek_base_url_cache_policy_can_be_overridden() -> None:
+    override = ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=True,
+    )
+
+    resolved = resolve_provider_cache_policy_capability(
+        provider=ProviderId.ANTHROPIC,
+        base_url="https://api.deepseek.com/anthropic",
+        override=override,
+    )
+
+    assert resolved is override
 
 
 def test_infer_provider_from_base_url_detects_anthropic_hosts() -> None:

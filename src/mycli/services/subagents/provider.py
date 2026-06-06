@@ -94,7 +94,7 @@ class SubAgentToolContributionProvider:
         return tuple(self._registration(profile) for profile in profiles)
 
     def _registration(self, profile: SubAgentProfile) -> ToolContributionRegistration:
-        route_name = f"subagent.{profile.name}"
+        route_name = f"subagent-{profile.name}"
         spec = ToolSpec(
             name=route_name,
             description=f"Run the {profile.name} sub-agent profile for a bounded delegated task.",
@@ -126,7 +126,7 @@ class SubAgentToolContributionProvider:
                 tool_id=f"subagent:{profile.name}",
                 display_name=route_name,
                 description=spec.description,
-                route_key=ToolRouteKey(namespace="subagent", name=profile.name),
+                route_key=ToolRouteKey.local(route_name),
                 source=ToolContributionSource.PROVIDER,
                 scope=ToolContributionScope.THREAD,
                 lifecycle_state=ToolContributionLifecycleState.DECLARED,

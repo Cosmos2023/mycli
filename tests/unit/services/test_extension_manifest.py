@@ -64,14 +64,14 @@ def _mcp_contribution_registration(server: str, tool_name: str) -> ToolContribut
 
 
 def _skill_contribution_registration(skill_name: str) -> ToolContributionRegistration:
-    route_name = f"skill.{skill_name}"
+    route_name = f"skill-{skill_name}"
     tool = FakeTool(route_name)
     return ToolContributionRegistration(
         descriptor=ToolContributionDescriptor(
             tool_id=f"skill:{skill_name}",
             display_name=route_name,
             description=tool.spec.description,
-            route_key=ToolRouteKey(namespace="skill", name=skill_name),
+            route_key=ToolRouteKey.local(route_name),
             source=ToolContributionSource.PROVIDER,
             scope=ToolContributionScope.THREAD,
             lifecycle_state=ToolContributionLifecycleState.DECLARED,
@@ -83,14 +83,14 @@ def _skill_contribution_registration(skill_name: str) -> ToolContributionRegistr
 
 
 def _subagent_contribution_registration(profile_name: str) -> ToolContributionRegistration:
-    route_name = f"subagent.{profile_name}"
+    route_name = f"subagent-{profile_name}"
     tool = FakeTool(route_name)
     return ToolContributionRegistration(
         descriptor=ToolContributionDescriptor(
             tool_id=f"subagent:{profile_name}",
             display_name=route_name,
             description=tool.spec.description,
-            route_key=ToolRouteKey(namespace="subagent", name=profile_name),
+            route_key=ToolRouteKey.local(route_name),
             source=ToolContributionSource.PROVIDER,
             scope=ToolContributionScope.THREAD,
             lifecycle_state=ToolContributionLifecycleState.DECLARED,
@@ -274,12 +274,12 @@ def test_extension_manifest_marks_skill_origin_contributed_tools_as_skill() -> N
 
     tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
-    entry = tools["skill.code-review"]
+    entry = tools["skill-code-review"]
 
     assert entry["source"] == "skill"
     assert entry["toolset"] == "external"
     assert entry["contribution"]["origin"] == {"skill": "code-review", "source_kind": "repo"}
-    assert "skill.code-review" in toolsets["external"]["tools"]
+    assert "skill-code-review" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["skill"]
 
 
@@ -290,11 +290,11 @@ def test_extension_manifest_marks_subagent_origin_contributed_tools_as_subagent(
 
     tools = {tool["name"]: tool for tool in manifest["tool_manifest"]["tools"]}
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
-    entry = tools["subagent.explore"]
+    entry = tools["subagent-explore"]
 
     assert entry["source"] == "subagent"
     assert entry["toolset"] == "external"
     assert entry["contribution"]["origin"]["profile"] == "explore"
     assert entry["contribution"]["origin"]["availability"] == "available"
-    assert "subagent.explore" in toolsets["external"]["tools"]
+    assert "subagent-explore" in toolsets["external"]["tools"]
     assert toolsets["external"]["sources"] == ["subagent"]

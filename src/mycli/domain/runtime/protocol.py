@@ -39,6 +39,7 @@ class TurnItemType(StrEnum):
     TOOL_EXPOSURE = "tool_exposure"
     CONTRIBUTED_TOOL = "contributed_tool"
     REASONING = "reasoning"
+    SKILL_INSTRUCTIONS = "skill_instructions"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     APPROVAL_REQUEST = "approval_request"
