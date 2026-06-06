@@ -2607,6 +2607,118 @@ def test_doctor_service_reports_missing_tool_execution_diagnostics_as_ok(
     assert check.message == "no tool execution diagnostics found"
 
 
+def test_doctor_service_reports_missing_runtime_policy_diagnostics_as_ok(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "runtime_policy_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "no runtime policy diagnostics found"
+
+
+def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    secret = "sk-runtimepolicysecret"
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "runtime_policy_decision",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "tool_name": "Read",
+                            "decision": "allowed",
+                            "policy": "builtin_safe_tool",
+                            "risk_level": "low",
+                            "arguments": {"path": f"/private/{secret}.txt"},
+                            "argument_count": 1,
+                            "argument_keys": ["path"],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "runtime_policy_decision",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "tool_name": "Write",
+                            "decision": "needs_approval",
+                            "policy": "medium_risk_requires_approval",
+                            "risk_level": "medium",
+                            "reason": f"raw reason {secret}",
+                            "argument_count": 2,
+                            "argument_keys": ["content", "file_path"],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "runtime_policy_decision",
+                        "turn_id": "turn-3",
+                        "payload": {
+                            "tool_name": "Bash",
+                            "decision": "denied",
+                            "policy": "shell_command_analysis",
+                            "risk_level": "high",
+                            "command_pattern": "rm -rf /",
+                            "argument_count": 1,
+                            "argument_keys": ["command"],
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "runtime_policy_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == (
+        "3 runtime policy diagnostic(s), allowed=1 needs_approval=1 denied=1 "
+        "argument_summaries=3"
+    )
+    assert check.detail == (
+        "decisions: allowed=1, denied=1, needs_approval=1; "
+        "risk_levels: high=1, low=1, medium=1; "
+        "policies: builtin_safe_tool=1, medium_risk_requires_approval=1, shell_command_analysis=1"
+    )
+    assert secret not in rendered
+    assert f"/private/{secret}.txt" not in rendered
+    assert "rm -rf" not in rendered
+    assert "raw reason" not in rendered
+
+
 def test_doctor_service_reports_no_tool_execution_diagnostics_rows_as_ok(
     tmp_path: Path,
 ) -> None:

@@ -8,10 +8,18 @@ from mycli.application.runtime.tools.tool_execution_service import (
     CONCURRENCY_SAFE_TOOLS,
     ToolExecutionService,
 )
+from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import InvokedSkillSnapshot, PlanState, RuntimeStreamEvent, TurnItemType
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.contributed_tools import (
+    ToolContributionDescriptor,
+    ToolContributionLifecycleState,
+    ToolContributionRegistration,
+    ToolContributionScope,
+    ToolContributionSource,
+)
 from mycli.domain.tooling.exposure import ToolExposure, ToolExposureEntry, ToolRouteKey, ToolRouteSource
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
@@ -25,6 +33,7 @@ from mycli.services.hooks import (
     register_configured_hooks,
 )
 from mycli.services.tracing import TraceService
+from mycli.services.approval import ApprovalService, SafetyPolicy
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.bash import BashTool
 from mycli.tools.registry import ToolRegistry
@@ -162,6 +171,25 @@ class FakeLongOutputTool:
         )
 
 
+class FakeContributedTool:
+    spec = ToolSpec(
+        name="runtime_echo",
+        description="Echo through runtime contribution",
+        parameters=(ToolParameter("message", "string"),),
+    )
+
+    def __init__(self) -> None:
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        return ToolResult(
+            success=True,
+            summary=f"Echo {arguments['message']}",
+            raw_payload={"message": arguments["message"]},
+        )
+
+
 class FakeInterruptTool:
     spec = ToolSpec(
         name="interrupt_tool",
@@ -208,6 +236,7 @@ def _service(
     file_history: FileHistoryService | None = None,
     record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
     write_diagnostics_runner: Callable[[tuple[str, ...]], dict[str, object]] | None = None,
+    policy_gate: RuntimePolicyGate | None = None,
 ) -> tuple[ToolExecutionService, FakeTool]:
     fake_tool = FakeTool()
     tool_registry = registry or ToolRegistry.from_tools([fake_tool])
@@ -230,6 +259,7 @@ def _service(
         file_history=file_history,
         record_invoked_skill=record_invoked_skill,
         write_diagnostics_runner=write_diagnostics_runner,
+        policy_gate=policy_gate,
     )
     router = ToolRouter(
         tool_registry=tool_registry,
@@ -237,6 +267,179 @@ def _service(
     )
     service._test_router = router  # type: ignore[attr-defined]
     return service, fake_tool
+
+
+def test_tool_execution_service_runtime_policy_denial_blocks_execution(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(
+                SafetyPolicy(workspace_root=tmp_path),
+            )
+        ),
+        registry=ToolRegistry.from_tools([WriteTool(tmp_path)]),
+    )
+    exposure = ToolExposure(
+        entries=(
+            *_tool_exposure().entries,
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Write"),
+                source=ToolRouteSource.REGISTRY,
+                spec=WriteTool(tmp_path).spec,
+            ),
+        ),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "../outside.txt", "content": "escape\n"},
+            reason="escape",
+            call_id="call_escape_1",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert fake_tool.seen_arguments == []
+    assert conversation.messages[-1].role == "tool"
+    assert "Tool denied by runtime policy." in conversation.messages[-1].content
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["tool_name"] == "Write"
+    assert policy_trace.payload["argument_keys"] == ["content", "file_path"]
+    assert "outside.txt" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_runtime_policy_needs_approval_blocks_execution(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(
+                SafetyPolicy(workspace_root=tmp_path, auto_approve_medium=False),
+            )
+        ),
+        registry=ToolRegistry.from_tools([WriteTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            *_tool_exposure().entries,
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Write"),
+                source=ToolRouteSource.REGISTRY,
+                spec=WriteTool(tmp_path).spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "hello\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert not (tmp_path / "notes.txt").exists()
+    assert fake_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "needs_approval"
+    assert policy_trace.payload["approval_required"] is True
+
+
+def test_tool_execution_service_runtime_policy_allows_contributed_tool(
+    tmp_path: Path,
+) -> None:
+    contributed_tool = FakeContributedTool()
+    registration = ToolContributionRegistration(
+        descriptor=ToolContributionDescriptor(
+            tool_id="runtime:runtime_echo:turn",
+            display_name="runtime_echo",
+            description="Echo through runtime contribution",
+            route_key=ToolRouteKey.local("runtime_echo"),
+            source=ToolContributionSource.RUNTIME,
+            scope=ToolContributionScope.TURN,
+            lifecycle_state=ToolContributionLifecycleState.EXPOSED,
+            spec=contributed_tool.spec,
+        ),
+        tool=contributed_tool,
+    )
+    trace_service = TraceService(home_dir=tmp_path / "home")
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        trace_service=trace_service,
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(
+                SafetyPolicy(workspace_root=tmp_path, auto_approve_medium=False),
+            )
+        ),
+    )
+    router = ToolRouter(
+        tool_registry=ToolRegistry.from_tools([]),
+        contributed_tools={"runtime_echo": registration},
+        contributed_tool_registry=ToolContributionRegistry(),
+    )
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("runtime_echo"),
+                source=ToolRouteSource.RUNTIME,
+                spec=contributed_tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="runtime_echo",
+            arguments={"message": "hello"},
+            reason="echo",
+            call_id="call_echo_1",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert contributed_tool.seen_arguments == [{"message": "hello"}]
+    policy_trace = next(
+        event
+        for event in trace_service.load("demo")
+        if event.kind == "runtime_policy_decision"
+    )
+    assert policy_trace.payload["decision"] == "allowed"
+    assert policy_trace.payload["policy"] == "contributed_tool_exposure"
+    assert policy_trace.payload["tool_name"] == "runtime_echo"
 
 
 def test_tool_execution_service_denies_tool_before_execution(tmp_path: Path) -> None:

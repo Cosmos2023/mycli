@@ -123,6 +123,7 @@ from mycli.application.runtime.subagents.loop import (
 )
 from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
+from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.tools.task import TaskTool
 
 
@@ -345,6 +346,10 @@ class AgentRuntime:
         )
         self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
+        self._runtime_policy_gate = RuntimePolicyGate(
+            approval_service=self._approval_service,
+            workspace_root=config.workspace_root,
+        )
         self._planning_effects = RuntimePlanningEffects(
             session_id=config.session_id,
             planning_service=self._planning_service,
@@ -391,6 +396,7 @@ class AgentRuntime:
             write_diagnostics_runner=WriteDiagnosticsService(
                 workspace_root=config.workspace_root,
             ).run,
+            policy_gate=self._runtime_policy_gate,
         )
         child_executor = RuntimeChildToolExecutor(
             tool_router=ToolRouter(tool_registry=self._tool_registry),
@@ -899,6 +905,7 @@ class AgentRuntime:
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
         lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        policy_approved: bool = False,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_call(
             conversation=conversation,
@@ -914,6 +921,7 @@ class AgentRuntime:
             metadata=metadata,
             record_assistant_call=record_assistant_call,
             lifecycle_sink=lifecycle_sink,
+            policy_approved=policy_approved,
         )
 
     def _execute_tool_call_for_clarification(

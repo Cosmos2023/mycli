@@ -81,6 +81,14 @@ from mycli.domain.runtime.instruction_contract import (
     InstructionFragment as InstructionFragment,
     InstructionFragmentKind as InstructionFragmentKind,
 )
+from mycli.domain.runtime.execution_policy import (
+    ApprovalGate as ApprovalGate,
+    ExecutionPolicy as ExecutionPolicy,
+    SandboxProfile as SandboxProfile,
+    ToolRuntimeDecision as ToolRuntimeDecision,
+    ToolRuntimeDecisionKind as ToolRuntimeDecisionKind,
+    ToolRuntimeResult as ToolRuntimeResult,
+)
 from mycli.domain.runtime.session_history import (
     BaselineFragment as BaselineFragment,
     ContextBaseline as ContextBaseline,
@@ -292,6 +300,7 @@ __all__ = [
     "DecisionAction",
     "DecisionKind",
     "ExecutionContext",
+    "ExecutionPolicy",
     "FileRehydrationCandidate",
     "FragmentStability",
     "HistoryItem",
@@ -305,6 +314,7 @@ __all__ = [
     "PendingApproval",
     "PendingClarification",
     "PendingDecision",
+    "ApprovalGate",
     "PlanItem",
     "PlanState",
     "PlanStatus",
@@ -329,6 +339,7 @@ __all__ = [
     "RuntimeStreamEvent",
     "RuntimeTraceEvent",
     "SessionCommandAllowance",
+    "SandboxProfile",
     "SessionRuntimeSnapshot",
     "StopReason",
     "SuspendedTurn",
@@ -344,6 +355,9 @@ __all__ = [
     "ToolExposureKind",
     "ToolRouteKey",
     "ToolRouteSource",
+    "ToolRuntimeDecision",
+    "ToolRuntimeDecisionKind",
+    "ToolRuntimeResult",
     "TurnRecord",
     "TurnResponse",
     "TurnRollout",

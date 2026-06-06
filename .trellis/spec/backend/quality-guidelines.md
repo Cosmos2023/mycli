@@ -254,7 +254,21 @@ Questions to answer:
   clarification rows, successful summary, and warning-summary redaction.
 - Unit test tool execution diagnostics doctor cases for missing directory, no
   tool rows, successful summary, failed/interrupted/denied/truncated/write
-  diagnostic summary, and warning-summary redaction.
+    diagnostic summary, and warning-summary redaction.
+- Runtime policy diagnostics check:
+  - Missing `~/.mycli/traces/` or no `runtime_policy_decision` trace rows ->
+    `runtime_policy_diagnostics=ok` with
+    `no runtime policy diagnostics found`; doctor must not create the trace
+    directory.
+  - Runtime policy rows must summarize only bounded fields such as decision
+    kind, policy name, risk level, argument key/count, and sandbox policy
+    shape.
+  - Allowed-only runtime policy rows -> `runtime_policy_diagnostics=ok`.
+  - `needs_approval` or `denied` runtime policy rows ->
+    `runtime_policy_diagnostics=warning` with bounded decision/risk/policy
+    counts.
+  - Doctor must not print raw prompt, raw tool output, command text, raw
+    arguments, local file payloads, headers, or secret-like values.
 - Unit test turn failure diagnostics doctor cases for missing directory, no
   failed-turn rows, warning summary, and raw message/traceback/request/secret
   redaction.

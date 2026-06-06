@@ -2946,7 +2946,15 @@ def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
         for event in loaded
     )
     assert any(event.kind == "tool_exposure" for event in loaded)
-    assert not any(event.kind == "runtime_policy" for event in loaded)
+    policy_decision = next(
+        event
+        for event in loaded
+        if event.kind == "runtime_policy_decision"
+        and event.payload.get("tool_name") == "LS"
+    )
+    assert policy_decision.payload["decision"] == "allowed"
+    assert policy_decision.payload["argument_keys"] == ["path"]
+    assert "arguments" not in policy_decision.payload
     assert any(event.kind == "instruction_contract" for event in loaded)
     request_shape = next(event for event in loaded if event.kind == "request_shape")
     assert request_shape.payload["provider"] == "openai"

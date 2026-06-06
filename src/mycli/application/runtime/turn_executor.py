@@ -333,6 +333,7 @@ class TurnExecutor:
             turn_id=turn_id,
             activity_events=activity_events,
             turn_items=turn_items,
+            policy_approved=True,
         )
 
         return self._run_turn_loop(

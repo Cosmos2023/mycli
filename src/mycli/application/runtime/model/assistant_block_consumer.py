@@ -297,6 +297,7 @@ class AssistantBlockConsumer:
                         metadata=dict(block.metadata),
                         record_assistant_call=False,
                         lifecycle_sink=stream_sink,
+                        policy_approved=True,
                     )
                     continue
 
@@ -468,7 +469,8 @@ class AssistantBlockConsumer:
                         ),
                     )
 
-                if approval.auto_approved_by == "session_allowance":
+                policy_approved = approval.auto_approved_by == "session_allowance"
+                if policy_approved:
                     self._record_approval_auto_allowed(
                         turn_id=turn_id,
                         tool_call=tool_call,
@@ -496,6 +498,7 @@ class AssistantBlockConsumer:
                     metadata=dict(block.metadata),
                     record_assistant_call=False,
                     lifecycle_sink=stream_sink,
+                    policy_approved=policy_approved,
                 )
 
             flush_pending_safe_tool_calls()

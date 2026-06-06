@@ -16,6 +16,8 @@ from mycli.domain.runtime import (
     RuntimeBlock,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
+    ToolRuntimeDecision,
+    ToolRuntimeDecisionKind,
     TurnItem,
     TurnItemType,
 )
@@ -35,6 +37,7 @@ from mycli.services.hooks import (
 )
 from mycli.services.security import InjectionGuard
 from mycli.tools.routing.tool_router import ToolRouter
+from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
 
@@ -98,6 +101,7 @@ class ToolExecutionService:
         injection_guard: InjectionGuard | None = None,
         record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
         write_diagnostics_runner: WriteDiagnosticsRunner | None = None,
+        policy_gate: RuntimePolicyGate | None = None,
     ) -> None:
         self._session_id = session_id
         self._context_manager = context_manager
@@ -111,6 +115,7 @@ class ToolExecutionService:
         self._injection_guard = injection_guard or InjectionGuard()
         self._record_invoked_skill = record_invoked_skill
         self._write_diagnostics_runner = write_diagnostics_runner
+        self._policy_gate = policy_gate
         self._monotonic = monotonic
 
     def execute_tool_calls(
@@ -195,6 +200,7 @@ class ToolExecutionService:
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
         lifecycle_sink: ToolLifecycleSink | None = None,
+        policy_approved: bool = False,
     ) -> PlanState:
         normalized_call = self._normalize_tool_call(call)
         execution_started_at = self._monotonic()
@@ -203,6 +209,39 @@ class ToolExecutionService:
             tool_router=tool_router,
             tool_exposure=tool_exposure,
         )
+        runtime_decision = self._runtime_policy_decision(
+            call=normalized_call,
+            tool_exposure=tool_exposure,
+            turn_id=turn_id,
+            policy_approved=policy_approved,
+        )
+        if runtime_decision is not None and runtime_decision.kind is not ToolRuntimeDecisionKind.ALLOWED:
+            self._record_tool_start(
+                normalized_call=normalized_call,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                lifecycle_sink=lifecycle_sink,
+            )
+            policy_result = self._runtime_policy_tool_result(runtime_decision)
+            return self._record_tool_outcome(
+                conversation=conversation,
+                normalized_call=normalized_call,
+                result=policy_result,
+                plan_state=plan_state,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                response_id=response_id,
+                record_assistant_call=record_assistant_call,
+                execution_started_at=execution_started_at,
+                effect_profile=effect_profile,
+                lifecycle_sink=lifecycle_sink,
+            )
         pre_hook_execution = self._hook_manager.execute_with_summary(
             HookPoint.PRE_TOOL_USE,
             HookContext(
@@ -542,6 +581,7 @@ class ToolExecutionService:
         metadata: dict[str, object] | None,
         record_assistant_call: bool,
         lifecycle_sink: ToolLifecycleSink | None,
+        policy_approved: bool = False,
     ) -> _ParallelToolOutcome:
         isolated_conversation = Conversation(session_id=self._session_id)
         isolated_activity_events: list[ActivityEvent] = []
@@ -560,6 +600,7 @@ class ToolExecutionService:
             metadata=metadata,
             record_assistant_call=record_assistant_call,
             lifecycle_sink=lifecycle_sink,
+            policy_approved=policy_approved,
         )
         return _ParallelToolOutcome(
             plan_state=next_plan_state,
@@ -716,6 +757,50 @@ class ToolExecutionService:
             ),
         )
         return next_plan_state
+
+    def _runtime_policy_decision(
+        self,
+        *,
+        call: ToolCall,
+        tool_exposure: ToolExposure,
+        turn_id: str,
+        policy_approved: bool,
+    ) -> ToolRuntimeDecision | None:
+        if self._policy_gate is None:
+            return None
+        if policy_approved:
+            return None
+        decision = self._policy_gate.decide(call, tool_exposure=tool_exposure)
+        self._trace_service.append(
+            self._session_id,
+            RuntimeTraceEvent(
+                kind="runtime_policy_decision",
+                turn_id=turn_id,
+                payload=decision.to_trace_payload(),
+            ),
+        )
+        return decision
+
+    def _runtime_policy_tool_result(
+        self,
+        decision: ToolRuntimeDecision,
+    ) -> ToolResult:
+        if decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL:
+            summary = "Tool needs approval before execution."
+            error_kind = "tool_needs_approval"
+        else:
+            summary = "Tool denied by runtime policy."
+            error_kind = "tool_denied_by_policy"
+        return ToolResult(
+            success=False,
+            summary=summary,
+            error=summary,
+            raw_payload={
+                "tool_name": decision.tool_call.name,
+                "error_kind": error_kind,
+                "runtime_policy": decision.to_trace_payload(),
+            },
+        )
 
     def _record_tool_start(
         self,
