@@ -3780,6 +3780,80 @@ def test_doctor_service_reports_cache_policy_validation_states(
     assert "key-hash" not in rendered
 
 
+def test_doctor_service_reports_recovery_diagnostics_without_raw_provider_text(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    _create_sessions_db(home / ".mycli" / "sessions.db")
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "recovery_diagnostic",
+                        "turn_id": "turn_1",
+                        "payload": {
+                            "error_class": "invalid_encrypted_content",
+                            "action": "strip_encrypted_reasoning_retry",
+                            "will_retry": True,
+                            "attempt": 1,
+                            "max_attempts": 1,
+                            "encrypted_content": "opaque-provider-state",
+                            "raw_message": "sk-do-not-print",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "recovery_diagnostic",
+                        "turn_id": "turn_2",
+                        "payload": {
+                            "error_class": "schema_rejected",
+                            "action": "surface_only",
+                            "will_retry": False,
+                            "attempt": 0,
+                            "max_attempts": 0,
+                            "request_payload": {"secret": "value"},
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "context")
+    rendered = "\n".join(render_doctor_report(report))
+
+    assert check.status is DoctorStatus.WARNING
+    assert "recovery_rows=2" in str(check.detail)
+    assert "recovery_retries=1" in str(check.detail)
+    assert "latest_recovery=error_class=schema_rejected action=surface_only will_retry=false" in str(
+        check.detail
+    )
+    assert "invalid_encrypted_content=1" in str(check.detail)
+    assert "schema_rejected=1" in str(check.detail)
+    assert "strip_encrypted_reasoning_retry=1" in str(check.detail)
+    assert "surface_only=1" in str(check.detail)
+    assert "opaque-provider-state" not in rendered
+    assert "sk-do-not-print" not in rendered
+    assert "request_payload" not in rendered
+
+
 def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

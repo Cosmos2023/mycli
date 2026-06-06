@@ -1,6 +1,6 @@
 # Prefix Cache Context Assembly Goals
 
-本文档保存 Prefix Cache Context Assembly Roadmap 剩余阶段的可执行 `/goal` 文本，并记录当前推荐的分批执行入口。
+本文档保存 Prefix Cache Context Assembly Roadmap 各阶段的可执行 `/goal` 文本，并记录当前推荐的分批执行入口。
 
 来源文档：
 
@@ -23,10 +23,10 @@ P5 -> P6 -> P7a -> P7b -> P8
 - P5 已完成、提交、归档、journal 记录。
 - P6 已完成、提交、归档、journal 记录。
 - P7a 已完成、提交、归档、journal 记录。
-- P7b 已启动，Trellis research/PRD 已提交，当前应继续 implementation/tests/archive。
-- P8 尚未开始。
+- P7b 已完成、提交、归档、journal 记录。
+- P8 已启动，Trellis research/PRD 已提交，当前应继续 implementation/tests/archive。
 
-继续执行时应从 P7b 开始，不要重新实现 P5/P6/P7a。P7b 完成并归档后，再进入 P8。P8 完成后再跑全链路质量门和最终报告。
+继续执行时应从 P8 开始，不要重新实现 P5/P6/P7a/P7b。P8 完成后再跑全链路质量门和最终报告。
 
 ## P5 Goal
 
@@ -116,8 +116,8 @@ cheap pruning、JSON 截断、重复 result 去重、tail group 保护、stable 
 
 ## P7b Goal
 
-状态：进行中。当前 Trellis task：
-`.trellis/tasks/06-06-prefix-cache-context-assembly-p7b`。
+状态：已完成、提交、归档、journal 记录。完成记录见
+`.trellis/tasks/archive/2026-06/06-06-prefix-cache-context-assembly-p7b/completion.md`。
 
 ```text
 /goal 当前工作目录为：
@@ -144,7 +144,8 @@ summary replacement、rehydration scope、tail protection、compact failure safe
 
 ## P8 Goal
 
-状态：未开始。
+状态：进行中。当前 Trellis task：
+`.trellis/tasks/06-06-prefix-cache-context-assembly-p8`。
 
 ```text
 /goal 当前工作目录为：
@@ -173,7 +174,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 
 ## Batch Execution Goal
 
-以下 goal 用于从当前进度继续，分批完成本文档中的剩余阶段。它不要求重做 P5/P6/P7a；当前入口是继续 P7b，然后做 P8，最后做全链路验收。
+以下 goal 用于从当前进度继续，分批完成本文档中的剩余阶段。它不要求重做 P5/P6/P7a/P7b；当前入口是继续 P8，然后做全链路验收。
 
 ```text
 /goal 当前工作目录为：
@@ -182,7 +183,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，按批次完成 docs/prefix-cache-context-assembly-goals.md 中保存的 Prefix Cache Context Assembly 剩余 goals。默认不合入 main，除非我明确说“合吧”。
 
 总目标：
-把 mycli Prefix Cache Context Assembly Roadmap 从当前状态继续推进：P5/P6/P7a 已完成，不重做；先完成 P7b canonical compact summary/rehydration lifecycle，再完成 P8 recovery/productized observability，最后跑全链路回归，确保 P1-P7a 的 prefix-cache stability、provider wire cache policy、redaction diagnostics、runtime adoption、canonical persistence、provider replay hardening、cheap pruning/tail protection 不回退。
+把 mycli Prefix Cache Context Assembly Roadmap 从当前状态继续推进：P5/P6/P7a/P7b 已完成，不重做；继续完成 P8 recovery/productized observability，最后跑全链路回归，确保 P1-P7b 的 prefix-cache stability、provider wire cache policy、redaction diagnostics、runtime adoption、canonical persistence、provider replay hardening、cheap pruning/tail protection、canonical compact lifecycle 不回退。
 
 执行方式：
 1. 读取并遵守：
@@ -193,12 +194,11 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
    - .trellis/spec/backend/context-management-contract.md
 2. 走 Trellis：research -> PRD -> implementation -> tests -> archive。
 3. 必须按批次推进：
-   - Batch 1 / P7b：Canonical Compact Summary / Rehydration Lifecycle。先检查当前 P7b Trellis task 和 git status，继续 TDD implementation/tests/archive，不重建任务。
-   - Batch 2 / P8：Recovery / Productized Observability。P7b 完成、提交、归档、journal 后再启动 P8 Trellis task。
-   - Batch 3 / Final stabilization：跑全量质量门、provider-free smoke、context/subagent/MCP/plugin/hook smoke，更新最终报告。
+   - Batch 1 / P8：Recovery / Productized Observability。先检查当前 P8 Trellis task 和 git status，继续 TDD implementation/tests/archive，不重建任务。
+   - Batch 2 / Final stabilization：跑全量质量门、provider-free smoke、context/subagent/MCP/plugin/hook smoke，更新最终报告。
 4. 每个实现 batch 都要有独立的 research/PRD、测试证据、提交和阶段报告。
 5. 每个实现 batch 完成后运行相关 focused tests 和 provider-free smoke；Final stabilization 完成后运行全量质量门。
-6. 禁止把 P7b/P8 混成一个不可审查的大 diff；如果发现 scope 超出单批次，先切更小 subtask。
+6. 禁止把 P8 和最终稳定化混成一个不可审查的大 diff；如果发现 scope 超出单批次，先切更小 subtask。
 7. 如果 `git status` 显示与当前 batch 无关的新改动，先隔离或记录，不要混入当前 batch commit。
 
 全局规则：
@@ -219,7 +219,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 - P5 canonical timeline / durability / `api_only` / rehydration scope 已完成且 regression 不回退。
 - P6 Responses replay、Chat 降级剥离、Anthropic wire-only cache_control、deterministic fallback id、schema sanitize 已完成且 regression 不回退。
 - P7a cheap pruning、JSON 截断、重复 result 去重、tail group 保护、stable prefix invariant 已完成且 regression 不回退。
-- P7b summary replacement、rehydration scope、tail protection、compact failure safety、lineage/trace、stable prefix invariant 有单测。
+- P7b summary replacement、rehydration scope、tail protection、compact failure safety、lineage/trace、stable prefix invariant 已完成且 regression 不回退。
 - P8 ErrorClassifier/RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction boundary 有单测。
 - provider-free cache smoke 通过，并覆盖 P5-P8 关键字段。
 - P1-P4 cache stability regression suite 不回退。
@@ -233,7 +233,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 
 ## Full Roadmap Execution Goal
 
-以下 goal 只适合在一个全新分支或从 P5 前置状态重新执行时使用。当前分支不推荐使用它，因为 P5 已完成，P6 已实现。
+以下 goal 只适合在一个全新分支或从 P5 前置状态重新执行时使用。当前分支不推荐使用它，因为 P5-P7b 已完成，P8 已启动。
 
 ```text
 /goal 当前工作目录为：

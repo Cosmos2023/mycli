@@ -6,10 +6,15 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from mycli.application.runtime.recovery import (
+    ErrorClassifier,
+    RecoveryErrorClass,
+    RecoveryPolicy,
+    RecoveryPolicyAction,
     RetryBackoffPolicy,
     fallback_metadata,
     is_transient_recovery_failure,
     output_limit_metadata,
+    recovery_diagnostic_metadata,
     retry_metadata,
 )
 from mycli.domain.conversation import Conversation, Message
@@ -824,6 +829,30 @@ class TurnExecutor:
                     loop_state=loop_state,
                     runtime_reminders=runtime_reminders,
                 )
+                if recovery_action.metadata.get("recovery_error_class"):
+                    runtime._trace_service.append(
+                        runtime._config.session_id,
+                        RuntimeTraceEvent(
+                            kind="recovery_diagnostic",
+                            turn_id=turn_id,
+                            payload={
+                                key: value
+                                for key, value in recovery_action.metadata.items()
+                                if key
+                                in {
+                                    "error_class",
+                                    "recovery_error_class",
+                                    "failure_kind",
+                                    "stop_reason",
+                                    "action",
+                                    "will_retry",
+                                    "attempt",
+                                    "max_attempts",
+                                    "recovery_kind",
+                                }
+                            },
+                        ),
+                    )
                 if recovery_action.should_retry:
                     loop_state = recovery_action.next_state
                     carryover_runtime_reminders = recovery_action.runtime_reminders
@@ -901,6 +930,8 @@ class TurnExecutor:
                                 output_token_retries=loop_state.output_token_retries,
                                 context_recovery_stage="reactive_compact",
                                 reactive_compact_attempted=True,
+                                fallback_model_attempted=loop_state.fallback_model_attempted,
+                                encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                             )
                             if reactive_compacted is not before_reactive:
                                 conversation = reactive_compacted
@@ -1060,12 +1091,58 @@ class TurnExecutor:
     ) -> "TurnRecoveryAction":
         failure_kind = exc.failure_kind or ""
         stop_reason = exc.stop_reason
+        classification = ErrorClassifier().classify(exc)
+        decision = RecoveryPolicy().decide(classification)
 
-        if stop_reason is StopReason.CONTEXT_WINDOW_EXCEEDED or failure_kind == "context_window_exceeded":
+        if classification.error_class is RecoveryErrorClass.INVALID_ENCRYPTED_CONTENT:
+            metadata = {
+                "recovery_kind": RecoveryPolicyAction.STRIP_ENCRYPTED_REASONING_RETRY.value,
+                "recovery_error_class": classification.error_class.value,
+                **recovery_diagnostic_metadata(
+                    classification=classification,
+                    decision=decision,
+                    attempt=loop_state.encrypted_reasoning_retries + 1,
+                ),
+            }
+            if loop_state.encrypted_reasoning_retries >= 1:
+                return TurnRecoveryAction(next_state=loop_state, metadata=metadata)
+            self._runtime._session_service.save_responses_continuation_state(
+                self._runtime._config.session_id,
+                None,
+            )
+            continuation_setter = getattr(
+                self._runtime._model_adapter,
+                "set_continuation_state",
+                None,
+            )
+            if callable(continuation_setter):
+                continuation_setter(None)
+            warning_text = (
+                "Encrypted reasoning replay was rejected. Retrying once without "
+                "provider-private encrypted replay state."
+            )
+            return TurnRecoveryAction(
+                should_retry=True,
+                warning_text=warning_text,
+                runtime_reminders=runtime_reminders,
+                next_state=LoopState(
+                    context_window_retries=loop_state.context_window_retries,
+                    transport_retries=loop_state.transport_retries,
+                    output_token_retries=loop_state.output_token_retries,
+                    context_recovery_stage=loop_state.context_recovery_stage,
+                    reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                    fallback_model_attempted=loop_state.fallback_model_attempted,
+                    encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries + 1,
+                ),
+                metadata=metadata,
+            )
+
+        if classification.error_class is RecoveryErrorClass.CONTEXT_OVERFLOW:
             if loop_state.context_window_retries == 0:
                 warning_text = (
                     "Context window exceeded. Retrying after draining redundant context."
                 )
+                recovery_decision = RecoveryPolicy().decide(classification)
                 return TurnRecoveryAction(
                     should_retry=True,
                     warning_text=warning_text,
@@ -1083,12 +1160,24 @@ class TurnExecutor:
                         output_token_retries=loop_state.output_token_retries,
                         context_recovery_stage="collapse_drain",
                         reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                        fallback_model_attempted=loop_state.fallback_model_attempted,
+                        encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                     ),
+                    metadata={
+                        "recovery_kind": RecoveryPolicyAction.COMPACT_OR_SHRINK_RETRY.value,
+                        "recovery_error_class": classification.error_class.value,
+                        **recovery_diagnostic_metadata(
+                            classification=classification,
+                            decision=recovery_decision,
+                            attempt=1,
+                        ),
+                    },
                 )
             if loop_state.context_window_retries == 1:
                 warning_text = (
                     "Context window still exceeded. Retrying once after reactive compaction."
                 )
+                recovery_decision = RecoveryPolicy().decide(classification)
                 return TurnRecoveryAction(
                     should_retry=True,
                     warning_text=warning_text,
@@ -1106,11 +1195,33 @@ class TurnExecutor:
                         output_token_retries=loop_state.output_token_retries,
                         context_recovery_stage="reactive_compact",
                         reactive_compact_attempted=False,
+                        fallback_model_attempted=loop_state.fallback_model_attempted,
+                        encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                     ),
                     invoke_pre_compact_hook=True,
+                    metadata={
+                        "recovery_kind": RecoveryPolicyAction.COMPACT_OR_SHRINK_RETRY.value,
+                        "recovery_error_class": classification.error_class.value,
+                        **recovery_diagnostic_metadata(
+                            classification=classification,
+                            decision=recovery_decision,
+                            attempt=2,
+                        ),
+                    },
                 )
             if loop_state.context_window_retries >= 2:
-                return TurnRecoveryAction(next_state=loop_state)
+                return TurnRecoveryAction(
+                    next_state=loop_state,
+                    metadata={
+                        "recovery_kind": RecoveryPolicyAction.COMPACT_OR_SHRINK_RETRY.value,
+                        "recovery_error_class": classification.error_class.value,
+                        **recovery_diagnostic_metadata(
+                            classification=classification,
+                            decision=RecoveryPolicy().decide(classification),
+                            attempt=loop_state.context_window_retries + 1,
+                        ),
+                    },
+                )
 
         if failure_kind in {"output_token_limit", "max_output_tokens", "output_tokens_exceeded"}:
             max_attempts = max(0, self._runtime._config.output_recovery_retry_limit)
@@ -1131,6 +1242,7 @@ class TurnExecutor:
                         context_recovery_stage=loop_state.context_recovery_stage,
                         reactive_compact_attempted=loop_state.reactive_compact_attempted,
                         fallback_model_attempted=loop_state.fallback_model_attempted,
+                        encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                     ),
                     escalated_max_output_tokens=(
                         self._runtime._config.output_limit_escalation_max_tokens
@@ -1159,6 +1271,7 @@ class TurnExecutor:
                     context_recovery_stage=loop_state.context_recovery_stage,
                     reactive_compact_attempted=loop_state.reactive_compact_attempted,
                     fallback_model_attempted=loop_state.fallback_model_attempted,
+                    encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                 ),
                 metadata=output_limit_metadata(
                     attempt=loop_state.output_token_retries + 1,
@@ -1190,6 +1303,7 @@ class TurnExecutor:
                             context_recovery_stage=loop_state.context_recovery_stage,
                             reactive_compact_attempted=loop_state.reactive_compact_attempted,
                             fallback_model_attempted=True,
+                            encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                         ),
                         fallback_model=fallback_model,
                         metadata=fallback_metadata(
@@ -1222,6 +1336,8 @@ class TurnExecutor:
                     output_token_retries=loop_state.output_token_retries,
                     context_recovery_stage=loop_state.context_recovery_stage,
                     reactive_compact_attempted=loop_state.reactive_compact_attempted,
+                    fallback_model_attempted=loop_state.fallback_model_attempted,
+                    encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
                 ),
                 delay_seconds=delay_seconds,
                 metadata=retry_metadata(
@@ -1338,6 +1454,7 @@ class LoopState:
     context_recovery_stage: str | None = None
     reactive_compact_attempted: bool = False
     fallback_model_attempted: bool = False
+    encrypted_reasoning_retries: int = 0
 
 
 @dataclass(slots=True, frozen=True)

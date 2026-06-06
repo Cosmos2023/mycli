@@ -153,3 +153,40 @@ def test_provider_request_dry_run_renderer_exposes_redacted_policy_surface(
     assert "first private request" not in str(rendered)
     assert "second private request" not in str(rendered)
     assert "sk-secret" not in str(rendered)
+
+
+def test_provider_request_dry_run_renderer_exposes_bounded_recovery_surface(
+    tmp_path: Path,
+) -> None:
+    previous = _shape(tmp_path, ProtocolId.RESPONSES, "first private request")
+    current = _shape(tmp_path, ProtocolId.RESPONSES, "second private request")
+
+    rendered = ProviderRequestDryRunRenderer().render(
+        ProviderRequestDryRun.compare(
+            previous=previous,
+            current=current,
+            recovery_counts={
+                "invalid_encrypted_content": 1,
+                "context_overflow": 2,
+            },
+            latest_recovery={
+                "error_class": "invalid_encrypted_content",
+                "action": "strip_encrypted_reasoning_retry",
+                "will_retry": True,
+                "encrypted_content": "opaque",
+                "raw_message": "sk-do-not-print",
+            },
+        )
+    )
+
+    assert rendered["recovery_counts"] == {
+        "context_overflow": 2,
+        "invalid_encrypted_content": 1,
+    }
+    assert rendered["latest_recovery"] == {
+        "error_class": "invalid_encrypted_content",
+        "action": "strip_encrypted_reasoning_retry",
+        "will_retry": True,
+    }
+    assert "opaque" not in str(rendered)
+    assert "sk-do-not-print" not in str(rendered)

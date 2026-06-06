@@ -295,6 +295,142 @@ baseline_metadata = {
 }
 ```
 
+## Scenario: Recovery Diagnostics And Provider Replay Recovery
+
+### 1. Scope / Trigger
+
+- Trigger: changes to provider/runtime model error handling, Responses
+  continuation replay, recovery retry policy, provider-free dry-run output,
+  cache-shape diagnostics, runtime trace rows, or doctor context diagnostics.
+- The flow crosses runtime recovery, model adapter continuation state, trace,
+  doctor, dry-run rendering, provider-cache smoke, and request-shape redaction.
+
+### 2. Signatures
+
+- Classifier:
+  `ErrorClassifier.classify(exc: ModelResponseError) -> ErrorClassification`
+- Policy:
+  `RecoveryPolicy.decide(classification, deterministic_repair_available=False) -> RecoveryDecision`
+- Recovery classes:
+  `invalid_encrypted_content`, `context_overflow`, `schema_rejected`,
+  `unsupported_payload`, `image_too_large`, `unknown`
+- Recovery actions:
+  `strip_encrypted_reasoning_retry`, `compact_or_shrink_retry`,
+  `sanitize_repair_retry`, `surface_only`
+- Trace kind:
+  `recovery_diagnostic`
+- Dry-run renderer fields:
+  `recovery_counts`, `latest_recovery`
+- Doctor context detail fields:
+  `recovery_rows`, `recovery_retries`, `recovery_error_classes`,
+  `recovery_actions`, `latest_recovery`
+
+### 3. Contracts
+
+- Error classification must be centralized in `recovery.py`; runtime tests
+  should not assert on scattered string matching in `TurnExecutor`.
+- `invalid_encrypted_content` recovery clears Responses continuation state from
+  the session and active adapter, retries once, and records a bounded
+  `recovery_diagnostic` trace row. It must not flatten encrypted reasoning or
+  provider-private state into ordinary prompt text.
+- `context_overflow` maps to the existing compact/shrink path. It may retry
+  through drain and reactive compact, but retry count remains bounded by the
+  runtime loop state.
+- `schema_rejected` retries only when deterministic adapter sanitize/repair is
+  explicitly available; otherwise it surfaces a bounded diagnostic.
+- `unsupported_payload` and `image_too_large` surface diagnostics only. The
+  text/multimodal envelope is not implemented by this contract.
+- `recovery_diagnostic` trace payloads may include only bounded taxonomy fields:
+  `error_class`, `recovery_error_class`, `failure_kind`, `stop_reason`,
+  `action`, `will_retry`, `attempt`, `max_attempts`, and `recovery_kind`.
+- Doctor and dry-run may summarize recovery counts and the latest bounded
+  recovery tuple. They must not print raw provider messages, raw request
+  payloads, raw tool output, full provider wire bodies, full `prompt_cache_key`,
+  provider-private encrypted state, or secret-like values.
+- Recovery diagnostics are local observability only. They must not be replayed
+  into canonical timeline content, provider messages, tool schemas, or stable
+  request-shape fragments.
+
+### 4. Validation & Error Matrix
+
+- Provider returns `invalid_encrypted_content` -> clear Responses continuation
+  state, call adapter `set_continuation_state(None)` when available, retry
+  once, record `recovery_diagnostic`, and do not persist encrypted content in
+  trace/doctor/dry-run output.
+- Provider returns another `invalid_encrypted_content` after the retry ->
+  surface the model error without another retry.
+- Provider returns context-window stop reason or equivalent failure kind ->
+  reuse drain/compact recovery; no raw provider error text is required for the
+  policy decision.
+- Provider returns schema rejection with no deterministic repair -> no retry;
+  doctor can report `schema_rejected` and `surface_only`.
+- Provider returns schema rejection with deterministic repair -> retry once
+  with sanitized adapter output.
+- Provider returns unsupported payload or image-too-large -> no retry; bounded
+  diagnostic/remediation only.
+- Trace rows containing extra raw fields such as `raw_message`,
+  `request_payload`, or `encrypted_content` -> doctor/dry-run ignore those
+  fields and render only allowlisted bounded recovery fields.
+
+### 5. Good/Base/Bad Cases
+
+- Good: A Responses replay failure with invalid encrypted content causes one
+  retry without continuation state and produces
+  `error_class=invalid_encrypted_content action=strip_encrypted_reasoning_retry`.
+- Good: Doctor reports `recovery_rows=2 recovery_retries=1` and class/action
+  counts without exposing provider payload text.
+- Base: No recovery trace rows -> doctor reports `recovery_rows=0` and
+  `latest_recovery=none`.
+- Bad: Retrying schema errors when no deterministic sanitizer produced a
+  repaired payload.
+- Bad: Adding raw provider exception strings or encrypted reasoning blobs to
+  `recovery_diagnostic`, `turn_item` metadata, doctor detail, dry-run payloads,
+  or canonical timeline fragments.
+- Bad: Treating `image_too_large` as recovered by silently dropping image
+  context in this text-only mainline.
+
+### 6. Tests Required
+
+- Unit tests for `ErrorClassifier` mapping explicit failure kinds and bounded
+  message fallbacks to all P8 recovery classes.
+- Unit tests for `RecoveryPolicy` decisions, retry limits, and deterministic
+  repair gating.
+- Runtime recovery tests proving invalid encrypted content clears continuation
+  state, retries once, records bounded trace data, and does not leak secret or
+  provider-private text.
+- Doctor tests proving recovery diagnostic trace rows are summarized as bounded
+  counts/latest status and raw payload fields are not rendered.
+- Dry-run tests proving `recovery_counts` and `latest_recovery` are redacted and
+  limited to allowlisted fields.
+- Provider-free smoke must include P8 recovery fields without real provider API
+  calls.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if "encrypted_content" in str(exc):
+    trace.append({"raw_message": str(exc), "encrypted_content": blob})
+    retry()
+```
+
+#### Correct
+
+```python
+classification = ErrorClassifier().classify(exc)
+decision = RecoveryPolicy().decide(classification)
+trace.append(
+    RuntimeTraceEvent(
+        kind="recovery_diagnostic",
+        payload={
+            **classification.to_trace_payload(),
+            **decision.to_trace_payload(attempt=1),
+        },
+    )
+)
+```
+
 ## Scenario: Provider Wire Cache Policy Projection
 
 ### 1. Scope / Trigger

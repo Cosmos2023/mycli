@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mycli.application.runtime.recovery import RetryBackoffPolicy
+from mycli.application.runtime.recovery import (
+    ErrorClassifier,
+    RecoveryErrorClass,
+    RecoveryPolicy,
+    RecoveryPolicyAction,
+    RetryBackoffPolicy,
+)
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.runtime.turn_executor import (
     BudgetNudge,
@@ -21,6 +27,7 @@ from mycli.domain.runtime import (
     TurnStatus,
 )
 from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.context.compaction import ContextBudget
 
 
@@ -148,6 +155,36 @@ class RetryTwiceThenDoneAdapter:
         )
 
 
+class InvalidEncryptedContentThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.continuation_states: list[object] = []
+
+    def set_continuation_state(self, state: object) -> None:
+        self.continuation_states.append(state)
+
+    def get_continuation_state(self) -> object | None:
+        return None
+
+    def next_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        if self.calls == 1:
+            raise ModelResponseError(
+                "invalid encrypted_content: sk-do-not-print",
+                failure_kind="invalid_encrypted_content",
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Recovered without encrypted replay"),),
+                ),
+            ),
+            done=True,
+        )
+
+
 class FallbackModelAdapter:
     def __init__(self) -> None:
         self.model = "primary-model"
@@ -245,6 +282,96 @@ def test_retry_backoff_policy_calculates_capped_delays() -> None:
     assert policy.delay_for_attempt(4) == 1.0
 
 
+def test_error_classifier_maps_p8_provider_error_taxonomy() -> None:
+    classifier = ErrorClassifier()
+
+    cases = {
+        "invalid_encrypted_content": RecoveryErrorClass.INVALID_ENCRYPTED_CONTENT,
+        "context_window_exceeded": RecoveryErrorClass.CONTEXT_OVERFLOW,
+        "schema_rejected": RecoveryErrorClass.SCHEMA_REJECTED,
+        "unsupported_payload": RecoveryErrorClass.UNSUPPORTED_PAYLOAD,
+        "image_too_large": RecoveryErrorClass.IMAGE_TOO_LARGE,
+    }
+
+    for failure_kind, expected in cases.items():
+        result = classifier.classify(ModelResponseError("provider failed", failure_kind=failure_kind))
+        assert result.error_class is expected
+        assert result.failure_kind == failure_kind
+        assert "provider failed" not in result.to_trace_payload().values()
+
+
+def test_error_classifier_uses_bounded_message_fallbacks() -> None:
+    classifier = ErrorClassifier()
+
+    assert classifier.classify(
+        ModelResponseError("invalid encrypted_content replay")
+    ).error_class is RecoveryErrorClass.INVALID_ENCRYPTED_CONTENT
+    assert classifier.classify(
+        ModelResponseError("This model's maximum context length was exceeded")
+    ).error_class is RecoveryErrorClass.CONTEXT_OVERFLOW
+    assert classifier.classify(
+        ModelResponseError("Invalid schema for request payload")
+    ).error_class is RecoveryErrorClass.SCHEMA_REJECTED
+    assert classifier.classify(
+        ModelResponseError("Unsupported content block in request payload")
+    ).error_class is RecoveryErrorClass.UNSUPPORTED_PAYLOAD
+    assert classifier.classify(
+        ModelResponseError("image payload is too large")
+    ).error_class is RecoveryErrorClass.IMAGE_TOO_LARGE
+
+
+def test_recovery_policy_maps_p8_retry_and_surface_actions() -> None:
+    policy = RecoveryPolicy()
+    classifier = ErrorClassifier()
+
+    invalid = policy.decide(
+        classifier.classify(
+            ModelResponseError("invalid encrypted_content", failure_kind="invalid_encrypted_content")
+        )
+    )
+    assert invalid.action is RecoveryPolicyAction.STRIP_ENCRYPTED_REASONING_RETRY
+    assert invalid.should_retry is True
+    assert invalid.max_attempts == 1
+
+    overflow = policy.decide(
+        classifier.classify(
+            ModelResponseError("context overflow", failure_kind="context_window_exceeded")
+        )
+    )
+    assert overflow.action is RecoveryPolicyAction.COMPACT_OR_SHRINK_RETRY
+    assert overflow.should_retry is True
+
+    schema_without_repair = policy.decide(
+        classifier.classify(
+            ModelResponseError("schema rejected", failure_kind="schema_rejected")
+        )
+    )
+    assert schema_without_repair.action is RecoveryPolicyAction.SURFACE_ONLY
+    assert schema_without_repair.should_retry is False
+
+    schema_with_repair = policy.decide(
+        classifier.classify(
+            ModelResponseError("schema rejected", failure_kind="schema_rejected")
+        ),
+        deterministic_repair_available=True,
+    )
+    assert schema_with_repair.action is RecoveryPolicyAction.SANITIZE_REPAIR_RETRY
+    assert schema_with_repair.should_retry is True
+
+    unsupported = policy.decide(
+        classifier.classify(
+            ModelResponseError("unsupported", failure_kind="unsupported_payload")
+        )
+    )
+    image = policy.decide(
+        classifier.classify(
+            ModelResponseError("image too large", failure_kind="image_too_large")
+        )
+    )
+    assert unsupported.action is RecoveryPolicyAction.SURFACE_ONLY
+    assert image.action is RecoveryPolicyAction.SURFACE_ONLY
+
+
 def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
     sleeps: list[float] = []
     runtime = AgentRuntime.for_tests(
@@ -269,6 +396,53 @@ def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
     assert warnings[0].metadata["recovery_kind"] == "retry"
     assert warnings[0].metadata["failure_kind"] == "rate_limited"
     assert warnings[0].metadata["delay_seconds"] == 0.25
+
+
+def test_turn_executor_retries_invalid_encrypted_content_once_without_leaking_secret(
+    tmp_path: Path,
+) -> None:
+    adapter = InvalidEncryptedContentThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    initial_state = ResponsesContinuationState(
+        response_id="resp_prev",
+        request_signature="{}",
+        request_input=({"type": "reasoning", "encrypted_content": "opaque"},),
+        response_output=(),
+        eligible=True,
+    )
+    runtime._session_service.save_responses_continuation_state(
+        runtime._config.session_id,
+        initial_state,
+    )
+
+    response = runtime.handle_user_turn("inspect")
+    trace = runtime._trace_service.load(runtime._config.session_id)
+    rendered_trace = "\n".join(str(event.to_dict()) for event in trace)
+
+    assert response.assistant_message == "Recovered without encrypted replay"
+    assert adapter.calls == 2
+    assert adapter.continuation_states == [initial_state, None]
+    assert runtime._session_service.load_responses_continuation_state(
+        runtime._config.session_id
+    ) is None
+    assert response.turn is not None
+    warning = next(
+        item
+        for item in response.turn.items
+        if item.type is TurnItemType.WARNING
+        and item.metadata.get("recovery_error_class") == "invalid_encrypted_content"
+    )
+    assert warning.metadata["recovery_kind"] == "strip_encrypted_reasoning_retry"
+    assert warning.metadata["action"] == "strip_encrypted_reasoning_retry"
+    assert "sk-do-not-print" not in rendered_trace
+    recovery_event = next(event for event in trace if event.kind == "recovery_diagnostic")
+    assert recovery_event.payload["error_class"] == "invalid_encrypted_content"
+    assert recovery_event.payload["action"] == "strip_encrypted_reasoning_retry"
+    assert recovery_event.payload["will_retry"] is True
 
 
 def test_turn_executor_uses_fallback_model_after_retry_exhaustion(tmp_path: Path) -> None:

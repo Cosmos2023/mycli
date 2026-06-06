@@ -200,6 +200,11 @@ class _ContextDiagnosticsSummary:
     cache_remediation: str | None
     persisted_summary_count: int
     duplicate_summary_count: int
+    recovery_count: int
+    recovery_retry_count: int
+    recovery_error_class_counts: tuple[tuple[str, int], ...]
+    recovery_action_counts: tuple[tuple[str, int], ...]
+    latest_recovery: tuple[tuple[str, str], ...]
     unreadable: tuple[str, ...]
 
 
@@ -1021,6 +1026,8 @@ class DoctorService:
             status = DoctorStatus.WARNING
         if trace_summary.stable_prefix_change_count:
             status = DoctorStatus.WARNING
+        if trace_summary.recovery_count:
+            status = DoctorStatus.WARNING
         if trace_summary.unreadable:
             status = DoctorStatus.FAILED
         source = diagnostics.selected_source or "none"
@@ -1083,6 +1090,17 @@ class DoctorService:
                 "cache_usage_telemetry_missing="
                 f"{trace_summary.cache_usage_telemetry_missing_count}"
             ),
+            f"recovery_rows={trace_summary.recovery_count}",
+            f"recovery_retries={trace_summary.recovery_retry_count}",
+            (
+                "recovery_error_classes="
+                f"{_format_count_pairs(trace_summary.recovery_error_class_counts)}"
+            ),
+            (
+                "recovery_actions="
+                f"{_format_count_pairs(trace_summary.recovery_action_counts)}"
+            ),
+            f"latest_recovery={_format_latest_recovery(trace_summary.latest_recovery)}",
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
         if trace_summary.cache_remediation:
@@ -2079,6 +2097,11 @@ def _summarize_context_diagnostics(
     cache_usage_telemetry_missing_count = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
+    recovery_count = 0
+    recovery_retry_count = 0
+    recovery_error_class_counts: dict[str, int] = {}
+    recovery_action_counts: dict[str, int] = {}
+    latest_recovery: tuple[tuple[str, str], ...] = ()
     unreadable: list[str] = []
     previous_cache_boundary_hash: str | None = None
 
@@ -2232,6 +2255,37 @@ def _summarize_context_diagnostics(
                         )
                         persisted_summary_count += persisted or 0
                         duplicate_summary_count += duplicates or 0
+                    elif event.kind == "recovery_diagnostic":
+                        recovery_count += 1
+                        error_class = _bounded_recovery_value(
+                            event.payload.get("error_class")
+                            or event.payload.get("recovery_error_class")
+                        )
+                        action = _bounded_recovery_value(
+                            event.payload.get("action")
+                            or event.payload.get("recovery_kind")
+                        )
+                        will_retry = event.payload.get("will_retry")
+                        if error_class:
+                            recovery_error_class_counts[error_class] = (
+                                recovery_error_class_counts.get(error_class, 0) + 1
+                            )
+                        if action:
+                            recovery_action_counts[action] = (
+                                recovery_action_counts.get(action, 0) + 1
+                            )
+                        if will_retry is True:
+                            recovery_retry_count += 1
+                        latest_parts: list[tuple[str, str]] = []
+                        if error_class:
+                            latest_parts.append(("error_class", error_class))
+                        if action:
+                            latest_parts.append(("action", action))
+                        if isinstance(will_retry, bool):
+                            latest_parts.append(
+                                ("will_retry", str(will_retry).lower())
+                            )
+                        latest_recovery = tuple(latest_parts)
         except OSError as exc:
             unreadable.append(f"{path.name}: {exc}")
 
@@ -2274,6 +2328,11 @@ def _summarize_context_diagnostics(
         ),
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,
+        recovery_count=recovery_count,
+        recovery_retry_count=recovery_retry_count,
+        recovery_error_class_counts=tuple(sorted(recovery_error_class_counts.items())),
+        recovery_action_counts=tuple(sorted(recovery_action_counts.items())),
+        latest_recovery=latest_recovery,
         unreadable=tuple(unreadable),
     )
 
@@ -2381,6 +2440,23 @@ def _format_count_pairs(counts: tuple[tuple[str, int], ...]) -> str:
     if len(counts) > _TRACE_DETAIL_LIMIT:
         parts.append("...")
     return ", ".join(parts)
+
+
+def _format_latest_recovery(values: tuple[tuple[str, str], ...]) -> str:
+    if not values:
+        return "none"
+    return " ".join(f"{key}={value}" for key, value in values[:_TRACE_DETAIL_LIMIT])
+
+
+def _bounded_recovery_value(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()[:80]
+    if _contains_probable_secret(normalized):
+        return "redacted"
+    if re.fullmatch(r"[A-Za-z0-9_.:-]+", normalized) is None:
+        return "other"
+    return normalized
 
 
 def _scan_diagnostics_for_secret_leaks(

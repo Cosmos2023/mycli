@@ -23,9 +23,11 @@ class ProviderRequestDryRunComparison:
     first_changed_cache_class: str | None
     previous_snapshot: ProviderPayloadSnapshot
     current_snapshot: ProviderPayloadSnapshot
+    recovery_counts: dict[str, int] | None = None
+    latest_recovery: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "provider_lane": self.provider_lane,
             "previous_cache_boundary_hash": self.previous_cache_boundary_hash,
             "current_cache_boundary_hash": self.current_cache_boundary_hash,
@@ -37,6 +39,11 @@ class ProviderRequestDryRunComparison:
             "previous_snapshot": self.previous_snapshot.to_dict(),
             "current_snapshot": self.current_snapshot.to_dict(),
         }
+        if self.recovery_counts is not None:
+            payload["recovery_counts"] = _bounded_recovery_counts(self.recovery_counts)
+        if self.latest_recovery is not None:
+            payload["latest_recovery"] = _bounded_latest_recovery(self.latest_recovery)
+        return payload
 
 
 class ProviderRequestDryRun:
@@ -45,6 +52,8 @@ class ProviderRequestDryRun:
         *,
         previous: RequestShape,
         current: RequestShape,
+        recovery_counts: dict[str, int] | None = None,
+        latest_recovery: dict[str, object] | None = None,
     ) -> ProviderRequestDryRunComparison:
         diagnostic = CacheShapeDiagnostics().build(
             previous=previous,
@@ -68,6 +77,8 @@ class ProviderRequestDryRun:
             first_changed_cache_class=diagnostic.first_changed_cache_class,
             previous_snapshot=previous_snapshot,
             current_snapshot=current_snapshot,
+            recovery_counts=recovery_counts,
+            latest_recovery=latest_recovery,
         )
 
 
@@ -96,6 +107,8 @@ class ProviderRequestDryRunRenderer:
                 "current": _snapshot_counts(current),
             },
             "prompt_cache_key_preview": current.prompt_cache_key_preview,
+            "recovery_counts": _bounded_recovery_counts(comparison.recovery_counts),
+            "latest_recovery": _bounded_latest_recovery(comparison.latest_recovery),
         }
 
 
@@ -117,3 +130,29 @@ def _snapshot_counts(snapshot: ProviderPayloadSnapshot) -> dict[str, object]:
         ),
         "request_option_hints": dict(snapshot.request_option_hints),
     }
+
+
+def _bounded_recovery_counts(value: dict[str, int] | None) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): count
+        for key, count in sorted(value.items())
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+    }
+
+
+def _bounded_latest_recovery(value: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, object] = {}
+    error_class = value.get("error_class") or value.get("recovery_error_class")
+    action = value.get("action") or value.get("recovery_kind")
+    will_retry = value.get("will_retry")
+    if isinstance(error_class, str) and error_class:
+        result["error_class"] = error_class
+    if isinstance(action, str) and action:
+        result["action"] = action
+    if isinstance(will_retry, bool):
+        result["will_retry"] = will_retry
+    return result

@@ -15,7 +15,13 @@ from mycli.application.runtime.request import (
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
 )
+from mycli.application.runtime.recovery import (
+    ErrorClassifier,
+    RecoveryPolicy,
+    recovery_diagnostic_metadata,
+)
 from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
+from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.llms.adapters.anthropic_messages_adapter import AnthropicMessagesModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.llms.clients.openai_chat import OpenAIChatClient
@@ -199,11 +205,31 @@ def main() -> int:
         dry_run = ProviderRequestDryRun.compare(
             previous=responses_shape,
             current=second_responses_shape,
+            recovery_counts={"invalid_encrypted_content": 1},
+            latest_recovery=recovery_diagnostic_metadata(
+                classification=ErrorClassifier().classify(
+                    ModelResponseError(
+                        "invalid encrypted_content: sk-do-not-print",
+                        failure_kind="invalid_encrypted_content",
+                    )
+                ),
+                decision=RecoveryPolicy().decide(
+                    ErrorClassifier().classify(
+                        ModelResponseError(
+                            "invalid encrypted_content",
+                            failure_kind="invalid_encrypted_content",
+                        )
+                    )
+                ),
+                attempt=1,
+            ),
         ).to_dict()
         dry_run_summary = ProviderRequestDryRunRenderer().render(
             ProviderRequestDryRun.compare(
                 previous=responses_shape,
                 current=second_responses_shape,
+                recovery_counts={"invalid_encrypted_content": 1},
+                latest_recovery=dry_run["latest_recovery"],
             )
         )
         anthropic_snapshot = ProviderPayloadSnapshot.from_request_shape(
@@ -278,6 +304,8 @@ def main() -> int:
             "anthropic_provider_cached_tokens": (
                 anthropic_cache_diagnostic["metadata"]["provider_cached_tokens"]
             ),
+            "dry_run_recovery_counts": dry_run_summary["recovery_counts"],
+            "dry_run_latest_recovery": dry_run_summary["latest_recovery"],
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         ok = (
@@ -294,6 +322,15 @@ def main() -> int:
             and payload["anthropic_snapshot_cache_control_blocks"] == 2
             and payload["anthropic_cache_usage_telemetry_status"] == "present"
             and payload["anthropic_provider_cached_tokens"] == 80
+            and payload["dry_run_recovery_counts"] == {
+                "invalid_encrypted_content": 1
+            }
+            and payload["dry_run_latest_recovery"] == {
+                "error_class": "invalid_encrypted_content",
+                "action": "strip_encrypted_reasoning_retry",
+                "will_retry": True,
+            }
+            and "sk-do-not-print" not in json.dumps(payload, ensure_ascii=False)
         )
         return 0 if ok else 1
 
