@@ -188,17 +188,17 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 /goal 当前工作目录为：
 /Users/cosmos/Desktop/mycli/.worktrees/mycli-prefix-cache-context-assembly-p1
 
-基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，按批次完成 docs/prefix-cache-context-assembly-goals.md 中保存的 Prefix Cache Context Assembly 剩余收尾工作。默认不合入 main，除非我明确说“合吧”。
+基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，按批次完成 docs/context/prefix-cache-context-assembly-goals.md 中保存的 Prefix Cache Context Assembly 剩余收尾工作。默认不合入 main，除非我明确说“合吧”。
 
 总目标：
 把 mycli Prefix Cache Context Assembly Roadmap 从当前状态收尾：P5/P6/P7a/P7b 已完成，不重做；P8 core implementation/tests 已完成并提交，继续完成 P8 Trellis archive、journal、最终质量门和最终报告，确保 P1-P8 的 prefix-cache stability、provider wire cache policy、redaction diagnostics、runtime adoption、canonical persistence、provider replay hardening、compact lifecycle、recovery/productized observability 都不回退。
 
 执行方式：
 1. 读取并遵守：
-   - docs/prefix-cache-context-assembly-goals.md
-   - docs/prefix-cache-context-assembly-roadmap.md
-   - docs/mycli-context-assembly-reference.md
-   - docs/prefix-cache-request-shape-design.md
+   - docs/context/prefix-cache-context-assembly-goals.md
+   - docs/context/prefix-cache-context-assembly-roadmap.md
+   - docs/context/mycli-context-assembly-reference.md
+   - docs/context/prefix-cache-request-shape-design.md
    - .trellis/spec/backend/context-management-contract.md
 2. 走 Trellis：确认已有 research/PRD/implementation/tests -> archive -> journal -> final report。
 3. 必须按批次推进：
@@ -248,17 +248,17 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 /goal 当前工作目录为：
 /Users/cosmos/Desktop/mycli/.worktrees/mycli-prefix-cache-context-assembly-p1
 
-基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，按批次完成 docs/prefix-cache-context-assembly-goals.md 中保存的 Prefix Cache Context Assembly P5-P8 goals。默认不合入 main，除非我明确说“合吧”。
+基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，按批次完成 docs/context/prefix-cache-context-assembly-goals.md 中保存的 Prefix Cache Context Assembly P5-P8 goals。默认不合入 main，除非我明确说“合吧”。
 
 总目标：
 把 mycli Prefix Cache Context Assembly Roadmap 按 P5 -> P6 -> P7a -> P7b -> P8 顺序落地，完成 canonical timeline persistence、provider adapter replay hardening、compact cheap pruning/tail protection、canonical compact summary/rehydration lifecycle、recovery/productized observability，同时保持 P1-P4 的 prefix-cache stability、provider wire cache policy、redaction diagnostics 和 runtime adoption 不回退。
 
 执行方式：
 1. 读取并遵守：
-   - docs/prefix-cache-context-assembly-goals.md
-   - docs/prefix-cache-context-assembly-roadmap.md
-   - docs/mycli-context-assembly-reference.md
-   - docs/prefix-cache-request-shape-design.md
+   - docs/context/prefix-cache-context-assembly-goals.md
+   - docs/context/prefix-cache-context-assembly-roadmap.md
+   - docs/context/mycli-context-assembly-reference.md
+   - docs/context/prefix-cache-request-shape-design.md
    - .trellis/spec/backend/context-management-contract.md
 2. 走 Trellis：research -> PRD -> implementation -> tests -> archive。
 3. 按以下 batch 顺序推进；每个 batch 都要独立 task 或明确 phase evidence、独立提交、独立归档、独立 journal：
@@ -304,9 +304,9 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，继续推进并一次性完成 mycli Prefix Cache Context Assembly Roadmap P5-P8。默认不合入 main，除非我明确说“合吧”。
 
 参考文档：
-- docs/prefix-cache-context-assembly-roadmap.md
-- docs/mycli-context-assembly-reference.md
-- docs/prefix-cache-request-shape-design.md
+- docs/context/prefix-cache-context-assembly-roadmap.md
+- docs/context/mycli-context-assembly-reference.md
+- docs/context/prefix-cache-request-shape-design.md
 - .trellis/spec/backend/context-management-contract.md
 
 背景：

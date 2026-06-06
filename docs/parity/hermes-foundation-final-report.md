@@ -6,7 +6,7 @@
 - Baseline: `feature/mycli-hermes-parity-consolidated`
 - Merge policy: `main` was not merged and this branch was not merged into
   `main`.
-- Roadmap source: `docs/hermes-parity-roadmap.md`
+- Roadmap source: `docs/parity/hermes-parity-roadmap.md`
 - Current recommendation: suitable as a main-merge candidate after human review,
   with known product-parity gaps documented below.
 

@@ -1,0 +1,30 @@
+# mycli Documentation Index
+
+This directory is split by document purpose.
+
+## Current Architecture
+
+- [architecture.md](./architecture.md): current Python package and runtime module boundaries.
+
+## Context And Prefix Cache
+
+Use these documents for the active context assembly and provider cache work:
+
+- [context/mycli-context-assembly-reference.md](./context/mycli-context-assembly-reference.md): semantic contract for canonical timeline, persistence, compact, rehydration, and provider projection.
+- [context/prefix-cache-request-shape-design.md](./context/prefix-cache-request-shape-design.md): provider-visible ordering, cache boundary, request shape hashing, and diagnostics contract.
+- [context/context-assembly-after-p5-p8-reference.md](./context/context-assembly-after-p5-p8-reference.md): concrete examples of stored context and provider payloads after P5-P8.
+- [context/prefix-cache-context-assembly-roadmap.md](./context/prefix-cache-context-assembly-roadmap.md): phase roadmap for prefix-cache context assembly.
+- [context/prefix-cache-context-assembly-goals.md](./context/prefix-cache-context-assembly-goals.md): archived `/goal` texts for P5-P8 execution.
+
+## Parity And Gap Reports
+
+These documents are reference material for comparing mycli with Hermes/Codex-style agent maturity:
+
+- [parity/hermes-agent-gap-analysis.md](./parity/hermes-agent-gap-analysis.md): broader Hermes-agent gap analysis.
+- [parity/hermes-parity-roadmap.md](./parity/hermes-parity-roadmap.md): completed Hermes-like foundation roadmap.
+- [parity/hermes-foundation-final-report.md](./parity/hermes-foundation-final-report.md): final report for the Hermes-like foundation slice.
+- [parity/tools-parity-report.md](./parity/tools-parity-report.md): local tool foundation and contributed tool parity report.
+
+## Historical Superpowers Docs
+
+- [superpowers/](./superpowers/): older plans, reports, and specs. Treat this as historical reference unless a task explicitly targets it.
