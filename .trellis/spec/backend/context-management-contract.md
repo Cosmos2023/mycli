@@ -787,6 +787,11 @@ trace.append(
   secret-like values, or full `prompt_cache_key` -> invalid.
 - Compatible provider capability disables `prompt_cache_key` -> policy summary
   reports the hint disabled and provider wire metadata omits the full key.
+- Dry-run `runtime_diagnostics` is local diagnostic metadata only. It may include
+  exposed tool names/counts, policy decision summaries, sandbox lane counts,
+  approval lane state, lifecycle counts, and session continuity counts, but must
+  not alter request fragments, provider payload snapshots, cache boundary hashes,
+  or provider wire payloads.
 
 ### 5. Good/Base/Bad Cases
 
@@ -818,11 +823,12 @@ trace.append(
 - Unit test provider profile/config capability resolution and RequestPipeline
   automatic capability injection.
 - Unit test redacted dry-run renderer output contract.
+- Unit test redacted dry-run runtime diagnostics contract.
 - Unit test provider cache usage telemetry normalization and doctor policy
   validation states.
 - Provider-free `evaluation/provider_cache_policy_smoke.py` covering all three
   provider lanes plus P4 capability resolution, dry-run comparison, snapshot
-  counts, and telemetry normalization fields.
+  counts, runtime diagnostics fields, and telemetry normalization fields.
 
 ### 7. Wrong vs Correct
 

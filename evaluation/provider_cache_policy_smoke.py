@@ -230,7 +230,37 @@ def main() -> int:
                 current=second_responses_shape,
                 recovery_counts={"invalid_encrypted_content": 1},
                 latest_recovery=dry_run["latest_recovery"],
-            )
+            ),
+            runtime_diagnostics={
+                "exposed_tools": ("Bash", "Read"),
+                "runtime_policy_events": (
+                    {
+                        "decision": "needs_approval",
+                        "policy": "shell_safety_analysis",
+                        "risk_level": "high",
+                        "argument_count": 1,
+                        "argument_keys": ["command"],
+                        "sandbox": {
+                            "filesystem": "workspace_write",
+                            "network": "enabled",
+                            "shell": "restricted",
+                        },
+                        "arguments": {"command": "git push origin main sk-do-not-print"},
+                    },
+                ),
+                "tool_lifecycle_events": (
+                    {"phase": "planned", "status": "running"},
+                    {"phase": "needs_approval", "status": "needs_approval"},
+                ),
+                "session_continuity_events": (
+                    {
+                        "action": "resume",
+                        "result": "resolved",
+                        "lineage_switched": True,
+                        "raw_user_text": "do not print sk-do-not-print",
+                    },
+                ),
+            },
         )
         anthropic_snapshot = ProviderPayloadSnapshot.from_request_shape(
             anthropic_shape
@@ -306,6 +336,9 @@ def main() -> int:
             ),
             "dry_run_recovery_counts": dry_run_summary["recovery_counts"],
             "dry_run_latest_recovery": dry_run_summary["latest_recovery"],
+            "dry_run_runtime_diagnostics": dry_run_summary[
+                "runtime_diagnostics"
+            ],
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         ok = (
@@ -330,6 +363,28 @@ def main() -> int:
                 "action": "strip_encrypted_reasoning_retry",
                 "will_retry": True,
             }
+            and payload["dry_run_runtime_diagnostics"]["exposed_tools"] == {
+                "count": 2,
+                "names": ["Bash", "Read"],
+            }
+            and payload["dry_run_runtime_diagnostics"]["approval_lane"] == {
+                "state": "needs_approval",
+                "needs_approval": 1,
+                "denied": 0,
+            }
+            and payload["dry_run_runtime_diagnostics"]["sandbox_lane"] == {
+                "filesystem": {"workspace_write": 1},
+                "network": {"enabled": 1},
+                "shell": {"restricted": 1},
+            }
+            and payload["dry_run_runtime_diagnostics"]["tool_lifecycle"][
+                "terminal"
+            ]
+            == 1
+            and payload["dry_run_runtime_diagnostics"]["session_continuity"][
+                "lineage_switched"
+            ]
+            == 1
             and "sk-do-not-print" not in json.dumps(payload, ensure_ascii=False)
         )
         return 0 if ok else 1

@@ -190,3 +190,84 @@ def test_provider_request_dry_run_renderer_exposes_bounded_recovery_surface(
     }
     assert "opaque" not in str(rendered)
     assert "sk-do-not-print" not in str(rendered)
+
+
+def test_provider_request_dry_run_renderer_exposes_runtime_diagnostics_surface(
+    tmp_path: Path,
+) -> None:
+    previous = _shape(tmp_path, ProtocolId.RESPONSES, "first private request")
+    current = _shape(tmp_path, ProtocolId.RESPONSES, "second private request")
+
+    rendered = ProviderRequestDryRunRenderer().render(
+        ProviderRequestDryRun.compare(previous=previous, current=current),
+        runtime_diagnostics={
+            "exposed_tools": ("Bash", "Read"),
+            "runtime_policy_events": (
+                {
+                    "decision": "needs_approval",
+                    "policy": "shell_safety_analysis",
+                    "risk_level": "high",
+                    "argument_keys": ["command"],
+                    "argument_count": 1,
+                    "sandbox": {
+                        "filesystem": "workspace_write",
+                        "network": "enabled",
+                        "shell": "restricted",
+                    },
+                    "arguments": {"command": "git push origin main sk-do-not-print"},
+                },
+            ),
+            "tool_lifecycle_events": (
+                {"phase": "planned", "status": "running"},
+                {"phase": "needs_approval", "status": "needs_approval"},
+            ),
+            "session_continuity_events": (
+                {
+                    "action": "resume",
+                    "result": "resolved",
+                    "lineage_switched": True,
+                    "raw_user_text": "do not print sk-do-not-print",
+                },
+            ),
+        },
+    )
+
+    runtime = rendered["runtime_diagnostics"]
+    assert runtime == {
+        "exposed_tools": {"count": 2, "names": ["Bash", "Read"]},
+        "policy_decisions": {
+            "allowed": 0,
+            "denied": 0,
+            "needs_approval": 1,
+            "decisions": {"needs_approval": 1},
+            "policies": {"shell_safety_analysis": 1},
+            "risk_levels": {"high": 1},
+            "argument_summaries": 1,
+        },
+        "sandbox_lane": {
+            "filesystem": {"workspace_write": 1},
+            "network": {"enabled": 1},
+            "shell": {"restricted": 1},
+        },
+        "approval_lane": {
+            "state": "needs_approval",
+            "needs_approval": 1,
+            "denied": 0,
+        },
+        "tool_lifecycle": {
+            "events": 2,
+            "terminal": 1,
+            "phases": {"needs_approval": 1, "planned": 1},
+            "statuses": {"needs_approval": 1, "running": 1},
+        },
+        "session_continuity": {
+            "events": 1,
+            "resume": 1,
+            "fork": 0,
+            "lineage_switched": 1,
+            "results": {"resolved": 1},
+        },
+    }
+    assert "git push" not in str(rendered)
+    assert "sk-do-not-print" not in str(rendered)
+    assert "do not print" not in str(rendered)

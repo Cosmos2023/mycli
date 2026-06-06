@@ -202,6 +202,9 @@ class _RuntimePolicyDiagnosticsSummary:
     decisions: tuple[tuple[str, int], ...]
     risk_levels: tuple[tuple[str, int], ...]
     policies: tuple[tuple[str, int], ...]
+    sandbox_filesystem: tuple[tuple[str, int], ...]
+    sandbox_network: tuple[tuple[str, int], ...]
+    sandbox_shell: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
 
 
@@ -1097,7 +1100,11 @@ class DoctorService:
         detail = (
             f"decisions: {_format_count_pairs(summary.decisions)}; "
             f"risk_levels: {_format_count_pairs(summary.risk_levels)}; "
-            f"policies: {_format_count_pairs(summary.policies)}"
+            f"policies: {_format_count_pairs(summary.policies)}; "
+            "sandbox: "
+            f"fs={_format_count_pairs(summary.sandbox_filesystem)} "
+            f"net={_format_count_pairs(summary.sandbox_network)} "
+            f"shell={_format_count_pairs(summary.sandbox_shell)}"
         )
         status = (
             DoctorStatus.WARNING
@@ -2247,6 +2254,9 @@ def _summarize_runtime_policy_diagnostics(
     decisions: Counter[str] = Counter()
     risk_levels: Counter[str] = Counter()
     policies: Counter[str] = Counter()
+    sandbox_filesystem: Counter[str] = Counter()
+    sandbox_network: Counter[str] = Counter()
+    sandbox_shell: Counter[str] = Counter()
     unreadable: list[str] = []
 
     for path in paths:
@@ -2273,6 +2283,17 @@ def _summarize_runtime_policy_diagnostics(
                         denied_count += 1
                     risk_levels[_safe_diagnostic_result(payload.get("risk_level"))] += 1
                     policies[_safe_diagnostic_result(payload.get("policy"))] += 1
+                    sandbox = payload.get("sandbox")
+                    if isinstance(sandbox, dict):
+                        sandbox_filesystem[
+                            _safe_diagnostic_result(sandbox.get("filesystem"))
+                        ] += 1
+                        sandbox_network[
+                            _safe_diagnostic_result(sandbox.get("network"))
+                        ] += 1
+                        sandbox_shell[
+                            _safe_diagnostic_result(sandbox.get("shell"))
+                        ] += 1
                     argument_keys = payload.get("argument_keys")
                     argument_count = payload.get("argument_count")
                     if isinstance(argument_keys, list) and isinstance(argument_count, int):
@@ -2289,6 +2310,15 @@ def _summarize_runtime_policy_diagnostics(
     ordered_policies = tuple(
         sorted(policies.items(), key=lambda item: (-item[1], item[0]))
     )
+    ordered_sandbox_filesystem = tuple(
+        sorted(sandbox_filesystem.items(), key=lambda item: (-item[1], item[0]))
+    )
+    ordered_sandbox_network = tuple(
+        sorted(sandbox_network.items(), key=lambda item: (-item[1], item[0]))
+    )
+    ordered_sandbox_shell = tuple(
+        sorted(sandbox_shell.items(), key=lambda item: (-item[1], item[0]))
+    )
     return _RuntimePolicyDiagnosticsSummary(
         policy_count=policy_count,
         allowed_count=allowed_count,
@@ -2298,6 +2328,9 @@ def _summarize_runtime_policy_diagnostics(
         decisions=ordered_decisions,
         risk_levels=ordered_risk_levels,
         policies=ordered_policies,
+        sandbox_filesystem=ordered_sandbox_filesystem,
+        sandbox_network=ordered_sandbox_network,
+        sandbox_shell=ordered_sandbox_shell,
         unreadable=tuple(unreadable),
     )
 

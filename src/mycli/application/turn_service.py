@@ -818,6 +818,43 @@ class TurnService:
                 if isinstance(value, str) and value:
                     parts.append(f"{key}={value}")
 
+            decision = event.payload.get("decision")
+            if isinstance(decision, str) and decision:
+                parts.append(f"decision={decision}")
+
+            policy = event.payload.get("policy")
+            if isinstance(policy, str) and policy:
+                parts.append(f"policy={policy}")
+
+            risk_level = event.payload.get("risk_level")
+            if isinstance(risk_level, str) and risk_level:
+                parts.append(f"risk={risk_level}")
+
+            argument_count = event.payload.get("argument_count")
+            argument_keys = event.payload.get("argument_keys")
+            if isinstance(argument_count, int) and isinstance(argument_keys, list):
+                keys = ",".join(
+                    key for key in argument_keys if isinstance(key, str) and key
+                )
+                parts.append(f"args={argument_count}")
+                if keys:
+                    parts.append(f"keys={keys}")
+
+            sandbox = event.payload.get("sandbox")
+            if isinstance(sandbox, dict):
+                filesystem = sandbox.get("filesystem")
+                network = sandbox.get("network")
+                shell = sandbox.get("shell")
+                sandbox_parts = []
+                if isinstance(filesystem, str) and filesystem:
+                    sandbox_parts.append(f"fs:{filesystem}")
+                if isinstance(network, str) and network:
+                    sandbox_parts.append(f"net:{network}")
+                if isinstance(shell, str) and shell:
+                    sandbox_parts.append(f"shell:{shell}")
+                if sandbox_parts:
+                    parts.append(f"sandbox={','.join(sandbox_parts)}")
+
             count = event.payload.get("count")
             if isinstance(count, int):
                 parts.append(f"count={count}")

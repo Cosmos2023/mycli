@@ -1985,6 +1985,53 @@ def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path
     )
 
 
+def test_turn_service_inspect_trace_renders_runtime_policy_bounded_fields(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+    service._trace_service.append(
+        "demo",
+        RuntimeTraceEvent(
+            kind="runtime_policy_decision",
+            turn_id="turn_1",
+            payload={
+                "tool_name": "Bash",
+                "decision": "needs_approval",
+                "policy": "shell_safety_analysis",
+                "risk_level": "high",
+                "argument_keys": ["command"],
+                "argument_count": 1,
+                "arguments": {"command": "git push origin main sk-do-not-print"},
+                "sandbox": {
+                    "filesystem": "workspace_write",
+                    "network": "enabled",
+                    "shell": "restricted",
+                },
+            },
+        ),
+    )
+
+    rendered = service.inspect_trace()
+
+    assert rendered == (
+        "runtime_policy_decision Bash decision=needs_approval "
+        "policy=shell_safety_analysis risk=high args=1 keys=command "
+        "sandbox=fs:workspace_write,net:enabled,shell:restricted",
+    )
+    assert "git push" not in str(rendered)
+    assert "sk-do-not-print" not in str(rendered)
+
+
 def test_turn_service_exports_trace_jsonl_for_external_consumers(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

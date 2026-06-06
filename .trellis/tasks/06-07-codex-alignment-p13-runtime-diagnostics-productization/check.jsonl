@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend spec index"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "doctor/runtime diagnostics contracts"}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "dry-run/request-shape redaction contracts"}
+{"file": ".trellis/tasks/06-07-codex-alignment-p13-runtime-diagnostics-productization/research/runtime-diagnostics-current-state.md", "reason": "current-state research"}

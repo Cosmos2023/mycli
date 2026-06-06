@@ -345,18 +345,36 @@ for line in render_doctor_report(report):
 #### 2. Signatures
 - `ToolExecutionService(..., write_diagnostics_runner: Callable[[tuple[str, ...]], dict[str, object]] | None = None)`
 - `WriteDiagnosticsService(workspace_root: Path).run(paths: tuple[str, ...]) -> dict[str, object]`
-- Trace event kind remains `tool_execution`.
+- Runtime dry-run:
+  `RuntimeDryRunDiagnostics().render(diagnostics: dict[str, object]) -> dict[str, object]`
+- Provider dry-run:
+  `ProviderRequestDryRunRenderer.render(..., runtime_diagnostics: dict[str, object] | None = None) -> dict[str, object]`
+- Runtime trace kinds:
+  `runtime_policy_decision`, `tool_runtime_lifecycle`, `session_continuity`,
+  and `tool_execution`.
 
 #### 3. Contracts
 - Allowed cache-volatile/local fields:
   - turn item metadata such as `write_diagnostics`
   - trace payload fields such as `write_diagnostics_count` and `write_diagnostics_error`
   - post-execution tool result `raw_payload` fields
+  - dry-run runtime summaries such as exposed tool names/counts, policy
+    decision counts, sandbox shape counts, approval lane state, lifecycle
+    counts, and session continuity counts
 - Forbidden stable-surface changes unless the actual user-visible contract changes:
   - stable system prompt text
   - model-visible `ToolSpec`
   - deterministic tool ordering
   - previous provider transcript messages
+- Runtime policy trace rows may render only bounded fields: decision, policy,
+  risk level, argument key/count, and sandbox filesystem/network/shell shape.
+  They must not render raw argument values or command text.
+- Runtime dry-run diagnostics must ignore unknown payload fields and must not
+  render raw prompts, raw tool output, raw tool argument values, raw command
+  text, provider payload bodies, secrets, provider keys, or full
+  `prompt_cache_key` values.
+- Doctor runtime policy diagnostics must include bounded sandbox profile counts
+  alongside allowed / denied / needs_approval counts.
 - Diagnostic failures are best-effort: they may record an error string but must not convert a successful write into a failed write.
 
 #### 4. Validation & Error Matrix
@@ -366,11 +384,28 @@ for line in render_doctor_report(report):
 - Diagnostic runner exception -> record diagnostic error; preserve original tool success.
 - Missing diagnostic runner -> preserve existing behavior.
 - Checkpoint/guardrail exit -> append a local `guardrail` trace event with bounded trigger diagnostics.
+- Runtime policy row with `sandbox` -> doctor reports bounded filesystem,
+  network, and shell counts.
+- Runtime policy row with raw `arguments` or `command_pattern` -> trace
+  inspection and doctor output omit those values.
+- Provider dry-run rendered with runtime diagnostics -> output includes
+  `runtime_diagnostics` with exposed tool summary, policy decision summary,
+  sandbox lane, approval lane, tool lifecycle counts, and session continuity
+  counts.
+- Provider dry-run runtime diagnostics containing extra raw fields -> renderer
+  ignores them.
 
 #### 5. Good/Base/Bad Cases
 - Good: `Write` succeeds, `write_diagnostics` appears in turn metadata and trace count is available.
+- Good: provider-free dry-run reports
+  `approval_lane.state=needs_approval` and
+  `sandbox_lane.shell.restricted=1` without command text.
+- Good: `/trace` renders `decision=needs_approval args=1 keys=command
+  sandbox=fs:workspace_write,net:enabled,shell:restricted`.
 - Base: No diagnostic runner is configured and tool execution output is unchanged.
 - Bad: A diagnostic warning is inserted into stable system instructions or model-visible tool schema.
+- Bad: rendering `arguments.command`, raw user text, stdout/stderr bodies,
+  provider payloads, or full provider cache keys in doctor, trace, or dry-run.
 
 #### 6. Tests Required
 - Unit test successful write diagnostics metadata and trace payload.
@@ -381,6 +416,11 @@ for line in render_doctor_report(report):
   turn-level recovery.
 - Unit test guardrail trace payloads for checkpoint exits.
 - Request-shape regression proving diagnostic metadata does not change stable system hash, tool schema hash, tool order hash, or replay hash when transcript content is unchanged.
+- Unit test runtime dry-run diagnostics redaction and bounded summaries.
+- Unit test runtime policy doctor sandbox counts and raw argument redaction.
+- Unit test trace inspection renders bounded runtime policy fields without raw
+  argument values.
+- Provider-free smoke must include runtime diagnostics fields.
 
 #### 7. Wrong vs Correct
 

@@ -2655,6 +2655,11 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
                             "arguments": {"path": f"/private/{secret}.txt"},
                             "argument_count": 1,
                             "argument_keys": ["path"],
+                            "sandbox": {
+                                "filesystem": "workspace_write",
+                                "network": "enabled",
+                                "shell": "restricted",
+                            },
                         },
                     }
                 ),
@@ -2670,6 +2675,11 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
                             "reason": f"raw reason {secret}",
                             "argument_count": 2,
                             "argument_keys": ["content", "file_path"],
+                            "sandbox": {
+                                "filesystem": "workspace_write",
+                                "network": "enabled",
+                                "shell": "restricted",
+                            },
                         },
                     }
                 ),
@@ -2685,6 +2695,11 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
                             "command_pattern": "rm -rf /",
                             "argument_count": 1,
                             "argument_keys": ["command"],
+                            "sandbox": {
+                                "filesystem": "workspace_write",
+                                "network": "disabled",
+                                "shell": "restricted",
+                            },
                         },
                     }
                 ),
@@ -2711,7 +2726,8 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
     assert check.detail == (
         "decisions: allowed=1, denied=1, needs_approval=1; "
         "risk_levels: high=1, low=1, medium=1; "
-        "policies: builtin_safe_tool=1, medium_risk_requires_approval=1, shell_command_analysis=1"
+        "policies: builtin_safe_tool=1, medium_risk_requires_approval=1, shell_command_analysis=1; "
+        "sandbox: fs=workspace_write=3 net=enabled=2, disabled=1 shell=restricted=3"
     )
     assert secret not in rendered
     assert f"/private/{secret}.txt" not in rendered
