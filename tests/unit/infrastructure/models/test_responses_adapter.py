@@ -59,15 +59,18 @@ class FakeResponsesClient:
         self.captured_input_items: list[dict[str, object]] = []
         self.captured_tools: list[dict[str, object]] = []
         self.captured_reasoning_effort: str | None = None
+        self.captured_prompt_cache_key: str | None = None
 
     def create_response(
         self,
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        prompt_cache_key: str | None = None,
     ) -> dict[str, object]:
         self.captured_input_items = input_items
         self.captured_tools = tools
+        self.captured_prompt_cache_key = prompt_cache_key
         return self._payload
 
     def set_reasoning_effort(self, reasoning_effort: str | None) -> None:
@@ -303,6 +306,28 @@ def test_responses_adapter_preserves_array_parameter_item_schema() -> None:
             ],
         }
     ]
+
+
+def test_responses_adapter_passes_prompt_cache_key_to_client() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="inspect"),),
+                metadata={
+                    "provider_request_policy": {
+                        "prompt_cache_key": "mycli:openai:responses:stable"
+                    }
+                },
+            )
+        ],
+        tools=[],
+    )
+
+    assert client.captured_prompt_cache_key == "mycli:openai:responses:stable"
 
 
 def test_responses_adapter_serializes_tool_result_payload_metadata_to_wire_text() -> None:

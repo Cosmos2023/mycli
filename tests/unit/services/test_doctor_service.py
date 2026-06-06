@@ -3381,6 +3381,13 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
                             "metadata": {
                                 "fragment_metadata_complete": True,
                                 "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_cache_hint_enabled": True,
+                                    "prompt_cache_key_hash": "hash123",
+                                    "prompt_cache_key_preview": "mycli:openai:responses:abcd",
+                                    "anthropic_cache_control_breakpoint_count": 2,
+                                },
+                                "provider_cached_tokens": 64,
                             },
                         },
                     }
@@ -3437,6 +3444,10 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
     assert "trimmed_context_sections=2" in str(check.detail)
     assert "missing_cache_metadata=0" in str(check.detail)
     assert "stable_prefix_changes=0" in str(check.detail)
+    assert "wire_cache_hint_rows=1" in str(check.detail)
+    assert "prompt_cache_key_hashes=1" in str(check.detail)
+    assert "anthropic_cache_control_breakpoints=2" in str(check.detail)
+    assert "max_provider_cached_tokens=64" in str(check.detail)
     assert "summary_duplicates_skipped=1" in str(check.detail)
     assert "Project context safe text" not in rendered
 

@@ -176,6 +176,7 @@ class OpenAIChatClient:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
+        prompt_cache_key = self._prompt_cache_key_from_messages(messages)
         adapted_messages = self._provider_adapter.adapt_messages(messages)
         payload_body: dict[str, object] = {
             "model": self._model,
@@ -183,6 +184,8 @@ class OpenAIChatClient:
             "max_tokens": self._max_output_tokens,
             "temperature": 0,
         }
+        if prompt_cache_key:
+            payload_body["prompt_cache_key"] = prompt_cache_key
         if tools:
             payload_body["tools"] = self._normalize_tool_definitions(tools)
             if self._tool_choice is not None:
@@ -194,6 +197,22 @@ class OpenAIChatClient:
                 thinking_effort=self._thinking_effort,
             ),
         )
+
+    def _prompt_cache_key_from_messages(
+        self,
+        messages: list[dict[str, object]],
+    ) -> str | None:
+        for message in messages:
+            metadata = message.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            policy = metadata.get("provider_request_policy")
+            if not isinstance(policy, dict):
+                continue
+            value = policy.get("prompt_cache_key")
+            if isinstance(value, str) and value:
+                return value
+        return None
 
     def complete(
         self,

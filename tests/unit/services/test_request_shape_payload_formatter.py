@@ -143,3 +143,23 @@ def test_request_shape_payload_formatter_builds_runtime_items_in_shape_order() -
         "Current user request: inspect",
         "volatile context",
     ]
+
+
+def test_request_shape_payload_formatter_preserves_runtime_item_metadata() -> None:
+    shape = RequestShape(
+        provider="anthropic",
+        protocol="anthropic_messages",
+        model="claude-test",
+        stable_system="stable",
+        provider_runtime_items=(
+            ProviderRuntimeItemShape(
+                role="system",
+                blocks=(RuntimeBlock(type="text", text="stable"),),
+                metadata={"cache_policy": {"breakpoint": "system_static"}},
+            ),
+        ),
+    )
+
+    items = RequestShapePayloadFormatter().runtime_items(shape)
+
+    assert items[0].metadata == {"cache_policy": {"breakpoint": "system_static"}}

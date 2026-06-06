@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from collections.abc import Callable, Iterator
 from typing import Protocol, cast
 
@@ -41,6 +42,7 @@ class ResponsesClient(Protocol):
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        prompt_cache_key: str | None = None,
     ) -> dict[str, object]:
         ...
 
@@ -126,16 +128,35 @@ class ResponsesModelAdapter:
     ) -> ModelTurnResult:
         input_items = self._serializer.serialize_items(items)
         serialized_tools = self._serializer.serialize_tools(tools)
+        prompt_cache_key = self._prompt_cache_key_from_items(items)
         create_events = getattr(self._client, "create_events", None)
         if callable(create_events):
-            turn_result = self._aggregator.collect(
-                create_events(input_items=input_items, tools=serialized_tools)
-            )
+            if prompt_cache_key and self._callable_accepts_prompt_cache_key(create_events):
+                turn_result = self._aggregator.collect(
+                    create_events(
+                        input_items=input_items,
+                        tools=serialized_tools,
+                        prompt_cache_key=prompt_cache_key,
+                    )
+                )
+            else:
+                turn_result = self._aggregator.collect(
+                    create_events(input_items=input_items, tools=serialized_tools)
+                )
         else:
-            payload = self._client.create_response(
-                input_items=input_items,
-                tools=serialized_tools,
-            )
+            if prompt_cache_key and self._callable_accepts_prompt_cache_key(
+                self._client.create_response
+            ):
+                payload = self._client.create_response(
+                    input_items=input_items,
+                    tools=serialized_tools,
+                    prompt_cache_key=prompt_cache_key,
+                )
+            else:
+                payload = self._client.create_response(
+                    input_items=input_items,
+                    tools=serialized_tools,
+                )
             turn_result = self._output_parser.to_model_turn_result(payload)
         self._record_client_completion(turn_result)
         return turn_result
@@ -153,10 +174,14 @@ class ResponsesModelAdapter:
         accumulated_blocks: list[RuntimeBlock] = []
         completed_response_id: str | None = None
 
-        for event in stream_response(
-            input_items=self._serializer.serialize_items(items),
-            tools=self._serializer.serialize_tools(tools),
-        ):
+        stream_kwargs: dict[str, object] = {
+            "input_items": self._serializer.serialize_items(items),
+            "tools": self._serializer.serialize_tools(tools),
+        }
+        prompt_cache_key = self._prompt_cache_key_from_items(items)
+        if prompt_cache_key and self._callable_accepts_prompt_cache_key(stream_response):
+            stream_kwargs["prompt_cache_key"] = prompt_cache_key
+        for event in stream_response(**stream_kwargs):
             if isinstance(event, dict) and not event:
                 continue
             typed_event = self._stream_events.coerce_event(event)
@@ -418,6 +443,28 @@ class ResponsesModelAdapter:
         recorder = getattr(self._client, "record_response_failure", None)
         if callable(recorder):
             recorder(reason)
+
+    def _prompt_cache_key_from_items(self, items: list[RuntimeItem]) -> str | None:
+        for item in items:
+            policy = item.metadata.get("provider_request_policy")
+            if not isinstance(policy, dict):
+                continue
+            value = policy.get("prompt_cache_key")
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def _callable_accepts_prompt_cache_key(self, func: Callable[..., object]) -> bool:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return False
+        for parameter in signature.parameters.values():
+            if parameter.kind is parameter.VAR_KEYWORD:
+                return True
+            if parameter.name == "prompt_cache_key":
+                return True
+        return False
 
     def _serialize_model_output_items(
         self,

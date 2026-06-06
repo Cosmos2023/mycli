@@ -62,6 +62,30 @@ def test_responses_request_builder_uses_previous_response_id_when_input_is_stric
     assert result.continuation_decision == "used_previous_response_id"
 
 
+def test_responses_request_builder_adds_prompt_cache_key_to_request_body() -> None:
+    builder = ResponsesRequestBuilder(
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True)
+    )
+
+    result = builder.build(
+        model="gpt-test",
+        input_items=[
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "inspect"}],
+            },
+        ],
+        tools=[],
+        max_output_tokens=128,
+        reasoning_effort="medium",
+        stream=True,
+        prompt_cache_key="mycli:openai:responses:stable",
+    )
+
+    assert result.payload_body["prompt_cache_key"] == "mycli:openai:responses:stable"
+    assert "prompt_cache_key" not in result.payload_body["input"][0]
+
+
 def test_responses_request_builder_falls_back_to_full_create_when_signature_changes() -> None:
     builder = ResponsesRequestBuilder(
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True)

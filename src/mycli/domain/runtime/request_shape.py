@@ -160,6 +160,129 @@ class ProviderProjectionShape:
 
 
 @dataclass(slots=True, frozen=True)
+class ProviderRequestPolicyShape:
+    """Provider wire cache policy derived from canonical request shape metadata."""
+
+    lane: ProviderProjectionLane
+    prompt_cache_key: str | None = None
+    anthropic_cache_control_breakpoints: tuple[str, ...] = ()
+    wire_only_hints: tuple[str, ...] = ()
+    wire_only: bool = True
+
+    @classmethod
+    def for_request_shape(
+        cls,
+        *,
+        provider: str,
+        protocol: str,
+        model: str,
+        system_hash: str,
+        tool_schema_hash: str | None,
+        cacheable_prefix_hash: str,
+        lane: ProviderProjectionLane,
+    ) -> ProviderRequestPolicyShape:
+        prompt_cache_key = cls._prompt_cache_key(
+            provider=provider,
+            protocol=protocol,
+            model=model,
+            system_hash=system_hash,
+            tool_schema_hash=tool_schema_hash,
+            cacheable_prefix_hash=cacheable_prefix_hash,
+            lane=lane,
+        )
+        breakpoints = cls._anthropic_breakpoints(lane)
+        wire_only_hints: list[str] = []
+        if prompt_cache_key is not None:
+            wire_only_hints.append("prompt_cache_key")
+        if breakpoints:
+            wire_only_hints.append("cache_control")
+        return cls(
+            lane=lane,
+            prompt_cache_key=prompt_cache_key,
+            anthropic_cache_control_breakpoints=breakpoints,
+            wire_only_hints=tuple(wire_only_hints),
+        )
+
+    @staticmethod
+    def _prompt_cache_key(
+        *,
+        provider: str,
+        protocol: str,
+        model: str,
+        system_hash: str,
+        tool_schema_hash: str | None,
+        cacheable_prefix_hash: str,
+        lane: ProviderProjectionLane,
+    ) -> str | None:
+        if lane not in {
+            ProviderProjectionLane.RESPONSES,
+            ProviderProjectionLane.CHAT_COMPLETIONS,
+        }:
+            return None
+        key_material = stable_hash(
+            json.dumps(
+                {
+                    "provider": provider,
+                    "protocol": protocol,
+                    "model": model,
+                    "system_hash": system_hash,
+                    "tool_schema_hash": tool_schema_hash,
+                    "cacheable_prefix_hash": cacheable_prefix_hash,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )[:32]
+        return f"mycli:{provider}:{protocol}:{key_material}"
+
+    @staticmethod
+    def _anthropic_breakpoints(
+        lane: ProviderProjectionLane,
+    ) -> tuple[str, ...]:
+        if lane is ProviderProjectionLane.ANTHROPIC_MESSAGES:
+            return ("system_static", "dynamic_boundary")
+        return ()
+
+    @property
+    def wire_cache_hint_enabled(self) -> bool:
+        return bool(self.prompt_cache_key or self.anthropic_cache_control_breakpoints)
+
+    @property
+    def prompt_cache_key_hash(self) -> str | None:
+        if self.prompt_cache_key is None:
+            return None
+        return stable_hash(self.prompt_cache_key)
+
+    @property
+    def prompt_cache_key_preview(self) -> str | None:
+        if self.prompt_cache_key is None:
+            return None
+        if len(self.prompt_cache_key) <= 48:
+            return self.prompt_cache_key
+        return f"{self.prompt_cache_key[:48]}..."
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "lane": self.lane.value,
+            "wire_only": self.wire_only,
+            "wire_cache_hint_enabled": self.wire_cache_hint_enabled,
+            "prompt_cache_key_hash": self.prompt_cache_key_hash,
+            "prompt_cache_key_preview": self.prompt_cache_key_preview,
+            "anthropic_cache_control_breakpoints": self.anthropic_cache_control_breakpoints,
+            "anthropic_cache_control_breakpoint_count": len(
+                self.anthropic_cache_control_breakpoints
+            ),
+            "wire_only_hints": self.wire_only_hints,
+        }
+
+    def to_wire_dict(self) -> dict[str, object]:
+        payload = self.to_dict()
+        payload["prompt_cache_key"] = self.prompt_cache_key
+        return payload
+
+
+@dataclass(slots=True, frozen=True)
 class RequestShape:
     provider: str
     protocol: str
@@ -171,6 +294,7 @@ class RequestShape:
     provider_messages: tuple[ProviderMessageShape, ...] = ()
     provider_runtime_items: tuple[ProviderRuntimeItemShape, ...] = ()
     provider_projection: ProviderProjectionShape | None = None
+    provider_request_policy: ProviderRequestPolicyShape | None = None
 
     def __post_init__(self) -> None:
         if not self.provider.strip():
@@ -289,6 +413,11 @@ class RequestShape:
             "provider_projection": (
                 self.provider_projection.to_dict()
                 if self.provider_projection is not None
+                else None
+            ),
+            "provider_request_policy": (
+                self.provider_request_policy.to_dict()
+                if self.provider_request_policy is not None
                 else None
             ),
             "compact_policy": self.compact_policy_summary(),

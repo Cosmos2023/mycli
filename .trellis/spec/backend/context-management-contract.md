@@ -156,3 +156,111 @@ section = TurnContextSection(
     cache_class=TurnContextCacheClass.STATIC,
 )
 ```
+
+## Scenario: Provider Wire Cache Policy Projection
+
+### 1. Scope / Trigger
+
+- Trigger: changes to request-shape provider policy, OpenAI Responses payload
+  construction, OpenAI-compatible Chat Completions payload construction,
+  Anthropic Messages serialization, cache-shape diagnostics, or doctor context
+  diagnostics.
+- The flow crosses canonical request shape, runtime item/message formatting,
+  provider adapters, clients, trace, doctor, and smoke evaluations.
+
+### 2. Signatures
+
+- Domain policy:
+  `ProviderRequestPolicyShape.for_request_shape(...) -> ProviderRequestPolicyShape`
+- Request shape:
+  `RequestShape.provider_request_policy: ProviderRequestPolicyShape | None`
+- Runtime item:
+  `RuntimeItem.metadata: dict[str, object]`
+- Responses request builder:
+  `ResponsesRequestBuilder.build(..., prompt_cache_key: str | None = None)`
+- Responses client/adapter:
+  `create_response(..., prompt_cache_key: str | None = None)`
+  and `stream_response(..., prompt_cache_key: str | None = None)`
+- Anthropic adapter:
+  `_serialize_items(...) -> tuple[str | list[dict[str, object]] | None, list[dict[str, object]]]`
+
+### 3. Contracts
+
+- Provider request policy is derived from provider, protocol, model,
+  `system_hash`, `tool_schema_hash`, and `cacheable_prefix_hash`.
+- OpenAI Responses and OpenAI-compatible Chat Completions use
+  `prompt_cache_key` only as a request-level wire option.
+- Anthropic Messages uses `cache_control: {"type": "ephemeral"}` only on
+  serialized payload content-block copies.
+- Provider cache hints must not be written into canonical conversation messages,
+  request fragments, persisted transcripts, or runtime history.
+- `RequestShape.summary()` may expose bounded policy diagnostics, including
+  key hash, preview, hint enabled state, and breakpoint counts. It must not
+  expose the full `prompt_cache_key`.
+- Full `prompt_cache_key` may exist only in runtime/provider metadata used by
+  provider clients during request construction.
+- Chat Completions message projection must strip provider-private fields such as
+  `metadata`, `cache_control`, `anthropic`, `responses`, and underscore-prefixed
+  keys before sending.
+- Cache-shape diagnostics and doctor summaries must use bounded counts, hashes,
+  and previews only.
+
+### 4. Validation & Error Matrix
+
+- Ephemeral/current intent changes only -> `prompt_cache_key` remains stable.
+- Stable system, tool schema, or stable prefix changes -> `prompt_cache_key`
+  changes.
+- Client does not accept `prompt_cache_key` -> adapter must omit the argument
+  instead of failing.
+- Anthropic system has no cache breakpoint -> keep legacy string system payload.
+- Anthropic system has cache breakpoint -> serialize system as text blocks with
+  block-level `cache_control`.
+- Chat message contains provider-private fields -> outgoing provider messages
+  exclude those fields.
+- Trace payload includes full `prompt_cache_key` -> invalid; only hash/preview
+  are allowed.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Responses payload has `prompt_cache_key` beside `model`, while input
+  items contain no cache hint fields.
+- Good: Anthropic payload has `cache_control` on system/static and dynamic
+  boundary block copies, while `RequestShape.summary()` has no `cache_control`.
+- Base: A legacy/fake Responses client without `prompt_cache_key` support still
+  receives normal `input_items` and `tools`.
+- Bad: Persisting `cache_control` in `RuntimeBlock.metadata`.
+- Bad: Passing Anthropic `cache_control` or `thinking` blocks through Chat
+  Completions messages.
+
+### 6. Tests Required
+
+- Unit test provider request policy generation and summary redaction.
+- Unit test stable `prompt_cache_key` across ephemeral-only changes.
+- Unit test `RuntimeItem.metadata` preservation through request-shape formatter.
+- Unit test Responses request builder/client/adapter request-level
+  `prompt_cache_key` propagation.
+- Unit test Anthropic wire-only `cache_control` and canonical non-mutation.
+- Unit test Chat Completions provider-private field stripping.
+- Unit test cache-shape diagnostics and doctor bounded cache policy summary.
+- Provider-free `evaluation/provider_cache_policy_smoke.py` covering all three
+  provider lanes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+block.metadata["cache_control"] = {"type": "ephemeral"}
+trace_payload["provider_request_policy"] = {"prompt_cache_key": full_key}
+```
+
+#### Correct
+
+```python
+wire_block = {"type": "text", "text": block.text}
+wire_block["cache_control"] = {"type": "ephemeral"}
+trace_payload["provider_request_policy"] = {
+    "prompt_cache_key_hash": stable_hash(full_key),
+    "prompt_cache_key_preview": full_key[:48] + "...",
+}
+```

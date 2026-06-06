@@ -7,6 +7,7 @@ from mycli.domain.runtime.request_shape import (
     ProviderMessageShape,
     ProviderProjectionLane,
     ProviderProjectionShape,
+    ProviderRequestPolicyShape,
     ProviderRuntimeItemShape,
     RequestFragment,
     RequestFragmentKind,
@@ -164,3 +165,51 @@ def test_provider_runtime_item_shape_hashes_structured_blocks() -> None:
 
     assert item.content_hash == item.content_hash
     assert item.char_length > 0
+
+
+def test_request_shape_summary_includes_provider_request_policy() -> None:
+    shape = RequestShape(
+        provider="openai",
+        protocol="responses",
+        model="gpt-test",
+        stable_system="stable system",
+        tool_schema_hash="tool-schema",
+        fragments=(
+            RequestFragment(
+                id="stable:system",
+                kind=RequestFragmentKind.STABLE,
+                content="stable system",
+                stability=FragmentStability.STABLE,
+                metadata={"cache_class": "static"},
+            ),
+            RequestFragment(
+                id="intent:current",
+                kind=RequestFragmentKind.INTENT,
+                content="do current work",
+                stability=FragmentStability.VOLATILE,
+                metadata={"cache_class": "ephemeral"},
+            ),
+        ),
+        provider_request_policy=ProviderRequestPolicyShape.for_request_shape(
+            provider="openai",
+            protocol="responses",
+            model="gpt-test",
+            system_hash=stable_hash("stable system"),
+            tool_schema_hash="tool-schema",
+            cacheable_prefix_hash=stable_hash(stable_hash("stable system")),
+            lane=ProviderProjectionLane.RESPONSES,
+        ),
+    )
+
+    summary = shape.summary()
+    policy = summary["provider_request_policy"]
+
+    assert isinstance(policy, dict)
+    assert policy["lane"] == "responses"
+    assert policy["wire_only"] is True
+    assert "prompt_cache_key" not in policy
+    assert policy["prompt_cache_key_preview"].startswith("mycli:openai:responses:")
+    assert policy["prompt_cache_key_hash"] == stable_hash(
+        str(shape.provider_request_policy.prompt_cache_key)
+    )
+    assert policy["anthropic_cache_control_breakpoint_count"] == 0

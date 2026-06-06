@@ -126,7 +126,7 @@ class AnthropicMessagesClient:
     def create_message(
         self,
         *,
-        system: str | None,
+        system: str | list[dict[str, object]] | None,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> dict[str, object]:
@@ -188,7 +188,7 @@ class AnthropicMessagesClient:
     def stream_message(
         self,
         *,
-        system: str | None,
+        system: str | list[dict[str, object]] | None,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> Iterator[dict[str, object]]:
@@ -247,7 +247,7 @@ class AnthropicMessagesClient:
     def _message_payload_body(
         self,
         *,
-        system: str | None,
+        system: str | list[dict[str, object]] | None,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> dict[str, object]:

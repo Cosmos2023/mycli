@@ -102,6 +102,11 @@ def test_request_shape_builder_keeps_stable_hashes_when_volatile_context_changes
     assert first.tool_schema_hash == second.tool_schema_hash
     assert first.tool_order_hash == second.tool_order_hash
     assert first.volatile_hash != second.volatile_hash
+    assert first.provider_request_policy is not None
+    assert second.provider_request_policy is not None
+    assert first.provider_request_policy.prompt_cache_key == (
+        second.provider_request_policy.prompt_cache_key
+    )
 
 
 def test_request_shape_builder_preserves_context_section_metadata(
@@ -283,6 +288,45 @@ def test_request_shape_builder_keeps_cacheable_prefix_stable_for_new_user_reques
     assert second.provider_projection is not None
     assert first.provider_projection.cache_hint == second.provider_projection.cache_hint
     assert first.provider_projection.wire_only_hints == ("cache_control",)
+
+
+def test_request_shape_builder_marks_anthropic_cache_policy_on_wire_items(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="anthropic",
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+            model="claude-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="compaction_rehydration",
+                    title="Compaction rehydration",
+                    content="<compaction>summary</compaction>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assert shape.provider_request_policy is not None
+    assert shape.provider_request_policy.anthropic_cache_control_breakpoints == (
+        "system_static",
+        "dynamic_boundary",
+    )
+    assert shape.provider_runtime_items[0].metadata[
+        "anthropic_cache_control_breakpoint"
+    ] == "system_static"
+    assert any(
+        item.metadata.get("anthropic_cache_control_breakpoint") == "dynamic_boundary"
+        for item in shape.provider_runtime_items
+    )
 
 
 def test_request_shape_builder_reports_responses_projection_contract(

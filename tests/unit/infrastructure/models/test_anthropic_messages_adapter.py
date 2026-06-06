@@ -15,7 +15,7 @@ from mycli.domain.runtime.blocks import RuntimeBlock, RuntimeItem
 class FakeAnthropicMessagesClient:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
-        self.captured_system: str | None = None
+        self.captured_system: object | None = None
         self.captured_messages: list[dict[str, object]] = []
         self.captured_tools: list[dict[str, object]] = []
         self.thinking_config: tuple[bool, object] | None = None
@@ -26,7 +26,7 @@ class FakeAnthropicMessagesClient:
     def create_message(
         self,
         *,
-        system: str | None,
+        system: object | None,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> dict[str, object]:
@@ -149,6 +149,64 @@ def test_anthropic_adapter_serializes_system_developer_messages_and_tools() -> N
     assert result.response_id == "msg_123"
     assert result.metadata == {"usage": {"input_tokens": 10, "output_tokens": 3}}
     assert result.items[0].blocks[0].text == "Ready."
+
+
+def test_anthropic_adapter_adds_wire_only_cache_control_breakpoints() -> None:
+    client = FakeAnthropicMessagesClient(
+        {
+            "id": "msg_123",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Ready."}],
+            "stop_reason": "end_turn",
+        }
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+    system_block = RuntimeBlock(type="text", text="System rules.")
+    dynamic_block = RuntimeBlock(type="text", text="Dynamic context.")
+    items = [
+        RuntimeItem(
+            role="system",
+            blocks=(system_block,),
+            metadata={
+                "provider_request_policy": {
+                    "anthropic_cache_control_breakpoints": ("system_static",)
+                }
+            },
+        ),
+        RuntimeItem(
+            role="user",
+            blocks=(dynamic_block,),
+            metadata={
+                "provider_request_policy": {
+                    "anthropic_cache_control_breakpoints": ("dynamic_boundary",)
+                }
+            },
+        ),
+    ]
+
+    adapter.next_turn(items=items, tools=[])
+
+    assert client.captured_system == [
+        {
+            "type": "text",
+            "text": "System rules.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert client.captured_messages == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Dynamic context.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
+    ]
+    assert "cache_control" not in system_block.metadata
+    assert "cache_control" not in dynamic_block.metadata
 
 
 def test_anthropic_adapter_serializes_prior_tool_use_and_tool_result() -> None:

@@ -197,6 +197,44 @@ def test_openai_chat_client_uses_openai_sdk_transport(monkeypatch) -> None:
     assert payload["assistant_message"] == "done"
 
 
+def test_openai_chat_client_uses_prompt_cache_key_request_option(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={"choices": [{"message": {"content": "done"}}]}
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    client.complete(
+        [
+            {
+                "role": "user",
+                "content": "Inspect the repo",
+                "metadata": {
+                    "provider_request_policy": {
+                        "prompt_cache_key": "mycli:compatible:chat:stable"
+                    }
+                },
+            }
+        ]
+    )
+
+    assert sdk_client.chat_completions.calls[-1]["prompt_cache_key"] == (
+        "mycli:compatible:chat:stable"
+    )
+    assert sdk_client.chat_completions.calls[-1]["messages"] == [
+        {"role": "user", "content": "Inspect the repo"}
+    ]
+
+
 def test_openai_chat_client_sends_tool_choice_none_with_stable_tools(
     monkeypatch,
 ) -> None:

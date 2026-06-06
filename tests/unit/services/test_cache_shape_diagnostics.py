@@ -5,6 +5,7 @@ from mycli.domain.runtime import (
     ProviderMessageShape,
     ProviderProjectionLane,
     ProviderProjectionShape,
+    ProviderRequestPolicyShape,
     RequestFragment,
     RequestFragmentKind,
     RequestShape,
@@ -146,6 +147,45 @@ def test_diagnostic_reports_cache_boundary_and_metadata_completeness() -> None:
         "rehydration_cache_class": "dynamic",
         "provider_specific_compact": False,
     }
+
+
+def test_diagnostic_reports_provider_request_policy_metadata() -> None:
+    shape = RequestShape(
+        provider="openai",
+        protocol="responses",
+        model="gpt-test",
+        stable_system="stable system",
+        fragments=(
+            RequestFragment(
+                id="stable:system",
+                kind=RequestFragmentKind.STABLE,
+                content="stable system",
+                stability=FragmentStability.STABLE,
+                metadata={"cache_class": "static"},
+            ),
+        ),
+        provider_request_policy=ProviderRequestPolicyShape.for_request_shape(
+            provider="openai",
+            protocol="responses",
+            model="gpt-test",
+            system_hash="system-hash",
+            tool_schema_hash="tool-schema",
+            cacheable_prefix_hash="prefix-hash",
+            lane=ProviderProjectionLane.RESPONSES,
+        ),
+    )
+
+    payload = CacheShapeDiagnostics().build(
+        current=shape,
+        usage={"prompt_tokens_details": {"cached_tokens": 42}},
+    ).to_dict()
+
+    policy = payload["metadata"]["provider_request_policy"]
+    assert isinstance(policy, dict)
+    assert policy["wire_cache_hint_enabled"] is True
+    assert policy["prompt_cache_key_hash"]
+    assert policy["anthropic_cache_control_breakpoint_count"] == 0
+    assert payload["metadata"]["provider_cached_tokens"] == 42
 
 
 def test_diagnostic_finds_first_changed_fragment() -> None:

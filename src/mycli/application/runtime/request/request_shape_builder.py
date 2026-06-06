@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
     ProviderMessageShape,
     ProviderProjectionLane,
     ProviderProjectionShape,
+    ProviderRequestPolicyShape,
     ProviderRuntimeItemShape,
     RequestFragment,
     RequestFragmentKind,
@@ -102,6 +103,29 @@ class RequestShapeBuilder:
             contract=contract,
             intent_content=intent_content,
         )
+        provider_projection = self._provider_projection(
+            config=config,
+            fragments=fragments,
+            provider_messages=provider_messages,
+            provider_runtime_items=provider_runtime_items,
+        )
+        provider_request_policy = ProviderRequestPolicyShape.for_request_shape(
+            provider=str(config.provider),
+            protocol=str(config.protocol),
+            model=config.model,
+            system_hash=stable_hash(contract.base_instructions),
+            tool_schema_hash=stable_hash(tool_schema),
+            cacheable_prefix_hash=self._cacheable_prefix_hash(fragments),
+            lane=provider_projection.lane,
+        )
+        provider_messages = self._attach_provider_request_policy_to_messages(
+            provider_messages,
+            policy=provider_request_policy,
+        )
+        provider_runtime_items = self._attach_provider_request_policy_to_runtime_items(
+            provider_runtime_items,
+            policy=provider_request_policy,
+        )
         return RequestShape(
             provider=str(config.provider),
             protocol=str(config.protocol),
@@ -112,13 +136,82 @@ class RequestShapeBuilder:
             fragments=fragments,
             provider_messages=provider_messages,
             provider_runtime_items=provider_runtime_items,
-            provider_projection=self._provider_projection(
-                config=config,
-                fragments=fragments,
-                provider_messages=provider_messages,
-                provider_runtime_items=provider_runtime_items,
-            ),
+            provider_projection=provider_projection,
+            provider_request_policy=provider_request_policy,
         )
+
+    def _cacheable_prefix_hash(
+        self,
+        fragments: tuple[RequestFragment, ...],
+    ) -> str:
+        hashes: list[str] = []
+        for fragment in fragments:
+            if fragment.stability is not FragmentStability.STABLE:
+                break
+            hashes.append(fragment.content_hash)
+        return stable_hash("\n".join(hashes))
+
+    def _attach_provider_request_policy_to_messages(
+        self,
+        messages: tuple[ProviderMessageShape, ...],
+        *,
+        policy: ProviderRequestPolicyShape,
+    ) -> tuple[ProviderMessageShape, ...]:
+        if not messages:
+            return messages
+        policy_payload = policy.to_wire_dict()
+        attached: list[ProviderMessageShape] = []
+        for index, message in enumerate(messages):
+            metadata = dict(message.metadata)
+            if index == 0:
+                metadata["provider_request_policy"] = policy_payload
+            attached.append(
+                ProviderMessageShape(
+                    role=message.role,
+                    content=message.content,
+                    metadata=metadata,
+                )
+            )
+        return tuple(attached)
+
+    def _attach_provider_request_policy_to_runtime_items(
+        self,
+        items: tuple[ProviderRuntimeItemShape, ...],
+        *,
+        policy: ProviderRequestPolicyShape,
+    ) -> tuple[ProviderRuntimeItemShape, ...]:
+        if not items:
+            return items
+        attached: list[ProviderRuntimeItemShape] = []
+        policy_payload = policy.to_wire_dict()
+        for index, item in enumerate(items):
+            metadata = dict(item.metadata)
+            if index == 0:
+                metadata["provider_request_policy"] = policy_payload
+            if (
+                policy.lane is ProviderProjectionLane.ANTHROPIC_MESSAGES
+                and item.role in {"system", "developer"}
+            ):
+                metadata["anthropic_cache_control_breakpoint"] = "system_static"
+            elif (
+                policy.lane is ProviderProjectionLane.ANTHROPIC_MESSAGES
+                and index > 0
+                and item.role == "user"
+                and not any(
+                    existing.metadata.get("anthropic_cache_control_breakpoint")
+                    == "dynamic_boundary"
+                    for existing in attached
+                )
+            ):
+                metadata["anthropic_cache_control_breakpoint"] = "dynamic_boundary"
+            attached.append(
+                ProviderRuntimeItemShape(
+                    role=item.role,
+                    blocks=item.blocks,
+                    metadata=metadata,
+                )
+            )
+        return tuple(attached)
 
     def _provider_messages(
         self,

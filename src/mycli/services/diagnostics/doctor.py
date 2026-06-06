@@ -182,6 +182,10 @@ class _ContextDiagnosticsSummary:
     trimmed_context_section_count: int
     missing_cache_metadata_count: int
     stable_prefix_change_count: int
+    wire_cache_hint_count: int
+    prompt_cache_key_hash_count: int
+    anthropic_cache_control_breakpoint_count: int
+    max_provider_cached_tokens: int
     persisted_summary_count: int
     duplicate_summary_count: int
     unreadable: tuple[str, ...]
@@ -1033,6 +1037,13 @@ class DoctorService:
             f"trimmed_context_sections={trace_summary.trimmed_context_section_count}",
             f"missing_cache_metadata={trace_summary.missing_cache_metadata_count}",
             f"stable_prefix_changes={trace_summary.stable_prefix_change_count}",
+            f"wire_cache_hint_rows={trace_summary.wire_cache_hint_count}",
+            f"prompt_cache_key_hashes={trace_summary.prompt_cache_key_hash_count}",
+            (
+                "anthropic_cache_control_breakpoints="
+                f"{trace_summary.anthropic_cache_control_breakpoint_count}"
+            ),
+            f"max_provider_cached_tokens={trace_summary.max_provider_cached_tokens}",
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
         if trace_summary.unreadable:
@@ -2010,6 +2021,10 @@ def _summarize_context_diagnostics(
     trimmed_context_section_count = 0
     missing_cache_metadata_count = 0
     stable_prefix_change_count = 0
+    wire_cache_hint_count = 0
+    prompt_cache_key_hash_count = 0
+    anthropic_cache_control_breakpoint_count = 0
+    max_provider_cached_tokens = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
     unreadable: list[str] = []
@@ -2077,6 +2092,28 @@ def _summarize_context_diagnostics(
                                 missing_cache_metadata_count += len(missing)
                             elif metadata.get("fragment_metadata_complete") is False:
                                 missing_cache_metadata_count += 1
+                            policy = metadata.get("provider_request_policy")
+                            if isinstance(policy, dict):
+                                if policy.get("wire_cache_hint_enabled") is True:
+                                    wire_cache_hint_count += 1
+                                if policy.get("prompt_cache_key_hash"):
+                                    prompt_cache_key_hash_count += 1
+                                breakpoint_count = _optional_non_negative_int(
+                                    policy.get(
+                                        "anthropic_cache_control_breakpoint_count"
+                                    )
+                                )
+                                anthropic_cache_control_breakpoint_count += (
+                                    breakpoint_count or 0
+                                )
+                            cached_tokens = _optional_non_negative_int(
+                                metadata.get("provider_cached_tokens")
+                            )
+                            if cached_tokens is not None:
+                                max_provider_cached_tokens = max(
+                                    max_provider_cached_tokens,
+                                    cached_tokens,
+                                )
                         else:
                             missing_cache_metadata_count += 1
                     elif event.kind == "context_budget_diagnostic":
@@ -2120,6 +2157,10 @@ def _summarize_context_diagnostics(
         trimmed_context_section_count=trimmed_context_section_count,
         missing_cache_metadata_count=missing_cache_metadata_count,
         stable_prefix_change_count=stable_prefix_change_count,
+        wire_cache_hint_count=wire_cache_hint_count,
+        prompt_cache_key_hash_count=prompt_cache_key_hash_count,
+        anthropic_cache_control_breakpoint_count=anthropic_cache_control_breakpoint_count,
+        max_provider_cached_tokens=max_provider_cached_tokens,
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,
         unreadable=tuple(unreadable),

@@ -120,7 +120,7 @@ class CacheShapeDiagnostics:
             prompt_tokens=self._prompt_tokens(usage_payload),
             cache_hit_tokens=self._cache_hit_tokens(usage_payload),
             cache_miss_tokens=self._cache_miss_tokens(usage_payload),
-            metadata=self._metadata(current_summary, metadata),
+            metadata=self._metadata(current_summary, metadata, usage_payload),
         )
 
     def _first_changed_fragment_id(
@@ -260,11 +260,13 @@ class CacheShapeDiagnostics:
         self,
         current_summary: dict[str, object],
         metadata: dict[str, Any] | None,
+        usage: dict[str, object],
     ) -> dict[str, Any]:
         result: dict[str, Any] = {} if metadata is None else dict(metadata)
         fragment_metadata = current_summary.get("fragment_metadata")
         section_boundaries = current_summary.get("section_boundaries")
         provider_projection = current_summary.get("provider_projection")
+        provider_request_policy = current_summary.get("provider_request_policy")
         compact_policy = current_summary.get("compact_policy")
         result["fragment_metadata_complete"] = self._fragment_metadata_complete(
             fragment_metadata
@@ -278,8 +280,30 @@ class CacheShapeDiagnostics:
         result["provider_projection"] = (
             provider_projection if isinstance(provider_projection, dict) else None
         )
+        result["provider_request_policy"] = (
+            self._diagnostic_policy(provider_request_policy)
+            if isinstance(provider_request_policy, dict)
+            else None
+        )
+        result["provider_cached_tokens"] = self._cache_hit_tokens(usage)
         result["compact_policy"] = compact_policy if isinstance(compact_policy, dict) else {}
         return result
+
+    def _diagnostic_policy(
+        self,
+        policy: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "lane": policy.get("lane"),
+            "wire_only": policy.get("wire_only"),
+            "wire_cache_hint_enabled": policy.get("wire_cache_hint_enabled"),
+            "prompt_cache_key_hash": policy.get("prompt_cache_key_hash"),
+            "prompt_cache_key_preview": policy.get("prompt_cache_key_preview"),
+            "anthropic_cache_control_breakpoint_count": policy.get(
+                "anthropic_cache_control_breakpoint_count"
+            ),
+            "wire_only_hints": policy.get("wire_only_hints"),
+        }
 
     def _fragment_metadata_complete(self, value: object) -> bool:
         return not self._missing_fragment_metadata(value)

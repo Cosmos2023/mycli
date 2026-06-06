@@ -110,3 +110,23 @@ def test_deepseek_adapter_marks_missing_provider_reasoning_metadata_for_tool_cal
             "reasoning_content_missing": True,
         }
     }
+
+
+def test_openai_chat_provider_adapter_strips_provider_private_fields() -> None:
+    adapter = OpenAIChatProviderAdapter()
+
+    adapted = adapter.adapt_messages(
+        [
+            {
+                "role": "user",
+                "content": "hello",
+                "metadata": {"provider_request_policy": {"prompt_cache_key": "key"}},
+                "cache_control": {"type": "ephemeral"},
+                "anthropic": {"type": "thinking"},
+                "responses": {"encrypted_reasoning": "..."},
+                "_provider_state": {"opaque": True},
+            }
+        ]
+    )
+
+    assert adapted == [{"role": "user", "content": "hello"}]

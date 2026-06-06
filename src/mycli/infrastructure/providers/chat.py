@@ -46,9 +46,25 @@ class DefaultChatProviderAdapter:
         adapted_messages: list[dict[str, object]] = []
         for message in messages:
             adapted_message = dict(message)
-            adapted_message.pop("metadata", None)
+            for key in tuple(adapted_message):
+                if self._provider_private_message_key(key):
+                    adapted_message.pop(key, None)
             adapted_messages.append(adapted_message)
         return adapted_messages
+
+    def _provider_private_message_key(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        return (
+            key == "metadata"
+            or key in {
+                "cache_control",
+                "anthropic",
+                "responses",
+                "provider_request_policy",
+            }
+            or key.startswith("_")
+        )
 
     def adapt_request_body(
         self,

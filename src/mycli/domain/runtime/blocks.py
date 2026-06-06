@@ -33,6 +33,7 @@ class RuntimeBlock:
 class RuntimeItem:
     role: RuntimeRole
     blocks: tuple[RuntimeBlock, ...] = ()
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)

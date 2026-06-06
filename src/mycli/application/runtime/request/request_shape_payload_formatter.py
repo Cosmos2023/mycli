@@ -24,6 +24,7 @@ class RequestShapePayloadFormatter:
             RuntimeItem(
                 role=item.role,
                 blocks=item.blocks,
+                metadata=dict(item.metadata),
             )
             for item in shape.provider_runtime_items
             if item.blocks

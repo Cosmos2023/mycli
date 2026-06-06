@@ -17,7 +17,7 @@ class AnthropicMessagesClientProtocol(Protocol):
     def create_message(
         self,
         *,
-        system: str | None,
+        system: str | list[dict[str, object]] | None,
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> dict[str, object]:
@@ -113,23 +113,36 @@ class AnthropicMessagesModelAdapter:
     def _serialize_items(
         self,
         items: list[RuntimeItem],
-    ) -> tuple[str | None, list[dict[str, object]]]:
-        system_parts: list[str] = []
+    ) -> tuple[str | list[dict[str, object]] | None, list[dict[str, object]]]:
+        system_parts: list[dict[str, object]] = []
+        system_has_cache_control = False
         messages: list[dict[str, object]] = []
         for item in items:
             if item.role in {"system", "developer"}:
-                system_parts.extend(
-                    block.text
-                    for block in item.blocks
-                    if block.type == "text" and block.text
-                )
+                for block in item.blocks:
+                    if block.type != "text" or not block.text:
+                        continue
+                    system_block: dict[str, object] = {
+                        "type": "text",
+                        "text": block.text,
+                    }
+                    if self._item_has_anthropic_breakpoint(item, "system_static"):
+                        system_block["cache_control"] = {"type": "ephemeral"}
+                        system_has_cache_control = True
+                    system_parts.append(system_block)
                 continue
             content = self._content_blocks_for_item(item)
             if content:
                 messages.append(
                     {"role": self._anthropic_role(item.role), "content": content}
                 )
-        system = "\n\n".join(system_parts) if system_parts else None
+        system: str | list[dict[str, object]] | None
+        if not system_parts:
+            system = None
+        elif system_has_cache_control:
+            system = system_parts
+        else:
+            system = "\n\n".join(str(block["text"]) for block in system_parts)
         return system, messages
 
     def _anthropic_role(self, role: RuntimeRole) -> str:
@@ -139,7 +152,10 @@ class AnthropicMessagesModelAdapter:
         content: list[dict[str, object]] = []
         for block in item.blocks:
             if block.type == "text" and block.text:
-                content.append({"type": "text", "text": block.text})
+                text_block: dict[str, object] = {"type": "text", "text": block.text}
+                if self._item_has_anthropic_breakpoint(item, "dynamic_boundary"):
+                    text_block["cache_control"] = {"type": "ephemeral"}
+                content.append(text_block)
                 continue
             if block.type == "tool_call":
                 content.append(
@@ -170,6 +186,23 @@ class AnthropicMessagesModelAdapter:
                     continue
                 content.append({"type": "thinking", "thinking": block.text})
         return content
+
+    def _item_has_anthropic_breakpoint(
+        self,
+        item: RuntimeItem,
+        breakpoint: str,
+    ) -> bool:
+        if item.metadata.get("anthropic_cache_control_breakpoint") == breakpoint:
+            return True
+        policy = item.metadata.get("provider_request_policy")
+        if not isinstance(policy, dict):
+            return False
+        raw_breakpoints = policy.get("anthropic_cache_control_breakpoints")
+        if isinstance(raw_breakpoints, tuple):
+            return breakpoint in raw_breakpoints
+        if isinstance(raw_breakpoints, list):
+            return breakpoint in raw_breakpoints
+        return False
 
     def _serialize_tools(
         self,
