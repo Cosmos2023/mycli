@@ -40,6 +40,61 @@ Implemented provider wire cache policy for OpenAI Responses, OpenAI-compatible C
 - None - task complete
 
 
+## Session 4: Prefix cache context assembly P7b
+
+**Date**: 2026-06-06
+**Task**: Prefix cache context assembly P7b
+**Branch**: `feature/mycli-prefix-cache-context-assembly-p1`
+
+### Summary
+
+Completed Canonical Compact Summary / Rehydration Lifecycle P7b. The canonical
+compact engine now records bounded lifecycle metadata on summary and
+continuation messages, protects the latest user message from summary
+replacement, filters provider-private reasoning out of natural-language
+summaries, and emits bounded compact lifecycle trace events.
+
+### Main Changes
+
+- Added deterministic `compaction_lineage_id`, source, split, summarized count,
+  tail count, and frozen fingerprint metadata to compact summary and
+  continuation messages.
+- Kept the latest user message in the raw protected compact tail instead of
+  compressing it into the summary.
+- Filtered reasoning-only/provider-private messages from fallback summaries and
+  summarizer prompt text.
+- Added `before_compact` / `after_compact` trace diagnostics for pre-request,
+  request-budget, and reactive compaction paths.
+- Updated the Prefix Cache Context Assembly goals document to show P5/P6/P7a as
+  complete and P7b -> P8 as the current continuation path.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0fcb807` | Trace compact summary lifecycle boundaries |
+| `1287b01` | chore(task): archive prefix cache context assembly p7b |
+
+### Testing
+
+- [OK] `uv run pytest tests/unit/services/context/compaction tests/unit/test_l4_summarizer.py tests/unit/test_l4_rehydration.py tests/unit/test_l4_safe_split.py tests/unit/application/test_agent_runtime_l4.py tests/unit/services/test_request_shape_builder.py -q` (`106 passed`)
+- [OK] `uv run pytest tests/unit/services/test_cache_stability_regressions.py tests/unit/services/test_provider_payload_snapshot.py tests/unit/services/test_request_shape_payload_formatter.py tests/unit/services/test_instruction_contract_assembler.py tests/unit/services/test_turn_context_assembler.py tests/unit/test_compaction_transcript_validity.py tests/unit/test_compaction_sealed_guard.py -q` (`46 passed`)
+- [OK] `uv run ruff check .`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run python evaluation/provider_cache_policy_smoke.py`
+- [OK] `uv run python evaluation/context_smoke.py`
+- [OK] `uv run python evaluation/plugin_runtime_smoke.py`
+- [OK] `uv run python evaluation/hook_smoke.py`
+
+### Status
+
+[OK] **Completed and archived**
+
+### Next Steps
+
+- Start P8: Recovery / Productized Observability.
+
+
 ## Session 4: Prefix cache context assembly P6
 
 **Date**: 2026-06-06
