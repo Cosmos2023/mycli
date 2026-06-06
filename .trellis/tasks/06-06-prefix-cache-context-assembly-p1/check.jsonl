@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify context/cache metadata and diagnostics contract."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor diagnostics stay read-only and bounded."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify cross-layer data survives from request shape to trace/doctor/tests."}
+{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p1/research/request-chain.md", "reason": "Verify implementation matches provider and compact policy research."}

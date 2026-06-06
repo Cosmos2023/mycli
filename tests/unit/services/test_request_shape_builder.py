@@ -128,10 +128,32 @@ def test_request_shape_builder_preserves_context_section_metadata(
         tools=(),
     )
 
-    fragment = next(item for item in shape.fragments if item.id == "retrieved_memory")
+    fragment = next(item for item in shape.fragments if item.id == "replay:retrieved_memory")
     assert fragment.metadata["cache_class"] == "dynamic"
     assert fragment.metadata["record_count"] == 1
     assert fragment.metadata["instruction_fragment_kind"] == "memory"
+
+
+def test_request_shape_builder_marks_replay_fragment_with_cache_metadata(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(role="user", content="Earlier request"),
+                Message(role="assistant", content="Earlier answer"),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(),
+    )
+
+    fragment = next(item for item in shape.fragments if item.id == "replay:conversation")
+    assert fragment.metadata["cache_class"] == "dynamic"
+    assert fragment.metadata["source"] == "conversation_replay"
+    assert fragment.metadata["section_hash"] == fragment.content_hash
 
 
 def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefix(
@@ -179,7 +201,7 @@ def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefi
         "stable:tool_schema",
         "stable:workspace_instructions",
         "replay:conversation",
-        "retrieved_memory",
+        "replay:retrieved_memory",
         "intent:current",
         "volatile:runtime_reminders",
     ]
@@ -202,6 +224,24 @@ def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefi
         "Current user request: current request",
         "Runtime reminders: current turn only",
     ]
+    assert shape.provider_projection is not None
+    assert shape.provider_projection.to_dict() == {
+        "lane": "anthropic_messages",
+        "message_count": 6,
+        "runtime_item_count": 6,
+        "cacheable_prefix_fragment_count": 3,
+        "first_dynamic_fragment_index": 3,
+        "first_ephemeral_fragment_index": 5,
+        "cache_hint": "cache_control_breakpoint_candidates",
+        "wire_only_hints": ("cache_control",),
+    }
+    assert shape.compact_policy_summary() == {
+        "engine": "canonical",
+        "cheap_pruning_scope": "dynamic_replay",
+        "stable_prefix_protected": True,
+        "rehydration_cache_class": "dynamic",
+        "provider_specific_compact": False,
+    }
 
 
 def test_request_shape_builder_keeps_cacheable_prefix_stable_for_new_user_request(
@@ -239,6 +279,56 @@ def test_request_shape_builder_keeps_cacheable_prefix_stable_for_new_user_reques
 
     assert first.cacheable_prefix_hash() == second.cacheable_prefix_hash()
     assert first.volatile_hash != second.volatile_hash
+    assert first.provider_projection is not None
+    assert second.provider_projection is not None
+    assert first.provider_projection.cache_hint == second.provider_projection.cache_hint
+    assert first.provider_projection.wire_only_hints == ("cache_control",)
+
+
+def test_request_shape_builder_reports_responses_projection_contract(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="openai",
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-5",
+        ),
+        contract=_contract(
+            current_user_request="inspect",
+            contextual_content="Runtime reminders: current turn only",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assert shape.provider_projection is not None
+    assert shape.provider_projection.to_dict()["lane"] == "responses"
+    assert shape.provider_projection.cache_hint == "prompt_cache_key_candidate"
+    assert shape.provider_projection.wire_only_hints == ("prompt_cache_key",)
+
+
+def test_request_shape_builder_reports_chat_completion_projection_contract(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="compatible",
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="compatible-model",
+        ),
+        contract=_contract(
+            current_user_request="inspect",
+            contextual_content="Runtime reminders: current turn only",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assert shape.provider_projection is not None
+    assert shape.provider_projection.to_dict()["lane"] == "chat_completions"
+    assert shape.provider_projection.cache_hint == "stable_transcript_prefix"
+    assert shape.provider_projection.wire_only_hints == ()
 
 
 def test_request_shape_builder_changes_tool_schema_hash_for_parameter_changes(
@@ -507,7 +597,7 @@ def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_remi
     assert "Current user request:" not in runtime_payload
     assert "Runtime reminders: use compact answers" in runtime_payload
     assert any(
-        fragment.id == "volatile:conversation_context"
+        fragment.id == "replay:conversation_context"
         and "Conversation summary:" in fragment.content
         for fragment in shape.fragments
     )
@@ -889,12 +979,12 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     fragments = {fragment.id: fragment for fragment in shape.fragments}
 
     assert "volatile:context" not in fragments
-    assert fragments["volatile:environment_context"].kind is RequestFragmentKind.VOLATILE
-    assert fragments["volatile:environment_context"].stability is FragmentStability.REPLAY
-    assert fragments["retrieved_memory"].kind is RequestFragmentKind.RETRIEVED_MEMORY
-    assert fragments["retrieved_memory"].stability is FragmentStability.REPLAY
-    assert fragments["volatile:plan"].kind is RequestFragmentKind.VOLATILE
-    assert fragments["volatile:plan"].stability is FragmentStability.REPLAY
+    assert fragments["replay:environment_context"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["replay:environment_context"].stability is FragmentStability.REPLAY
+    assert fragments["replay:retrieved_memory"].kind is RequestFragmentKind.RETRIEVED_MEMORY
+    assert fragments["replay:retrieved_memory"].stability is FragmentStability.REPLAY
+    assert fragments["replay:plan"].kind is RequestFragmentKind.VOLATILE
+    assert fragments["replay:plan"].stability is FragmentStability.REPLAY
     assert fragments["volatile:runtime_reminders"].kind is RequestFragmentKind.VOLATILE
     assert fragments["volatile:runtime_reminders"].stability is FragmentStability.VOLATILE
     assert shape.provider_messages[-3].content == "\n".join(
@@ -1012,18 +1102,18 @@ def test_request_shape_builder_removes_replayed_lines_from_volatile_conversation
         tools=(_tool("read_file"),),
     )
 
-    volatile_fragment = next(
-        fragment for fragment in shape.fragments if fragment.id == "volatile:conversation_context"
+    replay_fragment = next(
+        fragment for fragment in shape.fragments if fragment.id == "replay:conversation_context"
     )
-    volatile_payload = shape.provider_messages[-1].content
+    replay_payload = shape.provider_messages[-1].content
 
-    assert "Conversation summary: User asked for a repo inspection." in volatile_fragment.content
-    assert "user: inspect repo" not in volatile_fragment.content
-    assert "assistant: I will inspect README." not in volatile_fragment.content
-    assert "tool: Tool read_file: README content" not in volatile_fragment.content
-    assert "user: inspect repo" not in volatile_payload
-    assert "assistant: I will inspect README." not in volatile_payload
-    assert "tool: Tool read_file: README content" not in volatile_payload
+    assert "Conversation summary: User asked for a repo inspection." in replay_fragment.content
+    assert "user: inspect repo" not in replay_fragment.content
+    assert "assistant: I will inspect README." not in replay_fragment.content
+    assert "tool: Tool read_file: README content" not in replay_fragment.content
+    assert "user: inspect repo" not in replay_payload
+    assert "assistant: I will inspect README." not in replay_payload
+    assert "tool: Tool read_file: README content" not in replay_payload
 
 
 def test_request_shape_builder_does_not_duplicate_tool_names_in_developer_payload(
@@ -1202,7 +1292,7 @@ def test_request_shape_builder_includes_compaction_rehydration_in_responses_delt
         if message.role == "user"
     )
     assert any(
-        fragment.id == "volatile:compaction_rehydration"
+        fragment.id == "replay:compaction_rehydration"
         and fragment.metadata["instruction_fragment_kind"] == "compaction_rehydration"
         for fragment in shape.fragments
     )

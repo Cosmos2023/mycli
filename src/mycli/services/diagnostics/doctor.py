@@ -170,6 +170,7 @@ class _TurnInterruptDiagnosticsSummary:
 @dataclass(frozen=True, slots=True)
 class _ContextDiagnosticsSummary:
     context_count: int
+    request_shape_count: int
     cache_shape_count: int
     budget_count: int
     summary_persistence_count: int
@@ -180,6 +181,7 @@ class _ContextDiagnosticsSummary:
     max_estimated_budget_saved_tokens: int
     trimmed_context_section_count: int
     missing_cache_metadata_count: int
+    stable_prefix_change_count: int
     persisted_summary_count: int
     duplicate_summary_count: int
     unreadable: tuple[str, ...]
@@ -1001,6 +1003,8 @@ class DoctorService:
             status = DoctorStatus.WARNING
         if trace_summary.missing_cache_metadata_count:
             status = DoctorStatus.WARNING
+        if trace_summary.stable_prefix_change_count:
+            status = DoctorStatus.WARNING
         if trace_summary.unreadable:
             status = DoctorStatus.FAILED
         source = diagnostics.selected_source or "none"
@@ -1010,6 +1014,7 @@ class DoctorService:
             f"truncated={str(diagnostics.truncated).lower()} "
             f"session_summaries={summary_count} "
             f"context_trace_rows={trace_summary.context_count} "
+            f"request_shape_rows={trace_summary.request_shape_count} "
             f"cache_shape_rows={trace_summary.cache_shape_count} "
             f"context_budget_rows={trace_summary.budget_count} "
             f"summary_persisted={trace_summary.persisted_summary_count}"
@@ -1027,6 +1032,7 @@ class DoctorService:
             ),
             f"trimmed_context_sections={trace_summary.trimmed_context_section_count}",
             f"missing_cache_metadata={trace_summary.missing_cache_metadata_count}",
+            f"stable_prefix_changes={trace_summary.stable_prefix_change_count}",
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
         if trace_summary.unreadable:
@@ -1992,6 +1998,7 @@ def _summarize_context_diagnostics(
     paths: Iterable[Path],
 ) -> _ContextDiagnosticsSummary:
     context_count = 0
+    request_shape_count = 0
     cache_shape_count = 0
     budget_count = 0
     summary_persistence_count = 0
@@ -2002,9 +2009,11 @@ def _summarize_context_diagnostics(
     max_estimated_budget_saved_tokens = 0
     trimmed_context_section_count = 0
     missing_cache_metadata_count = 0
+    stable_prefix_change_count = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
     unreadable: list[str] = []
+    previous_cache_boundary_hash: str | None = None
 
     for path in paths:
         try:
@@ -2032,10 +2041,27 @@ def _summarize_context_diagnostics(
                                 max_estimated_context_tokens,
                                 tokens,
                             )
+                    elif event.kind == "request_shape":
+                        request_shape_count += 1
                     elif event.kind == "cache_shape_diagnostic":
                         cache_shape_count += 1
                         cache_boundary = event.payload.get("cache_boundary")
                         if isinstance(cache_boundary, dict):
+                            boundary_hash = cache_boundary.get("hash")
+                            if isinstance(boundary_hash, str) and boundary_hash:
+                                changed_cache_class = event.payload.get(
+                                    "first_changed_cache_class"
+                                )
+                                if changed_cache_class == "static":
+                                    stable_prefix_change_count += 1
+                                elif (
+                                    previous_cache_boundary_hash is not None
+                                    and previous_cache_boundary_hash != boundary_hash
+                                    and changed_cache_class
+                                    not in {"dynamic", "ephemeral"}
+                                ):
+                                    stable_prefix_change_count += 1
+                                previous_cache_boundary_hash = boundary_hash
                             tokens = _optional_non_negative_int(
                                 cache_boundary.get("estimated_tokens")
                             )
@@ -2082,6 +2108,7 @@ def _summarize_context_diagnostics(
 
     return _ContextDiagnosticsSummary(
         context_count=context_count,
+        request_shape_count=request_shape_count,
         cache_shape_count=cache_shape_count,
         budget_count=budget_count,
         summary_persistence_count=summary_persistence_count,
@@ -2092,6 +2119,7 @@ def _summarize_context_diagnostics(
         max_estimated_budget_saved_tokens=max_estimated_budget_saved_tokens,
         trimmed_context_section_count=trimmed_context_section_count,
         missing_cache_metadata_count=missing_cache_metadata_count,
+        stable_prefix_change_count=stable_prefix_change_count,
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,
         unreadable=tuple(unreadable),

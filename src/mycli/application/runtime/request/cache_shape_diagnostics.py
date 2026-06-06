@@ -24,6 +24,7 @@ class RequestShapeDiagnostic:
     fragment_lengths: dict[str, int]
     provider_message_lengths: tuple[int, ...]
     first_changed_fragment_id: str | None = None
+    first_changed_cache_class: str | None = None
     first_changed_provider_message_index: int | None = None
     prompt_tokens: int = 0
     cache_hit_tokens: int = 0
@@ -58,6 +59,7 @@ class RequestShapeDiagnostic:
             "fragment_lengths": self.fragment_lengths,
             "provider_message_lengths": self.provider_message_lengths,
             "first_changed_fragment_id": self.first_changed_fragment_id,
+            "first_changed_cache_class": self.first_changed_cache_class,
             "first_changed_provider_message_index": self.first_changed_provider_message_index,
             "prompt_tokens": self.prompt_tokens,
             "cache_hit_tokens": self.cache_hit_tokens,
@@ -107,6 +109,10 @@ class CacheShapeDiagnostics:
                 current_summary=current_summary,
                 previous_summary=previous_summary,
             ),
+            first_changed_cache_class=self._first_changed_cache_class(
+                current_summary=current_summary,
+                previous_summary=previous_summary,
+            ),
             first_changed_provider_message_index=self._first_changed_provider_message_index(
                 current_summary=current_summary,
                 previous_summary=previous_summary,
@@ -132,6 +138,27 @@ class CacheShapeDiagnostics:
             if previous_hashes.get(fragment_id) != current_hashes.get(fragment_id):
                 return str(fragment_id)
         return None
+
+    def _first_changed_cache_class(
+        self,
+        *,
+        current_summary: dict[str, object],
+        previous_summary: dict[str, object] | None,
+    ) -> str | None:
+        fragment_id = self._first_changed_fragment_id(
+            current_summary=current_summary,
+            previous_summary=previous_summary,
+        )
+        if fragment_id is None:
+            return None
+        fragment_metadata = current_summary.get("fragment_metadata")
+        if not isinstance(fragment_metadata, dict):
+            return None
+        metadata = fragment_metadata.get(fragment_id)
+        if not isinstance(metadata, dict):
+            return None
+        cache_class = metadata.get("cache_class")
+        return str(cache_class) if cache_class else None
 
     def _first_changed_provider_message_index(
         self,
@@ -236,12 +263,22 @@ class CacheShapeDiagnostics:
     ) -> dict[str, Any]:
         result: dict[str, Any] = {} if metadata is None else dict(metadata)
         fragment_metadata = current_summary.get("fragment_metadata")
+        section_boundaries = current_summary.get("section_boundaries")
+        provider_projection = current_summary.get("provider_projection")
+        compact_policy = current_summary.get("compact_policy")
         result["fragment_metadata_complete"] = self._fragment_metadata_complete(
             fragment_metadata
         )
         result["missing_fragment_metadata"] = self._missing_fragment_metadata(
             fragment_metadata
         )
+        result["section_boundaries"] = section_boundaries if isinstance(
+            section_boundaries, tuple
+        ) else ()
+        result["provider_projection"] = (
+            provider_projection if isinstance(provider_projection, dict) else None
+        )
+        result["compact_policy"] = compact_policy if isinstance(compact_policy, dict) else {}
         return result
 
     def _fragment_metadata_complete(self, value: object) -> bool:

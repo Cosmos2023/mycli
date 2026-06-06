@@ -10,6 +10,8 @@ from mycli.domain.runtime import (
     InstructionContract,
     InstructionFragment,
     ProviderMessageShape,
+    ProviderProjectionLane,
+    ProviderProjectionShape,
     ProviderRuntimeItemShape,
     RequestFragment,
     RequestFragmentKind,
@@ -37,6 +39,9 @@ class RequestShapeBuilder:
         tool_order = "\n".join(tool["name"] for tool in normalized_tools)
         contextual_fragments = self._contextual_fragments(contract)
         intent_content = f"Current user request: {contract.current_user_request}"
+        replay_content = self._messages.render_replay(
+            self._replay_messages(contract),
+        )
 
         fragments = (
             RequestFragment(
@@ -65,10 +70,13 @@ class RequestShapeBuilder:
             RequestFragment(
                 id="replay:conversation",
                 kind=RequestFragmentKind.REPLAY,
-                content=self._messages.render_replay(
-                    self._replay_messages(contract),
-                ),
+                content=replay_content,
                 stability=FragmentStability.REPLAY,
+                metadata={
+                    "source": "conversation_replay",
+                    "cache_class": "dynamic",
+                    "section_hash": stable_hash(replay_content),
+                },
             ),
             *self._dynamic_contextual_fragments(contextual_fragments),
             RequestFragment(
@@ -84,6 +92,16 @@ class RequestShapeBuilder:
             ),
             *self._ephemeral_contextual_fragments(contextual_fragments),
         )
+        provider_messages = self._provider_messages(
+            config=config,
+            contract=contract,
+            intent_content=intent_content,
+        )
+        provider_runtime_items = self._provider_runtime_items(
+            config=config,
+            contract=contract,
+            intent_content=intent_content,
+        )
         return RequestShape(
             provider=str(config.provider),
             protocol=str(config.protocol),
@@ -92,15 +110,13 @@ class RequestShapeBuilder:
             tool_schema_hash=stable_hash(tool_schema),
             tool_order_hash=stable_hash(tool_order),
             fragments=fragments,
-            provider_messages=self._provider_messages(
+            provider_messages=provider_messages,
+            provider_runtime_items=provider_runtime_items,
+            provider_projection=self._provider_projection(
                 config=config,
-                contract=contract,
-                intent_content=intent_content,
-            ),
-            provider_runtime_items=self._provider_runtime_items(
-                config=config,
-                contract=contract,
-                intent_content=intent_content,
+                fragments=fragments,
+                provider_messages=provider_messages,
+                provider_runtime_items=provider_runtime_items,
             ),
         )
 
@@ -319,6 +335,76 @@ class RequestShapeBuilder:
                 )
         )
         return tuple(items)
+
+    def _provider_projection(
+        self,
+        *,
+        config: AgentConfig,
+        fragments: tuple[RequestFragment, ...],
+        provider_messages: tuple[ProviderMessageShape, ...],
+        provider_runtime_items: tuple[ProviderRuntimeItemShape, ...],
+    ) -> ProviderProjectionShape:
+        lane = self._provider_projection_lane(config)
+        first_dynamic_index = self._first_fragment_index_for_cache_class(
+            fragments=fragments,
+            cache_class="dynamic",
+        )
+        first_ephemeral_index = self._first_fragment_index_for_cache_class(
+            fragments=fragments,
+            cache_class="ephemeral",
+        )
+        return ProviderProjectionShape(
+            lane=lane,
+            message_count=len(provider_messages),
+            runtime_item_count=len(provider_runtime_items),
+            cacheable_prefix_fragment_count=sum(
+                1
+                for fragment in fragments
+                if fragment.stability is FragmentStability.STABLE
+            ),
+            first_dynamic_fragment_index=first_dynamic_index,
+            first_ephemeral_fragment_index=first_ephemeral_index,
+            cache_hint=self._provider_cache_hint(lane),
+            wire_only_hints=self._provider_wire_only_hints(lane),
+        )
+
+    def _provider_projection_lane(self, config: AgentConfig) -> ProviderProjectionLane:
+        protocol = str(config.protocol)
+        if protocol == "responses":
+            return ProviderProjectionLane.RESPONSES
+        if protocol == "anthropic_messages":
+            return ProviderProjectionLane.ANTHROPIC_MESSAGES
+        return ProviderProjectionLane.CHAT_COMPLETIONS
+
+    def _first_fragment_index_for_cache_class(
+        self,
+        *,
+        fragments: tuple[RequestFragment, ...],
+        cache_class: str,
+    ) -> int | None:
+        for index, fragment in enumerate(fragments):
+            if fragment.metadata.get("cache_class") == cache_class:
+                return index
+        return None
+
+    def _provider_cache_hint(self, lane: ProviderProjectionLane) -> str | None:
+        if lane is ProviderProjectionLane.RESPONSES:
+            return "prompt_cache_key_candidate"
+        if lane is ProviderProjectionLane.ANTHROPIC_MESSAGES:
+            return "cache_control_breakpoint_candidates"
+        if lane is ProviderProjectionLane.CHAT_COMPLETIONS:
+            return "stable_transcript_prefix"
+        return None
+
+    def _provider_wire_only_hints(
+        self,
+        lane: ProviderProjectionLane,
+    ) -> tuple[str, ...]:
+        if lane is ProviderProjectionLane.RESPONSES:
+            return ("prompt_cache_key",)
+        if lane is ProviderProjectionLane.ANTHROPIC_MESSAGES:
+            return ("cache_control",)
+        return ()
 
     def _responses_provider_runtime_items(
         self,
@@ -561,11 +647,14 @@ class RequestShapeBuilder:
             content = self._contextual_section_content(section, contract).strip()
             if not content:
                 continue
-            base_id, kind = self._fragment_identity(str(section.kind))
+            cache_class = self._cache_class(section)
+            base_id, kind = self._fragment_identity(
+                str(section.kind),
+                cache_class=cache_class,
+            )
             index = seen.get(base_id, 0)
             seen[base_id] = index + 1
             fragment_id = base_id if index == 0 else f"{base_id}:{index + 1}"
-            cache_class = self._cache_class(section)
             stability = self._fragment_stability(cache_class)
             fragments.append(
                 RequestFragment(
@@ -695,15 +784,18 @@ class RequestShapeBuilder:
     def _fragment_identity(
         self,
         section_kind: str,
+        *,
+        cache_class: str = "dynamic",
     ) -> tuple[str, RequestFragmentKind]:
         normalized = section_kind.strip().lower().replace(" ", "_")
         if normalized == "memory":
-            return "retrieved_memory", RequestFragmentKind.RETRIEVED_MEMORY
+            return "replay:retrieved_memory", RequestFragmentKind.RETRIEVED_MEMORY
         if normalized == "tool_exposure":
             return "stable:tool_exposure", RequestFragmentKind.STABLE
         if normalized in {"workspace_instructions", "skill_catalog"}:
             return f"stable:{normalized}", RequestFragmentKind.STABLE
-        return f"volatile:{normalized}", RequestFragmentKind.VOLATILE
+        prefix = "volatile" if cache_class == "ephemeral" else "replay"
+        return f"{prefix}:{normalized}", RequestFragmentKind.VOLATILE
 
     def _normalized_tools(
         self,

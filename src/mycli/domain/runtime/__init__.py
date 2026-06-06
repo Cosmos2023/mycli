@@ -47,6 +47,8 @@ from mycli.domain.runtime.planning import (
 from mycli.domain.runtime.request_shape import (
     FragmentStability as FragmentStability,
     ProviderMessageShape as ProviderMessageShape,
+    ProviderProjectionLane as ProviderProjectionLane,
+    ProviderProjectionShape as ProviderProjectionShape,
     ProviderRuntimeItemShape as ProviderRuntimeItemShape,
     RequestFragment as RequestFragment,
     RequestFragmentKind as RequestFragmentKind,

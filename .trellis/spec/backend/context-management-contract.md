@@ -24,6 +24,8 @@
 - Trace kinds:
   `context_diagnostics`
   `context_summary_persistence`
+  `request_shape`
+  `cache_shape_diagnostic`
 - Smoke:
   `uv run python evaluation/context_smoke.py`
 
@@ -49,6 +51,34 @@
   current user request/new user input.
 - Request fragments must preserve cache class/source metadata so cache and trace
   policy does not infer behavior from section names.
+- Provider-visible request shape order is stable prefix first, dynamic replay
+  second, and ephemeral/current intent last. Dynamic replay fragments should use
+  `replay:*` identifiers; ephemeral fragments should use `volatile:*`
+  identifiers.
+- `RequestShape.summary()` must include:
+  - `section_boundaries`
+  - `cacheable_prefix_fragment_ids`
+  - `cacheable_prefix_hash`
+  - `estimated_cacheable_prefix_chars`
+  - `provider_projection`
+  - `compact_policy`
+- Provider projection diagnostics must distinguish the protocol lane without
+  mutating canonical timeline content:
+  - Responses: `lane=responses`, optional future `prompt_cache_key` as
+    wire-only hint.
+  - Chat Completions: `lane=chat_completions`, stable transcript prefix.
+  - Anthropic Messages: `lane=anthropic_messages`, optional future
+    `cache_control` as wire-only hint.
+- Compact policy diagnostics must state that all providers use the canonical
+  compact engine by default. Cheap pruning may only target dynamic replay and
+  must not alter the stable prefix hash.
+- Cache-shape diagnostics must include `first_changed_cache_class`,
+  section-boundary metadata, provider projection metadata, compact policy
+  metadata, and bounded provider cache usage when available.
+- Doctor context diagnostics must report bounded row counts for request-shape
+  and cache-shape traces in addition to context trace rows.
+- Doctor must warn on anomalous stable prefix changes, using bounded counts such
+  as `stable_prefix_changes=<n>` rather than raw fragment text or hashes.
 - Context diagnostics trace payloads are bounded counts, hashes, lengths, and
   status flags only. They must not include raw context file content, raw memory,
   user text, tool output, headers, or secrets.
@@ -69,6 +99,17 @@
 - Doctor with no traces -> context check still reports loader and session summary
   state without creating traces.
 - Doctor with context traces -> report counts and token maxima only.
+- Changing only the current user request or runtime reminders must leave
+  `cacheable_prefix_hash` unchanged and report the first changed cache class as
+  `ephemeral`.
+- Changing workspace instructions or deterministic tool schema should change the
+  stable prefix hash.
+- A cache-shape diagnostic with `first_changed_cache_class=static` -> doctor
+  context warning with a bounded stable-prefix-change count.
+- Compaction rehydration must be dynamic and placed before current user intent.
+- Anthropic `cache_control` and OpenAI `prompt_cache_key` must not be persisted
+  into canonical messages or request fragments; they are provider wire/request
+  hints only.
 
 ### 5. Good/Base/Bad Cases
 
@@ -85,10 +126,15 @@
 - Loader tests for priority, upward/root fallback, truncation, and blocking.
 - Assembler tests for cache classes and reference fences.
 - Instruction contract/request-shape tests for metadata preservation.
+- Request-shape tests for provider projection lanes and canonical compact policy
+  summary.
+- Cache-shape diagnostic tests for first changed cache class, section
+  boundaries, provider projection metadata, and compact policy metadata.
 - Runtime/trace tests for context diagnostics and summary persistence when
   compaction summaries are produced.
 - Doctor tests for bounded context diagnostics and raw-content redaction.
-- Provider-free `evaluation/context_smoke.py`.
+- Provider-free `evaluation/context_smoke.py`, including stable prefix hash
+  stability when only ephemeral/current intent changes.
 
 ### 7. Wrong vs Correct
 

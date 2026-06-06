@@ -3,6 +3,8 @@ from __future__ import annotations
 from mycli.domain.runtime import (
     FragmentStability,
     ProviderMessageShape,
+    ProviderProjectionLane,
+    ProviderProjectionShape,
     RequestFragment,
     RequestFragmentKind,
     RequestShape,
@@ -33,6 +35,15 @@ def _shape(*, fragment_content: str, second_message: str = "same") -> RequestSha
         provider_messages=(
             ProviderMessageShape(role="system", content="stable system"),
             ProviderMessageShape(role="user", content=second_message),
+        ),
+        provider_projection=ProviderProjectionShape(
+            lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+            message_count=2,
+            runtime_item_count=0,
+            cacheable_prefix_fragment_count=0,
+            first_dynamic_fragment_index=None,
+            first_ephemeral_fragment_index=0,
+            cache_hint="stable_transcript_prefix",
         ),
     )
 
@@ -126,6 +137,15 @@ def test_diagnostic_reports_cache_boundary_and_metadata_completeness() -> None:
     }
     assert payload["metadata"]["fragment_metadata_complete"] is True
     assert payload["metadata"]["missing_fragment_metadata"] == ()
+    assert payload["metadata"]["section_boundaries"] == shape.section_boundaries()
+    assert payload["metadata"]["provider_projection"] is None
+    assert payload["metadata"]["compact_policy"] == {
+        "engine": "canonical",
+        "cheap_pruning_scope": "dynamic_replay",
+        "stable_prefix_protected": True,
+        "rehydration_cache_class": "dynamic",
+        "provider_specific_compact": False,
+    }
 
 
 def test_diagnostic_finds_first_changed_fragment() -> None:
@@ -135,6 +155,7 @@ def test_diagnostic_finds_first_changed_fragment() -> None:
     diagnostic = CacheShapeDiagnostics().build(current=current, previous=previous)
 
     assert diagnostic.first_changed_fragment_id == "intent:current"
+    assert diagnostic.first_changed_cache_class == "ephemeral"
     assert diagnostic.first_changed_provider_message_index is None
 
 

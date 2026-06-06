@@ -5,14 +5,53 @@ import json
 from pathlib import Path
 import tempfile
 
+from mycli.application.runtime.request import CacheShapeDiagnostics, RequestShapeBuilder
+from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryKind, MemoryRecord
-from mycli.domain.runtime import AgentConfig, ExecutionContext, PlanState
+from mycli.domain.runtime import (
+    AgentConfig,
+    ExecutionContext,
+    InstructionContract,
+    InstructionFragment,
+    PlanState,
+)
+from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
+from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
 from mycli.memory.service import MemoryService
 from mycli.services.context import ContextFileLoader, TurnContextAssembler, TurnContextBudgeter
 from mycli.services.diagnostics.doctor import DoctorService
 from mycli.services.tracing import TraceService
-from mycli.domain.runtime.tracing import RuntimeTraceEvent
+
+
+def _cache_contract(
+    *,
+    current_user_request: str,
+    runtime_reminder: str,
+) -> InstructionContract:
+    return InstructionContract(
+        base_instructions="Stable system rules.",
+        contextual_user_sections=(
+            InstructionFragment(
+                kind="workspace_instructions",
+                title="Workspace",
+                content="<workspace-context>Use pytest.</workspace-context>",
+                source=".mycli.md",
+                metadata={"cache_class": "static"},
+            ),
+            InstructionFragment(
+                kind="runtime_reminders",
+                title="Runtime reminders",
+                content=runtime_reminder,
+                metadata={"cache_class": "ephemeral"},
+            ),
+        ),
+        conversation_messages=(
+            Message(role="user", content="Earlier request"),
+            Message(role="assistant", content="Earlier answer"),
+        ),
+        current_user_request=current_user_request,
+    )
 
 
 def main() -> int:
@@ -134,6 +173,54 @@ def main() -> int:
                 payload=budget_diagnostic.to_dict(),
             ),
         )
+        cache_builder = RequestShapeBuilder()
+        request_config = AgentConfig(
+            workspace_root=workspace,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        )
+        tool = ModelToolDefinition(
+            name="read_file",
+            description="Read a file",
+            parameters=(ModelToolParameter(name="path", type="string"),),
+        )
+        first_shape = cache_builder.build(
+            config=request_config,
+            contract=_cache_contract(
+                current_user_request="inspect cache policy",
+                runtime_reminder="runtime reminder turn one",
+            ),
+            tools=(tool,),
+        )
+        second_shape = cache_builder.build(
+            config=request_config,
+            contract=_cache_contract(
+                current_user_request="inspect cache policy with new intent",
+                runtime_reminder="runtime reminder turn two",
+            ),
+            tools=(tool,),
+        )
+        cache_diagnostic = CacheShapeDiagnostics().build(
+            current=second_shape,
+            previous=first_shape,
+        )
+        trace.append(
+            "context-smoke",
+            RuntimeTraceEvent(
+                kind="request_shape",
+                turn_id="turn_2",
+                payload=second_shape.summary(),
+            ),
+        )
+        trace.append(
+            "context-smoke",
+            RuntimeTraceEvent(
+                kind="cache_shape_diagnostic",
+                turn_id="turn_2",
+                payload=cache_diagnostic.to_dict(),
+            ),
+        )
         report = DoctorService(
             workspace_root=workspace,
             home_dir=home,
@@ -170,6 +257,13 @@ def main() -> int:
             "trimmed_user_request_preserved": (
                 trimmed_user_request.content == "Current user request: keep this exact request"
             ),
+            "cacheable_prefix_hash_stable": (
+                first_shape.cacheable_prefix_hash() == second_shape.cacheable_prefix_hash()
+            ),
+            "volatile_hash_changed": first_shape.volatile_hash != second_shape.volatile_hash,
+            "first_changed_cache_class": cache_diagnostic.first_changed_cache_class,
+            "request_shape_trace_available": "request_shape_rows=1" in context_check.message,
+            "cache_shape_trace_available": "cache_shape_rows=1" in context_check.message,
         }
         ok = (
             payload["selected_source"] == ".mycli"
@@ -183,6 +277,11 @@ def main() -> int:
             and payload["budget_saved_tokens"] > 0
             and payload["trimmed_user_request_preserved"] is True
             and "context_budget_rows=1" in context_check.message
+            and payload["cacheable_prefix_hash_stable"] is True
+            and payload["volatile_hash_changed"] is True
+            and payload["first_changed_cache_class"] == "ephemeral"
+            and payload["request_shape_trace_available"] is True
+            and payload["cache_shape_trace_available"] is True
         )
         payload["ok"] = ok
         output_dir = Path(__file__).resolve().parent / "runs"

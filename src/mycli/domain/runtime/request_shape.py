@@ -29,6 +29,12 @@ class RequestFragmentKind(StrEnum):
     TOOL_POLICY = "tool_policy"
 
 
+class ProviderProjectionLane(StrEnum):
+    RESPONSES = "responses"
+    CHAT_COMPLETIONS = "chat_completions"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+
+
 @dataclass(slots=True, frozen=True)
 class RequestFragment:
     id: str
@@ -123,6 +129,37 @@ class ProviderRuntimeItemShape:
 
 
 @dataclass(slots=True, frozen=True)
+class ProviderProjectionShape:
+    """Provider-facing view of the canonical request shape.
+
+    This is a diagnostic/contract object, not the final wire payload. It records
+    which provider lane owns projection decisions while keeping wire-only cache
+    hints out of the canonical timeline.
+    """
+
+    lane: ProviderProjectionLane
+    message_count: int
+    runtime_item_count: int
+    cacheable_prefix_fragment_count: int
+    first_dynamic_fragment_index: int | None
+    first_ephemeral_fragment_index: int | None
+    cache_hint: str | None = None
+    wire_only_hints: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "lane": self.lane.value,
+            "message_count": self.message_count,
+            "runtime_item_count": self.runtime_item_count,
+            "cacheable_prefix_fragment_count": self.cacheable_prefix_fragment_count,
+            "first_dynamic_fragment_index": self.first_dynamic_fragment_index,
+            "first_ephemeral_fragment_index": self.first_ephemeral_fragment_index,
+            "cache_hint": self.cache_hint,
+            "wire_only_hints": self.wire_only_hints,
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class RequestShape:
     provider: str
     protocol: str
@@ -133,6 +170,7 @@ class RequestShape:
     fragments: tuple[RequestFragment, ...] = ()
     provider_messages: tuple[ProviderMessageShape, ...] = ()
     provider_runtime_items: tuple[ProviderRuntimeItemShape, ...] = ()
+    provider_projection: ProviderProjectionShape | None = None
 
     def __post_init__(self) -> None:
         if not self.provider.strip():
@@ -195,6 +233,15 @@ class RequestShape:
             fragment.char_length for fragment in self.fragments if fragment.id in prefix_ids
         )
 
+    def compact_policy_summary(self) -> dict[str, object]:
+        return {
+            "engine": "canonical",
+            "cheap_pruning_scope": "dynamic_replay",
+            "stable_prefix_protected": True,
+            "rehydration_cache_class": "dynamic",
+            "provider_specific_compact": False,
+        }
+
     def fragment_metadata_summary(self) -> dict[str, dict[str, object]]:
         return {
             fragment.id: {
@@ -206,6 +253,20 @@ class RequestShape:
             }
             for fragment in self.fragments
         }
+
+    def section_boundaries(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "fragment_id": fragment.id,
+                "cache_class": fragment.metadata.get("cache_class"),
+                "stability": fragment.stability.value,
+                "kind": fragment.kind.value,
+                "source": fragment.metadata.get("source"),
+                "length": fragment.char_length,
+                "cacheable_prefix": fragment.id in self.cacheable_prefix_fragment_ids(),
+            }
+            for fragment in self.fragments
+        )
 
     def summary(self) -> dict[str, object]:
         return {
@@ -219,11 +280,18 @@ class RequestShape:
             "volatile_hash": self.volatile_hash,
             "fragment_hashes": self.fragment_hashes(),
             "fragment_metadata": self.fragment_metadata_summary(),
+            "section_boundaries": self.section_boundaries(),
             "cacheable_prefix_fragment_ids": self.cacheable_prefix_fragment_ids(),
             "cacheable_prefix_hash": self.cacheable_prefix_hash(),
             "estimated_cacheable_prefix_chars": self.estimated_cacheable_prefix_chars(),
             "provider_message_hashes": self.provider_message_hashes(),
             "provider_runtime_item_hashes": self.provider_runtime_item_hashes(),
+            "provider_projection": (
+                self.provider_projection.to_dict()
+                if self.provider_projection is not None
+                else None
+            ),
+            "compact_policy": self.compact_policy_summary(),
             "fragment_lengths": {
                 fragment.id: fragment.char_length for fragment in self.fragments
             },
