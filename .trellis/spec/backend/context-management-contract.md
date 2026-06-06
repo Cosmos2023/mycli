@@ -593,3 +593,77 @@ if block.metadata.get("anthropic", {}).get("type") == "thinking":
 responses_items.extend(responses_replay_items(item.metadata.get("provider_state")))
 chat_message = sanitize_provider_private(chat_message)
 ```
+
+## Scenario: Compact Cheap Pruning / Tail Protection
+
+### 1. Scope / Trigger
+
+- Trigger: changes to `services/context/compaction`, cheap pruning strategies,
+  tail protection, tool result shrinking, or tool-call argument pruning.
+- The flow crosses conversation messages, cache zones, compaction budget
+  recalculation, request-shape replay, and provider transcript validity tests.
+
+### 2. Signatures
+
+- Strategy:
+  `CheapPruning.apply(conversation: Conversation, zones: CacheZones, budget: ContextBudget) -> Conversation`
+- Pipeline:
+  `CompactionPipeline.apply(conversation: Conversation, budget: ContextBudget) -> Conversation`
+- Boundary:
+  `CacheZones.from_conversation(conversation).frozen_fingerprint`
+
+### 3. Contracts
+
+- Cheap pruning may only target messages at or after `CacheZones.fresh_start`.
+- Messages before the frozen boundary must remain byte-for-byte unchanged and
+  must preserve `frozen_fingerprint`.
+- Existing `append_only` or legacy `cache_frozen` messages are not rewritten.
+- The protected tail remains byte-for-byte unchanged.
+- Tail protection expands by semantic group:
+  - a protected tool result protects its assistant tool-call message.
+  - a protected assistant tool-call message protects matching tool results.
+  - protected messages sharing the same `response_id` protect the whole group.
+- Duplicate old tool results may be replaced by deterministic back-reference
+  messages, preserving the original call id and bounded metadata.
+- Large old tool results may be converted to structured summaries with bounded
+  preview text and original-content hashes.
+- Large tool-call arguments may be truncated recursively inside dict/list
+  values, but the arguments object must remain structured and JSON-compatible.
+- Cheap pruning runs before `ContextWindowAnalyzer` and `LLMSummarization` so
+  budget and diagnostics reflect the pruned conversation.
+- P7a must not perform canonical summary replacement, durable/turn
+  rehydration, session lineage switching, or provider-specific compact.
+
+### 4. Validation & Error Matrix
+
+- Static prefix + large dynamic tool result -> dynamic tool result may shrink,
+  static prefix fingerprint unchanged.
+- Recent tail with large tool result -> tail content remains unchanged.
+- Tail includes tool result whose assistant tool-call is just outside the tail
+  count -> assistant tool-call is protected too.
+- Duplicate old tool results -> older duplicate becomes a bounded
+  back-reference to the newest unprotected duplicate.
+- Tool call arguments contain long nested strings -> nested strings are
+  truncated, dict/list structure remains intact.
+
+### 5. Good/Base/Bad Cases
+
+- Good: old repeated `Read` output becomes `[duplicate tool result omitted; see
+  <call_id>]` with `cheap_pruning_kind=duplicate_tool_result`.
+- Good: old oversized `Write` arguments keep a dict payload but long string
+  values end with `...[truncated]`.
+- Base: conversation below pressure or without prunable old dynamic content is
+  returned unchanged.
+- Bad: modifying `STATIC` messages, changing the newest user/tool tail, or
+  producing orphan Chat tool results.
+
+### 6. Tests Required
+
+- Unit test static prefix invariant after cheap pruning.
+- Unit test protected tail remains unchanged.
+- Unit test tool-call/tool-result group protection.
+- Unit test duplicate tool-result back-reference.
+- Unit test old large tool-result structured summary.
+- Unit test recursive tool-call argument truncation keeps dict/list structure.
+- Existing compaction transcript validity and cache stability regression tests
+  must pass.

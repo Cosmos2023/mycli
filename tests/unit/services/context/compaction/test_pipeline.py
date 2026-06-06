@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import RuntimeBlock
+from mycli.domain.tooling.calls import ToolCall
 from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.compaction.pipeline import (
+    CheapPruning,
     CompactionCostProfile,
     CompactionPipeline,
     ContextWindowAnalyzer,
@@ -47,8 +49,138 @@ def _tool_msg(
     )
 
 
+def _assistant_tool_call(call_id: str, *, argument_size: int = 0) -> Message:
+    arguments: dict[str, object] = {"path": "/a.py"}
+    if argument_size:
+        arguments["content"] = "x" * argument_size
+        arguments["nested"] = {"payload": "y" * argument_size}
+    return Message(
+        role="assistant",
+        content="",
+        tool_calls=(
+            ToolCall(
+                name="write_file",
+                arguments=arguments,
+                reason="test",
+                call_id=call_id,
+            ),
+        ),
+        metadata={"cache_policy": "DYNAMIC"},
+        blocks=(
+            RuntimeBlock(
+                type="tool_call",
+                tool_name="write_file",
+                tool_arguments=arguments,
+                call_id=call_id,
+            ),
+        ),
+    )
+
+
 def _zones(conversation: Conversation) -> CacheZones:
     return CacheZones.from_conversation(conversation)
+
+
+class TestCheapPruning:
+    def test_preserves_static_prefix_and_recent_tail_unchanged(self) -> None:
+        strategy = CheapPruning(protected_tail_messages=2, tool_result_max_chars=80)
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="system", content="sys", metadata={"cache_policy": "STATIC"}),
+                Message(role="user", content="old", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("old1", content="x = 1\n" * 80),
+                Message(role="user", content="tail user", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("tail1", content="tail result " * 80),
+            ],
+        )
+        before_static = conversation.messages[0]
+        before_tail = tuple(conversation.messages[-2:])
+        before_fingerprint = _zones(conversation).frozen_fingerprint
+
+        result = strategy.apply(
+            conversation,
+            _zones(conversation),
+            ContextBudget(max_tokens=1000, total_tokens=900),
+        )
+
+        assert result.messages[0] == before_static
+        assert tuple(result.messages[-2:]) == before_tail
+        assert _zones(result).frozen_fingerprint == before_fingerprint
+        assert result.messages[2].metadata["cheap_pruned"] is True
+
+    def test_deduplicates_old_tool_results_with_back_reference(self) -> None:
+        strategy = CheapPruning(protected_tail_messages=1)
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="start", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("old1", path="/a.py", content="same", summary="Read file"),
+                _tool_msg("old2", path="/a.py", content="same", summary="Read file"),
+                Message(role="assistant", content="tail", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = strategy.apply(
+            conversation,
+            _zones(conversation),
+            ContextBudget(max_tokens=1000, total_tokens=900),
+        )
+
+        assert result.messages[1].content.startswith("[duplicate tool result omitted; see ")
+        assert result.messages[1].tool_call_id == "old1"
+        assert result.messages[1].metadata["cheap_pruning_kind"] == "duplicate_tool_result"
+        assert result.messages[2].content == "same"
+
+    def test_expands_tail_to_keep_tool_call_group_together(self) -> None:
+        strategy = CheapPruning(protected_tail_messages=1, tool_result_max_chars=40)
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="old", metadata={"cache_policy": "DYNAMIC"}),
+                _assistant_tool_call("call_tail", argument_size=300),
+                _tool_msg("call_tail", content="tail result " * 80),
+            ],
+        )
+        before_tail_group = tuple(conversation.messages[-2:])
+
+        result = strategy.apply(
+            conversation,
+            _zones(conversation),
+            ContextBudget(max_tokens=1000, total_tokens=900),
+        )
+
+        assert tuple(result.messages[-2:]) == before_tail_group
+
+    def test_truncates_old_tool_call_arguments_without_losing_structure(self) -> None:
+        strategy = CheapPruning(
+            protected_tail_messages=1,
+            tool_argument_string_max_chars=16,
+        )
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="old", metadata={"cache_policy": "DYNAMIC"}),
+                _assistant_tool_call("call_old", argument_size=200),
+                Message(role="assistant", content="tail", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = strategy.apply(
+            conversation,
+            _zones(conversation),
+            ContextBudget(max_tokens=1000, total_tokens=900),
+        )
+
+        pruned_call = result.messages[1].tool_calls[0]
+        assert isinstance(pruned_call.arguments, dict)
+        assert pruned_call.arguments["content"] == "x" * 16 + "...[truncated]"
+        nested = pruned_call.arguments["nested"]
+        assert isinstance(nested, dict)
+        assert nested["payload"] == "y" * 16 + "...[truncated]"
+        block_arguments = result.messages[1].blocks[0].tool_arguments
+        assert block_arguments == pruned_call.arguments
+        assert result.messages[1].metadata["cheap_pruning_kind"] == "tool_call_arguments"
 
 
 class TestContextWindowAnalyzer:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from typing import Protocol
 
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import RuntimeBlock
-from mycli.domain.tooling.calls import ToolEvidence
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.token_counter import TokenCounter
@@ -227,6 +228,289 @@ class ContextWindowAnalyzer:
             ),
         )
         return conversation
+
+
+class CheapPruning:
+    def __init__(
+        self,
+        *,
+        protected_tail_messages: int = 6,
+        tool_result_max_chars: int = 1200,
+        tool_argument_string_max_chars: int = 2000,
+    ) -> None:
+        self._protected_tail_messages = max(0, protected_tail_messages)
+        self._tool_result_max_chars = max(20, tool_result_max_chars)
+        self._tool_argument_string_max_chars = max(8, tool_argument_string_max_chars)
+
+    def apply(
+        self,
+        conversation: Conversation,
+        zones: CacheZones,
+        budget: ContextBudget,
+    ) -> Conversation:
+        del budget
+        protected = self._protected_indexes(conversation, zones)
+        duplicate_references = self._duplicate_references(conversation, zones, protected)
+        compacted = _copy_conversation(conversation)
+        changed = False
+        for index, message in enumerate(conversation.messages):
+            if index < zones.fresh_start or index in protected or _is_append_only(message):
+                continue
+            if reference := duplicate_references.get(index):
+                compacted.messages[index] = self._duplicate_reference_message(
+                    message,
+                    reference=reference,
+                )
+                changed = True
+                continue
+            if message.role == "tool" and len(message.content) > self._tool_result_max_chars:
+                compacted.messages[index] = self._summarized_tool_result_message(message)
+                changed = True
+                continue
+            if message.role == "assistant" and self._has_oversized_tool_arguments(message):
+                compacted.messages[index] = self._truncated_tool_call_message(message)
+                changed = True
+        return compacted if changed else conversation
+
+    def _protected_indexes(
+        self,
+        conversation: Conversation,
+        zones: CacheZones,
+    ) -> set[int]:
+        message_count = len(conversation.messages)
+        tail_start = max(zones.fresh_start, message_count - self._protected_tail_messages)
+        protected = set(range(tail_start, message_count))
+        changed = True
+        while changed:
+            changed = False
+            for index, message in enumerate(conversation.messages):
+                if index < zones.fresh_start:
+                    continue
+                if message.response_id and index in protected:
+                    for peer_index, peer in enumerate(conversation.messages):
+                        if (
+                            peer_index >= zones.fresh_start
+                            and peer.response_id == message.response_id
+                            and peer_index not in protected
+                        ):
+                            protected.add(peer_index)
+                            changed = True
+                if message.role == "tool" and index in protected and message.tool_call_id:
+                    for call_index in self._assistant_indexes_for_call(
+                        conversation,
+                        message.tool_call_id,
+                    ):
+                        if call_index not in protected:
+                            protected.add(call_index)
+                            changed = True
+                if message.role == "assistant" and index in protected:
+                    for call_id in self._message_tool_call_ids(message):
+                        for result_index in self._tool_result_indexes_for_call(
+                            conversation,
+                            call_id,
+                        ):
+                            if result_index not in protected:
+                                protected.add(result_index)
+                                changed = True
+        return protected
+
+    def _duplicate_references(
+        self,
+        conversation: Conversation,
+        zones: CacheZones,
+        protected: set[int],
+    ) -> dict[int, str]:
+        last_by_signature: dict[str, int] = {}
+        references: dict[int, str] = {}
+        for index in range(len(conversation.messages) - 1, zones.fresh_start - 1, -1):
+            if index in protected:
+                continue
+            message = conversation.messages[index]
+            if message.role != "tool" or _is_append_only(message):
+                continue
+            signature = _tool_result_signature(message)
+            if signature is None:
+                continue
+            if signature in last_by_signature:
+                references[index] = self._reference_id(conversation.messages[last_by_signature[signature]])
+                continue
+            last_by_signature[signature] = index
+        return references
+
+    def _duplicate_reference_message(self, message: Message, *, reference: str) -> Message:
+        content = f"[duplicate tool result omitted; see {reference}]"
+        return _replace_tool_message(
+            message,
+            content=content,
+            metadata_updates={
+                "cheap_pruned": True,
+                "cheap_pruning_kind": "duplicate_tool_result",
+                "cheap_pruning_reference": reference,
+                "original_content_hash": _content_hash(message.content),
+            },
+            block_metadata_updates={
+                "cheap_pruned": True,
+                "cheap_pruning_kind": "duplicate_tool_result",
+                "reference": reference,
+            },
+        )
+
+    def _summarized_tool_result_message(self, message: Message) -> Message:
+        summary = _tool_summary_for_message(message)
+        tool_name = _tool_name_for_message(message)
+        path = _extract_tool_path(message)
+        parts = [
+            "[tool result pruned]",
+            f"tool: {tool_name}",
+            f"summary: {summary}",
+        ]
+        if path:
+            parts.append(f"path: {path}")
+        preview_limit = max(0, self._tool_result_max_chars - len("\n".join(parts)) - 20)
+        preview = " ".join(message.content.split())[:preview_limit]
+        if preview:
+            parts.append(f"preview: {preview}")
+        content = "\n".join(parts)
+        return _replace_tool_message(
+            message,
+            content=content,
+            metadata_updates={
+                "cheap_pruned": True,
+                "cheap_pruning_kind": "tool_result_summary",
+                "original_content_hash": _content_hash(message.content),
+            },
+            block_metadata_updates={
+                "cheap_pruned": True,
+                "cheap_pruning_kind": "tool_result_summary",
+            },
+        )
+
+    def _truncated_tool_call_message(self, message: Message) -> Message:
+        tool_calls = tuple(self._truncate_tool_call(call) for call in message.tool_calls)
+        blocks = tuple(self._truncate_tool_call_block(block) for block in message.blocks)
+        metadata = dict(message.metadata)
+        metadata.update(
+            {
+                "cheap_pruned": True,
+                "cheap_pruning_kind": "tool_call_arguments",
+            }
+        )
+        return Message(
+            role=message.role,
+            content=message.content,
+            tool_call_id=message.tool_call_id,
+            tool_calls=tool_calls,
+            blocks=blocks,
+            response_id=message.response_id,
+            metadata=metadata,
+        )
+
+    def _truncate_tool_call(self, call: ToolCall) -> ToolCall:
+        return ToolCall(
+            name=call.name,
+            arguments=self._truncate_mapping(call.arguments),
+            reason=call.reason,
+            call_id=call.call_id,
+        )
+
+    def _truncate_tool_call_block(self, block: RuntimeBlock) -> RuntimeBlock:
+        if block.type != "tool_call" or block.tool_arguments is None:
+            return block
+        metadata = dict(block.metadata)
+        metadata.update(
+            {
+                "cheap_pruned": True,
+                "cheap_pruning_kind": "tool_call_arguments",
+            }
+        )
+        return RuntimeBlock(
+            type=block.type,
+            text=block.text,
+            tool_name=block.tool_name,
+            tool_arguments=self._truncate_mapping(block.tool_arguments),
+            call_id=block.call_id,
+            provider_id=block.provider_id,
+            source=block.source,
+            metadata=metadata,
+        )
+
+    def _truncate_mapping(self, value: dict[str, object]) -> dict[str, object]:
+        return {
+            str(key): self._truncate_value(item)
+            for key, item in value.items()
+        }
+
+    def _truncate_value(self, value: object) -> object:
+        if isinstance(value, str):
+            if len(value) <= self._tool_argument_string_max_chars:
+                return value
+            return value[: self._tool_argument_string_max_chars] + "...[truncated]"
+        if isinstance(value, dict):
+            return {str(key): self._truncate_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._truncate_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._truncate_value(item) for item in value]
+        return value
+
+    def _has_oversized_tool_arguments(self, message: Message) -> bool:
+        for call in message.tool_calls:
+            if self._value_has_oversized_string(call.arguments):
+                return True
+        for block in message.blocks:
+            if block.type == "tool_call" and self._value_has_oversized_string(
+                block.tool_arguments
+            ):
+                return True
+        return False
+
+    def _value_has_oversized_string(self, value: object) -> bool:
+        if isinstance(value, str):
+            return len(value) > self._tool_argument_string_max_chars
+        if isinstance(value, dict):
+            return any(self._value_has_oversized_string(item) for item in value.values())
+        if isinstance(value, list | tuple):
+            return any(self._value_has_oversized_string(item) for item in value)
+        return False
+
+    def _message_tool_call_ids(self, message: Message) -> set[str]:
+        return {
+            call_id
+            for call in message.tool_calls
+            if (call_id := _tool_call_identifier(call))
+        } | {
+            block.call_id
+            for block in message.blocks
+            if block.type == "tool_call" and block.call_id
+        }
+
+    def _assistant_indexes_for_call(
+        self,
+        conversation: Conversation,
+        call_id: str,
+    ) -> set[int]:
+        return {
+            index
+            for index, message in enumerate(conversation.messages)
+            if message.role == "assistant"
+            and call_id in self._message_tool_call_ids(message)
+        }
+
+    def _tool_result_indexes_for_call(
+        self,
+        conversation: Conversation,
+        call_id: str,
+    ) -> set[int]:
+        return {
+            index
+            for index, message in enumerate(conversation.messages)
+            if message.role == "tool" and message.tool_call_id == call_id
+        }
+
+    def _reference_id(self, message: Message) -> str:
+        if message.tool_call_id:
+            return message.tool_call_id
+        return _content_hash(message.content)[:16]
 
 
 class LLMSummarization:
@@ -554,12 +838,14 @@ class CompactionPipeline:
         self,
         *,
         tool_result_budget: ToolResultBudget,
+        cheap_pruning: CheapPruning | None = None,
         context_window_analyzer: ContextWindowAnalyzer,
         llm_summarization: LLMSummarization,
         token_counter: TokenCounter | None = None,
         hook_manager: HookManager | None = None,
     ) -> None:
         self.tool_result_budget = tool_result_budget
+        self.cheap_pruning = cheap_pruning or CheapPruning()
         self.context_window_analyzer = context_window_analyzer
         self.llm_summarization = llm_summarization
         self._token_counter = token_counter or TokenCounter()
@@ -586,6 +872,11 @@ class CompactionPipeline:
         )
         zones = CacheZones.from_conversation(conversation)
         compacted = self.tool_result_budget.apply(conversation, zones, budget)
+        compacted = self.cheap_pruning.apply(
+            compacted,
+            CacheZones.from_conversation(compacted),
+            budget,
+        )
         current_budget = ContextBudget.from_estimate(
             max_tokens=budget.max_tokens,
             estimated_input_tokens=sum(
@@ -605,6 +896,10 @@ def _copy_conversation(conversation: Conversation) -> Conversation:
         fork_point=conversation.fork_point,
         messages=list(conversation.messages),
     )
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _estimate_message_tokens(message: Message) -> int:
