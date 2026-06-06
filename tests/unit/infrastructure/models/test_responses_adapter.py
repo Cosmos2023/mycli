@@ -330,6 +330,147 @@ def test_responses_adapter_passes_prompt_cache_key_to_client() -> None:
     assert client.captured_prompt_cache_key == "mycli:openai:responses:stable"
 
 
+def test_responses_adapter_replays_same_issuer_reasoning_and_message_items() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(RuntimeBlock(type="text", text="Visible answer."),),
+                metadata={
+                    "provider_state": {
+                        "issuer": "openai_responses",
+                        "codex_reasoning_items": [
+                            {
+                                "id": "rs_1",
+                                "type": "reasoning",
+                                "encrypted_content": "opaque",
+                                "summary": [],
+                                "status": "completed",
+                                "_issuer_kind": "openai_responses",
+                            }
+                        ],
+                        "codex_message_items": [
+                            {
+                                "id": "msg_1",
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": "Visible answer.",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                },
+            )
+        ],
+        tools=[],
+    )
+
+    assert client.captured_input_items[:2] == [
+        {
+            "id": "rs_1",
+            "type": "reasoning",
+            "encrypted_content": "opaque",
+            "summary": [],
+            "status": "completed",
+        },
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Visible answer.",
+                }
+            ],
+        },
+    ]
+
+
+def test_responses_adapter_filters_foreign_issuer_reasoning_items() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(RuntimeBlock(type="text", text="Visible answer."),),
+                metadata={
+                    "provider_state": {
+                        "issuer": "other_responses",
+                        "codex_reasoning_items": [
+                            {
+                                "id": "rs_foreign",
+                                "type": "reasoning",
+                                "encrypted_content": "foreign",
+                                "_issuer_kind": "other_responses",
+                            }
+                        ],
+                    }
+                },
+            )
+        ],
+        tools=[],
+    )
+
+    assert all(
+        item.get("type") != "reasoning"
+        for item in client.captured_input_items
+        if isinstance(item, dict)
+    )
+    assert client.captured_input_items == [
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "Visible answer."}],
+        }
+    ]
+
+
+def test_responses_adapter_uses_deterministic_fallback_ids_for_replay_items() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+    items = [
+        RuntimeItem(
+            role="assistant",
+            blocks=(RuntimeBlock(type="text", text="Visible answer."),),
+            metadata={
+                "provider_state": {
+                    "codex_message_items": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "Visible answer.",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+        )
+    ]
+
+    adapter.next_turn(items=items, tools=[])
+    first_id = client.captured_input_items[0]["id"]
+    adapter.next_turn(items=items, tools=[])
+    second_id = client.captured_input_items[0]["id"]
+
+    assert first_id == second_id
+    assert str(first_id).startswith("msg_")
+
+
 def test_responses_adapter_serializes_tool_result_payload_metadata_to_wire_text() -> None:
     client = FakeResponsesClient({"id": "resp_123", "output": []})
     adapter = ResponsesModelAdapter(client=client)

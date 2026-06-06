@@ -6,12 +6,15 @@ from mycli.domain.runtime.blocks import RuntimeBlock, RuntimeItem
 from mycli.llms.adapters.base import ModelToolDefinition
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
+from mycli.utils.provider_replay import responses_replay_items
 
 
 class ResponsesInputSerializer:
     def serialize_items(self, items: list[RuntimeItem]) -> list[dict[str, object]]:
         serialized_items: list[dict[str, object]] = []
         for item in items:
+            provider_state = item.metadata.get("provider_state")
+            serialized_items.extend(responses_replay_items(provider_state))
             content: list[dict[str, object]] = []
 
             def flush_message_content() -> None:

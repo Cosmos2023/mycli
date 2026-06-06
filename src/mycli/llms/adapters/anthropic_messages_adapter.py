@@ -6,6 +6,7 @@ from typing import Protocol, cast
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.runtime.blocks import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
 from mycli.domain.tooling.calls import ToolCall
+from mycli.utils.provider_replay import deterministic_provider_id
 from mycli.llms.adapters.base import (
     ModelAction,
     ModelMessage,
@@ -158,10 +159,11 @@ class AnthropicMessagesModelAdapter:
                 content.append(text_block)
                 continue
             if block.type == "tool_call":
+                tool_use_id = self._tool_use_id(block)
                 content.append(
                     {
                         "type": "tool_use",
-                        "id": str(block.call_id),
+                        "id": tool_use_id,
                         "name": str(block.tool_name),
                         "input": block.tool_arguments or {},
                     }
@@ -182,10 +184,34 @@ class AnthropicMessagesModelAdapter:
                     isinstance(raw_anthropic_block, dict)
                     and raw_anthropic_block.get("type") == "thinking"
                 ):
-                    content.append(dict(raw_anthropic_block))
-                    continue
-                content.append({"type": "thinking", "thinking": block.text})
+                    content.append(self._anthropic_thinking_block(raw_anthropic_block))
         return content
+
+    def _anthropic_thinking_block(
+        self,
+        raw_block: dict[object, object],
+    ) -> dict[str, object]:
+        return {
+            str(key): value
+            for key, value in raw_block.items()
+            if isinstance(key, str)
+            and not key.startswith("_")
+            and key not in {"cache_control", "provider_state", "responses"}
+        }
+
+    def _tool_use_id(self, block: RuntimeBlock) -> str:
+        if block.provider_id:
+            return block.provider_id
+        if block.call_id and block.call_id != "call_missing":
+            return block.call_id
+        return deterministic_provider_id(
+            "toolu",
+            {
+                "name": block.tool_name,
+                "arguments": block.tool_arguments or {},
+                "call_id": block.call_id,
+            },
+        )
 
     def _item_has_anthropic_breakpoint(
         self,

@@ -475,3 +475,121 @@ trace_payload["provider_request_policy"] = {
     "prompt_cache_key_preview": full_key[:48] + "...",
 }
 ```
+
+## Scenario: Provider Adapter Replay Hardening
+
+### 1. Scope / Trigger
+
+- Trigger: changes to Responses input serialization, Chat Completions provider
+  adapters, Anthropic Messages serialization, provider-private runtime
+  metadata, or deterministic fallback provider ids.
+- The flow crosses canonical runtime items, provider adapter wire projection,
+  provider-private state replay, schema sanitization, and local provider-free
+  tests.
+
+### 2. Signatures
+
+- Responses serialization:
+  `ResponsesInputSerializer.serialize_items(items: list[RuntimeItem]) -> list[dict[str, object]]`
+- Chat provider adapter:
+  `ChatProviderAdapter.adapt_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]`
+- Anthropic serialization:
+  `AnthropicMessagesModelAdapter._serialize_items(items) -> tuple[system, messages]`
+- Provider-private helper:
+  `responses_replay_items(provider_state: object) -> tuple[dict[str, object], ...]`
+  `sanitize_provider_private(value: object) -> object`
+  `deterministic_provider_id(prefix: str, payload: object) -> str`
+
+### 3. Contracts
+
+- Responses lane may replay provider-private state only from adapter-supported
+  provider state keys:
+  `codex_reasoning_items` and `codex_message_items`.
+- Responses encrypted reasoning replay must remain opaque. It must not be
+  flattened into `input_text`, assistant content, Chat messages, Anthropic
+  thinking blocks, summaries, trace payloads, or diagnostics.
+- Responses replay items are same-issuer only. A replay item with
+  `_issuer_kind` that is present and not equal to the supported Responses issuer
+  must be filtered before request serialization.
+- Responses replay item wire copies may retain only supported wire fields. All
+  underscore-prefixed keys and unsupported metadata keys must be removed.
+- Replay items lacking provider ids receive deterministic fallback ids derived
+  from their sanitized payload.
+- Chat Completions providers must strip provider-private fields recursively
+  before sending:
+  `provider_state`, `codex_reasoning_items`, `codex_message_items`, `responses`,
+  `cache_control`, `anthropic`, `thinking`, `signature`, `provider_request_policy`,
+  `metadata`, and underscore-prefixed keys.
+- Provider-specific Chat adapters may explicitly reintroduce supported metadata
+  from their own namespace. Example: DeepSeek may use `metadata.deepseek` to
+  replay `reasoning_content`, while default OpenAI-compatible adapters strip it.
+- Anthropic Messages serialization must ignore Responses-private reasoning
+  blocks. It may replay Anthropic raw thinking only when block metadata contains
+  an Anthropic `thinking` block.
+- Anthropic `cache_control` remains wire-only and must not mutate runtime items
+  or canonical timeline state.
+
+### 4. Validation & Error Matrix
+
+- Responses same-issuer `codex_reasoning_items` -> serialized as opaque
+  `reasoning` wire items.
+- Responses foreign-issuer encrypted reasoning -> omitted before request.
+- Responses same-shape `codex_message_items` -> serialized as sanitized
+  `message` wire items.
+- Responses replay item missing `id` -> deterministic fallback id with stable
+  prefix (`rs_` or `msg_`).
+- Chat message contains nested provider-private fields -> outgoing message has
+  only supported Chat fields and recursively sanitized tool call objects.
+- DeepSeek receives `developer` role -> adapter maps/merges it into `system`
+  explicitly.
+- Anthropic receives a reasoning block with only Responses provider_state ->
+  no Anthropic thinking block is emitted.
+- Anthropic receives raw `metadata.anthropic.type=thinking` -> thinking block is
+  replayed with Anthropic fields intact except wire/private helper keys.
+- Anthropic tool call with missing/placeholder id -> deterministic `toolu_...`
+  fallback id.
+
+### 5. Good/Base/Bad Cases
+
+- Good: Responses replays same-issuer encrypted reasoning as a `type=reasoning`
+  item before normal assistant text.
+- Good: OpenAI Chat strips nested `_internal`, `cache_control`, and `responses`
+  fields inside tool calls.
+- Good: Anthropic ignores Codex encrypted reasoning but keeps Anthropic thinking
+  signatures.
+- Base: Runtime items without provider-private state serialize exactly as before.
+- Bad: Sending `reasoning.encrypted_content` to Chat Completions.
+- Bad: Sending Anthropic `cache_control` through a canonical runtime item or
+  default Chat message.
+
+### 6. Tests Required
+
+- Unit test Responses same-issuer encrypted reasoning replay.
+- Unit test Responses foreign issuer reasoning filtering.
+- Unit test Responses same-shape message replay and deterministic fallback ids.
+- Unit test default/OpenAI-compatible Chat recursive provider-private field
+  stripping.
+- Unit test DeepSeek developer-role downgrade remains explicit.
+- Unit test Anthropic wire-only cache control remains non-mutating.
+- Unit test Anthropic ignores Responses-private reasoning while preserving
+  Anthropic thinking metadata.
+- Unit test deterministic Anthropic `tool_use` fallback ids.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+content.append({"type": "thinking", "thinking": block.text})
+chat_message["reasoning"] = {"encrypted_content": encrypted}
+```
+
+#### Correct
+
+```python
+if block.metadata.get("anthropic", {}).get("type") == "thinking":
+    content.append(anthropic_thinking_block)
+
+responses_items.extend(responses_replay_items(item.metadata.get("provider_state")))
+chat_message = sanitize_provider_private(chat_message)
+```

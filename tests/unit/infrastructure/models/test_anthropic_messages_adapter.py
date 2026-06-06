@@ -547,3 +547,73 @@ def test_anthropic_adapter_replays_raw_thinking_metadata() -> None:
             ],
         }
     ]
+
+
+def test_anthropic_adapter_strips_responses_private_metadata_from_wire_content() -> None:
+    client = FakeAnthropicMessagesClient(
+        {"id": "msg_1", "content": [{"type": "text", "text": "ok"}]}
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="reasoning",
+                        text="Do not serialize as Anthropic thinking.",
+                        metadata={
+                            "provider_state": {
+                                "codex_reasoning_items": [{"encrypted_content": "opaque"}],
+                            },
+                            "responses": {"encrypted_content": "opaque"},
+                        },
+                    ),
+                    RuntimeBlock(type="text", text="Visible answer."),
+                ),
+                metadata={
+                    "provider_state": {
+                        "codex_message_items": [{"id": "msg_1"}],
+                    }
+                },
+            )
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages == [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Visible answer."}],
+        }
+    ]
+
+
+def test_anthropic_adapter_uses_deterministic_fallback_tool_use_id() -> None:
+    client = FakeAnthropicMessagesClient(
+        {"id": "msg_1", "content": [{"type": "text", "text": "ok"}]}
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+    items = [
+        RuntimeItem(
+            role="assistant",
+            blocks=(
+                RuntimeBlock(
+                    type="tool_call",
+                    tool_name="read_file",
+                    tool_arguments={"path": "README.md"},
+                    call_id="call_missing",
+                ),
+            ),
+        )
+    ]
+
+    adapter.next_turn(items=items, tools=[])
+    first_id = client.captured_messages[0]["content"][0]["id"]
+    adapter.next_turn(items=items, tools=[])
+    second_id = client.captured_messages[0]["content"][0]["id"]
+
+    assert first_id == second_id
+    assert first_id != "call_missing"
+    assert str(first_id).startswith("toolu_")

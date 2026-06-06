@@ -176,3 +176,56 @@ def test_openai_chat_provider_adapter_strips_provider_private_fields() -> None:
     )
 
     assert adapted == [{"role": "user", "content": "hello"}]
+
+
+def test_openai_chat_provider_adapter_strips_nested_provider_private_fields() -> None:
+    adapter = OpenAIChatProviderAdapter()
+
+    adapted = adapter.adapt_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "done",
+                "provider_state": {"codex_reasoning_items": ["opaque"]},
+                "responses": {
+                    "codex_message_items": [{"id": "msg_1"}],
+                    "reasoning": {"encrypted_content": "opaque"},
+                },
+                "anthropic": {
+                    "type": "thinking",
+                    "thinking": "private",
+                    "signature": "sig",
+                },
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "Read",
+                            "arguments": "{}",
+                            "_provider_debug": "drop",
+                        },
+                        "_internal": "drop",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert adapted == [
+        {
+            "role": "assistant",
+            "content": "done",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        }
+    ]

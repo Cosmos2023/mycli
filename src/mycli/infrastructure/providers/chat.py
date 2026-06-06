@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 from mycli.domain.providers import ProviderId
+from mycli.utils.provider_replay import sanitize_provider_private
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,7 +46,10 @@ class DefaultChatProviderAdapter:
     ) -> list[dict[str, object]]:
         adapted_messages: list[dict[str, object]] = []
         for message in messages:
-            adapted_message = dict(message)
+            adapted_message = cast(
+                dict[str, object],
+                sanitize_provider_private(message),
+            )
             for key in tuple(adapted_message):
                 if self._provider_private_message_key(key):
                     adapted_message.pop(key, None)
@@ -60,6 +64,7 @@ class DefaultChatProviderAdapter:
             or key in {
                 "cache_control",
                 "anthropic",
+                "provider_state",
                 "responses",
                 "provider_request_policy",
             }
