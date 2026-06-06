@@ -20,7 +20,7 @@ from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNS_ROOT = REPO_ROOT / "evaluation" / "runs"
-SKILL_ROUTE = "skill-data-helper"
+SKILL_ROUTE = "skill_data_helper"
 LEGACY_SKILL_ROUTE = "skill.data-helper"
 
 

@@ -523,7 +523,7 @@ def test_gateway_extension_manifest_can_include_runtime_contributed_tools(tmp_pa
     from mycli.tools.base import ToolResult, ToolSpec
 
     class FakeTool:
-        spec = ToolSpec(name="skill-review", description="Load review skill")
+        spec = ToolSpec(name="skill_review", description="Load review skill")
 
         def execute(self, arguments: dict[str, object]) -> ToolResult:
             del arguments
@@ -535,14 +535,14 @@ def test_gateway_extension_manifest_can_include_runtime_contributed_tools(tmp_pa
             registration = ToolContributionRegistration(
                 descriptor=ToolContributionDescriptor(
                     tool_id="skill:review",
-                    display_name="skill-review",
+                    display_name="skill_review",
                     description=tool.spec.description,
-                    route_key=ToolRouteKey.local("skill-review"),
+                    route_key=ToolRouteKey.local("skill_review"),
                     source=ToolContributionSource.PROVIDER,
                     scope=ToolContributionScope.THREAD,
                     lifecycle_state=ToolContributionLifecycleState.EXPOSED,
                     spec=tool.spec,
-                    origin_metadata={"skill": "review"},
+                    origin_metadata={"skill": "review", "legacy_route_name": "skill.review"},
                 ),
                 tool=tool,
             )
@@ -556,8 +556,8 @@ def test_gateway_extension_manifest_can_include_runtime_contributed_tools(tmp_pa
 
     assert response.result is not None
     tools = {tool["name"]: tool for tool in response.result["tool_manifest"]["tools"]}
-    assert tools["skill-review"]["source"] == "skill"
-    assert tools["skill-review"]["toolset"] == "external"
+    assert tools["skill_review"]["source"] == "skill"
+    assert tools["skill_review"]["toolset"] == "external"
 
 
 def test_extension_manifest_advertises_only_supported_gateway_methods() -> None:

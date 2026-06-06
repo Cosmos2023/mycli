@@ -82,9 +82,9 @@ def main() -> int:
         slash_toolsets = tuple(handler("/toolsets"))
         success = (
             tools["Read"]["source"] == "builtin"
-            and tools["subagent.explore"]["source"] == "subagent"
-            and tools["subagent.explore"]["toolset"] == "external"
-            and "subagent.explore" in toolsets["external"]["tools"]
+            and tools["subagent_explore"]["source"] == "subagent"
+            and tools["subagent_explore"]["toolset"] == "external"
+            and "subagent_explore" in toolsets["external"]["tools"]
             and any("source=builtin" in line for line in slash_tools)
             and any("source=subagent" in line for line in slash_tools)
             and any("approval=auto_allow" in line for line in slash_tools)
@@ -93,7 +93,7 @@ def main() -> int:
         )
         checks: dict[str, object] = {
             "builtin_source": tools["Read"]["source"],
-            "subagent_source": tools["subagent.explore"]["source"],
+            "subagent_source": tools["subagent_explore"]["source"],
             "external_tools": list(cast(list[str], toolsets["external"]["tools"])),
             "slash_tools_preview": slash_tools[:5],
             "slash_toolsets": slash_toolsets,

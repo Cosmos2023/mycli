@@ -370,9 +370,9 @@ def test_runtime_extension_manifest_exposes_live_subagent_contributed_tools(
     toolsets = {toolset["id"]: toolset for toolset in manifest["toolset_manifest"]["toolsets"]}
 
     assert tools["Task"]["source"] == "builtin"
-    assert tools["subagent-explore"]["source"] == "subagent"
-    assert tools["subagent-explore"]["toolset"] == "external"
-    assert "subagent-explore" in toolsets["external"]["tools"]
+    assert tools["subagent_explore"]["source"] == "subagent"
+    assert tools["subagent_explore"]["toolset"] == "external"
+    assert "subagent_explore" in toolsets["external"]["tools"]
 
 
 class InspectThenDoneAdapter:

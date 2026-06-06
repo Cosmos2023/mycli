@@ -63,15 +63,15 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
         conversation=Conversation(session_id="subagent-session"),
         plan_state=PlanState(),
     )
-    registration = planned.contributed_tools["subagent-explore"]
-    assert registration.descriptor.route_name == "subagent-explore"
-    assert registration.descriptor.display_name == "subagent-explore"
-    assert registration.descriptor.spec.name == "subagent-explore"
+    registration = planned.contributed_tools["subagent_explore"]
+    assert registration.descriptor.route_name == "subagent_explore"
+    assert registration.descriptor.display_name == "subagent_explore"
+    assert registration.descriptor.spec.name == "subagent_explore"
 
     router = orchestrator.build_tool_router(planned)
     result = router.execute(
         ToolCall(
-            name="subagent-explore",
+            name="subagent_explore",
             arguments={
                 "description": "Map repository docs",
                 "allowed_tools": ["Read", "Grep"],
@@ -119,9 +119,9 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
         },
     ]
     assert planned.exposure.callable_tool_names() == (
-        "subagent-executor",
-        "subagent-explore",
-        "subagent-review",
+        "subagent_executor",
+        "subagent_explore",
+        "subagent_review",
     )
     assert lifecycle_states == [
         ToolContributionLifecycleState.DECLARED,

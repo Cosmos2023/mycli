@@ -6,6 +6,7 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionRegistration,
 )
 from mycli.domain.tooling.exposure import ToolExposure
+from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.domain.tooling.tool_set import ToolSet
 from mycli.domain.tooling.calls import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
@@ -153,7 +154,7 @@ class ToolRouter:
 
 def _legacy_contributed_tool_name(name: str) -> str:
     if name.startswith("skill."):
-        return "skill-" + name.removeprefix("skill.")
+        return provider_safe_tool_name("skill", name.removeprefix("skill."))
     if name.startswith("subagent."):
-        return "subagent-" + name.removeprefix("subagent.")
+        return provider_safe_tool_name("subagent", name.removeprefix("subagent."))
     return name

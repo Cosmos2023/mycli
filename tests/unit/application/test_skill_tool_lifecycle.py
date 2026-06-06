@@ -50,15 +50,15 @@ def test_skill_provider_tool_flows_through_orchestrator_registry_and_router(
         conversation=Conversation(session_id="skill-session"),
         plan_state=PlanState(),
     )
-    registration = planned.contributed_tools["skill-code-review"]
-    assert registration.descriptor.route_name == "skill-code-review"
-    assert registration.descriptor.display_name == "skill-code-review"
-    assert registration.descriptor.spec.name == "skill-code-review"
+    registration = planned.contributed_tools["skill_code_review"]
+    assert registration.descriptor.route_name == "skill_code_review"
+    assert registration.descriptor.display_name == "skill_code_review"
+    assert registration.descriptor.spec.name == "skill_code_review"
 
     router = orchestrator.build_tool_router(planned)
     result = router.execute(
         ToolCall(
-            name="skill-code-review",
+            name="skill_code_review",
             arguments={"reason": "Need correctness review guidance"},
             reason="Verify skill provider route",
         ),
@@ -83,7 +83,7 @@ def test_skill_provider_tool_flows_through_orchestrator_registry_and_router(
     assert result.summary == "Activated skill: code-review"
     assert result.raw_payload["source_kind"] == "repo"
     assert "Find correctness bugs" in str(result.raw_payload["content"])
-    assert planned.exposure.callable_tool_names() == ("skill-code-review",)
+    assert planned.exposure.callable_tool_names() == ("skill_code_review",)
     assert lifecycle_states == [
         ToolContributionLifecycleState.DECLARED,
         ToolContributionLifecycleState.EXPOSED,
