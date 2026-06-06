@@ -1262,6 +1262,73 @@ class AgentRuntime:
             source=source if isinstance(source, str) else None,
         )
 
+    def _trace_before_compact(
+        self,
+        *,
+        turn_id: str,
+        conversation: Conversation,
+        budget: ContextBudget,
+        source: str,
+    ) -> None:
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="before_compact",
+                turn_id=turn_id,
+                payload={
+                    "source": source,
+                    "before_message_count": len(conversation.messages),
+                    "before_tokens": self._estimated_conversation_tokens(conversation),
+                    "max_tokens": budget.max_tokens,
+                    "usage_ratio": budget.usage_ratio,
+                    "remaining_tokens": budget.remaining,
+                },
+            ),
+        )
+
+    def _trace_after_compact(
+        self,
+        *,
+        turn_id: str,
+        before_messages: Conversation,
+        after_messages: Conversation,
+        source: str,
+        cost_metrics: dict[str, int | float | str | list[str]] | None,
+    ) -> None:
+        metrics = cost_metrics or {}
+        decision = metrics.get("decision")
+        payload: dict[str, object] = {
+            "source": source,
+            "decision": decision if isinstance(decision, str) else "unknown",
+            "before_message_count": len(before_messages.messages),
+            "after_message_count": len(after_messages.messages),
+            "before_tokens": self._estimated_conversation_tokens(before_messages),
+            "after_tokens": self._estimated_conversation_tokens(after_messages),
+            "compacted": after_messages is not before_messages,
+        }
+        for source_key, target_key in (
+            ("compaction_lineage_id", "compaction_lineage_id"),
+            ("compaction_summarized_count", "summarized_count"),
+            ("compaction_tail_count", "tail_count"),
+            ("compaction_split_index", "split_index"),
+            ("compaction_fresh_start", "fresh_start"),
+            ("compaction_source", "compaction_source"),
+            ("input_tokens", "input_tokens"),
+            ("summary_tokens", "summary_tokens"),
+            ("failure_count", "failure_count"),
+        ):
+            value = metrics.get(source_key)
+            if isinstance(value, str | int | float) and not isinstance(value, bool):
+                payload[target_key] = value
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="after_compact",
+                turn_id=turn_id,
+                payload=payload,
+            ),
+        )
+
     def _persist_compaction_summaries(
         self,
         *,

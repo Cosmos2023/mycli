@@ -315,6 +315,123 @@ class StubSummarization(LLMSummarization):
 
 
 class TestLLMSummarization:
+    def test_summary_and_continuation_include_bounded_lifecycle_metadata(self) -> None:
+        strategy = StubSummarization(
+            trigger_ratio=0.5,
+            cost_profile=CompactionCostProfile(
+                input_cost_per_1k=0.001,
+                output_cost_per_1k=0.001,
+                carry_cost_per_1k=0.01,
+                carry_turns=10,
+                expected_summary_tokens=20,
+                min_savings_ratio=0.0,
+            ),
+        )
+        budget = ContextBudget(max_tokens=1000)
+        budget.record({"total_tokens": 600})
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="system", content="sys", metadata={"cache_policy": "STATIC"}),
+                Message(role="user", content="turn1", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="resp1", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="user", content="turn2", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="resp2", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = strategy.apply(
+            conversation,
+            _zones(conversation),
+            budget,
+            source="pre_request",
+        )
+
+        summary = result.messages[1]
+        continuation = result.messages[2]
+        assert summary.metadata["compaction"] is True
+        assert summary.metadata["compaction_lineage_id"]
+        assert summary.metadata["compaction_source"] == "pre_request"
+        assert summary.metadata["compaction_split_index"] == 2
+        assert summary.metadata["compaction_summarized_count"] == 2
+        assert summary.metadata["compaction_tail_count"] == 2
+        assert summary.metadata["compressed_turns"] == 2
+        assert continuation.metadata["compaction_continuation"] is True
+        assert continuation.metadata["compaction_lineage_id"] == summary.metadata["compaction_lineage_id"]
+        assert continuation.metadata["compaction_source"] == "pre_request"
+        assert continuation.metadata["compaction_tail_count"] == 2
+
+    def test_fallback_summary_omits_provider_private_reasoning_messages(self) -> None:
+        strategy = LLMSummarization(trigger_ratio=0.5, summarizer_client=None)
+        budget = ContextBudget(max_tokens=1000)
+        budget.record({"total_tokens": 600})
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(
+                    role="assistant",
+                    content="SECRET PROVIDER REASONING",
+                    blocks=(RuntimeBlock(type="reasoning", text="SECRET PROVIDER REASONING"),),
+                    metadata={
+                        "cache_policy": "DYNAMIC",
+                        "provider_state": {
+                            "codex_reasoning_items": [
+                                {"type": "reasoning", "encrypted_content": "opaque"}
+                            ]
+                        },
+                    },
+                ),
+                Message(role="user", content="actual user request", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="visible assistant answer", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="user", content="latest user tail", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = strategy.apply(conversation, _zones(conversation), budget)
+
+        assert result.messages[0].metadata["compaction"] is True
+        assert "SECRET PROVIDER REASONING" not in result.messages[0].content
+        assert "actual user request" in result.messages[0].content
+
+    def test_summary_replacement_keeps_latest_user_message_in_tail(self) -> None:
+        strategy = StubSummarization(
+            trigger_ratio=0.5,
+            cost_profile=CompactionCostProfile(
+                input_cost_per_1k=0.001,
+                output_cost_per_1k=0.001,
+                carry_cost_per_1k=0.01,
+                carry_turns=10,
+                expected_summary_tokens=20,
+                min_savings_ratio=0.0,
+            ),
+        )
+        budget = ContextBudget(max_tokens=1000)
+        budget.record({"total_tokens": 600})
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="old request", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="old answer", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="user", content="current request must stay raw", metadata={"cache_policy": "DYNAMIC"}),
+                Message(role="assistant", content="tool planning 1", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("c1", content="tool result 1"),
+                Message(role="assistant", content="tool planning 2", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("c2", content="tool result 2"),
+                Message(role="assistant", content="tool planning 3", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg("c3", content="tool result 3"),
+                Message(role="assistant", content="tool planning 4", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = strategy.apply(conversation, _zones(conversation), budget)
+
+        assert result.messages[0].metadata["compaction"] is True
+        assert any(
+            message.role == "user" and message.content == "current request must stay raw"
+            for message in result.messages[2:]
+        )
+        assert "current request must stay raw" not in result.messages[0].content
+
     def test_summarizer_receives_full_context_snapshot_when_provided(self) -> None:
         captured: list[list[Message]] = []
 

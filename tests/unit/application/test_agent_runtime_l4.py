@@ -397,6 +397,56 @@ def test_agent_runtime_l4_rehydrates_recent_file_without_persisting_snapshot(
     )
 
 
+def test_agent_runtime_traces_bounded_compaction_lifecycle(
+    tmp_path: Path,
+) -> None:
+    adapter = SummarizingDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=10_000,
+            compaction_l4_trigger_ratio=0.5,
+            session_id="p7b-trace",
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(36):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 80),
+            )
+        )
+    runtime._session_service.save_conversation(conversation)
+
+    response = runtime.handle_user_turn("finish from compacted context")
+
+    assert response.assistant_message == "done"
+    trace = runtime._trace_service.load(runtime._config.session_id)
+    before = [event for event in trace if event.kind == "before_compact"]
+    after = [event for event in trace if event.kind == "after_compact"]
+    assert before
+    assert after
+    assert before[0].payload["source"] == "pre_request"
+    assert before[0].payload["before_message_count"] >= 36
+    assert before[0].payload["usage_ratio"] > 0
+    assert "message 0 token" not in str(before[0].payload)
+    summarized = next(event for event in after if event.payload.get("decision") == "summarize")
+    assert summarized.payload["after_message_count"] < summarized.payload["before_message_count"]
+    assert summarized.payload["compaction_lineage_id"]
+    assert summarized.payload["summarized_count"] > 0
+    assert summarized.payload["tail_count"] > 0
+    assert "Full-context L4 summary" not in str(summarized.payload)
+
+
 def test_agent_runtime_reactive_compacts_once_after_context_window_error(
     tmp_path: Path,
 ) -> None:

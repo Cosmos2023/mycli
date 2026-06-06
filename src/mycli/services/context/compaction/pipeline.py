@@ -595,13 +595,26 @@ class LLMSummarization:
             )
             return conversation
 
-        split_index = _find_safe_split(fresh_messages, len(fresh_messages) // 2)
+        split_candidate = _latest_user_tail_split_candidate(
+            fresh_messages,
+            len(fresh_messages) // 2,
+        )
+        split_index = _find_safe_split(fresh_messages, split_candidate)
         to_summarize = fresh_messages[:split_index]
         if not to_summarize:
             return conversation
         cost_metrics = self._estimate_cost_metrics(to_summarize, trigger_ratio, budget)
         cost_metrics["source"] = source
         cost_metrics["recent_files"] = _collect_recent_files(fresh_messages, n=3)
+        lifecycle_metadata = _compaction_lifecycle_metadata(
+            conversation=conversation,
+            zones=zones,
+            split_index=split_index,
+            to_summarize=to_summarize,
+            fresh_message_count=len(fresh_messages),
+            source=source,
+        )
+        cost_metrics.update(lifecycle_metadata)
         if self._should_skip_for_cost(cost_metrics):
             cost_metrics["decision"] = "skip_cost"
             self._last_cost_metrics = cost_metrics
@@ -613,32 +626,38 @@ class LLMSummarization:
         except Exception:
             self._failure_count += 1
             cost_metrics["decision"] = "summarizer_failed"
+            cost_metrics["failure_count"] = self._failure_count
             self._last_cost_metrics = cost_metrics
             return conversation
 
         self._failure_count = 0
         cost_metrics["decision"] = "summarize"
+        cost_metrics["summary_hash"] = _content_hash(summary)
         self._last_cost_metrics = cost_metrics
         compacted = _copy_conversation(conversation)
+        summary_metadata = {
+            "cache_policy": "DYNAMIC",
+            "compaction": True,
+            "compaction_cost": dict(cost_metrics),
+            "compressed_turns": len(to_summarize),
+            **lifecycle_metadata,
+        }
+        continuation_metadata = {
+            "cache_policy": "DYNAMIC",
+            "compaction_continuation": True,
+            **lifecycle_metadata,
+        }
         compacted.messages = [
             *compacted.messages[: zones.fresh_start],
             Message(
                 role="assistant",
                 content=summary,
-                metadata={
-                    "cache_policy": "DYNAMIC",
-                    "compaction": True,
-                    "compaction_cost": dict(cost_metrics),
-                    "compressed_turns": len(to_summarize),
-                },
+                metadata=summary_metadata,
             ),
             Message(
                 role="assistant",
                 content="[Conversation summarized. All key decisions preserved. Continue naturally.]",
-                metadata={
-                    "cache_policy": "DYNAMIC",
-                    "compaction_continuation": True,
-                },
+                metadata=continuation_metadata,
             ),
             *fresh_messages[split_index:],
         ]
@@ -723,9 +742,9 @@ class LLMSummarization:
             return self._fallback_summary(messages)
 
         conversation_text = "\n\n".join(
-            f"[{message.role}]\n{message.content}"
+            f"[{message.role}]\n{content}"
             for message in messages
-            if message.content.strip()
+            if (content := _summary_visible_content(message))
         )
         if not conversation_text:
             return "Conversation summary unavailable."
@@ -741,9 +760,9 @@ class LLMSummarization:
 
     def _fallback_summary(self, messages: list[Message]) -> str:
         lines = [
-            f"- {message.role}: {' '.join(message.content.split())[:120]}"
+            f"- {message.role}: {' '.join(content.split())[:120]}"
             for message in messages
-            if message.content.strip()
+            if (content := _summary_visible_content(message))
         ]
         if not lines:
             return "Conversation summary unavailable."
@@ -785,6 +804,86 @@ SUMMARY_PROMPT = (
 )
 
 
+def _compaction_lifecycle_metadata(
+    *,
+    conversation: Conversation,
+    zones: CacheZones,
+    split_index: int,
+    to_summarize: list[Message],
+    fresh_message_count: int,
+    source: str,
+) -> dict[str, int | str | bool]:
+    tail_count = max(0, fresh_message_count - split_index)
+    lineage_payload = {
+        "session_id": conversation.session_id,
+        "source": source,
+        "fresh_start": zones.fresh_start,
+        "split_index": split_index,
+        "summarized_count": len(to_summarize),
+        "tail_count": tail_count,
+        "summarized_hash": _messages_hash(to_summarize),
+        "frozen_fingerprint": zones.frozen_fingerprint,
+    }
+    lineage_id = _content_hash(
+        json.dumps(lineage_payload, ensure_ascii=False, sort_keys=True)
+    )[:24]
+    return {
+        "compaction_lineage_id": lineage_id,
+        "compaction_source": source,
+        "compaction_fresh_start": zones.fresh_start,
+        "compaction_split_index": split_index,
+        "compaction_summarized_count": len(to_summarize),
+        "compaction_tail_count": tail_count,
+        "compaction_frozen_fingerprint": zones.frozen_fingerprint,
+    }
+
+
+def _messages_hash(messages: list[Message]) -> str:
+    hasher = hashlib.sha256()
+    for message in messages:
+        hasher.update(message.role.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(message.content.encode("utf-8"))
+        hasher.update(b"\0")
+        for block in message.blocks:
+            hasher.update(str(block.type).encode("utf-8"))
+            hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
+def _summary_visible_content(message: Message) -> str:
+    if _is_provider_private_reasoning_message(message):
+        return ""
+    if message.blocks:
+        text_parts = [
+            block.text
+            for block in message.blocks
+            if block.type == "text" and isinstance(block.text, str) and block.text.strip()
+        ]
+        if text_parts:
+            return " ".join(part.strip() for part in text_parts)
+        if all(block.type == "reasoning" for block in message.blocks):
+            return ""
+    return message.content.strip()
+
+
+def _is_provider_private_reasoning_message(message: Message) -> bool:
+    if message.blocks and all(block.type == "reasoning" for block in message.blocks):
+        return True
+    provider_state = message.metadata.get("provider_state")
+    if isinstance(provider_state, dict) and any(
+        key in provider_state
+        for key in (
+            "codex_reasoning_items",
+            "anthropic_thinking",
+            "reasoning",
+            "thinking",
+        )
+    ):
+        return True
+    return bool(message.metadata.get("provider_private_reasoning"))
+
+
 def _find_safe_split(messages: list[Message], candidate: int) -> int:
     """Find a split point that does not leave provider tool results orphaned."""
     if not messages:
@@ -821,6 +920,17 @@ def _find_safe_split(messages: list[Message], candidate: int) -> int:
 
         break
     return idx
+
+
+def _latest_user_tail_split_candidate(messages: list[Message], candidate: int) -> int:
+    latest_user_index: int | None = None
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].role == "user":
+            latest_user_index = index
+            break
+    if latest_user_index is None:
+        return candidate
+    return min(candidate, latest_user_index)
 
 
 def _tool_call_identifier(tool_call: object) -> str | None:

@@ -21,10 +21,12 @@ P5 -> P6 -> P7a -> P7b -> P8
 截至 2026-06-06 当前 worktree 状态：
 
 - P5 已完成、提交、归档、journal 记录。
-- P6 已完成实现和验证，但仍处于待提交、待归档、待 journal 状态。
-- P7a / P7b / P8 尚未开始。
+- P6 已完成、提交、归档、journal 记录。
+- P7a 已完成、提交、归档、journal 记录。
+- P7b 已启动，Trellis research/PRD 已提交，当前应继续 implementation/tests/archive。
+- P8 尚未开始。
 
-继续执行时应先收尾 P6，再进入 P7a。不要重新实现 P5，也不要把 P7a/P7b/P8 混进 P6 收尾提交。
+继续执行时应从 P7b 开始，不要重新实现 P5/P6/P7a。P7b 完成并归档后，再进入 P8。P8 完成后再跑全链路质量门和最终报告。
 
 ## P5 Goal
 
@@ -59,7 +61,8 @@ P5 相关单测、provider-free smoke、P1-P4 regression 不回退，ruff/mypy/p
 
 ## P6 Goal
 
-状态：实现已完成并已验证，待提交、归档、journal 记录。
+状态：已完成、提交、归档、journal 记录。完成记录见
+`.trellis/tasks/archive/2026-06/06-06-prefix-cache-context-assembly-p6/completion.md`。
 
 ```text
 /goal 当前工作目录为：
@@ -84,6 +87,9 @@ Responses replay、Chat 降级剥离、Anthropic wire-only cache_control、deter
 ```
 
 ## P7a Goal
+
+状态：已完成、提交、归档、journal 记录。完成记录见
+`.trellis/tasks/archive/2026-06/06-06-prefix-cache-context-assembly-p7a/completion.md`。
 
 ```text
 /goal 当前工作目录为：
@@ -110,6 +116,9 @@ cheap pruning、JSON 截断、重复 result 去重、tail group 保护、stable 
 
 ## P7b Goal
 
+状态：进行中。当前 Trellis task：
+`.trellis/tasks/06-06-prefix-cache-context-assembly-p7b`。
+
 ```text
 /goal 当前工作目录为：
 /Users/cosmos/Desktop/mycli/.worktrees/mycli-prefix-cache-context-assembly-p1
@@ -134,6 +143,8 @@ summary replacement、rehydration scope、tail protection、compact failure safe
 ```
 
 ## P8 Goal
+
+状态：未开始。
 
 ```text
 /goal 当前工作目录为：
@@ -162,7 +173,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 
 ## Batch Execution Goal
 
-以下 goal 用于从当前进度继续，分批完成本文档中的剩余阶段。它不要求重做 P5，也不要求重做 P6 实现；P6 只需要完成提交、归档和 journal 收尾。
+以下 goal 用于从当前进度继续，分批完成本文档中的剩余阶段。它不要求重做 P5/P6/P7a；当前入口是继续 P7b，然后做 P8，最后做全链路验收。
 
 ```text
 /goal 当前工作目录为：
@@ -171,7 +182,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 基于当前分支 feature/mycli-prefix-cache-context-assembly-p1，按批次完成 docs/prefix-cache-context-assembly-goals.md 中保存的 Prefix Cache Context Assembly 剩余 goals。默认不合入 main，除非我明确说“合吧”。
 
 总目标：
-把 mycli Prefix Cache Context Assembly Roadmap 从当前状态继续推进：先完成 P6 收尾，然后按 P7a -> P7b -> P8 顺序落地 compact cheap pruning/tail protection、canonical compact summary/rehydration lifecycle、recovery/productized observability，同时保持 P1-P6 的 prefix-cache stability、provider wire cache policy、redaction diagnostics、runtime adoption、canonical persistence 和 provider replay hardening 不回退。
+把 mycli Prefix Cache Context Assembly Roadmap 从当前状态继续推进：P5/P6/P7a 已完成，不重做；先完成 P7b canonical compact summary/rehydration lifecycle，再完成 P8 recovery/productized observability，最后跑全链路回归，确保 P1-P7a 的 prefix-cache stability、provider wire cache policy、redaction diagnostics、runtime adoption、canonical persistence、provider replay hardening、cheap pruning/tail protection 不回退。
 
 执行方式：
 1. 读取并遵守：
@@ -182,14 +193,13 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
    - .trellis/spec/backend/context-management-contract.md
 2. 走 Trellis：research -> PRD -> implementation -> tests -> archive。
 3. 必须按批次推进：
-   - Batch 0 / P6 closeout：提交已完成的 P6 实现，archive P6 Trellis task，记录 journal；不得加入 P7 行为。
-   - Batch 1 / P7a：Compact Cheap Pruning / Tail Protection Foundation。
-   - Batch 2 / P7b：Canonical Compact Summary / Rehydration Lifecycle。
-   - Batch 3 / P8：Recovery / Productized Observability。
+   - Batch 1 / P7b：Canonical Compact Summary / Rehydration Lifecycle。先检查当前 P7b Trellis task 和 git status，继续 TDD implementation/tests/archive，不重建任务。
+   - Batch 2 / P8：Recovery / Productized Observability。P7b 完成、提交、归档、journal 后再启动 P8 Trellis task。
+   - Batch 3 / Final stabilization：跑全量质量门、provider-free smoke、context/subagent/MCP/plugin/hook smoke，更新最终报告。
 4. 每个实现 batch 都要有独立的 research/PRD、测试证据、提交和阶段报告。
-5. 每个实现 batch 完成后运行相关 focused tests 和 provider-free smoke；P8 完成后运行全量质量门。
-6. 禁止把 P7a/P7b/P8 混成一个不可审查的大 diff；如果发现 scope 超出单批次，先切更小 subtask。
-7. 当前 P6 已经完成验证，Batch 0 只允许做状态确认、commit、archive、journal；如果 `git status` 显示与 P6 无关的新改动，先隔离或记录，不要随手混入 P6 commit。
+5. 每个实现 batch 完成后运行相关 focused tests 和 provider-free smoke；Final stabilization 完成后运行全量质量门。
+6. 禁止把 P7b/P8 混成一个不可审查的大 diff；如果发现 scope 超出单批次，先切更小 subtask。
+7. 如果 `git status` 显示与当前 batch 无关的新改动，先隔离或记录，不要混入当前 batch commit。
 
 全局规则：
 - 不合入 main，除非我明确说“合吧”。
@@ -207,8 +217,8 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 
 最终验收：
 - P5 canonical timeline / durability / `api_only` / rehydration scope 已完成且 regression 不回退。
-- P6 Responses replay、Chat 降级剥离、Anthropic wire-only cache_control、deterministic fallback id、schema sanitize 已完成、已提交、已归档、已 journal。
-- P7a cheap pruning、JSON 截断、重复 result 去重、tail group 保护、stable prefix invariant 有单测。
+- P6 Responses replay、Chat 降级剥离、Anthropic wire-only cache_control、deterministic fallback id、schema sanitize 已完成且 regression 不回退。
+- P7a cheap pruning、JSON 截断、重复 result 去重、tail group 保护、stable prefix invariant 已完成且 regression 不回退。
 - P7b summary replacement、rehydration scope、tail protection、compact failure safety、lineage/trace、stable prefix invariant 有单测。
 - P8 ErrorClassifier/RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction boundary 有单测。
 - provider-free cache smoke 通过，并覆盖 P5-P8 关键字段。

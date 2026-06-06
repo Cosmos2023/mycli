@@ -596,6 +596,12 @@ class TurnExecutor:
             tool_router = runtime._build_tool_router(planned_exposure)
             conversation_before_compaction = conversation
             pre_compaction_budget = runtime._estimate_window_budget(conversation)
+            runtime._trace_before_compact(
+                turn_id=turn_id,
+                conversation=conversation_before_compaction,
+                budget=pre_compaction_budget,
+                source="pre_request",
+            )
             try:
                 conversation_for_model = runtime._compaction_pipeline.apply(
                     conversation,
@@ -617,6 +623,13 @@ class TurnExecutor:
             runtime._record_compaction_metric(
                 before_messages=conversation_before_compaction,
                 after_messages=conversation_for_model,
+            )
+            runtime._trace_after_compact(
+                turn_id=turn_id,
+                before_messages=conversation_before_compaction,
+                after_messages=conversation_for_model,
+                source="pre_request",
+                cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
             )
             l4_applied_before_request = (
                 runtime._compaction_pipeline.llm_summarization.last_cost_metrics or {}
@@ -677,6 +690,12 @@ class TurnExecutor:
             )
             if request_needs_l4:
                 conversation_before_request_compaction = conversation_for_model
+                runtime._trace_before_compact(
+                    turn_id=turn_id,
+                    conversation=conversation_before_request_compaction,
+                    budget=request_budget,
+                    source="request_budget",
+                )
                 try:
                     conversation_for_model = runtime._compaction_pipeline.llm_summarization.apply(
                         conversation_for_model,
@@ -701,6 +720,13 @@ class TurnExecutor:
                 runtime._record_compaction_metric(
                     before_messages=conversation_before_request_compaction,
                     after_messages=conversation_for_model,
+                )
+                runtime._trace_after_compact(
+                    turn_id=turn_id,
+                    before_messages=conversation_before_request_compaction,
+                    after_messages=conversation_for_model,
+                    source="request_budget",
+                    cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
                 )
                 runtime._record_l4_decision_metric(
                     runtime._compaction_pipeline.llm_summarization.last_cost_metrics
@@ -846,6 +872,12 @@ class TurnExecutor:
                                 max_tokens=runtime._config.max_prompt_tokens,
                                 total_tokens=runtime._config.max_prompt_tokens,
                             )
+                            runtime._trace_before_compact(
+                                turn_id=turn_id,
+                                conversation=before_reactive,
+                                budget=reactive_budget,
+                                source="reactive_error",
+                            )
                             reactive_compacted = (
                                 runtime._compaction_pipeline.llm_summarization.apply(
                                     conversation,
@@ -855,6 +887,13 @@ class TurnExecutor:
                                     force=True,
                                     source="reactive_error",
                                 )
+                            )
+                            runtime._trace_after_compact(
+                                turn_id=turn_id,
+                                before_messages=before_reactive,
+                                after_messages=reactive_compacted,
+                                source="reactive_error",
+                                cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
                             )
                             loop_state = LoopState(
                                 context_window_retries=loop_state.context_window_retries,
