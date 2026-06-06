@@ -9,6 +9,7 @@ from mycli.domain.runtime import (
     FragmentStability,
     InstructionContract,
     InstructionFragment,
+    ProviderCachePolicyCapability,
     ProviderMessageShape,
     ProviderProjectionLane,
     ProviderProjectionShape,
@@ -34,6 +35,7 @@ class RequestShapeBuilder:
         config: AgentConfig,
         contract: InstructionContract,
         tools: tuple[ModelToolDefinition, ...] | list[ModelToolDefinition],
+        cache_policy_capability: ProviderCachePolicyCapability | None = None,
     ) -> RequestShape:
         normalized_tools = self._normalized_tools(tools)
         tool_schema = self._tool_schema_content(normalized_tools)
@@ -117,6 +119,7 @@ class RequestShapeBuilder:
             tool_schema_hash=stable_hash(tool_schema),
             cacheable_prefix_hash=self._cacheable_prefix_hash(fragments),
             lane=provider_projection.lane,
+            capability=cache_policy_capability,
         )
         provider_messages = self._attach_provider_request_policy_to_messages(
             provider_messages,

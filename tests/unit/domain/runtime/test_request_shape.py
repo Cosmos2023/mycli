@@ -4,6 +4,7 @@ import pytest
 
 from mycli.domain.runtime.request_shape import (
     FragmentStability,
+    ProviderCachePolicyCapability,
     ProviderMessageShape,
     ProviderProjectionLane,
     ProviderProjectionShape,
@@ -213,3 +214,38 @@ def test_request_shape_summary_includes_provider_request_policy() -> None:
         str(shape.provider_request_policy.prompt_cache_key)
     )
     assert policy["anthropic_cache_control_breakpoint_count"] == 0
+
+
+def test_provider_request_policy_capability_can_disable_prompt_cache_key() -> None:
+    policy = ProviderRequestPolicyShape.for_request_shape(
+        provider="compatible",
+        protocol="chat_completions",
+        model="legacy-model",
+        system_hash="system",
+        tool_schema_hash="tools",
+        cacheable_prefix_hash="stable-prefix",
+        lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+        capability=ProviderCachePolicyCapability(prompt_cache_key_enabled=False),
+    )
+
+    assert policy.prompt_cache_key is None
+    assert policy.prompt_cache_key_hash is None
+    assert policy.wire_cache_hint_enabled is False
+    assert policy.to_wire_dict()["prompt_cache_key"] is None
+
+
+def test_provider_request_policy_capability_can_disable_anthropic_cache_control() -> None:
+    policy = ProviderRequestPolicyShape.for_request_shape(
+        provider="anthropic",
+        protocol="anthropic_messages",
+        model="claude-test",
+        system_hash="system",
+        tool_schema_hash="tools",
+        cacheable_prefix_hash="stable-prefix",
+        lane=ProviderProjectionLane.ANTHROPIC_MESSAGES,
+        capability=ProviderCachePolicyCapability(cache_control_enabled=False),
+    )
+
+    assert policy.anthropic_cache_control_breakpoints == ()
+    assert policy.wire_cache_hint_enabled is False
+    assert "cache_control" not in policy.wire_only_hints

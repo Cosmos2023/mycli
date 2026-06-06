@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mycli.domain.conversation import Message
+from mycli.domain.providers import ProviderId
 from mycli.domain.runtime import (
     AgentConfig,
     InstructionContract,
@@ -12,6 +13,7 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.runtime.request_shape import (
     FragmentStability,
+    ProviderCachePolicyCapability,
     RequestFragmentKind,
 )
 from mycli.llms.adapters.base import (
@@ -1340,3 +1342,28 @@ def test_request_shape_builder_includes_compaction_rehydration_in_responses_delt
         and fragment.metadata["instruction_fragment_kind"] == "compaction_rehydration"
         for fragment in shape.fragments
     )
+
+
+def test_request_shape_builder_applies_provider_cache_policy_capability(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.OPENAI,
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            current_user_request="inspect",
+        ),
+        tools=(),
+        cache_policy_capability=ProviderCachePolicyCapability(
+            prompt_cache_key_enabled=False
+        ),
+    )
+
+    assert shape.provider_request_policy is not None
+    assert shape.provider_request_policy.prompt_cache_key is None
+    assert shape.provider_request_policy.wire_cache_hint_enabled is False

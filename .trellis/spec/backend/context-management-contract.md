@@ -204,6 +204,27 @@ section = TurnContextSection(
   keys before sending.
 - Cache-shape diagnostics and doctor summaries must use bounded counts, hashes,
   and previews only.
+- P3 cache observability adds a provider-free diagnostics loop:
+  - `ProviderCachePolicyCapability` gates request-level `prompt_cache_key` and
+    Anthropic `cache_control` independently. Default capability preserves safe
+    P2 behavior; compatible or legacy provider paths may disable unsupported
+    hints without changing canonical fragments.
+  - `ProviderPayloadSnapshot` summarizes provider lane, message/runtime item
+    counts, request-option hint presence, sanitized provider-private field
+    counts, Anthropic cache-control block counts, and bounded prompt-cache-key
+    hash/preview. It must not include raw user text, raw tool output, secrets, or
+    the full `prompt_cache_key`.
+  - `ProviderRequestDryRun` compares two request shapes without calling a model
+    provider. It reports cache-boundary hash stability, prompt-cache-key hash
+    stability, first changed cache class, and redacted per-turn snapshots.
+  - Doctor context diagnostics must summarize first-changed-cache-class
+    distributions, stable/dynamic/ephemeral change counts, enabled/disabled/
+    missing wire-hint counts, max/latest provider cached tokens, and bounded
+    remediation text.
+- Wire-only hints remain outside the canonical timeline. It is valid for
+  summaries to name a wire-only hint such as `cache_control`, but raw canonical
+  fragments, persisted messages, and runtime blocks must not contain provider
+  wire payload fields such as `cache_control` or full prompt-cache keys.
 
 ### 4. Validation & Error Matrix
 
@@ -219,6 +240,10 @@ section = TurnContextSection(
   exclude those fields.
 - Trace payload includes full `prompt_cache_key` -> invalid; only hash/preview
   are allowed.
+- Payload snapshot or dry-run summary includes raw user prompt, tool output,
+  secret-like values, or full `prompt_cache_key` -> invalid.
+- Compatible provider capability disables `prompt_cache_key` -> policy summary
+  reports the hint disabled and provider wire metadata omits the full key.
 
 ### 5. Good/Base/Bad Cases
 
@@ -242,8 +267,12 @@ section = TurnContextSection(
 - Unit test Anthropic wire-only `cache_control` and canonical non-mutation.
 - Unit test Chat Completions provider-private field stripping.
 - Unit test cache-shape diagnostics and doctor bounded cache policy summary.
+- Unit test cache stability regressions across static, dynamic, and ephemeral
+  request changes.
+- Unit test provider payload snapshots and dry-run comparisons are redacted.
+- Unit test provider cache policy capability gates.
 - Provider-free `evaluation/provider_cache_policy_smoke.py` covering all three
-  provider lanes.
+  provider lanes plus dry-run comparison and snapshot counts.
 
 ### 7. Wrong vs Correct
 

@@ -160,6 +160,21 @@ class ProviderProjectionShape:
 
 
 @dataclass(slots=True, frozen=True)
+class ProviderCachePolicyCapability:
+    """Provider cache-hint capability gate.
+
+    Defaults represent the safe P2 behavior: request-level prompt cache keys are
+    available to OpenAI-compatible lanes and Anthropic block cache-control
+    breakpoints are available to the Anthropic lane. Callers can disable either
+    side for compatible providers without mutating canonical request shape
+    content.
+    """
+
+    prompt_cache_key_enabled: bool = True
+    cache_control_enabled: bool = True
+
+
+@dataclass(slots=True, frozen=True)
 class ProviderRequestPolicyShape:
     """Provider wire cache policy derived from canonical request shape metadata."""
 
@@ -180,7 +195,9 @@ class ProviderRequestPolicyShape:
         tool_schema_hash: str | None,
         cacheable_prefix_hash: str,
         lane: ProviderProjectionLane,
+        capability: ProviderCachePolicyCapability | None = None,
     ) -> ProviderRequestPolicyShape:
+        capability = capability or ProviderCachePolicyCapability()
         prompt_cache_key = cls._prompt_cache_key(
             provider=provider,
             protocol=protocol,
@@ -189,8 +206,12 @@ class ProviderRequestPolicyShape:
             tool_schema_hash=tool_schema_hash,
             cacheable_prefix_hash=cacheable_prefix_hash,
             lane=lane,
+        ) if capability.prompt_cache_key_enabled else None
+        breakpoints = (
+            cls._anthropic_breakpoints(lane)
+            if capability.cache_control_enabled
+            else ()
         )
-        breakpoints = cls._anthropic_breakpoints(lane)
         wire_only_hints: list[str] = []
         if prompt_cache_key is not None:
             wire_only_hints.append("prompt_cache_key")

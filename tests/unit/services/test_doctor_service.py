@@ -3562,6 +3562,106 @@ def test_doctor_service_warns_when_stable_prefix_changes(
     assert "stable-after" not in rendered
 
 
+def test_doctor_service_reports_cache_miss_triage_distribution(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    _create_sessions_db(home / ".mycli" / "sessions.db")
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_1",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-1", "estimated_tokens": 12},
+                            "first_changed_cache_class": "ephemeral",
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_cache_hint_enabled": True,
+                                    "prompt_cache_key_hash": "key-hash-1",
+                                },
+                                "provider_cached_tokens": 12,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_2",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-1", "estimated_tokens": 12},
+                            "first_changed_cache_class": "dynamic",
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_cache_hint_enabled": False,
+                                },
+                                "provider_cached_tokens": 20,
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_3",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-2", "estimated_tokens": 12},
+                            "first_changed_cache_class": "static",
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                            },
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "context")
+    rendered = "\n".join(render_doctor_report(report))
+
+    assert check.status is DoctorStatus.WARNING
+    assert "first_changed_cache_classes=" in str(check.detail)
+    assert "dynamic=1" in str(check.detail)
+    assert "ephemeral=1" in str(check.detail)
+    assert "static=1" in str(check.detail)
+    assert "dynamic_changes=1" in str(check.detail)
+    assert "ephemeral_changes=1" in str(check.detail)
+    assert "wire_cache_hint_enabled=1" in str(check.detail)
+    assert "wire_cache_hint_disabled=1" in str(check.detail)
+    assert "wire_cache_hint_missing=1" in str(check.detail)
+    assert "latest_provider_cached_tokens=20" in str(check.detail)
+    assert "max_provider_cached_tokens=20" in str(check.detail)
+    assert "remediation=stable prefix changed; inspect static context/tool schema" in str(
+        check.detail
+    )
+    assert "hash-1" not in rendered
+    assert "hash-2" not in rendered
+
+
 def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

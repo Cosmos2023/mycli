@@ -7,7 +7,12 @@ from pathlib import Path
 from mycli.domain.conversation import Message
 from mycli.domain.providers import ProviderId, ProtocolId
 from mycli.domain.runtime import AgentConfig, InstructionContract, InstructionFragment
-from mycli.application.runtime.request import RequestShapeBuilder, RequestShapePayloadFormatter
+from mycli.application.runtime.request import (
+    ProviderPayloadSnapshot,
+    ProviderRequestDryRun,
+    RequestShapeBuilder,
+    RequestShapePayloadFormatter,
+)
 from mycli.llms.adapters.anthropic_messages_adapter import AnthropicMessagesModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.llms.clients.openai_chat import OpenAIChatClient
@@ -188,6 +193,13 @@ def main() -> int:
         client.complete(chat_messages)
 
         chat_payload = chat_sdk.chat_completions.calls[-1]
+        dry_run = ProviderRequestDryRun.compare(
+            previous=responses_shape,
+            current=second_responses_shape,
+        ).to_dict()
+        anthropic_snapshot = ProviderPayloadSnapshot.from_request_shape(
+            anthropic_shape
+        ).to_dict()
         payload = {
             "responses_prompt_cache_key": responses_client.prompt_cache_key,
             "responses_prompt_cache_key_stable": (
@@ -217,6 +229,18 @@ def main() -> int:
                 )
                 for message in chat_payload.get("messages", [])
             ),
+            "dry_run_cache_boundary_hash_stable": dry_run[
+                "cache_boundary_hash_stable"
+            ],
+            "dry_run_prompt_cache_key_hash_stable": dry_run[
+                "prompt_cache_key_hash_stable"
+            ],
+            "dry_run_first_changed_cache_class": dry_run[
+                "first_changed_cache_class"
+            ],
+            "anthropic_snapshot_cache_control_blocks": anthropic_snapshot[
+                "anthropic_cache_control_block_count"
+            ],
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         ok = (
@@ -226,6 +250,10 @@ def main() -> int:
             and payload["anthropic_canonical_has_cache_control"] is False
             and isinstance(payload["chat_prompt_cache_key"], str)
             and payload["chat_messages_have_provider_private_fields"] is False
+            and payload["dry_run_cache_boundary_hash_stable"] is True
+            and payload["dry_run_prompt_cache_key_hash_stable"] is True
+            and payload["dry_run_first_changed_cache_class"] == "ephemeral"
+            and payload["anthropic_snapshot_cache_control_blocks"] == 2
         )
         return 0 if ok else 1
 

@@ -46,6 +46,7 @@ from mycli.domain.runtime.planning import (
 )
 from mycli.domain.runtime.request_shape import (
     FragmentStability as FragmentStability,
+    ProviderCachePolicyCapability as ProviderCachePolicyCapability,
     ProviderMessageShape as ProviderMessageShape,
     ProviderProjectionLane as ProviderProjectionLane,
     ProviderProjectionShape as ProviderProjectionShape,
@@ -301,6 +302,7 @@ __all__ = [
     "PlanState",
     "PlanStatus",
     "ProviderMessageShape",
+    "ProviderCachePolicyCapability",
     "ProviderRequestPolicyShape",
     "ProviderRuntimeItemShape",
     "RequestFragment",

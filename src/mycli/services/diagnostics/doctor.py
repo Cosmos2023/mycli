@@ -182,10 +182,17 @@ class _ContextDiagnosticsSummary:
     trimmed_context_section_count: int
     missing_cache_metadata_count: int
     stable_prefix_change_count: int
+    dynamic_change_count: int
+    ephemeral_change_count: int
+    first_changed_cache_class_counts: tuple[tuple[str, int], ...]
     wire_cache_hint_count: int
+    wire_cache_hint_disabled_count: int
+    wire_cache_hint_missing_count: int
     prompt_cache_key_hash_count: int
     anthropic_cache_control_breakpoint_count: int
     max_provider_cached_tokens: int
+    latest_provider_cached_tokens: int
+    cache_remediation: str | None
     persisted_summary_count: int
     duplicate_summary_count: int
     unreadable: tuple[str, ...]
@@ -1037,15 +1044,27 @@ class DoctorService:
             f"trimmed_context_sections={trace_summary.trimmed_context_section_count}",
             f"missing_cache_metadata={trace_summary.missing_cache_metadata_count}",
             f"stable_prefix_changes={trace_summary.stable_prefix_change_count}",
+            f"dynamic_changes={trace_summary.dynamic_change_count}",
+            f"ephemeral_changes={trace_summary.ephemeral_change_count}",
+            (
+                "first_changed_cache_classes="
+                f"{_format_count_pairs(trace_summary.first_changed_cache_class_counts)}"
+            ),
             f"wire_cache_hint_rows={trace_summary.wire_cache_hint_count}",
+            f"wire_cache_hint_enabled={trace_summary.wire_cache_hint_count}",
+            f"wire_cache_hint_disabled={trace_summary.wire_cache_hint_disabled_count}",
+            f"wire_cache_hint_missing={trace_summary.wire_cache_hint_missing_count}",
             f"prompt_cache_key_hashes={trace_summary.prompt_cache_key_hash_count}",
             (
                 "anthropic_cache_control_breakpoints="
                 f"{trace_summary.anthropic_cache_control_breakpoint_count}"
             ),
             f"max_provider_cached_tokens={trace_summary.max_provider_cached_tokens}",
+            f"latest_provider_cached_tokens={trace_summary.latest_provider_cached_tokens}",
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
+        if trace_summary.cache_remediation:
+            detail_parts.append(f"remediation={trace_summary.cache_remediation}")
         if trace_summary.unreadable:
             detail_parts.append(f"unreadable={_bounded_name_list(list(trace_summary.unreadable))}")
         return (
@@ -2021,10 +2040,16 @@ def _summarize_context_diagnostics(
     trimmed_context_section_count = 0
     missing_cache_metadata_count = 0
     stable_prefix_change_count = 0
+    dynamic_change_count = 0
+    ephemeral_change_count = 0
+    first_changed_cache_class_counts: dict[str, int] = {}
     wire_cache_hint_count = 0
+    wire_cache_hint_disabled_count = 0
+    wire_cache_hint_missing_count = 0
     prompt_cache_key_hash_count = 0
     anthropic_cache_control_breakpoint_count = 0
     max_provider_cached_tokens = 0
+    latest_provider_cached_tokens = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
     unreadable: list[str] = []
@@ -2061,12 +2086,23 @@ def _summarize_context_diagnostics(
                     elif event.kind == "cache_shape_diagnostic":
                         cache_shape_count += 1
                         cache_boundary = event.payload.get("cache_boundary")
+                        changed_cache_class = event.payload.get(
+                            "first_changed_cache_class"
+                        )
+                        if isinstance(changed_cache_class, str) and changed_cache_class:
+                            first_changed_cache_class_counts[changed_cache_class] = (
+                                first_changed_cache_class_counts.get(
+                                    changed_cache_class, 0
+                                )
+                                + 1
+                            )
+                            if changed_cache_class == "dynamic":
+                                dynamic_change_count += 1
+                            elif changed_cache_class == "ephemeral":
+                                ephemeral_change_count += 1
                         if isinstance(cache_boundary, dict):
                             boundary_hash = cache_boundary.get("hash")
                             if isinstance(boundary_hash, str) and boundary_hash:
-                                changed_cache_class = event.payload.get(
-                                    "first_changed_cache_class"
-                                )
                                 if changed_cache_class == "static":
                                     stable_prefix_change_count += 1
                                 elif (
@@ -2096,6 +2132,10 @@ def _summarize_context_diagnostics(
                             if isinstance(policy, dict):
                                 if policy.get("wire_cache_hint_enabled") is True:
                                     wire_cache_hint_count += 1
+                                elif policy.get("wire_cache_hint_enabled") is False:
+                                    wire_cache_hint_disabled_count += 1
+                                else:
+                                    wire_cache_hint_missing_count += 1
                                 if policy.get("prompt_cache_key_hash"):
                                     prompt_cache_key_hash_count += 1
                                 breakpoint_count = _optional_non_negative_int(
@@ -2106,6 +2146,8 @@ def _summarize_context_diagnostics(
                                 anthropic_cache_control_breakpoint_count += (
                                     breakpoint_count or 0
                                 )
+                            else:
+                                wire_cache_hint_missing_count += 1
                             cached_tokens = _optional_non_negative_int(
                                 metadata.get("provider_cached_tokens")
                             )
@@ -2114,8 +2156,10 @@ def _summarize_context_diagnostics(
                                     max_provider_cached_tokens,
                                     cached_tokens,
                                 )
+                                latest_provider_cached_tokens = cached_tokens
                         else:
                             missing_cache_metadata_count += 1
+                            wire_cache_hint_missing_count += 1
                     elif event.kind == "context_budget_diagnostic":
                         budget_count += 1
                         saved_tokens = _optional_non_negative_int(
@@ -2157,14 +2201,42 @@ def _summarize_context_diagnostics(
         trimmed_context_section_count=trimmed_context_section_count,
         missing_cache_metadata_count=missing_cache_metadata_count,
         stable_prefix_change_count=stable_prefix_change_count,
+        dynamic_change_count=dynamic_change_count,
+        ephemeral_change_count=ephemeral_change_count,
+        first_changed_cache_class_counts=tuple(
+            sorted(first_changed_cache_class_counts.items())
+        ),
         wire_cache_hint_count=wire_cache_hint_count,
+        wire_cache_hint_disabled_count=wire_cache_hint_disabled_count,
+        wire_cache_hint_missing_count=wire_cache_hint_missing_count,
         prompt_cache_key_hash_count=prompt_cache_key_hash_count,
         anthropic_cache_control_breakpoint_count=anthropic_cache_control_breakpoint_count,
         max_provider_cached_tokens=max_provider_cached_tokens,
+        latest_provider_cached_tokens=latest_provider_cached_tokens,
+        cache_remediation=_cache_remediation(
+            stable_prefix_change_count=stable_prefix_change_count,
+            missing_cache_metadata_count=missing_cache_metadata_count,
+            wire_cache_hint_missing_count=wire_cache_hint_missing_count,
+        ),
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,
         unreadable=tuple(unreadable),
     )
+
+
+def _cache_remediation(
+    *,
+    stable_prefix_change_count: int,
+    missing_cache_metadata_count: int,
+    wire_cache_hint_missing_count: int,
+) -> str | None:
+    if stable_prefix_change_count:
+        return "stable prefix changed; inspect static context/tool schema"
+    if wire_cache_hint_missing_count:
+        return "wire cache hints missing; inspect provider capability/config"
+    if missing_cache_metadata_count:
+        return "cache metadata incomplete; inspect request shape builder"
+    return None
 
 
 def _session_summary_count(path: Path) -> int:
