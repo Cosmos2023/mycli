@@ -40,6 +40,59 @@ Implemented provider wire cache policy for OpenAI Responses, OpenAI-compatible C
 - None - task complete
 
 
+## Session 4: Prefix cache context assembly P5
+
+**Date**: 2026-06-06
+**Task**: Prefix Cache Context Assembly P5
+**Branch**: `feature/mycli-prefix-cache-context-assembly-p1`
+
+### Summary
+
+Completed Canonical Timeline / Persistence Contract P5. Model-visible selected
+context now carries explicit durability/scope metadata, `api_only` sections are
+excluded before instruction/request-shape projection, request-shape summaries
+redact raw provider state, and replayable memory/plan fragments can persist
+through the session baseline and rehydrate sparse resume context.
+
+### Main Changes
+
+- Added `CanonicalTimelineItem` and exported durability/scope roles from the
+  runtime domain layer.
+- Threaded durability, scope, model-visible, and replayable metadata through
+  `TurnContextSection`, instruction contracts, and request-shape fragments.
+- Updated `RuntimeEventLedger.context_baseline_from_contract()` to persist only
+  model-visible replayable fragments and strip wire-only/provider-private keys.
+- Added baseline memory/plan resume fallback in `TurnContextAssembler`.
+- Updated context-management spec plus roadmap/goal docs for the P5 contract.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b4cc776` | Persist model-visible context through canonical timeline |
+| `b32d498` | chore(task): archive prefix cache context assembly p5 |
+
+### Testing
+
+- [OK] `uv run ruff check .`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q` (`1403 passed`)
+- [OK] `uv run python evaluation/provider_cache_policy_smoke.py`
+- [OK] `uv run python evaluation/context_smoke.py`
+- [OK] `uv run python evaluation/subagent_smoke.py`
+- [OK] `uv run python evaluation/mcp_smoke.py`
+- [OK] `uv run python evaluation/plugin_runtime_smoke.py`
+- [OK] `uv run python evaluation/hook_smoke.py`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Start P6 Provider Adapter / Replay Hardening as the next batch.
+
+
 ## Session 2: Prefix cache context assembly P3
 
 **Date**: 2026-06-06
