@@ -3,6 +3,7 @@ Common utilities for Trellis workflow scripts.
 
 This module provides shared functionality used by other Trellis scripts.
 """
+# ruff: noqa: E402,F401
 
 import io
 import sys
