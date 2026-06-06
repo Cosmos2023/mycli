@@ -20,6 +20,7 @@ Use these documents for the active context assembly and provider cache work:
 
 These documents are reference material for comparing mycli with Hermes/Codex-style agent maturity:
 
+- [parity/codex-alignment-roadmap.md](./parity/codex-alignment-roadmap.md): roadmap for moving mycli's core runtime architecture toward Codex-style execution, timeline, tool runtime, and policy boundaries.
 - [parity/hermes-agent-gap-analysis.md](./parity/hermes-agent-gap-analysis.md): broader Hermes-agent gap analysis.
 - [parity/hermes-parity-roadmap.md](./parity/hermes-parity-roadmap.md): completed Hermes-like foundation roadmap.
 - [parity/hermes-foundation-final-report.md](./parity/hermes-foundation-final-report.md): final report for the Hermes-like foundation slice.
