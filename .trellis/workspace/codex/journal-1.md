@@ -19,7 +19,13 @@ Implemented provider wire cache policy for OpenAI Responses, OpenAI-compatible C
 
 ### Main Changes
 
-(Add details)
+- Added bounded `tool_runtime_lifecycle` trace rows from `ToolExecutionService`
+  for planned, policy checked, started, progress, and terminal tool phases.
+- Added `tool_lifecycle_diagnostics` doctor checks for missing terminal rows,
+  terminal rows without starts, duplicate terminal rows, malformed phase/status,
+  and redacted lifecycle summaries.
+- Updated backend quality guidelines with the P10 lifecycle trace and doctor
+  redaction contract.
 
 ### Git Commits
 
@@ -29,7 +35,11 @@ Implemented provider wire cache policy for OpenAI Responses, OpenAI-compatible C
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `uv run ruff check src tests evaluation`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q`
+- [OK] context/subagent/MCP/plugin/hook/provider-cache smoke scripts
+- [OK] compact/rehydration diff audit: no compact files changed
 
 ### Status
 
@@ -372,6 +382,39 @@ Completed and archived Prefix Cache Context Assembly P8, clarified staged roadma
 | `b8f2b76` | (see git log) |
 | `605ce18` | (see git log) |
 | `319829e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 5: Codex alignment P10 tool runtime lifecycle
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P10 tool runtime lifecycle
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Implemented bounded per-call tool_runtime_lifecycle traces, doctor lifecycle integrity diagnostics, redaction contract tests, and P10 quality spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `28dec4f` | (see git log) |
 
 ### Testing
 
