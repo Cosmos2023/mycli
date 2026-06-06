@@ -30,10 +30,10 @@ P5 -> P6 -> P7a -> P7b -> P8
 - P6 已完成、提交、归档、journal 记录。
 - P7a 已完成、提交、归档、journal 记录。
 - P7b 已完成、提交、归档、journal 记录。
-- P8 core implementation/tests 已完成并提交：`b8f2b76 Recover provider replay without leaking context`。
-- P8 Trellis task 当前仍是 `in_progress`，需要继续做 archive、journal 和最终报告收尾。
+- P8 已完成、提交、归档。核心实现提交：`b8f2b76 Recover provider replay without leaking context`。
+- P8 最终质量门已通过：ruff、mypy、全量 pytest、provider-free cache smoke、context/subagent/MCP/plugin/hook smoke。
 
-继续执行时应从 P8 收尾开始，不要重新实现 P5/P6/P7a/P7b。P8 archive/journal 完成后，再跑全链路质量门和最终报告。
+继续执行时不应重新实现 P5/P6/P7a/P7b/P8。后续只需要基于新的产品范围另开任务。
 
 ## P5 Goal
 
@@ -151,8 +151,9 @@ summary replacement、rehydration scope、tail protection、compact failure safe
 
 ## P8 Goal
 
-状态：core implementation/tests 已完成，待 Trellis archive/journal/final report。当前 Trellis task：
-`.trellis/tasks/06-06-prefix-cache-context-assembly-p8`。
+状态：已完成、提交、归档。完成记录见
+`.trellis/tasks/archive/2026-06/06-06-prefix-cache-context-assembly-p8/completion.md`
+（归档前路径为 `.trellis/tasks/06-06-prefix-cache-context-assembly-p8/completion.md`）。
 
 ```text
 /goal 当前工作目录为：
@@ -181,7 +182,7 @@ RecoveryPolicy、doctor detail、dry-run/benchmark diagnostics、redaction bound
 
 ## Current Branch Phased Master Goal
 
-以下 goal 用于当前分支从现状继续，按批次完成剩余收尾工作。它不要求重做 P5/P6/P7a/P7b，也不要求重做 P8 core implementation；当前入口是 P8 archive/journal，然后做全链路验收。
+以下 goal 用于当前分支从 P8 归档前状态继续，按批次完成剩余收尾工作。当前分支已经执行过该 goal：P8 archive 已完成，最终质量门已通过，后续不应重复执行。
 
 ```text
 /goal 当前工作目录为：
