@@ -40,6 +40,47 @@ Implemented provider wire cache policy for OpenAI Responses, OpenAI-compatible C
 - None - task complete
 
 
+## Session 4: Prefix cache context assembly P6
+
+**Date**: 2026-06-06
+**Task**: Prefix cache context assembly P6
+**Branch**: `feature/mycli-prefix-cache-context-assembly-p1`
+
+### Summary
+
+Completed Provider Adapter / Replay Hardening P6 and archived the Trellis task. Responses, Chat Completions, and Anthropic Messages now project the same canonical timeline through stricter provider-private state boundaries.
+
+### Main Changes
+
+- Added deterministic provider replay helpers for stable fallback ids, Responses replay filtering, and recursive provider-private sanitization.
+- Extended Responses serialization to replay same-issuer opaque reasoning and message items while filtering foreign issuer encrypted reasoning.
+- Hardened OpenAI-compatible Chat serialization so nested Responses/Anthropic/private fields are stripped before wire projection.
+- Hardened Anthropic serialization so Responses-private reasoning does not become Anthropic thinking, while Anthropic-native thinking and wire-only cache behavior remain supported.
+- Updated `.trellis/spec/backend/context-management-contract.md` with the P6 adapter replay hardening contract.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9ebd0c7` | docs: record remaining prefix cache batches |
+| `1a7e40f` | Preserve provider replay boundaries across adapters |
+| `73d95d4` | chore(task): archive prefix cache context assembly p6 |
+
+### Testing
+
+- [OK] `uv run pytest tests/unit/infrastructure/models/test_responses_adapter.py tests/unit/infrastructure/test_provider_adapters.py tests/unit/infrastructure/models/test_anthropic_messages_adapter.py tests/unit/infrastructure/models/test_native_tool_adapter.py tests/unit/services/test_cache_stability_regressions.py tests/unit/services/test_provider_payload_snapshot.py tests/unit/services/test_request_shape_builder.py -q` (`101 passed`)
+- [OK] `uv run ruff check .`
+- [OK] `uv run mypy src/mycli`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Start P7a: Compact Cheap Pruning / Tail Protection Foundation.
+
+
 ## Session 4: Prefix cache context assembly P5
 
 **Date**: 2026-06-06
