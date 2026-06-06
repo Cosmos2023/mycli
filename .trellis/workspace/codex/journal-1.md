@@ -408,7 +408,13 @@ Implemented bounded per-call tool_runtime_lifecycle traces, doctor lifecycle int
 
 ### Main Changes
 
-(Add details)
+- Added bounded `tool_runtime_lifecycle` trace rows from `ToolExecutionService`
+  for planned, policy checked, started, progress, and terminal tool phases.
+- Added `tool_lifecycle_diagnostics` doctor checks for missing terminal rows,
+  terminal rows without starts, duplicate terminal rows, malformed phase/status,
+  and redacted lifecycle summaries.
+- Updated backend quality guidelines with the P10 lifecycle trace and doctor
+  redaction contract.
 
 ### Git Commits
 
@@ -418,7 +424,54 @@ Implemented bounded per-call tool_runtime_lifecycle traces, doctor lifecycle int
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `uv run ruff check src tests evaluation`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q`
+- [OK] context/subagent/MCP/plugin/hook/provider-cache smoke scripts
+- [OK] compact/rehydration diff audit: no compact files changed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 6: Codex alignment P11 skill context injection
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P11 skill context injection
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Stabilized skill context injection around the default Skill tool, added bounded skill_activation diagnostics, and documented the catalog plus explicit activation contract.
+
+### Main Changes
+
+- Kept normal runtime skill activation on the stable `Skill` tool and added
+  regression coverage that unactivated skill additions do not change
+  provider-visible tool schemas.
+- Added bounded `skill_activation` trace rows for successful skill activations,
+  carrying only metadata, body digest, content length, and replayability flags.
+- Documented the catalog plus explicit activation contract in
+  `.trellis/spec/backend/context-management-contract.md`.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `19a4b26` | (see git log) |
+
+### Testing
+
+- [OK] `uv run ruff check src tests evaluation`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q`
+- [OK] skill/context/subagent/MCP/plugin/hook/provider-cache smoke scripts
+- [OK] compact/rehydration diff audit: no compact files changed
 
 ### Status
 
