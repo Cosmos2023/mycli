@@ -542,3 +542,66 @@ Boundary note:
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Codex alignment P13 runtime diagnostics productization
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P13 runtime diagnostics productization
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Completed P13 runtime diagnostics productization for dry-run, trace, doctor, and smoke.
+
+### Main Changes
+
+Completed P13 from docs/parity/codex-alignment-phases-p9-p13.md.
+
+Key work:
+- Added RuntimeDryRunDiagnostics and allowed ProviderRequestDryRunRenderer to attach bounded runtime_diagnostics.
+- Runtime dry-run now summarizes exposed tools, policy decisions, sandbox lane, approval lane, tool lifecycle, and session continuity without raw prompt/tool/provider payload data.
+- Extended /trace inspection to show bounded runtime policy fields: decision, policy, risk, argument key/count, and sandbox shape.
+- Extended doctor runtime policy diagnostics with bounded sandbox filesystem/network/shell counts.
+- Extended provider-free cache smoke with P13 runtime diagnostics fields.
+- Updated quality and context-management specs for runtime diagnostics productization and redaction boundaries.
+
+Verification:
+- uv run ruff check src tests evaluation
+- uv run mypy src/mycli
+- uv run pytest -q
+- uv run python evaluation/context_smoke.py
+- uv run python evaluation/subagent_smoke.py
+- uv run python evaluation/mcp_smoke.py
+- uv run python evaluation/plugin_runtime_smoke.py
+- uv run python evaluation/hook_smoke.py
+- uv run python evaluation/provider_cache_policy_smoke.py
+- Compact boundary diff audit returned empty for compaction_rehydration.py and services/context/compaction*.py.
+
+Boundary note:
+- P13 did not edit compact/rehydration implementation files.
+- P13 did not call real providers or add a telemetry backend.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6046153` | (see git log) |
+| `0076c2b` | (see git log) |
+
+### Testing
+
+- [OK] `uv run ruff check src tests evaluation`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q` (`1462 passed`)
+- [OK] context/subagent/MCP/plugin/hook/provider-cache smoke scripts
+- [OK] compact/rehydration diff audit: no compact files changed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
