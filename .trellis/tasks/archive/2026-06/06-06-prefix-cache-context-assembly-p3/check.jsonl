@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify cache observability remains bounded, wire-only, and provider-free."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify doctor/trace redaction and required test coverage."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify cache policy data survives cross-layer projection without leaking raw content."}
+{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p3/research/cache-observability-loop.md", "reason": "Verify implementation matches researched P3 gaps and design."}

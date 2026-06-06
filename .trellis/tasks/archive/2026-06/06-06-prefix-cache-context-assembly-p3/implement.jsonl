@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for active guidelines."}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Canonical context/cache-class, provider wire hint, diagnostics, and dry-run contracts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor, trace, redaction, testing, and quality requirements."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide index."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "P3 spans request shape, provider projection, diagnostics, doctor, and smoke."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "P3 should reuse P1/P2 request-shape and diagnostics abstractions."}
+{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p3/research/cache-observability-loop.md", "reason": "Task-specific P1/P2 data flow and P3 gap analysis."}
