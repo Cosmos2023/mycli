@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for quality verification."}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context/cache/compaction contracts for P7b verification."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis verification thinking guides."}
+{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p7b/research/summary-rehydration-lifecycle.md", "reason": "P7b research requirements for verification."}
