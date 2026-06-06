@@ -163,6 +163,138 @@ section = TurnContextSection(
 )
 ```
 
+## Scenario: Canonical Timeline Persistence Contract
+
+### 1. Scope / Trigger
+
+- Trigger: changes to `CanonicalTimelineItem`, `TurnContextSection`
+  durability/scope metadata, instruction contract assembly, request-shape
+  fragment metadata, session context baseline persistence, or session resume
+  context rehydration.
+- The flow crosses domain runtime contracts, context assembly, instruction
+  fragments, request shape summaries, runtime ledger persistence, session store,
+  and resume-time `ExecutionContext` reconstruction.
+
+### 2. Signatures
+
+- Canonical item:
+  `CanonicalTimelineItem(role, kind, content, source, durability, scope,
+  cache_class, metadata, provider_state)`
+- Section:
+  `TurnContextSection(..., cache_class, durability, scope)`
+- Fragment metadata fields:
+  `durability`, `scope`, `model_visible`, `replayable`,
+  `provider_state_keys`
+- Baseline persistence:
+  `RuntimeEventLedger.context_baseline_from_contract(contract) -> ContextBaseline | None`
+- Resume input:
+  `ExecutionContext.context_baseline: ContextBaseline | None`
+
+### 3. Contracts
+
+- `CanonicalTimelineDurability` values are:
+  - `persistent`: model-visible state that may participate in later request
+    assembly or resume reconstruction.
+  - `api_only`: transport/cache/debug-only data that must not be projected into
+    model-visible instruction fragments.
+- `CanonicalTimelineScope` values are:
+  - `request`: one provider request only.
+  - `turn`: visible only during the current user turn or continuation.
+  - `session`: durable session state that may be selected again by runtime
+    assembly.
+  - `transcript`: durable model-visible replay across later user turns.
+- `InstructionContractAssembler` must skip sections with
+  `durability=api_only` before creating contextual or developer fragments.
+- Fragment metadata must preserve bounded persistence fields:
+  `durability`, `scope`, `model_visible`, and `replayable`.
+- `RequestShape.fragment_metadata_summary()` may expose bounded persistence
+  metadata but must not expose raw model-visible content, full provider wire
+  payloads, full `prompt_cache_key`, or raw `provider_state`.
+- If an instruction fragment includes `provider_state`, request-shape metadata
+  may include only sorted `provider_state_keys`.
+- `RuntimeEventLedger.context_baseline_from_contract()` stores only
+  model-visible persistent fragments that can be reconstructed later. It must
+  not store `conversation_context` or `user_request`, because those are handled
+  by structured history items.
+- The context baseline must remove wire-only metadata keys before persistence:
+  `provider_state`, `prompt_cache_key`, and `cache_control`.
+- Resume-time `TurnContextAssembler` may use baseline fragments for sparse
+  workspace, environment, memory, and plan context. Baseline memory/plan
+  fragments are fallback selected context when no live memory/plan provider data
+  is present.
+- Current user input remains the final model-visible user intent after
+  persistence metadata is added.
+
+### 4. Validation & Error Matrix
+
+- `durability=api_only` section -> no instruction fragment, no request-shape
+  fragment, no context baseline fragment.
+- `model_visible=false` metadata -> no context baseline fragment.
+- `replayable=true` memory or plan fragment -> persisted as a baseline fragment
+  and available to resume-time context assembly.
+- `conversation_context` or `user_request` fragment marked replayable ->
+  excluded from baseline; structured history remains the source of transcript
+  replay.
+- Baseline metadata contains `provider_state`, `prompt_cache_key`, or
+  `cache_control` -> invalid; these keys must be stripped before session state
+  persistence.
+- Sparse resume with baseline memory/plan and no live memory/plan provider ->
+  memory/plan sections are enabled and include the baseline content.
+- Empty plan with no baseline -> plan section remains disabled even though the
+  renderer fallback text is `Current plan: none`.
+- Provider-private state present in fragment metadata -> request-shape summary
+  shows `provider_state_keys` only.
+
+### 5. Good/Base/Bad Cases
+
+- Good: selected memory is emitted with
+  `durability=persistent`, `scope=transcript`, `replayable=true`, enters the
+  context baseline, and rehydrates after session resume.
+- Good: a retry notice is represented as `durability=api_only`,
+  `scope=request`, and never reaches the model-visible instruction contract.
+- Base: a session with no context baseline still assembles normal workspace,
+  environment, conversation, memory, plan, and current user sections.
+- Bad: persisting a full `prompt_cache_key` in baseline metadata.
+- Bad: flattening encrypted reasoning state into fragment content instead of
+  keeping provider-private state behind `provider_state`.
+
+### 6. Tests Required
+
+- Unit test `CanonicalTimelineItem` serialization, `is_model_visible`, and
+  `is_replayable`.
+- Unit test `InstructionContractAssembler` excludes `api_only` sections.
+- Unit test request-shape fragments preserve durability/scope/replayable
+  metadata and redact raw `provider_state`.
+- Unit test current user input remains the final request fragment after
+  persistence metadata changes.
+- Unit test `RuntimeEventLedger.context_baseline_from_contract()` persists
+  replayable memory/plan and skips `api_only`, turn-scoped, conversation, and
+  current-user fragments.
+- Unit test baseline metadata strips provider-private and wire-only keys.
+- Unit test `TurnContextAssembler` rehydrates baseline memory/plan when live
+  runtime stores are sparse.
+- Provider-free context and cache-policy smokes must continue to pass.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+fragment.metadata["provider_state"] = {"codex_reasoning_items": encrypted}
+baseline.fragments.append(fragment)
+```
+
+#### Correct
+
+```python
+request_metadata["provider_state_keys"] = tuple(sorted(provider_state))
+baseline_metadata = {
+    key: value
+    for key, value in fragment.metadata.items()
+    if key not in {"provider_state", "prompt_cache_key", "cache_control"}
+}
+```
+
 ## Scenario: Provider Wire Cache Policy Projection
 
 ### 1. Scope / Trigger

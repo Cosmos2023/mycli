@@ -14,6 +14,12 @@ from mycli.domain.runtime.approvals import (
 from mycli.domain.runtime.clarifications import (
     PendingClarification as PendingClarification,
 )
+from mycli.domain.runtime.canonical_timeline import (
+    CanonicalTimelineDurability as CanonicalTimelineDurability,
+    CanonicalTimelineItem as CanonicalTimelineItem,
+    CanonicalTimelineRole as CanonicalTimelineRole,
+    CanonicalTimelineScope as CanonicalTimelineScope,
+)
 from mycli.domain.runtime.blocks import (
     BlockType as BlockType,
     ModelTurnResult as ModelTurnResult,

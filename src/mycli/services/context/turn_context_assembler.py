@@ -3,6 +3,7 @@ from __future__ import annotations
 from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryRecord
 from mycli.domain.runtime import (
+    CanonicalTimelineScope,
     ExecutionContext,
     HistoryItemType,
     PlanItem,
@@ -25,9 +26,13 @@ class TurnContextAssembler:
     ) -> TurnContext:
         workspace_content = self._workspace_instructions(context, workspace_instructions)
         memory_records = self._deduplicated_memory_records(context)
-        memory_content = self._render_memory(memory_records)
+        memory_content = self._render_memory(context, memory_records)
         runtime_reminders_content = self._render_runtime_reminders(context)
         compaction_rehydration_content = self._render_compaction_rehydration(context)
+        plan_content = self._render_plan(context)
+        plan_enabled = bool(
+            context.plan_state.items or self._baseline_fragment_content(context, "plan")
+        )
         sections = (
             TurnContextSection(
                 type=TurnContextSectionType.BASE_INSTRUCTIONS,
@@ -36,6 +41,7 @@ class TurnContextAssembler:
                 enabled=True,
                 source="system_prompt",
                 cache_class=TurnContextCacheClass.STATIC,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.WORKSPACE_INSTRUCTIONS,
@@ -45,6 +51,7 @@ class TurnContextAssembler:
                 source=self._workspace_source(context, workspace_instructions),
                 metadata=self._workspace_metadata(context, workspace_instructions),
                 cache_class=TurnContextCacheClass.STATIC,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.ENVIRONMENT_CONTEXT,
@@ -59,6 +66,7 @@ class TurnContextAssembler:
                     "protocol": context.config.protocol,
                 },
                 cache_class=TurnContextCacheClass.DYNAMIC,
+                scope=CanonicalTimelineScope.TURN,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.CONVERSATION_CONTEXT,
@@ -71,6 +79,7 @@ class TurnContextAssembler:
                 ),
                 source="conversation",
                 cache_class=TurnContextCacheClass.DYNAMIC,
+                scope=CanonicalTimelineScope.TURN,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.COMPACTION_REHYDRATION,
@@ -79,23 +88,26 @@ class TurnContextAssembler:
                 enabled=bool(compaction_rehydration_content),
                 source="compaction",
                 cache_class=TurnContextCacheClass.DYNAMIC,
+                scope=CanonicalTimelineScope.TURN,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.MEMORY,
                 title="Memory",
                 content=memory_content,
-                enabled=bool(memory_records),
+                enabled=bool(memory_content),
                 source="memory",
-                metadata=self._memory_metadata(memory_records),
+                metadata=self._memory_metadata(context, memory_records),
                 cache_class=TurnContextCacheClass.DYNAMIC,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.PLAN,
                 title="Current plan",
-                content=self._render_plan(context),
-                enabled=bool(context.plan_state.items),
+                content=plan_content,
+                enabled=plan_enabled,
                 source="plan",
                 cache_class=TurnContextCacheClass.DYNAMIC,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.RUNTIME_REMINDERS,
@@ -104,6 +116,7 @@ class TurnContextAssembler:
                 enabled=bool(runtime_reminders_content),
                 source="runtime",
                 cache_class=TurnContextCacheClass.EPHEMERAL,
+                scope=CanonicalTimelineScope.TURN,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.SKILL_CATALOG,
@@ -112,6 +125,7 @@ class TurnContextAssembler:
                 enabled=bool(context.skill_catalog),
                 source="skill_registry",
                 cache_class=TurnContextCacheClass.STATIC,
+                scope=CanonicalTimelineScope.SESSION,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.TOOL_EXPOSURE,
@@ -122,6 +136,7 @@ class TurnContextAssembler:
                 source="tool_registry",
                 metadata=self._tool_exposure_metadata(context),
                 cache_class=TurnContextCacheClass.STATIC,
+                scope=CanonicalTimelineScope.SESSION,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.USER_REQUEST,
@@ -130,6 +145,7 @@ class TurnContextAssembler:
                 enabled=True,
                 source="user",
                 cache_class=TurnContextCacheClass.EPHEMERAL,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
             ),
         )
         return TurnContext(user_message=user_message, sections=sections)
@@ -241,7 +257,14 @@ class TurnContextAssembler:
         fragments = [fragment.content for fragment in baseline.fragments if fragment.kind == kind]
         return "\n".join(fragment for fragment in fragments if fragment)
 
-    def _render_memory(self, records: tuple[MemoryRecord, ...]) -> str:
+    def _render_memory(
+        self,
+        context: ExecutionContext,
+        records: tuple[MemoryRecord, ...],
+    ) -> str:
+        baseline = self._baseline_fragment_content(context, "memory")
+        if not records and baseline:
+            return baseline
         if not records:
             return ""
         lines = [
@@ -258,14 +281,21 @@ class TurnContextAssembler:
             ),
         )
 
-    def _memory_metadata(self, records: tuple[MemoryRecord, ...]) -> dict[str, object]:
+    def _memory_metadata(
+        self,
+        context: ExecutionContext,
+        records: tuple[MemoryRecord, ...],
+    ) -> dict[str, object]:
         counts: dict[str, int] = {}
         for record in records:
             counts[record.kind.value] = counts.get(record.kind.value, 0) + 1
-        return {
+        metadata: dict[str, object] = {
             "record_count": len(records),
             "kind_counts": counts,
         }
+        if not records and self._baseline_fragment_content(context, "memory"):
+            metadata["source"] = "baseline"
+        return metadata
 
     def _deduplicated_memory_records(self, context: ExecutionContext) -> tuple[MemoryRecord, ...]:
         replay_texts = self._replay_texts(context)
@@ -297,6 +327,9 @@ class TurnContextAssembler:
 
     def _render_plan(self, context: ExecutionContext) -> str:
         if not context.plan_state.items:
+            baseline = self._baseline_fragment_content(context, "plan")
+            if baseline:
+                return baseline
             return "Current plan: none"
 
         counts = self._plan_status_counts(context.plan_state)

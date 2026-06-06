@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mycli.domain.conversation import Message
 from mycli.domain.runtime import (
+    CanonicalTimelineDurability,
     InstructionContract,
     InstructionFragment,
     InstructionFragmentKind,
@@ -25,6 +26,8 @@ class InstructionContractAssembler:
         current_user_request = turn_context.user_message
 
         for section in turn_context.enabled_sections():
+            if section.durability is CanonicalTimelineDurability.API_ONLY:
+                continue
             if section.type is TurnContextSectionType.BASE_INSTRUCTIONS:
                 continue
             if section.type is TurnContextSectionType.RUNTIME_REMINDERS:
@@ -127,6 +130,17 @@ class InstructionContractAssembler:
     ) -> InstructionFragment:
         metadata = dict(section.metadata)
         metadata.setdefault("cache_class", section.cache_class.value)
+        metadata.setdefault("durability", section.durability.value)
+        metadata.setdefault("scope", section.scope.value)
+        metadata.setdefault(
+            "model_visible",
+            section.durability is not CanonicalTimelineDurability.API_ONLY,
+        )
+        metadata.setdefault(
+            "replayable",
+            section.durability is CanonicalTimelineDurability.PERSISTENT
+            and section.scope.value == "transcript",
+        )
         return InstructionFragment(
             kind=kind,
             title=section.title,
@@ -146,6 +160,17 @@ class InstructionContractAssembler:
     ) -> InstructionFragment:
         metadata = dict(section.metadata)
         metadata.setdefault("cache_class", section.cache_class.value)
+        metadata.setdefault("durability", section.durability.value)
+        metadata.setdefault("scope", section.scope.value)
+        metadata.setdefault(
+            "model_visible",
+            section.durability is not CanonicalTimelineDurability.API_ONLY,
+        )
+        metadata.setdefault(
+            "replayable",
+            section.durability is CanonicalTimelineDurability.PERSISTENT
+            and section.scope.value == "transcript",
+        )
         return InstructionFragment(
             kind=kind,
             title=section.title,
@@ -174,6 +199,17 @@ class InstructionContractAssembler:
     def _tool_exposure_fragment(self, section: TurnContextSection) -> InstructionFragment:
         metadata = dict(section.metadata)
         metadata.setdefault("cache_class", section.cache_class.value)
+        metadata.setdefault("durability", section.durability.value)
+        metadata.setdefault("scope", section.scope.value)
+        metadata.setdefault(
+            "model_visible",
+            section.durability is not CanonicalTimelineDurability.API_ONLY,
+        )
+        metadata.setdefault(
+            "replayable",
+            section.durability is CanonicalTimelineDurability.PERSISTENT
+            and section.scope.value == "transcript",
+        )
         return InstructionFragment(
             kind=InstructionFragmentKind.TOOL_EXPOSURE,
             title=section.title,

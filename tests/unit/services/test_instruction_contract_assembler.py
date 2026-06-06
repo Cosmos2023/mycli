@@ -10,12 +10,18 @@ from mycli.domain.contributed_tools import (
 )
 from mycli.domain.runtime import (
     AgentConfig,
+    CanonicalTimelineDurability,
+    CanonicalTimelineScope,
     CompactionRehydrationContext,
     ExecutionContext,
     PlanItem,
     PlanState,
     PlanStatus,
     RehydratedFile,
+    TurnContext,
+    TurnContextCacheClass,
+    TurnContextSection,
+    TurnContextSectionType,
 )
 from mycli.domain.tool_exposure import (
     ToolExposure,
@@ -87,6 +93,44 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
     )
     assert "调用 Skill 工具" in skill_catalog_fragment.content
     assert "code-review" in skill_catalog_fragment.content
+
+
+def test_instruction_contract_assembler_excludes_api_only_sections_from_model_context() -> None:
+    turn_context = TurnContext(
+        user_message="continue",
+        sections=(
+            TurnContextSection(
+                type=TurnContextSectionType.ENVIRONMENT_CONTEXT,
+                title="Transport retry",
+                content="request id req_123 should not reach model",
+                durability=CanonicalTimelineDurability.API_ONLY,
+                scope=CanonicalTimelineScope.REQUEST,
+                cache_class=TurnContextCacheClass.EPHEMERAL,
+            ),
+            TurnContextSection(
+                type=TurnContextSectionType.PLAN,
+                title="Plan",
+                content="Current: keep working",
+                source="plan",
+                durability=CanonicalTimelineDurability.PERSISTENT,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
+                cache_class=TurnContextCacheClass.DYNAMIC,
+            ),
+        ),
+    )
+
+    contract = InstructionContractAssembler().assemble(
+        turn_context=turn_context,
+        base_instructions="You are mycli.",
+        conversation_messages=(),
+    )
+
+    rendered = "\n".join(fragment.content for fragment in contract.contextual_user_sections)
+    assert "req_123" not in rendered
+    assert "keep working" in rendered
+    assert contract.contextual_user_sections[0].metadata["durability"] == "persistent"
+    assert contract.contextual_user_sections[0].metadata["scope"] == "transcript"
+    assert contract.contextual_user_sections[0].metadata["replayable"] is True
 
 
 def test_instruction_contract_assembler_keeps_added_tools_inside_plain_toolset() -> None:

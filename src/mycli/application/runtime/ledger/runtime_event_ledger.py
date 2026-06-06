@@ -9,6 +9,7 @@ from mycli.domain.runtime import (
     HistoryItem,
     HistoryItemType,
     InstructionContract,
+    InstructionFragment,
     RuntimeTraceEvent,
     StopReason,
     TurnItem,
@@ -26,12 +27,14 @@ from mycli.services.tracing import TraceService
 class RuntimeEventLedger:
     """Persists runtime events separately from provider transcript replay."""
 
+    _BASELINE_HISTORY_KINDS = {"conversation_context", "user_request"}
     _PROVIDER_TRANSCRIPT_TURN_ITEM_TYPES = {
         TurnItemType.USER_MESSAGE,
         TurnItemType.ASSISTANT_MESSAGE,
         TurnItemType.TOOL_CALL,
         TurnItemType.TOOL_RESULT,
     }
+    _WIRE_ONLY_METADATA_KEYS = {"provider_state", "prompt_cache_key", "cache_control"}
 
     def __init__(
         self,
@@ -130,9 +133,10 @@ class RuntimeEventLedger:
         if contract is None:
             return None
 
-        excluded_kinds = {"conversation_context", "memory", "plan", "user_request"}
         fragments: list[BaselineFragment] = []
         for index, section in enumerate(contract.developer_sections, start=1):
+            if not self._baseline_fragment_replayable(section):
+                continue
             fragments.append(
                 BaselineFragment(
                     id=f"developer:{index}",
@@ -140,12 +144,12 @@ class RuntimeEventLedger:
                     title=section.title,
                     content=section.content,
                     source=section.source,
-                    metadata=dict(section.metadata),
+                    metadata=self._baseline_metadata(section.metadata),
                 )
             )
         contextual_index = 0
         for section in contract.contextual_user_sections:
-            if str(section.kind) in excluded_kinds:
+            if not self._baseline_fragment_replayable(section):
                 continue
             contextual_index += 1
             fragments.append(
@@ -155,7 +159,7 @@ class RuntimeEventLedger:
                     title=section.title,
                     content=section.content,
                     source=section.source,
-                    metadata=dict(section.metadata),
+                    metadata=self._baseline_metadata(section.metadata),
                 )
             )
         if not fragments:
@@ -210,6 +214,28 @@ class RuntimeEventLedger:
         )
         self._session_service.append_turn_rollout(self._session_id, rollout)
         self._session_service.sync_conversation_view_from_history(self._session_id)
+
+    def _baseline_fragment_replayable(self, section: InstructionFragment) -> bool:
+        kind = str(section.kind)
+        if kind in self._BASELINE_HISTORY_KINDS:
+            return False
+        metadata = section.metadata
+        if not isinstance(metadata, dict):
+            return True
+        if metadata.get("model_visible") is False:
+            return False
+        if metadata.get("replayable") is True:
+            return True
+        durability = str(metadata.get("durability", "persistent"))
+        scope = str(metadata.get("scope", "turn"))
+        return durability == "persistent" and scope in {"transcript", "session"}
+
+    def _baseline_metadata(self, metadata: dict[str, object]) -> dict[str, object]:
+        return {
+            str(key): value
+            for key, value in metadata.items()
+            if str(key) not in self._WIRE_ONLY_METADATA_KEYS
+        }
 
     def _provider_transcript_type_for_turn_item(
         self,

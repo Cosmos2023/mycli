@@ -408,15 +408,28 @@ class RequestShape:
 
     def fragment_metadata_summary(self) -> dict[str, dict[str, object]]:
         return {
-            fragment.id: {
-                "kind": fragment.kind.value,
-                "stability": fragment.stability.value,
-                "source": fragment.metadata.get("source"),
-                "cache_class": fragment.metadata.get("cache_class"),
-                "section_hash": fragment.metadata.get("section_hash"),
-            }
+            fragment.id: self._fragment_metadata_summary(fragment)
             for fragment in self.fragments
         }
+
+    def _fragment_metadata_summary(self, fragment: RequestFragment) -> dict[str, object]:
+        summary: dict[str, object] = {
+            "kind": fragment.kind.value,
+            "stability": fragment.stability.value,
+            "source": fragment.metadata.get("source"),
+            "cache_class": fragment.metadata.get("cache_class"),
+            "section_hash": fragment.metadata.get("section_hash"),
+        }
+        for key in (
+            "durability",
+            "scope",
+            "model_visible",
+            "replayable",
+            "provider_state_keys",
+        ):
+            if key in fragment.metadata:
+                summary[key] = fragment.metadata[key]
+        return summary
 
     def section_boundaries(self) -> tuple[dict[str, object], ...]:
         return tuple(

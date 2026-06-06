@@ -216,6 +216,43 @@ def test_request_shape_summary_includes_provider_request_policy() -> None:
     assert policy["anthropic_cache_control_breakpoint_count"] == 0
 
 
+def test_request_shape_fragment_metadata_summary_includes_persistence_without_provider_state() -> None:
+    shape = RequestShape(
+        provider="openai",
+        protocol="responses",
+        model="gpt-5",
+        stable_system="Stable system rules.",
+        fragments=(
+            RequestFragment(
+                id="replay:retrieved_memory",
+                kind=RequestFragmentKind.RETRIEVED_MEMORY,
+                content="memory",
+                stability=FragmentStability.REPLAY,
+                metadata={
+                    "source": "memory",
+                    "cache_class": "dynamic",
+                    "section_hash": "hash",
+                    "durability": "persistent",
+                    "scope": "transcript",
+                    "model_visible": True,
+                    "replayable": True,
+                    "provider_state_keys": ("codex_reasoning_items",),
+                    "provider_state": {"codex_reasoning_items": [{"secret": "opaque"}]},
+                },
+            ),
+        ),
+    )
+
+    metadata = shape.summary()["fragment_metadata"]["replay:retrieved_memory"]
+
+    assert metadata["durability"] == "persistent"
+    assert metadata["scope"] == "transcript"
+    assert metadata["model_visible"] is True
+    assert metadata["replayable"] is True
+    assert metadata["provider_state_keys"] == ("codex_reasoning_items",)
+    assert "provider_state" not in metadata
+
+
 def test_provider_request_policy_capability_can_disable_prompt_cache_key() -> None:
     policy = ProviderRequestPolicyShape.for_request_shape(
         provider="compatible",

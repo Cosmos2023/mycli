@@ -6,6 +6,8 @@ from mycli.domain.conversation import Message
 from mycli.domain.providers import ProviderId
 from mycli.domain.runtime import (
     AgentConfig,
+    CanonicalTimelineDurability,
+    CanonicalTimelineScope,
     InstructionContract,
     InstructionFragment,
     ProtocolId,
@@ -144,6 +146,64 @@ def test_request_shape_builder_preserves_context_section_metadata(
     assert fragment.metadata["cache_class"] == "dynamic"
     assert fragment.metadata["record_count"] == 1
     assert fragment.metadata["instruction_fragment_kind"] == "memory"
+
+
+def test_request_shape_builder_preserves_canonical_persistence_metadata(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content="<memory-context>reference only</memory-context>",
+                    source="memory",
+                    metadata={
+                        "cache_class": "dynamic",
+                        "durability": CanonicalTimelineDurability.PERSISTENT.value,
+                        "scope": CanonicalTimelineScope.TRANSCRIPT.value,
+                        "provider_state": {
+                            "codex_reasoning_items": [{"encrypted_content": "opaque"}],
+                        },
+                    },
+                ),
+                InstructionFragment(
+                    kind="compaction_rehydration",
+                    title="Compaction rehydration",
+                    content="<compaction-rehydration>continue current turn</compaction-rehydration>",
+                    source="compact",
+                    metadata={
+                        "cache_class": "dynamic",
+                        "durability": CanonicalTimelineDurability.PERSISTENT.value,
+                        "scope": CanonicalTimelineScope.TURN.value,
+                    },
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(),
+    )
+
+    memory_fragment = next(
+        item for item in shape.fragments if item.id == "replay:retrieved_memory"
+    )
+    rehydration_fragment = next(
+        item for item in shape.fragments if item.id == "replay:compaction_rehydration"
+    )
+
+    assert memory_fragment.metadata["durability"] == "persistent"
+    assert memory_fragment.metadata["scope"] == "transcript"
+    assert memory_fragment.metadata["model_visible"] is True
+    assert memory_fragment.metadata["replayable"] is True
+    assert "provider_state" not in memory_fragment.metadata
+    assert memory_fragment.metadata["provider_state_keys"] == ("codex_reasoning_items",)
+    assert rehydration_fragment.metadata["durability"] == "persistent"
+    assert rehydration_fragment.metadata["scope"] == "turn"
+    assert rehydration_fragment.metadata["replayable"] is False
+    assert shape.fragments[-1].id == "intent:current"
 
 
 def test_request_shape_builder_marks_replay_fragment_with_cache_metadata(

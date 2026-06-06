@@ -13,6 +13,8 @@ from mycli.domain.memory import MemoryKind, MemoryRecord
 from mycli.domain.runtime import (
     AgentConfig,
     BaselineFragment,
+    CanonicalTimelineDurability,
+    CanonicalTimelineScope,
     CompactionRehydrationContext,
     ContextBaseline,
     ExecutionContext,
@@ -22,7 +24,9 @@ from mycli.domain.runtime import (
     PlanState,
     PlanStatus,
     RehydratedFile,
+    TurnContext,
     TurnContextSectionType,
+    TurnContextSection,
     TurnContextCacheClass,
 )
 from mycli.domain.tool_exposure import (
@@ -33,6 +37,7 @@ from mycli.domain.tool_exposure import (
     ToolRouteSource,
 )
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
+from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.tools.base import ToolSpec
 
 
@@ -155,6 +160,19 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         "tool_exposure": "static",
         "user_request": "ephemeral",
     }
+    assert turn_context.debug_summary()["scopes"] == {
+        "base_instructions": "transcript",
+        "workspace_instructions": "transcript",
+        "environment_context": "turn",
+        "conversation_context": "turn",
+        "compaction_rehydration": "turn",
+        "memory": "transcript",
+        "plan": "transcript",
+        "runtime_reminders": "turn",
+        "skill_catalog": "session",
+        "tool_exposure": "session",
+        "user_request": "transcript",
+    }
 
 
 def test_turn_context_assembler_keeps_empty_sections_but_marks_them_disabled() -> None:
@@ -253,8 +271,50 @@ def test_turn_context_assembler_renders_non_compaction_runtime_reminders() -> No
     )
 
     assert runtime_section.enabled is True
+    assert runtime_section.durability is CanonicalTimelineDurability.PERSISTENT
+    assert runtime_section.scope is CanonicalTimelineScope.TURN
     assert runtime_section.metadata == {}
     assert "Prefer source files before logs." in runtime_section.content
+
+
+def test_instruction_contract_assembler_excludes_api_only_sections() -> None:
+    assembler = InstructionContractAssembler()
+    turn_context = TurnContext(
+        user_message="continue",
+        sections=(
+            TurnContextSection(
+                type=TurnContextSectionType.ENVIRONMENT_CONTEXT,
+                title="Transport retry",
+                content="request id req_123 should not reach model",
+                durability=CanonicalTimelineDurability.API_ONLY,
+                scope=CanonicalTimelineScope.REQUEST,
+                cache_class=TurnContextCacheClass.EPHEMERAL,
+            ),
+            TurnContextSection(
+                type=TurnContextSectionType.MEMORY,
+                title="Memory",
+                content="<memory-context>Stable API rule.</memory-context>",
+                source="memory",
+                durability=CanonicalTimelineDurability.PERSISTENT,
+                scope=CanonicalTimelineScope.TRANSCRIPT,
+                cache_class=TurnContextCacheClass.DYNAMIC,
+            ),
+        ),
+    )
+
+    contract = assembler.assemble(
+        turn_context=turn_context,
+        base_instructions="Stable system rules.",
+        conversation_messages=(),
+    )
+
+    rendered_context = "\n".join(
+        section.content for section in contract.contextual_user_sections
+    )
+    assert "request id req_123" not in rendered_context
+    assert "Stable API rule" in rendered_context
+    assert contract.contextual_user_sections[0].metadata["durability"] == "persistent"
+    assert contract.contextual_user_sections[0].metadata["scope"] == "transcript"
 
 
 def test_turn_context_assembler_excludes_compaction_rehydration_runtime_reminders() -> None:
@@ -389,6 +449,58 @@ def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is
     assert "先检查仓库结构" in conversation_section.content
     assert "我先看一下入口文件。" in conversation_section.content
     assert "Timezone: Asia/Shanghai" in environment_section.content
+
+
+def test_turn_context_assembler_rehydrates_replayable_memory_and_plan_from_baseline() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="继续 P5",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            context_baseline=ContextBaseline(
+                thread_id="demo",
+                fragments=(
+                    BaselineFragment(
+                        id="memory",
+                        kind="memory",
+                        title="Memory",
+                        content="这是本轮召回的相关记忆。\nRemember the selected package boundary.",
+                        source="memory",
+                        metadata={
+                            "durability": "persistent",
+                            "scope": "transcript",
+                            "replayable": True,
+                        },
+                    ),
+                    BaselineFragment(
+                        id="plan",
+                        kind="plan",
+                        title="Current plan",
+                        content="这是本轮当前的计划状态。\nCurrent: finish canonical timeline P5.",
+                        source="plan",
+                        metadata={
+                            "durability": "persistent",
+                            "scope": "transcript",
+                            "replayable": True,
+                        },
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    memory_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.MEMORY
+    )
+    plan_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.PLAN
+    )
+
+    assert memory_section.enabled is True
+    assert "selected package boundary" in memory_section.content
+    assert memory_section.metadata["source"] == "baseline"
+    assert plan_section.enabled is True
+    assert "finish canonical timeline P5" in plan_section.content
+    assert plan_section.scope is CanonicalTimelineScope.TRANSCRIPT
 
 
 def test_turn_context_assembler_renders_conversation_as_stable_transcript() -> None:

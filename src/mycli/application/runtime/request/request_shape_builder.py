@@ -760,17 +760,42 @@ class RequestShapeBuilder:
                     kind=kind,
                     content=content,
                     stability=stability,
-                    metadata={
-                        "title": section.title,
-                        "source": section.source,
-                        "cache_class": cache_class,
-                        "instruction_fragment_kind": str(section.kind),
-                        "section_hash": stable_hash(content),
-                        **dict(section.metadata),
-                    },
+                    metadata=self._fragment_metadata(
+                        section=section,
+                        cache_class=cache_class,
+                        content=content,
+                    ),
                 )
             )
         return tuple(fragments)
+
+    def _fragment_metadata(
+        self,
+        *,
+        section: InstructionFragment,
+        cache_class: str,
+        content: str,
+    ) -> dict[str, object]:
+        section_metadata = dict(section.metadata)
+        provider_state = section_metadata.pop("provider_state", None)
+        metadata: dict[str, object] = {
+            "title": section.title,
+            "source": section.source,
+            "cache_class": cache_class,
+            "instruction_fragment_kind": str(section.kind),
+            "section_hash": stable_hash(content),
+            **section_metadata,
+        }
+        durability = str(metadata.get("durability", "persistent"))
+        scope = str(metadata.get("scope", "turn"))
+        metadata.setdefault("model_visible", durability != "api_only")
+        metadata.setdefault(
+            "replayable",
+            durability == "persistent" and scope == "transcript",
+        )
+        if isinstance(provider_state, dict) and provider_state:
+            metadata["provider_state_keys"] = tuple(sorted(provider_state))
+        return metadata
 
     def _stable_contextual_fragments(
         self,

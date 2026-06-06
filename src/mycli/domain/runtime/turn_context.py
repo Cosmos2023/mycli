@@ -4,6 +4,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from mycli.domain.runtime.canonical_timeline import (
+    CanonicalTimelineDurability,
+    CanonicalTimelineScope,
+)
+
 
 class TurnContextSectionType(StrEnum):
     BASE_INSTRUCTIONS = "base_instructions"
@@ -34,6 +39,8 @@ class TurnContextSection:
     source: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     cache_class: TurnContextCacheClass = TurnContextCacheClass.DYNAMIC
+    durability: CanonicalTimelineDurability = CanonicalTimelineDurability.PERSISTENT
+    scope: CanonicalTimelineScope = CanonicalTimelineScope.TURN
 
 
 @dataclass(slots=True, frozen=True)
@@ -54,5 +61,11 @@ class TurnContext:
             "disabled_sections": disabled_sections,
             "cache_classes": {
                 section.type.value: section.cache_class.value for section in self.sections
+            },
+            "durability": {
+                section.type.value: section.durability.value for section in self.sections
+            },
+            "scopes": {
+                section.type.value: section.scope.value for section in self.sections
             },
         }
