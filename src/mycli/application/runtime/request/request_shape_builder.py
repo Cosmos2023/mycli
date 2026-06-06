@@ -82,6 +82,7 @@ class RequestShapeBuilder:
                 },
             ),
             *self._dynamic_contextual_fragments(contextual_fragments),
+            *self._ephemeral_contextual_fragments(contextual_fragments),
             RequestFragment(
                 id="intent:current",
                 kind=RequestFragmentKind.INTENT,
@@ -93,7 +94,6 @@ class RequestShapeBuilder:
                     "section_hash": stable_hash(intent_content),
                 },
             ),
-            *self._ephemeral_contextual_fragments(contextual_fragments),
         )
         provider_messages = self._provider_messages(
             config=config,
@@ -258,10 +258,10 @@ class RequestShapeBuilder:
                 messages.append(provider_message)
         if dynamic_context:
             messages.append(ProviderMessageShape(role="user", content=dynamic_context))
-        if intent_content and not self._replay_contains_current_user_request(contract):
-            messages.append(ProviderMessageShape(role="user", content=intent_content))
         if ephemeral_context:
             messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
+        if intent_content and not self._replay_contains_current_user_request(contract):
+            messages.append(ProviderMessageShape(role="user", content=intent_content))
         return tuple(messages)
 
     def _uses_transcript_only_messages(self, config: AgentConfig) -> bool:
@@ -303,6 +303,8 @@ class RequestShapeBuilder:
                 messages.append(provider_message)
         if dynamic_context:
             messages.append(ProviderMessageShape(role="user", content=dynamic_context))
+        if ephemeral_context:
+            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -312,8 +314,6 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
-        if ephemeral_context:
-            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         return tuple(messages)
 
     def _transcript_provider_messages(
@@ -343,6 +343,8 @@ class RequestShapeBuilder:
                 messages.append(provider_message)
         if dynamic_context:
             messages.append(ProviderMessageShape(role="user", content=dynamic_context))
+        if ephemeral_context:
+            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -352,8 +354,6 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
-        if ephemeral_context:
-            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
         return tuple(messages)
 
     def _provider_runtime_items(
@@ -416,13 +416,6 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=dynamic_context),),
                 )
             )
-        if intent_content and not self._replay_contains_current_user_request(contract):
-            items.append(
-                ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=intent_content),),
-                )
-            )
         if ephemeral_context:
             items.append(
                 ProviderRuntimeItemShape(
@@ -430,6 +423,13 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
                 )
         )
+        if intent_content and not self._replay_contains_current_user_request(contract):
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=intent_content),),
+                )
+            )
         return tuple(items)
 
     def _provider_projection(
@@ -553,6 +553,13 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=dynamic_context),),
                 )
             )
+        if ephemeral_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
+                )
+            )
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -560,13 +567,6 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
-                )
-            )
-        if ephemeral_context:
-            items.append(
-                ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
                 )
             )
         return tuple(items)
@@ -611,6 +611,13 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=dynamic_context),),
                 )
             )
+        if ephemeral_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
+                )
+            )
         if contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
@@ -618,13 +625,6 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
-                )
-            )
-        if ephemeral_context:
-            items.append(
-                ProviderRuntimeItemShape(
-                    role="user",
-                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
                 )
             )
         return tuple(items)

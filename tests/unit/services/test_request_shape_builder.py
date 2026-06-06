@@ -209,8 +209,8 @@ def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefi
         "stable:workspace_instructions",
         "replay:conversation",
         "replay:retrieved_memory",
-        "intent:current",
         "volatile:runtime_reminders",
+        "intent:current",
     ]
     assert shape.fragments[2].stability is FragmentStability.STABLE
     assert shape.fragments[4].stability is FragmentStability.REPLAY
@@ -228,8 +228,8 @@ def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefi
         "<workspace-context>Use pytest.</workspace-context>",
         "previous request",
         "Memory: stable enough for this task",
-        "Current user request: current request",
         "Runtime reminders: current turn only",
+        "Current user request: current request",
     ]
     assert shape.provider_projection is not None
     assert shape.provider_projection.to_dict() == {
@@ -536,7 +536,7 @@ def test_request_shape_builder_ignores_write_diagnostics_metadata_for_stable_has
     assert first.replay_hash == second.replay_hash
 
 
-def test_request_shape_builder_orders_intent_before_volatile_context(
+def test_request_shape_builder_places_current_user_input_after_volatile_context(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -559,14 +559,14 @@ def test_request_shape_builder_orders_intent_before_volatile_context(
         "stable:system",
         "stable:tool_schema",
         "replay:conversation",
-        "intent:current",
         "volatile:runtime_reminders",
+        "intent:current",
     ]
     assert shape.fragments[2].kind is RequestFragmentKind.REPLAY
     assert shape.fragments[2].stability is FragmentStability.REPLAY
     assert provider_roles == ["system", "developer", "user", "assistant", "user", "user"]
-    assert provider_contents[-2] == "Current user request: current task"
-    assert provider_contents[-1] == "volatile runtime context"
+    assert provider_contents[-2] == "volatile runtime context"
+    assert provider_contents[-1] == "Current user request: current task"
 
 
 def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_reminders_for_responses_payload(
@@ -627,13 +627,13 @@ def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_remi
         "user",
     ]
     assert shape.provider_runtime_items[-2].blocks == (
-        RuntimeBlock(type="text", text="new query"),
-    )
-    assert shape.provider_runtime_items[-1].blocks == (
         RuntimeBlock(type="text", text="Runtime reminders: use compact answers"),
     )
-    assert shape.provider_messages[-2].content == "new query"
-    assert shape.provider_messages[-1].content == "Runtime reminders: use compact answers"
+    assert shape.provider_runtime_items[-1].blocks == (
+        RuntimeBlock(type="text", text="new query"),
+    )
+    assert shape.provider_messages[-2].content == "Runtime reminders: use compact answers"
+    assert shape.provider_messages[-1].content == "new query"
     assert "Conversation summary:" not in provider_payload
     assert "[file_excerpt]" not in provider_payload
     assert "Current user request:" not in provider_payload
@@ -742,8 +742,8 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "inspect README",
         "I will read README.",
         "README contents",
-        "summarize the result",
         "Runtime reminders: use compact answers",
+        "summarize the result",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
@@ -754,8 +754,11 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "user",
         "user",
     ]
-    assert shape.provider_runtime_items[-1].blocks == (
+    assert shape.provider_runtime_items[-2].blocks == (
         RuntimeBlock(type="text", text="Runtime reminders: use compact answers"),
+    )
+    assert shape.provider_runtime_items[-1].blocks == (
+        RuntimeBlock(type="text", text="summarize the result"),
     )
     assert all(message.role != "developer" for message in shape.provider_messages)
     assert all(item.role != "developer" for item in shape.provider_runtime_items)
@@ -1040,8 +1043,8 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
             "Current plan: inspect",
         ]
     )
-    assert shape.provider_messages[-2].content == "Current user request: inspect"
-    assert shape.provider_messages[-1].content == "Runtime reminders: use compact answers"
+    assert shape.provider_messages[-2].content == "Runtime reminders: use compact answers"
+    assert shape.provider_messages[-1].content == "Current user request: inspect"
 
 
 def test_request_shape_builder_uses_replayed_current_user_request_without_duplicate_intent_message(

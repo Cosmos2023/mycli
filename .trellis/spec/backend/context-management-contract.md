@@ -52,9 +52,11 @@
 - Request fragments must preserve cache class/source metadata so cache and trace
   policy does not infer behavior from section names.
 - Provider-visible request shape order is stable prefix first, dynamic replay
-  second, and ephemeral/current intent last. Dynamic replay fragments should use
-  `replay:*` identifiers; ephemeral fragments should use `volatile:*`
-  identifiers.
+  second, ephemeral runtime/hook/plugin context third, and current user input
+  last. Dynamic replay fragments should use `replay:*` identifiers; ephemeral
+  context fragments should use `volatile:*` identifiers; the newest user input
+  should remain `intent:current` and be the final model-visible user intent when
+  it is not already present in replay.
 - `RequestShape.summary()` must include:
   - `section_boundaries`
   - `cacheable_prefix_fragment_ids`
@@ -106,7 +108,11 @@
   stable prefix hash.
 - A cache-shape diagnostic with `first_changed_cache_class=static` -> doctor
   context warning with a bounded stable-prefix-change count.
-- Compaction rehydration must be dynamic and placed before current user intent.
+- Compaction rehydration must be dynamic and placed before ephemeral runtime
+  context and current user intent.
+- Runtime reminders, hook context, and plugin context should be placed before
+  the current user input so the newest user request remains the final
+  model-visible instruction.
 - Anthropic `cache_control` and OpenAI `prompt_cache_key` must not be persisted
   into canonical messages or request fragments; they are provider wire/request
   hints only.
