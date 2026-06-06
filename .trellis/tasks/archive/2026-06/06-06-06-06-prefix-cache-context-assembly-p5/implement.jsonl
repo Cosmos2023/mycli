@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for active guidelines."}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Canonical context cache classes, request shape ordering, wire-only hint, and redaction contracts."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide index."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "P5 spans runtime context sources, domain timeline contracts, instruction assembly, request shape, session resume, and diagnostics."}
+{"file": "docs/prefix-cache-context-assembly-goals.md", "reason": "Batch goal source for P5 acceptance and ordering constraints."}
+{"file": "docs/prefix-cache-context-assembly-roadmap.md", "reason": "Roadmap source for P5 boundaries and dependencies."}
+{"file": "docs/mycli-context-assembly-reference.md", "reason": "Canonical timeline and persistence contract reference."}
+{"file": "docs/prefix-cache-request-shape-design.md", "reason": "Provider-visible request ordering and cache boundary reference."}
+{"file": ".trellis/tasks/06-06-06-06-prefix-cache-context-assembly-p5/research/canonical-timeline-persistence.md", "reason": "Task-specific current-state research and implementation risks."}
