@@ -172,6 +172,7 @@ class ProviderCachePolicyCapability:
 
     prompt_cache_key_enabled: bool = True
     cache_control_enabled: bool = True
+    wire_hints_supported: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -182,6 +183,7 @@ class ProviderRequestPolicyShape:
     prompt_cache_key: str | None = None
     anthropic_cache_control_breakpoints: tuple[str, ...] = ()
     wire_only_hints: tuple[str, ...] = ()
+    wire_hint_state: str = "disabled_by_policy"
     wire_only: bool = True
 
     @classmethod
@@ -217,11 +219,21 @@ class ProviderRequestPolicyShape:
             wire_only_hints.append("prompt_cache_key")
         if breakpoints:
             wire_only_hints.append("cache_control")
+        if wire_only_hints:
+            wire_hint_state = "enabled_and_emitted"
+        elif (
+            not capability.wire_hints_supported
+            or not cls._lane_supports_wire_hints(lane)
+        ):
+            wire_hint_state = "unsupported"
+        else:
+            wire_hint_state = "disabled_by_policy"
         return cls(
             lane=lane,
             prompt_cache_key=prompt_cache_key,
             anthropic_cache_control_breakpoints=breakpoints,
             wire_only_hints=tuple(wire_only_hints),
+            wire_hint_state=wire_hint_state,
         )
 
     @staticmethod
@@ -265,6 +277,14 @@ class ProviderRequestPolicyShape:
             return ("system_static", "dynamic_boundary")
         return ()
 
+    @staticmethod
+    def _lane_supports_wire_hints(lane: ProviderProjectionLane) -> bool:
+        return lane in {
+            ProviderProjectionLane.RESPONSES,
+            ProviderProjectionLane.CHAT_COMPLETIONS,
+            ProviderProjectionLane.ANTHROPIC_MESSAGES,
+        }
+
     @property
     def wire_cache_hint_enabled(self) -> bool:
         return bool(self.prompt_cache_key or self.anthropic_cache_control_breakpoints)
@@ -279,14 +299,13 @@ class ProviderRequestPolicyShape:
     def prompt_cache_key_preview(self) -> str | None:
         if self.prompt_cache_key is None:
             return None
-        if len(self.prompt_cache_key) <= 48:
-            return self.prompt_cache_key
-        return f"{self.prompt_cache_key[:48]}..."
+        return _bounded_secret_preview(self.prompt_cache_key)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "lane": self.lane.value,
             "wire_only": self.wire_only,
+            "wire_hint_state": self.wire_hint_state,
             "wire_cache_hint_enabled": self.wire_cache_hint_enabled,
             "prompt_cache_key_hash": self.prompt_cache_key_hash,
             "prompt_cache_key_preview": self.prompt_cache_key_preview,
@@ -452,3 +471,10 @@ class RequestShape:
                 item.char_length for item in self.provider_runtime_items
             ),
         }
+
+
+def _bounded_secret_preview(value: str, *, limit: int = 48) -> str:
+    visible_length = min(limit, max(0, len(value) - 1))
+    if visible_length <= 0:
+        return "..."
+    return f"{value[:visible_length]}..."

@@ -4,8 +4,13 @@ import tomllib
 from pathlib import Path
 from typing import Mapping
 
-from mycli.domain.providers import parse_protocol, parse_provider
-from mycli.domain.runtime import AgentConfig, ReasoningEffort, ViewMode
+from mycli.domain.providers import ProviderId, parse_protocol, parse_provider
+from mycli.domain.runtime import (
+    AgentConfig,
+    ProviderCachePolicyCapability,
+    ReasoningEffort,
+    ViewMode,
+)
 from mycli.infrastructure.providers import (
     infer_provider_from_base_url,
     profile_for_provider,
@@ -41,6 +46,71 @@ def _parse_optional_bool(value: object) -> bool | None:
         if normalized in {"false", "0", "no", "off"}:
             return False
     return None
+
+
+def _config_value(
+    *,
+    env: Mapping[str, str],
+    project_config: Mapping[str, object],
+    user_config: Mapping[str, object],
+    env_key: str,
+    config_key: str,
+) -> object | None:
+    if env_key in env:
+        return env[env_key]
+    if config_key in project_config:
+        return project_config[config_key]
+    return user_config.get(config_key)
+
+
+def _provider_cache_policy_override(
+    *,
+    provider: ProviderId,
+    env: Mapping[str, str],
+    project_config: Mapping[str, object],
+    user_config: Mapping[str, object],
+) -> ProviderCachePolicyCapability | None:
+    prompt_cache_key_enabled = _parse_optional_bool(
+        _config_value(
+            env=env,
+            project_config=project_config,
+            user_config=user_config,
+            env_key="MYCLI_PROMPT_CACHE_KEY_ENABLED",
+            config_key="prompt_cache_key_enabled",
+        )
+    )
+    cache_control_enabled = _parse_optional_bool(
+        _config_value(
+            env=env,
+            project_config=project_config,
+            user_config=user_config,
+            env_key="MYCLI_CACHE_CONTROL_ENABLED",
+            config_key="cache_control_enabled",
+        )
+    )
+    if prompt_cache_key_enabled is None and cache_control_enabled is None:
+        return None
+    profile_default = profile_for_provider(provider).cache_policy_capability
+    default_capability = (
+        profile_default
+        if isinstance(profile_default, ProviderCachePolicyCapability)
+        else ProviderCachePolicyCapability(
+            prompt_cache_key_enabled=False,
+            cache_control_enabled=False,
+        )
+    )
+    return ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=(
+            default_capability.prompt_cache_key_enabled
+            if prompt_cache_key_enabled is None
+            else prompt_cache_key_enabled
+        ),
+        cache_control_enabled=(
+            default_capability.cache_control_enabled
+            if cache_control_enabled is None
+            else cache_control_enabled
+        ),
+    )
 
 
 def _parse_view_mode(value: object) -> ViewMode:
@@ -325,6 +395,12 @@ def resolve_config(
         or user_config.get("recent_message_count")
         or 6
     )
+    cache_policy_capability = _provider_cache_policy_override(
+        provider=provider,
+        env=env,
+        project_config=project_config,
+        user_config=user_config,
+    )
 
     return AgentConfig(
         workspace_root=cwd,
@@ -334,6 +410,7 @@ def resolve_config(
         api_base_url=api_base_url,
         api_key=api_key,
         session_id=session_id,
+        cache_policy_capability=cache_policy_capability,
         max_prompt_tokens=int(str(max_prompt_tokens_value)),
         max_output_tokens=int(str(max_output_tokens_value)),
         fallback_model=str(fallback_model_value) if fallback_model_value else None,

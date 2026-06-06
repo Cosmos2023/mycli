@@ -3662,6 +3662,124 @@ def test_doctor_service_reports_cache_miss_triage_distribution(
     assert "hash-2" not in rendered
 
 
+def test_doctor_service_reports_cache_policy_validation_states(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    _create_sessions_db(home / ".mycli" / "sessions.db")
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_enabled",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-enabled"},
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_hint_state": "enabled_and_emitted",
+                                    "wire_cache_hint_enabled": True,
+                                    "prompt_cache_key_hash": "key-hash",
+                                },
+                                "provider_cache_usage": {
+                                    "cached_tokens": 25,
+                                    "telemetry_status": "present",
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_disabled",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-disabled"},
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_hint_state": "disabled_by_policy",
+                                    "wire_cache_hint_enabled": False,
+                                },
+                                "provider_cache_usage": {
+                                    "cached_tokens": 0,
+                                    "telemetry_status": "missing",
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_missing",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-missing"},
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_hint_state": "enabled_but_missing",
+                                    "wire_cache_hint_enabled": None,
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "cache_shape_diagnostic",
+                        "turn_id": "turn_unsupported",
+                        "payload": {
+                            "cache_boundary": {"hash": "hash-unsupported"},
+                            "metadata": {
+                                "fragment_metadata_complete": True,
+                                "missing_fragment_metadata": [],
+                                "provider_request_policy": {
+                                    "wire_hint_state": "unsupported",
+                                    "wire_cache_hint_enabled": False,
+                                },
+                            },
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(check for check in report.checks if check.name == "context")
+    rendered = "\n".join(render_doctor_report(report))
+
+    assert check.status is DoctorStatus.WARNING
+    assert "wire_hint_enabled_and_emitted=1" in str(check.detail)
+    assert "wire_hint_disabled_by_policy=1" in str(check.detail)
+    assert "wire_hint_enabled_but_missing=1" in str(check.detail)
+    assert "wire_hint_unsupported=1" in str(check.detail)
+    assert "cache_usage_telemetry_missing=1" in str(check.detail)
+    assert "max_provider_cached_tokens=25" in str(check.detail)
+    assert "hash-enabled" not in rendered
+    assert "key-hash" not in rendered
+
+
 def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_creating_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

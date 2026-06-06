@@ -3,6 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
+from mycli.domain.runtime.request_shape import ProviderCachePolicyCapability
 from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
 from mycli.infrastructure.providers.openai import OPENAI_PROFILE
@@ -15,6 +16,10 @@ COMPATIBLE_PROFILE = ProviderProfile(
     supports_chat_completions=True,
     default_base_url="https://api.openai.com/v1",
     default_model=None,
+    cache_policy_capability=ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+    ),
 )
 
 _PROFILES: dict[ProviderId, ProviderProfile] = {
@@ -42,6 +47,23 @@ def infer_provider_from_base_url(base_url: str) -> ProviderId:
 
 def profile_for_provider(provider: ProviderId) -> ProviderProfile:
     return _PROFILES[provider]
+
+
+def resolve_provider_cache_policy_capability(
+    *,
+    provider: ProviderId,
+    override: ProviderCachePolicyCapability | None = None,
+) -> ProviderCachePolicyCapability:
+    if override is not None:
+        return override
+    profile = profile_for_provider(provider)
+    capability = profile.cache_policy_capability
+    if isinstance(capability, ProviderCachePolicyCapability):
+        return capability
+    return ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+    )
 
 
 def validate_provider_protocol(
@@ -72,5 +94,6 @@ __all__ = [
     "COMPATIBLE_PROFILE",
     "infer_provider_from_base_url",
     "profile_for_provider",
+    "resolve_provider_cache_policy_capability",
     "validate_provider_protocol",
 ]

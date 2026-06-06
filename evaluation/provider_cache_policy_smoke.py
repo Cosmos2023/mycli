@@ -8,11 +8,14 @@ from mycli.domain.conversation import Message
 from mycli.domain.providers import ProviderId, ProtocolId
 from mycli.domain.runtime import AgentConfig, InstructionContract, InstructionFragment
 from mycli.application.runtime.request import (
+    CacheShapeDiagnostics,
     ProviderPayloadSnapshot,
     ProviderRequestDryRun,
+    ProviderRequestDryRunRenderer,
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
 )
+from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 from mycli.llms.adapters.anthropic_messages_adapter import AnthropicMessagesModelAdapter
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.llms.clients.openai_chat import OpenAIChatClient
@@ -197,10 +200,34 @@ def main() -> int:
             previous=responses_shape,
             current=second_responses_shape,
         ).to_dict()
+        dry_run_summary = ProviderRequestDryRunRenderer().render(
+            ProviderRequestDryRun.compare(
+                previous=responses_shape,
+                current=second_responses_shape,
+            )
+        )
         anthropic_snapshot = ProviderPayloadSnapshot.from_request_shape(
             anthropic_shape
         ).to_dict()
+        anthropic_cache_diagnostic = CacheShapeDiagnostics().build(
+            current=anthropic_shape,
+            usage={
+                "input_tokens": 100,
+                "cache_read_input_tokens": 80,
+                "cache_creation_input_tokens": 12,
+            },
+        ).to_dict()
         payload = {
+            "openai_resolved_prompt_cache_key_enabled": (
+                resolve_provider_cache_policy_capability(
+                    provider=ProviderId.OPENAI
+                ).prompt_cache_key_enabled
+            ),
+            "anthropic_resolved_cache_control_enabled": (
+                resolve_provider_cache_policy_capability(
+                    provider=ProviderId.ANTHROPIC
+                ).cache_control_enabled
+            ),
             "responses_prompt_cache_key": responses_client.prompt_cache_key,
             "responses_prompt_cache_key_stable": (
                 responses_shape.provider_request_policy is not None
@@ -238,9 +265,19 @@ def main() -> int:
             "dry_run_first_changed_cache_class": dry_run[
                 "first_changed_cache_class"
             ],
+            "dry_run_wire_hint_state": dry_run_summary["wire_hint_state"],
+            "dry_run_snapshot_counts": dry_run_summary["snapshot_counts"],
             "anthropic_snapshot_cache_control_blocks": anthropic_snapshot[
                 "anthropic_cache_control_block_count"
             ],
+            "anthropic_cache_usage_telemetry_status": (
+                anthropic_cache_diagnostic["metadata"]["provider_cache_usage"][
+                    "telemetry_status"
+                ]
+            ),
+            "anthropic_provider_cached_tokens": (
+                anthropic_cache_diagnostic["metadata"]["provider_cached_tokens"]
+            ),
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         ok = (
@@ -253,7 +290,10 @@ def main() -> int:
             and payload["dry_run_cache_boundary_hash_stable"] is True
             and payload["dry_run_prompt_cache_key_hash_stable"] is True
             and payload["dry_run_first_changed_cache_class"] == "ephemeral"
+            and payload["dry_run_wire_hint_state"] == "enabled_and_emitted"
             and payload["anthropic_snapshot_cache_control_blocks"] == 2
+            and payload["anthropic_cache_usage_telemetry_status"] == "present"
+            and payload["anthropic_provider_cached_tokens"] == 80
         )
         return 0 if ok else 1
 

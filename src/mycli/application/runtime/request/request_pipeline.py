@@ -11,6 +11,7 @@ from mycli.domain.runtime import (
     TurnContext,
     stable_hash,
 )
+from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
 from mycli.prompts.react import build_react_prompt
 from mycli.prompts.system import build_system_prompt
@@ -160,10 +161,15 @@ class RequestPipeline:
         contract: InstructionContract,
         tools: list[ModelToolDefinition],
     ) -> RequestShape:
+        cache_policy_capability = resolve_provider_cache_policy_capability(
+            provider=self._config.provider,
+            override=self._config.cache_policy_capability,
+        )
         shape = self._request_shape_builder.build(
             config=self._config,
             contract=contract,
             tools=tools,
+            cache_policy_capability=cache_policy_capability,
         )
         payload = shape.summary()
         self._trace_service.append(

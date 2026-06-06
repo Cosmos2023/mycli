@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mycli.domain.runtime import ViewMode
+from mycli.domain.runtime import ProviderCachePolicyCapability, ViewMode
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.config.settings import resolve_config
 
@@ -121,6 +121,69 @@ def test_resolve_config_reads_usage_price_settings(tmp_path: Path) -> None:
     assert config.usage_output_cost_per_1k == 0.002
     assert config.usage_cache_read_cost_per_1k == 0.0001
     assert config.usage_cache_write_cost_per_1k == 0.0002
+
+
+def test_resolve_config_reads_provider_cache_policy_overrides(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "compatible"',
+                'protocol = "chat_completions"',
+                "prompt_cache_key_enabled = false",
+                "cache_control_enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+    )
+
+
+def test_resolve_config_env_cache_policy_overrides_project_file(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "compatible"',
+                'protocol = "chat_completions"',
+                "prompt_cache_key_enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={"MYCLI_PROMPT_CACHE_KEY_ENABLED": "true"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+    )
 
 
 def test_config_service_reads_recovery_settings(tmp_path: Path) -> None:

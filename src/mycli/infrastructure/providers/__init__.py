@@ -16,6 +16,7 @@ from mycli.infrastructure.providers.qwen import QWEN_PROFILE
 from mycli.infrastructure.providers.registry import (
     infer_provider_from_base_url,
     profile_for_provider,
+    resolve_provider_cache_policy_capability,
     validate_provider_protocol,
 )
 
@@ -44,5 +45,6 @@ __all__ = [
     "chat_adapter_for_provider",
     "infer_provider_from_base_url",
     "profile_for_provider",
+    "resolve_provider_cache_policy_capability",
     "validate_provider_protocol",
 ]

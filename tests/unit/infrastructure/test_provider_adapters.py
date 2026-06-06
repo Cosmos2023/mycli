@@ -1,10 +1,12 @@
 from mycli.domain.providers import ProviderId
 from mycli.domain.providers import ProtocolId
+from mycli.domain.runtime import ProviderCachePolicyCapability
 from mycli.infrastructure.providers import (
     chat_adapter_for_provider,
     infer_provider_from_base_url,
     profile_for_provider,
 )
+from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import (
     DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
@@ -45,6 +47,50 @@ def test_profile_for_provider_uses_provider_module_profiles() -> None:
     assert DEEPSEEK_PROFILE.default_protocol is ProtocolId.CHAT_COMPLETIONS
     assert ANTHROPIC_PROFILE.default_protocol is ProtocolId.ANTHROPIC_MESSAGES
     assert ANTHROPIC_PROFILE.default_base_url == "https://api.anthropic.com"
+
+
+def test_provider_profiles_declare_safe_cache_policy_capabilities() -> None:
+    assert OPENAI_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+    )
+    assert QWEN_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+    )
+    assert DEEPSEEK_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+        wire_hints_supported=False,
+    )
+    assert ANTHROPIC_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=True,
+    )
+
+
+def test_resolve_provider_cache_policy_capability_prefers_config_override() -> None:
+    override = ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+    )
+
+    resolved = resolve_provider_cache_policy_capability(
+        provider=ProviderId.OPENAI,
+        override=override,
+    )
+
+    assert resolved is override
+
+
+def test_deepseek_profile_resolves_unsupported_wire_hint_capability() -> None:
+    resolved = resolve_provider_cache_policy_capability(provider=ProviderId.DEEPSEEK)
+
+    assert resolved == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+        wire_hints_supported=False,
+    )
 
 
 def test_infer_provider_from_base_url_detects_anthropic_hosts() -> None:

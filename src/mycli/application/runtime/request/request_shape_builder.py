@@ -193,11 +193,13 @@ class RequestShapeBuilder:
                 metadata["provider_request_policy"] = policy_payload
             if (
                 policy.lane is ProviderProjectionLane.ANTHROPIC_MESSAGES
+                and "system_static" in policy.anthropic_cache_control_breakpoints
                 and item.role in {"system", "developer"}
             ):
                 metadata["anthropic_cache_control_breakpoint"] = "system_static"
             elif (
                 policy.lane is ProviderProjectionLane.ANTHROPIC_MESSAGES
+                and "dynamic_boundary" in policy.anthropic_cache_control_breakpoints
                 and index > 0
                 and item.role == "user"
                 and not any(

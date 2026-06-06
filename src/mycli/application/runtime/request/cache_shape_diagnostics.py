@@ -197,6 +197,12 @@ class CacheShapeDiagnostics:
         direct = self._int_usage(usage, "prompt_cache_hit_tokens")
         if direct:
             return direct
+        direct = self._int_usage(usage, "cache_read_input_tokens")
+        if direct:
+            return direct
+        direct = self._int_usage(usage, "cache_read_tokens")
+        if direct:
+            return direct
         for details_key in ("prompt_tokens_details", "input_tokens_details"):
             details = usage.get(details_key)
             if not isinstance(details, dict):
@@ -286,6 +292,7 @@ class CacheShapeDiagnostics:
             else None
         )
         result["provider_cached_tokens"] = self._cache_hit_tokens(usage)
+        result["provider_cache_usage"] = self._provider_cache_usage(usage)
         result["compact_policy"] = compact_policy if isinstance(compact_policy, dict) else {}
         return result
 
@@ -296,6 +303,8 @@ class CacheShapeDiagnostics:
         return {
             "lane": policy.get("lane"),
             "wire_only": policy.get("wire_only"),
+            "wire_hint_state": policy.get("wire_hint_state")
+            or self._wire_hint_state(policy),
             "wire_cache_hint_enabled": policy.get("wire_cache_hint_enabled"),
             "prompt_cache_key_hash": policy.get("prompt_cache_key_hash"),
             "prompt_cache_key_preview": policy.get("prompt_cache_key_preview"),
@@ -303,6 +312,27 @@ class CacheShapeDiagnostics:
                 "anthropic_cache_control_breakpoint_count"
             ),
             "wire_only_hints": policy.get("wire_only_hints"),
+        }
+
+    def _wire_hint_state(self, policy: dict[str, object]) -> str:
+        if policy.get("wire_cache_hint_enabled") is True:
+            return "enabled_and_emitted"
+        if policy.get("wire_cache_hint_enabled") is False:
+            return "disabled_by_policy"
+        return "enabled_but_missing"
+
+    def _provider_cache_usage(self, usage: dict[str, object]) -> dict[str, object]:
+        cached_tokens = self._cache_hit_tokens(usage)
+        cache_write_tokens = (
+            self._int_usage(usage, "cache_creation_input_tokens")
+            or self._int_usage(usage, "prompt_cache_creation_tokens")
+            or self._int_usage(usage, "cache_write_tokens")
+        )
+        telemetry_status = "present" if cached_tokens or cache_write_tokens else "missing"
+        return {
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "telemetry_status": telemetry_status,
         }
 
     def _fragment_metadata_complete(self, value: object) -> bool:

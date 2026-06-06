@@ -5,6 +5,7 @@ from pathlib import Path
 from mycli.application.runtime.request import (
     ProviderPayloadSnapshot,
     ProviderRequestDryRun,
+    ProviderRequestDryRunRenderer,
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
 )
@@ -130,3 +131,25 @@ def test_provider_request_dry_run_compares_two_turns_without_raw_prompt(
     assert payload["prompt_cache_key_hash_stable"] is True
     assert "first private request" not in str(payload)
     assert "second private request" not in str(payload)
+
+
+def test_provider_request_dry_run_renderer_exposes_redacted_policy_surface(
+    tmp_path: Path,
+) -> None:
+    previous = _shape(tmp_path, ProtocolId.RESPONSES, "first private request sk-secret")
+    current = _shape(tmp_path, ProtocolId.RESPONSES, "second private request")
+
+    rendered = ProviderRequestDryRunRenderer().render(
+        ProviderRequestDryRun.compare(previous=previous, current=current)
+    )
+
+    assert rendered["provider_lane"] == "responses"
+    assert rendered["wire_hint_state"] == "enabled_and_emitted"
+    assert rendered["cache_boundary_hash_stable"] is True
+    assert rendered["prompt_cache_key_hash_stable"] is True
+    assert rendered["snapshot_counts"]["previous"]["message_count"] > 0
+    assert rendered["snapshot_counts"]["current"]["runtime_item_count"] > 0
+    assert "prompt_cache_key" not in rendered
+    assert "first private request" not in str(rendered)
+    assert "second private request" not in str(rendered)
+    assert "sk-secret" not in str(rendered)

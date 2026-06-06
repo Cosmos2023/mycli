@@ -9,6 +9,7 @@ from mycli.application.runtime.request.provider_payload_snapshot import (
 from mycli.application.runtime.request.provider_request_dry_run import (
     ProviderRequestDryRun,
     ProviderRequestDryRunComparison,
+    ProviderRequestDryRunRenderer,
 )
 from mycli.application.runtime.request.request_shape_builder import RequestShapeBuilder
 from mycli.application.runtime.request.request_shape_payload_formatter import (
@@ -20,6 +21,7 @@ __all__ = [
     "ProviderPayloadSnapshot",
     "ProviderRequestDryRun",
     "ProviderRequestDryRunComparison",
+    "ProviderRequestDryRunRenderer",
     "RequestShapeDiagnostic",
     "RequestPipeline",
     "RequestShapeBuilder",

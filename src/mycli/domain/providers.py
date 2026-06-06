@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 
 class ProviderId(StrEnum):
@@ -28,6 +29,7 @@ class ProviderProfile:
     default_model: str | None = None
     unsupported_responses_hint: str | None = None
     supports_anthropic_messages: bool = False
+    cache_policy_capability: Any | None = None
 
 
 def parse_provider(value: object) -> ProviderId:

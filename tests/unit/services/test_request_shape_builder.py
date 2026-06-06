@@ -21,6 +21,11 @@ from mycli.llms.adapters.base import (
     ModelToolParameter,
 )
 from mycli.application.runtime.request import RequestShapeBuilder, RequestShapePayloadFormatter
+from mycli.application.runtime.request.cache_shape_diagnostics import CacheShapeDiagnostics
+from mycli.application.runtime.request.request_pipeline import RequestPipeline
+from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
+from mycli.services.trace_service import TraceService
+from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.domain.tools import ToolCall
 from mycli.tools.base import ToolEffectProfile, tool_effects_for_tool
 from mycli.tools.write import WriteTool
@@ -1370,3 +1375,43 @@ def test_request_shape_builder_applies_provider_cache_policy_capability(
     assert shape.provider_request_policy is not None
     assert shape.provider_request_policy.prompt_cache_key is None
     assert shape.provider_request_policy.wire_cache_hint_enabled is False
+
+
+def test_request_pipeline_resolves_cache_policy_capability_from_runtime_config(
+    tmp_path: Path,
+) -> None:
+    pipeline = RequestPipeline(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.COMPATIBLE,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="compatible-model",
+            cache_policy_capability=ProviderCachePolicyCapability(
+                prompt_cache_key_enabled=False,
+                cache_control_enabled=False,
+            ),
+        ),
+        instruction_contract_assembler=InstructionContractAssembler(),
+        request_shape_builder=RequestShapeBuilder(),
+        request_shape_payload_formatter=RequestShapePayloadFormatter(),
+        trace_service=TraceService(home_dir=tmp_path / "home"),
+        workspace_log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+
+    shape = pipeline.build_and_trace_request_shape(
+        turn_id="turn_policy",
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            current_user_request="inspect",
+        ),
+        tools=[],
+    )
+
+    assert shape.provider_request_policy is not None
+    assert shape.provider_request_policy.prompt_cache_key is None
+    assert shape.provider_request_policy.wire_cache_hint_enabled is False
+
+    diagnostic = CacheShapeDiagnostics().build(current=shape).to_dict()
+    policy = diagnostic["metadata"]["provider_request_policy"]
+    assert isinstance(policy, dict)
+    assert policy["wire_hint_state"] == "disabled_by_policy"

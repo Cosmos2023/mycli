@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for active guidelines."}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Canonical cache shape, provider wire hint, dry-run, doctor, and redaction contracts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor, trace, redaction, and testing requirements."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide index."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "P4 spans provider profiles, runtime request assembly, diagnostics, doctor, and smoke."}
+{"file": ".trellis/tasks/06-06-prefix-cache-context-assembly-p4/research/cache-policy-runtime-adoption.md", "reason": "Task-specific data flow, integration points, and P4 risks."}

@@ -188,10 +188,15 @@ class _ContextDiagnosticsSummary:
     wire_cache_hint_count: int
     wire_cache_hint_disabled_count: int
     wire_cache_hint_missing_count: int
+    wire_hint_enabled_and_emitted_count: int
+    wire_hint_disabled_by_policy_count: int
+    wire_hint_enabled_but_missing_count: int
+    wire_hint_unsupported_count: int
     prompt_cache_key_hash_count: int
     anthropic_cache_control_breakpoint_count: int
     max_provider_cached_tokens: int
     latest_provider_cached_tokens: int
+    cache_usage_telemetry_missing_count: int
     cache_remediation: str | None
     persisted_summary_count: int
     duplicate_summary_count: int
@@ -1054,6 +1059,19 @@ class DoctorService:
             f"wire_cache_hint_enabled={trace_summary.wire_cache_hint_count}",
             f"wire_cache_hint_disabled={trace_summary.wire_cache_hint_disabled_count}",
             f"wire_cache_hint_missing={trace_summary.wire_cache_hint_missing_count}",
+            (
+                "wire_hint_enabled_and_emitted="
+                f"{trace_summary.wire_hint_enabled_and_emitted_count}"
+            ),
+            (
+                "wire_hint_disabled_by_policy="
+                f"{trace_summary.wire_hint_disabled_by_policy_count}"
+            ),
+            (
+                "wire_hint_enabled_but_missing="
+                f"{trace_summary.wire_hint_enabled_but_missing_count}"
+            ),
+            f"wire_hint_unsupported={trace_summary.wire_hint_unsupported_count}",
             f"prompt_cache_key_hashes={trace_summary.prompt_cache_key_hash_count}",
             (
                 "anthropic_cache_control_breakpoints="
@@ -1061,6 +1079,10 @@ class DoctorService:
             ),
             f"max_provider_cached_tokens={trace_summary.max_provider_cached_tokens}",
             f"latest_provider_cached_tokens={trace_summary.latest_provider_cached_tokens}",
+            (
+                "cache_usage_telemetry_missing="
+                f"{trace_summary.cache_usage_telemetry_missing_count}"
+            ),
             f"summary_duplicates_skipped={trace_summary.duplicate_summary_count}",
         ]
         if trace_summary.cache_remediation:
@@ -2046,10 +2068,15 @@ def _summarize_context_diagnostics(
     wire_cache_hint_count = 0
     wire_cache_hint_disabled_count = 0
     wire_cache_hint_missing_count = 0
+    wire_hint_enabled_and_emitted_count = 0
+    wire_hint_disabled_by_policy_count = 0
+    wire_hint_enabled_but_missing_count = 0
+    wire_hint_unsupported_count = 0
     prompt_cache_key_hash_count = 0
     anthropic_cache_control_breakpoint_count = 0
     max_provider_cached_tokens = 0
     latest_provider_cached_tokens = 0
+    cache_usage_telemetry_missing_count = 0
     persisted_summary_count = 0
     duplicate_summary_count = 0
     unreadable: list[str] = []
@@ -2130,6 +2157,15 @@ def _summarize_context_diagnostics(
                                 missing_cache_metadata_count += 1
                             policy = metadata.get("provider_request_policy")
                             if isinstance(policy, dict):
+                                wire_hint_state = policy.get("wire_hint_state")
+                                if wire_hint_state == "enabled_and_emitted":
+                                    wire_hint_enabled_and_emitted_count += 1
+                                elif wire_hint_state == "disabled_by_policy":
+                                    wire_hint_disabled_by_policy_count += 1
+                                elif wire_hint_state == "enabled_but_missing":
+                                    wire_hint_enabled_but_missing_count += 1
+                                elif wire_hint_state == "unsupported":
+                                    wire_hint_unsupported_count += 1
                                 if policy.get("wire_cache_hint_enabled") is True:
                                     wire_cache_hint_count += 1
                                 elif policy.get("wire_cache_hint_enabled") is False:
@@ -2151,6 +2187,18 @@ def _summarize_context_diagnostics(
                             cached_tokens = _optional_non_negative_int(
                                 metadata.get("provider_cached_tokens")
                             )
+                            cache_usage = metadata.get("provider_cache_usage")
+                            if isinstance(cache_usage, dict):
+                                usage_cached_tokens = _optional_non_negative_int(
+                                    cache_usage.get("cached_tokens")
+                                )
+                                cached_tokens = (
+                                    usage_cached_tokens
+                                    if usage_cached_tokens is not None
+                                    else cached_tokens
+                                )
+                                if cache_usage.get("telemetry_status") == "missing":
+                                    cache_usage_telemetry_missing_count += 1
                             if cached_tokens is not None:
                                 max_provider_cached_tokens = max(
                                     max_provider_cached_tokens,
@@ -2209,14 +2257,20 @@ def _summarize_context_diagnostics(
         wire_cache_hint_count=wire_cache_hint_count,
         wire_cache_hint_disabled_count=wire_cache_hint_disabled_count,
         wire_cache_hint_missing_count=wire_cache_hint_missing_count,
+        wire_hint_enabled_and_emitted_count=wire_hint_enabled_and_emitted_count,
+        wire_hint_disabled_by_policy_count=wire_hint_disabled_by_policy_count,
+        wire_hint_enabled_but_missing_count=wire_hint_enabled_but_missing_count,
+        wire_hint_unsupported_count=wire_hint_unsupported_count,
         prompt_cache_key_hash_count=prompt_cache_key_hash_count,
         anthropic_cache_control_breakpoint_count=anthropic_cache_control_breakpoint_count,
         max_provider_cached_tokens=max_provider_cached_tokens,
         latest_provider_cached_tokens=latest_provider_cached_tokens,
+        cache_usage_telemetry_missing_count=cache_usage_telemetry_missing_count,
         cache_remediation=_cache_remediation(
             stable_prefix_change_count=stable_prefix_change_count,
             missing_cache_metadata_count=missing_cache_metadata_count,
             wire_cache_hint_missing_count=wire_cache_hint_missing_count,
+            wire_hint_enabled_but_missing_count=wire_hint_enabled_but_missing_count,
         ),
         persisted_summary_count=persisted_summary_count,
         duplicate_summary_count=duplicate_summary_count,
@@ -2229,9 +2283,12 @@ def _cache_remediation(
     stable_prefix_change_count: int,
     missing_cache_metadata_count: int,
     wire_cache_hint_missing_count: int,
+    wire_hint_enabled_but_missing_count: int = 0,
 ) -> str | None:
     if stable_prefix_change_count:
         return "stable prefix changed; inspect static context/tool schema"
+    if wire_hint_enabled_but_missing_count:
+        return "wire cache hints enabled but missing; inspect provider capability/config"
     if wire_cache_hint_missing_count:
         return "wire cache hints missing; inspect provider capability/config"
     if missing_cache_metadata_count:

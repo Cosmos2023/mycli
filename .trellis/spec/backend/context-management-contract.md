@@ -194,6 +194,22 @@ section = TurnContextSection(
 
 - Provider request policy is derived from provider, protocol, model,
   `system_hash`, `tool_schema_hash`, and `cacheable_prefix_hash`.
+- Provider cache hint capability is resolved before request-shape construction
+  in this order:
+  1. explicit `AgentConfig.cache_policy_capability` override,
+  2. `ProviderProfile.cache_policy_capability` default,
+  3. conservative fallback with both hints disabled.
+- Built-in provider defaults are safe by lane:
+  - OpenAI Responses / OpenAI Chat: `prompt_cache_key` enabled,
+    `cache_control` disabled.
+  - Anthropic Messages: `cache_control` enabled, `prompt_cache_key` disabled.
+  - DeepSeek / unsupported compatible lanes: both disabled with
+    `wire_hints_supported=false` unless a profile explicitly advertises support.
+  - Compatible OpenAI-style endpoints may disable `prompt_cache_key` through
+    config/profile when the upstream endpoint rejects the field.
+- Normal `RequestPipeline` request assembly must pass the resolved capability to
+  `RequestShapeBuilder`; the builder-level explicit argument remains available
+  for focused tests and low-level call sites.
 - OpenAI Responses and OpenAI-compatible Chat Completions use
   `prompt_cache_key` only as a request-level wire option.
 - Anthropic Messages uses `cache_control: {"type": "ephemeral"}` only on
@@ -210,6 +226,15 @@ section = TurnContextSection(
   keys before sending.
 - Cache-shape diagnostics and doctor summaries must use bounded counts, hashes,
   and previews only.
+- Cache-shape diagnostics must normalize fake/local usage payloads from
+  Responses, Chat, and Anthropic-style providers into bounded fields:
+  `provider_cached_tokens`, `provider_cache_usage.cached_tokens`,
+  `provider_cache_usage.cache_write_tokens`, and
+  `provider_cache_usage.telemetry_status`.
+- Doctor cache policy validation must distinguish
+  `enabled_and_emitted`, `disabled_by_policy`, `enabled_but_missing`, and
+  `unsupported`. `disabled_by_policy` is informational; `enabled_but_missing`
+  should produce bounded remediation.
 - P3 cache observability adds a provider-free diagnostics loop:
   - `ProviderCachePolicyCapability` gates request-level `prompt_cache_key` and
     Anthropic `cache_control` independently. Default capability preserves safe
@@ -223,6 +248,11 @@ section = TurnContextSection(
   - `ProviderRequestDryRun` compares two request shapes without calling a model
     provider. It reports cache-boundary hash stability, prompt-cache-key hash
     stability, first changed cache class, and redacted per-turn snapshots.
+  - `ProviderRequestDryRunRenderer` exposes a reusable provider-free local
+    diagnostic surface with provider lane, boundary hash stability,
+    prompt-cache-key hash stability, first changed cache class, wire hint state,
+    and snapshot counts. It must not include raw prompts, raw tool output,
+    provider wire payload bodies, secrets, or the full `prompt_cache_key`.
   - Doctor context diagnostics must summarize first-changed-cache-class
     distributions, stable/dynamic/ephemeral change counts, enabled/disabled/
     missing wire-hint counts, max/latest provider cached tokens, and bounded
@@ -239,6 +269,14 @@ section = TurnContextSection(
   changes.
 - Client does not accept `prompt_cache_key` -> adapter must omit the argument
   instead of failing.
+- Config/profile disables `prompt_cache_key` -> the request policy reports
+  `wire_hint_state=disabled_by_policy`, runtime metadata has no full
+  `prompt_cache_key`, and doctor does not fail.
+- Policy says a hint should be emitted but provider metadata lacks a hint ->
+  doctor reports `enabled_but_missing` with bounded remediation and no raw
+  payload.
+- Provider/lane is unsupported -> doctor reports `unsupported` as bounded
+  policy state rather than printing raw request data.
 - Anthropic system has no cache breakpoint -> keep legacy string system payload.
 - Anthropic system has cache breakpoint -> serialize system as text blocks with
   block-level `cache_control`.
@@ -277,8 +315,14 @@ section = TurnContextSection(
   request changes.
 - Unit test provider payload snapshots and dry-run comparisons are redacted.
 - Unit test provider cache policy capability gates.
+- Unit test provider profile/config capability resolution and RequestPipeline
+  automatic capability injection.
+- Unit test redacted dry-run renderer output contract.
+- Unit test provider cache usage telemetry normalization and doctor policy
+  validation states.
 - Provider-free `evaluation/provider_cache_policy_smoke.py` covering all three
-  provider lanes plus dry-run comparison and snapshot counts.
+  provider lanes plus P4 capability resolution, dry-run comparison, snapshot
+  counts, and telemetry normalization fields.
 
 ### 7. Wrong vs Correct
 

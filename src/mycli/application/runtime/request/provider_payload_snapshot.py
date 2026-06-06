@@ -139,9 +139,10 @@ def _lane_from_protocol(protocol: str) -> str:
 def _bounded_preview(value: str | None, *, limit: int = 48) -> str | None:
     if not value:
         return None
-    if len(value) <= limit:
-        return value
-    return f"{value[:limit]}..."
+    visible_length = min(limit, max(0, len(value) - 1))
+    if visible_length <= 0:
+        return "..."
+    return f"{value[:visible_length]}..."
 
 
 def _prompt_cache_key_from_messages(messages: list[dict[str, object]]) -> str | None:

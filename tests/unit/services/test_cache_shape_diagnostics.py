@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mycli.domain.runtime import (
     FragmentStability,
+    ProviderCachePolicyCapability,
     ProviderMessageShape,
     ProviderProjectionLane,
     ProviderProjectionShape,
@@ -84,6 +85,41 @@ def test_diagnostic_normalizes_nested_cached_token_usage() -> None:
     assert payload["cache_hit_tokens"] == 64
     assert payload["cache_miss_tokens"] == 36
     assert payload["cache_hit_ratio"] == 0.64
+
+
+def test_diagnostic_normalizes_anthropic_cached_token_usage() -> None:
+    diagnostic = CacheShapeDiagnostics().build(
+        current=_shape(fragment_content="first"),
+        usage={
+            "input_tokens": 100,
+            "cache_read_input_tokens": 70,
+            "cache_creation_input_tokens": 12,
+        },
+    )
+
+    payload = diagnostic.to_dict()
+
+    assert payload["prompt_tokens"] == 100
+    assert payload["cache_hit_tokens"] == 70
+    assert payload["cache_miss_tokens"] == 30
+    assert payload["metadata"]["provider_cache_usage"] == {
+        "cached_tokens": 70,
+        "cache_write_tokens": 12,
+        "telemetry_status": "present",
+    }
+
+
+def test_diagnostic_marks_missing_cache_usage_telemetry() -> None:
+    payload = CacheShapeDiagnostics().build(
+        current=_shape(fragment_content="first"),
+        usage={"prompt_tokens": 100},
+    ).to_dict()
+
+    assert payload["metadata"]["provider_cache_usage"] == {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "telemetry_status": "missing",
+    }
 
 
 def test_diagnostic_reports_cache_boundary_and_metadata_completeness() -> None:
@@ -183,9 +219,88 @@ def test_diagnostic_reports_provider_request_policy_metadata() -> None:
     policy = payload["metadata"]["provider_request_policy"]
     assert isinstance(policy, dict)
     assert policy["wire_cache_hint_enabled"] is True
+    assert policy["wire_hint_state"] == "enabled_and_emitted"
     assert policy["prompt_cache_key_hash"]
     assert policy["anthropic_cache_control_breakpoint_count"] == 0
     assert payload["metadata"]["provider_cached_tokens"] == 42
+
+
+def test_diagnostic_reports_disabled_provider_request_policy_state() -> None:
+    shape = RequestShape(
+        provider="compatible",
+        protocol="chat_completions",
+        model="compatible-model",
+        stable_system="stable system",
+        fragments=(
+            RequestFragment(
+                id="stable:system",
+                kind=RequestFragmentKind.STABLE,
+                content="stable system",
+                stability=FragmentStability.STABLE,
+                metadata={"cache_class": "static"},
+            ),
+        ),
+        provider_request_policy=ProviderRequestPolicyShape.for_request_shape(
+            provider="compatible",
+            protocol="chat_completions",
+            model="compatible-model",
+            system_hash="system-hash",
+            tool_schema_hash="tool-schema",
+            cacheable_prefix_hash="prefix-hash",
+            lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+            capability=ProviderCachePolicyCapability(
+                prompt_cache_key_enabled=False,
+                cache_control_enabled=False,
+            ),
+        ),
+    )
+
+    payload = CacheShapeDiagnostics().build(current=shape).to_dict()
+
+    policy = payload["metadata"]["provider_request_policy"]
+    assert isinstance(policy, dict)
+    assert policy["wire_cache_hint_enabled"] is False
+    assert policy["wire_hint_state"] == "disabled_by_policy"
+
+
+def test_diagnostic_reports_unsupported_provider_request_policy_state() -> None:
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-chat",
+        stable_system="stable system",
+        fragments=(
+            RequestFragment(
+                id="stable:system",
+                kind=RequestFragmentKind.STABLE,
+                content="stable system",
+                stability=FragmentStability.STABLE,
+                metadata={"cache_class": "static"},
+            ),
+        ),
+        provider_request_policy=ProviderRequestPolicyShape.for_request_shape(
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-chat",
+            system_hash="system-hash",
+            tool_schema_hash="tool-schema",
+            cacheable_prefix_hash="prefix-hash",
+            lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+            capability=ProviderCachePolicyCapability(
+                prompt_cache_key_enabled=False,
+                cache_control_enabled=False,
+                wire_hints_supported=False,
+            ),
+        ),
+    )
+
+    policy = CacheShapeDiagnostics().build(current=shape).to_dict()["metadata"][
+        "provider_request_policy"
+    ]
+
+    assert isinstance(policy, dict)
+    assert policy["wire_cache_hint_enabled"] is False
+    assert policy["wire_hint_state"] == "unsupported"
 
 
 def test_diagnostic_finds_first_changed_fragment() -> None:

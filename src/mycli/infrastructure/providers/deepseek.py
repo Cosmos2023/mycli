@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
+from mycli.domain.runtime.request_shape import ProviderCachePolicyCapability
 from mycli.infrastructure.providers.chat import ChatProviderSettings
 
 DEEPSEEK_METADATA_KEY = "deepseek"
@@ -15,6 +16,11 @@ DEEPSEEK_PROFILE = ProviderProfile(
     default_base_url="https://api.deepseek.com",
     default_model="deepseek-chat",
     unsupported_responses_hint="Use protocol='chat_completions' for DeepSeek.",
+    cache_policy_capability=ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=False,
+        wire_hints_supported=False,
+    ),
 )
 
 

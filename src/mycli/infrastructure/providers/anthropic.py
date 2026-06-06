@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
+from mycli.domain.runtime.request_shape import ProviderCachePolicyCapability
 
 ANTHROPIC_PROFILE = ProviderProfile(
     provider=ProviderId.ANTHROPIC,
@@ -11,6 +12,10 @@ ANTHROPIC_PROFILE = ProviderProfile(
     default_base_url="https://api.anthropic.com",
     default_model="claude-sonnet-4-6",
     unsupported_responses_hint="Use protocol='anthropic_messages' for Anthropic.",
+    cache_policy_capability=ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=True,
+    ),
 )
 
 ANTHROPIC_HIGH_CAPABILITY_MODEL = "claude-opus-4-7"

@@ -69,3 +69,51 @@ class ProviderRequestDryRun:
             previous_snapshot=previous_snapshot,
             current_snapshot=current_snapshot,
         )
+
+
+class ProviderRequestDryRunRenderer:
+    """Renders provider-free dry-run diagnostics without provider payload bodies."""
+
+    def render(
+        self,
+        comparison: ProviderRequestDryRunComparison,
+    ) -> dict[str, object]:
+        previous = comparison.previous_snapshot
+        current = comparison.current_snapshot
+        return {
+            "provider_lane": comparison.provider_lane,
+            "cache_boundary_hash_stable": comparison.cache_boundary_hash_stable,
+            "prompt_cache_key_hash_stable": comparison.prompt_cache_key_hash_stable,
+            "previous_cache_boundary_hash": comparison.previous_cache_boundary_hash,
+            "current_cache_boundary_hash": comparison.current_cache_boundary_hash,
+            "previous_prompt_cache_key_hash": comparison.previous_prompt_cache_key_hash,
+            "current_prompt_cache_key_hash": comparison.current_prompt_cache_key_hash,
+            "first_changed_cache_class": comparison.first_changed_cache_class,
+            "wire_hint_state": _wire_hint_state(current.request_option_hints),
+            "wire_hint_state_previous": _wire_hint_state(previous.request_option_hints),
+            "snapshot_counts": {
+                "previous": _snapshot_counts(previous),
+                "current": _snapshot_counts(current),
+            },
+            "prompt_cache_key_preview": current.prompt_cache_key_preview,
+        }
+
+
+def _wire_hint_state(hints: dict[str, bool]) -> str:
+    if any(hints.values()):
+        return "enabled_and_emitted"
+    return "disabled_by_policy"
+
+
+def _snapshot_counts(snapshot: ProviderPayloadSnapshot) -> dict[str, object]:
+    return {
+        "message_count": snapshot.message_count,
+        "runtime_item_count": snapshot.runtime_item_count,
+        "sanitized_provider_private_field_count": (
+            snapshot.sanitized_provider_private_field_count
+        ),
+        "anthropic_cache_control_block_count": (
+            snapshot.anthropic_cache_control_block_count
+        ),
+        "request_option_hints": dict(snapshot.request_option_hints),
+    }
