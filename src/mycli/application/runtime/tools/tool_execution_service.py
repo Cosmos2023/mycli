@@ -73,6 +73,13 @@ ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_WRITE_DIAGNOSTICS = 30
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
 MAX_CLARIFY_OPTIONS = 5
+_DENIED_ERROR_KINDS = frozenset(
+    {
+        "tool_denied_by_hook",
+        "tool_denied_by_policy",
+        "tool_denied_by_post_hook",
+    }
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -204,6 +211,12 @@ class ToolExecutionService:
     ) -> PlanState:
         normalized_call = self._normalize_tool_call(call)
         execution_started_at = self._monotonic()
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="planned",
+            status="running",
+        )
         effect_profile = self._effect_profile_for_call(
             call=normalized_call,
             tool_router=tool_router,
@@ -215,6 +228,14 @@ class ToolExecutionService:
             turn_id=turn_id,
             policy_approved=policy_approved,
         )
+        if runtime_decision is not None:
+            self._append_tool_runtime_lifecycle_trace(
+                turn_id=turn_id,
+                call=normalized_call,
+                phase="policy_checked",
+                status="running",
+                policy_decision=runtime_decision.kind.value,
+            )
         if runtime_decision is not None and runtime_decision.kind is not ToolRuntimeDecisionKind.ALLOWED:
             self._record_tool_start(
                 normalized_call=normalized_call,
@@ -241,6 +262,7 @@ class ToolExecutionService:
                 execution_started_at=execution_started_at,
                 effect_profile=effect_profile,
                 lifecycle_sink=lifecycle_sink,
+                emit_runtime_progress=False,
             )
         pre_hook_execution = self._hook_manager.execute_with_summary(
             HookPoint.PRE_TOOL_USE,
@@ -290,6 +312,7 @@ class ToolExecutionService:
                     effect_profile=effect_profile,
                     hook_summaries=pre_hook_summaries,
                     lifecycle_sink=lifecycle_sink,
+                    emit_runtime_progress=False,
                 )
             if hook_result.action is HookAction.MODIFY and hook_result.modified_args:
                 normalized_call = ToolCall(
@@ -419,6 +442,12 @@ class ToolExecutionService:
     ) -> tuple[PlanState, PendingClarification | None]:
         normalized_call = self._normalize_tool_call(call)
         execution_started_at = self._monotonic()
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="planned",
+            status="running",
+        )
         effect_profile = self._effect_profile_for_call(
             call=normalized_call,
             tool_router=tool_router,
@@ -432,6 +461,12 @@ class ToolExecutionService:
         self._notify_lifecycle_sink(
             lifecycle_sink,
             self._tool_lifecycle_start_event(call=normalized_call, context=start_event.message),
+        )
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="started",
+            status="running",
         )
         self._append_turn_item(
             turn_id=turn_id,
@@ -483,6 +518,12 @@ class ToolExecutionService:
             lifecycle_sink,
             self._tool_lifecycle_progress_event(call=normalized_call),
         )
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="progress",
+            status="running",
+        )
         activity_events.append(
             self._tool_activity_event(
                 normalized_call,
@@ -507,13 +548,21 @@ class ToolExecutionService:
                 },
             ),
         )
+        duration_seconds = max(0.0, self._monotonic() - execution_started_at)
         self._notify_lifecycle_sink(
             lifecycle_sink,
             self._tool_lifecycle_finish_event(
                 call=normalized_call,
                 result=result,
-                duration_seconds=max(0.0, self._monotonic() - execution_started_at),
+                duration_seconds=duration_seconds,
             ),
+        )
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="needs_approval",
+            status="needs_approval",
+            duration_seconds=duration_seconds,
         )
         clarify_event = self._clarify_request_event(call=normalized_call, result=result)
         if clarify_event is not None:
@@ -627,11 +676,19 @@ class ToolExecutionService:
         effect_profile: ToolEffectProfile,
         hook_summaries: tuple[HookExecutionSummary, ...] = (),
         lifecycle_sink: ToolLifecycleSink | None = None,
+        emit_runtime_progress: bool = True,
     ) -> PlanState:
         self._notify_lifecycle_sink(
             lifecycle_sink,
             self._tool_lifecycle_progress_event(call=normalized_call),
         )
+        if emit_runtime_progress:
+            self._append_tool_runtime_lifecycle_trace(
+                turn_id=turn_id,
+                call=normalized_call,
+                phase="progress",
+                status="running",
+            )
         if record_assistant_call:
             self._record_assistant_tool_call(
                 conversation,
@@ -739,6 +796,15 @@ class ToolExecutionService:
                 duration_seconds=duration_seconds,
             ),
         )
+        terminal_phase = self._tool_runtime_terminal_phase(result)
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase=terminal_phase,
+            status=terminal_phase,
+            duration_seconds=duration_seconds,
+            error_kind=result.raw_payload.get("error_kind"),
+        )
         clarify_event = self._clarify_request_event(call=normalized_call, result=result)
         if clarify_event is not None:
             self._notify_lifecycle_sink(lifecycle_sink, clarify_event)
@@ -821,6 +887,12 @@ class ToolExecutionService:
         self._notify_lifecycle_sink(
             lifecycle_sink,
             self._tool_lifecycle_start_event(call=normalized_call, context=start_event.message),
+        )
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="started",
+            status="running",
         )
         self._append_turn_item(
             turn_id=turn_id,
@@ -1014,6 +1086,52 @@ class ToolExecutionService:
             return call.call_id
         digest = hashlib.sha256(repr(call.arguments).encode("utf-8")).hexdigest()[:12]
         return f"{call.name}:{digest}"
+
+    def _append_tool_runtime_lifecycle_trace(
+        self,
+        *,
+        turn_id: str,
+        call: ToolCall,
+        phase: str,
+        status: str,
+        policy_decision: str | None = None,
+        duration_seconds: float | None = None,
+        error_kind: object = None,
+    ) -> None:
+        argument_keys = tuple(sorted(str(key) for key in call.arguments))
+        payload: dict[str, object] = {
+            "tool_name": call.name,
+            "tool_id": self._tool_lifecycle_id(call),
+            "tool_call_id": call.call_id or "",
+            "phase": phase,
+            "status": status,
+            "argument_count": len(argument_keys),
+            "argument_keys": list(argument_keys),
+        }
+        if policy_decision:
+            payload["policy_decision"] = policy_decision
+        if duration_seconds is not None:
+            payload["duration_ms"] = max(0, int(round(duration_seconds * 1000)))
+        if isinstance(error_kind, str) and error_kind:
+            payload["error_kind"] = error_kind
+        self._trace_service.append(
+            self._session_id,
+            RuntimeTraceEvent(
+                kind="tool_runtime_lifecycle",
+                turn_id=turn_id,
+                payload=payload,
+            ),
+        )
+
+    def _tool_runtime_terminal_phase(self, result: ToolResult) -> str:
+        error_kind = result.raw_payload.get("error_kind")
+        if error_kind == "tool_needs_approval":
+            return "needs_approval"
+        if error_kind == "tool_interrupted":
+            return "interrupted"
+        if error_kind in _DENIED_ERROR_KINDS:
+            return "denied"
+        return "completed" if result.success else "failed"
 
     def _tool_args_preview(self, call: ToolCall) -> str | None:
         preview_parts: list[str] = []

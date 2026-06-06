@@ -2719,6 +2719,91 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
     assert "raw reason" not in rendered
 
 
+def test_doctor_service_summarizes_tool_runtime_lifecycle_integrity(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "kind": "tool_runtime_lifecycle",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "tool_name": "Read",
+                            "tool_id": "call_read_1",
+                            "tool_call_id": "call_read_1",
+                            "phase": "planned",
+                            "status": "running",
+                            "argument_count": 1,
+                            "argument_keys": ["path"],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "tool_runtime_lifecycle",
+                        "turn_id": "turn-1",
+                        "payload": {
+                            "tool_name": "Read",
+                            "tool_id": "call_read_1",
+                            "tool_call_id": "call_read_1",
+                            "phase": "completed",
+                            "status": "completed",
+                            "argument_count": 1,
+                            "argument_keys": ["path"],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "tool_runtime_lifecycle",
+                        "turn_id": "turn-2",
+                        "payload": {
+                            "tool_name": "Bash",
+                            "tool_id": "call_orphan",
+                            "tool_call_id": "call_orphan",
+                            "phase": "started",
+                            "status": "running",
+                            "argument_count": 1,
+                            "argument_keys": ["command"],
+                            "arguments": {"command": "echo sk-secret"},
+                        },
+                    }
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(check for check in report.checks if check.name == "tool_lifecycle_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert check.message == (
+        "3 tool lifecycle diagnostic(s), calls=2 terminal=1 "
+        "missing_terminal=1 terminal_without_start=0 duplicate_terminal=0 "
+        "malformed=0 argument_summaries=3"
+    )
+    assert check.detail == "phases: completed=1, planned=1, started=1"
+    assert "sk-secret" not in rendered
+    assert "echo" not in rendered
+
+
 def test_doctor_service_reports_no_tool_execution_diagnostics_rows_as_ok(
     tmp_path: Path,
 ) -> None:

@@ -173,6 +173,33 @@ Questions to answer:
     bounded counts and allowlisted `error_kind` counts. Doctor must not print
     raw tool arguments, stdout, stderr, summaries, file contents, local paths,
     user text, headers, or secret-like values.
+- Tool runtime lifecycle diagnostics check:
+  - Missing `~/.mycli/traces/` or no `tool_runtime_lifecycle` trace rows ->
+    `tool_lifecycle_diagnostics=ok` with
+    `no tool lifecycle diagnostics found`; doctor must not create the trace
+    directory.
+  - Runtime lifecycle rows are emitted by `ToolExecutionService` as
+    `RuntimeTraceEvent(kind="tool_runtime_lifecycle", ...)`.
+  - Allowed phases are `planned`, `policy_checked`, `started`, `progress`,
+    `completed`, `failed`, `denied`, `needs_approval`, and `interrupted`.
+  - Allowed statuses are `running`, `completed`, `failed`, `denied`,
+    `needs_approval`, and `interrupted`.
+  - Lifecycle payloads may contain only bounded metadata: `tool_name`,
+    `tool_id`, `tool_call_id`, `phase`, `status`, `argument_count`,
+    `argument_keys`, optional `policy_decision`, optional `duration_ms`, and
+    optional `error_kind`.
+  - Lifecycle payloads must not contain raw arguments, raw command text, raw
+    prompt text, raw tool output, stdout/stderr bodies, local file contents,
+    headers, secrets, or provider payload bodies.
+  - Complete lifecycle rows -> `tool_lifecycle_diagnostics=ok` with bounded
+    row/call/terminal counts and phase counts.
+  - Planned/started calls without a terminal phase -> warning.
+  - Terminal phases without planned/started rows -> warning.
+  - Duplicate terminal phases for the same turn/call id -> warning.
+  - Unknown phase/status values -> warning.
+  - Doctor output must not print raw trace payload content, argument values,
+    command text, stdout/stderr bodies, file contents, headers, or secret-like
+    values even if those fields appear in a malformed trace row.
 - Turn failure diagnostics check:
   - Missing `~/.mycli/traces/` or no `turn_failed` trace rows ->
     `turn_failure_diagnostics=ok` with `no turn failure diagnostics found`;
@@ -255,6 +282,9 @@ Questions to answer:
 - Unit test tool execution diagnostics doctor cases for missing directory, no
   tool rows, successful summary, failed/interrupted/denied/truncated/write
     diagnostic summary, and warning-summary redaction.
+- Unit test tool runtime lifecycle diagnostics for missing directory/no rows,
+  complete lifecycle summary, missing terminal, terminal without start,
+  duplicate terminal, malformed phase/status, and warning-summary redaction.
 - Runtime policy diagnostics check:
   - Missing `~/.mycli/traces/` or no `runtime_policy_decision` trace rows ->
     `runtime_policy_diagnostics=ok` with

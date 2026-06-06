@@ -90,6 +90,33 @@ _RUNTIME_CONTRACT_REQUIRED_STREAMS = {
 }
 _SUCCESSFUL_APPROVAL_RESULTS = frozenset({"approved", "rejected"})
 _SUCCESSFUL_CLARIFICATION_RESULTS = frozenset({"answered"})
+_TOOL_RUNTIME_LIFECYCLE_PHASES = frozenset(
+    {
+        "planned",
+        "policy_checked",
+        "started",
+        "progress",
+        "completed",
+        "failed",
+        "denied",
+        "needs_approval",
+        "interrupted",
+    }
+)
+_TOOL_RUNTIME_LIFECYCLE_STATUSES = frozenset(
+    {
+        "running",
+        "completed",
+        "failed",
+        "denied",
+        "needs_approval",
+        "interrupted",
+    }
+)
+_TOOL_RUNTIME_START_PHASES = frozenset({"planned", "started"})
+_TOOL_RUNTIME_TERMINAL_PHASES = frozenset(
+    {"completed", "failed", "denied", "needs_approval", "interrupted"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +175,20 @@ class _ToolExecutionDiagnosticsSummary:
     write_diagnostics_error_count: int
     argument_summary_count: int
     error_kinds: tuple[tuple[str, int], ...]
+    unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolRuntimeLifecycleDiagnosticsSummary:
+    lifecycle_count: int
+    call_count: int
+    terminal_count: int
+    missing_terminal_count: int
+    terminal_without_start_count: int
+    duplicate_terminal_count: int
+    malformed_count: int
+    argument_summary_count: int
+    phases: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
 
 
@@ -292,6 +333,7 @@ class DoctorService:
             self._check_clarification_diagnostics,
             self._check_runtime_policy_diagnostics,
             self._check_tool_execution_diagnostics,
+            self._check_tool_lifecycle_diagnostics,
             self._check_turn_interrupt_diagnostics,
             self._check_turn_failure_diagnostics,
             self._check_tool_manifest,
@@ -884,6 +926,93 @@ class DoctorService:
             DoctorCheck(
                 "tool_execution_diagnostics",
                 DoctorStatus.OK,
+                message,
+                detail=detail,
+            ),
+        )
+
+    def _check_tool_lifecycle_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "tool_lifecycle_diagnostics",
+                    DoctorStatus.OK,
+                    "no tool lifecycle diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "tool_lifecycle_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "tool_lifecycle_diagnostics",
+                    DoctorStatus.OK,
+                    "no tool lifecycle diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_tool_runtime_lifecycle_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "tool_lifecycle_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.lifecycle_count == 0:
+            return (
+                DoctorCheck(
+                    "tool_lifecycle_diagnostics",
+                    DoctorStatus.OK,
+                    f"no tool lifecycle diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+
+        message = (
+            f"{summary.lifecycle_count} tool lifecycle diagnostic(s), "
+            f"calls={summary.call_count} "
+            f"terminal={summary.terminal_count} "
+            f"missing_terminal={summary.missing_terminal_count} "
+            f"terminal_without_start={summary.terminal_without_start_count} "
+            f"duplicate_terminal={summary.duplicate_terminal_count} "
+            f"malformed={summary.malformed_count} "
+            f"argument_summaries={summary.argument_summary_count}"
+            f"{suffix}"
+        )
+        detail = f"phases: {_format_count_pairs(summary.phases)}"
+        status = (
+            DoctorStatus.WARNING
+            if (
+                summary.missing_terminal_count
+                or summary.terminal_without_start_count
+                or summary.duplicate_terminal_count
+                or summary.malformed_count
+            )
+            else DoctorStatus.OK
+        )
+        return (
+            DoctorCheck(
+                "tool_lifecycle_diagnostics",
+                status,
                 message,
                 detail=detail,
             ),
@@ -2152,6 +2281,102 @@ def _summarize_tool_execution_diagnostics(
         error_kinds=ordered_error_kinds,
         unreadable=tuple(unreadable),
     )
+
+
+def _summarize_tool_runtime_lifecycle_diagnostics(
+    paths: Iterable[Path],
+) -> _ToolRuntimeLifecycleDiagnosticsSummary:
+    lifecycle_count = 0
+    terminal_count = 0
+    malformed_count = 0
+    argument_summary_count = 0
+    phases: Counter[str] = Counter()
+    calls: dict[str, dict[str, int | bool]] = {}
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "tool_runtime_lifecycle":
+                        continue
+                    lifecycle_count += 1
+                    payload = event.payload
+                    phase = _safe_diagnostic_result(payload.get("phase"))
+                    status = _safe_diagnostic_result(payload.get("status"))
+                    phases[phase] += 1
+                    if (
+                        phase not in _TOOL_RUNTIME_LIFECYCLE_PHASES
+                        or status not in _TOOL_RUNTIME_LIFECYCLE_STATUSES
+                    ):
+                        malformed_count += 1
+
+                    argument_keys = payload.get("argument_keys")
+                    argument_count = payload.get("argument_count")
+                    if isinstance(argument_keys, list) and isinstance(argument_count, int):
+                        argument_summary_count += 1
+
+                    call_key = _tool_runtime_lifecycle_call_key(event, payload)
+                    state = calls.setdefault(
+                        call_key,
+                        {
+                            "started": False,
+                            "terminal_count": 0,
+                        },
+                    )
+                    if phase in _TOOL_RUNTIME_START_PHASES:
+                        state["started"] = True
+                    if phase in _TOOL_RUNTIME_TERMINAL_PHASES:
+                        terminal_count += 1
+                        state["terminal_count"] = int(state["terminal_count"]) + 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    missing_terminal_count = 0
+    terminal_without_start_count = 0
+    duplicate_terminal_count = 0
+    for state in calls.values():
+        started = bool(state["started"])
+        call_terminal_count = int(state["terminal_count"])
+        if started and call_terminal_count == 0:
+            missing_terminal_count += 1
+        if not started and call_terminal_count > 0:
+            terminal_without_start_count += 1
+        if call_terminal_count > 1:
+            duplicate_terminal_count += 1
+
+    ordered_phases = tuple(sorted(phases.items(), key=lambda item: (-item[1], item[0])))
+    return _ToolRuntimeLifecycleDiagnosticsSummary(
+        lifecycle_count=lifecycle_count,
+        call_count=len(calls),
+        terminal_count=terminal_count,
+        missing_terminal_count=missing_terminal_count,
+        terminal_without_start_count=terminal_without_start_count,
+        duplicate_terminal_count=duplicate_terminal_count,
+        malformed_count=malformed_count,
+        argument_summary_count=argument_summary_count,
+        phases=ordered_phases,
+        unreadable=tuple(unreadable),
+    )
+
+
+def _tool_runtime_lifecycle_call_key(
+    event: RuntimeTraceEvent,
+    payload: dict[str, object],
+) -> str:
+    for raw_value in (
+        payload.get("tool_call_id"),
+        payload.get("tool_id"),
+    ):
+        if isinstance(raw_value, str) and raw_value.strip():
+            return f"{event.turn_id}:{_safe_diagnostic_result(raw_value)}"
+    return f"{event.turn_id}:unknown"
 
 
 def _summarize_turn_failure_diagnostics(

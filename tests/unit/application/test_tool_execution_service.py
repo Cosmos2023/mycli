@@ -442,6 +442,102 @@ def test_tool_execution_service_runtime_policy_allows_contributed_tool(
     assert policy_trace.payload["tool_name"] == "runtime_echo"
 
 
+def test_tool_execution_service_emits_runtime_lifecycle_trace_for_success(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
+    router = service._test_router  # type: ignore[attr-defined]
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    lifecycle = [
+        event.payload
+        for event in TraceService(home_dir=tmp_path / "home").load("demo")
+        if event.kind == "tool_runtime_lifecycle"
+    ]
+
+    assert [payload["phase"] for payload in lifecycle] == [
+        "planned",
+        "started",
+        "progress",
+        "completed",
+    ]
+    assert lifecycle[0]["status"] == "running"
+    assert lifecycle[-1]["status"] == "completed"
+    assert all(payload["tool_call_id"] == "call_read_1" for payload in lifecycle)
+    assert lifecycle[0]["argument_keys"] == ["path"]
+    assert "arguments" not in lifecycle[0]
+
+
+def test_tool_execution_service_emits_runtime_lifecycle_trace_for_policy_stop(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(
+                SafetyPolicy(workspace_root=tmp_path, auto_approve_medium=False),
+            )
+        ),
+        registry=ToolRegistry.from_tools([WriteTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Write"),
+                source=ToolRouteSource.REGISTRY,
+                spec=WriteTool(tmp_path).spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "hello\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    lifecycle = [
+        event.payload
+        for event in TraceService(home_dir=tmp_path / "home").load("demo")
+        if event.kind == "tool_runtime_lifecycle"
+    ]
+
+    assert [payload["phase"] for payload in lifecycle] == [
+        "planned",
+        "policy_checked",
+        "started",
+        "needs_approval",
+    ]
+    assert lifecycle[1]["policy_decision"] == "needs_approval"
+    assert lifecycle[-1]["status"] == "needs_approval"
+
+
 def test_tool_execution_service_denies_tool_before_execution(tmp_path: Path) -> None:
     hook_manager = HookManager()
     hook_manager.register(
@@ -541,6 +637,19 @@ def test_tool_execution_service_emits_lifecycle_and_trace_for_denied_tool(
             "message": "blocked by safety",
         }
     ]
+    lifecycle = [
+        event.payload
+        for event in trace
+        if event.kind == "tool_runtime_lifecycle"
+    ]
+    assert [payload["phase"] for payload in lifecycle] == [
+        "planned",
+        "started",
+        "denied",
+    ]
+    assert lifecycle[-1]["status"] == "denied"
+    assert lifecycle[-1]["error_kind"] == "tool_denied_by_hook"
+    assert all("arguments" not in payload for payload in lifecycle)
 
 
 def test_tool_execution_service_runs_configured_pre_tool_hook(
@@ -1277,6 +1386,20 @@ def test_tool_execution_service_records_failed_tool_trace_payload(tmp_path: Path
     assert trace.payload["stdout_truncated"] is False
     assert trace.payload["stderr_chars"] == 0
     assert trace.payload["stderr_truncated"] is False
+    lifecycle = [
+        event.payload
+        for event in loaded
+        if event.kind == "tool_runtime_lifecycle"
+    ]
+    assert [payload["phase"] for payload in lifecycle] == [
+        "planned",
+        "started",
+        "progress",
+        "failed",
+    ]
+    assert lifecycle[-1]["status"] == "failed"
+    assert lifecycle[-1]["error_kind"] == "tool_validation_error"
+    assert all("arguments" not in payload for payload in lifecycle)
 
 
 def test_tool_execution_service_records_long_output_trace_diagnostics(
@@ -1397,6 +1520,20 @@ def test_tool_execution_service_records_interrupted_tool_before_reraising(
     assert trace.payload["error_kind"] == "tool_interrupted"
     assert trace.payload["argument_count"] == 1
     assert trace.payload["argument_keys"] == ["path"]
+    lifecycle = [
+        event.payload
+        for event in loaded
+        if event.kind == "tool_runtime_lifecycle"
+    ]
+    assert [payload["phase"] for payload in lifecycle] == [
+        "planned",
+        "started",
+        "progress",
+        "interrupted",
+    ]
+    assert lifecycle[-1]["status"] == "interrupted"
+    assert lifecycle[-1]["error_kind"] == "tool_interrupted"
+    assert all("arguments" not in payload for payload in lifecycle)
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) -> None:
