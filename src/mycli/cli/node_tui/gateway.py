@@ -42,6 +42,7 @@ COMMAND_OVERLAYS = {
     "/status",
     "/usage",
     "/context",
+    "/changes",
     "/sessions",
     "/session-maintenance",
     "/session-maintenance --apply-empty",
@@ -189,6 +190,10 @@ class NodeTuiGateway:
                 return result_response(request.id, self.service.extension_manifest())
             if request.method == "trace.export":
                 return result_response(request.id, self._handle_trace_export(request.params))
+            if request.method == "workspace.trust.status":
+                return result_response(request.id, self._trust_status_payload())
+            if request.method == "workspace.trust.set":
+                return result_response(request.id, self._handle_workspace_trust_set(request.params))
             if request.method == "session.list":
                 return result_response(request.id, self._handle_session_list())
             if request.method == "session.resume":
@@ -252,7 +257,7 @@ class NodeTuiGateway:
                 code="incompatible_protocol",
                 message=f"Unsupported Node TUI protocol version: {version}",
             )
-        return {
+        payload = {
             "protocol_version": PROTOCOL_VERSION,
             "session_id": self.service._config.session_id,
             "workspace": str(self.service._config.workspace_root),
@@ -264,10 +269,14 @@ class NodeTuiGateway:
             "status": self._status_payload(),
             "welcome": self._welcome_payload(),
         }
+        title = self._session_title()
+        if title:
+            payload["session_title"] = title
+        return payload
 
     def _welcome_payload(self) -> dict[str, object]:
         mark_name = str(getattr(self.service._config, "tui_startup_mark", "default") or "default")
-        return {
+        payload = {
             "version": "0.1.0",
             "session_id": self.service._config.session_id,
             "workspace": str(self.service._config.workspace_root),
@@ -281,6 +290,10 @@ class NodeTuiGateway:
             "tips": ["/help", "/context", "/usage", "/sessions"],
             "release_notes_hint": "Run /release-notes",
         }
+        title = self._session_title()
+        if title:
+            payload["session_title"] = title
+        return payload
 
     def _handle_turn_submit(self, request: RpcRequest) -> RpcResponse:
         message = _required_str(request.params, "message").strip()
@@ -622,6 +635,8 @@ class NodeTuiGateway:
             "presentation": "overlay" if command_name in COMMAND_OVERLAYS else "transcript",
             "exit_requested": builtin == "quit",
         }
+        if command_name in {"/changes", "/diff"}:
+            result["presentation_hint"] = "file changes"
         view_mode = _view_mode_from_command(command)
         if view_mode is not None:
             result["view_mode"] = view_mode
@@ -929,7 +944,7 @@ class NodeTuiGateway:
         context_window = self.service.current_context_window_metrics()
         pending = self.service._session_service.load_pending_decision(self.service._config.session_id)
         suspended = self.service._session_service.load_suspended_turn(self.service._config.session_id)
-        return {
+        payload = {
             "session_id": self.service._config.session_id,
             "workspace": Path(self.service._config.workspace_root).name,
             "model": self.service._config.model,
@@ -947,7 +962,68 @@ class NodeTuiGateway:
             },
             "pending_decision": pending is not None,
             "suspended_turn": suspended is not None,
+            "trust": self._trust_status_payload(),
         }
+        title = self._session_title()
+        if title:
+            payload["session_title"] = title
+        return payload
+
+    def _session_title(self) -> str | None:
+        for name in ("session_title", "title"):
+            value = getattr(self.service._config, name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        provider = getattr(self.service, "session_title", None)
+        if callable(provider):
+            value = provider()
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _trust_status_payload(self) -> dict[str, object]:
+        workspace = str(self.service._config.workspace_root)
+        provider = getattr(self.service, "workspace_trust_status", None)
+        if callable(provider):
+            raw = provider()
+            if isinstance(raw, dict):
+                return {
+                    "state": str(raw.get("state") or "unknown"),
+                    "workspace": str(raw.get("workspace") or workspace),
+                    "source": str(raw.get("source") or "runtime"),
+                    "enforced": bool(raw.get("enforced", False)),
+                }
+        return {
+            "state": "unknown",
+            "workspace": workspace,
+            "source": "fallback",
+            "enforced": False,
+        }
+
+    def _handle_workspace_trust_set(self, params: dict[str, object]) -> dict[str, object]:
+        state = _required_str(params, "state").strip().lower()
+        if state not in {"trusted", "untrusted", "unknown"}:
+            raise ValueError("state must be trusted, untrusted, or unknown.")
+        setter = getattr(self.service, "set_workspace_trust", None)
+        if callable(setter):
+            raw = setter(state=state)
+            if isinstance(raw, dict):
+                payload = {
+                    "state": str(raw.get("state") or state),
+                    "workspace": str(raw.get("workspace") or self.service._config.workspace_root),
+                    "source": str(raw.get("source") or "runtime"),
+                    "enforced": bool(raw.get("enforced", False)),
+                }
+                self._emit_event("workspace.trust.changed", payload)
+                self._emit_event("status.changed", {**self._status_payload(), "trust": payload})
+                return payload
+        payload = {
+            **self._trust_status_payload(),
+            "requested_state": state,
+            "message": "Workspace trust runtime enforcement is not available yet.",
+        }
+        self._emit_event("workspace.trust.changed", payload)
+        return payload
 
     def _emit_resume_pending_state(self) -> None:
         pending = self.service._session_service.load_pending_decision(self.service._config.session_id)
@@ -1019,7 +1095,7 @@ def _approval_request_payload(
     client_turn_id: str,
     decision: PendingDecision,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "client_turn_id": client_turn_id,
         "decision_id": _decision_id_for_pending_decision(decision),
         "preview": decision.preview,
@@ -1033,6 +1109,15 @@ def _approval_request_payload(
             for action in decision.options
         ],
     }
+    payload["action"] = decision.tool_call.name
+    payload["cwd"] = str(Path.cwd())
+    if decision.command_pattern:
+        payload["risk"] = "command"
+        payload["risk_reason"] = decision.command_pattern
+    else:
+        payload["risk"] = decision.kind.value
+        payload["risk_reason"] = decision.reason
+    return payload
 
 
 def _decision_id_for_pending_decision(decision: PendingDecision) -> str:

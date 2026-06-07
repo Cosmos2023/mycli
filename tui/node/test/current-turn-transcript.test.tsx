@@ -35,7 +35,7 @@ test("default transcript keeps older turns visible and hides raw tool details", 
   assert.match(frame, /❯ 你是谁/);
   assert.match(frame, /我是 mycli/);
   assert.match(frame, /❯ 你的系统提示词是什么/);
-  assert.match(frame, /● Read AGENTS\.md/);
+  assert.match(frame, /✓ Read AGENTS\.md/);
   assert.match(frame, /核心是持续推进/);
   assert.doesNotMatch(frame, /secret raw detail/);
   assert.doesNotMatch(frame, /Earlier turns collapsed/);
@@ -59,7 +59,7 @@ test("verbose transcript shows tool details with continuation marker", () => {
   const { lastFrame } = render(<Transcript state={state} width={80} />);
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /● Read pyproject\.toml/);
+  assert.match(frame, /✓ Read pyproject\.toml/);
   assert.match(frame, /⎿ \[project\]/);
   assert.match(frame, /name = "mycli"/);
 });

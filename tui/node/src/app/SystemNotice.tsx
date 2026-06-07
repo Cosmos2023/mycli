@@ -39,6 +39,7 @@ export function noticeDiagnostics(
     diagnosticPair("source", metadata.source),
     diagnosticPair("method", metadata.method),
     diagnosticPair("code", metadata.code),
+    diagnosticPair("detail", metadata.detail),
   ].filter((value): value is string => Boolean(value));
   return pairs.join(" · ");
 }

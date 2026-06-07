@@ -9,6 +9,7 @@ test("app renders Claude-style continuous transcript anatomy", () => {
   const state = {
     ...initialState({ rawThemeName: "graphite" }),
     sessionId: "default",
+    sessionTitle: null,
     workspace: "/Users/cosmos/Desktop/mycli/.worktrees/fix-deepseek-cache-hit-rate",
     model: "deepseek/chat/deepseek-v4-flash",
     status: { context_window: { used_tokens: 9302, max_tokens: 100000 } },
@@ -33,13 +34,15 @@ test("app renders Claude-style continuous transcript anatomy", () => {
 
   assert.match(frame, /mycli/);
   assert.match(frame, /fix-de/);
+  assert.match(frame, /\[mycli\]/);
+  assert.match(frame, /model: deepseek-v4-flash/);
   assert.match(frame, /❯ 你是谁/);
   assert.match(frame, /我是 mycli/);
   assert.match(frame, /❯ 读配置/);
-  assert.match(frame, /● Read pyproject\.toml/);
+  assert.match(frame, /✓ Read pyproject\.toml/);
   assert.match(frame, />/);
-  assert.match(frame, /default · deepseek-v4-flash · graphite · 9% 9,302\/100k/);
+  assert.match(frame, /ctx: 9% 9,302\/100k/);
   assert.doesNotMatch(frame, /raw config/);
   assert.doesNotMatch(frame, /Type a message or \/command/);
-  assert.doesNotMatch(frame, /USER|ASSISTANT/);
+  assert.doesNotMatch(frame, /Turn|\[assistant\]|\[tools\]|USER|ASSISTANT/);
 });

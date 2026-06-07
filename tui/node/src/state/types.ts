@@ -1,5 +1,9 @@
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
-import type { ApprovalRequestPayload, ClarifyRequestPayload } from "../protocol/types.ts";
+import type {
+  ApprovalRequestPayload,
+  ClarifyRequestPayload,
+  WorkspaceTrustPayload,
+} from "../protocol/types.ts";
 
 export type ViewMode = "default" | "verbose" | "focus";
 
@@ -29,7 +33,14 @@ export type CompletionState = {
   visible: boolean;
   requestId: number;
   prefix: string;
-  items: Array<{ value: string; description?: string; kind?: string }>;
+  items: Array<{
+    value: string;
+    description?: string;
+    kind?: string;
+    category?: string;
+    mutating?: boolean;
+    aliases?: string[];
+  }>;
   selectedIndex: number;
 };
 
@@ -37,6 +48,7 @@ export type OverlayState = {
   visible: boolean;
   title: string;
   lines: string[];
+  presentationHint?: string;
 };
 
 export type TurnLiveState =
@@ -65,9 +77,11 @@ export type LiveReasoning = {
 
 export type ShellState = {
   sessionId: string | null;
+  sessionTitle: string | null;
   workspace: string;
   model: string;
   provider: string;
+  trust: WorkspaceTrustPayload;
   status: Record<string, unknown>;
   transcript: TranscriptItem[];
   themeName: ThemeName;

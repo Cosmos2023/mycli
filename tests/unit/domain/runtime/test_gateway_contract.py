@@ -65,8 +65,10 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "provider",
         "session_id",
         "suspended_turn",
+        "trust",
         "workspace",
     ]
+    assert "trust" not in schema["required"]
     assert schema["properties"]["pending_decision"] == {"type": "boolean"}
     assert schema["properties"]["suspended_turn"] == {"type": "boolean"}
     assert sorted(schema["properties"]["context_window"]["properties"]) == [

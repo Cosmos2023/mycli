@@ -3,7 +3,12 @@ import { render } from "ink";
 import { App } from "./app/App.tsx";
 import { GatewayClient, GatewayRequestError } from "./protocol/client.ts";
 import { initialState, reduceShellState } from "./state/reducer.ts";
-import { openTtyStreams } from "./terminal/tty.ts";
+import {
+  runtimeCommandDispatch,
+  sessionListOverlayLines,
+  sessionResumeOverlayLines,
+} from "./state/sessionCommands.ts";
+import { openTtyStreams, TtyOpenError } from "./terminal/tty.ts";
 
 function RuntimeApp() {
   const themeInit =
@@ -43,6 +48,7 @@ function RuntimeApp() {
       method: gatewayError.method || method,
       code: gatewayError.code,
       message: gatewayError.message,
+      ...(error instanceof Error ? { detail: error.stack ?? error.message } : {}),
     });
   }, []);
   const send = useCallback(
@@ -53,6 +59,17 @@ function RuntimeApp() {
       }),
     [client, reportRequestError],
   );
+  const loadTranscript = useCallback(
+    async (sessionId: unknown): Promise<void> => {
+      const transcript = await send("transcript.load", {
+        session_id: typeof sessionId === "string" && sessionId.trim() ? sessionId : undefined,
+        limit: 200,
+        before: null,
+      });
+      dispatch({ type: "transcript.loaded", payload: transcript });
+    },
+    [send],
+  );
 
   useEffect(() => {
     client.start();
@@ -62,12 +79,7 @@ function RuntimeApp() {
     })
       .then(async (payload) => {
         dispatch({ type: "bootstrap.result", payload });
-        const transcript = await send("transcript.load", {
-          session_id: payload.session_id,
-          limit: 200,
-          before: null,
-        });
-        dispatch({ type: "transcript.loaded", payload: transcript });
+        await loadTranscript(payload.session_id);
       })
       .catch(() => undefined);
     return () => client.stop();
@@ -83,9 +95,43 @@ function RuntimeApp() {
         );
       }}
       onCommand={(command) => {
-        void send("command.run", { command })
+        const dispatchPlan = runtimeCommandDispatch(command);
+        if (dispatchPlan.kind === "invalid") {
+          dispatch({
+            type: "command.result",
+            command: dispatchPlan.command,
+            result: { presentation: "overlay", lines: dispatchPlan.lines },
+          });
+          return;
+        }
+        if (dispatchPlan.kind === "session.list") {
+          void send("session.list", {})
+            .then((result) => {
+              dispatch({
+                type: "command.result",
+                command,
+                result: { presentation: "overlay", lines: sessionListOverlayLines(result) },
+              });
+            })
+            .catch(() => undefined);
+          return;
+        }
+        if (dispatchPlan.kind === "session.resume") {
+          void send("session.resume", { session_id: dispatchPlan.sessionId })
+            .then(async (result) => {
+              dispatch({
+                type: "command.result",
+                command,
+                result: { presentation: "overlay", lines: sessionResumeOverlayLines(result) },
+              });
+              await loadTranscript(result.session_id);
+            })
+            .catch(() => undefined);
+          return;
+        }
+        void send("command.run", { command: dispatchPlan.command })
           .then((result) => {
-            dispatch({ type: "command.result", command, result });
+            dispatch({ type: "command.result", command: dispatchPlan.command, result });
             if (result.exit_requested === true) {
               void send("shutdown", {}).then(() => process.exit(0), () => undefined);
             }
@@ -95,6 +141,9 @@ function RuntimeApp() {
       onInterrupt={() => {
         void send("turn.interrupt", {}).catch(() => undefined);
       }}
+      onExit={() => {
+        void send("shutdown", {}).then(() => process.exit(0), () => process.exit(0));
+      }}
       onLocalAction={dispatch}
       onDraftChange={() => undefined}
       onDecision={(decisionId, choice) => {
@@ -103,11 +152,31 @@ function RuntimeApp() {
       onClarification={(requestId, response) => {
         void send("clarify.respond", { request_id: requestId, response }).catch(() => undefined);
       }}
+      onTrustChoice={(choice) => {
+        if (choice === "later") {
+          dispatch({ type: "overlay.closed", message: "Workspace trust decision deferred." });
+          return;
+        }
+        void send("workspace.trust.set", { state: choice }).catch(() => undefined);
+      }}
     />
   );
 }
 
-const tty = openTtyStreams();
+let tty;
+try {
+  tty = openTtyStreams();
+} catch (error) {
+  const message =
+    error instanceof TtyOpenError
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : "Unable to start the interactive TUI.";
+  process.stderr.write(`[node-tui] ${message}\n`);
+  process.exit(1);
+}
+
 const instance = render(<RuntimeApp />, {
   stdin: tty.input,
   stdout: tty.output,

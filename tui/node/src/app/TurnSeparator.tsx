@@ -1,15 +1,13 @@
 import React from "react";
-import { Text } from "ink";
-import { DEFAULT_TERMINAL_WIDTH } from "./layout.ts";
+import { Box } from "ink";
 import type { ThemeTokens } from "../theme/types.ts";
 
 export function TurnSeparator({
-  theme,
-  width = DEFAULT_TERMINAL_WIDTH,
+  theme: _theme,
+  width: _width,
 }: {
   theme: ThemeTokens;
   width?: number;
 }) {
-  const dividerWidth = Math.max(24, Math.min(width, DEFAULT_TERMINAL_WIDTH));
-  return <Text color={theme.border}>{"─".repeat(dividerWidth)}</Text>;
+  return <Box height={1} />;
 }

@@ -784,6 +784,55 @@ test("gateway error event appends an error transcript row", () => {
   });
 });
 
+test("bootstrap and trust events update workspace trust state", () => {
+  let state = reduceShellState(initialState(), {
+    type: "bootstrap.result",
+    payload: {
+      session_id: "demo",
+      workspace: "/repo/project",
+      model: "gpt-test",
+      provider: "test/chat",
+      trust: { state: "untrusted", workspace: "/repo/project", source: "runtime", enforced: true },
+      status: {
+        trust: { state: "untrusted", workspace: "/repo/project", source: "runtime", enforced: true },
+      },
+    },
+  });
+
+  assert.equal(state.trust.state, "untrusted");
+  assert.equal(state.trust.enforced, true);
+
+  state = reduceShellState(state, {
+    type: "gateway.event",
+    method: "workspace.trust.changed",
+    params: { state: "trusted", workspace: "/repo/project", source: "runtime", enforced: true },
+  });
+
+  assert.deepEqual(state.trust, {
+    state: "trusted",
+    workspace: "/repo/project",
+    source: "runtime",
+    enforced: true,
+  });
+});
+
+test("request failure preserves bounded diagnostic detail", () => {
+  const state = reduceShellState(initialState(), {
+    type: "request.failed",
+    method: "session.bootstrap",
+    code: "request_failed",
+    message: "Request failed.",
+    detail: "Provider failed during bootstrap with a long stack frame ".repeat(8),
+  });
+
+  const error = state.transcript.at(-1);
+  assert.equal(error?.type, "error");
+  assert.equal(error?.metadata.method, "session.bootstrap");
+  assert.equal(error?.metadata.code, "request_failed");
+  assert.match(String(error?.metadata.detail), /Provider failed/);
+  assert.ok(String(error?.metadata.detail).length <= 123);
+});
+
 test("gateway error event preserves stable request error codes", () => {
   const state = reduceShellState(initialState(), {
     type: "gateway.event",
@@ -1023,10 +1072,25 @@ test("overlay command result opens overlay instead of transcript row", () => {
   const state = reduceShellState(initialState(), {
     type: "command.result",
     command: "/usage",
-    result: { lines: ["turns=1"], presentation: "overlay" },
+    result: { lines: ["turns=1"], presentation: "overlay", presentation_hint: "usage" },
   });
 
   assert.equal(state.overlay.visible, true);
   assert.equal(state.overlay.lines[0], "turns=1");
+  assert.equal(state.overlay.presentationHint, "usage");
   assert.equal(state.transcript.length, 0);
+});
+
+test("transcript command result closes stale overlay", () => {
+  const state = reduceShellState(
+    { ...initialState(), overlay: { visible: true, title: "/help", lines: ["Input"] } },
+    {
+      type: "command.result",
+      command: "/quit",
+      result: { lines: ["Bye."], presentation: "transcript" },
+    },
+  );
+
+  assert.equal(state.overlay.visible, false);
+  assert.equal(state.transcript.at(-1)?.text, "Bye.");
 });

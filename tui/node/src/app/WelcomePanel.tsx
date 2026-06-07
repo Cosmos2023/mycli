@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { DEFAULT_TERMINAL_WIDTH, truncateMiddle } from "./layout.ts";
+import { trustExplanation, trustLabel } from "./trust.ts";
+import { Badge } from "./ui/Badge.tsx";
 import type { ShellState, TranscriptItem } from "../state/types.ts";
 
 export function hasConversationContent(items: TranscriptItem[]): boolean {
@@ -37,8 +39,18 @@ export function WelcomePanel({
   const workspace = truncateMiddle(state.workspace || "workspace pending", Math.max(24, width - 32));
   return (
     <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
-      <Text color={state.theme.accent}>{item.text}</Text>
-      <Text color={state.theme.subtle}>ready · {workspace} · /help for commands</Text>
+      <Box>
+        <Badge variant="success" theme={state.theme}>
+          ready
+        </Badge>
+        <Text color={state.theme.accent}> {item.text}</Text>
+      </Box>
+      <Text color={state.theme.subtle}>
+        {workspace} · trust: {trustLabel(state)} · {trustExplanation(state)}
+      </Text>
+      <Text color={state.theme.subtle}>
+        /help commands · /sessions resume · /resume &lt;session&gt;
+      </Text>
     </Box>
   );
 }

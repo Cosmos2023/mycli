@@ -2,6 +2,11 @@ import { GatewayClient, GatewayRequestError } from "../protocol/client.ts";
 import type { TurnState } from "../protocol/types.ts";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
 import { initialState, reduceShellState } from "../state/reducer.ts";
+import {
+  runtimeCommandDispatch,
+  sessionListOverlayLines,
+  sessionResumeOverlayLines,
+} from "../state/sessionCommands.ts";
 
 type ScriptedState = ReturnType<typeof initialState>;
 type ExpectedScriptedTurnState = Exclude<TurnState, "running">;
@@ -81,8 +86,8 @@ export async function runScriptedClient(
           }
           continue;
         }
-        const result = await client.send("command.run", { command: item });
-        for (const line of (result.lines as string[] | undefined) ?? []) {
+        const result = await runRuntimeCommand(client, item);
+        for (const line of result.lines) {
           process.stderr.write(`[node-tui] ${line}\n`);
         }
         if (result.exit_requested === true) {
@@ -232,6 +237,29 @@ async function runScriptedAction(
     (event) => event.params?.client_turn_id === clientTurnId,
   );
   await waitForTerminalStatus(client, clientTurnId);
+}
+
+async function runRuntimeCommand(
+  client: GatewayClient,
+  command: string,
+): Promise<{ lines: string[]; exit_requested?: boolean }> {
+  const dispatch = runtimeCommandDispatch(command);
+  if (dispatch.kind === "invalid") {
+    return { lines: dispatch.lines };
+  }
+  if (dispatch.kind === "session.list") {
+    const result = await client.send("session.list", {});
+    return { lines: sessionListOverlayLines(result) };
+  }
+  if (dispatch.kind === "session.resume") {
+    const result = await client.send("session.resume", { session_id: dispatch.sessionId });
+    return { lines: sessionResumeOverlayLines(result) };
+  }
+  const result = await client.send("command.run", { command: dispatch.command });
+  return {
+    lines: (result.lines as string[] | undefined) ?? [],
+    ...(result.exit_requested === true ? { exit_requested: true } : {}),
+  };
 }
 
 async function waitForExpectedTurnState(

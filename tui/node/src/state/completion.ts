@@ -1,5 +1,12 @@
 export type CompletionKind = "slash" | "path";
-export type CompletionItem = { value: string; description?: string; kind?: string };
+export type CompletionItem = {
+  value: string;
+  description?: string;
+  kind?: string;
+  category?: string;
+  mutating?: boolean;
+  aliases?: string[];
+};
 
 export function shouldComplete(value: string): CompletionKind | null {
   if (value.startsWith("/")) {

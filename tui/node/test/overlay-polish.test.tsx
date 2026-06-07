@@ -28,6 +28,26 @@ test("overlay renders title content footer and truncation marker", () => {
   assert.match(frame, /Esc close/);
 });
 
+test("overlay renders command-specific presentation hint for changes output", () => {
+  const { lastFrame } = render(
+    <Overlay
+      theme={THEMES.graphite}
+      overlay={{
+        visible: true,
+        title: "/changes",
+        presentationHint: "file changes",
+        lines: ["[change] modified src/app.tsx", "[change] modified tests/app.test.tsx"],
+      }}
+      maxLines={12}
+    />,
+  );
+
+  const frame = lastFrame() ?? "";
+  assert.match(frame, /\/changes/);
+  assert.match(frame, /file changes/);
+  assert.match(frame, /\[change\] modified src\/app\.tsx/);
+});
+
 test("command output and system notice render compact text", () => {
   const command = render(<CommandOutput text="[view] view_mode=verbose" theme={THEMES.mono} />);
   assert.match(command.lastFrame() ?? "", /\[view\] view_mode=verbose/);

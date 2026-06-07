@@ -1,6 +1,8 @@
 import { resolveTheme } from "../theme/resolveTheme.ts";
 import type { ThemeName, ThemeTokens } from "../theme/types.ts";
 import type { ApprovalRequestPayload, ClarifyRequestPayload } from "../protocol/types.ts";
+import { acceptSelected, moveSelection, shouldComplete } from "./completion.ts";
+import { slashCommandCompletions } from "./slashCatalog.ts";
 import {
   applyMessageComplete,
   applyTextDelta,
@@ -22,7 +24,13 @@ export type ShellAction =
   | { type: "bootstrap.result"; payload: Record<string, unknown> }
   | { type: "transcript.loaded"; payload: Record<string, unknown> }
   | { type: "user.submit"; message: string }
-  | { type: "request.failed"; method: string; code: string; message: string }
+  | { type: "request.failed"; method: string; code: string; message: string; detail?: string }
+  | { type: "input.changed"; value: string }
+  | { type: "input.cleared"; message?: string }
+  | { type: "completion.move"; delta: number }
+  | { type: "completion.accept" }
+  | { type: "completion.closed" }
+  | { type: "overlay.closed"; message?: string }
   | { type: "theme.changed"; themeName: ThemeName; theme: ThemeTokens; message: string }
   | { type: "theme.failed"; message: string }
   | { type: "local.command_output"; command: string; lines: string[] }
@@ -37,9 +45,11 @@ export function initialState({
   const themeName = resolved.ok ? resolved.name : resolved.fallbackName;
   return {
     sessionId: null,
+    sessionTitle: null,
     workspace: "",
     model: "",
     provider: "",
+    trust: { state: "unknown", workspace: "", source: "initial", enforced: false },
     status: {},
     transcript: resolved.ok
       ? []
@@ -80,9 +90,13 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     return {
       ...state,
       sessionId: String(action.payload.session_id ?? ""),
+      sessionTitle: sessionTitleFromPayload(action.payload),
       workspace: String(action.payload.workspace ?? ""),
       model: String(action.payload.model ?? ""),
       provider: String(action.payload.provider ?? ""),
+      trust: trustFromPayload(action.payload.trust ?? recordOrNull(action.payload.status)?.trust, {
+        workspace: String(action.payload.workspace ?? ""),
+      }),
       status: recordOrNull(action.payload.status) ?? {},
       transcript: [
         ...state.transcript,
@@ -106,11 +120,71 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       ],
     };
   }
+  if (action.type === "input.changed") {
+    return { ...state, inputDraft: action.value, completion: completionFromInput(state, action.value) };
+  }
+  if (action.type === "input.cleared") {
+    return {
+      ...state,
+      inputDraft: "",
+      restoredDraft: action.message ?? state.restoredDraft,
+      completion: { ...state.completion, visible: false, items: [], selectedIndex: 0, prefix: "" },
+    };
+  }
+  if (action.type === "completion.move") {
+    return {
+      ...state,
+      completion: {
+        ...state.completion,
+        selectedIndex: moveSelection(
+          state.completion.selectedIndex,
+          action.delta,
+          state.completion.items.length,
+        ),
+      },
+    };
+  }
+  if (action.type === "completion.accept") {
+    const accepted = acceptSelected(state.completion.items, state.completion.selectedIndex);
+    if (!accepted) {
+      return { ...state, completion: { ...state.completion, visible: false } };
+    }
+    return {
+      ...state,
+      inputDraft: accepted,
+      completion: { ...state.completion, visible: false },
+    };
+  }
+  if (action.type === "completion.closed") {
+    return { ...state, completion: { ...state.completion, visible: false } };
+  }
+  if (action.type === "overlay.closed") {
+    return {
+      ...state,
+      completion: { ...state.completion, visible: false },
+      overlay: { visible: false, title: "", lines: [] },
+      ...(action.message
+        ? {
+            transcript: [
+              ...state.transcript,
+              {
+                id: itemId("system"),
+                type: "system_notice" as const,
+                text: action.message,
+                folded: false,
+                metadata: { local: true },
+              },
+            ],
+          }
+        : {}),
+    };
+  }
   if (action.type === "request.failed") {
     return appendErrorItem(state, {
       code: action.code,
       message: action.message,
       method: action.method,
+      ...(action.detail ? { detail: truncatePreview(action.detail) } : {}),
       source: "request",
     });
   }
@@ -239,7 +313,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       if (!sessionId) {
         return state;
       }
-      return { ...state, sessionId };
+      return { ...state, sessionId, sessionTitle: sessionTitleFromPayload(action.params) ?? state.sessionTitle };
     }
     if (action.method === "message.delta") {
       const clientTurnId = clientTurnIdFromParams(action.params) ?? state.currentTurnId;
@@ -399,9 +473,23 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
       return {
         ...state,
         status: action.params,
+        sessionTitle: sessionTitleFromPayload(action.params) ?? state.sessionTitle,
+        trust: trustFromPayload(action.params.trust, {
+          fallback: state.trust,
+          workspace: String(action.params.workspace ?? state.workspace),
+        }),
         pendingApproval: action.params.pending_decision === false ? null : state.pendingApproval,
         pendingClarification:
           action.params.suspended_turn === false ? null : state.pendingClarification,
+      };
+    }
+    if (action.method === "workspace.trust.changed") {
+      return {
+        ...state,
+        trust: trustFromPayload(action.params, {
+          fallback: state.trust,
+          workspace: state.workspace,
+        }),
       };
     }
     if (action.method === "turn.failed") {
@@ -440,6 +528,7 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
     const lines = Array.isArray(action.result.lines)
       ? action.result.lines.map((line) => String(line))
       : [];
+    const presentationHint = stringValue(action.result.presentation_hint) ?? undefined;
     return {
       ...state,
       viewMode: viewMode ?? state.viewMode,
@@ -458,8 +547,15 @@ export function reduceShellState(state: ShellState, action: ShellAction): ShellS
           : state.transcript,
       overlay:
         action.result.presentation === "overlay"
-          ? { visible: true, title: action.command, lines }
-          : state.overlay,
+          ? {
+              visible: true,
+              title: action.command,
+              lines,
+              ...(presentationHint === undefined ? {} : { presentationHint }),
+            }
+          : action.result.presentation === "transcript"
+            ? { visible: false, title: "", lines: [] }
+            : state.overlay,
     };
   }
   return state;
@@ -486,6 +582,53 @@ function appendErrorItem(
       },
     ],
   };
+}
+
+function completionFromInput(state: ShellState, value: string): ShellState["completion"] {
+  if (shouldComplete(value) !== "slash") {
+    return { ...state.completion, visible: false, prefix: "", items: [], selectedIndex: 0 };
+  }
+  const token = currentInputToken(value);
+  const items = slashCommandCompletions(token).map((command) => ({
+    value: command.name,
+    description: command.description,
+    category: command.category,
+    mutating: command.mutating,
+    aliases: command.aliases,
+  }));
+  return {
+    visible: items.length > 0,
+    requestId: state.completion.requestId + 1,
+    prefix: token,
+    items,
+    selectedIndex: 0,
+  };
+}
+
+function currentInputToken(value: string): string {
+  const stripped = value.trimStart();
+  if (!stripped) {
+    return "";
+  }
+  return stripped.split(/\s+/, 1)[0] ?? "";
+}
+
+function sessionTitleFromPayload(payload: Record<string, unknown>): string | null {
+  const direct = payload.session_title ?? payload.title;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const status = recordOrNull(payload.status);
+  const nested = status?.session_title ?? status?.title;
+  if (typeof nested === "string" && nested.trim()) {
+    return nested.trim();
+  }
+  const welcome = recordOrNull(payload.welcome);
+  const welcomeTitle = welcome?.session_title ?? welcome?.title;
+  if (typeof welcomeTitle === "string" && welcomeTitle.trim()) {
+    return welcomeTitle.trim();
+  }
+  return null;
 }
 
 function matchesRecentError(
@@ -526,6 +669,10 @@ function liveReasoningFromParams(
 function truncatePreview(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function boundedMessageCompleteMetadata(
@@ -671,6 +818,36 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
   }
   return null;
+}
+
+function trustFromPayload(
+  value: unknown,
+  {
+    fallback,
+    workspace,
+  }: { fallback?: ShellState["trust"]; workspace?: string } = {},
+): ShellState["trust"] {
+  const raw = recordOrNull(value);
+  if (!raw) {
+    return fallback ?? {
+      state: "unknown",
+      workspace: workspace ?? "",
+      source: "fallback",
+      enforced: false,
+    };
+  }
+  const state =
+    raw.state === "trusted" || raw.state === "untrusted" || raw.state === "unknown"
+      ? raw.state
+      : "unknown";
+  return {
+    state,
+    workspace: String(raw.workspace ?? workspace ?? fallback?.workspace ?? ""),
+    ...(typeof raw.source === "string" ? { source: raw.source } : {}),
+    ...(typeof raw.enforced === "boolean" ? { enforced: raw.enforced } : {}),
+    ...(typeof raw.message === "string" ? { message: truncatePreview(raw.message) } : {}),
+    ...(typeof raw.requested_state === "string" ? { requested_state: raw.requested_state } : {}),
+  };
 }
 
 function isViewMode(value: unknown): value is ViewMode {

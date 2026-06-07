@@ -29,6 +29,8 @@ _RPC_DESCRIPTIONS = {
     "transcript.load": "Load projected transcript history for a session.",
     "turn.interrupt": "Request interruption of the active turn.",
     "turn.submit": "Submit a user turn for runtime execution.",
+    "workspace.trust.set": "Record or update the TUI workspace trust choice when runtime support is available.",
+    "workspace.trust.status": "Return current workspace trust status for TUI display.",
 }
 
 _EVENT_DESCRIPTIONS = {
@@ -55,6 +57,7 @@ _EVENT_DESCRIPTIONS = {
     "turn.interrupted": "Terminal interrupted turn state.",
     "turn.started": "Turn execution start.",
     "turn.status": "Normalized turn status and terminal state.",
+    "workspace.trust.changed": "Workspace trust status changed or fallback trust diagnostics.",
 }
 
 
@@ -116,6 +119,14 @@ class ExtensionManifestService:
                     "id": "approvals",
                     "status": "available",
                     "description": "Approval request and response flow for risky actions.",
+                },
+                {
+                    "id": "workspace.trust",
+                    "status": "foundation_only",
+                    "description": (
+                        "Workspace trust RPC and TUI display foundations exist, but runtime "
+                        "enforcement is not productized."
+                    ),
                 },
                 {
                     "id": "sessions",

@@ -21,6 +21,8 @@ SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
         "transcript.load",
         "turn.interrupt",
         "turn.submit",
+        "workspace.trust.set",
+        "workspace.trust.status",
     }
 )
 
@@ -50,6 +52,7 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "turn.interrupted",
         "turn.started",
         "turn.status",
+        "workspace.trust.changed",
     }
 )
 
@@ -181,6 +184,10 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "reason": _STRING,
                 "tool_name": _STRING,
                 "options": _APPROVAL_OPTIONS,
+                "action": _STRING,
+                "cwd": _STRING,
+                "risk": _STRING,
+                "risk_reason": _STRING,
             }
         ),
     ),
@@ -269,6 +276,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "context_window": _CONTEXT_WINDOW,
             "pending_decision": _BOOLEAN,
             "suspended_turn": _BOOLEAN,
+            "trust": _OBJECT,
         },
     ),
     "status.update": _schema(
@@ -391,6 +399,18 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "message": _STRING,
             }
         ),
+    ),
+    "workspace.trust.changed": _schema(
+        "workspace.trust.changed",
+        required=("state", "workspace", "enforced"),
+        properties={
+            "state": _STRING,
+            "workspace": _STRING,
+            "source": _STRING,
+            "enforced": _BOOLEAN,
+            "message": _STRING,
+            "requested_state": _STRING,
+        },
     ),
 }
 

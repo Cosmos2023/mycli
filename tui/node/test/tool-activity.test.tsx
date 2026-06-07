@@ -18,7 +18,7 @@ test("tool row renders Claude-style tool call summary", () => {
   );
   const frame = lastFrame() ?? "";
 
-  assert.match(frame, /● Read pyproject\.toml · 82ms/);
+  assert.match(frame, /✓ Read pyproject\.toml · 82ms/);
   assert.doesNotMatch(frame, /done 82ms/);
 });
 
@@ -40,7 +40,50 @@ test("tool row renders running and failed lifecycle summaries", () => {
   ).lastFrame();
 
   assert.match(running ?? "", /● Read pyproject\.toml/);
-  assert.match(failed ?? "", /● Write notes\.txt · 2ms/);
+  assert.match(failed ?? "", /x Write notes\.txt · 2ms/);
+});
+
+test("tool row renders compact failed command reason and hints", () => {
+  const state = initialState({ rawThemeName: "graphite" });
+  const { lastFrame } = render(
+    <ToolRow
+      summary={{
+        verb: "bash",
+        target: "pytest -q",
+        status: "failed",
+        reason: "exit 1",
+        detail: "14.0s",
+        hint: "no files changed · details: /logs",
+      }}
+      theme={state.theme}
+      width={80}
+    />,
+  );
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /x Bash pytest -q · exit 1 · 14\.0s · no files changed · details: \/logs/);
+  assert.doesNotMatch(frame, /stderr|stdout|Traceback/);
+});
+
+test("tool row renders changed-file summary without raw diff", () => {
+  const state = initialState({ rawThemeName: "graphite" });
+  const { lastFrame } = render(
+    <ToolRow
+      summary={{
+        verb: "write",
+        target: "src/app.tsx",
+        status: "done",
+        changes: "2 files changed (add:1 modify:1): src/app.tsx, tests/app.test.tsx",
+      }}
+      theme={state.theme}
+      width={100}
+    />,
+  );
+  const frame = lastFrame() ?? "";
+
+  assert.match(frame, /✓ Write src\/app\.tsx · 2 files changed \(add:1 modify:1\):/);
+  assert.match(frame, /tests\/app\.test\.tsx/);
+  assert.doesNotMatch(frame, /^diff --git/m);
 });
 
 test("tool result row renders continuation marker", () => {

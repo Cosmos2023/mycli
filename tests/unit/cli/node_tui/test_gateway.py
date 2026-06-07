@@ -82,6 +82,9 @@ class FakeService(TurnService):
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=demo", "turns=1")
 
+    def inspect_file_changes(self) -> tuple[str, ...]:
+        return ("modified src/app.tsx", "modified tests/app.test.tsx")
+
     def inspect_status(self) -> tuple[str, ...]:
         return ("session=demo context=unknown",)
 
@@ -139,7 +142,60 @@ def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> N
     assert response.result["session_id"] == "demo"
     assert response.result["workspace"] == str(tmp_path)
     assert response.result["provider"] == "deepseek/chat_completions"
+    assert response.result["status"]["trust"] == {
+        "state": "unknown",
+        "workspace": str(tmp_path),
+        "source": "fallback",
+        "enforced": False,
+    }
     assert response.error is None
+
+
+def test_gateway_bootstrap_and_status_include_optional_session_title(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    service._config.session_title = "Boss reply follow-up"
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="session.bootstrap", params={"protocol_version": 1})
+    )
+    status = gateway.handle_request(RpcRequest(id="req_2", method="status.inspect", params={}))
+
+    assert response.error is None
+    assert response.result["session_title"] == "Boss reply follow-up"
+    assert response.result["welcome"]["session_title"] == "Boss reply follow-up"
+    assert response.result["status"]["session_title"] == "Boss reply follow-up"
+    assert status.result["session_title"] == "Boss reply follow-up"
+
+
+def test_gateway_workspace_trust_status_returns_safe_fallback(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="workspace.trust.status", params={})
+    )
+
+    assert response.result == {
+        "state": "unknown",
+        "workspace": str(tmp_path),
+        "source": "fallback",
+        "enforced": False,
+    }
+
+
+def test_gateway_workspace_trust_set_fallback_does_not_claim_enforcement(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(service=FakeService(tmp_path), emit=lambda method, params: events.append((method, params)))
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="workspace.trust.set", params={"state": "trusted"})
+    )
+
+    assert response.result is not None
+    assert response.result["requested_state"] == "trusted"
+    assert response.result["enforced"] is False
+    assert "not available yet" in str(response.result["message"])
+    assert any(method == "workspace.trust.changed" for method, _params in events)
 
 
 def test_gateway_bootstrap_includes_welcome_payload(tmp_path: Path) -> None:
@@ -220,6 +276,9 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     quit_response = gateway.handle_request(
         RpcRequest(id="req_3", method="command.run", params={"command": "/quit"})
     )
+    changes = gateway.handle_request(
+        RpcRequest(id="req_4", method="command.run", params={"command": "/changes"})
+    )
 
     assert usage.result is not None
     assert usage.result["presentation"] == "overlay"
@@ -229,6 +288,9 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     assert view.result["presentation"] == "transcript"
     assert quit_response.result is not None
     assert quit_response.result["exit_requested"] is True
+    assert changes.result is not None
+    assert changes.result["presentation"] == "overlay"
+    assert changes.result["presentation_hint"] == "file changes"
 
 
 def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
@@ -1243,7 +1305,11 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         "client_turn_id": "client_1",
         "decision_id": "call_push_1",
         "preview": "git push",
+        "action": "Bash",
+        "cwd": str(Path.cwd()),
         "reason": "git push requires confirmation.",
+        "risk": "needs_choice",
+        "risk_reason": "git push requires confirmation.",
         "tool_name": "Bash",
         "options": [
             {"choice": "approve_once", "label": "Allow once"},

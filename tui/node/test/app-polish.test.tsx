@@ -46,11 +46,13 @@ test("app renders branded console anatomy", () => {
   assert.match(frame, /mycli/);
   assert.match(frame, /project/);
   assert.match(frame, /deepseek-v4/);
+  assert.match(frame, /\[mycli\]/);
+  assert.match(frame, /provider: deepseek\/chat_completions/);
   assert.match(frame, /❯ read pyproject/);
-  assert.match(frame, /● Read pyproject\.toml · 82ms/);
+  assert.match(frame, /✓ Read pyproject\.toml · 82ms/);
+  assert.match(frame, /ctx: 4% 3,983\/100k/);
   assert.match(frame, /mycli\.cli\.main:main/);
   assert.match(frame, />/);
   assert.doesNotMatch(frame, /Type a message or \/command/);
-  assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
-  assert.doesNotMatch(frame, /│/);
+  assert.doesNotMatch(frame, /Turn|\[assistant\]|\[tools\]|USER|ASSISTANT|TOOL/);
 });

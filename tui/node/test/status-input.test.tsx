@@ -15,13 +15,34 @@ test("status line renders compact session model theme and context", () => {
   };
 
   const metadata = statusMetadata(state);
-  assert.match(metadata, /default/);
+  assert.match(metadata, /sess: default/);
   assert.match(metadata, /deepseek-v4-flash/);
   assert.match(metadata, /deep-teal/);
-  assert.match(metadata, /9% 9,302\/100k/);
+  assert.match(metadata, /trust: unknown\*/);
+  assert.match(metadata, /ctx: 9% 9,302\/100k/);
 
   const { lastFrame } = render(<StatusLine state={state} />);
-  assert.match(lastFrame() ?? "", /deepseek-v4-flash/);
+  const frame = lastFrame() ?? "";
+  assert.match(frame, /session: default/);
+  assert.match(frame, /model: deepseek-v4-flash/);
+  assert.match(frame, /trust: unknown\*/);
+  assert.match(frame, /theme: deep-teal/);
+  assert.match(frame, /ctx: 9% 9,302\/100k/);
+});
+
+test("status line renders session title when present", () => {
+  const state = {
+    ...initialState({ rawThemeName: "deep-teal" }),
+    sessionId: "default",
+    sessionTitle: "Boss reply follow-up",
+    model: "deepseek-v4",
+  };
+
+  const metadata = statusMetadata(state);
+  assert.match(metadata, /title: Boss reply follow-up/);
+
+  const frame = render(<StatusLine state={state} />).lastFrame() ?? "";
+  assert.match(frame, /title: Boss reply follow-up/);
 });
 
 test("status metadata includes live status and approval marker", () => {

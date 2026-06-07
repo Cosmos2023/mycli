@@ -145,7 +145,7 @@ def test_extension_manifest_does_not_productize_foundation_only_capabilities() -
 
     capabilities = {capability["id"]: capability for capability in manifest["capabilities"]}
 
-    for capability_id in ("mcp.tools",):
+    for capability_id in ("mcp.tools", "workspace.trust"):
         capability = capabilities[capability_id]
         assert capability["status"] == "foundation_only"
         assert "product" in capability["description"].lower()

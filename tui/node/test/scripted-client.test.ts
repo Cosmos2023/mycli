@@ -167,6 +167,71 @@ test("scripted client can resume a session before follow-up actions", async () =
   }
 });
 
+test("scripted client routes session commands through typed RPCs", async () => {
+  const originalStdin = process.stdin;
+  const originalStdout = process.stdout;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const messages: Array<{ id: string; method: string; params?: Record<string, unknown> }> = [];
+  output.on("data", (chunk) => {
+    const text = chunk.toString("utf8");
+    for (const rawLine of text.split("\n")) {
+      if (!rawLine.trim()) {
+        continue;
+      }
+      const message = JSON.parse(rawLine) as {
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      messages.push(message);
+      if (message.method === "session.bootstrap") {
+        input.write(
+          [
+            `{"jsonrpc":"2.0","id":"${message.id}","result":`,
+            '{"session_id":"root","workspace":"/tmp/work","model":"test",',
+            '"provider":"test/chat","status":{"session_id":"root"},',
+            '"welcome":{"workspace":"/tmp/work","startup_mark":{"text":"mycli"}}}}\n',
+          ].join(""),
+        );
+      }
+      if (message.method === "session.list") {
+        input.write(
+          [
+            `{"jsonrpc":"2.0","id":"${message.id}","result":`,
+            '{"sessions":[{"id":"root","last_active":"2026-06-07T01:00:00Z",',
+            '"message_count":4,"current":true}]}}\n',
+          ].join(""),
+        );
+      }
+      if (message.method === "session.resume") {
+        input.write(`{"jsonrpc":"2.0","method":"session.changed","params":{"session_id":"branch"}}\n`);
+        input.write(
+          `{"jsonrpc":"2.0","id":"${message.id}","result":{"session_id":"branch","lines":["[session] resumed branch"]}}\n`,
+        );
+      }
+      if (message.method === "shutdown") {
+        input.write(`{"jsonrpc":"2.0","id":"${message.id}","result":{"ok":true}}\n`);
+      }
+    }
+  });
+  Object.defineProperty(process, "stdin", { value: input, configurable: true });
+  Object.defineProperty(process, "stdout", { value: output, configurable: true });
+  try {
+    await runScriptedClient('["/sessions","/resume branch"]');
+  } finally {
+    Object.defineProperty(process, "stdin", { value: originalStdin, configurable: true });
+    Object.defineProperty(process, "stdout", { value: originalStdout, configurable: true });
+  }
+
+  assert.ok(messages.some((message) => message.method === "session.list"));
+  assert.deepEqual(
+    messages.find((message) => message.method === "session.resume")?.params,
+    { session_id: "branch" },
+  );
+  assert.equal(messages.some((message) => message.method === "command.run"), false);
+});
+
 test("scripted client records approval request failures in dumped state", async () => {
   const originalStdin = process.stdin;
   const originalStdout = process.stdout;

@@ -522,6 +522,9 @@ def test_run_node_tui_gateway_with_real_runtime_strict_write_approval(
     assert len(approval_items) == 1
     assert approval_items[0]["metadata"]["decision_id"] == "call_write_strict_1"
     assert approval_items[0]["metadata"]["tool_name"] == "Write"
+    assert approval_items[0]["metadata"]["action"] == "Write"
+    assert approval_items[0]["metadata"]["risk"]
+    assert approval_items[0]["metadata"]["risk_reason"]
     assert approval_items[0]["metadata"]["options"] == [
         {"choice": "approve_once", "label": "Allow once"},
         {"choice": "reject", "label": "Reject"},

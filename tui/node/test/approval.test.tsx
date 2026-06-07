@@ -11,7 +11,11 @@ test("approval prompt renders choices", () => {
       pendingApproval={{
         decision_id: "decision_current",
         preview: "git push",
+        action: "Bash",
+        cwd: "/repo/project",
         reason: "Bash command requires approval",
+        risk: "command",
+        risk_reason: "git push",
         tool_name: "Bash",
         options: [{ choice: "approve_once", label: "Allow once" }],
       }}
@@ -20,8 +24,15 @@ test("approval prompt renders choices", () => {
   );
 
   const frame = lastFrame() ?? "";
-  assert.match(frame, /Approval required · Bash/);
+  assert.match(frame, /Approval required/);
+  assert.match(frame, /tool: Bash/);
+  assert.match(frame, /\[hold\]/);
   assert.match(frame, /git push/);
+  assert.match(frame, /Decision: decision_current/);
+  assert.match(frame, /Action: Bash/);
+  assert.match(frame, /Cwd: \/repo\/project/);
+  assert.match(frame, /Risk: command/);
+  assert.match(frame, /Risk reason: git push/);
   assert.match(frame, /Reason: Bash command requires approval/);
   assert.match(frame, /Allow once/);
   assert.match(frame, /Press a number to respond/);

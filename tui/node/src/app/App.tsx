@@ -8,9 +8,12 @@ import { Overlay } from "./Overlay.tsx";
 import { RunningActivity } from "./RunningActivity.tsx";
 import { statusMetadata } from "./StatusLine.tsx";
 import { Transcript } from "./Transcript.tsx";
+import { TrustPrompt } from "./TrustPrompt.tsx";
 import { WelcomePanel } from "./WelcomePanel.tsx";
+import { interruptIntent } from "../state/interrupt.ts";
 import { handleLocalCommand, isLocalCommand } from "../state/localCommands.ts";
-import type { ApprovalDecisionChoice } from "../protocol/types.ts";
+import { slashCommandByName, slashCommandSuggestions } from "../state/slashCatalog.ts";
+import type { ApprovalDecisionChoice, TrustStateValue } from "../protocol/types.ts";
 import type { ShellAction } from "../state/reducer.ts";
 import type { ShellState } from "../state/types.ts";
 
@@ -24,6 +27,8 @@ export function App({
   onDraftChange,
   onDecision,
   onClarification,
+  onExit,
+  onTrustChoice,
 }: {
   state: ShellState;
   width?: number;
@@ -34,7 +39,28 @@ export function App({
   onDraftChange?: (value: string) => void;
   onDecision?: (decisionId: string, choice: ApprovalDecisionChoice) => void;
   onClarification?: (requestId: string, response: string) => void;
+  onExit?: () => void;
+  onTrustChoice?: (choice: TrustStateValue | "later") => void;
 }) {
+  const localAction = onLocalAction ?? (() => undefined);
+  const handleInterrupt = (): void => {
+    const intent = interruptIntent(state);
+    if (intent === "close_overlay") {
+      localAction({ type: "overlay.closed", message: "Cancelled." });
+      return;
+    }
+    if (intent === "clear_input") {
+      localAction({ type: "input.cleared" });
+      onDraftChange?.("");
+      return;
+    }
+    if (intent === "interrupt_turn") {
+      onInterrupt?.();
+      return;
+    }
+    onExit?.();
+  };
+
   return (
     <Box flexDirection="column" minHeight={10}>
       <Header state={state} width={width} />
@@ -42,6 +68,12 @@ export function App({
       <Transcript state={state} width={width} />
       <RunningActivity state={state} />
       <Overlay overlay={state.overlay} theme={state.theme} />
+      {state.overlay.visible ? null : (
+        <TrustPrompt
+          state={state}
+          {...(onTrustChoice ? { onTrustChoice } : {})}
+        />
+      )}
       <ApprovalPrompt
         pendingApproval={state.pendingApproval}
         theme={state.theme}
@@ -56,17 +88,38 @@ export function App({
         draft={state.inputDraft}
         turnRunning={state.turnRunning}
         completionVisible={state.completion.visible}
+        overlayVisible={state.overlay.visible}
         theme={state.theme}
         metadata={statusMetadata(state)}
         hint={inputHint(state)}
         width={width}
-        onDraftChange={onDraftChange ?? (() => undefined)}
+        onDraftChange={(value) => {
+          localAction({ type: "input.changed", value });
+          onDraftChange?.(value);
+        }}
         onSubmit={(value) => {
           if (value.startsWith("/") && isLocalCommand(value)) {
             onLocalAction?.(handleLocalCommand(value, state));
             return;
           }
           if (value.startsWith("/")) {
+            if (!slashCommandByName(value)) {
+              const suggestions = slashCommandSuggestions(value);
+              onLocalAction?.({
+                type: "command.result",
+                command: value,
+                result: {
+                  presentation: "overlay",
+                  lines: [
+                    `Unknown command: ${value}`,
+                    ...(suggestions.length
+                      ? ["", "Did you mean?", ...suggestions.map((command) => `  ${command.name} ${command.description}`)]
+                      : ["", "Type /help to see available commands."]),
+                  ],
+                },
+              });
+              return;
+            }
             onCommand?.(value);
             return;
           }
@@ -78,7 +131,10 @@ export function App({
           }
           onSubmit?.(value);
         }}
-        onInterrupt={onInterrupt ?? (() => undefined)}
+        onInterrupt={handleInterrupt}
+        onCompletionMove={(delta) => localAction({ type: "completion.move", delta })}
+        onCompletionAccept={() => localAction({ type: "completion.accept" })}
+        onCompletionClose={() => localAction({ type: "completion.closed" })}
       />
     </Box>
   );

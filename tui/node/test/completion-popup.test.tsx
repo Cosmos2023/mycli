@@ -8,11 +8,16 @@ test("completion popup renders selected row marker", () => {
   const { lastFrame } = render(
     <CompletionPopup
       visible
-      items={[{ value: "/help" }, { value: "/usage" }]}
+      items={[
+        { value: "/help", category: "local", description: "Show help.", mutating: false },
+        { value: "/usage", category: "runtime", description: "Inspect usage.", mutating: false },
+      ]}
       selectedIndex={1}
     />,
   );
   const frame = lastFrame() ?? "";
   assert.match(frame, /\/help/);
   assert.match(frame, /> \/usage/);
+  assert.match(frame, /\[runtime · read\]/);
+  assert.match(frame, /Inspect usage/);
 });

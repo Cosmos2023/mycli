@@ -26,7 +26,11 @@ export type ApprovalRequestPayload = {
   client_turn_id?: string;
   decision_id: string;
   preview: string;
+  action?: string;
+  cwd?: string;
   reason?: string;
+  risk?: string;
+  risk_reason?: string;
   tool_name?: string;
   options: ApprovalOptionPayload[];
 };
@@ -167,6 +171,17 @@ export type TurnInterruptedPayload = {
 
 export type StatusChangedPayload = JsonObject;
 
+export type TrustStateValue = "trusted" | "untrusted" | "unknown";
+
+export type WorkspaceTrustPayload = {
+  state: TrustStateValue;
+  workspace: string;
+  source?: string;
+  enforced?: boolean;
+  message?: string;
+  requested_state?: string;
+};
+
 export type SessionChangedPayload = {
   session_id: string;
 };
@@ -252,6 +267,7 @@ export const KNOWN_GATEWAY_EVENT_METHODS = [
   "turn.interrupted",
   "turn.started",
   "turn.status",
+  "workspace.trust.changed",
 ] as const;
 
 type ListedKnownGatewayEventMethod = (typeof KNOWN_GATEWAY_EVENT_METHODS)[number];
@@ -269,7 +285,18 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
 > = {
   "approval.request": {
     required: ["decision_id", "preview", "options"],
-    properties: ["client_turn_id", "decision_id", "options", "preview", "reason", "tool_name"],
+    properties: [
+      "action",
+      "client_turn_id",
+      "cwd",
+      "decision_id",
+      "options",
+      "preview",
+      "reason",
+      "risk",
+      "risk_reason",
+      "tool_name",
+    ],
     itemEnums: {
       options: {
         choice: ["approve_once", "reject", "allow_session"],
@@ -353,6 +380,7 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
       "provider",
       "session_id",
       "suspended_turn",
+      "trust",
       "workspace",
     ],
   },
@@ -511,6 +539,10 @@ export const GATEWAY_EVENT_PAYLOAD_CONTRACTS: Record<
       ],
     },
   },
+  "workspace.trust.changed": {
+    required: ["state", "workspace", "enforced"],
+    properties: ["enforced", "message", "requested_state", "source", "state", "workspace"],
+  },
 };
 
 export type KnownGatewayEvent =
@@ -537,7 +569,8 @@ export type KnownGatewayEvent =
   | Notification<"turn.status", TurnStatusPayload>
   | Notification<"gateway.error", GatewayErrorPayload>
   | Notification<"session.changed", SessionChangedPayload>
-  | Notification<"status.changed", StatusChangedPayload>;
+  | Notification<"status.changed", StatusChangedPayload>
+  | Notification<"workspace.trust.changed", WorkspaceTrustPayload>;
 
 export type KnownGatewayEventMethod = KnownGatewayEvent["method"];
 

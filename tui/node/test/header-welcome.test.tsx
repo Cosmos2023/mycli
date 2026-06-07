@@ -20,9 +20,35 @@ test("header band keeps brand and workspace inside compact width", () => {
 
   assert.match(frame, /mycli/);
   assert.match(frame, /fix-de/);
-  assert.doesNotMatch(frame, /deepseek-v4-flash/);
-  assert.doesNotMatch(frame, /3,983\/100k/);
+  assert.match(frame, /trust: unknown\*/);
+  assert.match(frame, /model: deepseek-v4-flash/);
+  assert.match(frame, /ctx: 4% 3,983\/100k/);
+  assert.match(frame, /\[mycli\]/);
   assert.doesNotMatch(frame, /\.worktrees\/fix-deepseek-cache-hit-rate/);
+});
+
+test("header and welcome copy expose session continuity hints", () => {
+  const state = reduceShellState(initialState({ rawThemeName: "graphite" }), {
+    type: "bootstrap.result",
+    payload: {
+      session_id: "demo-session",
+      session_title: "Boss reply follow-up",
+      workspace: "/repo/project",
+      model: "deepseek-v4",
+      provider: "deepseek/chat_completions",
+      status: {},
+      welcome: {
+        startup_mark: { name: "default", text: "mycli-mark" },
+        tips: ["/help", "/sessions"],
+      },
+    },
+  });
+
+  const header = render(<Header state={state} width={100} />).lastFrame() ?? "";
+  assert.match(header, /title: Boss reply follow-up/);
+
+  const welcome = render(<WelcomePanel state={state} width={100} />).lastFrame() ?? "";
+  assert.match(welcome, /\/sessions resume · \/resume <session>/);
 });
 
 test("welcome panel renders startup mark only before conversation content", () => {
@@ -39,7 +65,10 @@ test("welcome panel renders startup mark only before conversation content", () =
   });
 
   assert.equal(hasConversationContent(state.transcript), false);
-  assert.match(render(<WelcomePanel state={state} width={80} />).lastFrame() ?? "", /mycli-mark/);
+  const welcome = render(<WelcomePanel state={state} width={80} />).lastFrame() ?? "";
+  assert.match(welcome, /mycli-mark/);
+  assert.match(welcome, /trust: unknown\*/);
+  assert.match(welcome, /runtime enforcement pending/);
 
   state = reduceShellState(state, { type: "user.submit", message: "你是谁" });
 

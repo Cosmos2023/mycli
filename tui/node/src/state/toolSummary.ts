@@ -9,6 +9,9 @@ export type ToolSummary = {
   target: string;
   status: "running" | "done" | "failed" | "unknown";
   detail?: string;
+  hint?: string;
+  reason?: string;
+  changes?: string;
 };
 
 function metadataOf(input: ToolSummaryInput): Record<string, unknown> {
@@ -29,6 +32,78 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function booleanValue(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function fileChangeEntries(metadata: Record<string, unknown>): Array<Record<string, unknown>> {
+  const raw = metadata.file_changes;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter(
+    (entry): entry is Record<string, unknown> =>
+      typeof entry === "object" && entry !== null && !Array.isArray(entry),
+  );
+}
+
+function changePath(entry: Record<string, unknown>): string | null {
+  return (
+    stringValue(entry.path) ??
+    stringValue(entry.file_path) ??
+    stringValue(entry.target) ??
+    stringValue(entry.name)
+  );
+}
+
+function compactChangeKind(kind: string | null): string {
+  switch ((kind ?? "").toLowerCase()) {
+    case "write":
+    case "create":
+    case "created":
+    case "add":
+    case "added":
+      return "add";
+    case "edit":
+    case "modify":
+    case "modified":
+    case "update":
+    case "updated":
+      return "modify";
+    case "delete":
+    case "deleted":
+    case "remove":
+    case "removed":
+      return "delete";
+    default:
+      return "change";
+  }
+}
+
+function changedFilesSummary(metadata: Record<string, unknown>): string | undefined {
+  const entries = fileChangeEntries(metadata);
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const paths = entries.map(changePath).filter((value): value is string => value !== null);
+  const uniquePaths = [...new Set(paths)];
+  const kindCounts = new Map<string, number>();
+  for (const entry of entries) {
+    const kind = compactChangeKind(stringValue(entry.kind) ?? stringValue(entry.operation));
+    kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1);
+  }
+  const kindText = [...kindCounts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([kind, count]) => `${kind}:${count}`)
+    .join(" ");
+  const countText =
+    uniquePaths.length === 1 ? "1 file changed" : `${uniquePaths.length} files changed`;
+  const shown = uniquePaths.slice(0, 3).join(", ");
+  const hidden = Math.max(uniquePaths.length - 3, 0);
+  const pathText = shown ? `: ${shown}${hidden > 0 ? ` +${hidden}` : ""}` : "";
+  return `${countText}${kindText ? ` (${kindText})` : ""}${pathText}`;
 }
 
 function statusFrom(metadata: Record<string, unknown>): ToolSummary["status"] {
@@ -76,11 +151,78 @@ function durationDetailFrom(metadata: Record<string, unknown>): string | undefin
   return `${durationSeconds.toFixed(1)}s`;
 }
 
-function summaryWithDetail(
-  summary: Omit<ToolSummary, "detail">,
+function failureReasonFrom(metadata: Record<string, unknown>): string | undefined {
+  const exitCode = numberValue(metadata.exit_code);
+  if (exitCode !== null && exitCode !== 0) {
+    return `exit ${exitCode}`;
+  }
+  const timeoutSeconds = numberValue(metadata.timeout_s) ?? numberValue(metadata.timeout_seconds);
+  if (timeoutSeconds !== null) {
+    return `timeout ${timeoutSeconds}s`;
+  }
+  if (booleanValue(metadata.approval_denied) === true || metadata.status === "denied") {
+    return "denied";
+  }
+  if (metadata.status === "blocked") {
+    return "blocked";
+  }
+  if (metadata.status === "unavailable") {
+    return "unavailable";
+  }
+  if (metadata.status === "protocol_error") {
+    return "protocol error";
+  }
+  return (
+    stringValue(metadata.error_kind) ??
+    stringValue(metadata.reason) ??
+    stringValue(metadata.error) ??
+    undefined
+  );
+}
+
+function sideEffectHintFrom(metadata: Record<string, unknown>): string | undefined {
+  const changedFiles = changedFilesSummary(metadata);
+  if (changedFiles !== undefined) {
+    return changedFiles;
+  }
+  const filesChanged = numberValue(metadata.files_changed);
+  if (filesChanged !== null) {
+    return filesChanged === 0 ? "no files changed" : `${filesChanged} files changed`;
+  }
+  if (booleanValue(metadata.side_effects) === false) {
+    return "no side effects";
+  }
+  return stringValue(metadata.side_effect_status) ?? undefined;
+}
+
+function logHintFrom(metadata: Record<string, unknown>): string | undefined {
+  return (
+    stringValue(metadata.log_ref) ??
+    stringValue(metadata.logs_ref) ??
+    stringValue(metadata.details_ref) ??
+    undefined
+  );
+}
+
+function summaryWithDetails(
+  summary: Omit<ToolSummary, "detail" | "hint" | "reason">,
+  metadata: Record<string, unknown>,
   detail: string | undefined,
 ): ToolSummary {
-  return detail === undefined ? summary : { ...summary, detail };
+  const reason = summary.status === "failed" ? failureReasonFrom(metadata) : undefined;
+  const sideEffectHint = summary.status === "failed" ? sideEffectHintFrom(metadata) : undefined;
+  const logHint = summary.status === "failed" ? logHintFrom(metadata) : undefined;
+  const hintParts = [sideEffectHint, logHint ? `details: ${logHint}` : undefined].filter(
+    (value): value is string => Boolean(value),
+  );
+  const changes = summary.status === "failed" ? undefined : changedFilesSummary(metadata);
+  return {
+    ...summary,
+    ...(detail === undefined ? {} : { detail }),
+    ...(reason === undefined ? {} : { reason }),
+    ...(hintParts.length === 0 ? {} : { hint: hintParts.join(" · ") }),
+    ...(changes === undefined ? {} : { changes }),
+  };
 }
 
 export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
@@ -92,7 +234,7 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
   const durationDetail = durationDetailFrom(metadata);
 
   if (normalized === "read") {
-    return summaryWithDetail(
+    return summaryWithDetails(
       {
         verb: "read",
         target:
@@ -105,6 +247,7 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
           "file",
         status: status === "unknown" ? "done" : status,
       },
+      metadata,
       durationDetail,
     );
   }
@@ -115,7 +258,7 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
       additions !== null || deletions !== null
         ? `+${additions ?? 0} -${deletions ?? 0}`
         : durationDetail;
-    return summaryWithDetail(
+    return summaryWithDetails(
       {
         verb: normalized,
         target:
@@ -128,12 +271,14 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
           "file",
         status: status === "unknown" ? "done" : status,
       },
+      metadata,
       detail,
     );
   }
   if (normalized === "bash") {
     const exitCode = numberValue(metadata.exit_code);
-    return summaryWithDetail(
+    const effectiveStatus = exitCode === null ? status : exitCode === 0 ? "done" : "failed";
+    return summaryWithDetails(
       {
         verb: "bash",
         target:
@@ -143,14 +288,15 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
           stringValue(args.command) ??
           stringValue(input.text) ??
           "command",
-        status: exitCode === null ? status : exitCode === 0 ? "done" : "failed",
+        status: effectiveStatus,
       },
-      exitCode === null ? durationDetail : `exit ${exitCode}`,
+      metadata,
+      effectiveStatus === "failed" ? durationDetail : exitCode === null ? durationDetail : `exit ${exitCode}`,
     );
   }
   if (normalized === "grep") {
     const matches = numberValue(metadata.matches);
-    return summaryWithDetail(
+    return summaryWithDetails(
       {
         verb: "grep",
         target:
@@ -163,10 +309,11 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
           "pattern",
         status: status === "unknown" ? "done" : status,
       },
+      metadata,
       matches === null ? durationDetail : `${matches} matches`,
     );
   }
-  return summaryWithDetail(
+  return summaryWithDetails(
     {
       verb: normalized,
       target:
@@ -178,6 +325,7 @@ export function formatToolSummary(input: ToolSummaryInput): ToolSummary {
         "tool call",
       status,
     },
+    metadata,
     durationDetail,
   );
 }

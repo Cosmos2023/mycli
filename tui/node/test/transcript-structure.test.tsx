@@ -60,8 +60,7 @@ test("transcript routes user and assistant rows through Claude-style components"
 
   assert.match(frame, /❯ 你是谁/);
   assert.match(frame, /mycli\.cli\.main:main/);
-  assert.doesNotMatch(frame, /│/);
-  assert.doesNotMatch(frame, /USER|ASSISTANT|TOOL/);
+  assert.doesNotMatch(frame, /Turn|\[assistant\]|\[tools\]|USER|ASSISTANT|TOOL/);
 });
 
 test("transcript renders clarification request with options", () => {
