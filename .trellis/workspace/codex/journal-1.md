@@ -659,3 +659,36 @@ Boundary note:
 ### Next Steps
 
 - P15 should move from rule decisions into a fuller runtime enforcement kernel: unified shell execution entry, env/cwd/output/time limits, and stronger approval/sandbox diagnostics without touching compact/rehydration.
+
+
+## Session 9: Codex alignment P15a runtime environment contract
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P15a runtime environment contract
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Completed P15a bounded runtime environment contract: model-visible dynamic env/sandbox/approval/execpolicy posture, rebind rule refresh, request-shape visibility, redaction tests, docs/spec update, and compact boundary audit.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1c86a80` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
