@@ -238,6 +238,11 @@
   `cache_class`, `durability`, and optional `source_kind`.
 - `skill_activation` trace rows must not include raw skill bodies, raw user
   prompts, raw tool output, headers, secrets, or provider payload bodies.
+- Doctor skill runtime diagnostics may summarize `skill_activation` trace rows
+  with bounded counts for total activations, replayable activations, missing
+  replay metadata, missing body digest, and missing content length. It must not
+  print raw skill body, raw source path, raw user prompt, raw tool output,
+  headers, secrets, or provider payload bodies.
 
 ### 4. Validation & Error Matrix
 
@@ -248,6 +253,8 @@
   provider-safe route names continue to work.
 - Successful `Skill` call -> dynamic replayable skill instruction and bounded
   `skill_activation` trace.
+- Malformed `skill_activation` trace missing replay metadata, body digest, or
+  content length -> doctor warning with bounded counts only.
 - Unknown/missing skill -> failed tool result without skill instruction replay
   or activation snapshot.
 - Deleted source after activation -> existing persisted skill instruction and
@@ -274,6 +281,8 @@
 - Unit test successful skill activation records replayable transcript,
   `SKILL_INSTRUCTIONS` turn item, invoked skill snapshot, and bounded
   `skill_activation` trace.
+- Unit test doctor skill runtime diagnostics summarize activation rows without
+  leaking skill body or source path.
 - Unit test deleted source still leaves existing cached invoked-skill snapshot
   and history available without editing compact/rehydration implementation.
 

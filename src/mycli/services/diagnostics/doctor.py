@@ -218,6 +218,16 @@ class _BackgroundJobDiagnosticsSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class _SkillRuntimeDiagnosticsSummary:
+    activation_count: int
+    replayable_count: int
+    missing_replay_metadata_count: int
+    missing_body_digest_count: int
+    missing_content_length_count: int
+    unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _RuntimePolicyDiagnosticsSummary:
     policy_count: int
     allowed_count: int
@@ -388,6 +398,7 @@ class DoctorService:
             self._check_tool_manifest_runtime,
             self._check_tool_environment,
             self._check_skills,
+            self._check_skill_runtime_diagnostics,
             self._check_subagents,
             self._check_file_history,
             self._check_tui,
@@ -1730,6 +1741,83 @@ class DoctorService:
             ),
         )
 
+    def _check_skill_runtime_diagnostics(self) -> Iterable[DoctorCheck]:
+        traces_dir = self._layout.traces_dir
+        if not traces_dir.exists():
+            return (
+                DoctorCheck(
+                    "skill_runtime_diagnostics",
+                    DoctorStatus.OK,
+                    "no skill activation diagnostics found",
+                ),
+            )
+        if not traces_dir.is_dir():
+            return (
+                DoctorCheck(
+                    "skill_runtime_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"trace path is not a directory {traces_dir}",
+                ),
+            )
+        trace_paths = sorted(traces_dir.glob("*.jsonl"))
+        if not trace_paths:
+            return (
+                DoctorCheck(
+                    "skill_runtime_diagnostics",
+                    DoctorStatus.OK,
+                    "no skill activation diagnostics found",
+                    detail=str(traces_dir),
+                ),
+            )
+        inspected_paths = trace_paths[:_TRACE_SCAN_LIMIT]
+        summary = _summarize_skill_runtime_diagnostics(inspected_paths)
+        suffix = ""
+        if len(trace_paths) > len(inspected_paths):
+            suffix = f"; scanned first {len(inspected_paths)} of {len(trace_paths)} files"
+        if summary.unreadable:
+            detail = "; ".join(summary.unreadable[:_TRACE_DETAIL_LIMIT])
+            return (
+                DoctorCheck(
+                    "skill_runtime_diagnostics",
+                    DoctorStatus.FAILED,
+                    f"{len(summary.unreadable)} trace file(s) unreadable{suffix}",
+                    detail=detail,
+                ),
+            )
+        if summary.activation_count == 0:
+            return (
+                DoctorCheck(
+                    "skill_runtime_diagnostics",
+                    DoctorStatus.OK,
+                    f"no skill activation diagnostics found{suffix}",
+                    detail=str(traces_dir),
+                ),
+            )
+        message = (
+            f"{summary.activation_count} skill activation diagnostic(s), "
+            f"replayable={summary.replayable_count} "
+            f"missing_replay_metadata={summary.missing_replay_metadata_count} "
+            f"missing_body_digest={summary.missing_body_digest_count} "
+            f"missing_content_length={summary.missing_content_length_count}"
+            f"{suffix}"
+        )
+        status = (
+            DoctorStatus.WARNING
+            if (
+                summary.missing_replay_metadata_count
+                or summary.missing_body_digest_count
+                or summary.missing_content_length_count
+            )
+            else DoctorStatus.OK
+        )
+        return (
+            DoctorCheck(
+                "skill_runtime_diagnostics",
+                status,
+                message,
+            ),
+        )
+
     def _check_subagents(self) -> Iterable[DoctorCheck]:
         diagnostics = inspect_configured_subagent_profiles(
             workspace_root=self._workspace_root,
@@ -2768,6 +2856,56 @@ def _background_job_is_stale(job: BackgroundJobSummary) -> bool:
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
     return (datetime.now(tz=UTC) - started).total_seconds() > job.timeout_seconds
+
+
+def _summarize_skill_runtime_diagnostics(
+    paths: Iterable[Path],
+) -> _SkillRuntimeDiagnosticsSummary:
+    activation_count = 0
+    replayable_count = 0
+    missing_replay_metadata_count = 0
+    missing_body_digest_count = 0
+    missing_content_length_count = 0
+    unreadable: list[str] = []
+
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = _parse_trace_event_line(line)
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+                    if event.kind != "skill_activation":
+                        continue
+                    activation_count += 1
+                    payload = event.payload
+                    replayable = payload.get("replayable") is True
+                    if replayable:
+                        replayable_count += 1
+                    if (
+                        payload.get("cache_class") != "dynamic"
+                        or payload.get("durability") != "persistent"
+                        or payload.get("tool_name") != "Skill"
+                    ):
+                        missing_replay_metadata_count += 1
+                    if not isinstance(payload.get("body_digest"), str):
+                        missing_body_digest_count += 1
+                    if not isinstance(payload.get("content_chars"), int):
+                        missing_content_length_count += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {exc}")
+
+    return _SkillRuntimeDiagnosticsSummary(
+        activation_count=activation_count,
+        replayable_count=replayable_count,
+        missing_replay_metadata_count=missing_replay_metadata_count,
+        missing_body_digest_count=missing_body_digest_count,
+        missing_content_length_count=missing_content_length_count,
+        unreadable=tuple(unreadable),
+    )
 
 
 def _tool_runtime_lifecycle_call_key(

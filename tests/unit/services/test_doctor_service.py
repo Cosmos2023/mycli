@@ -742,6 +742,93 @@ def test_doctor_service_warns_for_skill_catalog_issues_without_leaking_body(
     assert "SECRET SKILL BODY" not in rendered
 
 
+def test_doctor_service_reports_skill_runtime_diagnostics_without_leaking_body(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "skill_activation",
+                "turn_id": "turn-1",
+                "payload": {
+                    "skill_name": "code-review",
+                    "tool_name": "Skill",
+                    "tool_call_id": "call_skill",
+                    "content_chars": 31,
+                    "body_digest": "abc123",
+                    "replayable": True,
+                    "cache_class": "dynamic",
+                    "durability": "persistent",
+                    "source_path": "/tmp/SECRET-SHOULD-NOT-PRINT.md",
+                    "content": "SECRET SKILL BODY SHOULD NOT LEAK",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "skill_runtime_diagnostics")
+    assert check.status is DoctorStatus.OK
+    assert "1 skill activation diagnostic(s)" in check.message
+    assert "replayable=1" in check.message
+    rendered = "\n".join(render_doctor_report(report))
+    assert "SECRET SKILL BODY" not in rendered
+    assert "SECRET-SHOULD-NOT-PRINT" not in rendered
+
+
+def test_doctor_service_warns_for_malformed_skill_runtime_diagnostics(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    traces = home / ".mycli" / "traces"
+    traces.mkdir(parents=True)
+    (traces / "demo-trace.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "skill_activation",
+                "turn_id": "turn-1",
+                "payload": {
+                    "skill_name": "code-review",
+                    "tool_name": "Skill",
+                    "replayable": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda _command: None,
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "skill_runtime_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert "missing_replay_metadata=1" in check.message
+    assert "missing_body_digest=1" in check.message
+    assert "missing_content_length=1" in check.message
+
+
 def test_doctor_service_reports_warnings_and_mcp_parse_failures(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
