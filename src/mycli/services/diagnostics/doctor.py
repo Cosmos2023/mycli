@@ -149,8 +149,10 @@ class _ApprovalDiagnosticsSummary:
     resolution_count: int
     allowance_count: int
     auto_allowed_count: int
+    recovery_count: int
     safety_metadata_count: int
     resolution_results: tuple[tuple[str, int], ...]
+    recovery_results: tuple[tuple[str, int], ...]
     risk_levels: tuple[tuple[str, int], ...]
     policies: tuple[tuple[str, int], ...]
     warning_results: tuple[tuple[str, int], ...]
@@ -759,12 +761,17 @@ class DoctorService:
             f"resolutions={summary.resolution_count} "
             f"allowances={summary.allowance_count} "
             f"auto_allowed={summary.auto_allowed_count}"
+            f" recoveries={summary.recovery_count}"
             f" safety_metadata={summary.safety_metadata_count}"
             f"{suffix}"
         )
         detail_parts = [
             f"resolution_results: {_format_count_pairs(summary.resolution_results)}"
         ]
+        if summary.recovery_results:
+            detail_parts.append(
+                f"recovery_results: {_format_count_pairs(summary.recovery_results)}"
+            )
         if summary.risk_levels:
             detail_parts.append(f"risk_levels: {_format_count_pairs(summary.risk_levels)}")
         if summary.policies:
@@ -2147,8 +2154,10 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
     resolution_count = 0
     allowance_count = 0
     auto_allowed_count = 0
+    recovery_count = 0
     safety_metadata_count = 0
     resolution_results: Counter[str] = Counter()
+    recovery_results: Counter[str] = Counter()
     risk_levels: Counter[str] = Counter()
     policies: Counter[str] = Counter()
     unreadable: list[str] = []
@@ -2166,6 +2175,11 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
                     if event.kind == "approval_resolution":
                         resolution_count += 1
                         resolution_results[
+                            _safe_approval_result(event.payload.get("result"))
+                        ] += 1
+                    elif event.kind == "approval_recovery":
+                        recovery_count += 1
+                        recovery_results[
                             _safe_approval_result(event.payload.get("result"))
                         ] += 1
                     elif event.kind == "approval_allowance":
@@ -2189,6 +2203,9 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
     ordered_results = tuple(
         sorted(resolution_results.items(), key=lambda item: (-item[1], item[0]))
     )
+    ordered_recovery_results = tuple(
+        sorted(recovery_results.items(), key=lambda item: (-item[1], item[0]))
+    )
     warning_results = tuple(
         (result, count)
         for result, count in ordered_results
@@ -2201,12 +2218,14 @@ def _summarize_approval_diagnostics(paths: Iterable[Path]) -> _ApprovalDiagnosti
         sorted(policies.items(), key=lambda item: (-item[1], item[0]))
     )
     return _ApprovalDiagnosticsSummary(
-        approval_count=resolution_count + allowance_count + auto_allowed_count,
+        approval_count=resolution_count + allowance_count + auto_allowed_count + recovery_count,
         resolution_count=resolution_count,
         allowance_count=allowance_count,
         auto_allowed_count=auto_allowed_count,
+        recovery_count=recovery_count,
         safety_metadata_count=safety_metadata_count,
         resolution_results=ordered_results,
+        recovery_results=ordered_recovery_results,
         risk_levels=ordered_risk_levels,
         policies=ordered_policies,
         warning_results=warning_results,

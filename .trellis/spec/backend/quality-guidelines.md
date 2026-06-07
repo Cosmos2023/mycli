@@ -142,14 +142,18 @@ Questions to answer:
     `approval_diagnostics=ok` with `no approval diagnostics found`; doctor must
     not create the trace directory.
   - Approval diagnostic rows include `approval_resolution`,
-    `approval_allowance`, and `approval_auto_allowed`.
+    `approval_recovery`, `approval_allowance`, and `approval_auto_allowed`.
   - Successful approval diagnostics -> `approval_diagnostics=ok` with bounded
-    total, per-kind counts, and `approval_resolution` result counts.
+    total, per-kind counts, `approval_resolution` result counts, and
+    `approval_recovery` result counts.
   - Problem approval-resolution results such as `no_pending_decision`,
     `invalid_choice`, `allow_session_unavailable`, `missing_suspended_turn`, or
     unknown non-empty results -> `approval_diagnostics=warning` with bounded
     result counts. Doctor must not print raw trace payloads, command patterns,
     reasons, user text, headers, or secret-like values.
+  - Approval recovery rows may expose only bounded result/status counts and
+    state booleans. Doctor must not print raw tool arguments, raw command text,
+    raw user prompt, raw tool output, headers, or secret-like values.
 - Clarification diagnostics check:
   - Missing `~/.mycli/traces/` or no `clarification_resolution` trace rows ->
     `clarification_diagnostics=ok` with `no clarification diagnostics found`;

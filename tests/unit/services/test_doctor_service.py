@@ -2320,6 +2320,20 @@ def test_doctor_service_summarizes_successful_approval_diagnostics(tmp_path: Pat
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "kind": "approval_recovery",
+                        "turn_id": "turn-5",
+                        "payload": {
+                            "result": "recovered_from_suspended_turn",
+                            "tool_name": "Bash",
+                            "call_id": "call_123",
+                            "command_pattern": "git push --force",
+                            "arguments": {"command": "git push --force"},
+                            "reason": "raw reason must stay hidden",
+                        },
+                    }
+                ),
             )
         ),
         encoding="utf-8",
@@ -2336,16 +2350,18 @@ def test_doctor_service_summarizes_successful_approval_diagnostics(tmp_path: Pat
     check = next(check for check in report.checks if check.name == "approval_diagnostics")
     assert check.status is DoctorStatus.OK
     assert check.message == (
-        "4 approval diagnostic(s), resolutions=2 allowances=1 auto_allowed=1 "
-        "safety_metadata=2"
+        "5 approval diagnostic(s), resolutions=2 allowances=1 auto_allowed=1 "
+        "recoveries=1 safety_metadata=2"
     )
     assert check.detail == (
         "resolution_results: approved=1, rejected=1; "
+        "recovery_results: recovered_from_suspended_turn=1; "
         "risk_levels: high=2; "
         "policies: shell_command_analysis=2"
     )
     rendered = "\n".join(render_doctor_report(report))
     assert "git push" not in rendered
+    assert "git push --force" not in rendered
     assert "raw reason" not in rendered
 
 
@@ -2411,7 +2427,7 @@ def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_paylo
     assert check.status is DoctorStatus.WARNING
     assert check.message == (
         "2 approval diagnostic(s), resolutions=2 allowances=0 auto_allowed=0 "
-        "safety_metadata=1"
+        "recoveries=0 safety_metadata=1"
     )
     assert check.detail == "warning_results: invalid_choice=1, missing_suspended_turn=1"
     assert secret not in rendered

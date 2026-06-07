@@ -337,6 +337,34 @@ def test_turn_service_runtime_recovers_pending_approval_from_structured_runtime_
     assert resolved.assistant_message == "Push finished"
 
 
+def test_turn_service_resolves_pending_approval_from_suspended_state_when_decision_row_missing(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneRuntimeAdapter(),
+    )
+    service = TurnService(
+        runtime=runtime,
+        config=AgentConfig(workspace_root=tmp_path, session_id="default"),
+        home_dir=tmp_path / "home",
+    )
+
+    first = service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    runtime._session_service.clear_pending_decision(runtime._config.session_id)
+
+    blocked = service.handle_user_turn("new user input should wait")
+    resolved = service.resolve_pending_decision("1")
+
+    assert blocked.pending_decision is not None
+    assert "choose 1, 2, or 3" in blocked.assistant_message.lower()
+    assert resolved.assistant_message == "Push finished"
+    assert runtime._session_service.load_pending_decision("default") is None
+    assert runtime._session_service.load_suspended_turn("default") is None
+
+
 def test_turn_service_resumes_root_to_tip_before_resolving_pending_approval(
     tmp_path: Path,
 ) -> None:

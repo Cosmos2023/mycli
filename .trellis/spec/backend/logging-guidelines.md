@@ -93,6 +93,13 @@ the local log root and must never become provider transcript inputs.
   blocked approval responses. These diagnostics explain why a pending approval
   did or did not resume a tool; they must not alter provider transcript replay
   or request-shape inputs.
+- Approval recovery diagnostics may append local `approval_recovery` trace rows
+  and workspace log entries when runtime rebuilds a pending approval from
+  structured suspended-turn state or detects unrecoverable approval state.
+  Payloads may include bounded result/status fields, state booleans, tool name,
+  call id, option count, and command pattern presence. They must not include raw
+  command text, raw tool arguments, raw user prompts, raw tool output, headers,
+  provider payload bodies, or secrets.
 - Clarification resolution diagnostics may append local
   `clarification_resolution` trace rows and workspace log entries for answered,
   blank, no-pending, or request-id-mismatch clarification responses. Payloads

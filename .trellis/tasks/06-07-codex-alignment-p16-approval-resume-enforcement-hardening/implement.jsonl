@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for P16 runtime approval/resume work."}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Resume/fork continuity and compact boundary contract."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Doctor, approval diagnostics, and runtime trace redaction requirements."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Approval resolution and workspace log redaction boundary."}
+{"file": ".trellis/spec/backend/runtime-tui-gateway-contract.md", "reason": "Gateway waiting approval/resume state contract must not regress."}
+{"file": ".trellis/tasks/06-07-codex-alignment-p16-approval-resume-enforcement-hardening/research/current-approval-resume-shape.md", "reason": "Current approval resume storage shape and P16 fallback target."}

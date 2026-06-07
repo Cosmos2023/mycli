@@ -153,6 +153,19 @@ class TurnExecutor:
         runtime = self._runtime
         normalized = choice.strip()
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
+        suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+        if decision is None and suspended is not None and suspended.pending_approval is not None:
+            decision = runtime._pending_decision_from_approval(suspended.pending_approval)
+            runtime._session_service.save_pending_decision(runtime._config.session_id, decision)
+            _record_approval_recovery(
+                runtime=runtime,
+                turn_id=f"approval_{uuid4().hex}",
+                result="recovered_from_suspended_turn",
+                pending_decision=True,
+                suspended_turn=True,
+                pending_approval=True,
+                decision=decision,
+            )
         if decision is None:
             _record_approval_resolution(
                 runtime=runtime,
@@ -202,7 +215,6 @@ class TurnExecutor:
                 pending_decision=decision,
             )
 
-        suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
         if suspended is None:
             suspended = runtime._session_service.reconstruct_suspended_turn(
                 runtime._config.session_id,
@@ -251,6 +263,15 @@ class TurnExecutor:
             )
 
         if suspended is None or suspended.pending_approval is None:
+            _record_approval_recovery(
+                runtime=runtime,
+                turn_id=turn_id,
+                result="missing_suspended_turn",
+                pending_decision=True,
+                suspended_turn=suspended is not None,
+                pending_approval=False,
+                decision=decision,
+            )
             _record_approval_resolution(
                 runtime=runtime,
                 turn_id=turn_id,
@@ -1519,6 +1540,44 @@ def _record_approval_allowance(
         level=LogLevel.INFO,
         event="approval_allowance",
         message=f"Allowed {decision.tool_call.name} for this session.",
+        context=payload,
+    )
+
+
+def _record_approval_recovery(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    result: str,
+    pending_decision: bool,
+    suspended_turn: bool,
+    pending_approval: bool,
+    decision: PendingDecision | None,
+) -> None:
+    payload: dict[str, object] = {
+        "result": result,
+        "pending_decision": pending_decision,
+        "suspended_turn": suspended_turn,
+        "pending_approval": pending_approval,
+        "option_count": len(decision.options) if decision is not None else 0,
+        "command_pattern_present": bool(decision and decision.command_pattern),
+    }
+    if decision is not None:
+        payload.update(
+            {
+                "tool_name": decision.tool_call.name,
+                "call_id": decision.tool_call.call_id,
+                "decision_id": decision.tool_call.call_id or "decision_current",
+            }
+        )
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(kind="approval_recovery", turn_id=turn_id, payload=payload),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.INFO,
+        event="approval_recovery",
+        message=f"Approval recovery {result}.",
         context=payload,
     )
 

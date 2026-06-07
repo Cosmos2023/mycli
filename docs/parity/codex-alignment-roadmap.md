@@ -473,6 +473,35 @@ gate，让 filesystem、shell、network policy 在工具执行前成为强约束
 - P14 ExecPolicy 和 P15b shell enforcement 回归不退。
 - compact/rehydration 实现保持未触碰。
 
+### P16: Approval Resume Enforcement Hardening
+
+目标：把 P14/P15 的 runtime enforcement 和 approval pause/resume 连接稳，
+保证 pending approval 在 restart、`/resume`、root-to-tip lineage switch、
+稀疏 session state 下仍然可解释、可恢复、可诊断。
+
+范围：
+
+- approval resolution 使用一致恢复顺序：
+  - `pending_decision + suspended_turn.pending_approval` 正常路径；
+  - 只有 `suspended_turn.pending_approval` 时 synthesize bounded
+    `PendingDecision`；
+  - 只有 `pending_decision` 时继续使用 runtime snapshot 重建 suspended turn。
+- 新增 bounded `approval_recovery` trace/log diagnostics。
+- doctor approval diagnostics 汇总 recovery result counts。
+- 保持 `APPROVE_ONCE` / `REJECT` / `ALLOW_SESSION` 语义不变。
+- 不输出 raw command、raw tool args、raw user prompt、raw tool output、secret、
+  provider payload body。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- suspended-only approval recovery 有回归测试。
+- pending-decision-only reconstruction 回归不退。
+- doctor/trace recovery diagnostics 有 redaction 测试。
+- root-to-tip resume approval/clarification 回归不退。
+- P14/P15 runtime policy/sandbox/shell enforcement 回归不退。
+- compact/rehydration 实现保持未触碰。
+
 ---
 
 ## 6. 优先级
@@ -489,6 +518,7 @@ P9 Runtime Kernel Contract
   -> P15a Runtime Environment Contract
   -> P15b Runtime Enforcement Kernel
   -> P15c Sandbox Policy Enforcement
+  -> P16 Approval Resume Enforcement Hardening
 ```
 
 原因：

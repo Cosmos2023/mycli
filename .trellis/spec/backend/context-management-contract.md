@@ -344,6 +344,16 @@ section = TurnContextSection(
 
 - Resuming an ancestor session resolves to the current branch tip before
   resolving pending approval or pending clarification state.
+- Pending approval recovery must use a consistent state order:
+  1. `pending_decision` plus `suspended_turn.pending_approval` when both exist.
+  2. `suspended_turn.pending_approval` as the structured fallback when the
+     `pending_decision` row is missing.
+  3. `SessionService.reconstruct_suspended_turn(...)` when the
+     `pending_decision` row exists but the suspended turn row is missing.
+- Approval fallback recovery may emit `RuntimeTraceEvent(kind="approval_recovery", ...)`
+  with bounded state booleans, tool name, call id, option count, and command
+  pattern presence. It must not emit raw tool arguments, raw command text, raw
+  user prompt, raw tool output, headers, provider payload bodies, or secrets.
 - Forking creates a child transcript at the requested fork point. Later child
   appends must not mutate the parent transcript/history.
 - `session_continuity` trace payloads may contain only bounded metadata:
@@ -368,6 +378,16 @@ section = TurnContextSection(
 
 - Resume `root` with newest child `branch` -> active runtime session becomes
   `branch`; pending approval/clarification resolution happens on `branch`.
+- Suspended turn contains `pending_approval` but `pending_decision` row is
+  missing -> approval response recovers a bounded pending decision, executes
+  the approved tool once, clears both pending stores, and emits
+  `approval_recovery.result=recovered_from_suspended_turn`.
+- `pending_decision` row exists but suspended turn row is missing and runtime
+  snapshot contains a waiting-approval rollout -> reconstruct suspended turn and
+  resume as before.
+- Approval state cannot be recovered -> return a pending-decision response and
+  emit bounded recovery/resolution diagnostics without raw command or prompt
+  content.
 - Resume missing session -> bounded `session_continuity` trace with
   `result=not_found`; no raw request text.
 - Fork `root` at message index `N` -> child contains the prefix through `N`;
@@ -398,6 +418,12 @@ section = TurnContextSection(
 
 - Integration test root-to-tip pending approval resume.
 - Integration test root-to-tip pending clarification resume.
+- Integration test approval response recovers from
+  `suspended_turn.pending_approval` when `pending_decision` is missing.
+- Integration test existing pending-decision-only suspended-turn reconstruction
+  remains valid.
+- Unit test approval recovery doctor summary redacts raw command, raw args,
+  raw prompt, and secret-like values.
 - Unit test fork child updates do not pollute parent transcript/history.
 - Unit test `session_continuity` doctor summary redacts raw payload fields.
 - Cache stability regression proving compaction rehydration stays dynamic and
