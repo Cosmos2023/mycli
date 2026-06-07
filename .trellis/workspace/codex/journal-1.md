@@ -844,3 +844,7 @@ Verification:
 ## 2026-06-07 P19 Background Tool Runtime
 - Added bounded BackgroundJobSummary, shell and sub-agent background job projections, and doctor background job diagnostics.
 - Verification: uv run ruff check src tests evaluation; uv run mypy src/mycli; uv run pytest -q; git diff --check; compact/rehydration diff audit empty.
+
+## 2026-06-07 P20 Skill Runtime Finalization
+- Added bounded doctor skill runtime diagnostics over skill activation traces while preserving stable default Skill tool behavior.
+- Verification: uv run ruff check src tests evaluation; uv run mypy src/mycli; uv run pytest -q; git diff --check; compact/rehydration diff audit empty.
