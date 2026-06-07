@@ -228,6 +228,7 @@ class ToolExecutionService:
             tool_exposure=tool_exposure,
             turn_id=turn_id,
             policy_approved=policy_approved,
+            effect_profile=effect_profile,
         )
         if runtime_decision is not None:
             self._append_tool_runtime_lifecycle_trace(
@@ -834,12 +835,17 @@ class ToolExecutionService:
         tool_exposure: ToolExposure,
         turn_id: str,
         policy_approved: bool,
+        effect_profile: ToolEffectProfile,
     ) -> ToolRuntimeDecision | None:
         if self._policy_gate is None:
             return None
         if policy_approved:
             return None
-        decision = self._policy_gate.decide(call, tool_exposure=tool_exposure)
+        decision = self._policy_gate.decide(
+            call,
+            tool_exposure=tool_exposure,
+            effect_profile=effect_profile,
+        )
         self._trace_service.append(
             self._session_id,
             RuntimeTraceEvent(

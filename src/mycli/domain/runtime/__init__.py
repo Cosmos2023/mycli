@@ -89,6 +89,7 @@ from mycli.domain.runtime.execution_policy import (
     ShellExecutionOptions as ShellExecutionOptions,
     ToolRuntimeDecision as ToolRuntimeDecision,
     ToolRuntimeDecisionKind as ToolRuntimeDecisionKind,
+    ToolRuntimeEffect as ToolRuntimeEffect,
     ToolRuntimeResult as ToolRuntimeResult,
 )
 from mycli.domain.runtime.execpolicy import (
@@ -369,6 +370,7 @@ __all__ = [
     "ToolRouteSource",
     "ToolRuntimeDecision",
     "ToolRuntimeDecisionKind",
+    "ToolRuntimeEffect",
     "ToolRuntimeResult",
     "TurnRecord",
     "TurnResponse",

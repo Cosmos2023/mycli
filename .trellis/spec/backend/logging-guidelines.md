@@ -73,6 +73,12 @@ the local log root and must never become provider transcript inputs.
   timeout caps, output limits, and cwd. They must not include raw environment
   values, raw command text, raw arguments, stdout/stderr bodies, file contents,
   headers, or secret-like values.
+- Sandbox policy diagnostics are local runtime evidence. They may include only
+  bounded policy names, decision/reason codes, sandbox lanes, argument keys and
+  counts, and effect summary fields (`filesystem`, `network`, `process`). They
+  must not include raw argument values, raw command text, raw URLs,
+  stdout/stderr previews or bodies, file contents, headers, provider payload
+  bodies, or secret-like values.
 - Shell `tool_execution` trace rows may expose argument key/count metadata and
   output character/truncation counters only. They must redact argument values
   and set stdout/stderr previews to empty even when the underlying tool result

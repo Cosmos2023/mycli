@@ -46,6 +46,12 @@ P9 Runtime Kernel Contract
 
 P9/P10 是地基。P11 依赖统一 tool runtime。P12 只保护 resume/fork/compact 边界，不改 compact 复水。P13 在 runtime contract 稳定后再产品化诊断。
 
+P14/P15 是 P9-P13 之后的 runtime kernel extension：P14 引入 shell
+ExecPolicy prefix rules，P15a 把 runtime environment 作为 bounded dynamic
+context 暴露给模型，P15b 强化 shell lane execution options，P15c 再把
+filesystem/shell/network sandbox policy 作为 effect-profile-driven execution
+gate。P15c 必须保持 compact/rehydration 实现未触碰。
+
 ---
 
 ## P9 Runtime Kernel Contract

@@ -11,6 +11,7 @@ from mycli.domain.runtime import (
     SandboxProfile,
     ToolRuntimeDecision,
     ToolRuntimeDecisionKind,
+    ToolRuntimeEffect,
 )
 from mycli.domain.tooling.calls import ToolCall
 
@@ -39,6 +40,7 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
             shell="restricted",
         ),
         execpolicy_rule=rule,
+        effect=ToolRuntimeEffect(filesystem="unknown", network=False, process=True),
     )
 
     payload = decision.to_trace_payload()
@@ -58,6 +60,11 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
             "filesystem": "workspace_write",
             "network": "enabled",
             "shell": "restricted",
+        },
+        "effect": {
+            "filesystem": "unknown",
+            "network": False,
+            "process": True,
         },
         "execpolicy_decision": "ask",
         "execpolicy_rule_source": "project",

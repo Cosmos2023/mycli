@@ -12,6 +12,7 @@ from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import (
+    ExecutionPolicy,
     ExecPolicyDecision,
     ExecPolicyRule,
     ExecPolicyRuleSet,
@@ -19,6 +20,7 @@ from mycli.domain.runtime import (
     InvokedSkillSnapshot,
     PlanState,
     RuntimeStreamEvent,
+    SandboxProfile,
     TurnItemType,
 )
 from mycli.domain.tooling.calls import ToolCall
@@ -180,6 +182,47 @@ class FakeLongOutputTool:
         )
 
 
+class FakeNetworkTool:
+    spec = ToolSpec(
+        name="WebFetch",
+        description="Fetch a URL",
+        parameters=(ToolParameter("url", "string"),),
+    )
+
+    def __init__(self) -> None:
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="none", network=True)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        return ToolResult(
+            success=True,
+            summary="Fetched URL",
+            raw_payload={"url": str(arguments["url"])},
+        )
+
+
+class FakeUnknownEffectTool:
+    spec = ToolSpec(
+        name="MysteryTool",
+        description="Tool with no declared effect profile",
+        parameters=(ToolParameter("payload", "string"),),
+    )
+
+    def __init__(self) -> None:
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        return ToolResult(
+            success=True,
+            summary="Ran mystery tool",
+            raw_payload={"payload": str(arguments["payload"])},
+        )
+
+
 class FakeContributedTool:
     spec = ToolSpec(
         name="runtime_echo",
@@ -278,6 +321,25 @@ def _service(
     return service, fake_tool
 
 
+def _set_default_sandbox(
+    gate: RuntimePolicyGate,
+    *,
+    workspace_root: Path,
+    filesystem: str = "workspace_write",
+    network: str = "enabled",
+    shell: str = "restricted",
+) -> None:
+    gate.default_policy = lambda: ExecutionPolicy(  # type: ignore[method-assign]
+        sandbox=SandboxProfile(
+            workspace_roots=(workspace_root,),
+            cwd=workspace_root,
+            filesystem=filesystem,  # type: ignore[arg-type]
+            network=network,  # type: ignore[arg-type]
+            shell=shell,  # type: ignore[arg-type]
+        )
+    )
+
+
 def test_tool_execution_service_runtime_policy_denial_blocks_execution(
     tmp_path: Path,
 ) -> None:
@@ -330,6 +392,237 @@ def test_tool_execution_service_runtime_policy_denial_blocks_execution(
     assert policy_trace.payload["tool_name"] == "Write"
     assert policy_trace.payload["argument_keys"] == ["content", "file_path"]
     assert "outside.txt" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_sandbox_read_only_blocks_write_tool(
+    tmp_path: Path,
+) -> None:
+    write_tool = WriteTool(tmp_path)
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    _set_default_sandbox(gate, workspace_root=tmp_path, filesystem="read_only")
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=gate,
+        registry=ToolRegistry.from_tools([write_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Write"),
+                source=ToolRouteSource.REGISTRY,
+                spec=write_tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "blocked\n"},
+            reason="write",
+            call_id="call_write_read_only",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert not (tmp_path / "notes.txt").exists()
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "sandbox_filesystem_policy"
+    assert policy_trace.payload["reason_code"] == "filesystem_write_blocked_by_read_only"
+    assert policy_trace.payload["effect"] == {
+        "filesystem": "write",
+        "network": False,
+        "process": False,
+    }
+    assert "blocked\n" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_sandbox_read_only_blocks_unknown_filesystem_effect(
+    tmp_path: Path,
+) -> None:
+    unknown_tool = FakeUnknownEffectTool()
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    _set_default_sandbox(gate, workspace_root=tmp_path, filesystem="read_only")
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=gate,
+        registry=ToolRegistry.from_tools([unknown_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("MysteryTool"),
+                source=ToolRouteSource.REGISTRY,
+                spec=unknown_tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="MysteryTool",
+            arguments={"payload": "secret-payload"},
+            reason="unknown effect",
+            call_id="call_unknown_read_only",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert unknown_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "sandbox_filesystem_policy"
+    assert policy_trace.payload["reason_code"] == "filesystem_unknown_blocked_by_read_only"
+    assert policy_trace.payload["effect"] == {
+        "filesystem": "unknown",
+        "network": False,
+        "process": False,
+    }
+    assert "secret-payload" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_sandbox_shell_disabled_blocks_execpolicy_allow(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        execpolicy_rules=ExecPolicyRuleSet(
+            rules=(
+                ExecPolicyRule(
+                    source=ExecPolicySource.PROJECT,
+                    index=0,
+                    pattern=("python3", "-c"),
+                    decision=ExecPolicyDecision.ALLOW,
+                ),
+            )
+        ),
+    )
+    _set_default_sandbox(gate, workspace_root=tmp_path, shell="disabled")
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=gate,
+        registry=ToolRegistry.from_tools([BashTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=BashTool(tmp_path).spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "python3 -c 'print(\"secret-output\")'"},
+            reason="probe",
+            call_id="call_shell_disabled",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "sandbox_shell_policy"
+    assert policy_trace.payload["reason_code"] == "shell_disabled"
+    assert "execpolicy_decision" not in policy_trace.payload
+    assert "python3 -c" not in str(policy_trace.payload)
+    assert "secret-output" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_sandbox_network_disabled_blocks_network_tool(
+    tmp_path: Path,
+) -> None:
+    network_tool = FakeNetworkTool()
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    _set_default_sandbox(gate, workspace_root=tmp_path, network="disabled")
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=gate,
+        registry=ToolRegistry.from_tools([network_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("WebFetch"),
+                source=ToolRouteSource.REGISTRY,
+                spec=network_tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="WebFetch",
+            arguments={"url": "https://example.com/sk-secret"},
+            reason="fetch",
+            call_id="call_network_disabled",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert network_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "sandbox_network_policy"
+    assert policy_trace.payload["reason_code"] == "network_disabled"
+    assert policy_trace.payload["effect"] == {
+        "filesystem": "none",
+        "network": True,
+        "process": False,
+    }
+    assert "example.com" not in str(policy_trace.payload)
+    assert "sk-secret" not in str(policy_trace.payload)
 
 
 def test_tool_execution_service_runtime_policy_needs_approval_blocks_execution(

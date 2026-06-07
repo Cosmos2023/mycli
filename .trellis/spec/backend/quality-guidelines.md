@@ -293,6 +293,8 @@ Questions to answer:
   - Runtime policy rows must summarize only bounded fields such as decision
     kind, policy name, risk level, argument key/count, and sandbox policy
     shape.
+  - Runtime policy rows for sandbox enforcement may include only bounded effect
+    fields: `filesystem`, `network`, and `process`.
   - ExecPolicy prefix-rule matches may add bounded fields only:
     `execpolicy_decision`, `execpolicy_rule_source`,
     `execpolicy_rule_index`, `execpolicy_rule_pattern_hash`,
@@ -384,6 +386,8 @@ for line in render_doctor_report(report):
   - previous provider transcript messages
 - Runtime policy trace rows may render only bounded fields: decision, policy,
   risk level, argument key/count, and sandbox filesystem/network/shell shape.
+  Sandbox enforcement rows may additionally render the bounded effect summary
+  fields `filesystem`, `network`, and `process`.
   If an ExecPolicy prefix rule matched, the row may additionally render bounded
   rule metadata: decision, source, pattern hash, pattern length, and command
   argument count. It must not render raw rule tokens or command text.
@@ -405,6 +409,12 @@ for line in render_doctor_report(report):
 - Checkpoint/guardrail exit -> append a local `guardrail` trace event with bounded trigger diagnostics.
 - Runtime policy row with `sandbox` -> doctor reports bounded filesystem,
   network, and shell counts.
+- Runtime policy row with `effect` -> trace inspection, doctor, and dry-run may
+  aggregate bounded filesystem/network/process effect state, but must not render
+  raw argument values that produced the effect.
+- Runtime policy row with `policy=sandbox_filesystem_policy`,
+  `sandbox_shell_policy`, or `sandbox_network_policy` -> doctor reports bounded
+  denial counts and remains warning-level when any denial exists.
 - Runtime policy row with raw `arguments` or `command_pattern` -> trace
   inspection and doctor output omit those values.
 - Runtime policy row with ExecPolicy fields -> doctor and dry-run report
@@ -449,6 +459,12 @@ for line in render_doctor_report(report):
 - Unit test ExecPolicy trace, doctor, and dry-run redaction.
 - Unit test shell runtime enforcement for workspace cwd, sanitized env, timeout
   cap, output limit metadata, and runtime-only argument filtering.
+- Unit test sandbox enforcement for read-only filesystem write/unknown effects,
+  shell disabled overriding ExecPolicy allow, and network disabled blocking
+  network-effect tools before execution.
+- Unit test sandbox-denied trace and doctor diagnostics include bounded effect
+  metadata and exclude raw command text, raw args, raw URLs, stdout/stderr,
+  headers, and secrets.
 - Provider-free smoke must include runtime diagnostics fields.
 
 #### 7. Wrong vs Correct

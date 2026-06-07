@@ -15,6 +15,7 @@ FilesystemPolicy = Literal["read_only", "workspace_write", "unrestricted"]
 NetworkPolicy = Literal["disabled", "enabled"]
 ShellPolicy = Literal["disabled", "restricted", "enabled"]
 ShellEnvPolicy = Literal["inherit", "sanitized"]
+FilesystemEffect = Literal["none", "read", "write", "unknown"]
 
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120
 DEFAULT_SHELL_OUTPUT_CHAR_LIMIT = 10_000
@@ -133,6 +134,20 @@ class ShellExecutionOptions:
 
 
 @dataclass(slots=True, frozen=True)
+class ToolRuntimeEffect:
+    filesystem: FilesystemEffect = "unknown"
+    network: bool = False
+    process: bool = False
+
+    def to_trace_payload(self) -> dict[str, object]:
+        return {
+            "filesystem": self.filesystem,
+            "network": self.network,
+            "process": self.process,
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class RuntimeEnvironmentContract:
     workspace_root: Path
     filesystem: FilesystemPolicy
@@ -196,6 +211,7 @@ class ToolRuntimeDecision:
     pending_approval: PendingApproval | None = None
     execpolicy_rule: ExecPolicyRule | None = None
     execpolicy_argument_count: int | None = None
+    effect: ToolRuntimeEffect | None = None
 
     @classmethod
     def allowed(
@@ -207,6 +223,7 @@ class ToolRuntimeDecision:
         risk_level: str | None = None,
         execpolicy_rule: ExecPolicyRule | None = None,
         execpolicy_argument_count: int | None = None,
+        effect: ToolRuntimeEffect | None = None,
     ) -> "ToolRuntimeDecision":
         return cls(
             kind=ToolRuntimeDecisionKind.ALLOWED,
@@ -216,6 +233,7 @@ class ToolRuntimeDecision:
             risk_level=risk_level,
             execpolicy_rule=execpolicy_rule,
             execpolicy_argument_count=execpolicy_argument_count,
+            effect=effect,
         )
 
     @classmethod
@@ -229,6 +247,7 @@ class ToolRuntimeDecision:
         reason_code: str | None = None,
         execpolicy_rule: ExecPolicyRule | None = None,
         execpolicy_argument_count: int | None = None,
+        effect: ToolRuntimeEffect | None = None,
     ) -> "ToolRuntimeDecision":
         return cls(
             kind=ToolRuntimeDecisionKind.DENIED,
@@ -239,6 +258,7 @@ class ToolRuntimeDecision:
             reason_code=reason_code,
             execpolicy_rule=execpolicy_rule,
             execpolicy_argument_count=execpolicy_argument_count,
+            effect=effect,
         )
 
     @classmethod
@@ -253,6 +273,7 @@ class ToolRuntimeDecision:
         reason_code: str | None = None,
         execpolicy_rule: ExecPolicyRule | None = None,
         execpolicy_argument_count: int | None = None,
+        effect: ToolRuntimeEffect | None = None,
     ) -> "ToolRuntimeDecision":
         return cls(
             kind=ToolRuntimeDecisionKind.NEEDS_APPROVAL,
@@ -264,6 +285,7 @@ class ToolRuntimeDecision:
             pending_approval=pending_approval,
             execpolicy_rule=execpolicy_rule,
             execpolicy_argument_count=execpolicy_argument_count,
+            effect=effect,
         )
 
     def to_trace_payload(self) -> dict[str, object]:
@@ -280,6 +302,8 @@ class ToolRuntimeDecision:
             "reason_code": self.reason_code,
             "sandbox": self.sandbox.to_trace_payload(),
         }
+        if self.effect is not None:
+            payload["effect"] = self.effect.to_trace_payload()
         if self.execpolicy_rule is not None:
             payload.update(
                 self.execpolicy_rule.to_trace_payload(
@@ -299,6 +323,7 @@ class ToolRuntimeDecision:
         tool_call: ToolCall,
         match: ExecPolicyMatch,
         sandbox: SandboxProfile,
+        effect: ToolRuntimeEffect | None = None,
     ) -> "ToolRuntimeDecision":
         rule = match.rule
         if rule.decision == "allow":
@@ -309,6 +334,7 @@ class ToolRuntimeDecision:
                 sandbox=sandbox,
                 execpolicy_rule=rule,
                 execpolicy_argument_count=match.argument_count,
+                effect=effect,
             )
         if rule.decision == "deny":
             return cls.denied(
@@ -319,6 +345,7 @@ class ToolRuntimeDecision:
                 sandbox=sandbox,
                 execpolicy_rule=rule,
                 execpolicy_argument_count=match.argument_count,
+                effect=effect,
             )
         return cls.needs_approval(
             tool_call=tool_call,
@@ -334,6 +361,7 @@ class ToolRuntimeDecision:
             sandbox=sandbox,
             execpolicy_rule=rule,
             execpolicy_argument_count=match.argument_count,
+            effect=effect,
         )
 
 
@@ -361,5 +389,6 @@ class ApprovalGate(Protocol):
         self,
         call: ToolCall,
         policy: ExecutionPolicy,
+        effect: ToolRuntimeEffect | None = None,
     ) -> ToolRuntimeDecision:
         ...

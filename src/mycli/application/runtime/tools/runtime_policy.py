@@ -9,10 +9,15 @@ from mycli.domain.runtime import (
     SandboxProfile,
     ShellExecutionOptions,
     ToolRuntimeDecision,
+    ToolRuntimeEffect,
 )
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.services.approval import ApprovalService
+from mycli.tools.base import ToolEffectProfile
+
+
+SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
 
 
 class RuntimePolicyGate:
@@ -48,11 +53,21 @@ class RuntimePolicyGate:
         policy: ExecutionPolicy | None = None,
         *,
         tool_exposure: ToolExposure | None = None,
+        effect_profile: ToolEffectProfile | ToolRuntimeEffect | None = None,
     ) -> ToolRuntimeDecision:
         resolved_policy = policy or self.default_policy()
+        runtime_effect = _runtime_effect(effect_profile)
+        sandbox_decision = self._sandbox_decision(
+            call=call,
+            sandbox=resolved_policy.sandbox,
+            effect=runtime_effect,
+        )
+        if sandbox_decision is not None:
+            return sandbox_decision
         execpolicy_decision = self._execpolicy_decision(
             call=call,
             sandbox=resolved_policy.sandbox,
+            effect=runtime_effect,
         )
         if execpolicy_decision is not None:
             return execpolicy_decision
@@ -62,6 +77,7 @@ class RuntimePolicyGate:
                 policy="contributed_tool_exposure",
                 risk_level="low",
                 sandbox=resolved_policy.sandbox,
+                effect=runtime_effect,
             )
 
         outcome = self._approval_service.evaluate(call)
@@ -76,6 +92,7 @@ class RuntimePolicyGate:
                 risk_level=risk_level,
                 reason_code=decision_kind or "deny",
                 sandbox=resolved_policy.sandbox,
+                effect=runtime_effect,
             )
         if outcome.pending_approval is not None:
             return ToolRuntimeDecision.needs_approval(
@@ -85,23 +102,28 @@ class RuntimePolicyGate:
                 reason_code=decision_kind or "needs_choice",
                 pending_approval=outcome.pending_approval,
                 sandbox=resolved_policy.sandbox,
+                effect=runtime_effect,
             )
         return ToolRuntimeDecision.allowed(
             tool_call=call,
             policy=policy_name,
             risk_level=risk_level,
             sandbox=resolved_policy.sandbox,
+            effect=runtime_effect,
         )
 
     def decide_execpolicy(
         self,
         call: ToolCall,
         policy: ExecutionPolicy | None = None,
+        *,
+        effect_profile: ToolEffectProfile | ToolRuntimeEffect | None = None,
     ) -> ToolRuntimeDecision | None:
         resolved_policy = policy or self.default_policy()
         return self._execpolicy_decision(
             call=call,
             sandbox=resolved_policy.sandbox,
+            effect=_runtime_effect(effect_profile),
         )
 
     def shell_execution_options(
@@ -115,8 +137,9 @@ class RuntimePolicyGate:
         *,
         call: ToolCall,
         sandbox: SandboxProfile,
+        effect: ToolRuntimeEffect | None,
     ) -> ToolRuntimeDecision | None:
-        if call.name not in {"Bash", "run_shell"}:
+        if call.name not in SHELL_TOOL_NAMES:
             return None
         command_args = _shell_command_args(call)
         if not command_args:
@@ -128,7 +151,46 @@ class RuntimePolicyGate:
             tool_call=call,
             match=match,
             sandbox=sandbox,
+            effect=effect,
         )
+
+    def _sandbox_decision(
+        self,
+        *,
+        call: ToolCall,
+        sandbox: SandboxProfile,
+        effect: ToolRuntimeEffect | None,
+    ) -> ToolRuntimeDecision | None:
+        if effect is None:
+            return None
+        if sandbox.filesystem == "read_only" and effect.filesystem in {"write", "unknown"}:
+            return ToolRuntimeDecision.denied(
+                tool_call=call,
+                policy="sandbox_filesystem_policy",
+                risk_level="high" if effect.filesystem == "write" else "medium",
+                reason_code=f"filesystem_{effect.filesystem}_blocked_by_read_only",
+                sandbox=sandbox,
+                effect=effect,
+            )
+        if sandbox.shell == "disabled" and call.name in SHELL_TOOL_NAMES:
+            return ToolRuntimeDecision.denied(
+                tool_call=call,
+                policy="sandbox_shell_policy",
+                risk_level="high",
+                reason_code="shell_disabled",
+                sandbox=sandbox,
+                effect=effect,
+            )
+        if sandbox.network == "disabled" and effect.network:
+            return ToolRuntimeDecision.denied(
+                tool_call=call,
+                policy="sandbox_network_policy",
+                risk_level="medium",
+                reason_code="network_disabled",
+                sandbox=sandbox,
+                effect=effect,
+            )
+        return None
 
     @staticmethod
     def _is_contributed_tool(
@@ -164,3 +226,20 @@ def _shell_command_args(call: ToolCall) -> tuple[str, ...]:
         return tuple(shlex.split(command_value))
     except ValueError:
         return ()
+
+
+def _runtime_effect(
+    effect_profile: ToolEffectProfile | ToolRuntimeEffect | None,
+) -> ToolRuntimeEffect | None:
+    if effect_profile is None:
+        return None
+    if isinstance(effect_profile, ToolRuntimeEffect):
+        return effect_profile
+    filesystem = effect_profile.filesystem
+    if filesystem not in {"none", "read", "write", "unknown"}:
+        filesystem = "unknown"
+    return ToolRuntimeEffect(
+        filesystem=filesystem,
+        network=effect_profile.network,
+        process=effect_profile.process,
+    )

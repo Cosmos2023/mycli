@@ -67,6 +67,21 @@
   counters. They must not report shell argument values, command text,
   stdout/stderr previews, stdout/stderr bodies, inherited env values, headers,
   secrets, or provider payload bodies.
+- Sandbox policy enforcement is the execution-side gate for declared tool
+  effects. `ToolExecutionService` must resolve a `ToolEffectProfile` before the
+  runtime policy decision and pass the bounded effect summary into
+  `RuntimePolicyGate.decide(...)`.
+- Sandbox denial must happen before ExecPolicy prefix rules, contributed-tool
+  exposure allow rules, approval service evaluation, hooks, or actual tool
+  execution. In `filesystem=read_only`, filesystem `write` and `unknown`
+  effects are denied. In `shell=disabled`, `Bash` / `run_shell` are denied even
+  if an ExecPolicy rule would otherwise allow them. In `network=disabled`,
+  network-effect tools are denied.
+- Sandbox enforcement diagnostics may include only bounded effect summary fields
+  `filesystem`, `network`, and `process`, alongside existing sandbox and
+  argument key/count metadata. They must not include raw tool argument values,
+  raw shell command text, raw URLs, stdout/stderr bodies or previews, local file
+  payloads, headers, secrets, or provider payload bodies.
 - Workspace context, memory, session summaries, and compaction rehydration must be
   rendered inside explicit reference fences that say the content is not the
   current user request/new user input.
@@ -129,6 +144,14 @@
   stable prefix hash.
 - Changing only runtime environment fields should remain a dynamic-context
   change, not a stable-prefix change.
+- Sandbox-denied tool calls -> append a bounded `runtime_policy_decision` trace
+  row and do not execute the tool.
+- Sandbox-denied `Bash` / `run_shell` with a matching ExecPolicy allow rule ->
+  deny with `policy=sandbox_shell_policy` and do not emit raw command text.
+- Sandbox-denied network tool with a URL argument -> deny with
+  `policy=sandbox_network_policy` and do not emit the raw URL.
+- Sandbox-denied unknown filesystem-effect tool under `read_only` -> deny with
+  `reason_code=filesystem_unknown_blocked_by_read_only`.
 - A cache-shape diagnostic with `first_changed_cache_class=static` -> doctor
   context warning with a bounded stable-prefix-change count.
 - Compaction rehydration must be dynamic and placed before ephemeral runtime
@@ -166,6 +189,8 @@
   boundaries, provider projection metadata, and compact policy metadata.
 - Runtime/trace tests for context diagnostics and summary persistence when
   compaction summaries are produced.
+- Runtime policy tests for sandbox enforcement denial ordering and bounded
+  effect summaries.
 
 ---
 

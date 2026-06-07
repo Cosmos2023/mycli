@@ -2708,6 +2708,32 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "kind": "runtime_policy_decision",
+                        "turn_id": "turn-4",
+                        "payload": {
+                            "tool_name": "WebFetch",
+                            "decision": "denied",
+                            "policy": "sandbox_network_policy",
+                            "risk_level": "medium",
+                            "reason_code": "network_disabled",
+                            "arguments": {"url": f"https://example.com/{secret}"},
+                            "argument_count": 1,
+                            "argument_keys": ["url"],
+                            "effect": {
+                                "filesystem": "none",
+                                "network": True,
+                                "process": False,
+                            },
+                            "sandbox": {
+                                "filesystem": "workspace_write",
+                                "network": "disabled",
+                                "shell": "restricted",
+                            },
+                        },
+                    }
+                ),
             )
         ),
         encoding="utf-8",
@@ -2725,18 +2751,23 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
     check = next(check for check in report.checks if check.name == "runtime_policy_diagnostics")
     assert check.status is DoctorStatus.WARNING
     assert check.message == (
-        "3 runtime policy diagnostic(s), allowed=1 needs_approval=1 denied=1 "
-        "argument_summaries=3"
+        "4 runtime policy diagnostic(s), allowed=1 needs_approval=1 denied=2 "
+        "argument_summaries=4"
     )
-    assert check.detail == (
-        "decisions: allowed=1, denied=1, needs_approval=1; "
-        "risk_levels: high=1, low=1, medium=1; "
-        "policies: builtin_safe_tool=1, medium_risk_requires_approval=1, shell_command_analysis=1; "
-        "execpolicy: decisions=deny=1 sources=project=1 rules=1; "
-        "sandbox: fs=workspace_write=3 net=enabled=2, disabled=1 shell=restricted=3"
+    assert "decisions: denied=2, allowed=1, needs_approval=1" in check.detail
+    assert "risk_levels: medium=2, high=1, low=1" in check.detail
+    assert (
+        "policies: builtin_safe_tool=1, medium_risk_requires_approval=1, "
+        "sandbox_network_policy=1, ..."
+    ) in check.detail
+    assert "execpolicy: decisions=deny=1 sources=project=1 rules=1" in check.detail
+    assert (
+        "sandbox: fs=workspace_write=4 net=disabled=2, enabled=2 shell=restricted=4"
+        in check.detail
     )
     assert secret not in rendered
     assert f"/private/{secret}.txt" not in rendered
+    assert "example.com" not in rendered
     assert "rm -rf" not in rendered
     assert "raw reason" not in rendered
 

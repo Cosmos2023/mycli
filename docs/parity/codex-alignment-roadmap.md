@@ -441,6 +441,38 @@ timeout、output limit enforcement。
 - runtime-only enforcement options 不改变 provider tool schema。
 - compact/rehydration 实现保持未触碰。
 
+### P15c: Sandbox Policy Enforcement
+
+目标：把 P15a/P15b 的 runtime posture 扩展成 effect-profile-driven sandbox
+gate，让 filesystem、shell、network policy 在工具执行前成为强约束，而不是
+只靠提示词或 approval 兜底。
+
+范围：
+
+- `ToolExecutionService` 在 runtime policy decision 前解析
+  `ToolEffectProfile`。
+- `RuntimePolicyGate.decide()` 先执行 sandbox denial，再进入 ExecPolicy、
+  contributed-tool allow、approval service 和实际 tool execution。
+- `filesystem=read_only` 拒绝 filesystem `write` 和 `unknown` effect。
+- `shell=disabled` 拒绝 `Bash` / `run_shell`，即使命中 ExecPolicy allow。
+- `network=disabled` 拒绝 network-effect tools。
+- `runtime_policy_decision` trace row 输出 bounded sandbox/effect summary，
+  只允许 argument key/count、decision/policy/reason/risk、sandbox lanes、
+  effect lanes。
+- doctor 继续通过 runtime policy diagnostics 汇总 sandbox denials。
+- 不实现 OS sandbox、network firewall、provider API 调用或 compact/rehydration
+  改造。
+
+验收：
+
+- read-only filesystem write/unknown effect、shell disabled、network disabled
+  有单测。
+- sandbox deny 发生在 ExecPolicy/approval/tool execution 前。
+- trace/doctor 不输出 raw command、raw args、raw URL、stdout/stderr、secret 或
+  provider payload body。
+- P14 ExecPolicy 和 P15b shell enforcement 回归不退。
+- compact/rehydration 实现保持未触碰。
+
 ---
 
 ## 6. 优先级
@@ -456,6 +488,7 @@ P9 Runtime Kernel Contract
   -> P14 Runtime ExecPolicy Rules
   -> P15a Runtime Environment Contract
   -> P15b Runtime Enforcement Kernel
+  -> P15c Sandbox Policy Enforcement
 ```
 
 原因：
@@ -490,6 +523,8 @@ P9 Runtime Kernel Contract
 - 所有模型可见上下文来自 canonical timeline / request shape projection，而不是散落 prompt 拼接。
 - 所有工具调用都经过统一 runtime policy 和 lifecycle。
 - sandbox、approval、exec policy 是 runtime 强约束，不只是 prompt 说明。
+- filesystem、shell、network sandbox policy 能在工具执行前基于 bounded
+  effect profile 强制拒绝不允许的调用。
 - provider adapters 只处理 wire projection 和 provider quirks。
 - skill 不再默认导致 provider tool schema 随 skill 数量膨胀。
 - resume/fork/compact 都能从 typed timeline 解释。
