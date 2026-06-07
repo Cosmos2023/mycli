@@ -11,6 +11,9 @@ from mycli.domain.runtime.approvals import (
     ApprovalStatus as ApprovalStatus,
     PendingApproval as PendingApproval,
 )
+from mycli.domain.runtime.background_jobs import (
+    BackgroundJobSummary as BackgroundJobSummary,
+)
 from mycli.domain.runtime.clarifications import (
     PendingClarification as PendingClarification,
 )
@@ -305,6 +308,7 @@ __all__ = [
     "AgentConfig",
     "ApprovalStatus",
     "ActivityEvent",
+    "BackgroundJobSummary",
     "BlockType",
     "BaselineFragment",
     "CompactionRehydrationContext",

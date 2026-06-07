@@ -436,6 +436,39 @@ def test_background_task_returns_running_then_records_completion() -> None:
     assert summaries[0].mode == "background"
 
 
+def test_background_task_projects_bounded_job_summary() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done with sensitive raw details",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=InlineBackgroundExecutor(),
+    )
+
+    service.run_task(
+        description="Inspect repo and do not leak this prompt",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    jobs = service.background_jobs()
+    assert len(jobs) == 1
+    payload = jobs[0].to_diagnostic_payload()
+    assert payload["owner"] == "subagent"
+    assert payload["state"] == "completed"
+    assert payload["owner_turn_id"] == "turn_1"
+    assert "Inspect repo" not in str(payload)
+    assert "sensitive raw details" not in str(payload)
+
+
 def test_background_task_rejects_when_concurrency_cap_is_reached() -> None:
     service = SubAgentService(
         session_id="demo",

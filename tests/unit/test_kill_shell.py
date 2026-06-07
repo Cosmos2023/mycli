@@ -21,6 +21,23 @@ class TestKillShell:
         assert "command" not in kill_result
         assert bash_id not in _background_processes
 
+    def test_shell_registry_projects_background_job_without_raw_command(self):
+        command = "sleep 60"
+        result = execute_bash(command, run_in_background=True)
+        bash_id = str(result["bash_id"])
+        try:
+            from mycli.tools.shell_registry import SHELL_REGISTRY
+
+            jobs = SHELL_REGISTRY.background_jobs()
+            job = next(item for item in jobs if item.job_id == f"shell:{bash_id}")
+            payload = job.to_diagnostic_payload()
+            assert job.owner == "shell"
+            assert job.state == "running"
+            assert payload["job_id"] == f"shell:{bash_id}"
+            assert command not in str(payload)
+        finally:
+            kill_shell(bash_id)
+
     def test_kill_nonexistent(self):
         result = kill_shell("nosuchid")
 

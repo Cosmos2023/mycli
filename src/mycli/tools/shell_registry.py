@@ -9,6 +9,8 @@ import threading
 import time
 from uuid import uuid4
 
+from mycli.domain.runtime.background_jobs import BackgroundJobState, BackgroundJobSummary
+
 
 @dataclass(slots=True)
 class ShellProcess:
@@ -190,6 +192,10 @@ class ShellProcessRegistry:
                 if shell.process.poll() is None
             }
 
+    def background_jobs(self) -> tuple[BackgroundJobSummary, ...]:
+        rows = self.list()
+        return tuple(_background_job_from_row(row) for row in rows)
+
     def _drain_output(self, shell: ShellProcess) -> None:
         stdout = shell.process.stdout
         if stdout is None:
@@ -229,6 +235,44 @@ def _process_state_for_exit_code(exit_code: int | None, terminal_state: str | No
     if terminal_state:
         return terminal_state
     return "running_background" if exit_code is None else "completed"
+
+
+def _background_job_from_row(row: dict[str, object]) -> BackgroundJobSummary:
+    shell_id = str(row.get("shell_id") or "unknown")
+    state = _background_state(row.get("process_state"), row.get("status"))
+    output_chars = row.get("output_chars")
+    timeout_seconds = row.get("timeout_seconds")
+    return BackgroundJobSummary(
+        job_id=f"shell:{shell_id}",
+        owner="shell",
+        state=state,
+        started_at=_optional_str(row.get("started_at")),
+        last_event_at=_optional_str(row.get("last_observed_at")),
+        timeout_seconds=timeout_seconds if isinstance(timeout_seconds, int) else None,
+        terminal_summary=_optional_str(row.get("terminal_state")),
+        output_chars=output_chars if isinstance(output_chars, int) else None,
+    )
+
+
+def _background_state(process_state: object, status: object) -> BackgroundJobState:
+    state = str(process_state or "")
+    if state == "running_background" or status == "running":
+        return "running"
+    if state == "completed":
+        return "completed"
+    if state == "failed":
+        return "failed"
+    if state == "killed":
+        return "killed"
+    if state == "timed_out":
+        return "timed_out"
+    return "unknown"
+
+
+def _optional_str(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value
 
 
 SHELL_REGISTRY = ShellProcessRegistry()

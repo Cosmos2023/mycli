@@ -15,7 +15,13 @@ from uuid import uuid4
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
 from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
-from mycli.domain.runtime import ContextBaseline, HistoryItem, HistoryItemType
+from mycli.domain.runtime import (
+    BackgroundJobSummary,
+    ContextBaseline,
+    HistoryItem,
+    HistoryItemType,
+)
+from mycli.domain.runtime.background_jobs import BackgroundJobState
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.subagents import (
     SubAgentContextSnapshot,
@@ -185,6 +191,31 @@ class SubAgentService:
     def recent_runs(self) -> tuple[SubAgentRunSummary, ...]:
         with self._run_state_lock:
             return tuple(self._recent_runs)
+
+    def background_jobs(self) -> tuple[BackgroundJobSummary, ...]:
+        with self._run_state_lock:
+            summaries = tuple(self._recent_runs)
+            running_ids = set(self._running_background)
+        jobs: list[BackgroundJobSummary] = []
+        for summary in summaries:
+            if summary.mode != "background":
+                continue
+            state = _background_job_state(summary.status)
+            if summary.child_session_id in running_ids:
+                state = "running"
+            jobs.append(
+                BackgroundJobSummary(
+                    job_id=f"subagent:{summary.child_session_id}",
+                    owner="subagent",
+                    state=state,
+                    owner_turn_id=summary.parent_turn_id or None,
+                    started_at=summary.started_at,
+                    last_event_at=summary.completed_at or summary.started_at,
+                    completed_at=summary.completed_at,
+                    terminal_summary=summary.status if summary.status != "running" else None,
+                )
+            )
+        return tuple(jobs)
 
     def inspect_transcript(self, child_session_id: str) -> tuple[str, ...]:
         if self._session_service is None:
@@ -556,6 +587,16 @@ class SubAgentService:
 
 
 __all__ = ["SubAgentService"]
+
+
+def _background_job_state(status: str) -> BackgroundJobState:
+    if status == "running":
+        return "running"
+    if status == "completed":
+        return "completed"
+    if status == "failed":
+        return "failed"
+    return "unknown"
 
 
 def _builtin_profile_lookup(profile_id: str) -> SubAgentProfile | None:

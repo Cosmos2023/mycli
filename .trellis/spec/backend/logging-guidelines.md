@@ -86,6 +86,12 @@ the local log root and must never become provider transcript inputs.
   background and interrupt-cleanup support. They must not include raw command
   text, raw environment values, stdout/stderr bodies, file contents, headers,
   provider payload bodies, or secret-like values.
+- Background job diagnostics are local runtime evidence. They may include job
+  id, owner kind, lifecycle state, owner turn id, started/completed/last-event
+  timestamps, timeout seconds, terminal summary, and output character counts.
+  They must not include raw commands, raw prompts, raw sub-agent reports, raw
+  tool output bodies, environment values, headers, provider payload bodies, or
+  secret-like values.
 - Sandbox policy diagnostics are local runtime evidence. They may include only
   bounded policy names, decision/reason codes, sandbox lanes, argument keys and
   counts, and effect summary fields (`filesystem`, `network`, `process`). They

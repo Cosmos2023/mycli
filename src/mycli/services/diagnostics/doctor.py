@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 from mycli.config.settings import resolve_config
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
+from mycli.domain.runtime import BackgroundJobSummary
 from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
@@ -207,6 +208,16 @@ class _ShellProcessDiagnosticsSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class _BackgroundJobDiagnosticsSummary:
+    job_count: int
+    running_count: int
+    stale_count: int
+    missing_terminal_count: int
+    owners: tuple[tuple[str, int], ...]
+    states: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _RuntimePolicyDiagnosticsSummary:
     policy_count: int
     allowed_count: int
@@ -367,6 +378,7 @@ class DoctorService:
             self._check_tool_lifecycle_diagnostics,
             self._check_shell_process_diagnostics,
             self._check_shell_backend_diagnostics,
+            self._check_background_job_diagnostics,
             self._check_turn_interrupt_diagnostics,
             self._check_session_continuity_diagnostics,
             self._check_turn_failure_diagnostics,
@@ -1215,6 +1227,42 @@ class DoctorService:
         return (
             DoctorCheck(
                 "shell_backend_diagnostics",
+                status,
+                message,
+                detail=detail,
+            ),
+        )
+
+    def _check_background_job_diagnostics(self) -> Iterable[DoctorCheck]:
+        from mycli.tools.shell_registry import SHELL_REGISTRY
+
+        summary = _summarize_background_job_diagnostics(SHELL_REGISTRY.background_jobs())
+        if summary.job_count == 0:
+            return (
+                DoctorCheck(
+                    "background_job_diagnostics",
+                    DoctorStatus.OK,
+                    "no background jobs found",
+                ),
+            )
+        message = (
+            f"{summary.job_count} background job diagnostic(s), "
+            f"running={summary.running_count} "
+            f"stale={summary.stale_count} "
+            f"missing_terminal={summary.missing_terminal_count}"
+        )
+        detail = (
+            f"owners: {_format_count_pairs(summary.owners)}; "
+            f"states: {_format_count_pairs(summary.states)}"
+        )
+        status = (
+            DoctorStatus.WARNING
+            if summary.running_count or summary.stale_count or summary.missing_terminal_count
+            else DoctorStatus.OK
+        )
+        return (
+            DoctorCheck(
+                "background_job_diagnostics",
                 status,
                 message,
                 detail=detail,
@@ -2675,6 +2723,51 @@ def _shell_process_is_stale(row: Mapping[str, object]) -> bool:
         started = started.replace(tzinfo=UTC)
     elapsed = (datetime.now(tz=UTC) - started).total_seconds()
     return elapsed > timeout_seconds
+
+
+def _summarize_background_job_diagnostics(
+    jobs: Iterable[BackgroundJobSummary],
+) -> _BackgroundJobDiagnosticsSummary:
+    job_count = 0
+    running_count = 0
+    stale_count = 0
+    missing_terminal_count = 0
+    owners: Counter[str] = Counter()
+    states: Counter[str] = Counter()
+
+    for job in jobs:
+        job_count += 1
+        owners[job.owner] += 1
+        states[job.state] += 1
+        if job.is_running:
+            running_count += 1
+            if _background_job_is_stale(job):
+                stale_count += 1
+        elif job.is_terminal and not job.terminal_summary:
+            missing_terminal_count += 1
+
+    return _BackgroundJobDiagnosticsSummary(
+        job_count=job_count,
+        running_count=running_count,
+        stale_count=stale_count,
+        missing_terminal_count=missing_terminal_count,
+        owners=tuple(sorted(owners.items(), key=lambda item: (-item[1], item[0]))),
+        states=tuple(sorted(states.items(), key=lambda item: (-item[1], item[0]))),
+    )
+
+
+def _background_job_is_stale(job: BackgroundJobSummary) -> bool:
+    if job.timeout_seconds is None or job.timeout_seconds <= 0:
+        return False
+    if not job.started_at:
+        return False
+    try:
+        started = datetime.fromisoformat(job.started_at)
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return (datetime.now(tz=UTC) - started).total_seconds() > job.timeout_seconds
 
 
 def _tool_runtime_lifecycle_call_key(
