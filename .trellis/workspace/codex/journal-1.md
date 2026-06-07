@@ -725,3 +725,55 @@ Implemented shell runtime enforcement options from RuntimePolicyGate into Bash/r
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Codex alignment P15c sandbox policy enforcement
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P15c sandbox policy enforcement
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Implemented effect-profile sandbox denial before ExecPolicy/approval, added bounded diagnostics and archived the P15c Trellis task.
+
+### Main Changes
+
+Completed P15c sandbox policy enforcement.
+
+Changes:
+- Added ToolRuntimeEffect and bounded effect trace payloads.
+- RuntimePolicyGate now denies read-only filesystem write/unknown effects, shell-disabled Bash/run_shell, and network-disabled network tools before ExecPolicy, contributed-tool allow, approval, hooks, or execution.
+- ToolExecutionService passes resolved ToolEffectProfile into runtime policy decisions.
+- Doctor/runtime policy diagnostics keep bounded sandbox and effect summaries without raw args, command text, URLs, stdout/stderr, provider payloads, or secrets.
+- Updated backend specs and Codex alignment roadmap with the P15c contract.
+
+Verification:
+- uv run pytest focused P15c/P14/P15b/doctor tests -q: 10 passed.
+- uv run ruff check src tests evaluation: passed.
+- uv run mypy src/mycli: passed.
+- uv run pytest tests/unit/application/test_tool_execution_service.py tests/unit/domain/runtime/test_execution_policy.py tests/unit/services/test_doctor_service.py -q: 136 passed.
+- uv run pytest -q: 1483 passed.
+- Provider-free smokes passed: context, provider_cache_policy, mcp, plugin_runtime, hook, hook_management, skill, subagent, tool, tool_management.
+- git diff --check: passed.
+- compact/rehydration diff audit: clean.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ad87118` | (see git log) |
+| `daa9429` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
