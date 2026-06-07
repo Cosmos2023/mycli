@@ -204,6 +204,24 @@ Questions to answer:
   - Doctor output must not print raw trace payload content, argument values,
     command text, stdout/stderr bodies, file contents, headers, or secret-like
     values even if those fields appear in a malformed trace row.
+- Tool runtime coverage diagnostics check:
+  - `ToolRuntimeCoverageProfile` is a metadata-only contract that names
+    tool-like runtime lanes and whether lifecycle, effect profile, sandbox,
+    execpolicy, approval, hooks, background, cancellation, and diagnostics are
+    `full`, `partial`, or `external`.
+  - Default coverage rows must include built-in tools, shell foreground,
+    shell background, MCP tools, plugin tools, hook execution, subagent jobs,
+    skill activation, and background job control.
+  - `tool_runtime_coverage` is a Doctor contract summary, not a tool executor.
+    It must not execute tools, read provider payloads, or create trace files.
+  - Partial lanes and known gaps must be visible as bounded metadata instead of
+    hidden, but they are roadmap gaps rather than runtime health failures, so
+    they should not make an otherwise healthy doctor report warn by default.
+  - Coverage payloads may include lane id, owner label, coverage labels, and
+    short known-gap labels only. They must not include raw commands, raw
+    arguments, raw env values, stdout/stderr, hook stdin/stdout/stderr, raw
+    prompts, raw tool outputs, file contents, provider payload bodies, headers,
+    secrets, or full prompt-cache keys.
 - Turn failure diagnostics check:
   - Missing `~/.mycli/traces/` or no `turn_failed` trace rows ->
     `turn_failure_diagnostics=ok` with `no turn failure diagnostics found`;
@@ -289,6 +307,9 @@ Questions to answer:
 - Unit test tool runtime lifecycle diagnostics for missing directory/no rows,
   complete lifecycle summary, missing terminal, terminal without start,
   duplicate terminal, malformed phase/status, and warning-summary redaction.
+- Unit test tool runtime coverage registry rows for all named tool-like lanes,
+  bounded payload shape, Doctor warning status for partial lanes, and redaction
+  of raw command/argument/output/secret-like fields.
 - Runtime policy diagnostics check:
   - Missing `~/.mycli/traces/` or no `runtime_policy_decision` trace rows ->
     `runtime_policy_diagnostics=ok` with

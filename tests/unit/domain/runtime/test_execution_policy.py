@@ -14,6 +14,7 @@ from mycli.domain.runtime import (
     ToolRuntimeDecision,
     ToolRuntimeDecisionKind,
     ToolRuntimeEffect,
+    tool_runtime_coverage_profiles,
 )
 from mycli.domain.tooling.calls import ToolCall
 
@@ -128,3 +129,41 @@ def test_approval_gate_protocol_accepts_policy_decisions() -> None:
 
     assert decision.kind is ToolRuntimeDecisionKind.DENIED
     assert decision.to_trace_payload()["decision"] == "denied"
+
+
+def test_tool_runtime_coverage_profiles_name_all_tool_like_lanes() -> None:
+    profiles = tool_runtime_coverage_profiles()
+    by_lane = {profile.lane: profile for profile in profiles}
+
+    assert set(by_lane) == {
+        "builtin_tool",
+        "shell_foreground",
+        "shell_background",
+        "mcp_tool",
+        "plugin_tool",
+        "hook_execution",
+        "subagent_job",
+        "skill_activation",
+        "background_job_control",
+    }
+    assert by_lane["shell_foreground"].is_full_runtime_lane is True
+    assert by_lane["hook_execution"].is_partial_runtime_lane is True
+    assert by_lane["subagent_job"].known_gap == (
+        "delegated_actions_are_not_single_tool_runtime_lane"
+    )
+
+
+def test_tool_runtime_coverage_payload_is_bounded_metadata() -> None:
+    payloads = [
+        profile.to_diagnostic_payload()
+        for profile in tool_runtime_coverage_profiles()
+    ]
+
+    encoded = str(payloads)
+
+    assert "command" not in encoded
+    assert "arguments" not in encoded
+    assert "stdout" not in encoded
+    assert "stderr" not in encoded
+    assert "api_key" not in encoded
+    assert "secret" not in encoded

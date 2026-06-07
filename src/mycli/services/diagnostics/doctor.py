@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from mycli.config.settings import resolve_config
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
-from mycli.domain.runtime import BackgroundJobSummary
+from mycli.domain.runtime import BackgroundJobSummary, tool_runtime_coverage_profiles
 from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
@@ -195,6 +195,19 @@ class _ToolRuntimeLifecycleDiagnosticsSummary:
     argument_summary_count: int
     phases: tuple[tuple[str, int], ...]
     unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolRuntimeCoverageSummary:
+    lane_count: int
+    full_lane_count: int
+    partial_lane_count: int
+    known_gap_count: int
+    lifecycle: tuple[tuple[str, int], ...]
+    sandbox: tuple[tuple[str, int], ...]
+    approval: tuple[tuple[str, int], ...]
+    diagnostics: tuple[tuple[str, int], ...]
+    gaps: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +401,7 @@ class DoctorService:
             self._check_runtime_policy_diagnostics,
             self._check_tool_execution_diagnostics,
             self._check_tool_lifecycle_diagnostics,
+            self._check_tool_runtime_coverage,
             self._check_shell_process_diagnostics,
             self._check_shell_backend_diagnostics,
             self._check_background_job_diagnostics,
@@ -1222,6 +1236,30 @@ class DoctorService:
             DoctorCheck(
                 "runtime_policy_diagnostics",
                 status,
+                message,
+                detail=detail,
+            ),
+        )
+
+    def _check_tool_runtime_coverage(self) -> Iterable[DoctorCheck]:
+        summary = _summarize_tool_runtime_coverage()
+        message = (
+            f"{summary.lane_count} tool runtime lane(s), "
+            f"full={summary.full_lane_count} "
+            f"partial={summary.partial_lane_count} "
+            f"known_gaps={summary.known_gap_count}"
+        )
+        detail = (
+            f"lifecycle: {_format_count_pairs(summary.lifecycle)}; "
+            f"sandbox: {_format_count_pairs(summary.sandbox)}; "
+            f"approval: {_format_count_pairs(summary.approval)}; "
+            f"diagnostics: {_format_count_pairs(summary.diagnostics)}; "
+            f"gaps: {_format_lane_gap_pairs(summary.gaps)}"
+        )
+        return (
+            DoctorCheck(
+                "tool_runtime_coverage",
+                DoctorStatus.OK,
                 message,
                 detail=detail,
             ),
@@ -2815,6 +2853,39 @@ def _summarize_tool_runtime_lifecycle_diagnostics(
     )
 
 
+def _summarize_tool_runtime_coverage() -> _ToolRuntimeCoverageSummary:
+    lifecycle: Counter[str] = Counter()
+    sandbox: Counter[str] = Counter()
+    approval: Counter[str] = Counter()
+    diagnostics: Counter[str] = Counter()
+    gaps: list[tuple[str, str]] = []
+    full_lane_count = 0
+    partial_lane_count = 0
+    profiles = tool_runtime_coverage_profiles()
+    for profile in profiles:
+        lifecycle[profile.lifecycle] += 1
+        sandbox[profile.sandbox] += 1
+        approval[profile.approval] += 1
+        diagnostics[profile.diagnostics] += 1
+        if profile.is_full_runtime_lane:
+            full_lane_count += 1
+        else:
+            partial_lane_count += 1
+        if profile.known_gap is not None:
+            gaps.append((profile.lane, profile.known_gap))
+    return _ToolRuntimeCoverageSummary(
+        lane_count=len(profiles),
+        full_lane_count=full_lane_count,
+        partial_lane_count=partial_lane_count,
+        known_gap_count=len(gaps),
+        lifecycle=_ordered_counts(lifecycle),
+        sandbox=_ordered_counts(sandbox),
+        approval=_ordered_counts(approval),
+        diagnostics=_ordered_counts(diagnostics),
+        gaps=tuple(gaps),
+    )
+
+
 def _summarize_shell_process_diagnostics(
     rows: Iterable[Mapping[str, object]],
 ) -> _ShellProcessDiagnosticsSummary:
@@ -3490,6 +3561,19 @@ def _format_count_pairs(counts: tuple[tuple[str, int], ...]) -> str:
     if len(counts) > _TRACE_DETAIL_LIMIT:
         parts.append("...")
     return ", ".join(parts)
+
+
+def _format_lane_gap_pairs(gaps: tuple[tuple[str, str], ...]) -> str:
+    if not gaps:
+        return "none"
+    parts = [f"{lane}={gap}" for lane, gap in gaps[:_TRACE_DETAIL_LIMIT]]
+    if len(gaps) > _TRACE_DETAIL_LIMIT:
+        parts.append("...")
+    return ", ".join(parts)
+
+
+def _ordered_counts(counts: Counter[str]) -> tuple[tuple[str, int], ...]:
+    return tuple(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
 def _format_latest_recovery(values: tuple[tuple[str, str], ...]) -> str:

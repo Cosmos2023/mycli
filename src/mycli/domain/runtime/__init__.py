@@ -93,8 +93,10 @@ from mycli.domain.runtime.execution_policy import (
     ShellExecutionOptions as ShellExecutionOptions,
     ToolRuntimeDecision as ToolRuntimeDecision,
     ToolRuntimeDecisionKind as ToolRuntimeDecisionKind,
+    ToolRuntimeCoverageProfile as ToolRuntimeCoverageProfile,
     ToolRuntimeEffect as ToolRuntimeEffect,
     ToolRuntimeResult as ToolRuntimeResult,
+    tool_runtime_coverage_profiles as tool_runtime_coverage_profiles,
 )
 from mycli.domain.runtime.execpolicy import (
     ExecPolicyDecision as ExecPolicyDecision,
@@ -376,8 +378,10 @@ __all__ = [
     "ToolRouteSource",
     "ToolRuntimeDecision",
     "ToolRuntimeDecisionKind",
+    "ToolRuntimeCoverageProfile",
     "ToolRuntimeEffect",
     "ToolRuntimeResult",
+    "tool_runtime_coverage_profiles",
     "TurnRecord",
     "TurnResponse",
     "TurnRollout",

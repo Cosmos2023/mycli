@@ -3053,6 +3053,40 @@ def test_doctor_service_summarizes_tool_runtime_lifecycle_integrity(
     assert "echo" not in rendered
 
 
+def test_doctor_service_reports_tool_runtime_coverage_gaps_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+    rendered = "\n".join(render_doctor_report(report))
+
+    check = next(item for item in report.checks if item.name == "tool_runtime_coverage")
+    assert check.status is DoctorStatus.OK
+    assert check.message == "9 tool runtime lane(s), full=4 partial=5 known_gaps=8"
+    assert "lifecycle: full=5, partial=4" in str(check.detail)
+    assert "sandbox: full=6, partial=3" in str(check.detail)
+    assert "approval: full=6, external=3" in str(check.detail)
+    assert "diagnostics: full=9" in str(check.detail)
+    assert "gaps: builtin_tool=generic_cancel_collect_not_unified" in str(check.detail)
+    assert "..." in str(check.detail)
+    assert "command" not in rendered
+    assert "arguments" not in rendered
+    assert "stdout" not in rendered
+    assert "stderr" not in rendered
+    assert "sk-" not in rendered
+
+
 def test_doctor_service_reports_no_tool_execution_diagnostics_rows_as_ok(
     tmp_path: Path,
 ) -> None:

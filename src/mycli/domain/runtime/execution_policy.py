@@ -17,6 +17,7 @@ ShellPolicy = Literal["disabled", "restricted", "enabled"]
 ShellEnvPolicy = Literal["inherit", "sanitized"]
 ShellBackendKind = Literal["local"]
 FilesystemEffect = Literal["none", "read", "write", "unknown"]
+ToolRuntimeCoverageLevel = Literal["full", "partial", "external"]
 
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120
 DEFAULT_SHELL_OUTPUT_CHAR_LIMIT = 10_000
@@ -166,6 +167,188 @@ class ToolRuntimeEffect:
             "network": self.network,
             "process": self.process,
         }
+
+
+@dataclass(slots=True, frozen=True)
+class ToolRuntimeCoverageProfile:
+    lane: str
+    owner: str
+    lifecycle: ToolRuntimeCoverageLevel
+    effect_profile: ToolRuntimeCoverageLevel
+    sandbox: ToolRuntimeCoverageLevel
+    execpolicy: ToolRuntimeCoverageLevel
+    approval: ToolRuntimeCoverageLevel
+    hooks: ToolRuntimeCoverageLevel
+    background: ToolRuntimeCoverageLevel
+    cancellation: ToolRuntimeCoverageLevel
+    diagnostics: ToolRuntimeCoverageLevel
+    known_gap: str | None = None
+
+    @property
+    def is_full_runtime_lane(self) -> bool:
+        return all(
+            value == "full"
+            for value in (
+                self.lifecycle,
+                self.effect_profile,
+                self.sandbox,
+                self.approval,
+                self.diagnostics,
+            )
+        )
+
+    @property
+    def is_partial_runtime_lane(self) -> bool:
+        return not self.is_full_runtime_lane
+
+    def to_diagnostic_payload(self) -> dict[str, object]:
+        return {
+            "lane": self.lane,
+            "owner": self.owner,
+            "lifecycle": self.lifecycle,
+            "effect_profile": self.effect_profile,
+            "sandbox": self.sandbox,
+            "execpolicy": self.execpolicy,
+            "approval": self.approval,
+            "hooks": self.hooks,
+            "background": self.background,
+            "cancellation": self.cancellation,
+            "diagnostics": self.diagnostics,
+            "known_gap": self.known_gap,
+        }
+
+
+DEFAULT_TOOL_RUNTIME_COVERAGE: tuple[ToolRuntimeCoverageProfile, ...] = (
+    ToolRuntimeCoverageProfile(
+        lane="builtin_tool",
+        owner="tool_execution_service",
+        lifecycle="full",
+        effect_profile="full",
+        sandbox="full",
+        execpolicy="partial",
+        approval="full",
+        hooks="full",
+        background="external",
+        cancellation="partial",
+        diagnostics="full",
+        known_gap="generic_cancel_collect_not_unified",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="shell_foreground",
+        owner="tool_execution_service",
+        lifecycle="full",
+        effect_profile="full",
+        sandbox="full",
+        execpolicy="full",
+        approval="full",
+        hooks="full",
+        background="external",
+        cancellation="full",
+        diagnostics="full",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="shell_background",
+        owner="shell_registry",
+        lifecycle="partial",
+        effect_profile="full",
+        sandbox="full",
+        execpolicy="full",
+        approval="full",
+        hooks="full",
+        background="full",
+        cancellation="full",
+        diagnostics="full",
+        known_gap="background_collect_protocol_is_shell_specific",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="mcp_tool",
+        owner="tool_execution_service",
+        lifecycle="full",
+        effect_profile="full",
+        sandbox="full",
+        execpolicy="partial",
+        approval="full",
+        hooks="full",
+        background="external",
+        cancellation="partial",
+        diagnostics="full",
+        known_gap="remote_effect_precision_is_conservative",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="plugin_tool",
+        owner="tool_execution_service",
+        lifecycle="full",
+        effect_profile="partial",
+        sandbox="full",
+        execpolicy="partial",
+        approval="full",
+        hooks="full",
+        background="external",
+        cancellation="partial",
+        diagnostics="full",
+        known_gap="plugin_effects_default_to_none_unless_declared",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="hook_execution",
+        owner="hook_manager",
+        lifecycle="partial",
+        effect_profile="partial",
+        sandbox="partial",
+        execpolicy="external",
+        approval="external",
+        hooks="external",
+        background="external",
+        cancellation="partial",
+        diagnostics="full",
+        known_gap="hook_is_runtime_sidecar_not_first_class_tool",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="subagent_job",
+        owner="subagent_service",
+        lifecycle="partial",
+        effect_profile="partial",
+        sandbox="partial",
+        execpolicy="external",
+        approval="external",
+        hooks="external",
+        background="full",
+        cancellation="partial",
+        diagnostics="full",
+        known_gap="delegated_actions_are_not_single_tool_runtime_lane",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="skill_activation",
+        owner="skill_tool",
+        lifecycle="full",
+        effect_profile="full",
+        sandbox="full",
+        execpolicy="external",
+        approval="full",
+        hooks="full",
+        background="external",
+        cancellation="external",
+        diagnostics="full",
+        known_gap="activation_replay_is_context_not_background_job",
+    ),
+    ToolRuntimeCoverageProfile(
+        lane="background_job_control",
+        owner="background_job_registry",
+        lifecycle="partial",
+        effect_profile="partial",
+        sandbox="partial",
+        execpolicy="external",
+        approval="external",
+        hooks="external",
+        background="full",
+        cancellation="partial",
+        diagnostics="full",
+        known_gap="observe_cancel_collect_contract_not_global_for_all_tools",
+    ),
+)
+
+
+def tool_runtime_coverage_profiles() -> tuple[ToolRuntimeCoverageProfile, ...]:
+    return DEFAULT_TOOL_RUNTIME_COVERAGE
 
 
 @dataclass(slots=True, frozen=True)
