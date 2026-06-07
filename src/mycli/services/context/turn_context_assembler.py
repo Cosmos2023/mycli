@@ -64,6 +64,7 @@ class TurnContextAssembler:
                     "session_id": context.config.session_id,
                     "model": context.config.model,
                     "protocol": context.config.protocol,
+                    **self._runtime_environment_metadata(context),
                 },
                 cache_class=TurnContextCacheClass.DYNAMIC,
                 scope=CanonicalTimelineScope.TURN,
@@ -151,13 +152,46 @@ class TurnContextAssembler:
         return TurnContext(user_message=user_message, sections=sections)
 
     def _render_environment_context(self, context: ExecutionContext) -> str:
-        runtime_context = f"Workspace root: {context.config.workspace_root}"
+        runtime_context = self._render_runtime_environment_contract(context)
         baseline_environment = self._deduplicated_environment_baseline(
             self._baseline_fragment_content(context, "environment_context")
         )
         if baseline_environment:
             return f"{baseline_environment}\n{runtime_context}"
         return runtime_context
+
+    def _render_runtime_environment_contract(self, context: ExecutionContext) -> str:
+        contract = context.runtime_environment
+        if contract is None:
+            return f"Workspace root: {context.config.workspace_root}"
+        lines = [
+            "Runtime environment:",
+            f"- workspace_root: {contract.workspace_root}",
+            f"- filesystem: {contract.filesystem}",
+            f"- network: {contract.network}",
+            f"- shell: {contract.shell}",
+            f"- approval_policy: {contract.approval_policy}",
+            f"- command_policy: {contract.command_policy}",
+            f"- file_policy: {contract.file_policy}",
+            f"- tool_policy: {contract.tool_policy}",
+            f"- execpolicy: {contract.execpolicy_status}",
+            f"- execpolicy_rule_count: {contract.execpolicy_rule_count}",
+        ]
+        if contract.execpolicy_sources:
+            lines.append(
+                "- execpolicy_sources: "
+                + ", ".join(contract.execpolicy_sources)
+            )
+        return "\n".join(lines)
+
+    def _runtime_environment_metadata(
+        self,
+        context: ExecutionContext,
+    ) -> dict[str, object]:
+        contract = context.runtime_environment
+        if contract is None:
+            return {}
+        return contract.to_metadata()
 
     def _deduplicated_environment_baseline(self, content: str) -> str:
         if not content:

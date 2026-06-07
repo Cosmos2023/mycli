@@ -24,6 +24,7 @@ from mycli.domain.runtime import (
     PlanState,
     PlanStatus,
     RehydratedFile,
+    RuntimeEnvironmentContract,
     TurnContext,
     TurnContextSectionType,
     TurnContextSection,
@@ -191,6 +192,53 @@ def test_turn_context_assembler_keeps_empty_sections_but_marks_them_disabled() -
     assert sections[TurnContextSectionType.SKILL_CATALOG].enabled is False
     assert sections[TurnContextSectionType.TOOL_EXPOSURE].enabled is False
     assert sections[TurnContextSectionType.USER_REQUEST].enabled is True
+
+
+def test_turn_context_assembler_renders_bounded_runtime_environment_contract() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="inspect runtime",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            runtime_environment=RuntimeEnvironmentContract(
+                workspace_root=Path("/tmp/workspace"),
+                filesystem="workspace_write",
+                network="enabled",
+                shell="restricted",
+                approval_policy="safety_policy",
+                command_policy="shell_safety_analysis",
+                file_policy="workspace_boundary",
+                tool_policy="tool_exposure",
+                execpolicy_status="enabled",
+                execpolicy_rule_count=2,
+                execpolicy_sources=("project", "user"),
+            ),
+        ),
+    )
+
+    section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT
+    )
+
+    assert section.cache_class is TurnContextCacheClass.DYNAMIC
+    assert section.metadata["execpolicy_status"] == "enabled"
+    assert section.metadata["execpolicy_rule_count"] == 2
+    assert "Runtime environment:" in section.content
+    assert "- workspace_root: /tmp/workspace" in section.content
+    assert "- filesystem: workspace_write" in section.content
+    assert "- network: enabled" in section.content
+    assert "- shell: restricted" in section.content
+    assert "- approval_policy: safety_policy" in section.content
+    assert "- command_policy: shell_safety_analysis" in section.content
+    assert "- file_policy: workspace_boundary" in section.content
+    assert "- tool_policy: tool_exposure" in section.content
+    assert "- execpolicy: enabled" in section.content
+    assert "- execpolicy_rule_count: 2" in section.content
+    assert "- execpolicy_sources: project, user" in section.content
+    assert "prefix_rule" not in section.content
+    assert "git push" not in section.content
+    assert "sk-do-not-print" not in section.content
 
 
 def test_turn_context_assembler_renders_skill_catalog_section() -> None:

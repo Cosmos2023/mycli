@@ -46,6 +46,17 @@
   - `static`: stable prefix-like guidance and tool/skill catalogs.
   - `dynamic`: conversation, memory, plan, environment, and compaction context.
   - `ephemeral`: current user request and runtime reminders.
+- Runtime environment context is a bounded model-visible contract, not an
+  enforcement mechanism. It may include workspace root, filesystem policy,
+  network policy, shell policy, approval policy, command/file/tool policy, and
+  execpolicy status/count/source summary.
+- Runtime environment context remains `dynamic` and turn-scoped. It must not be
+  part of the stable prefix, must not alter the cacheable prefix hash, and must
+  be rendered before ephemeral runtime reminders and the current user request.
+- Runtime environment metadata and rendered content must not include raw
+  environment variables, secret values, raw command text, raw execpolicy rule
+  pattern tokens, stdout/stderr, local file payloads, headers, or provider wire
+  payload bodies.
 - Workspace context, memory, session summaries, and compaction rehydration must be
   rendered inside explicit reference fences that say the content is not the
   current user request/new user input.
@@ -106,6 +117,8 @@
   `ephemeral`.
 - Changing workspace instructions or deterministic tool schema should change the
   stable prefix hash.
+- Changing only runtime environment fields should remain a dynamic-context
+  change, not a stable-prefix change.
 - A cache-shape diagnostic with `first_changed_cache_class=static` -> doctor
   context warning with a bounded stable-prefix-change count.
 - Compaction rehydration must be dynamic and placed before ephemeral runtime
@@ -121,6 +134,9 @@
 
 - Good: `.mycli.md` at workspace root is fenced as `workspace-context` with
   `cache_class=static`, and request fragment metadata preserves the same class.
+- Good: runtime environment renders `filesystem=workspace_write`,
+  `network=enabled`, `shell=restricted`, and `execpolicy_rule_count=2` without
+  raw rule patterns.
 - Base: a fresh workspace without context files has no workspace context section
   and no failure.
 - Bad: injecting `Ignore previous instructions...` raw from a project file.
@@ -131,6 +147,8 @@
 
 - Loader tests for priority, upward/root fallback, truncation, and blocking.
 - Assembler tests for cache classes and reference fences.
+- Assembler/runtime tests for bounded runtime environment contract rendering
+  and redaction.
 - Instruction contract/request-shape tests for metadata preservation.
 - Request-shape tests for provider projection lanes and canonical compact policy
   summary.

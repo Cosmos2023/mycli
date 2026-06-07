@@ -32,6 +32,15 @@ class RuntimePolicyGate:
         root = self._workspace_root or Path.cwd()
         return ExecutionPolicy.for_workspace(root)
 
+    def set_workspace_policy(
+        self,
+        *,
+        workspace_root: Path,
+        execpolicy_rules: ExecPolicyRuleSet,
+    ) -> None:
+        self._workspace_root = workspace_root
+        self._execpolicy_rules = execpolicy_rules
+
     def decide(
         self,
         call: ToolCall,

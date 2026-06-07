@@ -492,6 +492,7 @@ class AgentRuntime:
             tool_registry=self._tool_registry,
             workspace_log_service=self._workspace_log_service,
             trace_service=self._trace_service,
+            execpolicy_rules=self._execpolicy_rules,
         )
         self._recover_plan_mode_anchor()
         self._closed = False
@@ -1759,10 +1760,19 @@ class AgentRuntime:
 
     def rebind_session(self, config: AgentConfig) -> None:
         self._config = config
+        self._execpolicy_rules = self._load_execpolicy_rules(
+            home_dir=self._home_dir,
+            config=config,
+        )
         session_id = config.session_id
         self._workspace_log_service.set_session_id(session_id)
         self._model_state.set_config(config)
         self._runtime_context_builder.set_config(config)
+        self._runtime_context_builder.set_execpolicy_rules(self._execpolicy_rules)
+        self._runtime_policy_gate.set_workspace_policy(
+            workspace_root=config.workspace_root,
+            execpolicy_rules=self._execpolicy_rules,
+        )
         self._request_pipeline.set_config(config)
         self._runtime_error_logger.set_config(config)
         self._response_finalizer.set_config(config)

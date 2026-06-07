@@ -5,8 +5,11 @@ from mycli.domain.logging import LogLevel
 from mycli.domain.runtime import (
     AgentConfig,
     CompactionRehydrationContext,
+    ExecPolicyRuleSet,
     ExecutionContext,
+    ExecutionPolicy,
     PlanState,
+    RuntimeEnvironmentContract,
     RuntimeTraceEvent,
     TurnContext,
 )
@@ -39,6 +42,7 @@ class RuntimeContextBuilder:
         context_file_loader: ContextFileLoader | None = None,
         trace_service: TraceService | None = None,
         turn_context_budgeter: TurnContextBudgeter | None = None,
+        execpolicy_rules: ExecPolicyRuleSet | None = None,
     ) -> None:
         self._config = config
         self._session_service = session_service
@@ -51,9 +55,13 @@ class RuntimeContextBuilder:
         self._context_file_loader = context_file_loader or ContextFileLoader()
         self._trace_service = trace_service
         self._turn_context_budgeter = turn_context_budgeter or TurnContextBudgeter()
+        self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
 
     def set_config(self, config: AgentConfig) -> None:
         self._config = config
+
+    def set_execpolicy_rules(self, rules: ExecPolicyRuleSet) -> None:
+        self._execpolicy_rules = rules
 
     def build_context(
         self,
@@ -105,8 +113,18 @@ class RuntimeContextBuilder:
             compaction_rehydration=(
                 compaction_rehydration or CompactionRehydrationContext()
             ),
+            runtime_environment=self._runtime_environment_contract(),
             context_file_content=loaded_context.content,
             context_file_diagnostics=loaded_context.diagnostics.to_dict(),
+        )
+
+    def _runtime_environment_contract(self) -> RuntimeEnvironmentContract:
+        policy = ExecutionPolicy.for_workspace(self._config.workspace_root)
+        sources = tuple(rule.source.value for rule in self._execpolicy_rules.rules)
+        return RuntimeEnvironmentContract.from_policy(
+            policy,
+            execpolicy_rule_count=len(self._execpolicy_rules.rules),
+            execpolicy_sources=sources,
         )
 
     def assemble_turn_context(

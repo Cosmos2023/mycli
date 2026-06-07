@@ -59,6 +59,59 @@ class ExecutionPolicy:
 
 
 @dataclass(slots=True, frozen=True)
+class RuntimeEnvironmentContract:
+    workspace_root: Path
+    filesystem: FilesystemPolicy
+    network: NetworkPolicy
+    shell: ShellPolicy
+    approval_policy: str
+    command_policy: str
+    file_policy: str
+    tool_policy: str
+    execpolicy_status: str = "disabled"
+    execpolicy_rule_count: int = 0
+    execpolicy_sources: tuple[str, ...] = ()
+
+    @classmethod
+    def from_policy(
+        cls,
+        policy: ExecutionPolicy,
+        *,
+        execpolicy_rule_count: int = 0,
+        execpolicy_sources: tuple[str, ...] = (),
+    ) -> "RuntimeEnvironmentContract":
+        normalized_sources = tuple(sorted(set(execpolicy_sources)))
+        return cls(
+            workspace_root=policy.sandbox.cwd,
+            filesystem=policy.sandbox.filesystem,
+            network=policy.sandbox.network,
+            shell=policy.sandbox.shell,
+            approval_policy=policy.approval_policy,
+            command_policy=policy.command_policy,
+            file_policy=policy.file_policy,
+            tool_policy=policy.tool_policy,
+            execpolicy_status="enabled" if execpolicy_rule_count > 0 else "disabled",
+            execpolicy_rule_count=max(0, execpolicy_rule_count),
+            execpolicy_sources=normalized_sources,
+        )
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "workspace_root": str(self.workspace_root),
+            "filesystem": self.filesystem,
+            "network": self.network,
+            "shell": self.shell,
+            "approval_policy": self.approval_policy,
+            "command_policy": self.command_policy,
+            "file_policy": self.file_policy,
+            "tool_policy": self.tool_policy,
+            "execpolicy_status": self.execpolicy_status,
+            "execpolicy_rule_count": self.execpolicy_rule_count,
+            "execpolicy_sources": list(self.execpolicy_sources),
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class ToolRuntimeDecision:
     kind: ToolRuntimeDecisionKind
     tool_call: ToolCall

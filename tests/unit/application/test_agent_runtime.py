@@ -163,6 +163,86 @@ def test_project_execpolicy_deny_overrides_existing_session_shell_allowance(
     assert "git push" not in str(policy_trace.payload)
 
 
+def test_agent_runtime_includes_bounded_environment_contract_in_model_context(
+    tmp_path: Path,
+) -> None:
+    rules_dir = tmp_path / ".mycli" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "default.rules").write_text(
+        'prefix_rule(pattern=["git", "push"], decision="deny")\n',
+        encoding="utf-8",
+    )
+    adapter = BlockSingleTurnCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    response = runtime.handle_user_turn("inspect runtime environment")
+
+    assert response.assistant_message == "done"
+    assert adapter.seen_items
+    rendered_items = "\n".join(
+        block.text or ""
+        for item in adapter.seen_items[0]
+        for block in item.blocks
+        if block.type == "text"
+    )
+    assert "Runtime environment:" in rendered_items
+    assert f"- workspace_root: {tmp_path}" in rendered_items
+    assert "- filesystem: workspace_write" in rendered_items
+    assert "- network: enabled" in rendered_items
+    assert "- shell: restricted" in rendered_items
+    assert "- approval_policy: safety_policy" in rendered_items
+    assert "- command_policy: shell_safety_analysis" in rendered_items
+    assert "- execpolicy: enabled" in rendered_items
+    assert "- execpolicy_rule_count: 1" in rendered_items
+    assert "- execpolicy_sources: project" in rendered_items
+    assert "prefix_rule" not in rendered_items
+    assert "git push" not in rendered_items
+
+
+def test_agent_runtime_rebind_session_refreshes_environment_execpolicy_summary(
+    tmp_path: Path,
+) -> None:
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    second_rules_dir = second_workspace / ".mycli" / "rules"
+    second_rules_dir.mkdir(parents=True)
+    (second_rules_dir / "default.rules").write_text(
+        'prefix_rule(pattern=["git", "push"], decision="deny")\n',
+        encoding="utf-8",
+    )
+    adapter = BlockSingleTurnCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=first_workspace,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    runtime.rebind_session(
+        AgentConfig(workspace_root=second_workspace, session_id="second")
+    )
+    response = runtime.handle_user_turn("inspect runtime environment")
+
+    assert response.assistant_message == "done"
+    rendered_items = "\n".join(
+        block.text or ""
+        for item in adapter.seen_items[0]
+        for block in item.blocks
+        if block.type == "text"
+    )
+    assert f"- workspace_root: {second_workspace.resolve()}" in rendered_items
+    assert "- execpolicy: enabled" in rendered_items
+    assert "- execpolicy_rule_count: 1" in rendered_items
+    assert "- execpolicy_sources: project" in rendered_items
+    assert "prefix_rule" not in rendered_items
+    assert "git push" not in rendered_items
+
+
 def test_agent_runtime_requires_approval_for_medium_risk_write_when_strict(
     tmp_path: Path,
 ) -> None:

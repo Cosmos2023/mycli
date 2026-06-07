@@ -862,6 +862,7 @@ class RequestShapeBuilder:
     ) -> bool:
         return str(section.kind) in {
             "compaction_rehydration",
+            "environment_context",
             "memory",
             "runtime_reminders",
             "skill_catalog",

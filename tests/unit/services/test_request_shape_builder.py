@@ -1361,6 +1361,55 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     assert shape.provider_messages[-1].content == "Current user request: inspect"
 
 
+def test_request_shape_builder_keeps_runtime_environment_dynamic_before_user_tail(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            protocol=ProtocolId.RESPONSES,
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="\n".join(
+                        [
+                            "这是本轮相关的环境事实。",
+                            "Runtime environment:",
+                            f"- workspace_root: {tmp_path}",
+                            "- filesystem: workspace_write",
+                            "- network: enabled",
+                            "- shell: restricted",
+                            "- approval_policy: safety_policy",
+                            "- execpolicy: enabled",
+                            "- execpolicy_rule_count: 2",
+                            "- execpolicy_sources: project, user",
+                        ]
+                    ),
+                ),
+            ),
+            current_user_request="inspect runtime",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    fragments = tuple(shape.fragments)
+    environment = next(
+        fragment for fragment in fragments if fragment.id == "replay:environment_context"
+    )
+
+    assert environment.stability is FragmentStability.REPLAY
+    assert environment.metadata["cache_class"] == "dynamic"
+    assert "Runtime environment:" in environment.content
+    assert "prefix_rule" not in environment.content
+    assert "git push" not in environment.content
+    assert fragments[-1].id == "intent:current"
+    assert fragments[-1].content == "Current user request: inspect runtime"
+
+
 def test_request_shape_builder_uses_replayed_current_user_request_without_duplicate_intent_message(
     tmp_path: Path,
 ) -> None:

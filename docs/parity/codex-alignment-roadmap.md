@@ -386,6 +386,32 @@ Provider adapter 不应负责：
 - raw command、raw pattern tokens、secret 不进入 trace/doctor/dry-run。
 - 未命中规则时 P9-P13 行为不回退。
 
+### P15a: Runtime Environment Contract
+
+目标：把 Codex-style runtime posture 以 bounded dynamic context 形式送进模型，
+让模型知道当前 workspace、sandbox、approval、tool policy 和 execpolicy 状态。
+真正的安全边界仍由 runtime enforcement 执行。
+
+范围：
+
+- `RuntimeEnvironmentContract` 从 `ExecutionPolicy` 和已加载 execpolicy rules
+  解析 workspace root、filesystem、network、shell、approval、command、file、
+  tool policy。
+- `TurnContextAssembler` 在 `ENVIRONMENT_CONTEXT` 中渲染 bounded runtime
+  environment block。
+- `RequestShapeBuilder` 保持该 section 为 dynamic replay fragment，并在
+  Responses/Chat/Anthropic projection 中作为 provider-visible context。
+- 不输出 raw env、secret、raw command、raw execpolicy pattern tokens、
+  stdout/stderr 或 provider payload body。
+- current user input 继续保持 request tail。
+
+验收：
+
+- runtime environment contract 有 assembler/runtime/request-shape 单测。
+- environment context 不进入 stable prefix。
+- 只暴露 execpolicy enabled/disabled、rule count 和 source summary。
+- compact/rehydration 实现保持未触碰。
+
 ---
 
 ## 6. 优先级
@@ -399,6 +425,7 @@ P9 Runtime Kernel Contract
   -> P12 Resume / Fork / Compact Timeline Rewrite
   -> P13 Runtime Diagnostics Productization
   -> P14 Runtime ExecPolicy Rules
+  -> P15a Runtime Environment Contract
 ```
 
 原因：

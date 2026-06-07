@@ -84,6 +84,7 @@ from mycli.domain.runtime.instruction_contract import (
 from mycli.domain.runtime.execution_policy import (
     ApprovalGate as ApprovalGate,
     ExecutionPolicy as ExecutionPolicy,
+    RuntimeEnvironmentContract as RuntimeEnvironmentContract,
     SandboxProfile as SandboxProfile,
     ToolRuntimeDecision as ToolRuntimeDecision,
     ToolRuntimeDecisionKind as ToolRuntimeDecisionKind,
@@ -254,6 +255,7 @@ class ExecutionContext:
     compaction_rehydration: CompactionRehydrationContext = field(
         default_factory=CompactionRehydrationContext
     )
+    runtime_environment: RuntimeEnvironmentContract | None = None
     context_file_content: str = ""
     context_file_diagnostics: dict[str, object] = field(default_factory=dict)
 
@@ -341,6 +343,7 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeEventEnvelope",
     "RuntimeEventType",
+    "RuntimeEnvironmentContract",
     "RuntimeItem",
     "RuntimeRole",
     "RuntimeStreamEvent",
