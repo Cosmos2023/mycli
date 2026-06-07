@@ -17,6 +17,7 @@ from mycli.infrastructure.providers.registry import (
     infer_provider_from_base_url,
     profile_for_provider,
     resolve_provider_cache_policy_capability,
+    resolve_provider_quirk_profile,
     validate_provider_protocol,
 )
 
@@ -46,5 +47,6 @@ __all__ = [
     "infer_provider_from_base_url",
     "profile_for_provider",
     "resolve_provider_cache_policy_capability",
+    "resolve_provider_quirk_profile",
     "validate_provider_protocol",
 ]

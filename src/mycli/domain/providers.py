@@ -32,6 +32,36 @@ class ProviderProfile:
     cache_policy_capability: Any | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class ProviderQuirkProfile:
+    provider_family: str
+    protocol: ProtocolId
+    cache_strategy: str
+    prompt_cache_key_supported: bool
+    cache_control_supported: bool
+    automatic_prefix_cache: bool
+    wire_hints_supported: bool
+    reasoning_content_replay: str
+    usage_cached_token_shape: str
+    streaming_event_shape: str
+    retry_error_shape: str
+
+    def to_diagnostic_payload(self) -> dict[str, object]:
+        return {
+            "provider_family": self.provider_family,
+            "protocol": self.protocol.value,
+            "cache_strategy": self.cache_strategy,
+            "prompt_cache_key_supported": self.prompt_cache_key_supported,
+            "cache_control_supported": self.cache_control_supported,
+            "automatic_prefix_cache": self.automatic_prefix_cache,
+            "wire_hints_supported": self.wire_hints_supported,
+            "reasoning_content_replay": self.reasoning_content_replay,
+            "usage_cached_token_shape": self.usage_cached_token_shape,
+            "streaming_event_shape": self.streaming_event_shape,
+            "retry_error_shape": self.retry_error_shape,
+        }
+
+
 def parse_provider(value: object) -> ProviderId:
     try:
         return ProviderId(str(value))
@@ -56,6 +86,7 @@ def parse_protocol(value: object) -> ProtocolId:
 __all__ = [
     "ProviderId",
     "ProviderProfile",
+    "ProviderQuirkProfile",
     "ProtocolId",
     "parse_provider",
     "parse_protocol",

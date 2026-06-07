@@ -4303,6 +4303,34 @@ def test_doctor_service_reports_cache_policy_validation_states(
     assert "key-hash" not in rendered
 
 
+def test_doctor_service_reports_provider_quirk_diagnostics_without_secrets(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace, api_key="sk-provider-quirk-secret")
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        which=lambda command: f"/usr/bin/{command}",
+        import_checker=lambda module: module == "mycli.cli.tui",
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "provider_quirk_diagnostics")
+    rendered = "\n".join(render_doctor_report(report))
+
+    assert check.status is DoctorStatus.OK
+    assert "provider_family=deepseek" in rendered
+    assert "cache_strategy=automatic_prefix_cache" in rendered
+    assert "wire_hints=false" in rendered
+    assert "sk-provider-quirk-secret" not in rendered
+    assert "api_key" not in str(check.detail).lower()
+
+
 def test_doctor_service_reports_recovery_diagnostics_without_raw_provider_text(
     tmp_path: Path,
 ) -> None:

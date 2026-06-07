@@ -23,6 +23,7 @@ from mycli.services.hooks import HookAllowlist, HookConfigRegistry, HookManager,
 from mycli.services.hooks.config import HookEnvPolicy
 from mycli.services.hooks.builtin import permission_guard
 from mycli.services.context.context_files import ContextFileLoader
+from mycli.infrastructure.providers import resolve_provider_quirk_profile
 from mycli.services.mcp.diagnostics import discover_mcp_servers, redact_mcp_diagnostic_text
 from mycli.services.skills import SkillRegistry
 from mycli.services.subagents import inspect_configured_subagent_profiles
@@ -380,6 +381,7 @@ class DoctorService:
             self._check_storage_layout,
             self._check_traces,
             self._check_context,
+            self._check_provider_quirk_diagnostics,
             self._check_stream_diagnostics,
             self._check_approval_diagnostics,
             self._check_clarification_diagnostics,
@@ -492,6 +494,60 @@ class DoctorService:
         return (
             DoctorCheck("sessions_db", DoctorStatus.OK, f"openable {path}"),
             maintenance_check,
+        )
+
+    def _check_provider_quirk_diagnostics(self) -> Iterable[DoctorCheck]:
+        try:
+            config = resolve_config(
+                cli_args={"session": "doctor", "model": None},
+                env=self._env,
+                cwd=self._workspace_root,
+                home=self._home_dir,
+            )
+        except Exception as exc:
+            return (
+                DoctorCheck(
+                    "provider_quirk_diagnostics",
+                    DoctorStatus.WARNING,
+                    f"provider quirks unavailable: configuration invalid: {exc}",
+                ),
+            )
+        profile = resolve_provider_quirk_profile(
+            provider=config.provider,
+            protocol=config.protocol,
+            base_url=config.api_base_url,
+        )
+        payload = profile.to_diagnostic_payload()
+        message = (
+            f"provider_family={payload['provider_family']} "
+            f"protocol={payload['protocol']} "
+            f"cache_strategy={payload['cache_strategy']}"
+        )
+        detail = (
+            " ".join(
+                (
+                    f"prompt_cache_key={str(payload['prompt_cache_key_supported']).lower()}",
+                    f"cache_control={str(payload['cache_control_supported']).lower()}",
+                    f"automatic_prefix_cache={str(payload['automatic_prefix_cache']).lower()}",
+                    f"wire_hints={str(payload['wire_hints_supported']).lower()}",
+                )
+            )
+            + "; "
+            + " ".join(
+                (
+                    f"usage_shape={payload['usage_cached_token_shape']}",
+                    f"streaming_shape={payload['streaming_event_shape']}",
+                    f"reasoning={payload['reasoning_content_replay']}",
+                )
+            )
+        )
+        return (
+            DoctorCheck(
+                "provider_quirk_diagnostics",
+                DoctorStatus.OK,
+                message,
+                detail=detail,
+            ),
         )
 
     def _check_logs(self) -> Iterable[DoctorCheck]:

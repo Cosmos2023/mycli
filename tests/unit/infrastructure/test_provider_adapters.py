@@ -5,6 +5,7 @@ from mycli.infrastructure.providers import (
     chat_adapter_for_provider,
     infer_provider_from_base_url,
     profile_for_provider,
+    resolve_provider_quirk_profile,
 )
 from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
@@ -131,6 +132,76 @@ def test_anthropic_deepseek_base_url_cache_policy_can_be_overridden() -> None:
     )
 
     assert resolved is override
+
+
+def test_provider_quirk_profile_resolves_openai_responses() -> None:
+    profile = resolve_provider_quirk_profile(
+        provider=ProviderId.OPENAI,
+        protocol=ProtocolId.RESPONSES,
+        base_url="https://api.openai.com/v1",
+    )
+
+    assert profile.provider_family == "openai"
+    assert profile.protocol is ProtocolId.RESPONSES
+    assert profile.prompt_cache_key_supported is True
+    assert profile.cache_control_supported is False
+    assert profile.usage_cached_token_shape == "input_tokens_details.cached_tokens"
+
+
+def test_provider_quirk_profile_resolves_compatible_chat() -> None:
+    profile = resolve_provider_quirk_profile(
+        provider=ProviderId.COMPATIBLE,
+        protocol=ProtocolId.CHAT_COMPLETIONS,
+        base_url="https://example.invalid/v1",
+    )
+
+    assert profile.provider_family == "compatible"
+    assert profile.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert profile.prompt_cache_key_supported is True
+    assert profile.cache_control_supported is False
+    assert profile.wire_hints_supported is True
+
+
+def test_provider_quirk_profile_resolves_anthropic_messages() -> None:
+    profile = resolve_provider_quirk_profile(
+        provider=ProviderId.ANTHROPIC,
+        protocol=ProtocolId.ANTHROPIC_MESSAGES,
+        base_url="https://api.anthropic.com",
+    )
+
+    assert profile.provider_family == "anthropic"
+    assert profile.cache_strategy == "cache_control"
+    assert profile.prompt_cache_key_supported is False
+    assert profile.cache_control_supported is True
+    assert profile.usage_cached_token_shape == "cache_read_input_tokens"
+
+
+def test_provider_quirk_profile_resolves_deepseek_chat() -> None:
+    profile = resolve_provider_quirk_profile(
+        provider=ProviderId.DEEPSEEK,
+        protocol=ProtocolId.CHAT_COMPLETIONS,
+        base_url="https://api.deepseek.com",
+    )
+
+    assert profile.provider_family == "deepseek"
+    assert profile.cache_strategy == "automatic_prefix_cache"
+    assert profile.automatic_prefix_cache is True
+    assert profile.wire_hints_supported is False
+    assert profile.reasoning_content_replay == "reasoning_content_required_for_tool_replay"
+
+
+def test_provider_quirk_profile_resolves_deepseek_anthropic_style_endpoint() -> None:
+    profile = resolve_provider_quirk_profile(
+        provider=ProviderId.ANTHROPIC,
+        protocol=ProtocolId.ANTHROPIC_MESSAGES,
+        base_url="https://api.deepseek.com/anthropic",
+    )
+
+    assert profile.provider_family == "deepseek"
+    assert profile.protocol is ProtocolId.ANTHROPIC_MESSAGES
+    assert profile.cache_strategy == "automatic_prefix_cache"
+    assert profile.cache_control_supported is False
+    assert profile.streaming_event_shape == "anthropic_messages_compatible_events"
 
 
 def test_infer_provider_from_base_url_detects_anthropic_hosts() -> None:

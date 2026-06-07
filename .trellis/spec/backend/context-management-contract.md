@@ -844,6 +844,22 @@ trace.append(
   summaries to name a wire-only hint such as `cache_control`, but raw canonical
   fragments, persisted messages, and runtime blocks must not contain provider
   wire payload fields such as `cache_control` or full prompt-cache keys.
+- Provider quirk profiles are provider-edge metadata, not timeline content.
+  `resolve_provider_quirk_profile(...)` must resolve bounded labels from
+  configured provider, protocol, and base URL inference. It may report provider
+  family, protocol, cache strategy, hint support booleans, automatic prefix-cache
+  status, reasoning replay label, cached-token usage-shape label, streaming
+  shape label, and retry-error shape label. It must not include raw base URLs,
+  API keys, headers, provider payload bodies, raw prompts, raw tool output, or
+  full prompt-cache keys.
+- Provider quirk resolution must recognize Anthropic protocol pointed at
+  DeepSeek's Anthropic-compatible endpoint as `provider_family=deepseek` with
+  `cache_strategy=automatic_prefix_cache` and wire hints disabled. This explains
+  DeepSeek prefix-cache behavior without emitting Anthropic `cache_control`.
+- Doctor `provider_quirk_diagnostics` and provider-free eval matrix rows may
+  expose only the bounded quirk labels above. They must not mutate request
+  fragments, canonical conversation messages, provider payload snapshots, or
+  persisted session history.
 
 ### 4. Validation & Error Matrix
 
@@ -880,6 +896,10 @@ trace.append(
   approval lane state, lifecycle counts, and session continuity counts, but must
   not alter request fragments, provider payload snapshots, cache boundary hashes,
   or provider wire payloads.
+- DeepSeek Anthropic-compatible endpoint -> quirk diagnostics report
+  `provider_family=deepseek`, `protocol=anthropic_messages`,
+  `cache_strategy=automatic_prefix_cache`, and `wire_hints=false` without
+  printing base URL, key, request, response, or prompt text.
 
 ### 5. Good/Base/Bad Cases
 
@@ -893,6 +913,8 @@ trace.append(
 - Bad: Persisting `cache_control` in `RuntimeBlock.metadata`.
 - Bad: Passing Anthropic `cache_control` or `thinking` blocks through Chat
   Completions messages.
+- Bad: Inferring provider quirks by inspecting persisted transcript text or
+  provider payload bodies.
 
 ### 6. Tests Required
 
@@ -908,6 +930,11 @@ trace.append(
   request changes.
 - Unit test provider payload snapshots and dry-run comparisons are redacted.
 - Unit test provider cache policy capability gates.
+- Unit test provider quirk resolution for OpenAI, compatible, Anthropic,
+  DeepSeek Chat, and DeepSeek Anthropic-compatible endpoints.
+- Unit test doctor provider quirk diagnostics are bounded and secret-safe.
+- Unit test provider-free quirk eval matrix rows cover the supported fixture
+  lanes without live provider calls.
 - Unit test provider profile/config capability resolution and RequestPipeline
   automatic capability injection.
 - Unit test redacted dry-run renderer output contract.
@@ -925,6 +952,7 @@ trace.append(
 ```python
 block.metadata["cache_control"] = {"type": "ephemeral"}
 trace_payload["provider_request_policy"] = {"prompt_cache_key": full_key}
+quirk = infer_from_payload_body(raw_provider_payload)
 ```
 
 #### Correct
@@ -936,6 +964,7 @@ trace_payload["provider_request_policy"] = {
     "prompt_cache_key_hash": stable_hash(full_key),
     "prompt_cache_key_preview": full_key[:48] + "...",
 }
+quirk = resolve_provider_quirk_profile(provider=config.provider, protocol=config.protocol)
 ```
 
 ## Scenario: Provider Adapter Replay Hardening
