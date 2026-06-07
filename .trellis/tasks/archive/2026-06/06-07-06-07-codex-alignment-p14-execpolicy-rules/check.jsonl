@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify runtime policy diagnostics, doctor behavior, and bounded output requirements."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify no raw command, raw args, output, or secrets leak into logs/traces."}
+{"file": ".trellis/tasks/06-07-06-07-codex-alignment-p14-execpolicy-rules/prd.md", "reason": "P14 acceptance criteria and non-goals."}
