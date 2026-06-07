@@ -692,3 +692,36 @@ Completed P15a bounded runtime environment contract: model-visible dynamic env/s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Codex Alignment P15b Runtime Enforcement Kernel
+
+**Date**: 2026-06-07
+**Task**: Codex Alignment P15b Runtime Enforcement Kernel
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Implemented shell runtime enforcement options from RuntimePolicyGate into Bash/run_shell: workspace cwd, sanitized env with workspace PWD, timeout caps, bounded runtime_enforcement metadata, and redacted shell tool_execution diagnostics. Archived the P15b Trellis task after full verification.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `77f1958` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
