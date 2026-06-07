@@ -502,6 +502,267 @@ gate，让 filesystem、shell、network policy 在工具执行前成为强约束
 - P14/P15 runtime policy/sandbox/shell enforcement 回归不退。
 - compact/rehydration 实现保持未触碰。
 
+### P17: Shell Process Lifecycle Hardening
+
+目标：把 `Bash` / `run_shell` 从“能执行命令”推进到“执行后仍可治理”，补齐
+foreground/background process lifecycle、timeout、interrupt、kill、doctor 诊断。
+
+范围：
+
+- 标准化 shell process state：
+  - planned
+  - policy_checked
+  - started
+  - running_foreground
+  - running_background
+  - output_capped
+  - timed_out
+  - interrupted
+  - killed
+  - completed
+  - failed
+- 强化 `ShellRegistry` / `KillShell` / `ToolExecutionService` 的一致性。
+- timeout cleanup 和 turn interrupt cleanup 必须尝试终止子进程，并记录 bounded
+  cleanup result。
+- background shell 必须有 registry id、started_at、cwd policy summary、runtime
+  effect summary、last_observed_at、terminal state。
+- doctor 能报告 running/orphan/stale/background shell 状态。
+- trace 只输出 bounded process metadata：pid 是否存在、registry id、state、
+  elapsed_ms、output char count、truncated flags、cleanup result。
+- 不输出 raw command、raw env、stdout/stderr body、secret。
+
+非目标：
+
+- 不实现 Docker/seatbelt/seccomp/云沙箱。
+- 不做 shell command rewriting。
+- 不改 approval 语义。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- foreground timeout cleanup 有单测。
+- interrupt cleanup 有单测。
+- background registry lifecycle 有单测。
+- `KillShell` policy + lifecycle + trace 有单测。
+- doctor 能发现 stale/orphan/running background shell。
+- P14/P15/P16 runtime policy、sandbox、approval resume 回归不退。
+- compact/rehydration 实现保持未触碰。
+
+### P18: Shell Backend Contract
+
+目标：抽出 shell backend contract，让当前 local subprocess 是一个 backend，
+未来 Docker/seatbelt/remote backend 可以接入，但本期不默认实现重型隔离。
+
+范围：
+
+- 定义 provider-neutral `ShellBackend` / `ShellProcessHandle` / `ShellBackendResult`
+  contract。
+- local backend 复用 P17 process lifecycle。
+- backend selection 来自 runtime profile / sandbox profile，默认仍为 local。
+- backend capability 进入 bounded runtime environment 和 doctor summary。
+- doctor 能解释 backend unavailable / unsupported / disabled-by-policy。
+
+非目标：
+
+- 不默认上 Docker backend。
+- 不实现 SSH/Modal/Daytona/Singularity。
+- 不实现网络 firewall 或 OS sandbox。
+- 不改 provider request shape。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- local backend contract 有单测。
+- backend capability resolution 有单测。
+- backend unavailable / disabled-by-policy doctor diagnostics 有单测。
+- 现有 shell eval/smoke 不回退。
+
+### P19: Background Tool Runtime Completeness
+
+目标：把 long-running tool 和 background job 从 shell 单点能力扩展成统一 runtime
+能力，覆盖进度、取消、恢复诊断和 terminal state。
+
+范围：
+
+- 标准化 background job model：tool call id、job id、owner turn、state、
+  started_at、last_event_at、terminal result summary。
+- tool lifecycle 支持 detach / observe / cancel / collect result。
+- doctor 能发现 orphan job、missing terminal state、cancel failed、stale progress。
+- trace 输出 bounded lifecycle counters，不输出 raw tool output body。
+- shell background 复用 P17/P18；其他 tool-like action 通过同一 contract 暴露。
+
+非目标：
+
+- 不做 cron/background maintenance 产品化。
+- 不做分布式 worker。
+- 不做 remote agent/swarm。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- background job state machine 有单测。
+- cancel / collect / stale diagnostics 有单测。
+- shell background 与 generic background job id 能互相解释。
+- context/subagent/MCP/plugin/hook smoke 不回退。
+
+### P20: Skill Runtime Finalization
+
+目标：收束 P11 的兼容迁移，让 skill 长期形态稳定为 catalog + activation +
+context/timeline，而不是 provider-visible tool schema 随 skill 数量膨胀。
+
+范围：
+
+- 默认 provider-visible surface 保持一个稳定 `Skill` / skill activation 工具或
+ 等价入口。
+- skill catalog 作为 stable capability context，未激活 skill 不注入完整指令。
+- active skill instructions 落入 replayable timeline/context snapshot。
+- skill 文件被删除、改名、升级时，历史 turn 仍能 replay 已激活语义。
+- doctor 能报告 skill catalog drift、missing activated skill snapshot、tool schema
+  stability。
+
+非目标：
+
+- 不做完整 marketplace。
+- 不做 skill package manager 产品化。
+- 不把所有 skill 都暴露成独立 provider tool。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- 新增/删除未激活 skill 不改变默认 provider tool schema。
+- activated skill replay 有单测。
+- missing skill file 的历史 replay 有单测。
+- doctor skill runtime diagnostics 有单测。
+- prefix-cache stable tool schema 回归不退。
+
+### P21: Provider Edge Quirk Registry And Eval Matrix
+
+目标：把已经积累的 DeepSeek / OpenAI-compatible / Responses proxy /
+Anthropic-style edge 行为沉淀为显式 provider quirk registry 和可回归 eval matrix，
+避免 quirks 散落在 adapter 条件分支里。
+
+范围：
+
+- 标准化 provider quirk metadata：
+  - prompt cache mechanism
+  - supports / rejects `prompt_cache_key`
+  - Anthropic `cache_control` behavior
+  - encrypted reasoning handling
+  - usage cached-token shape
+  - streaming event quirks
+  - retry/error classification quirks
+- local/fake provider fixtures 覆盖主要 quirks。
+- live eval 只作为显式 opt-in，不进入默认测试。
+- doctor/provider diagnostics 输出 bounded quirk summary。
+
+非目标：
+
+- 不做真实 provider API 默认调用。
+- 不扩大 provider-specific compact engine。
+- 不把 provider quirks 放进 canonical timeline。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- quirk resolution 有单测。
+- DeepSeek OpenAI-compatible / DeepSeek Anthropic-style / Responses proxy fixtures
+  有本地回归。
+- streaming + usage normalization fixtures 有单测。
+- redaction 边界不回退。
+
+### P22: Evaluation Quality Harness
+
+目标：把当前 smoke/eval 变成可长期比较的质量回归矩阵，覆盖 coding agent 的真实
+任务链路，而不是只验证单个 provider 或单个 tool。
+
+范围：
+
+- 扩充 provider-free scenario corpus：
+  - file edit
+  - patch failure recovery
+  - approval pause/resume
+  - sandbox deny
+  - background shell lifecycle
+  - subagent delegation
+  - MCP/plugin/hook smoke
+  - skill activation replay
+  - provider request shape stability
+- 为每个 scenario 输出 bounded score/report。
+- 支持本地 fake model / fake provider / dry-run mode。
+- 可选 live provider eval 需要显式配置和 redacted result capture。
+
+非目标：
+
+- 不引入第三方 eval 平台。
+- 不默认跑真实 provider API。
+- 不做网页 dashboard。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- scenario runner 有文档和单测。
+- 至少覆盖 P14-P21 的关键 runtime/provider regression。
+- eval artifact 不包含 raw secret、raw provider payload body、raw tool output body。
+- CI/本地都能 provider-free 跑核心矩阵。
+
+### P23: External Gateway / ACP Readiness
+
+目标：在 runtime/tool/approval/event contract 稳定后，定义最小外部协议 readiness，
+为未来 HTTP/Webhook/ACP 做准备，但不在本阶段产品化多平台 gateway。
+
+范围：
+
+- 定义 gateway-facing manifest：
+  - tools
+  - toolsets
+  - approval actions
+  - runtime event stream
+  - session/turn ids
+  - redaction contract
+- Node TUI gateway 与 manifest/event contract 对齐。
+- doctor 能检查 gateway manifest/runtime consistency。
+- ACP 只做 contract gap list，不实现 adapter。
+
+非目标：
+
+- 不实现 ACP server。
+- 不做 Slack/Telegram/remote agent/swarm。
+- 不做 OAuth/auth 产品化。
+- 不改 compact/rehydration 实现。
+
+验收：
+
+- gateway manifest contract 有单测。
+- Node TUI gateway smoke 不回退。
+- doctor manifest/runtime consistency 有单测。
+- ACP readiness 文档列出阻塞项和后续阶段。
+
+### P24: Memory And Maintenance Readiness
+
+目标：只定义 memory/background maintenance 的边界和 readiness，不把完整 memory
+system 或 background maintenance 混进 runtime kernel 阶段。
+
+范围：
+
+- 明确 memory-like context 的 durable/timeline/request-shape 边界。
+- 明确 background maintenance 与 user turn runtime 的隔离边界。
+- 定义未来 memory tool / session search / background summarization 的最小
+  contract。
+- 保持现有 compact/rehydration 为受保护边界，只增加只读 contract tests 或文档。
+
+非目标：
+
+- 不实现完整 memory system。
+- 不实现 background maintenance。
+- 不实现 provider-specific compact engine。
+- 不模仿 Codex compact rehydration。
+
+验收：
+
+- readiness 文档明确数据归属、redaction、diagnostics、test plan。
+- 未来 P25+ 可以基于该文档开独立 goal。
+- compact/rehydration 实现保持未触碰。
+
 ---
 
 ## 6. 优先级
@@ -519,6 +780,14 @@ P9 Runtime Kernel Contract
   -> P15b Runtime Enforcement Kernel
   -> P15c Sandbox Policy Enforcement
   -> P16 Approval Resume Enforcement Hardening
+  -> P17 Shell Process Lifecycle Hardening
+  -> P18 Shell Backend Contract
+  -> P19 Background Tool Runtime Completeness
+  -> P20 Skill Runtime Finalization
+  -> P21 Provider Edge Quirk Registry And Eval Matrix
+  -> P22 Evaluation Quality Harness
+  -> P23 External Gateway / ACP Readiness
+  -> P24 Memory And Maintenance Readiness
 ```
 
 原因：
@@ -527,6 +796,14 @@ P9 Runtime Kernel Contract
 - P11 依赖稳定 tool runtime，否则 skill 从 tool 迁出时容易破坏现有 smoke。
 - P12 依赖 timeline/source-of-truth 明确，否则 compact/resume 很容易变成另一套 prompt 拼接。
 - P13 最后做，避免 doctor 固化还没稳定的 contract。
+- P17-P19 接着 P14-P16 做 shell/process/background，是 runtime enforcement
+  自然后半段。
+- P20 等 tool/runtime 稳定后再收束 skill，避免再次把 skill 做成 provider
+  schema 膨胀点。
+- P21/P22 把 provider quirks 和 eval 沉淀成回归资产，但真实 provider 调用仍然
+  opt-in。
+- P23/P24 只做 readiness，因为 gateway/ACP/memory/background maintenance 都应在
+  runtime kernel 稳定后独立产品化。
 
 ---
 

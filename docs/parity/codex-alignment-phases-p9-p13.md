@@ -52,6 +52,14 @@ context 暴露给模型，P15b 强化 shell lane execution options，P15c 再把
 filesystem/shell/network sandbox policy 作为 effect-profile-driven execution
 gate。P15c 必须保持 compact/rehydration 实现未触碰。
 
+P16 已把 runtime enforcement 与 approval pause/resume 接稳。P17-P24 继续沿
+runtime kernel 后半段推进：先补 shell process lifecycle 和 backend contract，
+再补 background tool runtime、skill runtime finalization、provider quirk
+registry、evaluation harness、gateway/ACP readiness、memory/background
+maintenance readiness。P17-P24 仍然不触碰 compact/rehydration 实现，不模仿
+Codex compact rehydration；gateway、ACP、完整 memory system 和 background
+maintenance 只做 readiness 或后续独立项目，不混进 shell/runtime hardening。
+
 ---
 
 ## P9 Runtime Kernel Contract
