@@ -777,3 +777,58 @@ Verification:
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Codex alignment P16 approval resume enforcement hardening
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P16 approval resume enforcement hardening
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Recovered pending approvals from structured suspended-turn state, added bounded approval_recovery diagnostics, and archived the P16 task.
+
+### Main Changes
+
+Completed P16 approval resume enforcement hardening.
+
+Changes:
+- TurnExecutor.resolve_pending_approval now recovers a PendingDecision from SuspendedTurn.pending_approval when the pending_decision row is missing.
+- Existing pending-decision-only suspended-turn reconstruction remains intact.
+- Added bounded approval_recovery trace/log diagnostics with state booleans, option count, command-pattern presence, tool name, and call id only.
+- Doctor approval diagnostics now summarize approval_recovery result counts and still avoids raw commands, raw args, prompts, output, provider payloads, headers, and secrets.
+- Updated backend specs and Codex alignment roadmap with the P16 contract.
+
+Verification:
+- RED observed for suspended-only approval resume before implementation.
+- uv run pytest focused approval/resume tests -q: passed.
+- uv run pytest tests/unit/services/test_doctor_service.py approval diagnostics tests -q: passed.
+- uv run ruff check src tests evaluation: passed.
+- uv run mypy src/mycli: passed.
+- uv run pytest tests/integration/test_turn_service.py tests/unit/services/test_doctor_service.py tests/integration/test_node_tui_gateway.py -q: 120 passed.
+- uv run python evaluation/context_smoke.py: ok=true.
+- uv run python evaluation/provider_cache_policy_smoke.py: passed.
+- uv run pytest -q: 1484 passed.
+- git diff --check: passed.
+- compact/rehydration diff audit: clean.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `df6279f` | (see git log) |
+| `0574e1d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
