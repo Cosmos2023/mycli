@@ -848,3 +848,8 @@ Verification:
 ## 2026-06-07 P20 Skill Runtime Finalization
 - Added bounded doctor skill runtime diagnostics over skill activation traces while preserving stable default Skill tool behavior.
 - Verification: uv run ruff check src tests evaluation; uv run mypy src/mycli; uv run pytest -q; git diff --check; compact/rehydration diff audit empty.
+
+## 2026-06-07 P21 Provider Quirk Registry
+- Added bounded ProviderQuirkProfile metadata and resolver for OpenAI Responses, compatible Chat, Anthropic Messages, DeepSeek Chat, and DeepSeek Anthropic-style endpoints.
+- Added doctor provider quirk diagnostics plus provider-free quirk matrix eval rows without live provider calls or canonical timeline mutation.
+- Verification: uv run ruff check src tests evaluation; uv run mypy src/mycli; uv run pytest -q; uv run python evaluation/provider_cache_policy_smoke.py; uv run python evaluation/provider_quirk_matrix.py; uv run python evaluation/context_smoke.py; uv run python evaluation/subagent_smoke.py && uv run python evaluation/mcp_smoke.py && uv run python evaluation/plugin_runtime_smoke.py && uv run python evaluation/hook_smoke.py; git diff --check; compact/rehydration diff audit empty.
