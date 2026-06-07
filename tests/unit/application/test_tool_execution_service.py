@@ -537,6 +537,79 @@ def test_tool_execution_service_execpolicy_allow_runs_shell_with_bounded_trace(
     assert "print" not in str(policy_trace.payload)
 
 
+def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+            workspace_root=tmp_path,
+        ),
+        registry=ToolRegistry.from_tools([BashTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=BashTool(tmp_path).spec,
+            ),
+        )
+    )
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "python3 -c 'print(\"ok\")'", "timeout": 999},
+            reason="probe",
+            call_id="call_shell_enforced",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert fake_tool.seen_arguments == []
+    result_item = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    runtime_enforcement = result_item.metadata["raw_payload"]["runtime_enforcement"]
+    assert runtime_enforcement["filesystem"] == "workspace_write"
+    assert runtime_enforcement["shell"] == "restricted"
+    assert runtime_enforcement["env_policy"] == "sanitized"
+    assert runtime_enforcement["timeout_seconds"] <= 120
+    assert runtime_enforcement["timeout_capped"] is True
+    assert "command" not in runtime_enforcement
+    assert "secret" not in str(runtime_enforcement).lower()
+
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    tool_trace = next(event for event in trace if event.kind == "tool_execution")
+    assert tool_trace.payload["runtime_enforcement"] == runtime_enforcement
+    assert "_runtime_shell_options" not in tool_trace.payload["argument_keys"]
+    assert "_runtime_shell_options" not in str(tool_trace.payload.get("arguments"))
+    assert tool_trace.payload["arguments"] == {
+        "redacted": True,
+        "argument_count": 2,
+    }
+    assert tool_trace.payload["argument_preview"] == "argument_count=2 redacted=True"
+    assert tool_trace.payload["stdout_preview"] is None
+    assert tool_trace.payload["stderr_preview"] is None
+    assert tool_trace.payload["stdout_chars"] == 2
+    assert tool_trace.payload["stderr_chars"] == 0
+    assert "command" not in tool_trace.payload["raw_payload_keys"]
+    assert "output" not in tool_trace.payload["raw_payload_keys"]
+    assert "stdout" not in tool_trace.payload["raw_payload_keys"]
+    assert "stderr" not in tool_trace.payload["raw_payload_keys"]
+    assert "python3 -c" not in str(tool_trace.payload)
+    assert "print" not in str(tool_trace.payload)
+
+
 def test_tool_execution_service_runtime_policy_allows_contributed_tool(
     tmp_path: Path,
 ) -> None:
@@ -1791,7 +1864,7 @@ def test_tool_execution_service_legacy_mutation_paths_include_patch(tmp_path: Pa
     assert paths == ("app.py",)
 
 
-def test_tool_execution_service_trace_argument_preview_redacts_secret_values(
+def test_tool_execution_service_trace_argument_preview_redacts_shell_arguments(
     tmp_path: Path,
 ) -> None:
     service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
@@ -1808,7 +1881,31 @@ def test_tool_execution_service_trace_argument_preview_redacts_secret_values(
         effect_profile=ToolEffectProfile(process=True),
     )
 
+    assert payload["arguments"] == {"redacted": True, "argument_count": 2}
+    assert payload["argument_preview"] == "argument_count=2 redacted=True"
+    assert "deploy" not in str(payload)
+    assert "secret-value" not in str(payload)
+
+
+def test_tool_execution_service_trace_argument_preview_redacts_non_shell_secret_values(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
+
+    payload = service._tool_execution_trace_payload(  # type: ignore[attr-defined]
+        call=ToolCall(
+            name="runtime_echo",
+            arguments={"message": "deploy", "api_key": "secret-value"},
+            reason="deploy",
+            call_id="call_secret_1",
+        ),
+        result=ToolResult(success=True, summary="done", raw_payload={}),
+        duration_seconds=0.1,
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
     assert "api_key=<redacted>" in payload["argument_preview"]
+    assert "message=deploy" in payload["argument_preview"]
     assert "secret-value" not in payload["argument_preview"]
 
 

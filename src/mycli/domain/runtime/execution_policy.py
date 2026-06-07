@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 import shlex
-from typing import Literal, Protocol
+from typing import Literal, Protocol, SupportsInt
 
 from mycli.domain.runtime.approvals import PendingApproval
 from mycli.domain.runtime.execpolicy import ExecPolicyMatch, ExecPolicyRule
@@ -14,6 +14,22 @@ from mycli.domain.tooling.calls import ToolCall
 FilesystemPolicy = Literal["read_only", "workspace_write", "unrestricted"]
 NetworkPolicy = Literal["disabled", "enabled"]
 ShellPolicy = Literal["disabled", "restricted", "enabled"]
+ShellEnvPolicy = Literal["inherit", "sanitized"]
+
+DEFAULT_SHELL_TIMEOUT_SECONDS = 120
+DEFAULT_SHELL_OUTPUT_CHAR_LIMIT = 10_000
+SAFE_SHELL_ENV_KEYS = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "PWD",
+    "SHELL",
+    "TERM",
+    "TMPDIR",
+    "USER",
+)
 
 
 class ToolRuntimeDecisionKind(StrEnum):
@@ -56,6 +72,64 @@ class ExecutionPolicy:
                 cwd=resolved,
             )
         )
+
+
+@dataclass(slots=True, frozen=True)
+class ShellExecutionOptions:
+    workspace_root: Path
+    filesystem: FilesystemPolicy = "workspace_write"
+    network: NetworkPolicy = "enabled"
+    shell: ShellPolicy = "restricted"
+    env_policy: ShellEnvPolicy = "sanitized"
+    max_timeout_seconds: int = DEFAULT_SHELL_TIMEOUT_SECONDS
+    output_char_limit: int = DEFAULT_SHELL_OUTPUT_CHAR_LIMIT
+
+    @classmethod
+    def from_policy(cls, policy: ExecutionPolicy) -> "ShellExecutionOptions":
+        return cls(
+            workspace_root=policy.sandbox.cwd,
+            filesystem=policy.sandbox.filesystem,
+            network=policy.sandbox.network,
+            shell=policy.sandbox.shell,
+        )
+
+    def effective_timeout(self, requested_timeout: object) -> tuple[int, bool]:
+        if isinstance(requested_timeout, str | bytes | bytearray) or isinstance(
+            requested_timeout,
+            SupportsInt,
+        ):
+            try:
+                requested = int(requested_timeout)
+            except (TypeError, ValueError):
+                requested = self.max_timeout_seconds
+        else:
+            requested = self.max_timeout_seconds
+        if requested < 0:
+            requested = 0
+        cap = max(0, self.max_timeout_seconds)
+        return min(requested, cap), requested > cap
+
+    def to_trace_payload(
+        self,
+        *,
+        timeout_seconds: int,
+        timeout_capped: bool,
+        env_keys: tuple[str, ...],
+        cwd: Path | str | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "filesystem": self.filesystem,
+            "network": self.network,
+            "shell": self.shell,
+            "env_policy": self.env_policy,
+            "env_keys": list(env_keys),
+            "timeout_seconds": timeout_seconds,
+            "timeout_capped": timeout_capped,
+            "output_char_limit": self.output_char_limit,
+        }
+        if cwd is not None:
+            payload["cwd"] = str(cwd)
+        return payload
 
 
 @dataclass(slots=True, frozen=True)

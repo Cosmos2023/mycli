@@ -68,6 +68,7 @@ FILE_MUTATION_TOOLS = frozenset(
     }
 )
 
+SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
 WriteDiagnosticsRunner = Callable[[tuple[str, ...]], dict[str, object]]
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_WRITE_DIAGNOSTICS = 30
@@ -341,6 +342,7 @@ class ToolExecutionService:
                 response_id=response_id,
                 metadata=metadata,
             )
+        execution_call = self._with_runtime_execution_options(normalized_call)
         snapshot_ids = self._snapshot_before_file_mutation(
             call=normalized_call,
             tool_router=tool_router,
@@ -349,7 +351,7 @@ class ToolExecutionService:
             turn_metadata=turn_metadata,
         )
         try:
-            result = tool_router.execute(normalized_call, exposure=tool_exposure)
+            result = tool_router.execute(execution_call, exposure=tool_exposure)
         except KeyboardInterrupt:
             interrupted_result = self._interrupted_tool_result(normalized_call)
             self._finalize_file_history_snapshots(
@@ -848,6 +850,19 @@ class ToolExecutionService:
         )
         return decision
 
+    def _with_runtime_execution_options(self, call: ToolCall) -> ToolCall:
+        if self._policy_gate is None or call.name not in SHELL_TOOL_NAMES:
+            return call
+        return ToolCall(
+            name=call.name,
+            arguments={
+                **call.arguments,
+                "_runtime_shell_options": self._policy_gate.shell_execution_options(),
+            },
+            reason=call.reason,
+            call_id=call.call_id,
+        )
+
     def _runtime_policy_tool_result(
         self,
         decision: ToolRuntimeDecision,
@@ -1320,19 +1335,30 @@ class ToolExecutionService:
         raw_path = result.raw_payload.get("path") or call.arguments.get("file_path") or call.arguments.get("path")
         path = raw_path if isinstance(raw_path, str) and raw_path else None
         error_kind = result.raw_payload.get("error_kind")
-        argument_keys = tuple(sorted(str(key) for key in call.arguments))
-        raw_payload_keys = tuple(sorted(str(key) for key in result.raw_payload))
+        visible_argument_keys = tuple(
+            sorted(str(key) for key in _visible_tool_arguments(call.arguments))
+        )
+        visible_arguments = self._trace_arguments_payload(
+            call=call,
+            visible_argument_keys=visible_argument_keys,
+        )
+        raw_payload_keys = self._trace_raw_payload_keys(call=call, result=result)
+        output_metadata = self._trace_output_metadata(call=call, result=result)
         return {
             "tool_name": call.name,
             "tool_id": self._tool_lifecycle_id(call),
             "tool_call_id": call.call_id or "",
-            "arguments": call.arguments,
-            "argument_preview": self._trace_arguments_preview(call.arguments),
-            "argument_count": len(argument_keys),
-            "argument_keys": list(argument_keys),
+            "arguments": visible_arguments,
+            "argument_preview": self._trace_arguments_preview(visible_arguments),
+            "argument_count": len(visible_argument_keys),
+            "argument_keys": list(visible_argument_keys),
             "summary": result.summary,
             "result_summary": self._trace_preview(result.summary, max_chars=200),
-            "error_summary": self._trace_preview(result.error, max_chars=200),
+            "error_summary": (
+                None
+                if call.name in SHELL_TOOL_NAMES
+                else self._trace_preview(result.error, max_chars=200)
+            ),
             "success": result.success,
             "status": "succeeded" if result.success else "failed",
             "duration_ms": duration_ms,
@@ -1345,9 +1371,101 @@ class ToolExecutionService:
             "hook_summaries": [
                 summary.safe_payload() for summary in hook_summaries
             ],
-            **self._trace_text_metadata("stdout", result.raw_payload.get("stdout")),
-            **self._trace_text_metadata("stderr", result.raw_payload.get("stderr")),
+            **output_metadata,
+            **self._runtime_enforcement_trace_payload(result.raw_payload),
             **self._write_diagnostics_trace_payload(result.raw_payload),
+        }
+
+    def _trace_arguments_payload(
+        self,
+        *,
+        call: ToolCall,
+        visible_argument_keys: tuple[str, ...],
+    ) -> dict[str, object]:
+        if call.name not in SHELL_TOOL_NAMES:
+            return _visible_tool_arguments(call.arguments)
+        if not visible_argument_keys:
+            return {}
+        return {
+            "redacted": True,
+            "argument_count": len(visible_argument_keys),
+        }
+
+    def _trace_output_metadata(
+        self,
+        *,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> dict[str, object]:
+        if call.name not in SHELL_TOOL_NAMES:
+            return {
+                **self._trace_text_metadata("stdout", result.raw_payload.get("stdout")),
+                **self._trace_text_metadata("stderr", result.raw_payload.get("stderr")),
+            }
+        return {
+            "stdout_preview": None,
+            "stdout_chars": self._trace_text_chars(result.raw_payload.get("stdout")),
+            "stdout_truncated": bool(result.raw_payload.get("stdout_truncated", False)),
+            "stderr_preview": None,
+            "stderr_chars": self._trace_text_chars(result.raw_payload.get("stderr")),
+            "stderr_truncated": bool(result.raw_payload.get("stderr_truncated", False)),
+        }
+
+    def _trace_raw_payload_keys(
+        self,
+        *,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> tuple[str, ...]:
+        if call.name not in SHELL_TOOL_NAMES:
+            return tuple(sorted(str(key) for key in result.raw_payload))
+        allowed_shell_keys = {
+            "cwd",
+            "duration_ms",
+            "error_kind",
+            "exit_code",
+            "output_chars",
+            "runtime_enforcement",
+            "stderr_chars",
+            "stderr_truncated",
+            "stdout_chars",
+            "stdout_truncated",
+            "timed_out",
+            "truncated",
+            "truncated_chars",
+        }
+        return tuple(
+            sorted(
+                str(key)
+                for key in result.raw_payload
+                if str(key) in allowed_shell_keys
+            )
+        )
+
+    def _runtime_enforcement_trace_payload(
+        self,
+        result_payload: dict[str, object],
+    ) -> dict[str, object]:
+        runtime_enforcement = result_payload.get("runtime_enforcement")
+        if not isinstance(runtime_enforcement, dict):
+            return {"runtime_enforcement": None}
+        allowed_keys = {
+            "filesystem",
+            "network",
+            "shell",
+            "env_policy",
+            "env_keys",
+            "timeout_seconds",
+            "timeout_capped",
+            "output_char_limit",
+            "cwd",
+        }
+        return {
+            "runtime_enforcement": {
+                key: runtime_enforcement[key]
+                for key in sorted(allowed_keys)
+                if key in runtime_enforcement
+            }
         }
 
     def _write_diagnostics_trace_payload(
@@ -1762,6 +1880,11 @@ class ToolExecutionService:
             f"{prefix}_truncated": len(normalized) > max_chars,
         }
 
+    def _trace_text_chars(self, value: object) -> int:
+        if not isinstance(value, str) or not value.strip():
+            return 0
+        return len(self._context_manager._normalize_whitespace(value))
+
     def _lifecycle_text_metadata(self, prefix: str, value: str) -> dict[str, object]:
         normalized = self._context_manager._normalize_whitespace(value)
         return {
@@ -1806,6 +1929,14 @@ def _apply_post_hook_results(
         elif action is HookAction.MODIFY and isinstance(modified_args, dict):
             updated = _with_post_hook_modifications(updated, modified_args)
     return updated
+
+
+def _visible_tool_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in arguments.items()
+        if not str(key).startswith("_")
+    }
 
 
 def _with_post_hook_modifications(

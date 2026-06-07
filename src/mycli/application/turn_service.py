@@ -807,8 +807,9 @@ class TurnService:
             if isinstance(route_name, str) and route_name and route_name not in parts:
                 parts.append(route_name)
 
+            is_shell_trace = tool_name in {"Bash", "run_shell"}
             arguments = event.payload.get("arguments")
-            if isinstance(arguments, dict):
+            if isinstance(arguments, dict) and not is_shell_trace:
                 args = arguments.get("args")
                 if isinstance(args, list) and args and all(isinstance(item, str) for item in args):
                     parts.append(f"args={' '.join(args)}")
@@ -898,11 +899,11 @@ class TurnService:
                 parts.append(f"summary={summary}")
 
             stdout_preview = event.payload.get("stdout_preview")
-            if isinstance(stdout_preview, str) and stdout_preview:
+            if not is_shell_trace and isinstance(stdout_preview, str) and stdout_preview:
                 parts.append(f"stdout={stdout_preview}")
 
             stderr_preview = event.payload.get("stderr_preview")
-            if isinstance(stderr_preview, str) and stderr_preview:
+            if not is_shell_trace and isinstance(stderr_preview, str) and stderr_preview:
                 parts.append(f"stderr={stderr_preview}")
 
             lines.append(" ".join(parts))

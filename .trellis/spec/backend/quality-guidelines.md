@@ -301,6 +301,14 @@ Questions to answer:
   - ExecPolicy diagnostics must never render the raw command, raw rule pattern
     tokens, raw argument values, or secret-like values. The pattern hash is the
     stable join point across trace, doctor, and dry-run.
+  - Shell runtime enforcement metadata may expose only bounded fields:
+    filesystem, network, shell, env policy, env key names, timeout seconds,
+    timeout capped flag, output char limit, and cwd. It must never expose env
+    values, raw command text, raw arguments, stdout/stderr bodies, or secret-like
+    values.
+  - Shell `tool_execution` trace payloads must keep `arguments` value-redacted
+    and may expose only argument keys/count plus stdout/stderr character and
+    truncation counters. Shell stdout/stderr previews must be empty.
   - Allowed-only runtime policy rows -> `runtime_policy_diagnostics=ok`.
   - `needs_approval` or `denied` runtime policy rows ->
     `runtime_policy_diagnostics=warning` with bounded decision/risk/policy
@@ -439,6 +447,8 @@ for line in render_doctor_report(report):
 - Unit test RuntimePolicyGate and runtime execution for ExecPolicy
   `allow`/`deny`/`ask` decisions on `Bash` / `run_shell`.
 - Unit test ExecPolicy trace, doctor, and dry-run redaction.
+- Unit test shell runtime enforcement for workspace cwd, sanitized env, timeout
+  cap, output limit metadata, and runtime-only argument filtering.
 - Provider-free smoke must include runtime diagnostics fields.
 
 #### 7. Wrong vs Correct

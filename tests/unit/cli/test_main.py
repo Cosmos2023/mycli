@@ -1981,7 +1981,7 @@ def test_turn_service_inspect_trace_includes_tool_summary_and_arguments(tmp_path
     rendered = service.inspect_trace()
 
     assert rendered == (
-        "tool_execution run_shell args=pwd summary=Command exited with 0 stdout=/Users/cosmos/Desktop/mycli",
+        "tool_execution run_shell summary=Command exited with 0",
     )
 
 

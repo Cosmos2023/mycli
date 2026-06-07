@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for runtime enforcement work"}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Context/runtime policy and redaction contracts"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Runtime diagnostics and doctor quality contracts"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Logging and trace redaction boundaries"}
+{"file": ".trellis/tasks/06-07-codex-alignment-p15b-runtime-enforcement-kernel/research/current-shell-runtime-enforcement-shape.md", "reason": "Current shell enforcement research"}

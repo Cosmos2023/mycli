@@ -68,6 +68,15 @@ the local log root and must never become provider transcript inputs.
   hash, pattern length, and shell argument count. They must not include raw
   command text, raw rule pattern tokens, raw argument values, stdout/stderr,
   file contents, headers, or secret-like values.
+- Shell runtime enforcement diagnostics are local runtime evidence. They may
+  include bounded filesystem/network/shell lanes, env policy, env key names,
+  timeout caps, output limits, and cwd. They must not include raw environment
+  values, raw command text, raw arguments, stdout/stderr bodies, file contents,
+  headers, or secret-like values.
+- Shell `tool_execution` trace rows may expose argument key/count metadata and
+  output character/truncation counters only. They must redact argument values
+  and set stdout/stderr previews to empty even when the underlying tool result
+  contains command text or output bodies for transcript rendering.
 - When runtime config disables medium-risk auto-approval, local mutation tools
   such as `Edit`, `Write`, and `KillShell` should produce pending approval
   decisions with `safety_metadata.policy=medium_risk_requires_approval`.

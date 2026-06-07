@@ -24,7 +24,13 @@ class ShellProcessRegistry:
         self._processes: dict[str, ShellProcess] = {}
         self._lock = threading.Lock()
 
-    def start(self, command: str, *, workdir: str | None = None) -> ShellProcess:
+    def start(
+        self,
+        command: str,
+        *,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ShellProcess:
         process = subprocess.Popen(
             command,
             shell=True,
@@ -33,6 +39,7 @@ class ShellProcessRegistry:
             text=True,
             cwd=workdir or os.getcwd(),
             executable=os.environ.get("SHELL", "/bin/bash"),
+            env=env,
         )
         shell = ShellProcess(
             shell_id=uuid4().hex[:8],

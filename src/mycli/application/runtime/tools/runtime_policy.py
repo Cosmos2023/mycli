@@ -7,6 +7,7 @@ from mycli.domain.runtime import (
     ExecPolicyRuleSet,
     ExecutionPolicy,
     SandboxProfile,
+    ShellExecutionOptions,
     ToolRuntimeDecision,
 )
 from mycli.domain.tooling.calls import ToolCall
@@ -102,6 +103,12 @@ class RuntimePolicyGate:
             call=call,
             sandbox=resolved_policy.sandbox,
         )
+
+    def shell_execution_options(
+        self,
+        policy: ExecutionPolicy | None = None,
+    ) -> ShellExecutionOptions:
+        return ShellExecutionOptions.from_policy(policy or self.default_policy())
 
     def _execpolicy_decision(
         self,

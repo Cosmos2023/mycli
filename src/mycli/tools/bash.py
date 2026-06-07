@@ -7,6 +7,8 @@ import subprocess
 import time
 from typing import Any
 
+from mycli.domain.runtime import ShellExecutionOptions
+from mycli.domain.runtime.execution_policy import SAFE_SHELL_ENV_KEYS
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
@@ -51,11 +53,12 @@ def execute_bash(
     timeout: int = 120,
     workdir: str | None = None,
     run_in_background: bool = False,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     effective_cwd = workdir or os.getcwd()
     started = time.monotonic()
     if run_in_background:
-        background_payload = _run_background(command, timeout, effective_cwd)
+        background_payload = _run_background(command, timeout, effective_cwd, env=env)
         background_payload["cwd"] = effective_cwd
         background_payload["duration_ms"] = _duration_ms(started)
         return background_payload
@@ -69,6 +72,7 @@ def execute_bash(
             timeout=timeout,
             cwd=effective_cwd,
             executable=os.environ.get("SHELL", "/bin/bash"),
+            env=env,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -94,6 +98,8 @@ def execute_bash(
             "output_chars": output_meta["original_chars"],
             "stdout_chars": stdout_meta["original_chars"],
             "stderr_chars": stderr_meta["original_chars"],
+            "stdout_truncated": stdout_meta["truncated"],
+            "stderr_truncated": stderr_meta["truncated"],
             "truncated_chars": output_meta["truncated_chars"],
         }
 
@@ -113,6 +119,8 @@ def execute_bash(
         "output_chars": output_meta["original_chars"],
         "stdout_chars": stdout_meta["original_chars"],
         "stderr_chars": stderr_meta["original_chars"],
+        "stdout_truncated": stdout_meta["truncated"],
+        "stderr_truncated": stderr_meta["truncated"],
         "truncated_chars": output_meta["truncated_chars"],
     }
     if result.returncode != 0:
@@ -124,8 +132,9 @@ def _run_background(
     command: str,
     timeout: int,
     workdir: str | None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    shell = SHELL_REGISTRY.start(command, workdir=workdir)
+    shell = SHELL_REGISTRY.start(command, workdir=workdir, env=env)
     _background_processes.clear()
     _background_processes.update(SHELL_REGISTRY.processes())
     return {
@@ -252,13 +261,24 @@ class BashTool:
         cwd_result = self._resolve_cwd(arguments.get("cwd"))
         if isinstance(cwd_result, ToolResult):
             return cwd_result
+        shell_options = _shell_execution_options(arguments.get("_runtime_shell_options"))
+        timeout_value = arguments.get("timeout", 120)
+        timeout, timeout_capped = shell_options.effective_timeout(timeout_value)
+        env = _shell_env(shell_options)
         payload = execute_bash(
             command_value,
-            timeout=int(arguments.get("timeout", 120)),
+            timeout=timeout,
             workdir=str(cwd_result),
             run_in_background=bool(arguments.get("run_in_background", False)),
+            env=env,
         )
         payload.setdefault("command_pattern", analysis.command_pattern)
+        payload["runtime_enforcement"] = shell_options.to_trace_payload(
+            timeout_seconds=timeout,
+            timeout_capped=timeout_capped,
+            env_keys=tuple(sorted(env)),
+            cwd=cwd_result,
+        )
         exit_code = payload.get("exit_code")
         success = exit_code == 0 or payload.get("status") == "running"
         return ToolResult(
@@ -308,6 +328,25 @@ class BashTool:
                 },
             )
         return cwd
+
+
+def _shell_execution_options(value: object) -> ShellExecutionOptions:
+    if isinstance(value, ShellExecutionOptions):
+        return value
+    return ShellExecutionOptions(workspace_root=Path.cwd())
+
+
+def _shell_env(options: ShellExecutionOptions) -> dict[str, str]:
+    if options.env_policy == "inherit":
+        return dict(os.environ)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in SAFE_SHELL_ENV_KEYS and isinstance(value, str)
+    }
+    env.setdefault("PATH", os.defpath)
+    env["PWD"] = str(options.workspace_root)
+    return env
 
 
 def _suggested_tool_arguments(command: str) -> dict[str, object]:

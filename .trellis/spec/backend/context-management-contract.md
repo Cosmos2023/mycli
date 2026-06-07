@@ -57,6 +57,16 @@
   environment variables, secret values, raw command text, raw execpolicy rule
   pattern tokens, stdout/stderr, local file payloads, headers, or provider wire
   payload bodies.
+- Shell runtime enforcement is the execution-side counterpart to the
+  model-visible runtime environment contract. It may enforce workspace cwd,
+  sanitized env policy, timeout caps, and output limits, but these enforcement
+  options remain runtime-only and must not become provider-visible tool schema
+  fields or stable prompt text.
+- Shell runtime enforcement diagnostics may report argument key/count metadata,
+  env key names, timeout/output limits, cwd, and output character/truncation
+  counters. They must not report shell argument values, command text,
+  stdout/stderr previews, stdout/stderr bodies, inherited env values, headers,
+  secrets, or provider payload bodies.
 - Workspace context, memory, session summaries, and compaction rehydration must be
   rendered inside explicit reference fences that say the content is not the
   current user request/new user input.

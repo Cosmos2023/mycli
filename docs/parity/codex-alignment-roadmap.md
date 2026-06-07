@@ -412,6 +412,35 @@ Provider adapter 不应负责：
 - 只暴露 execpolicy enabled/disabled、rule count 和 source summary。
 - compact/rehydration 实现保持未触碰。
 
+### P15b: Runtime Enforcement Kernel
+
+目标：把 P15a 的 runtime posture 从“模型可见事实”推进到 shell lane 的
+runtime 强约束，让 `Bash` / `run_shell` 获得统一的 workspace cwd、env、
+timeout、output limit enforcement。
+
+范围：
+
+- `ShellExecutionOptions` 从 `ExecutionPolicy` / `SandboxProfile` 解析
+  filesystem、network、shell、env policy、timeout cap、output limit。
+- `ToolExecutionService` 对 shell lane 注入 runtime-only enforcement
+  options；该参数不进入 provider-visible tool schema，也不进入 trace
+  argument keys。
+- `BashTool` 使用 sanitized env allowlist 和 timeout cap 执行命令，并在
+  raw payload / trace 中输出 bounded `runtime_enforcement` metadata。
+- 保持 P14 execpolicy allow / deny / ask 行为。
+- shell `tool_execution` trace 只保留参数 key/count、bounded enforcement
+  metadata、stdout/stderr char/truncated counters；不保留 raw command、
+  argument values 或 stdout/stderr preview/body。
+- 不输出 raw env values、secret、raw command、raw execpolicy pattern tokens、
+  stdout/stderr body 或 provider payload body。
+
+验收：
+
+- Bash timeout cap、sanitized env、workspace cwd 和 bounded metadata 有单测。
+- tool execution trace 只暴露 bounded enforcement fields。
+- runtime-only enforcement options 不改变 provider tool schema。
+- compact/rehydration 实现保持未触碰。
+
 ---
 
 ## 6. 优先级
@@ -426,6 +455,7 @@ P9 Runtime Kernel Contract
   -> P13 Runtime Diagnostics Productization
   -> P14 Runtime ExecPolicy Rules
   -> P15a Runtime Environment Contract
+  -> P15b Runtime Enforcement Kernel
 ```
 
 原因：

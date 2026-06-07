@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mycli.domain.runtime import RiskLevel
+from mycli.domain.runtime import RiskLevel, ShellExecutionOptions
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
@@ -37,6 +37,90 @@ def test_shell_tool_executes_with_workspace_cwd(tmp_path: Path) -> None:
     assert result.success is True
     assert result.raw_payload["cwd"] == str(nested.resolve())
     assert str(nested.resolve()) in result.raw_payload["output"]
+
+
+def test_shell_tool_applies_runtime_enforcement_timeout_cap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    tool = BashTool(workspace_root=tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_execute_bash(
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        run_in_background: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        seen.update(
+            {
+                "command": command,
+                "timeout": timeout,
+                "workdir": workdir,
+                "run_in_background": run_in_background,
+                "env": env,
+            }
+        )
+        return {"exit_code": 0, "output": "ok", "truncated": False}
+
+    monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)
+
+    result = tool.execute(
+        {
+            "command": "python3 -c 'print(1)'",
+            "timeout": 999,
+            "_runtime_shell_options": ShellExecutionOptions(
+                workspace_root=tmp_path,
+                max_timeout_seconds=5,
+            ),
+        }
+    )
+
+    assert result.success is True
+    assert seen["timeout"] == 5
+    assert result.raw_payload["runtime_enforcement"]["timeout_seconds"] == 5
+    assert result.raw_payload["runtime_enforcement"]["timeout_capped"] is True
+    assert result.raw_payload["runtime_enforcement"]["env_policy"] == "sanitized"
+
+
+def test_shell_tool_applies_sanitized_runtime_environment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MYCLI_SECRET_SHOULD_NOT_LEAK", "secret-value")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("PWD", "/outside-workspace")
+    tool = BashTool(workspace_root=tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_execute_bash(
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        run_in_background: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del command, timeout, workdir, run_in_background
+        seen["env"] = dict(env or {})
+        return {"exit_code": 0, "output": "ok", "truncated": False}
+
+    monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)
+
+    result = tool.execute(
+        {
+            "command": "python3 -c 'print(1)'",
+            "_runtime_shell_options": ShellExecutionOptions(workspace_root=tmp_path),
+        }
+    )
+
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["PATH"] == "/usr/bin"
+    assert env["PWD"] == str(tmp_path)
+    assert "MYCLI_SECRET_SHOULD_NOT_LEAK" not in env
+    assert result.raw_payload["runtime_enforcement"]["env_keys"] == sorted(env)
+    assert "secret-value" not in str(result.raw_payload["runtime_enforcement"])
 
 
 def test_shell_tool_rejects_cwd_outside_workspace(tmp_path: Path) -> None:
@@ -78,6 +162,8 @@ def test_execute_bash_reports_truncation_metadata() -> None:
     assert result["truncated"] is True
     assert result["output_chars"] > 10_000
     assert result["stdout_chars"] > 10_000
+    assert result["stdout_truncated"] is True
+    assert result["stderr_truncated"] is False
     assert result["truncated_chars"] > 0
 
 
@@ -184,7 +270,9 @@ def test_bash_tool_does_not_reroute_confirm_level_command(monkeypatch, tmp_path:
         timeout: int = 120,
         workdir: str | None = None,
         run_in_background: bool = False,
+        env: dict[str, str] | None = None,
     ) -> dict[str, object]:
+        del env
         return {"exit_code": 7, "output": "simulated", "truncated": False}
 
     monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)
