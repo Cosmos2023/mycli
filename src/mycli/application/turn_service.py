@@ -840,6 +840,16 @@ class TurnService:
                 if keys:
                     parts.append(f"keys={keys}")
 
+            execpolicy_decision = event.payload.get("execpolicy_decision")
+            execpolicy_source = event.payload.get("execpolicy_rule_source")
+            execpolicy_rule = event.payload.get("execpolicy_rule_pattern_hash")
+            if isinstance(execpolicy_decision, str) and execpolicy_decision:
+                parts.append(f"execpolicy={execpolicy_decision}")
+                if isinstance(execpolicy_source, str) and execpolicy_source:
+                    parts.append(f"source={execpolicy_source}")
+                if isinstance(execpolicy_rule, str) and execpolicy_rule:
+                    parts.append(f"rule={execpolicy_rule}")
+
             sandbox = event.payload.get("sandbox")
             if isinstance(sandbox, dict):
                 filesystem = sandbox.get("filesystem")

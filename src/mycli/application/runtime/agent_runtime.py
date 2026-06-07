@@ -40,6 +40,8 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    ExecPolicyRuleSet,
+    ToolRuntimeDecision,
     stable_hash,
 )
 from mycli.domain.logging import LogLevel
@@ -55,6 +57,7 @@ from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefini
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.approval.safety_policy import SafetyPolicy
+from mycli.services.execpolicy import ExecPolicyLoadError, ExecPolicyLoader
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.compaction import (
     CompactionRehydrationService,
@@ -346,9 +349,11 @@ class AgentRuntime:
         )
         self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
+        self._execpolicy_rules = self._load_execpolicy_rules(home_dir=home_dir, config=config)
         self._runtime_policy_gate = RuntimePolicyGate(
             approval_service=self._approval_service,
             workspace_root=config.workspace_root,
+            execpolicy_rules=self._execpolicy_rules,
         )
         self._planning_effects = RuntimePlanningEffects(
             session_id=config.session_id,
@@ -464,6 +469,7 @@ class AgentRuntime:
             execute_tool_call_for_clarification=self._execute_tool_call_for_clarification,
             execute_tool_calls=self._execute_tool_calls,
             pending_decision_from_approval=self._pending_decision_from_approval,
+            runtime_policy_decision=self._runtime_policy_decision_for_block,
         )
         self._model_state = RuntimeModelState(
             model_adapter=model_adapter,
@@ -490,6 +496,26 @@ class AgentRuntime:
         self._recover_plan_mode_anchor()
         self._closed = False
         self._execute_session_hook(HookPoint.SESSION_START)
+
+    def _load_execpolicy_rules(
+        self,
+        *,
+        home_dir: Path,
+        config: AgentConfig,
+    ) -> ExecPolicyRuleSet:
+        try:
+            return ExecPolicyLoader(
+                home_dir=home_dir,
+                workspace_root=config.workspace_root,
+            ).load()
+        except ExecPolicyLoadError as exc:
+            self._workspace_log_service.log(
+                level=LogLevel.WARNING,
+                event="execpolicy_load_failed",
+                message="Execpolicy rules could not be loaded; continuing without rules.",
+                context={"error_kind": type(exc).__name__},
+            )
+            return ExecPolicyRuleSet()
 
     @classmethod
     def for_tests(
@@ -1706,6 +1732,27 @@ class AgentRuntime:
         approval: PendingApproval,
     ) -> PendingDecision:
         return self._approval_decisions.pending_decision_from_approval(approval)
+
+    def _runtime_policy_decision_for_block(
+        self,
+        *,
+        call: ToolCall,
+        tool_exposure: ToolExposure,
+        turn_id: str,
+    ) -> ToolRuntimeDecision | None:
+        del tool_exposure
+        decision = self._runtime_policy_gate.decide_execpolicy(call)
+        if decision is None:
+            return None
+        self._trace_service.append(
+            self._config.session_id,
+            RuntimeTraceEvent(
+                kind="runtime_policy_decision",
+                turn_id=turn_id,
+                payload=decision.to_trace_payload(),
+            ),
+        )
+        return decision
 
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
         return self._approval_decisions.format_allowed_choices(options)

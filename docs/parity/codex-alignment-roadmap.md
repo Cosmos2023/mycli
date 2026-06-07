@@ -363,6 +363,29 @@ Provider adapter 不应负责：
 - 不输出 secret、raw prompt、raw tool output、完整 provider key。
 - provider-free smoke 能覆盖 runtime policy diagnostics。
 
+### P14: Runtime ExecPolicy Rules
+
+目标：引入最小 Codex-style execpolicy rules layer，让 `Bash` /
+`run_shell` 在执行前经过 user/project/session-extension rules 判断。
+
+范围：
+
+- typed `prefix_rule(pattern=[...], decision="allow|deny|ask")` model。
+- user rules 与 project rules loader，project rules 在多条命中时覆盖 user
+  rules。
+- P14 只作用于 shell lane，不扩大到所有 tool。
+- `RuntimePolicyGate` 在安全策略前解析命中规则，并输出
+  `allowed` / `denied` / `needs_approval`。
+- trace / doctor / dry-run 只输出 rule source、decision、pattern hash、
+  pattern length、argument count 等 bounded metadata。
+
+验收：
+
+- rule parser/loader 有单测。
+- shell allow/deny/ask 有 runtime 单测。
+- raw command、raw pattern tokens、secret 不进入 trace/doctor/dry-run。
+- 未命中规则时 P9-P13 行为不回退。
+
 ---
 
 ## 6. 优先级
@@ -375,6 +398,7 @@ P9 Runtime Kernel Contract
   -> P11 Skill Context Injection Migration
   -> P12 Resume / Fork / Compact Timeline Rewrite
   -> P13 Runtime Diagnostics Productization
+  -> P14 Runtime ExecPolicy Rules
 ```
 
 原因：

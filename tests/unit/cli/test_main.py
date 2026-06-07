@@ -2012,6 +2012,11 @@ def test_turn_service_inspect_trace_renders_runtime_policy_bounded_fields(
                 "argument_keys": ["command"],
                 "argument_count": 1,
                 "arguments": {"command": "git push origin main sk-do-not-print"},
+                "execpolicy_decision": "ask",
+                "execpolicy_rule_source": "project",
+                "execpolicy_rule_pattern_hash": "hash-only",
+                "execpolicy_rule_pattern_length": 2,
+                "execpolicy_rule_argument_count": 5,
                 "sandbox": {
                     "filesystem": "workspace_write",
                     "network": "enabled",
@@ -2026,6 +2031,7 @@ def test_turn_service_inspect_trace_renders_runtime_policy_bounded_fields(
     assert rendered == (
         "runtime_policy_decision Bash decision=needs_approval "
         "policy=shell_safety_analysis risk=high args=1 keys=command "
+        "execpolicy=ask source=project rule=hash-only "
         "sandbox=fs:workspace_write,net:enabled,shell:restricted",
     )
     assert "git push" not in str(rendered)

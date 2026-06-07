@@ -16,6 +16,8 @@ from mycli.domain.runtime import (
     RuntimeTraceEvent,
     StopReason,
     SuspendedTurn,
+    ToolRuntimeDecision,
+    ToolRuntimeDecisionKind,
     TurnItem,
     TurnItemType,
     TurnResponse,
@@ -50,6 +52,7 @@ class AssistantBlockConsumer:
         execute_tool_call_for_clarification: Callable[..., tuple[PlanState, PendingClarification | None]],
         execute_tool_calls: Callable[..., PlanState],
         pending_decision_from_approval: Callable[..., PendingDecision],
+        runtime_policy_decision: Callable[..., ToolRuntimeDecision | None] | None = None,
     ) -> None:
         self._session_id = session_id
         self._session_service = session_service
@@ -64,6 +67,7 @@ class AssistantBlockConsumer:
         self._execute_tool_call_for_clarification = execute_tool_call_for_clarification
         self._execute_tool_calls = execute_tool_calls
         self._pending_decision_from_approval = pending_decision_from_approval
+        self._runtime_policy_decision = runtime_policy_decision
 
     def set_session_id(self, session_id: str) -> None:
         self._session_id = session_id
@@ -263,9 +267,39 @@ class AssistantBlockConsumer:
                         ),
                     )
 
+                runtime_decision: ToolRuntimeDecision | None = None
+                if (
+                    self._runtime_policy_decision is not None
+                    and tool_call.name not in CONCURRENCY_SAFE_TOOLS
+                ):
+                    runtime_decision = self._runtime_policy_decision(
+                        call=tool_call,
+                        tool_exposure=tool_exposure,
+                        turn_id=turn_id,
+                    )
+                    if runtime_decision is not None:
+                        pending_response = self._pending_response_from_runtime_decision(
+                            runtime_decision=runtime_decision,
+                            conversation=conversation,
+                            current_plan_state=current_plan_state,
+                            user_message=user_message,
+                            turn_id=turn_id,
+                            turn_items=turn_items,
+                            turn_has_tool_call=turn_has_tool_call,
+                            turn_text_chunks=turn_text_chunks,
+                            streamed_chunks=streamed_chunks,
+                            progress_updates=progress_updates,
+                            activity_events=activity_events,
+                            flush_pending_safe_tool_calls=flush_pending_safe_tool_calls,
+                            record_tool_call_group_once=record_tool_call_group_once,
+                        )
+                        if pending_response is not None:
+                            return pending_response
+
                 safety = self._approval_service._safety_policy.evaluate(tool_call)
                 if (
-                    safety.kind is not DecisionKind.DENY
+                    runtime_decision is None
+                    and safety.kind is not DecisionKind.DENY
                     and self._session_service.is_command_allowed(
                         self._session_id,
                         safety.command_pattern,
@@ -378,106 +412,109 @@ class AssistantBlockConsumer:
                                 TurnStatus.WAITING_CLARIFICATION,
                                 StopReason.CLARIFICATION_REQUIRED,
                             ),
-                        )
+                    )
                     continue
 
-                approval = self._approval_service.evaluate(tool_call)
-                if approval.denied_reason is not None:
-                    flush_pending_safe_tool_calls()
-                    warning_message = f"Denied: {approval.denied_reason}"
-                    self._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.WARNING,
-                            text=warning_message,
-                            tool_name=tool_call.name,
-                            call_id=tool_call.call_id,
-                        ),
-                    )
-                    return (
-                        current_plan_state,
-                        turn_has_tool_call,
-                        turn_text_chunks,
-                        (
-                            TurnResponse(
-                                assistant_message=warning_message,
-                                streamed_chunks=tuple(streamed_chunks),
-                                progress_updates=tuple(progress_updates),
-                            ),
-                            TurnStatus.COMPLETED,
-                            StopReason.ASSISTANT_COMPLETED,
-                        ),
-                    )
+                policy_approved = runtime_decision is not None
 
-                if approval.pending_approval is not None:
-                    flush_pending_safe_tool_calls()
-                    record_tool_call_group_once()
-                    pending_decision = self._pending_decision_from_approval(
-                        approval.pending_approval
-                    )
-                    self._session_service.save_pending_decision(
-                        self._session_id,
-                        pending_decision,
-                    )
-                    self._session_service.save_suspended_turn(
-                        self._session_id,
-                        SuspendedTurn(
-                            user_message=user_message,
-                            conversation=tuple(conversation.messages),
-                            plan_state=current_plan_state,
-                            pending_approval=approval.pending_approval,
-                        ),
-                    )
-                    waiting_message = f"Waiting approval: {pending_decision.preview}"
-                    self._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.APPROVAL_REQUEST,
-                            text=waiting_message,
-                            tool_name=pending_decision.tool_call.name,
-                            call_id=pending_decision.tool_call.call_id,
-                            metadata={"preview": pending_decision.preview},
-                        ),
-                    )
-                    return (
-                        current_plan_state,
-                        turn_has_tool_call,
-                        turn_text_chunks,
-                        (
-                            TurnResponse(
-                                assistant_message=(
-                                    "A risky action is waiting for your decision. "
-                                    "Choose 1 to approve once, 2 to reject, or 3 to allow for this session."
+                if not policy_approved:
+                    approval = self._approval_service.evaluate(tool_call)
+                    if approval.denied_reason is not None:
+                        flush_pending_safe_tool_calls()
+                        warning_message = f"Denied: {approval.denied_reason}"
+                        self._append_turn_item(
+                            turn_id=turn_id,
+                            turn_items=turn_items,
+                            item=TurnItem(
+                                type=TurnItemType.WARNING,
+                                text=warning_message,
+                                tool_name=tool_call.name,
+                                call_id=tool_call.call_id,
+                            ),
+                        )
+                        return (
+                            current_plan_state,
+                            turn_has_tool_call,
+                            turn_text_chunks,
+                            (
+                                TurnResponse(
+                                    assistant_message=warning_message,
+                                    streamed_chunks=tuple(streamed_chunks),
+                                    progress_updates=tuple(progress_updates),
                                 ),
-                                activity_events=(
-                                    *activity_events,
-                                    ActivityEvent(
-                                        kind="waiting_approval",
-                                        message=waiting_message,
-                                        tool_name=pending_decision.tool_call.name,
-                                        preview=pending_decision.preview,
+                                TurnStatus.COMPLETED,
+                                StopReason.ASSISTANT_COMPLETED,
+                            ),
+                        )
+
+                    if approval.pending_approval is not None:
+                        flush_pending_safe_tool_calls()
+                        record_tool_call_group_once()
+                        pending_decision = self._pending_decision_from_approval(
+                            approval.pending_approval
+                        )
+                        self._session_service.save_pending_decision(
+                            self._session_id,
+                            pending_decision,
+                        )
+                        self._session_service.save_suspended_turn(
+                            self._session_id,
+                            SuspendedTurn(
+                                user_message=user_message,
+                                conversation=tuple(conversation.messages),
+                                plan_state=current_plan_state,
+                                pending_approval=approval.pending_approval,
+                            ),
+                        )
+                        waiting_message = f"Waiting approval: {pending_decision.preview}"
+                        self._append_turn_item(
+                            turn_id=turn_id,
+                            turn_items=turn_items,
+                            item=TurnItem(
+                                type=TurnItemType.APPROVAL_REQUEST,
+                                text=waiting_message,
+                                tool_name=pending_decision.tool_call.name,
+                                call_id=pending_decision.tool_call.call_id,
+                                metadata={"preview": pending_decision.preview},
+                            ),
+                        )
+                        return (
+                            current_plan_state,
+                            turn_has_tool_call,
+                            turn_text_chunks,
+                            (
+                                TurnResponse(
+                                    assistant_message=(
+                                        "A risky action is waiting for your decision. "
+                                        "Choose 1 to approve once, 2 to reject, or 3 to allow for this session."
                                     ),
+                                    activity_events=(
+                                        *activity_events,
+                                        ActivityEvent(
+                                            kind="waiting_approval",
+                                            message=waiting_message,
+                                            tool_name=pending_decision.tool_call.name,
+                                            preview=pending_decision.preview,
+                                        ),
+                                    ),
+                                    streamed_chunks=tuple(streamed_chunks),
+                                    progress_updates=tuple(progress_updates),
+                                    pending_decision=pending_decision,
                                 ),
-                                streamed_chunks=tuple(streamed_chunks),
-                                progress_updates=tuple(progress_updates),
-                                pending_decision=pending_decision,
+                                TurnStatus.WAITING_APPROVAL,
+                                StopReason.APPROVAL_REQUIRED,
                             ),
-                            TurnStatus.WAITING_APPROVAL,
-                            StopReason.APPROVAL_REQUIRED,
-                        ),
-                    )
+                        )
 
-                policy_approved = approval.auto_approved_by == "session_allowance"
-                if policy_approved:
-                    self._record_approval_auto_allowed(
-                        turn_id=turn_id,
-                        tool_call=tool_call,
-                        command_pattern=approval.command_pattern,
-                        reason=approval.reason,
-                        safety_metadata=approval.safety_metadata,
-                    )
+                    policy_approved = approval.auto_approved_by == "session_allowance"
+                    if policy_approved:
+                        self._record_approval_auto_allowed(
+                            turn_id=turn_id,
+                            tool_call=tool_call,
+                            command_pattern=approval.command_pattern,
+                            reason=approval.reason,
+                            safety_metadata=approval.safety_metadata,
+                        )
 
                 if tool_call.name in CONCURRENCY_SAFE_TOOLS:
                     pending_safe_tool_calls.append((tool_call, block))
@@ -510,6 +547,118 @@ class AssistantBlockConsumer:
             turn_text_chunks,
             None,
         )
+
+    def _pending_response_from_runtime_decision(
+        self,
+        *,
+        runtime_decision: ToolRuntimeDecision,
+        conversation: Conversation,
+        current_plan_state: PlanState,
+        user_message: str,
+        turn_id: str,
+        turn_items: list[TurnItem],
+        turn_has_tool_call: bool,
+        turn_text_chunks: list[str],
+        streamed_chunks: list[str],
+        progress_updates: list[str],
+        activity_events: list[ActivityEvent],
+        flush_pending_safe_tool_calls: Callable[[], None],
+        record_tool_call_group_once: Callable[[], None],
+    ) -> tuple[
+        PlanState,
+        bool,
+        list[str],
+        tuple[TurnResponse, TurnStatus, StopReason],
+    ] | None:
+        if runtime_decision.kind is ToolRuntimeDecisionKind.DENIED:
+            flush_pending_safe_tool_calls()
+            warning_message = "Denied: Tool denied by runtime policy."
+            self._append_turn_item(
+                turn_id=turn_id,
+                turn_items=turn_items,
+                item=TurnItem(
+                    type=TurnItemType.WARNING,
+                    text=warning_message,
+                    tool_name=runtime_decision.tool_call.name,
+                    call_id=runtime_decision.tool_call.call_id,
+                ),
+            )
+            return (
+                current_plan_state,
+                turn_has_tool_call,
+                turn_text_chunks,
+                (
+                    TurnResponse(
+                        assistant_message=warning_message,
+                        streamed_chunks=tuple(streamed_chunks),
+                        progress_updates=tuple(progress_updates),
+                    ),
+                    TurnStatus.COMPLETED,
+                    StopReason.ASSISTANT_COMPLETED,
+                ),
+            )
+        if (
+            runtime_decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+            and runtime_decision.pending_approval is not None
+        ):
+            flush_pending_safe_tool_calls()
+            record_tool_call_group_once()
+            pending_decision = self._pending_decision_from_approval(
+                runtime_decision.pending_approval
+            )
+            self._session_service.save_pending_decision(
+                self._session_id,
+                pending_decision,
+            )
+            self._session_service.save_suspended_turn(
+                self._session_id,
+                SuspendedTurn(
+                    user_message=user_message,
+                    conversation=tuple(conversation.messages),
+                    plan_state=current_plan_state,
+                    pending_approval=runtime_decision.pending_approval,
+                ),
+            )
+            waiting_message = f"Waiting approval: {pending_decision.preview}"
+            self._append_turn_item(
+                turn_id=turn_id,
+                turn_items=turn_items,
+                item=TurnItem(
+                    type=TurnItemType.APPROVAL_REQUEST,
+                    text=waiting_message,
+                    tool_name=pending_decision.tool_call.name,
+                    call_id=pending_decision.tool_call.call_id,
+                    metadata={"preview": pending_decision.preview},
+                ),
+            )
+            return (
+                current_plan_state,
+                turn_has_tool_call,
+                turn_text_chunks,
+                (
+                    TurnResponse(
+                        assistant_message=(
+                            "A risky action is waiting for your decision. "
+                            "Choose 1 to approve once or 2 to reject."
+                        ),
+                        activity_events=(
+                            *activity_events,
+                            ActivityEvent(
+                                kind="waiting_approval",
+                                message=waiting_message,
+                                tool_name=pending_decision.tool_call.name,
+                                preview=pending_decision.preview,
+                            ),
+                        ),
+                        streamed_chunks=tuple(streamed_chunks),
+                        progress_updates=tuple(progress_updates),
+                        pending_decision=pending_decision,
+                    ),
+                    TurnStatus.WAITING_APPROVAL,
+                    StopReason.APPROVAL_REQUIRED,
+                ),
+            )
+        return None
 
     def _is_auto_allowed_contributed_tool(
         self,

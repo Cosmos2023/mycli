@@ -2695,6 +2695,11 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
                             "command_pattern": "rm -rf /",
                             "argument_count": 1,
                             "argument_keys": ["command"],
+                            "execpolicy_decision": "deny",
+                            "execpolicy_rule_source": "project",
+                            "execpolicy_rule_pattern_hash": "hash-only",
+                            "execpolicy_rule_pattern_length": 2,
+                            "execpolicy_rule_argument_count": 3,
                             "sandbox": {
                                 "filesystem": "workspace_write",
                                 "network": "disabled",
@@ -2727,6 +2732,7 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
         "decisions: allowed=1, denied=1, needs_approval=1; "
         "risk_levels: high=1, low=1, medium=1; "
         "policies: builtin_safe_tool=1, medium_risk_requires_approval=1, shell_command_analysis=1; "
+        "execpolicy: decisions=deny=1 sources=project=1 rules=1; "
         "sandbox: fs=workspace_write=3 net=enabled=2, disabled=1 shell=restricted=3"
     )
     assert secret not in rendered

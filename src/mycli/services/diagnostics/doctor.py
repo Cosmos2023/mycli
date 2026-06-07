@@ -202,6 +202,9 @@ class _RuntimePolicyDiagnosticsSummary:
     decisions: tuple[tuple[str, int], ...]
     risk_levels: tuple[tuple[str, int], ...]
     policies: tuple[tuple[str, int], ...]
+    execpolicy_decisions: tuple[tuple[str, int], ...]
+    execpolicy_sources: tuple[tuple[str, int], ...]
+    execpolicy_rule_summary_count: int
     sandbox_filesystem: tuple[tuple[str, int], ...]
     sandbox_network: tuple[tuple[str, int], ...]
     sandbox_shell: tuple[tuple[str, int], ...]
@@ -1101,6 +1104,10 @@ class DoctorService:
             f"decisions: {_format_count_pairs(summary.decisions)}; "
             f"risk_levels: {_format_count_pairs(summary.risk_levels)}; "
             f"policies: {_format_count_pairs(summary.policies)}; "
+            "execpolicy: "
+            f"decisions={_format_count_pairs(summary.execpolicy_decisions)} "
+            f"sources={_format_count_pairs(summary.execpolicy_sources)} "
+            f"rules={summary.execpolicy_rule_summary_count}; "
             "sandbox: "
             f"fs={_format_count_pairs(summary.sandbox_filesystem)} "
             f"net={_format_count_pairs(summary.sandbox_network)} "
@@ -2254,6 +2261,9 @@ def _summarize_runtime_policy_diagnostics(
     decisions: Counter[str] = Counter()
     risk_levels: Counter[str] = Counter()
     policies: Counter[str] = Counter()
+    execpolicy_decisions: Counter[str] = Counter()
+    execpolicy_sources: Counter[str] = Counter()
+    execpolicy_rule_summary_count = 0
     sandbox_filesystem: Counter[str] = Counter()
     sandbox_network: Counter[str] = Counter()
     sandbox_shell: Counter[str] = Counter()
@@ -2283,6 +2293,22 @@ def _summarize_runtime_policy_diagnostics(
                         denied_count += 1
                     risk_levels[_safe_diagnostic_result(payload.get("risk_level"))] += 1
                     policies[_safe_diagnostic_result(payload.get("policy"))] += 1
+                    execpolicy_decision = _safe_diagnostic_result(
+                        payload.get("execpolicy_decision")
+                    )
+                    if execpolicy_decision != "unknown":
+                        execpolicy_decisions[execpolicy_decision] += 1
+                    execpolicy_source = _safe_diagnostic_result(
+                        payload.get("execpolicy_rule_source")
+                    )
+                    if execpolicy_source != "unknown":
+                        execpolicy_sources[execpolicy_source] += 1
+                    if (
+                        isinstance(payload.get("execpolicy_rule_pattern_hash"), str)
+                        and isinstance(payload.get("execpolicy_rule_pattern_length"), int)
+                        and isinstance(payload.get("execpolicy_rule_argument_count"), int)
+                    ):
+                        execpolicy_rule_summary_count += 1
                     sandbox = payload.get("sandbox")
                     if isinstance(sandbox, dict):
                         sandbox_filesystem[
@@ -2310,6 +2336,12 @@ def _summarize_runtime_policy_diagnostics(
     ordered_policies = tuple(
         sorted(policies.items(), key=lambda item: (-item[1], item[0]))
     )
+    ordered_execpolicy_decisions = tuple(
+        sorted(execpolicy_decisions.items(), key=lambda item: (-item[1], item[0]))
+    )
+    ordered_execpolicy_sources = tuple(
+        sorted(execpolicy_sources.items(), key=lambda item: (-item[1], item[0]))
+    )
     ordered_sandbox_filesystem = tuple(
         sorted(sandbox_filesystem.items(), key=lambda item: (-item[1], item[0]))
     )
@@ -2328,6 +2360,9 @@ def _summarize_runtime_policy_diagnostics(
         decisions=ordered_decisions,
         risk_levels=ordered_risk_levels,
         policies=ordered_policies,
+        execpolicy_decisions=ordered_execpolicy_decisions,
+        execpolicy_sources=ordered_execpolicy_sources,
+        execpolicy_rule_summary_count=execpolicy_rule_summary_count,
         sandbox_filesystem=ordered_sandbox_filesystem,
         sandbox_network=ordered_sandbox_network,
         sandbox_shell=ordered_sandbox_shell,

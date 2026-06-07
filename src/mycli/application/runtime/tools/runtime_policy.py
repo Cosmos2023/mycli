@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 
-from mycli.domain.runtime import ExecutionPolicy, ToolRuntimeDecision
+from mycli.domain.runtime import (
+    ExecPolicyRuleSet,
+    ExecutionPolicy,
+    SandboxProfile,
+    ToolRuntimeDecision,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.services.approval import ApprovalService
@@ -16,9 +22,11 @@ class RuntimePolicyGate:
         *,
         approval_service: ApprovalService,
         workspace_root: Path | None = None,
+        execpolicy_rules: ExecPolicyRuleSet | None = None,
     ) -> None:
         self._approval_service = approval_service
         self._workspace_root = workspace_root
+        self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
 
     def default_policy(self) -> ExecutionPolicy:
         root = self._workspace_root or Path.cwd()
@@ -32,6 +40,12 @@ class RuntimePolicyGate:
         tool_exposure: ToolExposure | None = None,
     ) -> ToolRuntimeDecision:
         resolved_policy = policy or self.default_policy()
+        execpolicy_decision = self._execpolicy_decision(
+            call=call,
+            sandbox=resolved_policy.sandbox,
+        )
+        if execpolicy_decision is not None:
+            return execpolicy_decision
         if self._is_contributed_tool(call, tool_exposure):
             return ToolRuntimeDecision.allowed(
                 tool_call=call,
@@ -69,6 +83,37 @@ class RuntimePolicyGate:
             sandbox=resolved_policy.sandbox,
         )
 
+    def decide_execpolicy(
+        self,
+        call: ToolCall,
+        policy: ExecutionPolicy | None = None,
+    ) -> ToolRuntimeDecision | None:
+        resolved_policy = policy or self.default_policy()
+        return self._execpolicy_decision(
+            call=call,
+            sandbox=resolved_policy.sandbox,
+        )
+
+    def _execpolicy_decision(
+        self,
+        *,
+        call: ToolCall,
+        sandbox: SandboxProfile,
+    ) -> ToolRuntimeDecision | None:
+        if call.name not in {"Bash", "run_shell"}:
+            return None
+        command_args = _shell_command_args(call)
+        if not command_args:
+            return None
+        match = self._execpolicy_rules.match(command_args)
+        if match is None:
+            return None
+        return ToolRuntimeDecision.from_execpolicy_match(
+            tool_call=call,
+            match=match,
+            sandbox=sandbox,
+        )
+
     @staticmethod
     def _is_contributed_tool(
         call: ToolCall,
@@ -88,3 +133,18 @@ def _metadata_string(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _shell_command_args(call: ToolCall) -> tuple[str, ...]:
+    args_value = call.arguments.get("args")
+    if isinstance(args_value, list) and args_value and all(
+        isinstance(item, str) for item in args_value
+    ):
+        return tuple(args_value)
+    command_value = call.arguments.get("command")
+    if not isinstance(command_value, str) or not command_value:
+        return ()
+    try:
+        return tuple(shlex.split(command_value))
+    except ValueError:
+        return ()

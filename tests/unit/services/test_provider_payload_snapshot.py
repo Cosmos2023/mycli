@@ -209,6 +209,11 @@ def test_provider_request_dry_run_renderer_exposes_runtime_diagnostics_surface(
                     "risk_level": "high",
                     "argument_keys": ["command"],
                     "argument_count": 1,
+                    "execpolicy_decision": "ask",
+                    "execpolicy_rule_source": "project",
+                    "execpolicy_rule_pattern_hash": "hash-only",
+                    "execpolicy_rule_pattern_length": 2,
+                    "execpolicy_rule_argument_count": 5,
                     "sandbox": {
                         "filesystem": "workspace_write",
                         "network": "enabled",
@@ -243,6 +248,11 @@ def test_provider_request_dry_run_renderer_exposes_runtime_diagnostics_surface(
             "policies": {"shell_safety_analysis": 1},
             "risk_levels": {"high": 1},
             "argument_summaries": 1,
+            "execpolicy": {
+                "decisions": {"ask": 1},
+                "sources": {"project": 1},
+                "rule_summaries": 1,
+            },
         },
         "sandbox_lane": {
             "filesystem": {"workspace_write": 1},

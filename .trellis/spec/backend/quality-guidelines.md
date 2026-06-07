@@ -293,6 +293,14 @@ Questions to answer:
   - Runtime policy rows must summarize only bounded fields such as decision
     kind, policy name, risk level, argument key/count, and sandbox policy
     shape.
+  - ExecPolicy prefix-rule matches may add bounded fields only:
+    `execpolicy_decision`, `execpolicy_rule_source`,
+    `execpolicy_rule_index`, `execpolicy_rule_pattern_hash`,
+    `execpolicy_rule_pattern_length`, and
+    `execpolicy_rule_argument_count`.
+  - ExecPolicy diagnostics must never render the raw command, raw rule pattern
+    tokens, raw argument values, or secret-like values. The pattern hash is the
+    stable join point across trace, doctor, and dry-run.
   - Allowed-only runtime policy rows -> `runtime_policy_diagnostics=ok`.
   - `needs_approval` or `denied` runtime policy rows ->
     `runtime_policy_diagnostics=warning` with bounded decision/risk/policy
@@ -368,6 +376,9 @@ for line in render_doctor_report(report):
   - previous provider transcript messages
 - Runtime policy trace rows may render only bounded fields: decision, policy,
   risk level, argument key/count, and sandbox filesystem/network/shell shape.
+  If an ExecPolicy prefix rule matched, the row may additionally render bounded
+  rule metadata: decision, source, pattern hash, pattern length, and command
+  argument count. It must not render raw rule tokens or command text.
   They must not render raw argument values or command text.
 - Runtime dry-run diagnostics must ignore unknown payload fields and must not
   render raw prompts, raw tool output, raw tool argument values, raw command
@@ -388,6 +399,9 @@ for line in render_doctor_report(report):
   network, and shell counts.
 - Runtime policy row with raw `arguments` or `command_pattern` -> trace
   inspection and doctor output omit those values.
+- Runtime policy row with ExecPolicy fields -> doctor and dry-run report
+  bounded decision/source counts and rule summary count without raw rule
+  pattern tokens.
 - Provider dry-run rendered with runtime diagnostics -> output includes
   `runtime_diagnostics` with exposed tool summary, policy decision summary,
   sandbox lane, approval lane, tool lifecycle counts, and session continuity
@@ -420,6 +434,11 @@ for line in render_doctor_report(report):
 - Unit test runtime policy doctor sandbox counts and raw argument redaction.
 - Unit test trace inspection renders bounded runtime policy fields without raw
   argument values.
+- Unit test ExecPolicy parser/loader for user/project sources and project
+  override precedence.
+- Unit test RuntimePolicyGate and runtime execution for ExecPolicy
+  `allow`/`deny`/`ask` decisions on `Bash` / `run_shell`.
+- Unit test ExecPolicy trace, doctor, and dry-run redaction.
 - Provider-free smoke must include runtime diagnostics fields.
 
 #### 7. Wrong vs Correct

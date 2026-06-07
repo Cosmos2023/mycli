@@ -240,6 +240,11 @@ def main() -> int:
                         "risk_level": "high",
                         "argument_count": 1,
                         "argument_keys": ["command"],
+                        "execpolicy_decision": "ask",
+                        "execpolicy_rule_source": "project",
+                        "execpolicy_rule_pattern_hash": "hash-only",
+                        "execpolicy_rule_pattern_length": 2,
+                        "execpolicy_rule_argument_count": 5,
                         "sandbox": {
                             "filesystem": "workspace_write",
                             "network": "enabled",
@@ -371,6 +376,14 @@ def main() -> int:
                 "state": "needs_approval",
                 "needs_approval": 1,
                 "denied": 0,
+            }
+            and payload["dry_run_runtime_diagnostics"]["policy_decisions"][
+                "execpolicy"
+            ]
+            == {
+                "decisions": {"ask": 1},
+                "sources": {"project": 1},
+                "rule_summaries": 1,
             }
             and payload["dry_run_runtime_diagnostics"]["sandbox_lane"] == {
                 "filesystem": {"workspace_write": 1},

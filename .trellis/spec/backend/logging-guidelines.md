@@ -63,6 +63,11 @@ the local log root and must never become provider transcript inputs.
   `decision_kind`, `policy`, and sanitized `command_pattern`. They must not
   include raw tool arguments, full shell commands beyond the sanitized command
   pattern, file contents, provider text, headers, or secret-like values.
+- ExecPolicy diagnostics are local runtime policy evidence. They may include
+  only bounded rule metadata such as decision, source, rule index, pattern
+  hash, pattern length, and shell argument count. They must not include raw
+  command text, raw rule pattern tokens, raw argument values, stdout/stderr,
+  file contents, headers, or secret-like values.
 - When runtime config disables medium-risk auto-approval, local mutation tools
   such as `Edit`, `Write`, and `KillShell` should produce pending approval
   decisions with `safety_metadata.policy=medium_risk_requires_approval`.

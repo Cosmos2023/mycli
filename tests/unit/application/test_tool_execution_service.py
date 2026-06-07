@@ -11,7 +11,16 @@ from mycli.application.runtime.tools.tool_execution_service import (
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import InvokedSkillSnapshot, PlanState, RuntimeStreamEvent, TurnItemType
+from mycli.domain.runtime import (
+    ExecPolicyDecision,
+    ExecPolicyRule,
+    ExecPolicyRuleSet,
+    ExecPolicySource,
+    InvokedSkillSnapshot,
+    PlanState,
+    RuntimeStreamEvent,
+    TurnItemType,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
@@ -370,6 +379,162 @@ def test_tool_execution_service_runtime_policy_needs_approval_blocks_execution(
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
     assert policy_trace.payload["decision"] == "needs_approval"
     assert policy_trace.payload["approval_required"] is True
+
+
+def test_tool_execution_service_execpolicy_deny_blocks_shell_without_raw_command(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+            execpolicy_rules=ExecPolicyRuleSet(
+                rules=(
+                    ExecPolicyRule(
+                        source=ExecPolicySource.PROJECT,
+                        index=0,
+                        pattern=("git", "push"),
+                        decision=ExecPolicyDecision.DENY,
+                    ),
+                )
+            ),
+        ),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "git push origin main sk-do-not-print"},
+            reason="push",
+            call_id="call_shell_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "execpolicy_prefix_rule"
+    assert policy_trace.payload["execpolicy_decision"] == "deny"
+    assert policy_trace.payload["execpolicy_rule_source"] == "project"
+    assert "git push" not in str(policy_trace.payload)
+    assert "sk-do-not-print" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_execpolicy_ask_blocks_shell_for_approval(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+            execpolicy_rules=ExecPolicyRuleSet(
+                rules=(
+                    ExecPolicyRule(
+                        source=ExecPolicySource.PROJECT,
+                        index=0,
+                        pattern=("git", "push"),
+                        decision=ExecPolicyDecision.ASK,
+                    ),
+                )
+            ),
+        ),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="run_shell",
+            arguments={"args": ["git", "push", "origin", "main"]},
+            reason="push",
+            call_id="call_shell_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "needs_approval"
+    assert policy_trace.payload["approval_required"] is True
+    assert policy_trace.payload["execpolicy_decision"] == "ask"
+
+
+def test_tool_execution_service_execpolicy_allow_runs_shell_with_bounded_trace(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+            execpolicy_rules=ExecPolicyRuleSet(
+                rules=(
+                    ExecPolicyRule(
+                        source=ExecPolicySource.PROJECT,
+                        index=0,
+                        pattern=("python3", "-c"),
+                        decision=ExecPolicyDecision.ALLOW,
+                    ),
+                )
+            ),
+        ),
+        registry=ToolRegistry.from_tools([BashTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=BashTool(tmp_path).spec,
+            ),
+        )
+    )
+    conversation = Conversation(session_id="demo")
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "python3 -c 'print(\"ok\")'"},
+            reason="probe",
+            call_id="call_shell_1",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    assert conversation.messages[-1].role == "tool"
+    assert "ok" in conversation.messages[-1].content
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "allowed"
+    assert policy_trace.payload["policy"] == "execpolicy_prefix_rule"
+    assert policy_trace.payload["execpolicy_decision"] == "allow"
+    assert policy_trace.payload["execpolicy_rule_argument_count"] == 3
+    assert "print" not in str(policy_trace.payload)
 
 
 def test_tool_execution_service_runtime_policy_allows_contributed_tool(

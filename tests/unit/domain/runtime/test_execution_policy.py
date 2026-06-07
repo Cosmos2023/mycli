@@ -4,6 +4,9 @@ from pathlib import Path
 
 from mycli.domain.runtime import (
     ApprovalGate,
+    ExecPolicyDecision,
+    ExecPolicyRule,
+    ExecPolicySource,
     ExecutionPolicy,
     SandboxProfile,
     ToolRuntimeDecision,
@@ -13,6 +16,12 @@ from mycli.domain.tooling.calls import ToolCall
 
 
 def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() -> None:
+    rule = ExecPolicyRule(
+        source=ExecPolicySource.PROJECT,
+        index=0,
+        pattern=("git", "push"),
+        decision=ExecPolicyDecision.ASK,
+    )
     decision = ToolRuntimeDecision.allowed(
         tool_call=ToolCall(
             name="Bash",
@@ -29,6 +38,7 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
             network="enabled",
             shell="restricted",
         ),
+        execpolicy_rule=rule,
     )
 
     payload = decision.to_trace_payload()
@@ -49,8 +59,15 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
             "network": "enabled",
             "shell": "restricted",
         },
+        "execpolicy_decision": "ask",
+        "execpolicy_rule_source": "project",
+        "execpolicy_rule_index": 0,
+        "execpolicy_rule_pattern_hash": rule.pattern_hash,
+        "execpolicy_rule_pattern_length": 2,
+        "execpolicy_rule_argument_count": 2,
     }
     assert "sk-secret" not in str(payload)
+    assert "git push" not in str(payload)
 
 
 def test_execution_policy_default_sandbox_is_bounded_to_workspace() -> None:

@@ -178,7 +178,10 @@ def _runtime_policy_summary(value: object) -> dict[str, object]:
     decisions: Counter[str] = Counter()
     policies: Counter[str] = Counter()
     risk_levels: Counter[str] = Counter()
+    execpolicy_decisions: Counter[str] = Counter()
+    execpolicy_sources: Counter[str] = Counter()
     argument_summaries = 0
+    execpolicy_rule_summaries = 0
 
     for event in _dict_items(value):
         decision = _safe_diagnostic_token(event.get("decision"))
@@ -189,6 +192,14 @@ def _runtime_policy_summary(value: object) -> dict[str, object]:
         risk_levels[risk] += 1
         if _has_argument_summary(event):
             argument_summaries += 1
+        execpolicy_decision = _safe_diagnostic_token(event.get("execpolicy_decision"))
+        if execpolicy_decision != "unknown":
+            execpolicy_decisions[execpolicy_decision] += 1
+        execpolicy_source = _safe_diagnostic_token(event.get("execpolicy_rule_source"))
+        if execpolicy_source != "unknown":
+            execpolicy_sources[execpolicy_source] += 1
+        if _has_execpolicy_rule_summary(event):
+            execpolicy_rule_summaries += 1
 
     return {
         "allowed": decisions.get("allowed", 0),
@@ -198,6 +209,11 @@ def _runtime_policy_summary(value: object) -> dict[str, object]:
         "policies": _counter_dict(policies),
         "risk_levels": _counter_dict(risk_levels),
         "argument_summaries": argument_summaries,
+        "execpolicy": {
+            "decisions": _counter_dict(execpolicy_decisions),
+            "sources": _counter_dict(execpolicy_sources),
+            "rule_summaries": execpolicy_rule_summaries,
+        },
     }
 
 
@@ -289,6 +305,14 @@ def _has_argument_summary(event: dict[str, Any]) -> bool:
     argument_keys = event.get("argument_keys")
     argument_count = event.get("argument_count")
     return isinstance(argument_keys, list) and isinstance(argument_count, int)
+
+
+def _has_execpolicy_rule_summary(event: dict[str, Any]) -> bool:
+    return (
+        isinstance(event.get("execpolicy_rule_pattern_hash"), str)
+        and isinstance(event.get("execpolicy_rule_pattern_length"), int)
+        and isinstance(event.get("execpolicy_rule_argument_count"), int)
+    )
 
 
 def _counter_dict(counter: Counter[str]) -> dict[str, int]:

@@ -32,6 +32,7 @@ from mycli.domain.runtime import (
     PlanStatus,
     RuntimeBlock,
     RuntimeItem,
+    SessionCommandAllowance,
     StopReason,
     TurnItemType,
     TurnRollout,
@@ -103,6 +104,63 @@ def test_agent_runtime_resumes_after_approval(tmp_path: Path) -> None:
 
     resumed = runtime.resolve_pending_approval("1")
     assert resumed.assistant_message == "Push finished"
+
+
+def test_agent_runtime_loads_project_execpolicy_rules_before_shell_execution(
+    tmp_path: Path,
+) -> None:
+    rules_dir = tmp_path / ".mycli" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "default.rules").write_text(
+        'prefix_rule(pattern=["git", "push"], decision="deny")\n',
+        encoding="utf-8",
+    )
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+
+    response = runtime.handle_user_turn("push the branch")
+
+    assert response.pending_decision is None
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "execpolicy_prefix_rule"
+    assert policy_trace.payload["execpolicy_decision"] == "deny"
+    assert policy_trace.payload["execpolicy_rule_source"] == "project"
+    assert "git push" not in str(policy_trace.payload)
+
+
+def test_project_execpolicy_deny_overrides_existing_session_shell_allowance(
+    tmp_path: Path,
+) -> None:
+    rules_dir = tmp_path / ".mycli" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "default.rules").write_text(
+        'prefix_rule(pattern=["git", "push"], decision="deny")\n',
+        encoding="utf-8",
+    )
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+    runtime._session_service.add_command_allowance(
+        runtime._config.session_id,
+        SessionCommandAllowance(command_pattern="git push"),
+    )
+
+    response = runtime.handle_user_turn("push the branch")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == "Denied: Tool denied by runtime policy."
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["policy"] == "execpolicy_prefix_rule"
+    assert policy_trace.payload["execpolicy_decision"] == "deny"
+    assert "git push" not in str(policy_trace.payload)
 
 
 def test_agent_runtime_requires_approval_for_medium_risk_write_when_strict(
