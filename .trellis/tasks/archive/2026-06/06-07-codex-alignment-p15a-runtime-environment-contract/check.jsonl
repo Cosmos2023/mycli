@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for verification"}
+{"file": ".trellis/spec/backend/context-management-contract.md", "reason": "Verify context/request shape contract"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify runtime diagnostics and redaction requirements"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Verify no secret/raw runtime data leaks"}
