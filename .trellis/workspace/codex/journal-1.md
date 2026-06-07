@@ -605,3 +605,57 @@ Boundary note:
 ### Next Steps
 
 - None - task complete
+
+## Session 9: Codex alignment P14 runtime execpolicy rules
+
+**Date**: 2026-06-07
+**Task**: Codex alignment P14 runtime execpolicy rules
+**Branch**: `feature/mycli-codex-alignment-p9-runtime-kernel`
+
+### Summary
+
+Completed P14 minimal Codex-style execpolicy rules for Bash/run_shell.
+
+### Main Changes
+
+Key work:
+- Added typed execpolicy domain models for `prefix_rule(pattern=[...], decision="allow|deny|ask")`.
+- Added local user/project rule loading from `.mycli/rules/default.rules`; project rules override user rules and session remains an extension source in the model.
+- Integrated execpolicy with `RuntimePolicyGate` and runtime request execution so Bash/run_shell can be allowed, denied, or moved to approval before execution.
+- Added block-level runtime policy checking so model-emitted Bash/run_shell calls are intercepted before old session approval allowances can bypass project rules.
+- Added bounded execpolicy diagnostics to runtime trace, dry-run policy summaries, doctor runtime policy diagnostics, `/trace`, and provider cache policy smoke.
+- Added regression coverage for project deny overriding an existing session allowance.
+- Updated backend specs and Codex alignment roadmap with the execpolicy redaction and precedence contract.
+
+Verification:
+- uv run ruff check src tests evaluation
+- uv run mypy src/mycli
+- uv run pytest -q
+- uv run python evaluation/context_smoke.py
+- uv run python evaluation/subagent_smoke.py
+- uv run python evaluation/mcp_smoke.py
+- uv run python evaluation/plugin_runtime_smoke.py
+- uv run python evaluation/hook_smoke.py
+- uv run python evaluation/provider_cache_policy_smoke.py
+- Compact boundary diff audit returned empty for compaction_rehydration.py and services/context/compaction*.py.
+
+Boundary note:
+- P14 did not edit compact/rehydration implementation files.
+- P14 did not add OS sandboxing, env isolation, non-shell tool rules, or a rule management UI.
+- Diagnostics expose rule source, decision, pattern hash, pattern length, and argument count only; raw commands, raw args, rule pattern tokens, and secrets stay out of trace/doctor/dry-run summaries.
+
+### Testing
+
+- [OK] `uv run ruff check src tests evaluation`
+- [OK] `uv run mypy src/mycli`
+- [OK] `uv run pytest -q` (`1471 passed`)
+- [OK] context/subagent/MCP/plugin/hook/provider-cache smoke scripts
+- [OK] compact/rehydration diff audit: no compact files changed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- P15 should move from rule decisions into a fuller runtime enforcement kernel: unified shell execution entry, env/cwd/output/time limits, and stronger approval/sandbox diagnostics without touching compact/rehydration.
