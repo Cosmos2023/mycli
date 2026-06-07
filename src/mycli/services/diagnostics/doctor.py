@@ -366,6 +366,7 @@ class DoctorService:
             self._check_tool_execution_diagnostics,
             self._check_tool_lifecycle_diagnostics,
             self._check_shell_process_diagnostics,
+            self._check_shell_backend_diagnostics,
             self._check_turn_interrupt_diagnostics,
             self._check_session_continuity_diagnostics,
             self._check_turn_failure_diagnostics,
@@ -1179,6 +1180,41 @@ class DoctorService:
         return (
             DoctorCheck(
                 "shell_process_diagnostics",
+                status,
+                message,
+                detail=detail,
+            ),
+        )
+
+    def _check_shell_backend_diagnostics(self) -> Iterable[DoctorCheck]:
+        from mycli.domain.runtime import ShellBackendProfile
+
+        profile = ShellBackendProfile()
+        shell = self._env.get("SHELL") or "/bin/bash"
+        shell_path = Path(shell).expanduser()
+        available = False
+        detail_shell = ""
+        if shell_path.is_absolute():
+            available = shell_path.exists() and _is_executable_file(shell_path)
+            detail_shell = str(shell_path)
+        else:
+            resolved = self._which(shell)
+            available = bool(resolved)
+            detail_shell = resolved or shell
+        status = DoctorStatus.OK if available else DoctorStatus.WARNING
+        message = (
+            f"shell backend {profile.backend} "
+            f"available={str(available).lower()} "
+            f"isolation={profile.isolation}"
+        )
+        detail = (
+            f"shell={detail_shell}; "
+            f"background={str(profile.supports_background).lower()} "
+            f"interrupt_cleanup={str(profile.supports_interrupt_cleanup).lower()}"
+        )
+        return (
+            DoctorCheck(
+                "shell_backend_diagnostics",
                 status,
                 message,
                 detail=detail,

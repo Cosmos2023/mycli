@@ -79,6 +79,31 @@ def test_doctor_service_reports_shell_process_diagnostics_without_raw_command(
     assert "time.sleep" not in rendered
 
 
+def test_doctor_service_reports_shell_backend_diagnostics(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    shell = tmp_path / "bin" / "bash"
+    shell.parent.mkdir()
+    shell.write_text("#!/bin/sh\n", encoding="utf-8")
+    shell.chmod(0o755)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={"SHELL": str(shell)},
+        which=lambda _name: None,
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "shell_backend_diagnostics")
+    assert check.status is DoctorStatus.OK
+    rendered = "\n".join(render_doctor_report(report))
+    assert "shell backend local available=true isolation=host_subprocess" in rendered
+    assert "background=true" in rendered
+    assert "interrupt_cleanup=true" in rendered
+    assert "secret" not in rendered.lower()
+
+
 def _create_sessions_db(path: Path, *, foreign_keys: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     message_fk = (

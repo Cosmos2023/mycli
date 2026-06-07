@@ -229,6 +229,8 @@ def test_turn_context_assembler_renders_bounded_runtime_environment_contract() -
     assert "- filesystem: workspace_write" in section.content
     assert "- network: enabled" in section.content
     assert "- shell: restricted" in section.content
+    assert "- shell_backend: local" in section.content
+    assert "- shell_backend_isolation: host_subprocess" in section.content
     assert "- approval_policy: safety_policy" in section.content
     assert "- command_policy: shell_safety_analysis" in section.content
     assert "- file_policy: workspace_boundary" in section.content

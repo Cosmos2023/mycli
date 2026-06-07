@@ -4,6 +4,7 @@ from mycli.domain.runtime import RiskLevel, ShellExecutionOptions
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
+from mycli.tools.shell_backend import LocalShellBackend, ShellBackendRequest
 
 
 def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:
@@ -85,6 +86,36 @@ def test_shell_tool_applies_runtime_enforcement_timeout_cap(
     assert result.raw_payload["runtime_enforcement"]["timeout_seconds"] == 5
     assert result.raw_payload["runtime_enforcement"]["timeout_capped"] is True
     assert result.raw_payload["runtime_enforcement"]["env_policy"] == "sanitized"
+
+
+def test_shell_tool_executes_through_backend_contract(tmp_path: Path) -> None:
+    class FakeBackend(LocalShellBackend):
+        def __init__(self) -> None:
+            self.requests: list[ShellBackendRequest] = []
+
+        def execute(self, request: ShellBackendRequest) -> dict[str, object]:
+            self.requests.append(request)
+            return {
+                "exit_code": 0,
+                "output": "ok",
+                "truncated": False,
+                "process_state": "completed",
+            }
+
+    backend = FakeBackend()
+    tool = BashTool(workspace_root=tmp_path, shell_backend=backend)
+
+    result = tool.execute({"command": "python3 -c 'print(1)'"})
+
+    assert result.success is True
+    assert backend.requests
+    request = backend.requests[0]
+    assert request.command == "python3 -c 'print(1)'"
+    assert request.cwd == str(tmp_path)
+    assert request.command_pattern is not None
+    backend_payload = result.raw_payload["runtime_enforcement"]["backend"]
+    assert backend_payload["backend"] == "local"
+    assert backend_payload["isolation"] == "host_subprocess"
 
 
 def test_shell_tool_applies_sanitized_runtime_environment(

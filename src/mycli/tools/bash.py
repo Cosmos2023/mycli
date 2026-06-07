@@ -18,6 +18,7 @@ from mycli.tools.shell_safety import (
     dedicated_tool_for_command,
     derive_command_pattern as _derive_command_pattern,
 )
+from mycli.tools.shell_backend import LocalShellBackend, ShellBackend, ShellBackendRequest
 from mycli.tools.shell_registry import SHELL_REGISTRY
 
 
@@ -230,8 +231,9 @@ class BashTool:
         risk_level="high",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, workspace_root: Path, shell_backend: ShellBackend | None = None) -> None:
         self._workspace_root = workspace_root
+        self._shell_backend = shell_backend or LocalShellBackend()
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="unknown", process=True)
@@ -289,21 +291,25 @@ class BashTool:
         timeout_value = arguments.get("timeout", 120)
         timeout, timeout_capped = shell_options.effective_timeout(timeout_value)
         env = _shell_env(shell_options)
-        payload = execute_bash(
-            command_value,
-            timeout=timeout,
-            workdir=str(cwd_result),
-            run_in_background=bool(arguments.get("run_in_background", False)),
-            env=env,
-            command_pattern=analysis.command_pattern,
+        payload = self._shell_backend.execute(
+            ShellBackendRequest(
+                command=command_value,
+                timeout_seconds=timeout,
+                cwd=str(cwd_result),
+                run_in_background=bool(arguments.get("run_in_background", False)),
+                env=env,
+                command_pattern=analysis.command_pattern,
+            )
         )
         payload.setdefault("command_pattern", analysis.command_pattern)
-        payload["runtime_enforcement"] = shell_options.to_trace_payload(
+        runtime_enforcement = shell_options.to_trace_payload(
             timeout_seconds=timeout,
             timeout_capped=timeout_capped,
             env_keys=tuple(sorted(env)),
             cwd=cwd_result,
         )
+        runtime_enforcement["backend"] = self._shell_backend.profile.to_trace_payload()
+        payload["runtime_enforcement"] = runtime_enforcement
         exit_code = payload.get("exit_code")
         success = exit_code == 0 or payload.get("status") == "running"
         return ToolResult(

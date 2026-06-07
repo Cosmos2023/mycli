@@ -1469,6 +1469,7 @@ class ToolExecutionService:
         if not isinstance(runtime_enforcement, dict):
             return {"runtime_enforcement": None}
         allowed_keys = {
+            "backend",
             "filesystem",
             "network",
             "shell",

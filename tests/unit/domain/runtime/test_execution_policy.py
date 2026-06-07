@@ -9,6 +9,8 @@ from mycli.domain.runtime import (
     ExecPolicySource,
     ExecutionPolicy,
     SandboxProfile,
+    ShellBackendProfile,
+    ShellExecutionOptions,
     ToolRuntimeDecision,
     ToolRuntimeDecisionKind,
     ToolRuntimeEffect,
@@ -85,6 +87,27 @@ def test_execution_policy_default_sandbox_is_bounded_to_workspace() -> None:
     assert policy.sandbox.filesystem == "workspace_write"
     assert policy.sandbox.network == "enabled"
     assert policy.sandbox.shell == "restricted"
+
+
+def test_shell_backend_profile_is_bounded_runtime_metadata() -> None:
+    profile = ShellBackendProfile()
+    options = ShellExecutionOptions(workspace_root=Path("/repo"), backend=profile)
+
+    payload = options.to_trace_payload(
+        timeout_seconds=3,
+        timeout_capped=False,
+        env_keys=("PATH",),
+        cwd="/repo",
+    )
+
+    assert payload["backend"] == {
+        "backend": "local",
+        "available": True,
+        "isolation": "host_subprocess",
+        "supports_background": True,
+        "supports_interrupt_cleanup": True,
+    }
+    assert "command" not in str(payload)
 
 
 def test_approval_gate_protocol_accepts_policy_decisions() -> None:

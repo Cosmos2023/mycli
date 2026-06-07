@@ -15,6 +15,7 @@ FilesystemPolicy = Literal["read_only", "workspace_write", "unrestricted"]
 NetworkPolicy = Literal["disabled", "enabled"]
 ShellPolicy = Literal["disabled", "restricted", "enabled"]
 ShellEnvPolicy = Literal["inherit", "sanitized"]
+ShellBackendKind = Literal["local"]
 FilesystemEffect = Literal["none", "read", "write", "unknown"]
 
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120
@@ -76,6 +77,24 @@ class ExecutionPolicy:
 
 
 @dataclass(slots=True, frozen=True)
+class ShellBackendProfile:
+    backend: ShellBackendKind = "local"
+    available: bool = True
+    isolation: str = "host_subprocess"
+    supports_background: bool = True
+    supports_interrupt_cleanup: bool = True
+
+    def to_trace_payload(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "available": self.available,
+            "isolation": self.isolation,
+            "supports_background": self.supports_background,
+            "supports_interrupt_cleanup": self.supports_interrupt_cleanup,
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class ShellExecutionOptions:
     workspace_root: Path
     filesystem: FilesystemPolicy = "workspace_write"
@@ -84,6 +103,7 @@ class ShellExecutionOptions:
     env_policy: ShellEnvPolicy = "sanitized"
     max_timeout_seconds: int = DEFAULT_SHELL_TIMEOUT_SECONDS
     output_char_limit: int = DEFAULT_SHELL_OUTPUT_CHAR_LIMIT
+    backend: ShellBackendProfile = ShellBackendProfile()
 
     @classmethod
     def from_policy(cls, policy: ExecutionPolicy) -> "ShellExecutionOptions":
@@ -127,6 +147,7 @@ class ShellExecutionOptions:
             "timeout_seconds": timeout_seconds,
             "timeout_capped": timeout_capped,
             "output_char_limit": self.output_char_limit,
+            "backend": self.backend.to_trace_payload(),
         }
         if cwd is not None:
             payload["cwd"] = str(cwd)
@@ -160,6 +181,7 @@ class RuntimeEnvironmentContract:
     execpolicy_status: str = "disabled"
     execpolicy_rule_count: int = 0
     execpolicy_sources: tuple[str, ...] = ()
+    shell_backend: ShellBackendProfile = ShellBackendProfile()
 
     @classmethod
     def from_policy(
@@ -197,6 +219,7 @@ class RuntimeEnvironmentContract:
             "execpolicy_status": self.execpolicy_status,
             "execpolicy_rule_count": self.execpolicy_rule_count,
             "execpolicy_sources": list(self.execpolicy_sources),
+            "shell_backend": self.shell_backend.to_trace_payload(),
         }
 
 

@@ -170,6 +170,8 @@ class TurnContextAssembler:
             f"- filesystem: {contract.filesystem}",
             f"- network: {contract.network}",
             f"- shell: {contract.shell}",
+            f"- shell_backend: {contract.shell_backend.backend}",
+            f"- shell_backend_isolation: {contract.shell_backend.isolation}",
             f"- approval_policy: {contract.approval_policy}",
             f"- command_policy: {contract.command_policy}",
             f"- file_policy: {contract.file_policy}",
