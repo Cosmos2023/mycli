@@ -840,3 +840,7 @@ Verification:
 ## 2026-06-07 P18 Shell Backend Contract
 - Added bounded shell backend profile metadata, local ShellBackend contract, BashTool backend execution path, runtime environment backend rendering, and doctor shell backend diagnostics.
 - Verification: uv run ruff check targeted files; uv run mypy src/mycli; uv run pytest -q; git diff --check; compact/rehydration diff audit empty.
+
+## 2026-06-07 P19 Background Tool Runtime
+- Added bounded BackgroundJobSummary, shell and sub-agent background job projections, and doctor background job diagnostics.
+- Verification: uv run ruff check src tests evaluation; uv run mypy src/mycli; uv run pytest -q; git diff --check; compact/rehydration diff audit empty.
