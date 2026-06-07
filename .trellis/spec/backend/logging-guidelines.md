@@ -73,6 +73,14 @@ the local log root and must never become provider transcript inputs.
   timeout caps, output limits, and cwd. They must not include raw environment
   values, raw command text, raw arguments, stdout/stderr bodies, file contents,
   headers, or secret-like values.
+- Shell process lifecycle diagnostics are local runtime evidence. Background
+  shell registry, `BashOutput`, `KillShell`, doctor, and lifecycle trace rows may
+  include bounded fields such as shell id, process state, terminal state,
+  command hash, command length, sanitized command pattern, timeout, cwd,
+  output character counters, truncation flags, and cleanup result. They must not
+  include raw command text, raw environment values, raw arguments,
+  stdout/stderr bodies, file contents, headers, provider payload bodies, or
+  secret-like values.
 - Sandbox policy diagnostics are local runtime evidence. They may include only
   bounded policy names, decision/reason codes, sandbox lanes, argument keys and
   counts, and effect summary fields (`filesystem`, `network`, `process`). They

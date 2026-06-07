@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+from datetime import UTC, datetime
 
 from mycli.config.settings import resolve_config
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
@@ -195,6 +196,17 @@ class _ToolRuntimeLifecycleDiagnosticsSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class _ShellProcessDiagnosticsSummary:
+    process_count: int
+    running_count: int
+    stale_count: int
+    terminal_count: int
+    statuses: tuple[tuple[str, int], ...]
+    states: tuple[tuple[str, int], ...]
+    missing_terminal_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class _RuntimePolicyDiagnosticsSummary:
     policy_count: int
     allowed_count: int
@@ -353,6 +365,7 @@ class DoctorService:
             self._check_runtime_policy_diagnostics,
             self._check_tool_execution_diagnostics,
             self._check_tool_lifecycle_diagnostics,
+            self._check_shell_process_diagnostics,
             self._check_turn_interrupt_diagnostics,
             self._check_session_continuity_diagnostics,
             self._check_turn_failure_diagnostics,
@@ -1128,6 +1141,44 @@ class DoctorService:
         return (
             DoctorCheck(
                 "runtime_policy_diagnostics",
+                status,
+                message,
+                detail=detail,
+            ),
+        )
+
+    def _check_shell_process_diagnostics(self) -> Iterable[DoctorCheck]:
+        from mycli.tools.shell_registry import SHELL_REGISTRY
+
+        summary = _summarize_shell_process_diagnostics(SHELL_REGISTRY.list())
+        if summary.process_count == 0:
+            return (
+                DoctorCheck(
+                    "shell_process_diagnostics",
+                    DoctorStatus.OK,
+                    "no shell processes found",
+                ),
+            )
+
+        message = (
+            f"{summary.process_count} shell process diagnostic(s), "
+            f"running={summary.running_count} "
+            f"terminal={summary.terminal_count} "
+            f"stale={summary.stale_count} "
+            f"missing_terminal={summary.missing_terminal_count}"
+        )
+        detail = (
+            f"statuses: {_format_count_pairs(summary.statuses)}; "
+            f"states: {_format_count_pairs(summary.states)}"
+        )
+        status = (
+            DoctorStatus.WARNING
+            if summary.running_count or summary.stale_count or summary.missing_terminal_count
+            else DoctorStatus.OK
+        )
+        return (
+            DoctorCheck(
+                "shell_process_diagnostics",
                 status,
                 message,
                 detail=detail,
@@ -2534,6 +2585,60 @@ def _summarize_tool_runtime_lifecycle_diagnostics(
         phases=ordered_phases,
         unreadable=tuple(unreadable),
     )
+
+
+def _summarize_shell_process_diagnostics(
+    rows: Iterable[Mapping[str, object]],
+) -> _ShellProcessDiagnosticsSummary:
+    process_count = 0
+    running_count = 0
+    stale_count = 0
+    terminal_count = 0
+    missing_terminal_count = 0
+    statuses: Counter[str] = Counter()
+    states: Counter[str] = Counter()
+
+    for row in rows:
+        process_count += 1
+        status = _safe_diagnostic_result(row.get("status"))
+        state = _safe_diagnostic_result(row.get("process_state"))
+        statuses[status] += 1
+        states[state] += 1
+        if status == "running" or state == "running_background":
+            running_count += 1
+            if _shell_process_is_stale(row):
+                stale_count += 1
+        else:
+            terminal_count += 1
+            if _safe_diagnostic_result(row.get("terminal_state")) == "unknown":
+                missing_terminal_count += 1
+
+    return _ShellProcessDiagnosticsSummary(
+        process_count=process_count,
+        running_count=running_count,
+        stale_count=stale_count,
+        terminal_count=terminal_count,
+        statuses=tuple(sorted(statuses.items(), key=lambda item: (-item[1], item[0]))),
+        states=tuple(sorted(states.items(), key=lambda item: (-item[1], item[0]))),
+        missing_terminal_count=missing_terminal_count,
+    )
+
+
+def _shell_process_is_stale(row: Mapping[str, object]) -> bool:
+    timeout_seconds = row.get("timeout_seconds")
+    started_at = row.get("started_at")
+    if not isinstance(timeout_seconds, int | float) or timeout_seconds <= 0:
+        return False
+    if not isinstance(started_at, str) or not started_at:
+        return False
+    try:
+        started = datetime.fromisoformat(started_at)
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    elapsed = (datetime.now(tz=UTC) - started).total_seconds()
+    return elapsed > timeout_seconds
 
 
 def _tool_runtime_lifecycle_call_key(

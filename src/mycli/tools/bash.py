@@ -54,11 +54,18 @@ def execute_bash(
     workdir: str | None = None,
     run_in_background: bool = False,
     env: dict[str, str] | None = None,
+    command_pattern: str | None = None,
 ) -> dict[str, Any]:
     effective_cwd = workdir or os.getcwd()
     started = time.monotonic()
     if run_in_background:
-        background_payload = _run_background(command, timeout, effective_cwd, env=env)
+        background_payload = _run_background(
+            command,
+            timeout,
+            effective_cwd,
+            env=env,
+            command_pattern=command_pattern,
+        )
         background_payload["cwd"] = effective_cwd
         background_payload["duration_ms"] = _duration_ms(started)
         return background_payload
@@ -94,6 +101,8 @@ def execute_bash(
             "duration_ms": _duration_ms(started),
             "cwd": effective_cwd,
             "error_kind": "timeout",
+            "process_state": "timed_out",
+            "cleanup_result": "subprocess_timeout_expired",
             "timeout_seconds": timeout,
             "output_chars": output_meta["original_chars"],
             "stdout_chars": stdout_meta["original_chars"],
@@ -133,15 +142,30 @@ def _run_background(
     timeout: int,
     workdir: str | None,
     env: dict[str, str] | None = None,
+    command_pattern: str | None = None,
 ) -> dict[str, Any]:
-    shell = SHELL_REGISTRY.start(command, workdir=workdir, env=env)
+    shell = SHELL_REGISTRY.start(
+        command,
+        workdir=workdir,
+        env=env,
+        timeout_seconds=timeout,
+        command_pattern=command_pattern,
+    )
     _background_processes.clear()
     _background_processes.update(SHELL_REGISTRY.processes())
     return {
         "bash_id": shell.shell_id,
         "shell_id": shell.shell_id,
         "status": "running",
+        "process_state": "running_background",
+        "started_at": shell.started_at,
+        "last_observed_at": shell.last_observed_at,
         "timeout": timeout,
+        "timeout_seconds": timeout,
+        "command_hash": shell.command_hash,
+        "command_length": shell.command_length,
+        "command_pattern": shell.command_pattern,
+        "output_chars": 0,
     }
 
 
@@ -271,6 +295,7 @@ class BashTool:
             workdir=str(cwd_result),
             run_in_background=bool(arguments.get("run_in_background", False)),
             env=env,
+            command_pattern=analysis.command_pattern,
         )
         payload.setdefault("command_pattern", analysis.command_pattern)
         payload["runtime_enforcement"] = shell_options.to_trace_payload(

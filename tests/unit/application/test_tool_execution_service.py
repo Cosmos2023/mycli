@@ -830,6 +830,76 @@ def test_tool_execution_service_execpolicy_allow_runs_shell_with_bounded_trace(
     assert "print" not in str(policy_trace.payload)
 
 
+def test_tool_execution_service_shell_lifecycle_trace_has_bounded_process_metadata(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+            workspace_root=tmp_path,
+            execpolicy_rules=ExecPolicyRuleSet(
+                rules=(
+                    ExecPolicyRule(
+                        source=ExecPolicySource.PROJECT,
+                        index=0,
+                        pattern=("python3", "-c"),
+                        decision=ExecPolicyDecision.ALLOW,
+                    ),
+                )
+            ),
+        ),
+        registry=ToolRegistry.from_tools([BashTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=BashTool(tmp_path).spec,
+            ),
+        )
+    )
+    command = "python3 -c 'import time; time.sleep(30)'"
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={
+                "command": command,
+                "run_in_background": True,
+            },
+            reason="probe background",
+            call_id="call_shell_background",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    lifecycle = [
+        event.payload
+        for event in TraceService(home_dir=tmp_path / "home").load("demo")
+        if event.kind == "tool_runtime_lifecycle"
+    ]
+    terminal = lifecycle[-1]
+    assert terminal["phase"] == "completed"
+    assert terminal["process_state"] == "running_background"
+    assert isinstance(terminal["shell_id"], str)
+    assert terminal["command_length"] == len(command)
+    assert "command_hash" in terminal
+    assert command not in str(terminal)
+    from mycli.tools.kill_shell import kill_shell
+
+    kill_shell(str(terminal["shell_id"]))
+
+
 def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
     tmp_path: Path,
 ) -> None:

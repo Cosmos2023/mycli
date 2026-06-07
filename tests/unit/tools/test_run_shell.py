@@ -52,6 +52,7 @@ def test_shell_tool_applies_runtime_enforcement_timeout_cap(
         workdir: str | None = None,
         run_in_background: bool = False,
         env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
     ) -> dict[str, object]:
         seen.update(
             {
@@ -60,6 +61,7 @@ def test_shell_tool_applies_runtime_enforcement_timeout_cap(
                 "workdir": workdir,
                 "run_in_background": run_in_background,
                 "env": env,
+                "command_pattern": command_pattern,
             }
         )
         return {"exit_code": 0, "output": "ok", "truncated": False}
@@ -79,6 +81,7 @@ def test_shell_tool_applies_runtime_enforcement_timeout_cap(
 
     assert result.success is True
     assert seen["timeout"] == 5
+    assert str(seen["command_pattern"]).startswith("python3 -c")
     assert result.raw_payload["runtime_enforcement"]["timeout_seconds"] == 5
     assert result.raw_payload["runtime_enforcement"]["timeout_capped"] is True
     assert result.raw_payload["runtime_enforcement"]["env_policy"] == "sanitized"
@@ -100,8 +103,9 @@ def test_shell_tool_applies_sanitized_runtime_environment(
         workdir: str | None = None,
         run_in_background: bool = False,
         env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
     ) -> dict[str, object]:
-        del command, timeout, workdir, run_in_background
+        del command, timeout, workdir, run_in_background, command_pattern
         seen["env"] = dict(env or {})
         return {"exit_code": 0, "output": "ok", "truncated": False}
 
@@ -271,8 +275,9 @@ def test_bash_tool_does_not_reroute_confirm_level_command(monkeypatch, tmp_path:
         workdir: str | None = None,
         run_in_background: bool = False,
         env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
     ) -> dict[str, object]:
-        del env
+        del command, timeout, workdir, run_in_background, env, command_pattern
         return {"exit_code": 7, "output": "simulated", "truncated": False}
 
     monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)

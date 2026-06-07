@@ -808,6 +808,7 @@ class ToolExecutionService:
             status=terminal_phase,
             duration_seconds=duration_seconds,
             error_kind=result.raw_payload.get("error_kind"),
+            result=result,
         )
         clarify_event = self._clarify_request_event(call=normalized_call, result=result)
         if clarify_event is not None:
@@ -1119,6 +1120,7 @@ class ToolExecutionService:
         policy_decision: str | None = None,
         duration_seconds: float | None = None,
         error_kind: object = None,
+        result: ToolResult | None = None,
     ) -> None:
         argument_keys = tuple(sorted(str(key) for key in call.arguments))
         payload: dict[str, object] = {
@@ -1136,6 +1138,8 @@ class ToolExecutionService:
             payload["duration_ms"] = max(0, int(round(duration_seconds * 1000)))
         if isinstance(error_kind, str) and error_kind:
             payload["error_kind"] = error_kind
+        if result is not None:
+            payload.update(self._shell_process_lifecycle_payload(call=call, result=result))
         self._trace_service.append(
             self._session_id,
             RuntimeTraceEvent(
@@ -1426,16 +1430,25 @@ class ToolExecutionService:
         if call.name not in SHELL_TOOL_NAMES:
             return tuple(sorted(str(key) for key in result.raw_payload))
         allowed_shell_keys = {
+            "cleanup_result",
+            "command_hash",
+            "command_length",
+            "command_pattern",
             "cwd",
             "duration_ms",
             "error_kind",
             "exit_code",
+            "last_observed_at",
+            "new_output_chars",
             "output_chars",
+            "process_state",
             "runtime_enforcement",
+            "shell_id",
             "stderr_chars",
             "stderr_truncated",
             "stdout_chars",
             "stdout_truncated",
+            "terminal_state",
             "timed_out",
             "truncated",
             "truncated_chars",
@@ -1490,6 +1503,46 @@ class ToolExecutionService:
             "write_diagnostics_count": count if isinstance(count, int) else None,
             "write_diagnostics_error": error if isinstance(error, str) else None,
         }
+
+    def _shell_process_lifecycle_payload(
+        self,
+        *,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> dict[str, object]:
+        if call.name not in {"Bash", "run_shell", "BashOutput", "KillShell"}:
+            return {}
+        result_payload = result.raw_payload
+        payload: dict[str, object] = {}
+        shell_id = result_payload.get("shell_id") or result_payload.get("bash_id")
+        if isinstance(shell_id, str) and shell_id:
+            payload["shell_id"] = shell_id
+        for key in (
+            "process_state",
+            "terminal_state",
+            "cleanup_result",
+            "command_hash",
+            "command_pattern",
+        ):
+            value = result_payload.get(key)
+            if isinstance(value, str) and value:
+                payload[key] = value
+        for key in (
+            "command_length",
+            "output_chars",
+            "new_output_chars",
+            "stdout_chars",
+            "stderr_chars",
+            "truncated_chars",
+        ):
+            value = result_payload.get(key)
+            if isinstance(value, int):
+                payload[key] = value
+        for key in ("stdout_truncated", "stderr_truncated", "truncated"):
+            value = result_payload.get(key)
+            if isinstance(value, bool):
+                payload[key] = value
+        return payload
 
     def _effect_profile_for_call(
         self,

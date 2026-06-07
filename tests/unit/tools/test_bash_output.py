@@ -18,6 +18,13 @@ def test_bash_output_reads_background_output_incrementally(tmp_path):
     assert output.raw_payload["shell_id"] == shell_id
     assert "ready" in str(output.raw_payload["output"])
     assert output.raw_payload["status"] in {"running", "exited"}
+    assert output.raw_payload["process_state"] in {
+        "running_background",
+        "completed",
+        "failed",
+    }
+    assert isinstance(output.raw_payload["output_chars"], int)
+    assert "command" not in output.raw_payload
 
     kill_shell(shell_id)
 

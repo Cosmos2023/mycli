@@ -288,7 +288,11 @@ class TurnService:
         if not rows:
             return ("no background shells",)
         return tuple(
-            f"{row['shell_id']} {row['status']} exit={row['exit_code']} {row['command']}"
+            (
+                f"{row['shell_id']} {row['status']} "
+                f"state={row.get('process_state')} exit={row['exit_code']} "
+                f"cmd={row.get('command_hash')} chars={row.get('command_length')}"
+            )
             for row in rows
         )
 

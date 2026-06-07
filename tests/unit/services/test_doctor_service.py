@@ -42,6 +42,43 @@ def _write_project_config(workspace: Path, *, api_key: str = "sk-secret") -> Non
     )
 
 
+def test_doctor_service_reports_shell_process_diagnostics_without_raw_command(
+    tmp_path: Path,
+) -> None:
+    from mycli.tools.bash import execute_bash
+    from mycli.tools.kill_shell import kill_shell
+
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    command = "python3 -c 'import time; time.sleep(30)'"
+    started = execute_bash(
+        command,
+        workdir=str(workspace),
+        run_in_background=True,
+        command_pattern="python3 -c",
+    )
+    shell_id = str(started["shell_id"])
+
+    try:
+        report = DoctorService(
+            workspace_root=workspace,
+            home_dir=home,
+            env={},
+            which=lambda _name: None,
+        ).run()
+    finally:
+        kill_shell(shell_id)
+
+    check = next(item for item in report.checks if item.name == "shell_process_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    rendered = "\n".join(render_doctor_report(report))
+    assert "shell process diagnostic" in rendered
+    assert "running_background" in rendered
+    assert "python3 -c" not in rendered
+    assert "time.sleep" not in rendered
+
+
 def _create_sessions_db(path: Path, *, foreign_keys: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     message_fk = (
