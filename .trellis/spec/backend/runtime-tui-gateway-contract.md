@@ -29,6 +29,8 @@
   - `approval.request`
   - `approval.respond`
   - `clarify.request`
+  - `compaction.started`
+  - `compaction.completed`
   - `tool.start`
   - `tool.progress`
   - `tool.complete`
@@ -37,6 +39,8 @@
   - `message.complete`
   - `reasoning.delta`
   - `thinking.delta`
+  - `plan.proposed`
+  - `plan.updated`
   - `turn.completed`
   - `turn.completion_suppressed`
   - `turn.failed`
@@ -48,7 +52,7 @@
 - TypeScript reducer entry point:
   `reduceShellState(state: ShellState, action: ShellAction) -> ShellState`
 - Scripted smoke state dump:
-  `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/node/src/index.js`
+  `MYCLI_NODE_TUI_STATE_DUMP=/path/to/state.json node tui/mycli-shell/test/support/scripted-client.ts`
 - Scripted smoke assertion action:
   `{"type":"turn.submit_expect","message":"...","expected_state":"failed"}`
 
@@ -129,6 +133,26 @@
   `waiting_approval`; a turn record with `WAITING_CLARIFICATION` maps to
   `waiting_clarification`; a turn record with `REJECTED` maps to `rejected`;
   otherwise it maps to `completed`.
+- `plan.proposed` payload:
+  - `client_turn_id`: string for the turn that produced the plan.
+  - `text`: Markdown content extracted from a Codex-style
+    `<proposed_plan>...</proposed_plan>` assistant block.
+  - `source`: optional short source label, normally `assistant_message`.
+  - The gateway must strip the proposed-plan XML block from
+    `turn.completed.assistant_message` and final `message.complete(text)` so
+    clients render the plan once as a dedicated plan item instead of duplicating
+    it as ordinary assistant text.
+  - Only exact standalone tag lines are treated as plan delimiters. Malformed or
+    inline tags remain ordinary assistant text.
+- `plan.updated` payload:
+  - `client_turn_id`: string for the turn whose active plan changed.
+  - `plan_steps`: array of rendered `"<status>: <content>"` rows, where status
+    is normally `pending`, `in_progress`, or `completed`.
+  - `source`: optional short source label, normally the tool name that updated
+    the plan.
+  - The runtime should emit this event immediately after the `Plan` /
+    `update_plan` tool mutates plan state, before the turn completes, so clients
+    can update a Claude Code-style active plan panel in place.
 - `turn.status` is the normalized turn outcome/status event for clients that
   want one small routing payload instead of deriving outcomes from
   `turn.completed`, `turn.failed`, `turn.interrupted`, and `status.update`:
@@ -181,7 +205,7 @@
   - Python exposes the source taxonomy as `GATEWAY_ERROR_CODES` from
     `mycli.domain.runtime.gateway_contract`; Node TUI exposes the matching
     `GATEWAY_ERROR_CODES` runtime constant and `GatewayErrorCode` type from
-    `tui/node/src/protocol/types.ts`. Node tests must compare the TypeScript
+    `tui/mycli-shell/src/adapters/gateway-client.ts`. Node tests must compare the TypeScript
     constant against the Python extension manifest schema.
   - `message`: bounded user-facing error text
   - `detail`: optional bounded diagnostic detail
@@ -230,6 +254,18 @@
     a deterministic local fallback when a call id is absent.
   - Lifecycle payloads are UI/diagnostic signals only. They must not be written
     into provider transcript content or stable request-shape inputs.
+- Compaction lifecycle notifications are turn-internal activity events, not
+  terminal turn outcomes:
+  - `compaction.started` is emitted only when the runtime actually enters a
+    compression path after the threshold check. It includes `client_turn_id`,
+    `source`, `before_tokens`, and `max_tokens`.
+  - `compaction.completed` includes `client_turn_id`, `source`, `status`,
+    `before_tokens`, `after_tokens`, `max_tokens`, and `duration_s`.
+    `status` is one of `compressed`, `skipped`, or `failed`.
+  - These payloads are bounded diagnostics only. They must not include raw
+    prompt text, tool output, provider payloads, headers, or secrets.
+  - After `compaction.completed`, the active turn remains running and continues
+    to the next model request unless another runtime condition terminates it.
 - Message and reasoning stream notifications are typed gateway projections of
   runtime model stream events:
   - `message.delta` is emitted for assistant text deltas and includes
@@ -346,6 +382,9 @@
   - `tool.complete` maps the matching row to `status: "done"` and
     `tool.failed` maps it to `status: "failed"`. If completion arrives without
     a prior start, the reducer creates a compact fallback row.
+  - `compaction.started` and `compaction.completed` are consumed as a matched
+    in-turn activity row. They must not clear `turnRunning`, finalize assistant
+    text, or render a turn-level `Completed` state.
   - `message.delta` is consumed as assistant stream text.
   - After a `message.delta` has been seen for a `client_turn_id`, the reducer
     ignores compatibility `turn.event` assistant deltas for that same
@@ -742,7 +781,7 @@
 - Run Python gateway tests, `ruff`, `mypy` for the changed gateway file, Node
   `typecheck`, and Node tests for protocol/reducer/rendering changes.
 - Node TUI `test` and `typecheck` commands must run `npm run verify:deps`
-  first, so missing or partially installed `tui/node/node_modules` produces an
+  first, so missing or partially installed `tui/mycli-shell/node_modules` produces an
   actionable dependency message before `tsx` is imported.
 
 ### 7. Wrong vs Correct

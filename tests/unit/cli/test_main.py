@@ -66,6 +66,13 @@ def test_build_parser_reads_session_argument() -> None:
     assert args.session == "demo-session"
 
 
+def test_build_parser_leaves_session_unset_by_default() -> None:
+    parser = build_parser()
+    args = parser.parse_args([])
+
+    assert args.session is None
+
+
 def test_build_parser_accepts_doctor_command() -> None:
     parser = build_parser()
     args = parser.parse_args(["doctor"])
@@ -1297,6 +1304,25 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_plan(self) -> tuple[str, ...]:
             return ("in_progress: Inspect runtime entrypoints",)
 
+        def inspect_mode(self) -> tuple[str, ...]:
+            return ("collaboration_mode=default",)
+
+        def set_collaboration_mode(self, mode: str) -> tuple[str, ...]:
+            if mode == "plan":
+                return ("collaboration_mode=plan",)
+            if mode == "default":
+                return ("collaboration_mode=default",)
+            return (f"unsupported collaboration_mode={mode}; allowed=default, plan",)
+
+        def set_model_settings(
+            self,
+            *,
+            model: str | None = None,
+            thinking_effort: str | None = None,
+        ) -> tuple[str, ...]:
+            del thinking_effort
+            return (f"model={model or 'gpt-test'}",)
+
         def inspect_skills(self) -> tuple[str, ...]:
             return ("repository-analysis: Inspect repos",)
 
@@ -1304,6 +1330,9 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             return (
                 "Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
             )
+
+        def inspect_permissions(self) -> tuple[str, ...]:
+            return ("session_allowances=0", "execpolicy_rules=0")
 
         def inspect_hooks(self) -> tuple[str, ...]:
             return (
@@ -1421,10 +1450,23 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         f"event_streams={len(manifest['event_streams'])}"
     )
 
-    assert list(handler("/plan")) == ["[plan] in_progress: Inspect runtime entrypoints"]
+    assert list(handler("/plan")) == [
+        "[mode] collaboration_mode=plan",
+        "[plan] in_progress: Inspect runtime entrypoints",
+    ]
+    assert list(handler("/mode")) == ["[mode] collaboration_mode=default"]
+    assert list(handler("/mode plan")) == ["[mode] collaboration_mode=plan"]
+    assert list(handler("/mode invalid")) == [
+        "[mode] unsupported collaboration_mode=invalid; allowed=default, plan",
+    ]
+    assert list(handler("/model gpt-5.4")) == ["[model] model=gpt-5.4"]
     assert list(handler("/skills")) == ["[skill] repository-analysis: Inspect repos"]
     assert list(handler("/tools")) == [
         "[tool] Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
+    ]
+    assert list(handler("/permissions")) == [
+        "[permission] session_allowances=0",
+        "[permission] execpolicy_rules=0",
     ]
     assert list(handler("/hooks")) == [
         "[hook] pre_tool_use permission_guard enabled=true calls=0 errors=0",
@@ -2418,6 +2460,27 @@ def test_main_routes_node_tui_env_backend(monkeypatch, tmp_path: Path) -> None:
         env={"MYCLI_API_KEY": "x", "MYCLI_TUI_BACKEND": "node"},
     ) == 0
     assert events["called"] is True
+
+
+def test_main_routes_mycli_shell_env_backend_through_node_gateway(monkeypatch, tmp_path: Path) -> None:
+    events: dict[str, object] = {}
+
+    class FakeService:
+        pass
+
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
+    monkeypatch.setattr(
+        "mycli.cli.main.run_node_tui",
+        lambda service, *, cwd, env: events.setdefault("env", env) and 0,
+    )
+
+    assert main(
+        ["--session", "demo"],
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        env={"MYCLI_API_KEY": "x", "MYCLI_TUI_BACKEND": "shell"},
+    ) == 0
+    assert events["env"]["MYCLI_TUI_BACKEND"] == "shell"
 
 
 def test_main_plain_overrides_node_tui_backend(monkeypatch, tmp_path: Path) -> None:

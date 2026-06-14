@@ -1,0 +1,10 @@
+{"jsonrpc":"2.0","method":"turn.started","params":{"client_turn_id":"c1"}}
+{"jsonrpc":"2.0","method":"runtime.event","params":{"version":1,"sequence":1,"type":"turn.started","payload":{"client_turn_id":"c1"},"timestamp":1800000000.0}}
+{"jsonrpc":"2.0","method":"reasoning.delta","params":{"client_turn_id":"c1","text":"我需要直接回答用户身份。"}}
+{"jsonrpc":"2.0","method":"runtime.event","params":{"version":1,"sequence":2,"type":"reasoning.delta","payload":{"client_turn_id":"c1","text":"我需要直接回答用户身份。"},"timestamp":1800000000.1}}
+{"jsonrpc":"2.0","method":"message.delta","params":{"client_turn_id":"c1","text":"我是 mycli，你的本地编程助手。已经在待命了，有具体任务直接说。"}}
+{"jsonrpc":"2.0","method":"runtime.event","params":{"version":1,"sequence":3,"type":"message.delta","payload":{"client_turn_id":"c1","text":"我是 mycli，你的本地编程助手。已经在待命了，有具体任务直接说。"},"timestamp":1800000000.2}}
+{"jsonrpc":"2.0","method":"message.complete","params":{"client_turn_id":"c1","final":true,"text":"我是 mycli，你的本地编程助手。已经在待命了，有具体任务直接说。"}}
+{"jsonrpc":"2.0","method":"runtime.event","params":{"version":1,"sequence":4,"type":"message.complete","payload":{"client_turn_id":"c1","final":true,"text":"我是 mycli，你的本地编程助手。已经在待命了，有具体任务直接说。"},"timestamp":1800000000.3}}
+{"jsonrpc":"2.0","method":"turn.completed","params":{"client_turn_id":"c1","turn_state":"completed"}}
+{"jsonrpc":"2.0","method":"runtime.event","params":{"version":1,"sequence":5,"type":"turn.completed","payload":{"client_turn_id":"c1","turn_state":"completed"},"timestamp":1800000000.4}}

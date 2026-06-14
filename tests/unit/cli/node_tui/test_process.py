@@ -52,36 +52,92 @@ def test_resolve_node_entrypoint_reports_missing_default(tmp_path: Path) -> None
         resolve_node_entrypoint(repo_root=tmp_path, env={})
 
 
-def test_build_node_command_runs_tsx_shell_entrypoint(tmp_path: Path) -> None:
-    node_root = tmp_path / "tui" / "node"
-    entrypoint = node_root / "src" / "index.tsx"
+def test_build_node_command_defaults_to_mycli_shell_gateway(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    shell_entrypoint = tmp_path / "tui" / "mycli-shell" / "src" / "gateway.ts"
+    tsx_bin.parent.mkdir(parents=True)
+    shell_entrypoint.parent.mkdir(parents=True)
+    tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    shell_entrypoint.write_text("export {}", encoding="utf-8")
+
+    assert build_node_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(shell_entrypoint)]
+
+
+def test_build_node_command_maps_legacy_ink_backend_to_mycli_shell(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    entrypoint = node_root / "src" / "gateway.ts"
     tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
     entrypoint.parent.mkdir(parents=True)
     tsx_bin.parent.mkdir(parents=True)
     entrypoint.write_text("export {}", encoding="utf-8")
     tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
 
-    assert build_node_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(entrypoint)]
+    command = build_node_command(repo_root=tmp_path, env={"MYCLI_TUI_BACKEND": "ink"})
+
+    assert command == [str(tsx_bin), str(entrypoint)]
+
+
+def test_build_node_command_can_run_mycli_shell_gateway_backend(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    shell_entrypoint = tmp_path / "tui" / "mycli-shell" / "src" / "gateway.ts"
+    tsx_bin.parent.mkdir(parents=True)
+    shell_entrypoint.parent.mkdir(parents=True)
+    tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    shell_entrypoint.write_text("export {}", encoding="utf-8")
+
+    command = build_node_command(repo_root=tmp_path, env={"MYCLI_TUI_BACKEND": "shell"})
+
+    assert command == [str(tsx_bin), str(shell_entrypoint)]
+
+
+def test_build_node_command_reports_missing_mycli_shell_gateway_backend(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    tsx_bin.parent.mkdir(parents=True)
+    tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+
+    with pytest.raises(NodeTuiProcessError, match="mycli-shell gateway entrypoint not found"):
+        build_node_command(repo_root=tmp_path, env={"MYCLI_TUI_BACKEND": "shell"})
+
+
+def test_build_node_command_rejects_unknown_tui_backend(tmp_path: Path) -> None:
+    with pytest.raises(NodeTuiProcessError, match="Unsupported MYCLI_TUI_BACKEND"):
+        build_node_command(repo_root=tmp_path, env={"MYCLI_TUI_BACKEND": "unknown"})
 
 
 def test_build_node_command_keeps_scripted_client_entrypoint(tmp_path: Path) -> None:
-    node_root = tmp_path / "tui" / "node"
-    scripted = node_root / "src" / "index.js"
+    node_root = tmp_path / "tui" / "mycli-shell"
+    scripted = node_root / "test" / "support" / "scripted-client.ts"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
     scripted.parent.mkdir(parents=True)
+    tsx_bin.parent.mkdir(parents=True)
     scripted.write_text("console.log('scripted')", encoding="utf-8")
+    tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
 
     command = build_node_command(repo_root=tmp_path, env={"MYCLI_NODE_TUI_SCRIPT": "[]"})
 
-    assert command == ["node", str(scripted)]
+    assert command == [str(tsx_bin), str(scripted)]
 
 
-def test_node_tui_child_env_respects_auto_color_environment() -> None:
+def test_node_tui_child_env_forces_color_by_default() -> None:
     env = node_tui_child_env(
-        base_env={"TERM": "dumb", "NO_COLOR": "1"},
+        base_env={"TERM": "xterm-256color"},
         requested_env={},
     )
 
-    assert env["TERM"] == "dumb"
+    assert env["TERM"] == "xterm-256color"
+    assert env["FORCE_COLOR"] == "3"
+    assert "NO_COLOR" not in env
+
+
+def test_node_tui_child_env_respects_no_color_by_default() -> None:
+    env = node_tui_child_env(
+        base_env={"TERM": "xterm-256color", "NO_COLOR": "1"},
+        requested_env={},
+    )
+
     assert env["NO_COLOR"] == "1"
     assert "FORCE_COLOR" not in env
 

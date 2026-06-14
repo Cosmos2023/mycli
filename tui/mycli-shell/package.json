@@ -1,0 +1,23 @@
+{
+  "name": "mycli-shell-tui",
+  "version": "0.1.0",
+  "private": true,
+	"type": "module",
+	"scripts": {
+		"demo": "node --import ./node_modules/tsx/dist/esm/index.mjs src/demo.ts",
+		"test": "node --import ./node_modules/tsx/dist/esm/index.mjs --test \"test/**/*.test.ts\" --test-reporter=dot",
+		"typecheck": "./node_modules/.bin/tsc --noEmit"
+	},
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "get-east-asian-width": "1.6.0",
+    "marked": "15.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
+  }
+}

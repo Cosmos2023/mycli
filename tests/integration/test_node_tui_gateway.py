@@ -14,11 +14,13 @@ from mycli.cli.node_tui.process import NodeTuiProcess
 from mycli.cli.node_tui.gateway import run_node_tui_gateway
 from mycli.domain.runtime import (
     AgentConfig,
+    CollaborationMode,
     DecisionAction,
     DecisionKind,
     ModelTurnResult,
     PendingDecision,
     PendingClarification,
+    ReasoningEffort,
     RuntimeBlock,
     RuntimeItem,
     RuntimeStreamEvent,
@@ -31,6 +33,31 @@ from mycli.domain.runtime import (
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.write import WriteTool
+
+
+def node_scripted_client_args(repo_root: Path) -> list[str]:
+    return [
+        str(repo_root / "tui" / "mycli-shell" / "node_modules" / ".bin" / "tsx"),
+        str(repo_root / "tui" / "mycli-shell" / "test" / "support" / "scripted-client.ts"),
+    ]
+
+
+def e2e_config(**overrides: object) -> SimpleNamespace:
+    values: dict[str, object] = {
+        "session_id": "demo",
+        "workspace_root": Path.cwd(),
+        "model": "gpt-smoke",
+        "collaboration_mode": CollaborationMode.DEFAULT,
+        "reasoning_effort": ReasoningEffort.MEDIUM,
+        "thinking_enabled": True,
+        "thinking_effort": ReasoningEffort.MEDIUM,
+        "provider": SimpleNamespace(value="test"),
+        "protocol": SimpleNamespace(value="chat_completions"),
+        "max_prompt_tokens": 12000,
+        "tui_startup_mark": "default",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 class FakeNodeProcess:
@@ -59,13 +86,11 @@ class FakeNodeProcess:
 
 class FakeService:
     def __init__(self, workspace_root: Path) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="demo",
             workspace_root=workspace_root,
             model="gpt-test",
             provider=SimpleNamespace(value="deepseek"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
         )
         self._session_service = SimpleNamespace(
             load_pending_decision=lambda _session_id: None,
@@ -151,14 +176,9 @@ class E2ESessionService:
 
 class E2ETypedStreamService:
     def __init__(self, workspace_root: Path) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="typed-smoke",
             workspace_root=workspace_root,
-            model="gpt-smoke",
-            provider=SimpleNamespace(value="test"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
-            tui_startup_mark="default",
         )
         self._session_service = E2ESessionService()
         self.messages: list[str] = []
@@ -200,7 +220,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(["/help", "/theme mono", "hello"]),
@@ -215,14 +235,11 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
     assert exit_code == 0
     assert service.messages == ["hello"]
     state = json.loads(dump_path.read_text(encoding="utf-8"))
-    assert state["overlay"]["visible"] is True
-    assert state["overlay"]["title"] == "/help"
-    overlay_text = "\n".join(state["overlay"]["lines"])
-    assert "Enter send message" in overlay_text
-    assert "Approval: press 1-9" in overlay_text
-    assert state["themeName"] == "mono"
     command_items = [item for item in state["transcript"] if item["type"] == "command_output"]
-    assert [item["text"] for item in command_items] == ["Theme changed to mono."]
+    assert len(command_items) == 2
+    assert "Enter send message" in command_items[0]["text"]
+    assert "Approval:" in command_items[0]["text"]
+    assert command_items[1]["text"] == "Theme changed to mono."
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
@@ -252,14 +269,9 @@ class E2EWaitingSessionService:
 
 class E2EWaitingStateService:
     def __init__(self, workspace_root: Path) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="waiting-smoke",
             workspace_root=workspace_root,
-            model="gpt-smoke",
-            provider=SimpleNamespace(value="test"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
-            tui_startup_mark="default",
         )
         self._session_service = E2EWaitingSessionService()
         self.messages: list[str] = []
@@ -360,7 +372,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_waiting_state_route
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-waiting-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -408,7 +420,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_approval_reject(
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-approval-reject-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -497,7 +509,7 @@ def test_run_node_tui_gateway_with_real_runtime_strict_write_approval(
         home_dir=tmp_path / "home",
     )
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -541,7 +553,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_wrong_approval_id(
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-approval-wrong-id-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -585,7 +597,7 @@ def test_run_node_tui_gateway_scripted_expected_failed_state(
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-expected-failed-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -622,7 +634,7 @@ def test_run_node_tui_gateway_scripted_expected_waiting_states(
 
     approval_dump_path = tmp_path / "node-expected-waiting-approval.json"
     approval_process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -653,7 +665,7 @@ def test_run_node_tui_gateway_scripted_expected_waiting_states(
 
     clarification_dump_path = tmp_path / "node-expected-waiting-clarification.json"
     clarification_process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -685,14 +697,9 @@ def test_run_node_tui_gateway_scripted_expected_waiting_states(
 
 class E2EToolLifecycleService:
     def __init__(self, workspace_root: Path) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="tool-lifecycle-smoke",
             workspace_root=workspace_root,
-            model="gpt-smoke",
-            provider=SimpleNamespace(value="test"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
-            tui_startup_mark="default",
         )
         self._session_service = E2ESessionService()
         self.messages: list[str] = []
@@ -806,7 +813,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_tool_lifecycle(
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-tool-lifecycle.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(["tool lifecycle"]),
@@ -844,14 +851,9 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_tool_lifecycle(
 
 class E2EInterruptedStateService:
     def __init__(self, workspace_root: Path) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="interrupted-smoke",
             workspace_root=workspace_root,
-            model="gpt-smoke",
-            provider=SimpleNamespace(value="test"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
-            tui_startup_mark="default",
         )
         self._session_service = E2ESessionService()
         self.messages: list[str] = []
@@ -899,14 +901,9 @@ class E2EInterruptedStateService:
 
 class E2EFailureRecoveryService:
     def __init__(self, workspace_root: Path) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="failure-recovery-smoke",
             workspace_root=workspace_root,
-            model="gpt-smoke",
-            provider=SimpleNamespace(value="test"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
-            tui_startup_mark="default",
         )
         self._session_service = E2EWaitingSessionService()
         self.messages: list[str] = []
@@ -1101,7 +1098,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_interrupted_turn(
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-interrupted-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -1133,7 +1130,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_suppresses_late_com
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-interrupt-late-completion-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -1167,7 +1164,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_ma
     repo_root = Path(__file__).resolve().parents[2]
     dump_path = tmp_path / "node-failure-recovery-state.json"
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -1274,14 +1271,9 @@ class E2EResumeTipService:
         pending_decision: PendingDecision | None = None,
         suspended_turn: SuspendedTurn | None = None,
     ) -> None:
-        self._config = SimpleNamespace(
+        self._config = e2e_config(
             session_id="root",
             workspace_root=workspace_root,
-            model="gpt-smoke",
-            provider=SimpleNamespace(value="test"),
-            protocol=SimpleNamespace(value="chat_completions"),
-            max_prompt_tokens=12000,
-            tui_startup_mark="default",
         )
         self._session_service = E2EResumeTipSessionService(
             pending_decision=pending_decision,
@@ -1346,7 +1338,7 @@ def test_run_node_tui_gateway_scripted_resume_tip_then_approval_response(
         options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
     )
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(
@@ -1405,7 +1397,7 @@ def test_run_node_tui_gateway_scripted_resume_tip_then_clarification_response(
         ),
     )
     process = NodeTuiProcess(
-        args=["node", str(repo_root / "tui" / "node" / "src" / "index.js")],
+        args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
             "MYCLI_NODE_TUI_SCRIPT": json.dumps(

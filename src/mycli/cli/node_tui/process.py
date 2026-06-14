@@ -92,27 +92,37 @@ def resolve_node_entrypoint(*, repo_root: Path, env: Mapping[str, str]) -> Path:
     override = env.get("MYCLI_NODE_TUI_ENTRYPOINT")
     if override:
         candidate = Path(override).expanduser()
+    elif env.get("MYCLI_NODE_TUI_SCRIPT"):
+        candidate = _node_tui_scripted_entrypoint(repo_root=repo_root)
     else:
-        candidate = repo_root / "tui" / "node" / "src" / "index.js"
+        candidate = repo_root / "tui" / "mycli-shell" / "src" / "gateway.ts"
     if not candidate.is_file():
         raise NodeTuiProcessError(f"Node TUI entrypoint not found: {candidate}")
     return candidate
 
 
 def build_node_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
-    if env.get("MYCLI_NODE_TUI_SCRIPT"):
-        return ["node", str(resolve_node_entrypoint(repo_root=repo_root, env=env))]
     override = env.get("MYCLI_NODE_TUI_ENTRYPOINT")
-    if override:
+    if override and not env.get("MYCLI_NODE_TUI_SCRIPT"):
         return ["node", str(Path(override).expanduser())]
-    node_root = repo_root / "tui" / "node"
+    node_root = repo_root / "tui" / "mycli-shell"
     tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
-    entrypoint = node_root / "src" / "index.tsx"
+    if env.get("MYCLI_NODE_TUI_SCRIPT"):
+        entrypoint = resolve_node_entrypoint(repo_root=repo_root, env=env)
+        if not tsx_bin.is_file():
+            raise NodeTuiProcessError(
+                "Node TUI dependencies are not installed. Run: npm --prefix tui/mycli-shell install"
+            )
+        return [str(tsx_bin), str(entrypoint)]
+    backend = _node_tui_backend(env)
+    entrypoint = _node_tui_entrypoint(repo_root=repo_root, backend=backend)
     if not tsx_bin.is_file():
         raise NodeTuiProcessError(
-            "Node TUI dependencies are not installed. Run: npm --prefix tui/node install"
+            "Node TUI dependencies are not installed. Run: npm --prefix tui/mycli-shell install"
         )
     if not entrypoint.is_file():
+        if backend == "shell":
+            raise NodeTuiProcessError(f"mycli-shell gateway entrypoint not found: {entrypoint}")
         raise NodeTuiProcessError(f"Node TUI entrypoint not found: {entrypoint}")
     return [str(tsx_bin), str(entrypoint)]
 
@@ -138,7 +148,11 @@ def node_tui_child_env(
 ) -> dict[str, str]:
     child_env = dict(base_env)
     child_env.update(requested_env)
-    color_mode = child_env.get("MYCLI_TUI_COLOR", "auto").strip().lower()
+    explicit_color_mode = child_env.get("MYCLI_TUI_COLOR")
+    color_mode = (explicit_color_mode or "always").strip().lower()
+    if explicit_color_mode is None and child_env.get("NO_COLOR"):
+        child_env.pop("FORCE_COLOR", None)
+        return child_env
     if color_mode in {"always", "force", "true", "1", "yes"}:
         child_env.pop("NO_COLOR", None)
         child_env["FORCE_COLOR"] = "3"
@@ -150,6 +164,27 @@ def node_tui_child_env(
 
 def _run_node_version(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=False, capture_output=True, text=True)
+
+
+def _node_tui_backend(env: Mapping[str, str]) -> str:
+    backend = env.get("MYCLI_TUI_BACKEND", "shell").strip().lower()
+    if backend in {"", "node", "ink"}:
+        return "shell"
+    if backend in {"shell", "mycli-shell", "mycli_shell"}:
+        return "shell"
+    raise NodeTuiProcessError(
+        f"Unsupported MYCLI_TUI_BACKEND={backend!r}. Supported values: shell."
+    )
+
+
+def _node_tui_entrypoint(*, repo_root: Path, backend: str) -> Path:
+    if backend == "shell":
+        return repo_root / "tui" / "mycli-shell" / "src" / "gateway.ts"
+    return repo_root / "tui" / "mycli-shell" / "src" / "gateway.ts"
+
+
+def _node_tui_scripted_entrypoint(*, repo_root: Path) -> Path:
+    return repo_root / "tui" / "mycli-shell" / "test" / "support" / "scripted-client.ts"
 
 
 def _parse_node_major(version: str) -> int:

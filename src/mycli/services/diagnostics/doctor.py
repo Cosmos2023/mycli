@@ -1732,7 +1732,7 @@ class DoctorService:
             )
         node_tui_root = _node_tui_source_root()
         if node_tui_root.exists():
-            checks.append(DoctorCheck("node_tui", DoctorStatus.OK, "source present tui/node"))
+            checks.append(DoctorCheck("node_tui", DoctorStatus.OK, "source present tui/mycli-shell"))
             dependency_config = _node_tui_dependency_config(node_tui_root)
             missing_markers = [
                 marker
@@ -1745,7 +1745,7 @@ class DoctorService:
                         "node_tui_dependencies",
                         DoctorStatus.OK,
                         "required Node TUI dependencies present",
-                        detail="tui/node/node_modules",
+                        detail="tui/mycli-shell/node_modules",
                     )
                 )
             else:
@@ -1776,7 +1776,7 @@ class DoctorService:
                 DoctorCheck(
                     "node_tui",
                     DoctorStatus.WARNING,
-                    "missing source tui/node",
+                    "missing source tui/mycli-shell",
                 )
             )
         for command in ("node", "npm"):
@@ -2365,7 +2365,7 @@ def _bounded_name_list(names: list[str]) -> str:
 
 
 def _node_tui_source_root() -> Path:
-    return Path(__file__).resolve().parents[4] / "tui" / "node"
+    return Path(__file__).resolve().parents[4] / "tui" / "mycli-shell"
 
 
 def _node_tui_dependency_config(node_tui_root: Path) -> _NodeTuiDependencyConfig:
@@ -2374,13 +2374,11 @@ def _node_tui_dependency_config(node_tui_root: Path) -> _NodeTuiDependencyConfig
         required_paths=(
             "node_modules/.bin/tsx",
             "node_modules/.bin/tsc",
-            "node_modules/ink",
-            "node_modules/react",
             "node_modules/tsx",
             "node_modules/typescript",
         ),
-        install_command="npm --prefix tui/node ci",
-        cleanup_command="rm -rf tui/node/node_modules",
+        install_command="npm --prefix tui/mycli-shell ci",
+        cleanup_command="rm -rf tui/mycli-shell/node_modules",
     )
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))

@@ -243,12 +243,12 @@ Questions to answer:
 - MCP config load fails -> failed; do not start servers.
 - Node/npm or Python TUI unavailable -> warning unless a stricter command is
   explicitly introduced later.
-- Node TUI source exists but `tui/node/node_modules/.bin/tsx` is missing ->
+- Node TUI source exists but `tui/mycli-shell/node_modules/.bin/tsx` is missing ->
   `node_tui_dependencies=warning` with remediation text
-  `npm --prefix tui/node install`; do not create `node_modules` or run npm.
+  `npm --prefix tui/mycli-shell install`; do not create `node_modules` or run npm.
 - Node-side TUI verification should run a dependency-free preflight before
   commands that import `tsx`, and should print missing markers plus the
-  remediation `npm --prefix tui/node ci`.
+  remediation `npm --prefix tui/mycli-shell ci`.
 - Node TUI source is missing -> report the existing `node_tui` warning and skip
   dependency-marker checks, because missing source is the actionable root cause.
 - Runtime gateway discovery contract mismatch between `extension.manifest` and

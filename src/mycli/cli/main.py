@@ -81,7 +81,7 @@ __all__ = [
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mycli")
-    parser.add_argument("--session", default="default", help="Session identifier")
+    parser.add_argument("--session", default=None, help="Session identifier")
     parser.add_argument("--model", default=None, help="Model override")
     parser.add_argument(
         "--plain",
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--node-tui",
         action="store_true",
-        help="Run the experimental Node.js TUI gateway",
+        help="Run the full-screen Node.js TUI gateway",
     )
     parser.add_argument("--eval-list", action="store_true", help="List evaluation scenarios")
     parser.add_argument("--eval-scenario", default=None, help="Run a single evaluation scenario")
@@ -125,7 +125,13 @@ def should_use_node_tui(cli_args: dict[str, object], env: dict[str, str] | None)
     backend = env_vars.get("MYCLI_TUI_BACKEND", "").strip().lower()
     if backend == "textual":
         return False
-    if bool(cli_args.get("node_tui")) or backend == "node":
+    if bool(cli_args.get("node_tui")) or backend in {
+        "node",
+        "ink",
+        "shell",
+        "mycli-shell",
+        "mycli_shell",
+    }:
         return True
     return stdin.isatty() and stdout.isatty()
 

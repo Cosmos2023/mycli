@@ -13,8 +13,10 @@ from mycli.cli.node_tui.gateway import (
 )
 from mycli.cli.node_tui.protocol import RpcRequest
 from mycli.domain.runtime import (
+    CollaborationMode,
     DecisionAction,
     DecisionKind,
+    ReasoningEffort,
     PendingDecision,
     PendingClarification,
     RuntimeStreamEvent,
@@ -71,6 +73,10 @@ class FakeService(TurnService):
             session_id="demo",
             workspace_root=workspace_root,
             model="deepseek-v4-flash",
+            collaboration_mode=CollaborationMode.DEFAULT,
+            reasoning_effort=ReasoningEffort.MEDIUM,
+            thinking_enabled=True,
+            thinking_effort=ReasoningEffort.MEDIUM,
             provider=SimpleNamespace(value="deepseek"),
             protocol=SimpleNamespace(value="chat_completions"),
             max_prompt_tokens=100000,
@@ -88,8 +94,43 @@ class FakeService(TurnService):
     def inspect_status(self) -> tuple[str, ...]:
         return ("session=demo context=unknown",)
 
+    def inspect_permissions(self) -> tuple[str, ...]:
+        return (
+            "session_allowances=1",
+            "allow_session pattern=git push",
+            "execpolicy_rules=1",
+            "execpolicy source=project decision=allow pattern_length=2",
+        )
+
     def set_view_mode(self, mode: str) -> tuple[str, ...]:
         return (f"mode={mode}",)
+
+    def inspect_mode(self) -> tuple[str, ...]:
+        return (f"collaboration_mode={self._config.collaboration_mode.value}",)
+
+    def set_collaboration_mode(self, mode: str) -> tuple[str, ...]:
+        try:
+            collaboration_mode = CollaborationMode(mode)
+        except ValueError:
+            return (f"unsupported collaboration_mode={mode}; allowed=default, plan",)
+        self._config.collaboration_mode = collaboration_mode
+        return (f"collaboration_mode={collaboration_mode.value}",)
+
+    def set_model_settings(
+        self,
+        *,
+        model: str | None = None,
+        thinking_effort: str | None = None,
+    ) -> tuple[str, ...]:
+        if model is not None:
+            self._config.model = model
+        if thinking_effort is not None:
+            self._config.reasoning_effort = ReasoningEffort(thinking_effort)
+            self._config.thinking_effort = ReasoningEffort(thinking_effort)
+        return (
+            f"model={self._config.model}",
+            f"thinking_effort={self._config.thinking_effort.value}",
+        )
 
     def current_context_window_metrics(self) -> dict[str, object]:
         return {"input_tokens": 123, "max_tokens": 100000, "source": "provider"}
@@ -168,6 +209,66 @@ def test_gateway_bootstrap_and_status_include_optional_session_title(tmp_path: P
     assert status.result["session_title"] == "Boss reply follow-up"
 
 
+def test_gateway_forwards_compaction_lifecycle_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._forward_stream_event(
+        "client_1",
+        RuntimeStreamEvent(
+            kind="compaction_started",
+            metadata={
+                "source": "pre_request",
+                "before_tokens": 120000,
+                "max_tokens": 128000,
+            },
+        ),
+    )
+    gateway._forward_stream_event(
+        "client_1",
+        RuntimeStreamEvent(
+            kind="compaction_completed",
+            metadata={
+                "source": "pre_request",
+                "status": "compressed",
+                "before_tokens": 120000,
+                "after_tokens": 42000,
+                "max_tokens": 128000,
+                "duration_s": 2.5,
+            },
+        ),
+    )
+
+    assert events[0] == (
+        "compaction.started",
+        {
+            "client_turn_id": "client_1",
+            "source": "pre_request",
+            "before_tokens": 120000,
+            "max_tokens": 128000,
+        },
+    )
+    assert events[1] == (
+        "runtime.event",
+        {
+            "version": 1,
+            "sequence": 1,
+            "type": "compaction.started",
+            "payload": events[0][1],
+            "timestamp": events[1][1]["timestamp"],
+        },
+    )
+    assert events[2][0] == "compaction.completed"
+    assert events[2][1]["client_turn_id"] == "client_1"
+    assert events[2][1]["status"] == "compressed"
+    assert events[2][1]["after_tokens"] == 42000
+    assert events[3][0] == "runtime.event"
+    assert events[3][1]["type"] == "compaction.completed"
+
+
 def test_gateway_workspace_trust_status_returns_safe_fallback(tmp_path: Path) -> None:
     gateway = NodeTuiGateway(service=FakeService(tmp_path))
 
@@ -188,14 +289,22 @@ def test_gateway_workspace_trust_set_fallback_does_not_claim_enforcement(tmp_pat
     gateway = NodeTuiGateway(service=FakeService(tmp_path), emit=lambda method, params: events.append((method, params)))
 
     response = gateway.handle_request(
-        RpcRequest(id="req_1", method="workspace.trust.set", params={"state": "trusted"})
+        RpcRequest(id="req_1", method="workspace.trust.set", params={"state": "untrusted"})
     )
 
     assert response.result is not None
-    assert response.result["requested_state"] == "trusted"
+    assert response.result["state"] == "untrusted"
+    assert response.result["requested_state"] == "untrusted"
     assert response.result["enforced"] is False
     assert "not available yet" in str(response.result["message"])
     assert any(method == "workspace.trust.changed" for method, _params in events)
+
+    status_response = gateway.handle_request(
+        RpcRequest(id="req_2", method="workspace.trust.status", params={})
+    )
+    assert status_response.result is not None
+    assert status_response.result["state"] == "untrusted"
+    assert status_response.result["enforced"] is False
 
 
 def test_gateway_bootstrap_includes_welcome_payload(tmp_path: Path) -> None:
@@ -279,6 +388,9 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     changes = gateway.handle_request(
         RpcRequest(id="req_4", method="command.run", params={"command": "/changes"})
     )
+    permissions = gateway.handle_request(
+        RpcRequest(id="req_5", method="command.run", params={"command": "/permissions"})
+    )
 
     assert usage.result is not None
     assert usage.result["presentation"] == "overlay"
@@ -291,6 +403,64 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     assert changes.result is not None
     assert changes.result["presentation"] == "overlay"
     assert changes.result["presentation_hint"] == "file changes"
+    assert permissions.result is not None
+    assert permissions.result["presentation"] == "overlay"
+    assert permissions.result["lines"] == [
+        "[permission] session_allowances=1",
+        "[permission] allow_session pattern=git push",
+        "[permission] execpolicy_rules=1",
+        "[permission] execpolicy source=project decision=allow pattern_length=2",
+    ]
+
+
+def test_gateway_command_run_updates_model_and_thinking_effort(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service, emit=lambda method, params: events.append((method, params)))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="command.run",
+            params={"command": "/model gpt-5.4 --thinking-effort high"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["lines"] == [
+        "[model] model=gpt-5.4",
+        "[model] thinking_effort=high",
+    ]
+    assert service._config.model == "gpt-5.4"
+    assert service._config.reasoning_effort == ReasoningEffort.HIGH
+    assert service._config.thinking_effort == ReasoningEffort.HIGH
+    status_events = [params for method, params in events if method == "status.changed"]
+    assert status_events
+    assert status_events[-1]["model"] == "gpt-5.4"
+    assert status_events[-1]["thinking_effort"] == "high"
+
+
+def test_gateway_command_run_updates_collaboration_mode(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service, emit=lambda method, params: events.append((method, params)))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="command.run",
+            params={"command": "/mode plan"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["lines"] == ["[mode] collaboration_mode=plan"]
+    assert response.result["mutated_mode"] is True
+    assert response.result["collaboration_mode"] == "plan"
+    assert service._config.collaboration_mode == CollaborationMode.PLAN
+    status_events = [params for method, params in events if method == "status.changed"]
+    assert status_events
+    assert status_events[-1]["collaboration_mode"] == "plan"
 
 
 def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
@@ -1053,6 +1223,59 @@ def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Pa
     ]
 
 
+def test_gateway_forwards_plan_updated_stream_event(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+
+    def plan_turn(
+        _message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        if stream_sink is not None:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="plan_updated",
+                    metadata={
+                        "plan_steps": [
+                            "completed: Inspect runtime state",
+                            "in_progress: Render active plan",
+                            "pending: Verify shell tests",
+                        ],
+                        "source": "Plan",
+                    },
+                )
+            )
+        return TurnResponse(assistant_message="Working on it")
+
+    service.handle_user_turn = plan_turn  # type: ignore[assignment, method-assign]
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "do it", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    direct_events = [(method, params) for method, params in events if method != "runtime.event"]
+    assert ("plan.updated",) in [(method,) for method, _params in direct_events]
+    assert next(params for method, params in direct_events if method == "plan.updated") == {
+        "client_turn_id": "client_1",
+        "plan_steps": [
+            "completed: Inspect runtime state",
+            "in_progress: Render active plan",
+            "pending: Verify shell tests",
+        ],
+        "source": "Plan",
+    }
+
+
 def test_gateway_bounds_final_message_complete_text(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
@@ -1090,6 +1313,61 @@ def test_gateway_bounds_final_message_complete_text(tmp_path: Path) -> None:
         "truncated": True,
         "original_length": 16_010,
     }
+
+
+def test_gateway_emits_proposed_plan_as_special_event(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    plan_message = (
+        "I checked the repo.\n"
+        "<proposed_plan>\n"
+        "# Plan\n"
+        "- Add parser\n"
+        "- Render plan block\n"
+        "</proposed_plan>\n"
+        "Ready when you switch modes."
+    )
+
+    def plan_turn(
+        _message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
+        return TurnResponse(assistant_message=plan_message)
+
+    service.handle_user_turn = plan_turn  # type: ignore[assignment, method-assign]
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "make a plan", "client_turn_id": "client_1"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    direct_events = [(method, params) for method, params in events if method != "runtime.event"]
+    methods = [method for method, _params in direct_events]
+    assert "plan.proposed" in methods
+    assert methods.index("plan.proposed") < methods.index("turn.completed")
+    assert next(params for method, params in direct_events if method == "plan.proposed") == {
+        "client_turn_id": "client_1",
+        "text": "# Plan\n- Add parser\n- Render plan block",
+        "source": "assistant_message",
+    }
+    completed = next(params for method, params in direct_events if method == "turn.completed")
+    assert completed["assistant_message"] == "I checked the repo.\nReady when you switch modes."
+    final_complete = next(
+        params
+        for method, params in direct_events
+        if method == "message.complete" and params.get("final") is True
+    )
+    assert final_complete["text"] == "I checked the repo.\nReady when you switch modes."
 
 
 def test_gateway_mirrors_runtime_notifications_with_versioned_envelopes(tmp_path: Path) -> None:

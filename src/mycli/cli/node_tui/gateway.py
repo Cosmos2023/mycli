@@ -42,6 +42,7 @@ COMMAND_OVERLAYS = {
     "/status",
     "/usage",
     "/context",
+    "/permissions",
     "/changes",
     "/sessions",
     "/session-maintenance",
@@ -51,6 +52,8 @@ COMMAND_OVERLAYS = {
     "/release-notes",
 }
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
+PROPOSED_PLAN_OPEN_TAG = "<proposed_plan>"
+PROPOSED_PLAN_CLOSE_TAG = "</proposed_plan>"
 SUPPORTED_RPC_METHODS = SUPPORTED_GATEWAY_RPC_METHODS
 SUPPORTED_EVENT_STREAMS = SUPPORTED_GATEWAY_EVENT_STREAMS
 DECISION_CHOICE_MAP = {
@@ -161,6 +164,7 @@ class NodeTuiGateway:
         self._current_client_turn_id: str | None = None
         self._interrupt_requested = False
         self._event_sequence = 0
+        self._fallback_trust_state = "unknown"
 
     def handle_request(self, request: RpcRequest) -> RpcResponse:
         try:
@@ -262,6 +266,13 @@ class NodeTuiGateway:
             "session_id": self.service._config.session_id,
             "workspace": str(self.service._config.workspace_root),
             "model": self.service._config.model,
+            "collaboration_mode": self.service._config.collaboration_mode.value,
+            "reasoning_effort": str(getattr(self.service._config.reasoning_effort, "value", self.service._config.reasoning_effort)),
+            "thinking_effort": (
+                str(getattr(self.service._config.thinking_effort, "value", self.service._config.thinking_effort))
+                if self.service._config.thinking_effort is not None
+                else "off"
+            ),
             "provider": (
                 f"{self.service._config.provider.value}/"
                 f"{self.service._config.protocol.value}"
@@ -281,6 +292,13 @@ class NodeTuiGateway:
             "session_id": self.service._config.session_id,
             "workspace": str(self.service._config.workspace_root),
             "model": self.service._config.model,
+            "collaboration_mode": self.service._config.collaboration_mode.value,
+            "reasoning_effort": str(getattr(self.service._config.reasoning_effort, "value", self.service._config.reasoning_effort)),
+            "thinking_effort": (
+                str(getattr(self.service._config.thinking_effort, "value", self.service._config.thinking_effort))
+                if self.service._config.thinking_effort is not None
+                else "off"
+            ),
             "provider": (
                 f"{self.service._config.provider.value}/"
                 f"{self.service._config.protocol.value}"
@@ -401,9 +419,23 @@ class NodeTuiGateway:
                     "approval.request",
                     _approval_request_payload(client_turn_id, response.pending_decision),
                 )
+            assistant_message, proposed_plan = _split_proposed_plan(response.assistant_message)
+            if proposed_plan is not None:
+                self._emit_event(
+                    "plan.proposed",
+                    {
+                        "client_turn_id": client_turn_id,
+                        "text": proposed_plan,
+                        "source": "assistant_message",
+                    },
+                )
             self._emit_event(
                 "turn.completed",
-                self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+                self._turn_completed_payload(
+                    client_turn_id=client_turn_id,
+                    response=response,
+                    assistant_message=assistant_message,
+                ),
             )
             turn_state = _turn_state_for_response(response)
             self._emit_turn_status(
@@ -412,7 +444,7 @@ class NodeTuiGateway:
                 message=_terminal_status_message(response, turn_state),
             )
             if turn_state == "completed":
-                self._emit_final_message_complete(client_turn_id, response)
+                self._emit_final_message_complete(client_turn_id, assistant_message)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -483,6 +515,22 @@ class NodeTuiGateway:
                 text=_status_text_for_state("waiting_clarification"),
             )
             return
+        if event.kind in {"compaction_started", "compaction_completed"}:
+            method = {
+                "compaction_started": "compaction.started",
+                "compaction_completed": "compaction.completed",
+            }[event.kind]
+            self._emit_event(
+                method,
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            return
+        if event.kind == "plan_updated":
+            self._emit_event(
+                "plan.updated",
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            return
         if event.kind == "reasoning":
             payload: dict[str, object] = {"client_turn_id": client_turn_id, "text": event.text}
             self._emit_event("reasoning.delta", payload)
@@ -514,10 +562,14 @@ class NodeTuiGateway:
         *,
         client_turn_id: str,
         response: TurnResponse,
+        assistant_message: str | None = None,
     ) -> dict[str, object]:
+        rendered_assistant_message = (
+            response.assistant_message if assistant_message is None else assistant_message
+        )
         return {
             "client_turn_id": client_turn_id,
-            "assistant_message": response.assistant_message,
+            "assistant_message": rendered_assistant_message,
             "activity_events": [
                 {
                     "kind": item.kind,
@@ -601,17 +653,17 @@ class NodeTuiGateway:
     def _emit_final_message_complete(
         self,
         client_turn_id: str,
-        response: TurnResponse,
+        assistant_message: str,
     ) -> None:
         payload: dict[str, object] = {
             "client_turn_id": client_turn_id,
-            "text": _bounded_message_complete_text(response.assistant_message),
+            "text": _bounded_message_complete_text(assistant_message),
             "final": True,
             "source": "turn_response",
         }
-        if len(response.assistant_message) > MESSAGE_COMPLETE_TEXT_LIMIT:
+        if len(assistant_message) > MESSAGE_COMPLETE_TEXT_LIMIT:
             payload["truncated"] = True
-            payload["original_length"] = len(response.assistant_message)
+            payload["original_length"] = len(assistant_message)
         self._emit_event("message.complete", payload)
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
@@ -629,9 +681,17 @@ class NodeTuiGateway:
         mutated_session = command.startswith(("/resume", "/fork"))
         if mutated_session and self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
+        mutated_model = command == "/model" or command.startswith("/model ")
+        if mutated_model:
+            self._emit_event("status.changed", self._status_payload())
+        mutated_mode = command == "/plan" or command == "/mode" or command.startswith("/mode ")
+        if mutated_mode:
+            self._emit_event("status.changed", self._status_payload())
         result: dict[str, object] = {
             "lines": lines,
             "mutated_session": mutated_session,
+            "mutated_model": mutated_model,
+            "mutated_mode": mutated_mode,
             "presentation": "overlay" if command_name in COMMAND_OVERLAYS else "transcript",
             "exit_requested": builtin == "quit",
         }
@@ -640,6 +700,9 @@ class NodeTuiGateway:
         view_mode = _view_mode_from_command(command)
         if view_mode is not None:
             result["view_mode"] = view_mode
+        collaboration_mode = _collaboration_mode_from_command(command)
+        if collaboration_mode is not None:
+            result["collaboration_mode"] = collaboration_mode
         return result
 
     def _handle_transcript_load(self, params: dict[str, object]) -> dict[str, object]:
@@ -758,9 +821,23 @@ class NodeTuiGateway:
                     "choice": _choice_for_resolved_value(choice),
                 },
             )
+            assistant_message, proposed_plan = _split_proposed_plan(response.assistant_message)
+            if proposed_plan is not None:
+                self._emit_event(
+                    "plan.proposed",
+                    {
+                        "client_turn_id": client_turn_id,
+                        "text": proposed_plan,
+                        "source": "assistant_message",
+                    },
+                )
             self._emit_event(
                 "turn.completed",
-                self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+                self._turn_completed_payload(
+                    client_turn_id=client_turn_id,
+                    response=response,
+                    assistant_message=assistant_message,
+                ),
             )
             turn_state = _turn_state_for_response(response)
             self._emit_turn_status(
@@ -769,7 +846,7 @@ class NodeTuiGateway:
                 message=_terminal_status_message(response, turn_state),
             )
             if turn_state == "completed":
-                self._emit_final_message_complete(client_turn_id, response)
+                self._emit_final_message_complete(client_turn_id, assistant_message)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -865,9 +942,23 @@ class NodeTuiGateway:
                     "response": _bounded_text(response),
                 },
             )
+            assistant_message, proposed_plan = _split_proposed_plan(turn_response.assistant_message)
+            if proposed_plan is not None:
+                self._emit_event(
+                    "plan.proposed",
+                    {
+                        "client_turn_id": client_turn_id,
+                        "text": proposed_plan,
+                        "source": "assistant_message",
+                    },
+                )
             self._emit_event(
                 "turn.completed",
-                self._turn_completed_payload(client_turn_id=client_turn_id, response=turn_response),
+                self._turn_completed_payload(
+                    client_turn_id=client_turn_id,
+                    response=turn_response,
+                    assistant_message=assistant_message,
+                ),
             )
             turn_state = _turn_state_for_response(turn_response)
             self._emit_turn_status(
@@ -876,7 +967,7 @@ class NodeTuiGateway:
                 message=_terminal_status_message(turn_response, turn_state),
             )
             if turn_state == "completed":
-                self._emit_final_message_complete(client_turn_id, turn_response)
+                self._emit_final_message_complete(client_turn_id, assistant_message)
             self._emit_status_update(
                 client_turn_id=client_turn_id,
                 state=turn_state,
@@ -948,6 +1039,13 @@ class NodeTuiGateway:
             "session_id": self.service._config.session_id,
             "workspace": Path(self.service._config.workspace_root).name,
             "model": self.service._config.model,
+            "collaboration_mode": self.service._config.collaboration_mode.value,
+            "reasoning_effort": str(getattr(self.service._config.reasoning_effort, "value", self.service._config.reasoning_effort)),
+            "thinking_effort": (
+                str(getattr(self.service._config.thinking_effort, "value", self.service._config.thinking_effort))
+                if self.service._config.thinking_effort is not None
+                else "off"
+            ),
             "provider": (
                 f"{self.service._config.provider.value}/"
                 f"{self.service._config.protocol.value}"
@@ -994,7 +1092,7 @@ class NodeTuiGateway:
                     "enforced": bool(raw.get("enforced", False)),
                 }
         return {
-            "state": "unknown",
+            "state": self._fallback_trust_state,
             "workspace": workspace,
             "source": "fallback",
             "enforced": False,
@@ -1017,6 +1115,7 @@ class NodeTuiGateway:
                 self._emit_event("workspace.trust.changed", payload)
                 self._emit_event("status.changed", {**self._status_payload(), "trust": payload})
                 return payload
+        self._fallback_trust_state = state
         payload = {
             **self._trust_status_payload(),
             "requested_state": state,
@@ -1087,6 +1186,15 @@ def _bounded_text(value: str, *, max_chars: int = 500) -> str:
 def _view_mode_from_command(command: str) -> str | None:
     parts = command.split(maxsplit=1)
     if len(parts) == 2 and parts[0] == "/view" and parts[1] in {"default", "verbose", "focus"}:
+        return parts[1]
+    return None
+
+
+def _collaboration_mode_from_command(command: str) -> str | None:
+    if command == "/plan":
+        return "plan"
+    parts = command.split(maxsplit=1)
+    if len(parts) == 2 and parts[0] == "/mode" and parts[1] in {"default", "plan"}:
         return parts[1]
     return None
 
@@ -1210,6 +1318,31 @@ def _bounded_message_complete_text(value: str) -> str:
     if len(value) <= MESSAGE_COMPLETE_TEXT_LIMIT:
         return value
     return value[:MESSAGE_COMPLETE_TEXT_LIMIT]
+
+
+def _split_proposed_plan(message: str) -> tuple[str, str | None]:
+    """Return visible assistant text plus a Codex-style proposed plan block."""
+
+    lines = message.splitlines(keepends=True)
+    open_index = _find_exact_tag_line(lines, PROPOSED_PLAN_OPEN_TAG, start=0)
+    if open_index is None:
+        return message, None
+    close_index = _find_exact_tag_line(lines, PROPOSED_PLAN_CLOSE_TAG, start=open_index + 1)
+    if close_index is None:
+        return message, None
+
+    plan = "".join(lines[open_index + 1 : close_index]).strip()
+    if not plan:
+        return message, None
+    visible = "".join([*lines[:open_index], *lines[close_index + 1 :]]).strip()
+    return visible, plan
+
+
+def _find_exact_tag_line(lines: list[str], tag: str, *, start: int) -> int | None:
+    for index in range(start, len(lines)):
+        if lines[index].strip() == tag:
+            return index
+    return None
 
 
 def _project_history_item(item: HistoryItem) -> dict[str, object]:
