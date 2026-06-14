@@ -142,6 +142,24 @@ Codex 和 Claude Code 值得学习的是安全感和 coding workflow：
 
 这些体验会让用户敢把 TUI 当成真正的 coding surface，而不是一个聊天壳。
 
+### 3.3 pi-agent / pi-tui
+
+pi-agent 值得学习的不是 LLM runtime，而是完整的 coding-agent UI 架构。
+
+参考笔记：`docs/parity/pi-agent-tui-lessons.md`
+
+关键结论：
+
+- 好的 TUI 不是把字符串拼得更漂亮，而是把 transcript、tool、bash、
+  selector、footer 和 command 系统拆成稳定组件。
+- `mycli` 应继续保留 Python runtime/gateway 作为事实来源，只学习
+  pi-agent 的 UI shell、selector、footer、tool rendering 和 command
+  registry。
+- `pi-tui/examples/mycli-gateway.ts` 当前只是 real-gateway proof，后续要改成
+  `ShellState -> TranscriptBlock -> Component`，而不是继续在入口里拼行。
+- Slash commands 要变成产品面，而不是散落在 TUI 中的 if/else：同一份
+  registry 应驱动 `/help`、autocomplete、hotkeys、footer hints 和 selector。
+
 ---
 
 ## 4. 目标架构
