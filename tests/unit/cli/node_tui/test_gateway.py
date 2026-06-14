@@ -166,6 +166,20 @@ class FakeService(TurnService):
             "capabilities": [],
         }
 
+    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        del message
+        return (), ()
+
+    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        del message
+        return (), ()
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return (), ()
+
+    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return (), ()
+
 
 def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> None:
     gateway = NodeTuiGateway(service=FakeService(tmp_path))
@@ -183,6 +197,9 @@ def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> N
     assert response.result["session_id"] == "demo"
     assert response.result["workspace"] == str(tmp_path)
     assert response.result["provider"] == "deepseek/chat_completions"
+    assert response.result["status"]["turn_running"] is False
+    assert response.result["status"]["queued_steering"] == []
+    assert response.result["status"]["queued_follow_up"] == []
     assert response.result["status"]["trust"] == {
         "state": "unknown",
         "workspace": str(tmp_path),
@@ -489,7 +506,7 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
         RpcRequest(
             id="req_1",
             method="transcript.load",
-            params={"session_id": "demo", "limit": 20, "before": None},
+            params={"session_id": "demo", "before": None},
         )
     )
 
@@ -515,6 +532,34 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
         ],
         "next_before": None,
     }
+
+
+def test_gateway_transcript_load_limit_returns_tail_with_cursor(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.history_items = tuple(
+        HistoryItem(
+            id=f"hist_{index}",
+            thread_id="demo",
+            turn_id=f"turn_{index}",
+            type=HistoryItemType.USER_MESSAGE,
+            text=f"message {index}",
+            metadata={"created_at": f"2026-05-27T08:00:0{index}Z"},
+        )
+        for index in range(3)
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="transcript.load",
+            params={"session_id": "demo", "limit": 2, "before": None},
+        )
+    )
+
+    assert response.result is not None
+    assert [item["id"] for item in response.result["items"]] == ["hist_1", "hist_2"]
+    assert response.result["next_before"] == "hist_1"
 
 
 def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
@@ -881,6 +926,8 @@ class FakeTurnService(FakeService):
         self.resolved_choices: list[str] = []
         self.clarification_responses: list[tuple[str, str]] = []
         self.interrupt_requests: list[str | None] = []
+        self.steering_messages: list[str] = []
+        self.follow_up_messages: list[str] = []
 
     def handle_user_turn(
         self,
@@ -925,6 +972,24 @@ class FakeTurnService(FakeService):
 
     def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None:
         self.interrupt_requests.append(client_turn_id)
+
+    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        self.steering_messages.append(message)
+        return tuple(self.steering_messages), tuple(self.follow_up_messages)
+
+    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        self.follow_up_messages.append(message)
+        return tuple(self.steering_messages), tuple(self.follow_up_messages)
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return tuple(self.steering_messages), tuple(self.follow_up_messages)
+
+    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        steering = tuple(self.steering_messages)
+        follow_up = tuple(self.follow_up_messages)
+        self.steering_messages.clear()
+        self.follow_up_messages.clear()
+        return steering, follow_up
 
 
 class BlockingTurnService(FakeTurnService):
@@ -1791,6 +1856,59 @@ def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_comp
 
     assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
     assert interrupted.result == {"interrupted": True}
+
+
+def test_gateway_queues_steering_and_follow_up_while_turn_runs(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = BlockingTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    accepted = gateway.handle_request(
+        RpcRequest(id="req_1", method="turn.submit", params={"message": "hello"})
+    )
+    assert service.started.wait(timeout=2.0)
+    steering = gateway.handle_request(
+        RpcRequest(id="req_2", method="turn.steer", params={"message": "steer now"})
+    )
+    follow_up = gateway.handle_request(
+        RpcRequest(id="req_3", method="turn.follow_up", params={"message": "after this"})
+    )
+    cleared = gateway.handle_request(
+        RpcRequest(id="req_4", method="turn.queue.clear", params={})
+    )
+    service.release.set()
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
+    assert steering.result == {
+        "accepted": True,
+        "steering": ["steer now"],
+        "follow_up": [],
+    }
+    assert follow_up.result == {
+        "accepted": True,
+        "steering": ["steer now"],
+        "follow_up": ["after this"],
+    }
+    assert cleared.result == {
+        "steering": ["steer now"],
+        "follow_up": ["after this"],
+    }
+    assert (
+        "turn.queue.updated",
+        {"steering": ["steer now"], "follow_up": []},
+    ) in events
+    assert (
+        "turn.queue.updated",
+        {"steering": ["steer now"], "follow_up": ["after this"]},
+    ) in events
+    assert (
+        "turn.queue.updated",
+        {"steering": [], "follow_up": []},
+    ) in events
 
 
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:

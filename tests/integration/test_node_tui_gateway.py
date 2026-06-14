@@ -4,7 +4,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from types import SimpleNamespace
 from typing import cast
 
@@ -84,6 +84,17 @@ class FakeNodeProcess:
         self.terminated = True
 
 
+class BrokenPipeNodeProcess(FakeNodeProcess):
+    def __init__(self, incoming: list[str], *, fail_after_writes: int) -> None:
+        super().__init__(incoming)
+        self.fail_after_writes = fail_after_writes
+
+    def write_line(self, line: str) -> None:
+        if len(self.written) >= self.fail_after_writes:
+            raise BrokenPipeError
+        super().write_line(line)
+
+
 class FakeService:
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
@@ -137,6 +148,21 @@ def test_run_node_tui_gateway_processes_fake_node_requests(tmp_path: Path) -> No
     assert '"method":"turn.event"' in output
     assert '"method":"turn.completed"' in output
     assert '"[usage] session=demo"' in output
+
+
+def test_run_node_tui_gateway_handles_node_broken_pipe(tmp_path: Path) -> None:
+    process = BrokenPipeNodeProcess(
+        [
+            '{"jsonrpc":"2.0","id":"1","method":"session.bootstrap","params":{"protocol_version":1}}\n',
+            '{"jsonrpc":"2.0","id":"2","method":"turn.submit","params":{"message":"hello","client_turn_id":"c1"}}\n',
+        ],
+        fail_after_writes=2,
+    )
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, FakeService(tmp_path)), process=process)
+
+    assert exit_code == 0
+    assert process.terminated is True
 
 
 def test_run_node_tui_gateway_reports_non_request_messages_with_declared_error_code(
@@ -899,6 +925,93 @@ class E2EInterruptedStateService:
         return (f"resumed {session_id or 'interrupted-smoke'}",)
 
 
+class E2EQueuedTurnService:
+    def __init__(self, workspace_root: Path) -> None:
+        self._config = e2e_config(
+            session_id="queued-turn-smoke",
+            workspace_root=workspace_root,
+        )
+        self._session_service = E2ESessionService()
+        self.messages: list[str] = []
+        self.steering_requests: list[str] = []
+        self.follow_up_requests: list[str] = []
+        self.cleared_steering: tuple[str, ...] = ()
+        self.cleared_follow_up: tuple[str, ...] = ()
+        self.started = Event()
+        self.cleared = Event()
+        self._queue_lock = Lock()
+        self._steering: list[str] = []
+        self._follow_up: list[str] = []
+
+    def current_context_window_metrics(self) -> dict[str, object]:
+        return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        self.messages.append(message)
+        if message != "long task":
+            raise AssertionError(f"unexpected message: {message}")
+        self.started.set()
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="reasoning", text="working"))
+        if not self.cleared.wait(timeout=2.0):
+            return TurnResponse(
+                assistant_message="Queue was not cleared.",
+                turn=TurnRecord(
+                    thread_id="queued-turn-smoke",
+                    turn_id="turn_queue_failed_1",
+                    status=TurnStatus.FAILED,
+                    started_at="2026-05-31T00:00:00Z",
+                    completed_at="2026-05-31T00:00:01Z",
+                    stop_reason=StopReason.RUNTIME_ERROR,
+                    user_message=message,
+                ),
+            )
+        return TurnResponse(assistant_message="queued turn done")
+
+    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        self.steering_requests.append(message)
+        with self._queue_lock:
+            self._steering.append(message)
+            return tuple(self._steering), tuple(self._follow_up)
+
+    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        self.follow_up_requests.append(message)
+        with self._queue_lock:
+            self._follow_up.append(message)
+            return tuple(self._steering), tuple(self._follow_up)
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        with self._queue_lock:
+            return tuple(self._steering), tuple(self._follow_up)
+
+    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        with self._queue_lock:
+            steering = tuple(self._steering)
+            follow_up = tuple(self._follow_up)
+            self._steering.clear()
+            self._follow_up.clear()
+        self.cleared_steering = steering
+        self.cleared_follow_up = follow_up
+        self.cleared.set()
+        return steering, follow_up
+
+    def inspect_usage(self) -> tuple[str, ...]:
+        return ("session=queued-turn-smoke",)
+
+    def inspect_status(self) -> tuple[str, ...]:
+        return ("session=queued-turn-smoke context=test",)
+
+    def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        return (f"mode={mode}",)
+
+    def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        return (f"resumed {session_id or 'queued-turn-smoke'}",)
+
+
 class E2EFailureRecoveryService:
     def __init__(self, workspace_root: Path) -> None:
         self._config = e2e_config(
@@ -1156,6 +1269,55 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_suppresses_late_com
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
     assert [item["text"] for item in assistant_items] == ["late draft"]
+
+
+def test_run_node_tui_gateway_with_real_node_scripted_client_running_turn_queue(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "node-running-turn-queue-state.json"
+    process = NodeTuiProcess(
+        args=node_scripted_client_args(repo_root),
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {
+                        "type": "turn.submit_queue",
+                        "message": "long task",
+                        "steering": ["add more detail"],
+                        "follow_up": ["summarize next"],
+                        "clear": True,
+                        "expected_state": "completed",
+                    }
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+    service = E2EQueuedTurnService(tmp_path)
+
+    exit_code = run_node_tui_gateway(service=cast(TurnService, service), process=process)
+
+    assert exit_code == 0
+    assert service.started.is_set()
+    assert service.messages == ["long task"]
+    assert service.steering_requests == ["add more detail"]
+    assert service.follow_up_requests == ["summarize next"]
+    assert service.cleared_steering == ("add more detail",)
+    assert service.cleared_follow_up == ("summarize next",)
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["turnRunning"] is False
+    assert state["currentTurnId"] is None
+    assert state["queuedInputs"] == []
+    assert state["queuedSteeringInputs"] == []
+    assert state["queuedFollowUpInputs"] == []
+    assert state["liveStatus"]["state"] == "completed"
+    assistant_items = [
+        item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
+    ]
+    assert [item["text"] for item in assistant_items] == ["queued turn done"]
 
 
 def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_matrix(

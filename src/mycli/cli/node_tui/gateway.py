@@ -113,12 +113,27 @@ class NodeTuiServiceLike(Protocol):
 
     def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None: ...
 
+    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+
+    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+
+    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
     process.start()
+    pipe_closed = False
 
     def emit(method: str, params: dict[str, object]) -> None:
-        process.write_line(encode_message(notification(method, params)))
+        nonlocal pipe_closed
+        if pipe_closed:
+            return
+        try:
+            process.write_line(encode_message(notification(method, params)))
+        except BrokenPipeError:
+            pipe_closed = True
 
     gateway = NodeTuiGateway(service=cast(NodeTuiServiceLike, service), emit=emit)
     emit("runtime.ready", gateway._status_payload())
@@ -140,7 +155,11 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
                 )
                 continue
             response = gateway.handle_request(message)
-            process.write_line(encode_message(response))
+            try:
+                process.write_line(encode_message(response))
+            except BrokenPipeError:
+                gateway.wait_for_current_turn(timeout=None)
+                return process.wait()
             if message.method == "shutdown":
                 gateway.wait_for_current_turn(timeout=None)
                 return process.wait()
@@ -172,6 +191,12 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_bootstrap(request.params))
             if request.method == "turn.submit":
                 return self._handle_turn_submit(request)
+            if request.method == "turn.steer":
+                return result_response(request.id, self._handle_turn_steer(request.params))
+            if request.method == "turn.follow_up":
+                return result_response(request.id, self._handle_turn_follow_up(request.params))
+            if request.method == "turn.queue.clear":
+                return result_response(request.id, self._handle_turn_queue_clear())
             if request.method == "turn.interrupt":
                 return result_response(request.id, self._handle_turn_interrupt())
             if request.method == "command.run":
@@ -342,6 +367,47 @@ class NodeTuiGateway:
             self._turn_thread.start()
         return result_response(request.id, {"accepted": True, "client_turn_id": client_turn_id})
 
+    def _handle_turn_steer(self, params: dict[str, object]) -> dict[str, object]:
+        message = _required_str(params, "message").strip()
+        if not message:
+            raise ValueError("message is required.")
+        with self._turn_lock:
+            running = self._turn_running
+        if not running:
+            return {"accepted": False, "reason": "not_running", **self._queue_payload()}
+        queue = getattr(self.service, "queue_steering_message", None)
+        if not callable(queue):
+            return {"accepted": False, "reason": "unsupported", **self._queue_payload()}
+        steering, follow_up = queue(message)
+        payload = self._queue_payload(steering=steering, follow_up=follow_up)
+        self._emit_queue_update(steering=steering, follow_up=follow_up)
+        return {"accepted": True, **payload}
+
+    def _handle_turn_follow_up(self, params: dict[str, object]) -> dict[str, object]:
+        message = _required_str(params, "message").strip()
+        if not message:
+            raise ValueError("message is required.")
+        with self._turn_lock:
+            running = self._turn_running
+        if not running:
+            return {"accepted": False, "reason": "not_running", **self._queue_payload()}
+        queue = getattr(self.service, "queue_follow_up_message", None)
+        if not callable(queue):
+            return {"accepted": False, "reason": "unsupported", **self._queue_payload()}
+        steering, follow_up = queue(message)
+        payload = self._queue_payload(steering=steering, follow_up=follow_up)
+        self._emit_queue_update(steering=steering, follow_up=follow_up)
+        return {"accepted": True, **payload}
+
+    def _handle_turn_queue_clear(self) -> dict[str, object]:
+        clear = getattr(self.service, "clear_queued_messages", None)
+        if callable(clear):
+            steering, follow_up = clear()
+        else:
+            steering, follow_up = (), ()
+        self._emit_queue_update(steering=(), follow_up=())
+        return self._queue_payload(steering=steering, follow_up=follow_up)
+
     def _handle_turn_interrupt(self) -> dict[str, object]:
         with self._turn_lock:
             running = self._turn_running
@@ -371,6 +437,33 @@ class NodeTuiGateway:
                 message="Interrupt requested",
             )
         return {"interrupted": running}
+
+    def _queue_payload(
+        self,
+        *,
+        steering: tuple[str, ...] | None = None,
+        follow_up: tuple[str, ...] | None = None,
+    ) -> dict[str, object]:
+        if steering is None or follow_up is None:
+            queued = getattr(self.service, "queued_messages", None)
+            if callable(queued):
+                steering, follow_up = queued()
+            else:
+                steering, follow_up = (), ()
+        return {
+            "steering": list(steering),
+            "follow_up": list(follow_up),
+        }
+
+    def _emit_queue_update(
+        self,
+        *,
+        steering: tuple[str, ...],
+        follow_up: tuple[str, ...],
+    ) -> None:
+        if self._emit is None:
+            return
+        self._emit_event("turn.queue.updated", self._queue_payload(steering=steering, follow_up=follow_up))
 
     def _record_turn_interrupt_request(self, *, client_turn_id: str | None) -> None:
         recorder = getattr(self.service, "record_turn_interrupt_request", None)
@@ -523,6 +616,15 @@ class NodeTuiGateway:
             self._emit_event(
                 method,
                 {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            return
+        if event.kind == "queue_updated":
+            self._emit_event(
+                "turn.queue.updated",
+                {
+                    "steering": list(event.metadata.get("steering", [])),
+                    "follow_up": list(event.metadata.get("follow_up", [])),
+                },
             )
             return
         if event.kind == "plan_updated":
@@ -707,7 +809,7 @@ class NodeTuiGateway:
 
     def _handle_transcript_load(self, params: dict[str, object]) -> dict[str, object]:
         session_id = _optional_str(params.get("session_id")) or self.service._config.session_id
-        limit = _positive_int(params.get("limit"), default=200)
+        limit = _positive_int(params.get("limit"), default=0) if "limit" in params else None
         before = _optional_str(params.get("before"))
         items = list(self.service._session_service.load_history_items(session_id))
         if before is not None:
@@ -716,7 +818,7 @@ class NodeTuiGateway:
                 len(items),
             )
             items = items[:before_index]
-        selected = items[-limit:]
+        selected = items[-limit:] if limit is not None else items
         projected = [_project_history_item(item) for item in selected]
         next_before = selected[0].id if len(items) > len(selected) and selected else None
         return {"session_id": session_id, "items": projected, "next_before": next_before}
@@ -1035,6 +1137,7 @@ class NodeTuiGateway:
         context_window = self.service.current_context_window_metrics()
         pending = self.service._session_service.load_pending_decision(self.service._config.session_id)
         suspended = self.service._session_service.load_suspended_turn(self.service._config.session_id)
+        queue_payload = self._queue_payload()
         payload = {
             "session_id": self.service._config.session_id,
             "workspace": Path(self.service._config.workspace_root).name,
@@ -1060,6 +1163,9 @@ class NodeTuiGateway:
             },
             "pending_decision": pending is not None,
             "suspended_turn": suspended is not None,
+            "turn_running": self._turn_running,
+            "queued_steering": queue_payload["steering"],
+            "queued_follow_up": queue_payload["follow_up"],
             "trust": self._trust_status_payload(),
         }
         title = self._session_title()

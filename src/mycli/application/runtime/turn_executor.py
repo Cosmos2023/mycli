@@ -514,6 +514,14 @@ class TurnExecutor:
         output_tokens_escalated = False
 
         while True:
+            self._drain_steering_messages(
+                conversation=conversation,
+                turn_id=turn_id,
+                turn_items=turn_items,
+                progress_updates=progress_updates,
+                activity_events=activity_events,
+                stream_sink=stream_sink,
+            )
             checkpoint_result = runtime._checkpoint.evaluate(
                 step_index=step_index,
                 conversation=conversation,
@@ -1144,6 +1152,25 @@ class TurnExecutor:
                     current_plan_state,
                     initial_in_progress_item_id,
                 )
+                follow_up_message = runtime.pop_next_follow_up_message()
+                if follow_up_message:
+                    conversation.append(Message(role="user", content=follow_up_message))
+                    runtime._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.USER_MESSAGE,
+                            text=follow_up_message,
+                            metadata={"queued": True, "queue_kind": "follow_up"},
+                        ),
+                    )
+                    progress_updates.append("[queue] follow-up")
+                    activity_events.append(
+                        ActivityEvent(kind="queued_message", message="processing follow-up")
+                    )
+                    self._emit_queue_update(stream_sink=stream_sink)
+                    step_index += 1
+                    continue
                 runtime._save_runtime_state(
                     conversation=conversation,
                     plan_state=current_plan_state,
@@ -1171,6 +1198,62 @@ class TurnExecutor:
                     context_baseline=latest_context_baseline,
                 )
             step_index += 1
+
+    def _drain_steering_messages(
+        self,
+        *,
+        conversation: Conversation,
+        turn_id: str,
+        turn_items: list[TurnItem],
+        progress_updates: list[str],
+        activity_events: list[ActivityEvent],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+    ) -> None:
+        runtime = self._runtime
+        drained = 0
+        while True:
+            message = runtime.pop_next_steering_message()
+            if message is None:
+                break
+            conversation.append(Message(role="user", content=message))
+            runtime._append_turn_item(
+                turn_id=turn_id,
+                turn_items=turn_items,
+                item=TurnItem(
+                    type=TurnItemType.USER_MESSAGE,
+                    text=message,
+                    metadata={"queued": True, "queue_kind": "steering"},
+                ),
+            )
+            drained += 1
+        if drained == 0:
+            return
+        progress_updates.append(f"[queue] steering {drained}")
+        activity_events.append(
+            ActivityEvent(kind="queued_message", message=f"processing {drained} steering message(s)")
+        )
+        self._emit_queue_update(stream_sink=stream_sink)
+
+    def _emit_queue_update(
+        self,
+        *,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+    ) -> None:
+        if stream_sink is None:
+            return
+        steering, follow_up = self._runtime.queued_messages()
+        try:
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind="queue_updated",
+                    metadata={
+                        "steering": list(steering),
+                        "follow_up": list(follow_up),
+                    },
+                )
+            )
+        except Exception:
+            return
 
     def _recovery_action_for_model_error(
         self,

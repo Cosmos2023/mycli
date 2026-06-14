@@ -8,6 +8,11 @@ from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.domain.runtime import (
     AgentConfig,
     ModelTurnResult,
+    ProviderMessageShape,
+    ProviderProjectionLane,
+    ProviderProjectionShape,
+    ProviderRuntimeItemShape,
+    RequestShape,
     RuntimeBlock,
     RuntimeItem,
     RuntimeStreamEvent,
@@ -258,6 +263,47 @@ def test_agent_runtime_l4_summarizer_adapter_sends_runtime_items(
     assert adapter.seen_items
     assert adapter.seen_items[0]
     assert "Summarize this conversation" in (adapter.seen_items[0][0].blocks[0].text or "")
+
+
+def test_agent_runtime_request_budget_uses_wire_payload_for_chat_completions(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=DoneAdapter(),
+    )
+    wire_content = "wire " * 100
+    diagnostic_mirror = "diagnostic " * 20_000
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="system",
+        provider_messages=(
+            ProviderMessageShape(role="system", content="system"),
+            ProviderMessageShape(role="user", content=wire_content),
+        ),
+        provider_runtime_items=(
+            ProviderRuntimeItemShape(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text=diagnostic_mirror),),
+            ),
+        ),
+        provider_projection=ProviderProjectionShape(
+            lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+            message_count=2,
+            runtime_item_count=1,
+            cacheable_prefix_fragment_count=0,
+            first_dynamic_fragment_index=None,
+            first_ephemeral_fragment_index=None,
+            cache_hint=None,
+        ),
+    )
+
+    estimated = runtime._estimate_request_window_budget(shape)
+
+    assert estimated.total_tokens < 1_000
 
 
 def test_agent_runtime_l4_triggers_from_full_provider_request_budget(

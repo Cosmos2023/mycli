@@ -337,6 +337,11 @@
     persisted pending approval.
   - `suspended_turn`: boolean indicating whether the active session has a
     persisted suspended turn.
+  - `turn_running`: boolean indicating whether the gateway currently has an
+    accepted turn worker in progress.
+  - `queued_steering`: array of queued steering messages for the active turn.
+  - `queued_follow_up`: array of queued follow-up messages waiting for the
+    active turn to finish.
   - `status.changed` is a snapshot event. It is not a replacement for
     `status.update`, and booleans alone are not enough to recover a pending
     approval or clarification.
@@ -349,6 +354,20 @@
     `status.changed.pending_decision` / `suspended_turn` flag is not enough for
     clients to respond because they need the stable `decision_id` or
     `request_id`.
+- Running-turn queue RPCs:
+  - `turn.steer` accepts `{message}` only while a turn is running. It queues
+    steering text that the runtime may inject before the next model request in
+    the active turn.
+  - `turn.follow_up` accepts `{message}` only while a turn is running. It queues
+    a follow-up user message after the active assistant answer finishes.
+  - `turn.queue.clear` accepts `{}` and returns the cleared steering and
+    follow-up messages so the TUI can restore them into the editor.
+- `turn.queue.updated` payload:
+  - `steering`: array of currently queued steering messages.
+  - `follow_up`: array of currently queued follow-up messages.
+  - Emit after successful queue mutation and after runtime drains queued
+    messages, so the footer and pending-message area stay synchronized with the
+    backend instead of relying on local-only queue state.
 - `trace.export` is a read-only pull RPC for machine-readable runtime trace
   rows:
   - Request payload accepts optional `tail`; invalid or non-positive values use

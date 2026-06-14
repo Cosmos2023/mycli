@@ -18,9 +18,12 @@ SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
         "shutdown",
         "status.inspect",
         "trace.export",
+        "turn.follow_up",
         "transcript.load",
         "turn.interrupt",
+        "turn.queue.clear",
         "turn.submit",
+        "turn.steer",
         "workspace.trust.set",
         "workspace.trust.status",
     }
@@ -53,6 +56,7 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "turn.completion_suppressed",
         "turn.event",
         "turn.failed",
+        "turn.queue.updated",
         "turn.interrupted",
         "turn.started",
         "turn.status",
@@ -319,6 +323,9 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "context_window",
             "pending_decision",
             "suspended_turn",
+            "turn_running",
+            "queued_steering",
+            "queued_follow_up",
         ),
         properties={
             "session_id": _STRING,
@@ -328,6 +335,9 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "context_window": _CONTEXT_WINDOW,
             "pending_decision": _BOOLEAN,
             "suspended_turn": _BOOLEAN,
+            "turn_running": _BOOLEAN,
+            "queued_steering": _ARRAY,
+            "queued_follow_up": _ARRAY,
             "trust": _OBJECT,
         },
     ),
@@ -429,6 +439,14 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     "turn.failed": _schema(
         "turn.failed",
         properties=_with_client_turn({"message": _STRING}),
+    ),
+    "turn.queue.updated": _schema(
+        "turn.queue.updated",
+        required=("steering", "follow_up"),
+        properties={
+            "steering": _ARRAY,
+            "follow_up": _ARRAY,
+        },
     ),
     "turn.interrupted": _schema(
         "turn.interrupted",

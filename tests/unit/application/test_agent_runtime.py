@@ -1000,6 +1000,36 @@ class MultiToolThenDoneAdapter:
         )
 
 
+class FollowUpCaptureAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_items: list[list[RuntimeItem]] = []
+
+    def next_turn(self, *, items, tools):
+        del tools
+        self.calls += 1
+        self.seen_items.append(items)
+        if self.calls == 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="first answer"),),
+                    ),
+                ),
+                done=True,
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="follow-up answer"),),
+                ),
+            ),
+            done=True,
+        )
+
+
 class PushThenResumedReasoningUnsupportedAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -1620,6 +1650,67 @@ def test_agent_runtime_reinjects_multi_tool_turn_as_single_assistant_item(
         for block in item.blocks
         if block.type == "tool_result"
     ] == ["call_read_readme", "call_read_pyproject"]
+
+
+def test_agent_runtime_consumes_steering_before_next_model_request(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    adapter = MultiToolThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
+
+    def queue_steering_after_tools(**kwargs):
+        result = original_execute_tool_calls(**kwargs)
+        runtime.queue_steering_message("also check docs")
+        return result
+
+    runtime._tool_execution_service.execute_tool_calls = queue_steering_after_tools
+
+    response = runtime.handle_user_turn("inspect both files")
+
+    assert response.assistant_message == "Inspection complete"
+    assert adapter.calls == 2
+    second_request_user_texts = [
+        block.text
+        for item in adapter.seen_items[1]
+        if item.role == "user"
+        for block in item.blocks
+        if block.type == "text"
+    ]
+    assert "also check docs" in second_request_user_texts
+    assert runtime.queued_messages() == ((), ())
+
+
+def test_agent_runtime_consumes_follow_up_after_answer_completion(
+    tmp_path: Path,
+) -> None:
+    adapter = FollowUpCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.queue_follow_up_message("now summarize risks")
+
+    response = runtime.handle_user_turn("answer first")
+
+    assert response.assistant_message == "follow-up answer"
+    assert adapter.calls == 2
+    second_request_user_texts = [
+        block.text
+        for item in adapter.seen_items[1]
+        if item.role == "user"
+        for block in item.blocks
+        if block.type == "text"
+    ]
+    assert "now summarize risks" in second_request_user_texts
+    assert runtime.queued_messages() == ((), ())
 
 
 def test_agent_runtime_turns_reasoning_blocks_into_activity_events(tmp_path: Path) -> None:

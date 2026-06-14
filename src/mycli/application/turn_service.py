@@ -156,6 +156,30 @@ class TurnService:
                 context=payload,
             )
 
+    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        queue = getattr(self._runtime, "queue_steering_message", None)
+        if not callable(queue):
+            return (), ()
+        return cast(tuple[tuple[str, ...], tuple[str, ...]], queue(message))
+
+    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        queue = getattr(self._runtime, "queue_follow_up_message", None)
+        if not callable(queue):
+            return (), ()
+        return cast(tuple[tuple[str, ...], tuple[str, ...]], queue(message))
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        queued = getattr(self._runtime, "queued_messages", None)
+        if not callable(queued):
+            return (), ()
+        return cast(tuple[tuple[str, ...], tuple[str, ...]], queued())
+
+    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        clear = getattr(self._runtime, "clear_queued_messages", None)
+        if not callable(clear):
+            return (), ()
+        return cast(tuple[tuple[str, ...], tuple[str, ...]], clear())
+
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
         choice_to_action = {
             "1": DecisionAction.APPROVE_ONCE,

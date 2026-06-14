@@ -57,25 +57,42 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "context_window",
         "pending_decision",
         "suspended_turn",
+        "turn_running",
+        "queued_steering",
+        "queued_follow_up",
     ]
     assert sorted(schema["properties"]) == [
         "context_window",
         "model",
         "pending_decision",
         "provider",
+        "queued_follow_up",
+        "queued_steering",
         "session_id",
         "suspended_turn",
         "trust",
+        "turn_running",
         "workspace",
     ]
     assert "trust" not in schema["required"]
     assert schema["properties"]["pending_decision"] == {"type": "boolean"}
     assert schema["properties"]["suspended_turn"] == {"type": "boolean"}
+    assert schema["properties"]["turn_running"] == {"type": "boolean"}
+    assert schema["properties"]["queued_steering"] == {"type": "array"}
+    assert schema["properties"]["queued_follow_up"] == {"type": "array"}
     assert sorted(schema["properties"]["context_window"]["properties"]) == [
         "max_tokens",
         "source",
         "used_tokens",
     ]
+
+
+def test_turn_queue_updated_schema_exposes_split_queue_snapshot() -> None:
+    schema = gateway_event_payload_schemas()["turn.queue.updated"]
+
+    assert schema["required"] == ["steering", "follow_up"]
+    assert schema["properties"]["steering"] == {"type": "array"}
+    assert schema["properties"]["follow_up"] == {"type": "array"}
 
 
 def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:

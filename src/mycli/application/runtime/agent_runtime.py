@@ -31,6 +31,7 @@ from mycli.domain.runtime import (
     RuntimeStreamEvent,
     RuntimeTraceEvent,
     RequestShape,
+    ProviderProjectionLane,
     ReasoningEffort,
     RehydrationBudget,
     StopReason,
@@ -237,6 +238,9 @@ class AgentRuntime:
         self._tool_registry = tool_registry
         self._config = config
         self._home_dir = home_dir
+        self._message_queue_lock = Lock()
+        self._steering_messages: list[str] = []
+        self._follow_up_messages: list[str] = []
         self._recovery_sleep = time.sleep
         self._monotonic = time.monotonic
         self._approval_service = approval_service or ApprovalService(
@@ -767,6 +771,46 @@ class AgentRuntime:
 
     def _set_current_turn_id(self, turn_id: str) -> None:
         self._current_turn_id = turn_id
+
+    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        text = message.strip()
+        if not text:
+            return self.queued_messages()
+        with self._message_queue_lock:
+            self._steering_messages.append(text)
+            return tuple(self._steering_messages), tuple(self._follow_up_messages)
+
+    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        text = message.strip()
+        if not text:
+            return self.queued_messages()
+        with self._message_queue_lock:
+            self._follow_up_messages.append(text)
+            return tuple(self._steering_messages), tuple(self._follow_up_messages)
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        with self._message_queue_lock:
+            return tuple(self._steering_messages), tuple(self._follow_up_messages)
+
+    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        with self._message_queue_lock:
+            steering = tuple(self._steering_messages)
+            follow_up = tuple(self._follow_up_messages)
+            self._steering_messages.clear()
+            self._follow_up_messages.clear()
+        return steering, follow_up
+
+    def pop_next_steering_message(self) -> str | None:
+        with self._message_queue_lock:
+            if not self._steering_messages:
+                return None
+            return self._steering_messages.pop(0)
+
+    def pop_next_follow_up_message(self) -> str | None:
+        with self._message_queue_lock:
+            if not self._follow_up_messages:
+                return None
+            return self._follow_up_messages.pop(0)
 
     def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
         return self._sub_agent_service.recent_runs()
@@ -1457,31 +1501,76 @@ class AgentRuntime:
     def _estimated_request_shape_tokens(self, request_shape: RequestShape) -> int:
         seen: set[str] = set()
         total = 0
+        lane = (
+            request_shape.provider_projection.lane
+            if request_shape.provider_projection is not None
+            else None
+        )
+        if lane in {
+            ProviderProjectionLane.RESPONSES,
+            ProviderProjectionLane.ANTHROPIC_MESSAGES,
+        }:
+            return self._estimated_runtime_item_tokens(
+                request_shape.provider_runtime_items,
+                seen=seen,
+            )
+        if lane is ProviderProjectionLane.CHAT_COMPLETIONS:
+            return self._estimated_provider_message_tokens(
+                request_shape.provider_messages,
+                seen=seen,
+            )
+
+        total += self._estimated_provider_message_tokens(
+            request_shape.provider_messages,
+            seen=seen,
+        )
+        if total > 0:
+            return total
+        total += self._estimated_runtime_item_tokens(
+            request_shape.provider_runtime_items,
+            seen=seen,
+        )
+        if total > 0:
+            return total
         for fragment in request_shape.fragments:
-            content = fragment.content.strip()
-            if not content or content in seen:
-                continue
-            seen.add(content)
-            total += self._token_counter.count(content)
-        for message in request_shape.provider_messages:
-            content = f"{message.role}: {message.content}".strip()
-            if not content or content in seen:
-                continue
-            seen.add(content)
-            total += self._token_counter.count(content)
-        for item in request_shape.provider_runtime_items:
-            for block in item.blocks:
-                if block.text:
-                    content = str(block.text).strip()
-                    if content and content not in seen:
-                        seen.add(content)
-                        total += self._token_counter.count(content)
-                if block.tool_arguments:
-                    content = str(block.tool_arguments).strip()
-                    if content and content not in seen:
-                        seen.add(content)
-                        total += self._token_counter.count(content)
+            total += self._add_token_estimate(seen, fragment.content)
         return total
+
+    def _estimated_provider_message_tokens(
+        self,
+        messages: tuple[object, ...],
+        *,
+        seen: set[str],
+    ) -> int:
+        total = 0
+        for message in messages:
+            role = getattr(message, "role", "")
+            content = getattr(message, "content", "")
+            total += self._add_token_estimate(seen, f"{role}: {content}")
+        return total
+
+    def _estimated_runtime_item_tokens(
+        self,
+        items: tuple[object, ...],
+        *,
+        seen: set[str],
+    ) -> int:
+        total = 0
+        for item in items:
+            blocks = getattr(item, "blocks", ())
+            for block in blocks:
+                if block.text:
+                    total += self._add_token_estimate(seen, str(block.text))
+                if block.tool_arguments:
+                    total += self._add_token_estimate(seen, str(block.tool_arguments))
+        return total
+
+    def _add_token_estimate(self, seen: set[str], content: str) -> int:
+        normalized = content.strip()
+        if not normalized or normalized in seen:
+            return 0
+        seen.add(normalized)
+        return self._token_counter.count(normalized)
 
     @staticmethod
     def _snapshot_role(role: str) -> Role:
