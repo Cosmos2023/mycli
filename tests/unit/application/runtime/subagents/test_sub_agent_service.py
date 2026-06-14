@@ -68,12 +68,17 @@ class FakeHistorySessionService:
     def __init__(self) -> None:
         self.items: dict[str, tuple[HistoryItem, ...]] = {}
         self.appended: list[tuple[str, tuple[HistoryItem, ...]]] = []
+        self.subagent_snapshots: list[dict[str, object]] = []
 
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
         return self.items.get(session_id, ())
 
     def append_history_items(self, session_id: str, items: tuple[HistoryItem, ...]) -> None:
         self.appended.append((session_id, items))
+        self.items[session_id] = (*self.items.get(session_id, ()), *items)
+
+    def write_subagent_snapshot(self, **kwargs: object) -> None:
+        self.subagent_snapshots.append(kwargs)
 
 
 class FakeTraceService:
@@ -143,6 +148,47 @@ def test_service_passes_transcript_recorder_to_child_loop() -> None:
     assert result.status == "completed"
     assert loop.calls[0]["transcript"] is not None
     assert session_service.appended
+
+
+def test_service_writes_subagent_snapshot_when_session_service_supports_it() -> None:
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="Found README.md.",
+            child_session_id="ignored",
+            tool_calls=1,
+            context_diagnostics={"tool_count": 1},
+        )
+    )
+    session_service = FakeHistorySessionService()
+    service = SubAgentService(
+        session_id="parent-session",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+        session_service=session_service,
+    )
+
+    result = service.run_task(
+        description="Find docs",
+        agent_type="explore",
+        allowed_tools=("Read",),
+    )
+
+    assert len(session_service.subagent_snapshots) == 1
+    snapshot = session_service.subagent_snapshots[0]
+    assert snapshot["parent_session_id"] == "parent-session"
+    assert snapshot["child_session_id"] == result.child_session_id
+    assert snapshot["parent_turn_id"] == "turn_1"
+    assert snapshot["agent_type"] == "explore"
+    assert snapshot["status"] == "completed"
+    assert snapshot["mode"] == "sync"
+    assert snapshot["description"] == "Find docs"
+    assert result.report.startswith("<sub-agent-report")
+    assert snapshot["report"] == "Found README.md."
+    assert snapshot["tool_calls"] == 1
+    assert snapshot["error"] is None
+    assert snapshot["context_diagnostics"] == {"tool_count": 1}
 
 
 def test_service_rejects_unknown_profile_with_xml_report() -> None:
@@ -407,6 +453,7 @@ def test_service_reports_missing_child_transcript() -> None:
 
 
 def test_background_task_returns_running_then_records_completion() -> None:
+    session_service = FakeHistorySessionService()
     service = SubAgentService(
         session_id="demo",
         turn_id_provider=lambda: "turn_1",
@@ -420,6 +467,7 @@ def test_background_task_returns_running_then_records_completion() -> None:
             )
         ),
         background_executor=InlineBackgroundExecutor(),
+        session_service=session_service,
     )
 
     result = service.run_task(
@@ -434,6 +482,11 @@ def test_background_task_returns_running_then_records_completion() -> None:
     summaries = service.recent_runs()
     assert summaries[0].status == "completed"
     assert summaries[0].mode == "background"
+    assert [snapshot["status"] for snapshot in session_service.subagent_snapshots] == [
+        "running",
+        "completed",
+    ]
+    assert session_service.subagent_snapshots[-1]["report"] == "done"
 
 
 def test_background_task_projects_bounded_job_summary() -> None:

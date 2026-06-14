@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 from html import escape
+from html.parser import HTMLParser
 from threading import Lock
 from time import monotonic
 from typing import Any, Protocol
@@ -132,6 +133,8 @@ class SubAgentService:
         self,
         invocation: SubAgentInvocation,
         child_session_id: str,
+        *,
+        persist_snapshot: bool = True,
     ) -> SubAgentResult:
         profile = self._profile_lookup(invocation.agent_type)
         if profile is None:
@@ -149,7 +152,12 @@ class SubAgentService:
                 tool_calls=0,
                 error=f"Unknown sub-agent profile: {invocation.agent_type}",
             )
-            self._record(invocation, result)
+            self._record(
+                invocation,
+                result,
+                snapshot_report=f"Unknown sub-agent profile: {invocation.agent_type}",
+                persist_snapshot=persist_snapshot,
+            )
             return result
         tool_names = resolve_child_tool_scope(
             parent_tools=self._parent_tool_names(),
@@ -185,7 +193,12 @@ class SubAgentService:
             error=loop_result.error,
             context_diagnostics=context_diagnostics,
         )
-        self._record(invocation, result)
+        self._record(
+            invocation,
+            result,
+            snapshot_report=loop_result.report,
+            persist_snapshot=persist_snapshot,
+        )
         return result
 
     def recent_runs(self) -> tuple[SubAgentRunSummary, ...]:
@@ -287,7 +300,11 @@ class SubAgentService:
 
         def run_child() -> None:
             try:
-                final_result = self._run_sync_invocation(invocation, child_session_id)
+                final_result = self._run_sync_invocation(
+                    invocation,
+                    child_session_id,
+                    persist_snapshot=False,
+                )
             except Exception as exc:
                 final_result = SubAgentResult(
                     status="failed",
@@ -349,14 +366,22 @@ class SubAgentService:
         result: SubAgentResult,
         started_at: str,
     ) -> None:
+        completed_at = self._timestamp()
         with self._run_state_lock:
             self._running_background.pop(result.child_session_id, None)
             self._replace_record_unlocked(
                 invocation,
                 result,
                 started_at=started_at,
-                completed_at=self._timestamp(),
+                completed_at=completed_at,
             )
+        self._write_subagent_snapshot(
+            invocation,
+            result,
+            started_at=started_at,
+            completed_at=completed_at,
+            snapshot_report=self._snapshot_report(result.report),
+        )
 
     def _record(
         self,
@@ -365,6 +390,8 @@ class SubAgentService:
         *,
         started_at: str | None = None,
         completed_at: str | None = None,
+        snapshot_report: str | None = None,
+        persist_snapshot: bool = True,
     ) -> None:
         with self._run_state_lock:
             self._record_unlocked(
@@ -373,6 +400,15 @@ class SubAgentService:
                 started_at=started_at,
                 completed_at=completed_at,
             )
+        if not persist_snapshot:
+            return
+        self._write_subagent_snapshot(
+            invocation,
+            result,
+            started_at=started_at,
+            completed_at=completed_at,
+            snapshot_report=snapshot_report,
+        )
 
     def _record_unlocked(
         self,
@@ -418,6 +454,36 @@ class SubAgentService:
         return any(
             summary.child_session_id == child_session_id and summary.status != "running"
             for summary in self._recent_runs
+        )
+
+    def _write_subagent_snapshot(
+        self,
+        invocation: SubAgentInvocation,
+        result: SubAgentResult,
+        *,
+        started_at: str | None,
+        completed_at: str | None,
+        snapshot_report: str | None = None,
+    ) -> None:
+        if self._session_service is None:
+            return
+        writer = getattr(self._session_service, "write_subagent_snapshot", None)
+        if not callable(writer):
+            return
+        writer(
+            parent_session_id=invocation.parent_session_id,
+            child_session_id=result.child_session_id,
+            parent_turn_id=invocation.parent_turn_id,
+            agent_type=invocation.agent_type,
+            status=result.status,
+            mode=invocation.mode,
+            description=invocation.description,
+            report=result.report if snapshot_report is None else snapshot_report,
+            tool_calls=result.tool_calls,
+            error=result.error,
+            started_at=started_at,
+            completed_at=completed_at,
+            context_diagnostics=dict(result.context_diagnostics),
         )
 
     def _child_session_id(self, turn_id: str) -> str:
@@ -582,6 +648,18 @@ class SubAgentService:
             f"\n{escape(report_body)}\n</sub-agent-report>"
         )
 
+    def _snapshot_report(self, report: str) -> str:
+        if not report.startswith("<sub-agent-report"):
+            return report
+        parser = _SubAgentReportTextParser()
+        try:
+            parser.feed(report)
+            parser.close()
+        except Exception:
+            return report
+        parsed = parser.text.strip()
+        return parsed or report
+
     def _timestamp(self) -> str:
         return datetime.now(UTC).isoformat()
 
@@ -603,3 +681,16 @@ def _builtin_profile_lookup(profile_id: str) -> SubAgentProfile | None:
     from mycli.domain.subagent_profiles import get_sub_agent_profile
 
     return get_sub_agent_profile(profile_id)
+
+
+class _SubAgentReportTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+
+    @property
+    def text(self) -> str:
+        return "".join(self._parts)
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
