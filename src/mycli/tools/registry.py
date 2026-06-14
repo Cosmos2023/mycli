@@ -600,7 +600,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.bash import BashTool
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
-    from mycli.tools.file_snapshot import FileSnapshotStore
+    from mycli.services.filesystem import FileSystemRuntime
     from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
     from mycli.tools.glob import GlobTool
     from mycli.tools.grep import GrepTool
@@ -616,12 +616,12 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.web_search import WebSearchTool
     from mycli.tools.write import WriteTool
 
-    snapshot_store = FileSnapshotStore()
+    filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
     return [
-        ReadTool(workspace_root, snapshot_store=snapshot_store),
-        EditTool(workspace_root, snapshot_store=snapshot_store),
-        PatchTool(workspace_root, snapshot_store=snapshot_store),
-        WriteTool(workspace_root),
+        ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
+        EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
+        PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
+        WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
         GrepTool(workspace_root),
         GlobTool(workspace_root),
         LSTool(workspace_root),

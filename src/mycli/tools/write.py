@@ -4,15 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.file_mutation import (
     backup_file,
     unified_diff,
-    validate_content_safety,
-    validate_expected_sha256,
-    validate_text_write_target,
 )
-from mycli.tools.path_utils import resolve_workspace_path
 
 
 def write_file(file_path: str, content: str) -> dict[str, Any]:
@@ -53,8 +50,13 @@ class WriteTool:
         risk_level="medium",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        filesystem_runtime: FileSystemRuntime | None = None,
+    ) -> None:
         self._workspace_root = workspace_root
+        self._filesystem = filesystem_runtime or FileSystemRuntime(workspace_root=workspace_root)
 
     def mutation_targets(self, arguments: dict[str, Any]) -> tuple[str, ...]:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
@@ -63,7 +65,7 @@ class WriteTool:
         content = arguments.get("content", arguments.get("new_content"))
         if not isinstance(content, str):
             raise ValueError("Write requires string content.")
-        target = resolve_workspace_path(self._workspace_root, raw_path)
+        target = self._filesystem.resolve_path(raw_path)
         try:
             if target.exists():
                 if target.is_dir():
@@ -82,27 +84,12 @@ class WriteTool:
             content = arguments.get("content", arguments.get("new_content"))
             if not isinstance(content, str):
                 raise ValueError("Write requires string content.")
-            target = resolve_workspace_path(self._workspace_root, raw_path)
-            ok, error_kind, error_message = validate_text_write_target(target)
-            if not ok:
-                return ToolResult(
-                    success=False,
-                    summary=f"Failed to write {raw_path}",
-                    error=error_message,
-                    raw_payload={"path": raw_path, "error_kind": error_kind},
-                )
-            ok, error_kind, error_message = validate_content_safety(content)
-            if not ok:
-                return ToolResult(
-                    success=False,
-                    summary=f"Failed to write {raw_path}",
-                    error=error_message,
-                    raw_payload={"path": raw_path, "error_kind": error_kind},
-                )
-            ok, error_kind, error_message = validate_expected_sha256(
-                workspace_root=self._workspace_root,
-                target=target,
-                expected_sha256=arguments.get("expected_sha256"),
+            target = self._filesystem.resolve_path(raw_path)
+            validation = self._filesystem.validate_text_target(target)
+            ok, error_kind, error_message = (
+                validation.ok,
+                validation.error_kind,
+                validation.error_message,
             )
             if not ok:
                 return ToolResult(
@@ -111,8 +98,37 @@ class WriteTool:
                     error=error_message,
                     raw_payload={"path": raw_path, "error_kind": error_kind},
                 )
-            payload = write_file(str(target), content)
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            validation = self._filesystem.validate_content(content)
+            ok, error_kind, error_message = (
+                validation.ok,
+                validation.error_kind,
+                validation.error_message,
+            )
+            if not ok:
+                return ToolResult(
+                    success=False,
+                    summary=f"Failed to write {raw_path}",
+                    error=error_message,
+                    raw_payload={"path": raw_path, "error_kind": error_kind},
+                )
+            validation = self._filesystem.validate_expected_sha256(
+                target=target,
+                expected_sha256=arguments.get("expected_sha256"),
+            )
+            ok, error_kind, error_message = (
+                validation.ok,
+                validation.error_kind,
+                validation.error_message,
+            )
+            if not ok:
+                return ToolResult(
+                    success=False,
+                    summary=f"Failed to write {raw_path}",
+                    error=error_message,
+                    raw_payload={"path": raw_path, "error_kind": error_kind},
+                )
+            payload = self._filesystem.write_full_content(target=target, content=content)
+        except (OSError, UnicodeDecodeError, ValueError, FileSystemRuntimeError) as exc:
             return ToolResult(
                 success=False,
                 summary=f"Failed to write {raw_path}",
@@ -120,12 +136,15 @@ class WriteTool:
                 raw_payload={"path": raw_path, "error_kind": _write_error_kind(exc)},
             )
 
-        success = "error" not in payload
         return ToolResult(
-            success=success,
-            summary=f"Wrote {raw_path}" if success else f"Failed to write {raw_path}",
-            error=str(payload["error"]) if "error" in payload else None,
-            raw_payload={"path": raw_path, **payload},
+            success=True,
+            summary=f"Wrote {raw_path}",
+            raw_payload={
+                "path": raw_path,
+                "status": payload.status,
+                "file": payload.file,
+                "diff": payload.diff,
+            },
         )
 
     def run(self, call: ToolCall) -> ToolResult:
@@ -133,6 +152,8 @@ class WriteTool:
 
 
 def _write_error_kind(exc: Exception) -> str:
+    if isinstance(exc, FileSystemRuntimeError):
+        return exc.error_kind
     if isinstance(exc, UnicodeDecodeError):
         return "invalid_encoding"
     message = str(exc).lower()

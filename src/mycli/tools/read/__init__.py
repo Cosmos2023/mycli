@@ -6,13 +6,14 @@ from types import ModuleType
 from typing import Any, Callable, cast
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
+from mycli.services.filesystem import FileSystemRuntime
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.file_snapshot import (
     FileSnapshot,
     FileSnapshotStore,
-    build_file_snapshot,
+    build_file_snapshot as build_file_snapshot,  # noqa: F401 - compatibility for tests/extensions monkeypatching this symbol.
 )
-from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
+from mycli.tools.path_utils import classify_filesystem_error
 
 
 TEXT_EXTENSIONS = {
@@ -162,10 +163,17 @@ class ReadTool:
     )
 
     def __init__(
-        self, workspace_root: Path, snapshot_store: FileSnapshotStore | None = None
+        self,
+        workspace_root: Path,
+        snapshot_store: FileSnapshotStore | None = None,
+        filesystem_runtime: FileSystemRuntime | None = None,
     ) -> None:
         self._workspace_root = workspace_root
-        self._snapshot_store = snapshot_store or FileSnapshotStore()
+        self._filesystem = filesystem_runtime or FileSystemRuntime(
+            workspace_root=workspace_root,
+            snapshot_store=snapshot_store,
+        )
+        self._snapshot_store = self._filesystem.snapshot_store
         self._read_ranges: dict[tuple[str, int, int, str | None], FileSnapshot] = {}
 
     def effect_profile(self) -> ToolEffectProfile:
@@ -176,7 +184,7 @@ class ReadTool:
         try:
             if not raw_path:
                 raise ValueError("Read requires file_path.")
-            target = resolve_workspace_path(self._workspace_root, raw_path)
+            target = self._filesystem.resolve_path(raw_path)
             offset = int(arguments.get("offset", arguments.get("start_line", 1)))
             if "end_line" in arguments and "limit" not in arguments:
                 end_line = int(arguments["end_line"])
@@ -214,11 +222,11 @@ class ReadTool:
         )
         if snapshot is None:
             try:
-                snapshot = build_file_snapshot(workspace_root=self._workspace_root, path=target)
+                snapshot = self._filesystem.build_snapshot(target)
             except OSError:
                 snapshot = None
         if snapshot is not None:
-            self._snapshot_store.record(snapshot)
+            self._filesystem.record_read_snapshot(snapshot)
             payload["snapshot"] = snapshot.to_dict()
 
         range_key = _read_range_key(

@@ -5,15 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError, MutationResult
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
-from mycli.tools.file_snapshot import FileSnapshotStore, build_file_snapshot
+from mycli.tools.file_snapshot import FileSnapshotStore
 from mycli.tools.file_mutation import (
     backup_file,
     contains_secret_like_content,
     unified_diff,
-    validate_text_write_target,
 )
-from mycli.tools.path_utils import resolve_workspace_path
 
 
 LINE_NUMBER_PATTERN = re.compile(r"^\s*\d+\t", re.MULTILINE)
@@ -101,21 +100,6 @@ def _write_empty_old_string(path: Path, new_string: str) -> dict[str, str]:
     return {"status": "written", "file": str(path)}
 
 
-def _write_full_content(path: Path, content: str) -> dict[str, str]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text(content)
-        return {"status": "created", "file": str(path)}
-    if path.is_dir():
-        raise EditError(f"Path is a directory: {path}")
-    existing = path.read_text()
-    if existing == content:
-        return {"status": "unchanged", "file": str(path)}
-    backup_file(path, existing)
-    path.write_text(content)
-    return {"status": "overwritten", "file": str(path)}
-
-
 def _preprocess(text: str, path: Path) -> str:
     text = LINE_NUMBER_PATTERN.sub("", text)
     if path.suffix.lower() not in {".md", ".mdx"}:
@@ -138,10 +122,17 @@ class EditTool:
     )
 
     def __init__(
-        self, workspace_root: Path, snapshot_store: FileSnapshotStore | None = None
+        self,
+        workspace_root: Path,
+        snapshot_store: FileSnapshotStore | None = None,
+        filesystem_runtime: FileSystemRuntime | None = None,
     ) -> None:
         self._workspace_root = workspace_root
-        self._snapshot_store = snapshot_store or FileSnapshotStore()
+        self._filesystem = filesystem_runtime or FileSystemRuntime(
+            workspace_root=workspace_root,
+            snapshot_store=snapshot_store,
+        )
+        self._snapshot_store = self._filesystem.snapshot_store
 
     def mutation_targets(self, arguments: dict[str, Any]) -> tuple[str, ...]:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
@@ -151,7 +142,7 @@ class EditTool:
         if legacy_content is not None:
             if not isinstance(legacy_content, str):
                 raise ValueError("Edit requires string new_content.")
-            target = resolve_workspace_path(self._workspace_root, raw_path)
+            target = self._filesystem.resolve_path(raw_path)
             try:
                 if target.exists():
                     if target.is_dir():
@@ -169,7 +160,7 @@ class EditTool:
             and str(old_string) == str(new_string)
         ):
             return ()
-        resolve_workspace_path(self._workspace_root, raw_path)
+        self._filesystem.resolve_path(raw_path)
         return (raw_path,)
 
     def _validate_size(self, target: Path) -> tuple[bool, str | None]:
@@ -182,34 +173,21 @@ class EditTool:
         return contains_secret_like_content(value)
 
     def _validate_snapshot(self, target: Path) -> tuple[bool, str | None, str | None]:
-        relative_path = target.resolve().relative_to(self._workspace_root.resolve()).as_posix()
-        snapshot = self._snapshot_store.latest(relative_path)
-        if snapshot is None:
-            return (
-                False,
-                "missing_read_snapshot",
-                "Edit requires a recent Read of the target file before modifying it.",
-            )
-        current = build_file_snapshot(workspace_root=self._workspace_root, path=target)
-        if (
-            current.sha256 != snapshot.sha256
-            or current.mtime_ns != snapshot.mtime_ns
-            or current.size != snapshot.size
-        ):
-            return (
-                False,
-                "stale_read_snapshot",
-                "File changed since last Read. Re-read the file and retry.",
-            )
-        return True, None, None
+        validation = self._filesystem.validate_recent_read_snapshot(target)
+        return validation.ok, validation.error_kind, validation.error_message
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raw_path = str(arguments.get("file_path") or arguments.get("path") or "")
         try:
             if not raw_path:
                 raise ValueError("Edit requires file_path.")
-            target = resolve_workspace_path(self._workspace_root, raw_path)
-            ok, error_kind, error_message = validate_text_write_target(target)
+            target = self._filesystem.resolve_path(raw_path)
+            validation = self._filesystem.validate_text_target(target)
+            ok, error_kind, error_message = (
+                validation.ok,
+                validation.error_kind,
+                validation.error_message,
+            )
             if not ok:
                 return ToolResult(
                     success=False,
@@ -219,11 +197,14 @@ class EditTool:
                 )
             legacy_content = arguments.get("new_content")
             if isinstance(legacy_content, str):
-                payload = _write_full_content(target, legacy_content)
+                mutation = self._filesystem.write_full_content(
+                    target=target,
+                    content=legacy_content,
+                )
                 return ToolResult(
                     success=True,
                     summary=f"Edited {raw_path}",
-                    raw_payload={"path": raw_path, **payload},
+                    raw_payload={"path": raw_path, **_mutation_payload(mutation)},
                 )
             ok, error_kind, error_message = self._validate_snapshot(target)
             if not ok:
@@ -251,8 +232,17 @@ class EditTool:
                     error="New content looks like a secret. Refusing to write it.",
                     raw_payload={"path": raw_path, "error_kind": "secret_like_content"},
                 )
-            payload = edit_file(str(target), old_string, new_string, replace_all=replace_all)
-        except (OSError, UnicodeDecodeError, ValueError, EditError) as exc:
+            mutation, matches = self._filesystem.replace_text(
+                target=target,
+                old_string=old_string,
+                new_string=new_string,
+                replace_all=replace_all,
+            )
+            payload: dict[str, Any] = {
+                **_mutation_payload(mutation),
+                "matches": matches,
+            }
+        except (OSError, UnicodeDecodeError, ValueError, EditError, FileSystemRuntimeError) as exc:
             error_kind = _edit_error_kind(exc)
             return ToolResult(
                 success=False,
@@ -272,6 +262,8 @@ class EditTool:
 
 
 def _edit_error_kind(exc: Exception) -> str:
+    if isinstance(exc, FileSystemRuntimeError):
+        return exc.error_kind
     message = str(exc).lower()
     if "no-op" in message:
         return "no_op"
@@ -286,3 +278,11 @@ def _edit_error_kind(exc: Exception) -> str:
     if isinstance(exc, UnicodeDecodeError):
         return "invalid_encoding"
     return "edit_failed"
+
+
+def _mutation_payload(result: MutationResult) -> dict[str, str]:
+    return {
+        "status": str(getattr(result, "status")),
+        "file": str(getattr(result, "file")),
+        "diff": str(getattr(result, "diff", "")),
+    }
