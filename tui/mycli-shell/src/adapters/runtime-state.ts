@@ -32,6 +32,8 @@ export type RuntimeShellState = {
 	turnRunning: boolean;
 	activeAssistantItemId: string | null;
 	queuedInputs: string[];
+	queuedSteeringInputs: string[];
+	queuedFollowUpInputs: string[];
 	liveStatus: { state: string; text: string; kind?: string; message?: string } | null;
 	liveReasoning: { text: string; kind: string } | null;
 	viewMode: "default" | "verbose" | "focus";
@@ -56,6 +58,8 @@ export function initialRuntimeState(): RuntimeShellState {
 		turnRunning: false,
 		activeAssistantItemId: null,
 		queuedInputs: [],
+		queuedSteeringInputs: [],
+		queuedFollowUpInputs: [],
 		liveStatus: null,
 		liveReasoning: null,
 		viewMode: "default",
@@ -143,10 +147,12 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			model: state.model || undefined,
 			reasoningLevel: reasoningLevelFromStatus(state.status),
 			...usageFooterData(state.status),
-			queueCount: state.queuedInputs.length,
+			queueCount: queuedInputCount(state),
+			steeringQueueCount: state.queuedSteeringInputs.length,
+			followUpQueueCount: state.queuedFollowUpInputs.length,
 			trust: state.trust.state ?? "unknown",
 			collaborationMode: state.collaborationMode,
-			liveState: state.liveStatus?.text ?? (state.turnRunning ? "Running" : state.collaborationMode === "plan" ? "Plan" : "Idle"),
+			liveState: footerLiveState(state),
 			autoCompact: true,
 		},
 		pendingNotice: pendingNotice(state),
@@ -159,6 +165,26 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		},
 		sessions,
 	};
+}
+
+function footerLiveState(state: RuntimeShellState): string {
+	if (state.turnRunning) {
+		return state.liveStatus?.text ?? "Running";
+	}
+	if (state.pendingApproval) {
+		return "Waiting approval";
+	}
+	if (state.pendingClarification) {
+		return "Waiting clarification";
+	}
+	const liveStatusKind = state.liveStatus?.kind ?? state.liveStatus?.state;
+	if (liveStatusKind === "failed") {
+		return state.liveStatus?.text ?? liveStatusKind;
+	}
+	if (state.collaborationMode === "plan") {
+		return "Plan";
+	}
+	return "Idle";
 }
 
 export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
@@ -359,9 +385,18 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 	}
 	if (method === "status.changed") {
 		const trust = trustFromPayload(params.trust, state.workspace);
+		const turnRunning = booleanValue(params.turn_running);
+		const queuedSteering = stringArrayValue(params.queued_steering);
+		const queuedFollowUp = stringArrayValue(params.queued_follow_up);
 		return {
 			...state,
 			status: params,
+			turnRunning: turnRunning ?? state.turnRunning,
+			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
+			liveReasoning: turnRunning === false ? null : state.liveReasoning,
+			queuedSteeringInputs: queuedSteering,
+			queuedFollowUpInputs: queuedFollowUp,
+			queuedInputs: [...queuedSteering, ...queuedFollowUp],
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			model: stringValue(params.model) ?? state.model,
 			collaborationMode: collaborationModeValue(params.collaboration_mode) ?? state.collaborationMode,
@@ -373,6 +408,11 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 	if (method === "workspace.trust.changed") {
 		const trust = trustFromPayload(params, state.workspace);
 		return { ...state, trust, trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown" };
+	}
+	if (method === "turn.queue.updated") {
+		const steering = stringArrayValue(params.steering) ?? [];
+		const followUp = stringArrayValue(params.follow_up) ?? [];
+		return runtimeStateWithMessageQueues(state, { steering, followUp });
 	}
 	if (method === "session.changed") {
 		return {
@@ -389,6 +429,30 @@ export function runtimeStateWithUserMessage(state: RuntimeShellState, message: s
 		...state,
 		transcript: [...state.transcript, { id: nextId("user"), type: "user", text: message, folded: false, metadata: {} }],
 	};
+}
+
+export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInputs: string[]): RuntimeShellState {
+	return {
+		...state,
+		queuedInputs: [...queuedInputs],
+	};
+}
+
+export function runtimeStateWithMessageQueues(
+	state: RuntimeShellState,
+	queues: { steering: string[]; followUp: string[] },
+): RuntimeShellState {
+	return {
+		...state,
+		queuedSteeringInputs: [...queues.steering],
+		queuedFollowUpInputs: [...queues.followUp],
+		queuedInputs: [...queues.steering, ...queues.followUp],
+	};
+}
+
+function queuedInputCount(state: RuntimeShellState): number {
+	const splitQueueCount = state.queuedSteeringInputs.length + state.queuedFollowUpInputs.length;
+	return splitQueueCount > 0 ? splitQueueCount : state.queuedInputs.length;
 }
 
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
@@ -879,6 +943,10 @@ function isTranscriptItem(value: unknown): value is RuntimeTranscriptItem {
 
 function stringValue(value: unknown): string | null {
 	return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function booleanValue(value: unknown): boolean | null {
+	return typeof value === "boolean" ? value : null;
 }
 
 function collaborationModeValue(value: unknown): RuntimeShellState["collaborationMode"] | null {

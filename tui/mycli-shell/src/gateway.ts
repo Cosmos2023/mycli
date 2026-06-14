@@ -7,6 +7,7 @@ import {
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateWithCommandResult,
+	runtimeStateWithMessageQueues,
 	runtimeStateWithUserMessage,
 	sessionsFromResult,
 	type RuntimeShellState,
@@ -29,6 +30,12 @@ let runtime: MycliShellRuntime | null = null;
 let ttyStreams: TtyStreams | null = null;
 let bootstrapped = false;
 const eventDeduper = new GatewayEventDeduper();
+const queuedSteeringTurns: string[] = [];
+const queuedFollowUpTurns: string[] = [];
+let queueDrainTimer: NodeJS.Timeout | null = null;
+let queueDraining = false;
+let backendTurnBusy = false;
+let clientTurnSequence = 0;
 
 function currentShellState(): MycliShellState {
 	return projectRuntimeState(runtimeState, sessions);
@@ -50,9 +57,26 @@ function handleGatewayEvent(event: GatewayEvent): void {
 		return;
 	}
 	setRuntimeState(reduceRuntimeEvent(runtimeState, event.method, event.params));
+	if (event.method === "turn.started") {
+		backendTurnBusy = true;
+	}
+	if (event.method === "status.changed" && backendTurnBusy && event.params.turn_running === false) {
+		backendTurnBusy = false;
+	}
+	if (event.method === "turn.queue.updated") {
+		queuedSteeringTurns.length = 0;
+		queuedSteeringTurns.push(...stringArrayValue(event.params.steering));
+		queuedFollowUpTurns.length = 0;
+		queuedFollowUpTurns.push(...stringArrayValue(event.params.follow_up));
+	}
+	scheduleQueuedTurnDrain();
 }
 
-async function send(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+async function send(
+	method: string,
+	params: Record<string, unknown> = {},
+	options: { recordErrors?: boolean } = {},
+): Promise<Record<string, unknown>> {
 	try {
 		return await client.send(method, params);
 	} catch (error) {
@@ -64,13 +88,15 @@ async function send(method: string, params: Record<string, unknown> = {}): Promi
 						message: error instanceof Error ? error.message : "Request failed.",
 						method,
 					});
-		setRuntimeState(
-			reduceRuntimeEvent(runtimeState, "gateway.error", {
-				code: gatewayError.code,
-				message: gatewayError.message,
-				method: gatewayError.method || method,
-			}),
-		);
+		if (options.recordErrors !== false) {
+			setRuntimeState(
+				reduceRuntimeEvent(runtimeState, "gateway.error", {
+					code: gatewayError.code,
+					message: gatewayError.message,
+					method: gatewayError.method || method,
+				}),
+			);
+		}
 		throw error;
 	}
 }
@@ -84,7 +110,6 @@ async function bootstrap(): Promise<void> {
 	setRuntimeState(runtimeStateFromBootstrap(runtimeState, bootstrapPayload));
 	const transcriptPayload = await send("transcript.load", {
 		session_id: runtimeState.sessionId ?? undefined,
-		limit: 200,
 		before: null,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
@@ -102,9 +127,203 @@ async function loadSessions(): Promise<void> {
 	}
 }
 
-async function submitTurn(message: string): Promise<void> {
-	setRuntimeState(runtimeStateWithUserMessage(runtimeState, message));
-	await send("turn.submit", { message, client_turn_id: `ui_${Date.now()}` });
+async function submitTurn(message: string, options: { fromQueue?: "steer" | "followUp" } = {}): Promise<void> {
+	const text = message.trim();
+	if (!text) {
+		return;
+	}
+	if (!options.fromQueue && runtimeState.turnRunning) {
+		await queueSteeringTurn(text);
+		return;
+	}
+	try {
+		await send("turn.submit", { message: text, client_turn_id: nextClientTurnId(options.fromQueue ?? "ui") }, { recordErrors: false });
+		backendTurnBusy = true;
+		if (options.fromQueue === "steer") {
+			queuedSteeringTurns.shift();
+			syncQueuedInputs();
+		} else if (options.fromQueue === "followUp") {
+			queuedFollowUpTurns.shift();
+			syncQueuedInputs();
+		}
+		setRuntimeState(runtimeStateWithUserMessage(runtimeState, text));
+	} catch (error) {
+		if (error instanceof GatewayRequestError && error.code === "turn_in_progress") {
+			backendTurnBusy = true;
+			if (!options.fromQueue) {
+				enqueueSteeringTurn(text);
+			}
+			return;
+		}
+		setRuntimeState(
+			reduceRuntimeEvent(runtimeState, "gateway.error", {
+				code: error instanceof GatewayRequestError ? error.code : "request_failed",
+				message: error instanceof Error ? error.message : "Request failed.",
+				method: "turn.submit",
+			}),
+		);
+		backendTurnBusy = false;
+		throw error;
+	}
+}
+
+function nextClientTurnId(prefix: string): string {
+	clientTurnSequence += 1;
+	return `${prefix}_${Date.now()}_${clientTurnSequence}`;
+}
+
+function enqueueSteeringTurn(message: string): void {
+	queuedSteeringTurns.push(message);
+	syncQueuedInputs();
+}
+
+async function submitFollowUp(message: string): Promise<void> {
+	const text = message.trim();
+	if (!text) {
+		return;
+	}
+	if (runtimeState.turnRunning || backendTurnBusy) {
+		await queueFollowUpTurn(text);
+		return;
+	}
+	await submitTurn(text);
+}
+
+async function queueSteeringTurn(message: string): Promise<void> {
+	try {
+		const result = await send("turn.steer", { message }, { recordErrors: false });
+		syncQueuedInputsFromResult(result);
+		if (result.accepted === false) {
+			enqueueSteeringTurn(message);
+		}
+	} catch {
+		enqueueSteeringTurn(message);
+	}
+}
+
+async function queueFollowUpTurn(message: string): Promise<void> {
+	try {
+		const result = await send("turn.follow_up", { message }, { recordErrors: false });
+		syncQueuedInputsFromResult(result);
+		if (result.accepted === false) {
+			queuedFollowUpTurns.push(message);
+			syncQueuedInputs();
+		}
+	} catch {
+		queuedFollowUpTurns.push(message);
+		syncQueuedInputs();
+	}
+}
+
+function queuedTurns(): string[] {
+	return [...queuedSteeringTurns, ...queuedFollowUpTurns];
+}
+
+function nextQueuedTurn(): { kind: "steer" | "followUp"; message: string } | null {
+	const steering = queuedSteeringTurns[0];
+	if (steering !== undefined) {
+		return { kind: "steer", message: steering };
+	}
+	const followUp = queuedFollowUpTurns[0];
+	if (followUp !== undefined) {
+		return { kind: "followUp", message: followUp };
+	}
+	return null;
+}
+
+function clearQueuedTurns(): string[] {
+	const allQueued = queuedTurns();
+	queuedSteeringTurns.length = 0;
+	queuedFollowUpTurns.length = 0;
+	syncQueuedInputs();
+	return allQueued;
+}
+
+function syncQueuedInputs(): void {
+	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queuedSteeringTurns, followUp: queuedFollowUpTurns }));
+}
+
+function syncQueuedInputsFromResult(result: Record<string, unknown>): void {
+	const steering = stringArrayValue(result.steering);
+	const followUp = stringArrayValue(result.follow_up);
+	queuedSteeringTurns.length = 0;
+	queuedSteeringTurns.push(...steering);
+	queuedFollowUpTurns.length = 0;
+	queuedFollowUpTurns.push(...followUp);
+	syncQueuedInputs();
+}
+
+async function dequeueQueuedInput(): Promise<string | null> {
+	try {
+		const result = await send("turn.queue.clear", {}, { recordErrors: false });
+		const restored = [...stringArrayValue(result.steering), ...stringArrayValue(result.follow_up)];
+		queuedSteeringTurns.length = 0;
+		queuedFollowUpTurns.length = 0;
+		syncQueuedInputs();
+		if (restored.length > 0) {
+			return restored.join("\n\n");
+		}
+	} catch {
+		// Fall back to local queue below.
+	}
+	const allQueued = clearQueuedTurns();
+	return allQueued.length > 0 ? allQueued.join("\n\n") : null;
+}
+
+function scheduleQueuedTurnDrain(): void {
+	if (queueDrainTimer || queueDraining || !canDrainQueuedTurns()) {
+		return;
+	}
+	queueDrainTimer = setTimeout(() => {
+		queueDrainTimer = null;
+		void drainQueuedTurns();
+	}, 25);
+	queueDrainTimer.unref?.();
+}
+
+async function drainQueuedTurns(): Promise<void> {
+	if (queueDraining || !canDrainQueuedTurns()) {
+		return;
+	}
+	const next = nextQueuedTurn();
+	if (!next) {
+		return;
+	}
+	queueDraining = true;
+	try {
+		await submitTurn(next.message, { fromQueue: next.kind });
+	} finally {
+		queueDraining = false;
+		scheduleQueuedTurnDrain();
+	}
+}
+
+function canDrainQueuedTurns(): boolean {
+	return (
+		queuedTurns().length > 0 &&
+		!backendTurnBusy &&
+		!runtimeState.turnRunning &&
+		!runtimeState.pendingApproval &&
+		!runtimeState.pendingClarification
+	);
+}
+
+async function interruptTurn(): Promise<void> {
+	const restored = await dequeueQueuedInput();
+	if (restored) {
+		runtime?.restoreQueuedText(restored);
+	}
+	await send("turn.interrupt", {});
+}
+
+function stringArrayValue(value: unknown): string[] {
+	if (typeof value === "string" && value.trim()) {
+		return [value.trim()];
+	}
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 async function runCommand(command: string): Promise<void> {
@@ -126,7 +345,6 @@ async function selectSession(sessionId: string): Promise<void> {
 	};
 	const transcriptPayload = await send("transcript.load", {
 		session_id: String(result.session_id ?? sessionId),
-		limit: 200,
 		before: null,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
@@ -158,6 +376,9 @@ async function main(): Promise<void> {
 		projectTrusted: runtimeState.trust.state === "trusted",
 		trustSavedDecision: trustDecisionFromState(runtimeState.trust.state),
 		onSubmit: submitTurn,
+		onFollowUp: submitFollowUp,
+		onInterrupt: interruptTurn,
+		onDequeueQueuedInput: dequeueQueuedInput,
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
 		onModelSelect: async (model) => {
@@ -189,11 +410,16 @@ async function main(): Promise<void> {
 	runtime.start();
 }
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-	process.once(signal, () => {
-		void shutdown(0).finally(() => process.exit(0));
-	});
-}
+process.on("SIGINT", () => {
+	if (runtime?.isStarted()) {
+		return;
+	}
+	void shutdown(0).finally(() => process.exit(0));
+});
+
+process.once("SIGTERM", () => {
+	void shutdown(0).finally(() => process.exit(0));
+});
 
 main().catch((error: unknown) => {
 	const message = error instanceof Error ? error.message : "Unable to start mycli shell TUI.";

@@ -35,6 +35,17 @@ type ScriptedAction =
 			message: string;
 			expected_state: ExpectedScriptedTurnState;
 	  }
+	| {
+			type: "turn.submit_queue";
+			message: string;
+			steering?: string[];
+			follow_up?: string[];
+			clear?: boolean;
+			expected_state?: ExpectedScriptedTurnState;
+	  }
+	| { type: "turn.steer"; message: string }
+	| { type: "turn.follow_up"; message: string }
+	| { type: "turn.queue.clear" }
 	| { type: "turn.submit_interrupt"; message: string };
 
 const LOCAL_HELP_LINES = [
@@ -117,7 +128,6 @@ async function send(method: string, params: Record<string, unknown> = {}): Promi
 async function loadTranscript(): Promise<void> {
 	const payload = await send("transcript.load", {
 		session_id: state.sessionId ?? undefined,
-		limit: 200,
 		before: null,
 	});
 	state = runtimeStateFromTranscript(state, payload);
@@ -209,6 +219,44 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 		return;
 	}
 
+	if (action.type === "turn.submit_queue") {
+		const clientTurnId = `script_queue_${Date.now()}`;
+		state = runtimeStateWithUserMessage(state, action.message);
+		await send("turn.submit", {
+			message: action.message,
+			client_turn_id: clientTurnId,
+		});
+		await client.waitForEvent("turn.started", (event) => event.params.client_turn_id === clientTurnId);
+		for (const message of action.steering ?? []) {
+			await queueMessage("turn.steer", message, "steering");
+		}
+		for (const message of action.follow_up ?? []) {
+			await queueMessage("turn.follow_up", message, "follow_up");
+		}
+		if (action.clear === true) {
+			await send("turn.queue.clear", {});
+			await waitForQueue((event) => queueValues(event, "steering").length === 0 && queueValues(event, "follow_up").length === 0);
+		}
+		await waitForExpectedTurnState(clientTurnId, action.expected_state ?? "completed");
+		return;
+	}
+
+	if (action.type === "turn.steer") {
+		await queueMessage("turn.steer", action.message, "steering");
+		return;
+	}
+
+	if (action.type === "turn.follow_up") {
+		await queueMessage("turn.follow_up", action.message, "follow_up");
+		return;
+	}
+
+	if (action.type === "turn.queue.clear") {
+		await send("turn.queue.clear", {});
+		await waitForQueue((event) => queueValues(event, "steering").length === 0 && queueValues(event, "follow_up").length === 0);
+		return;
+	}
+
 	if (action.type === "session.resume") {
 		const result = await send("session.resume", { session_id: action.session_id });
 		state = runtimeStateWithCommandResult(state, `/resume ${action.session_id}`, result);
@@ -260,6 +308,14 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 	const clientTurnId = requiredString(result, "client_turn_id", "clarify.respond");
 	await client.waitForEvent("turn.completed", (event) => event.params.client_turn_id === clientTurnId);
 	await waitForTerminalStatus(clientTurnId);
+}
+
+async function queueMessage(method: "turn.steer" | "turn.follow_up", message: string, queueKey: "steering" | "follow_up"): Promise<void> {
+	const result = await send(method, { message });
+	if (result.accepted !== true) {
+		throw new Error(`${method} was not accepted.`);
+	}
+	await waitForQueue((event) => queueValues(event, queueKey).includes(message));
 }
 
 async function waitForSubmittedTurn(clientTurnId: string): Promise<void> {
@@ -387,6 +443,18 @@ async function waitForPending(
 	throw new Error(`${eventName} did not update scripted client state.`);
 }
 
+async function waitForQueue(matches: (event: GatewayEvent) => boolean): Promise<void> {
+	await client.waitForEvent("turn.queue.updated", matches);
+}
+
+function queueValues(event: GatewayEvent, key: "steering" | "follow_up"): string[] {
+	const value = event.params[key];
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.filter((item): item is string => typeof item === "string");
+}
+
 function isScriptedAction(item: unknown): item is ScriptedAction {
 	if (typeof item !== "object" || item === null || Array.isArray(item)) {
 		return false;
@@ -407,10 +475,34 @@ function isScriptedAction(item: unknown): item is ScriptedAction {
 	if (record.type === "turn.submit_expect") {
 		return typeof record.message === "string" && isExpectedScriptedTurnState(record.expected_state);
 	}
+	if (record.type === "turn.submit_queue") {
+		const steering = record.steering;
+		const followUp = record.follow_up;
+		return (
+			typeof record.message === "string" &&
+			(steering === undefined || isStringArray(steering)) &&
+			(followUp === undefined || isStringArray(followUp)) &&
+			(record.clear === undefined || typeof record.clear === "boolean") &&
+			(record.expected_state === undefined || isExpectedScriptedTurnState(record.expected_state))
+		);
+	}
+	if (record.type === "turn.steer") {
+		return typeof record.message === "string";
+	}
+	if (record.type === "turn.follow_up") {
+		return typeof record.message === "string";
+	}
+	if (record.type === "turn.queue.clear") {
+		return true;
+	}
 	if (record.type === "turn.submit_interrupt") {
 		return typeof record.message === "string";
 	}
 	return false;
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isExpectedScriptedTurnState(value: unknown): value is ExpectedScriptedTurnState {

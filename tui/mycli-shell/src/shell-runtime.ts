@@ -5,6 +5,7 @@ import { Spacer } from "./tui-core/components/spacer.ts";
 import { Text } from "./tui-core/components/text.ts";
 import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
 import { Container, TUI, type Component } from "./tui-core/tui.ts";
+import { matchesKey } from "./tui-core/keys.ts";
 import { installMycliKeybindings } from "./keybindings.ts";
 import type {
 	MycliShellCommand,
@@ -35,6 +36,9 @@ export type MycliShellRuntimeOptions = {
 	trustSavedDecision?: ProjectTrustDecision;
 	projectTrusted?: boolean;
 	onSubmit?: (text: string) => void | Promise<void>;
+	onFollowUp?: (text: string) => void | Promise<void>;
+	onInterrupt?: () => void | Promise<void>;
+	onDequeueQueuedInput?: () => string | null | Promise<string | null>;
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
 	onModelSelect?: (model: MycliShellModel) => void | Promise<void>;
@@ -115,6 +119,7 @@ class TurnActivityComponent implements Component {
 			this.frameIndex = (this.frameIndex + 1) % this.frames.length;
 			this.ui.requestRender();
 		}, 250);
+		this.intervalId.unref?.();
 	}
 }
 
@@ -131,6 +136,7 @@ class TurnCompletedComponent implements Component {
 class TranscriptViewportComponent implements Component {
 	private scrollOffset = 0;
 	private lastLineCount = 0;
+	private renderFullOnce = false;
 
 	constructor(
 		private readonly content: Container,
@@ -149,6 +155,10 @@ class TranscriptViewportComponent implements Component {
 		this.scrollOffset = 0;
 	}
 
+	renderFullNext(): void {
+		this.renderFullOnce = true;
+	}
+
 	invalidate(): void {
 		this.content.invalidate();
 	}
@@ -160,6 +170,11 @@ class TranscriptViewportComponent implements Component {
 			this.scrollOffset = 0;
 		}
 		this.lastLineCount = lines.length;
+		if (this.renderFullOnce) {
+			this.renderFullOnce = false;
+			this.scrollOffset = 0;
+			return lines;
+		}
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
 		const start = Math.max(0, lines.length - height - this.scrollOffset);
@@ -189,19 +204,29 @@ export class MycliShellRuntime {
 	private turnActivity: TurnActivityComponent | null = null;
 	private turnStartedAtMs: number | null = null;
 	private completedDurationMs: number | null = null;
+	private selectorActive = false;
 	private readonly now: () => number;
+	private lastCtrlCAtMs: number | null = null;
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
 		this.transcriptViewport = new TranscriptViewportComponent(this.chatContainer, (width) => this.transcriptHeight(width));
+		if (this.ui.terminal.nativeScrollback) {
+			this.transcriptViewport.renderFullNext();
+		}
 		const keybindings = installMycliKeybindings();
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, { paddingX: 1, autocompleteMaxVisible: 8 });
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
-		this.editor.onAction("app.interrupt", () => this.restoreEditor());
+		this.editor.onEscape = () => {
+			void this.handleInterrupt();
+		};
+		this.editor.onAction("app.interrupt", () => {
+			void this.handleInterrupt();
+		});
 		this.editor.onAction("app.exit", () => {
 			void this.shutdown();
 		});
@@ -210,6 +235,12 @@ export class MycliShellRuntime {
 		this.editor.onAction("app.model.select", () => this.showModelSelector());
 		this.editor.onAction("app.mode.cycle", () => {
 			void this.cycleCollaborationMode();
+		});
+		this.editor.onAction("app.message.followUp", () => {
+			void this.submitFollowUp();
+		});
+		this.editor.onAction("app.message.dequeue", () => {
+			void this.restoreQueuedInput();
 		});
 		this.editor.onAction("app.tools.expand", () => this.toggleToolDetails());
 		this.ui.addInputListener((data) => this.handleGlobalInput(data));
@@ -256,6 +287,10 @@ export class MycliShellRuntime {
 		return this.transcriptViewport.getScrollOffset();
 	}
 
+	restoreQueuedText(text: string): void {
+		this.restoreQueuedTextToEditor(text);
+	}
+
 	async shutdown(): Promise<void> {
 		this.stopTurnActivity();
 		if (this.started) {
@@ -271,8 +306,16 @@ export class MycliShellRuntime {
 	}
 
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
-		if (this.ui.hasOverlay()) {
+		if (this.ui.hasOverlay() || this.selectorActive) {
 			return undefined;
+		}
+		if (matchesKey(data, "ctrl+c")) {
+			void this.handleCtrlC();
+			return { consume: true };
+		}
+		if (matchesKey(data, "escape") && this.isTurnRunning()) {
+			void this.handleInterrupt();
+			return { consume: true };
 		}
 		if (data === "\x1b[5~") {
 			this.scrollTranscript(Math.max(5, this.transcriptPageSize()));
@@ -280,6 +323,14 @@ export class MycliShellRuntime {
 		}
 		if (data === "\x1b[6~") {
 			this.scrollTranscript(-Math.max(5, this.transcriptPageSize()));
+			return { consume: true };
+		}
+		if (data === "\x1b[A" && this.editor.getText().length === 0) {
+			this.scrollTranscript(3);
+			return { consume: true };
+		}
+		if (data === "\x1b[B" && this.editor.getText().length === 0) {
+			this.scrollTranscript(-3);
 			return { consume: true };
 		}
 		const mouse = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
@@ -456,6 +507,7 @@ export class MycliShellRuntime {
 			this.restoreEditor();
 		};
 		const { component, focus } = create(done);
+		this.selectorActive = true;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(component);
 		this.ui.setFocus(focus);
@@ -463,6 +515,7 @@ export class MycliShellRuntime {
 	}
 
 	private restoreEditor(): void {
+		this.selectorActive = false;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
@@ -667,6 +720,18 @@ export class MycliShellRuntime {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			this.pendingMessagesContainer.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
 		}
+		const steering = this.state.footer.steeringQueueCount ?? 0;
+		const followUp = this.state.footer.followUpQueueCount ?? 0;
+		if (steering > 0 || followUp > 0) {
+			this.pendingMessagesContainer.addChild(new Spacer(1));
+			if (steering > 0) {
+				this.pendingMessagesContainer.addChild(new Text(theme.fg("muted", `Steering queued: ${steering}`), 1, 0));
+			}
+			if (followUp > 0) {
+				this.pendingMessagesContainer.addChild(new Text(theme.fg("muted", `Follow-up queued: ${followUp}`), 1, 0));
+			}
+			this.pendingMessagesContainer.addChild(new Text(theme.fg("dim", "↳ option+up to edit all queued messages"), 1, 0));
+		}
 		if (this.state.activePlan?.length) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			this.pendingMessagesContainer.addChild(new PlanPanelComponent(this.state.activePlan));
@@ -716,7 +781,8 @@ export class MycliShellRuntime {
 	private rebuildFooter(): void {
 		this.footerContainer.clear();
 		this.footerContainer.addChild(new Spacer(1));
-		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${rawKeyHint("enter", "send")}  ${rawKeyHint("esc", "cancel")}`, 1, 0));
+		const sendHint = this.isTurnRunning() ? rawKeyHint("enter", "steer") : rawKeyHint("enter", "send");
+		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("option+enter", "follow-up")}  ${rawKeyHint("esc", "interrupt")}  ${rawKeyHint("option+up", "dequeue")}`, 1, 0));
 		this.footerContainer.addChild(new FooterComponent(this.state.footer));
 	}
 
@@ -780,6 +846,67 @@ export class MycliShellRuntime {
 		this.editor.addToHistory(input);
 		this.editor.setText("");
 		await this.options.onSubmit?.(input);
+	}
+
+	private async submitFollowUp(): Promise<void> {
+		const input = this.editor.getText().trim();
+		if (!input) {
+			return;
+		}
+		this.editor.addToHistory(input);
+		this.editor.setText("");
+		await (this.options.onFollowUp ?? this.options.onSubmit)?.(input);
+	}
+
+	private async restoreQueuedInput(): Promise<void> {
+		const queued = await this.options.onDequeueQueuedInput?.();
+		if (!queued) {
+			this.addSystemNotice("No queued message to restore.");
+			return;
+		}
+		this.restoreQueuedTextToEditor(queued);
+	}
+
+	private async handleInterrupt(): Promise<void> {
+		if (this.selectorActive) {
+			this.restoreEditor();
+			return;
+		}
+		if (this.isTurnRunning()) {
+			await this.options.onInterrupt?.();
+			this.addSystemNotice("Interrupted.");
+			return;
+		}
+		if (this.editor.getText().length > 0) {
+			this.editor.setText("");
+			return;
+		}
+		this.restoreEditor();
+	}
+
+	private async handleCtrlC(): Promise<void> {
+		if (this.editor.getText().length > 0) {
+			this.editor.setText("");
+			this.lastCtrlCAtMs = null;
+			return;
+		}
+		const now = this.now();
+		if (this.lastCtrlCAtMs !== null && now - this.lastCtrlCAtMs <= 2000) {
+			await this.shutdown();
+			return;
+		}
+		this.lastCtrlCAtMs = now;
+		this.addSystemNotice("Press Ctrl+C again to exit.");
+	}
+
+	private restoreQueuedTextToEditor(queued: string): void {
+		const current = this.editor.getText().trim();
+		this.editor.setText([queued, current].filter((text) => text.trim()).join("\n\n"));
+	}
+
+	private isTurnRunning(): boolean {
+		const liveState = this.state.footer.liveState?.trim().toLowerCase() ?? "";
+		return ["running", "thinking", "streaming", "waiting approval", "waiting clarification"].includes(liveState);
 	}
 
 	private commands(): MycliShellCommand[] {
@@ -873,7 +1000,21 @@ export class MycliShellRuntime {
 	}
 
 	private localCommandIds(): Set<string> {
-		return new Set(["settings", "session", "resume", "model", "trust", "tools", "details", "view", "hotkeys", "copy", "new", "clear", "quit"]);
+		return new Set([
+			"settings",
+			"session",
+			"resume",
+			"model",
+			"trust",
+			"tools",
+			"details",
+			"view",
+			"hotkeys",
+			"copy",
+			"new",
+			"clear",
+			"quit",
+		]);
 	}
 
 	private isBackendCommand(commandId: string): boolean {
@@ -962,9 +1103,9 @@ export class MycliShellRuntime {
 			[
 				"Hotkeys",
 				"ctrl+p commands · ? help",
-				"enter send · esc cancel",
+				"enter send/steer · esc interrupt",
 				"ctrl+l model · ctrl+o tools",
-				"ctrl+d exit · alt+enter queue",
+				"ctrl+c clear/exit · alt+enter follow-up · alt+up dequeue",
 			].join("\n"),
 		);
 	}

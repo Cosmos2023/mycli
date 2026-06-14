@@ -1140,10 +1140,15 @@ export class TUI extends Container {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines
+		// Render all components to get new lines. On the real shell TTY we keep the
+		// first render on the main screen so earlier transcript lines enter native
+		// terminal scrollback and can be copied or mouse-scrolled like Claude Code.
 		const logicalLines = this.render(width);
-		const logicalViewportTop = this.viewportTopFor(Math.max(height, logicalLines.length), height);
-		let newLines = logicalLines.slice(logicalViewportTop, logicalViewportTop + height);
+		const useNativeScrollbackFirstRender = this.terminal.nativeScrollback && this.previousLines.length === 0;
+		const logicalViewportTop = useNativeScrollbackFirstRender
+			? 0
+			: this.viewportTopFor(Math.max(height, logicalLines.length), height);
+		let newLines = useNativeScrollbackFirstRender ? logicalLines : logicalLines.slice(logicalViewportTop, logicalViewportTop + height);
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {

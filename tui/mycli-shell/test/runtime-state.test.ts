@@ -421,6 +421,35 @@ test("runtime adapter keeps ordinary running status out of pending transcript ar
 	assert.equal(shell.footer.liveState, "Thinking");
 });
 
+test("runtime adapter syncs backend message queues", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		steering: ["steer now"],
+		follow_up: ["later"],
+	});
+
+	let shell = projectRuntimeState(state);
+
+	assert.equal(shell.footer.queueCount, 2);
+	assert.equal(shell.footer.steeringQueueCount, 1);
+	assert.equal(shell.footer.followUpQueueCount, 1);
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		model: "gpt-5.4",
+		provider: "openai/responses",
+		turn_running: false,
+		queued_steering: [],
+		queued_follow_up: [],
+		trust: { state: "trusted", workspace: "/repo" },
+	});
+	shell = projectRuntimeState(state);
+
+	assert.equal(shell.footer.queueCount, 0);
+	assert.equal(shell.footer.steeringQueueCount, 0);
+	assert.equal(shell.footer.followUpQueueCount, 0);
+	assert.equal(shell.footer.liveState, "Idle");
+});
+
 test("runtime adapter projects thinking effort into footer and current model", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "status.changed", {

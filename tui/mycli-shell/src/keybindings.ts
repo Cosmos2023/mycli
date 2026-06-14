@@ -16,6 +16,7 @@ declare module "./tui-core/keybindings.ts" {
 		"app.help": true;
 		"app.mode.cycle": true;
 		"app.message.followUp": true;
+		"app.message.dequeue": true;
 		"app.clipboard.pasteImage": true;
 	}
 }
@@ -31,6 +32,7 @@ const APP_KEYBINDINGS = {
 	"app.help": { defaultKeys: "?", description: "Open help" },
 	"app.mode.cycle": { defaultKeys: "shift+tab", description: "Cycle mode" },
 	"app.message.followUp": { defaultKeys: "alt+enter", description: "Queue follow-up" },
+	"app.message.dequeue": { defaultKeys: "alt+up", description: "Restore queued message" },
 	"app.clipboard.pasteImage": { defaultKeys: "ctrl+v", description: "Paste image" },
 } as const satisfies KeybindingDefinitions;
 

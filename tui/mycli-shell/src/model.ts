@@ -69,6 +69,8 @@ export type MycliShellFooterData = {
 	usingSubscription?: boolean;
 	autoCompact?: boolean;
 	queueCount?: number;
+	steeringQueueCount?: number;
+	followUpQueueCount?: number;
 	trust?: string;
 	collaborationMode?: "default" | "plan";
 	liveState?: string;

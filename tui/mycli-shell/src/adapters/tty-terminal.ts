@@ -53,6 +53,10 @@ export class StreamTerminal implements Terminal {
 		return this._kittyProtocolActive;
 	}
 
+	get nativeScrollback(): boolean {
+		return true;
+	}
+
 	get columns(): number {
 		return this.streams.output.columns || Number(process.env.COLUMNS) || 80;
 	}
@@ -70,9 +74,8 @@ export class StreamTerminal implements Terminal {
 		}
 		this.streams.input.setEncoding("utf8");
 		this.streams.input.resume();
-		this.write("\x1b[?1049h\x1b[2J\x1b[H");
+		this.write("\x1b[2J\x1b[H");
 		this.write("\x1b[?2004h");
-		this.write("\x1b[?1000h\x1b[?1006h");
 		this.streams.output.on("resize", this.resizeHandler);
 		this.stdinBuffer = new StdinBuffer({ timeout: 10 });
 		this.stdinBuffer.on("data", (sequence) => {
@@ -104,7 +107,6 @@ export class StreamTerminal implements Terminal {
 		if (this.streams.input.setRawMode) {
 			this.streams.input.setRawMode(this.wasRaw);
 		}
-		this.write("\x1b[?1049l");
 	}
 
 	async drainInput(maxMs = 1000, idleMs = 50): Promise<void> {

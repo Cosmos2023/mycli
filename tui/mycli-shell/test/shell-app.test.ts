@@ -37,7 +37,6 @@ function sampleState(): MycliShellState {
 			totalOutputTokens: 700,
 			cacheReadTokens: 300,
 			autoCompact: true,
-			queueCount: 1,
 			trust: "trusted",
 			liveState: "Idle",
 			extensionStatuses: ["terminal ready"],
@@ -79,6 +78,7 @@ class TestTerminal implements Terminal {
 	columns = 100;
 	rows = 40;
 	kittyProtocolActive = false;
+	nativeScrollback = false;
 	output = "";
 	input?: (data: string) => void;
 	resize?: () => void;
@@ -299,7 +299,8 @@ test("footer keeps copied compact shape width safe", () => {
 		costUsd: 0.123,
 		usingSubscription: true,
 		autoCompact: true,
-		queueCount: 2,
+		steeringQueueCount: 1,
+		followUpQueueCount: 1,
 		trust: "trusted",
 		collaborationMode: "plan",
 		liveState: "Streaming",
@@ -871,6 +872,156 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.equal(runtime.getState().transcript?.length, 0);
 });
 
+test("mycli shell runtime forwards running-turn messages for steering queueing", async () => {
+	const submitted: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal: new TestTerminal(),
+		onSubmit: (text) => {
+			submitted.push(text);
+		},
+	});
+
+	runtime.editor.setText("second turn");
+	await runtime.editor.onSubmit?.("second turn");
+
+	assert.deepEqual(submitted, ["second turn"]);
+	assert.equal(runtime.editor.getText(), "");
+});
+
+test("mycli shell runtime queues follow-up messages with alt enter", async () => {
+	const followUps: string[] = [];
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onFollowUp: (text) => {
+			followUps.push(text);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("after current run");
+	terminal.input?.("\x1b\r");
+	await setTimeout(25);
+
+	assert.deepEqual(followUps, ["after current run"]);
+	assert.equal(runtime.editor.getText(), "");
+});
+
+test("mycli shell runtime restores queued messages with alt up", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, steeringQueueCount: 1, followUpQueueCount: 1 },
+		},
+		terminal,
+		onDequeueQueuedInput: () => "queued follow-up",
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("draft");
+	terminal.input?.("\x1bp");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "queued follow-up\n\ndraft");
+});
+
+test("mycli shell runtime interrupts running turns with escape", async () => {
+	let interrupted = 0;
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onInterrupt: () => {
+			interrupted += 1;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+
+	assert.equal(interrupted, 1);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupted/);
+});
+
+test("mycli shell runtime does not interrupt running turns with ctrl c", async () => {
+	let interrupted = 0;
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onInterrupt: () => {
+			interrupted += 1;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("draft");
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.equal(interrupted, 0);
+	assert.equal(runtime.editor.getText(), "");
+
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.equal(interrupted, 0);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Press Ctrl\+C again to exit/);
+});
+
+test("mycli shell runtime clears editor then exits on repeated ctrl c while idle", async () => {
+	let now = 1000;
+	let exits = 0;
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		now: () => now,
+		onExit: () => {
+			exits += 1;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("draft");
+	terminal.input?.("\x03");
+	await setTimeout(25);
+	assert.equal(runtime.editor.getText(), "");
+	assert.equal(exits, 0);
+
+	terminal.input?.("\x03");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Press Ctrl\+C again to exit/);
+	assert.equal(exits, 0);
+
+	now = 1500;
+	terminal.input?.("\x03");
+	await setTimeout(25);
+	assert.equal(exits, 1);
+	assert.equal(runtime.isStarted(), false);
+});
+
 test("mycli shell forwards backend slash commands instead of chatting them", async () => {
 	const submitted: string[] = [];
 	const commands: string[] = [];
@@ -928,29 +1079,22 @@ test("mycli shell command palette includes backend-supported commands", async ()
 	runtime.start();
 	await setTimeout(25);
 	runtime.showCommandPalette();
-	for (let index = 0; index < 20; index += 1) {
-		terminal.input?.("\x1b[B");
-	}
-	let output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /\/subagents/);
+	const assertCommandVisible = async (pattern: RegExp) => {
+		for (let index = 0; index < 40; index += 1) {
+			const output = stripAnsi(runtime.ui.render(100).join("\n"));
+			if (pattern.test(output)) {
+				return;
+			}
+			terminal.input?.("\x1b[B");
+			await setTimeout(0);
+		}
+		assert.match(stripAnsi(runtime.ui.render(100).join("\n")), pattern);
+	};
 
-	for (let index = 0; index < 7; index += 1) {
-		terminal.input?.("\x1b[B");
-	}
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /\/changes/);
-
-	for (let index = 0; index < 3; index += 1) {
-		terminal.input?.("\x1b[B");
-	}
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /\/trace/);
-
-	for (let index = 0; index < 3; index += 1) {
-		terminal.input?.("\x1b[B");
-	}
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /\/session-maintenance/);
+	await assertCommandVisible(/\/subagents/);
+	await assertCommandVisible(/\/changes/);
+	await assertCommandVisible(/\/trace/);
+	await assertCommandVisible(/\/session-maintenance/);
 });
 
 test("mycli shell local view command switches tool visibility", async () => {
@@ -1031,6 +1175,34 @@ test("mycli shell runtime supports internal transcript page scrolling", async ()
 	assert.equal(runtime.getTranscriptScrollOffset(), 0);
 });
 
+test("mycli shell writes full initial history when terminal has native scrollback", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 18 }, (_, index) => ({
+				id: `history-${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				text: `history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /history message 0/);
+	assert.match(output, /history message 17/);
+});
+
 test("mycli shell runtime scrolls only transcript and keeps chrome visible", async () => {
 	const terminal = new TestTerminal();
 	terminal.rows = 12;
@@ -1063,7 +1235,7 @@ test("mycli shell runtime scrolls only transcript and keeps chrome visible", asy
 	assert.match(output, /message 1[0-9]/);
 });
 
-test("mycli shell runtime supports mouse wheel transcript scrolling", async () => {
+test("mycli shell runtime supports terminal wheel-style transcript scrolling", async () => {
 	const terminal = new TestTerminal();
 	terminal.rows = 12;
 	const runtime = new MycliShellRuntime({
@@ -1084,11 +1256,11 @@ test("mycli shell runtime supports mouse wheel transcript scrolling", async () =
 	runtime.start();
 	await setTimeout(25);
 
-	terminal.input?.("\x1b[<64;10;5M");
+	terminal.input?.("\x1b[A");
 	await setTimeout(25);
 	assert.ok(runtime.getTranscriptScrollOffset() > 0);
 
-	terminal.input?.("\x1b[<65;10;5M");
+	terminal.input?.("\x1b[B");
 	await setTimeout(25);
 	assert.equal(runtime.getTranscriptScrollOffset(), 0);
 });

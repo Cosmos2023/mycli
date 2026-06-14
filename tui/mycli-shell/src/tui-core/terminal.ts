@@ -74,6 +74,9 @@ export interface Terminal {
 	// Whether Kitty keyboard protocol is active
 	get kittyProtocolActive(): boolean;
 
+	// Whether normal terminal scrollback is available for content above the viewport.
+	get nativeScrollback(): boolean;
+
 	// Cursor positioning (relative to current position)
 	moveBy(lines: number): void; // Move cursor up (negative) or down (positive) by N lines
 
@@ -125,6 +128,10 @@ export class ProcessTerminal implements Terminal {
 
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
+	}
+
+	get nativeScrollback(): boolean {
+		return false;
 	}
 
 	get modifyOtherKeysActive(): boolean {

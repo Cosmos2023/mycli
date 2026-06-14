@@ -38,7 +38,7 @@ class FakeOutput extends EventEmitter {
 	}
 }
 
-test("stream terminal enters and leaves alternate screen around lifecycle", () => {
+test("stream terminal uses main screen without mouse capture so copy and native scroll work", () => {
 	const input = new FakeInput();
 	const output = new FakeOutput();
 	const terminal = new StreamTerminal({
@@ -50,12 +50,13 @@ test("stream terminal enters and leaves alternate screen around lifecycle", () =
 	terminal.start(() => {}, () => {});
 	terminal.stop();
 
-	assert.match(output.output, /^\x1b\[\?1049h\x1b\[2J\x1b\[H/);
+	assert.match(output.output, /^\x1b\[2J\x1b\[H/);
 	assert.match(output.output, /\x1b\[\?2004h/);
-	assert.match(output.output, /\x1b\[\?1000h\x1b\[\?1006h/);
+	assert.doesNotMatch(output.output, /\x1b\[\?1049h/);
+	assert.doesNotMatch(output.output, /\x1b\[\?1049l/);
+	assert.doesNotMatch(output.output, /\x1b\[\?1000h\x1b\[\?1006h/);
 	assert.match(output.output, /\x1b\[\?1006l\x1b\[\?1000l/);
 	assert.match(output.output, /\x1b\[\?2004l/);
-	assert.match(output.output, /\x1b\[\?1049l$/);
 	assert.equal(input.resumed, true);
 	assert.equal(input.paused, true);
 	assert.equal(input.isRaw, false);
