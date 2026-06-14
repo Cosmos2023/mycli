@@ -3,10 +3,12 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 from typing import Mapping
+from uuid import uuid4
 
 from mycli.domain.providers import ProviderId, parse_protocol, parse_provider
 from mycli.domain.runtime import (
     AgentConfig,
+    CollaborationMode,
     ProviderCachePolicyCapability,
     ReasoningEffort,
     ViewMode,
@@ -128,6 +130,17 @@ def _parse_view_mode(value: object) -> ViewMode:
         ) from exc
 
 
+def _parse_collaboration_mode(value: object) -> CollaborationMode:
+    raw = str(value or CollaborationMode.DEFAULT.value).strip().lower()
+    try:
+        return CollaborationMode(raw)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in CollaborationMode)
+        raise ValueError(
+            f"Unsupported collaboration_mode '{raw}'. Supported values: {allowed}."
+        ) from exc
+
+
 def _parse_optional_float(value: object) -> float | None:
     if value is None:
         return None
@@ -157,6 +170,10 @@ def _parse_float_map(value: object) -> dict[str, float]:
             continue
         parsed[key] = numeric
     return parsed
+
+
+def _new_session_id() -> str:
+    return str(uuid4())
 
 
 def resolve_config(
@@ -215,7 +232,7 @@ def resolve_config(
         or user_config.get("api_key")
     )
     api_key = str(api_key_value) if api_key_value else None
-    session_id = str(cli_args.get("session") or "default")
+    session_id = str(cli_args["session"]) if cli_args.get("session") else _new_session_id()
     max_prompt_tokens_value = (
         env.get("MYCLI_MAX_PROMPT_TOKENS")
         or project_config.get("max_prompt_tokens")
@@ -270,6 +287,12 @@ def resolve_config(
         or project_config.get("view_mode")
         or user_config.get("view_mode")
         or ViewMode.DEFAULT.value
+    )
+    collaboration_mode_value = (
+        env.get("MYCLI_COLLABORATION_MODE")
+        or project_config.get("collaboration_mode")
+        or user_config.get("collaboration_mode")
+        or CollaborationMode.DEFAULT.value
     )
     statusline_enabled_raw: object | None = env.get("MYCLI_STATUSLINE_ENABLED")
     if statusline_enabled_raw is None:
@@ -434,6 +457,7 @@ def resolve_config(
         heartbeat_enabled=True if heartbeat_enabled_value is None else heartbeat_enabled_value,
         heartbeat_interval_seconds=float(str(heartbeat_interval_seconds_value)),
         view_mode=_parse_view_mode(view_mode_value),
+        collaboration_mode=_parse_collaboration_mode(collaboration_mode_value),
         statusline_enabled=True
         if statusline_enabled_value is None
         else statusline_enabled_value,

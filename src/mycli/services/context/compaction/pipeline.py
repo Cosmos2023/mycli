@@ -545,6 +545,29 @@ class LLMSummarization:
             return None
         return dict(self._last_cost_metrics)
 
+    def should_compress(self, budget: ContextBudget, *, force: bool = False) -> bool:
+        if force:
+            return True
+        return budget.usage_ratio >= self._active_trigger_ratio(budget.max_tokens)
+
+    def record_threshold_skip(
+        self,
+        budget: ContextBudget,
+        *,
+        source: str = "pre_request",
+    ) -> None:
+        trigger_ratio = self._active_trigger_ratio(budget.max_tokens)
+        self._record_skip_metrics(
+            {
+                "buffer_tokens": self._buffer_tokens,
+                "buffer_trigger_ratio": trigger_ratio,
+                "decision": "skip_threshold",
+                "source": source,
+                "trigger_ratio": trigger_ratio,
+                "usage_ratio": budget.usage_ratio,
+            }
+        )
+
     def apply(
         self,
         conversation: Conversation,
@@ -970,6 +993,12 @@ class CompactionPipeline:
         conversation: Conversation,
         budget: ContextBudget,
     ) -> Conversation:
+        if not self.llm_summarization.should_compress(budget):
+            self.llm_summarization.record_threshold_skip(
+                budget,
+                source="pre_request",
+            )
+            return conversation
         self._hook_manager.execute(
             HookPoint.PRE_COMPACT,
             HookContext(

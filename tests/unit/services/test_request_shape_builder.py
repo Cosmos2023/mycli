@@ -815,6 +815,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "assistant",
         "tool",
         "user",
+        "user",
     ]
     assert "Stable system rules." in shape.provider_messages[0].content
     assert "Available skills:\n- code-review: Review code" in shape.provider_messages[0].content
@@ -822,6 +823,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "inspect README",
         "I will read README.",
         "README contents",
+        "Workspace root: /tmp/demo",
         "summarize the result\nRuntime reminders: use compact answers",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
@@ -829,6 +831,7 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         "user",
         "assistant",
         "tool",
+        "user",
         "user",
     ]
     assert all(message.role != "developer" for message in shape.provider_messages)
@@ -923,17 +926,22 @@ def test_request_shape_builder_puts_chat_static_context_in_system_prefix(
         "user",
         "assistant",
         "user",
+        "user",
     ]
     assert "Stable system rules." in shape.provider_messages[0].content
     assert "Use the tool schema attached to this request" in shape.provider_messages[0].content
     assert "<workspace-context>Use pytest.</workspace-context>" in shape.provider_messages[0].content
     assert "Available skills:" in shape.provider_messages[0].content
-    assert "<memory-context>Remember concise output.</memory-context>" in (
+    assert "<memory-context>Remember concise output.</memory-context>" not in (
         shape.provider_messages[0].content
     )
     assert "Runtime reminders:" not in shape.provider_messages[0].content
     assert shape.provider_messages[1].content == "inspect README"
     assert shape.provider_messages[2].content == "I will inspect README."
+    assert shape.provider_messages[3].content == (
+        "<memory-context>Remember concise output.</memory-context>"
+    )
+    assert shape.provider_messages[3].metadata["cache_class"] == "dynamic"
     assert shape.provider_messages[-1].content == (
         "summarize now\nRuntime reminders: current turn only"
     )
@@ -1010,20 +1018,23 @@ def test_request_shape_builder_uses_single_chat_system_snapshot_plus_transcript(
         "user",
         "assistant",
         "user",
+        "user",
     ]
     system = shape.provider_messages[0].content
     assert "Stable system rules." in system
     assert "Use the tool schema attached to this request" in system
     assert "<workspace-context>Use pytest.</workspace-context>" in system
     assert "Available skills:" in system
-    assert "<memory-context>Remember concise output.</memory-context>" in system
-    assert "Plan: update the report." in system
+    assert "<memory-context>Remember concise output.</memory-context>" not in system
+    assert "Plan: update the report." not in system
     assert "Runtime reminders: current turn only" not in system
     assert [message.content for message in shape.provider_messages[1:]] == [
         "inspect README",
         "I will inspect README.",
+        "<memory-context>Remember concise output.</memory-context>\nPlan: update the report.",
         "summarize now\nRuntime reminders: current turn only",
     ]
+    assert shape.provider_messages[3].metadata["cache_class"] == "dynamic"
     assert shape.provider_runtime_items[0].blocks == (
         RuntimeBlock(type="text", text=system),
     )
@@ -1032,7 +1043,111 @@ def test_request_shape_builder_uses_single_chat_system_snapshot_plus_transcript(
         "user",
         "assistant",
         "user",
+        "user",
     ]
+    assert shape.provider_runtime_items[3].metadata["cache_class"] == "dynamic"
+
+
+def test_request_shape_builder_keeps_chat_system_prefix_stable_for_dynamic_context_changes(
+    tmp_path: Path,
+) -> None:
+    builder = RequestShapeBuilder()
+    config = AgentConfig(
+        workspace_root=tmp_path,
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+    )
+
+    def contract(*, environment: str, memory: str, plan: str) -> InstructionContract:
+        return InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(
+                InstructionFragment(
+                    kind="tool_exposure",
+                    title="Tool exposure",
+                    content="Available tools: read_file",
+                ),
+            ),
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="workspace_instructions",
+                    title="Workspace",
+                    content="<workspace-context>Use pytest.</workspace-context>",
+                    metadata={"cache_class": "static"},
+                ),
+                InstructionFragment(
+                    kind="skill_catalog",
+                    title="Skill catalog",
+                    content="Available skills:\n- code-review: Review code",
+                    metadata={"cache_class": "static"},
+                ),
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content=environment,
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content=memory,
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="plan",
+                    title="Current plan",
+                    content=plan,
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="inspect README"),
+                Message(role="assistant", content="I will inspect README."),
+            ),
+            current_user_request="continue",
+        )
+
+    first = builder.build(
+        config=config,
+        contract=contract(
+            environment="Workspace root: /tmp/one",
+            memory="<memory-context>Remember one.</memory-context>",
+            plan="Plan: one.",
+        ),
+        tools=(_tool("read_file"),),
+    )
+    second = builder.build(
+        config=config,
+        contract=contract(
+            environment="Workspace root: /tmp/two",
+            memory="<memory-context>Remember two.</memory-context>",
+            plan="Plan: two.",
+        ),
+        tools=(_tool("read_file"),),
+    )
+
+    assert first.provider_messages[0].content == second.provider_messages[0].content
+    assert first.provider_messages[0].content_hash == second.provider_messages[0].content_hash
+    assert first.stable_system == second.stable_system
+    assert first.cacheable_prefix_hash() == second.cacheable_prefix_hash()
+    assert "Workspace root: /tmp/one" not in first.provider_messages[0].content
+    assert "Remember one" not in first.provider_messages[0].content
+    assert "Plan: one." not in first.provider_messages[0].content
+    assert first.provider_messages[3].content == "\n".join(
+        [
+            "Workspace root: /tmp/one",
+            "<memory-context>Remember one.</memory-context>",
+            "Plan: one.",
+        ]
+    )
+    assert second.provider_messages[3].content == "\n".join(
+        [
+            "Workspace root: /tmp/two",
+            "<memory-context>Remember two.</memory-context>",
+            "Plan: two.",
+        ]
+    )
 
 
 def test_request_shape_builder_keeps_chat_transcript_context_before_tool_followup(

@@ -43,25 +43,14 @@ def test_plan_mode_recovers_plan_state_from_anchor_file(tmp_path) -> None:
     )
 
 
-def test_plan_mode_recover_current_plan_preserves_existing_session_state(tmp_path) -> None:
-    service = PlanModeService(workspace_root=tmp_path)
-    existing = PlanState(
-        items=(PlanItem(id="live", content="Live plan", status=PlanStatus.IN_PROGRESS),)
-    )
-
-    recovered = service.recover_current_plan(existing)
-
-    assert recovered is existing
-
-
-def test_plan_mode_recover_current_plan_loads_anchor_when_session_is_empty(tmp_path) -> None:
+def test_plan_mode_load_current_plan_keeps_anchor_explicit(tmp_path) -> None:
     plan_path = tmp_path / "docs" / "tasks" / "current.md"
     plan_path.parent.mkdir(parents=True)
-    plan_path.write_text("# Current Plan\n\n- [ ] Recover this\n", encoding="utf-8")
+    plan_path.write_text("# Current Plan\n\n- [ ] Load this explicitly\n", encoding="utf-8")
     service = PlanModeService(workspace_root=tmp_path)
 
-    recovered = service.recover_current_plan(PlanState())
+    recovered = service.load_current_plan()
 
     assert recovered.items == (
-        PlanItem(id="step-1", content="Recover this", status=PlanStatus.PENDING),
+        PlanItem(id="step-1", content="Load this explicitly", status=PlanStatus.PENDING),
     )

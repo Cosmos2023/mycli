@@ -510,6 +510,11 @@ class ToolRuntimeDecision:
         }
         if self.effect is not None:
             payload["effect"] = self.effect.to_trace_payload()
+        if (
+            self.policy == "collaboration_mode"
+            and self.reason_code == "plan_mode_blocks_mutating_tool"
+        ):
+            payload["collaboration_mode"] = "plan"
         if self.execpolicy_rule is not None:
             payload.update(
                 self.execpolicy_rule.to_trace_payload(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import shlex
 from typing import Any
 
 from mycli.application.turn_service import TurnService
@@ -15,11 +16,13 @@ def handle_slash_command(command: str) -> str:
                 "/skills",
                 "/memory",
                 "/plan",
+                "/mode [default|plan]",
                 "/subagents",
                 "/trace",
                 "/trace-jsonl",
                 "/logs",
                 "/tools",
+                "/permissions",
                 "/hooks",
                 "/plugin",
                 "/toolsets",
@@ -30,6 +33,7 @@ def handle_slash_command(command: str) -> str:
                 "/resume <session>",
                 "/fork [source] <new-session> [message-index]",
                 "/status",
+                "/model <model> [--thinking-effort low|medium|high|xhigh]",
                 "/view [default|verbose|focus]",
                 "/stats",
                 "/context",
@@ -57,6 +61,8 @@ def build_command_handler(
             return [f"[skill] {line}" for line in service.inspect_skills()]
         if command == "/tools":
             return [f"[tool] {line}" for line in service.inspect_tools()]
+        if command == "/permissions":
+            return [f"[permission] {line}" for line in service.inspect_permissions()]
         if command == "/hooks":
             return [f"[hook] {line}" for line in service.inspect_hooks()]
         if command == "/toolsets":
@@ -81,7 +87,17 @@ def build_command_handler(
                 for line in service.run_plugin_command(parts[1], parts[2], raw_args)
             ]
         if command == "/plan":
-            return [f"[plan] {line}" for line in service.inspect_plan()]
+            mode_lines = service.set_collaboration_mode("plan")
+            plan_lines = service.inspect_plan()
+            return [
+                *(f"[mode] {line}" for line in mode_lines),
+                *(f"[plan] {line}" for line in plan_lines),
+            ]
+        if command == "/mode" or command.startswith("/mode "):
+            parts = command.split(maxsplit=1)
+            if len(parts) == 1:
+                return [f"[mode] {line}" for line in service.inspect_mode()]
+            return [f"[mode] {line}" for line in service.set_collaboration_mode(parts[1])]
         if command.startswith("/subagents"):
             parts = command.split(maxsplit=1)
             child_session_id = parts[1] if len(parts) > 1 else None
@@ -113,6 +129,18 @@ def build_command_handler(
             return [f"[search] {line}" for line in service.search_sessions(query)]
         if command == "/status":
             return [f"[status] {line}" for line in service.inspect_status()]
+        if command == "/model" or command.startswith("/model "):
+            try:
+                model, thinking_effort = _parse_model_command(command)
+            except ValueError as exc:
+                return [f"[model] {exc}"]
+            setter = getattr(service, "set_model_settings", None)
+            if not callable(setter):
+                return ["[model] runtime model switching is not available"]
+            return [
+                f"[model] {line}"
+                for line in setter(model=model, thinking_effort=thinking_effort)
+            ]
         if command.startswith("/view"):
             parts = command.split(maxsplit=1)
             if len(parts) == 1:
@@ -158,6 +186,36 @@ def build_command_handler(
         return [f"Unknown command: {command}"]
 
     return handle
+
+
+def _parse_model_command(command: str) -> tuple[str | None, str | None]:
+    parts = shlex.split(command)
+    if len(parts) == 1:
+        return None, None
+    if parts[0] != "/model":
+        raise ValueError("usage: /model <model> [--thinking-effort low|medium|high|xhigh]")
+    model: str | None = None
+    thinking_effort: str | None = None
+    index = 1
+    while index < len(parts):
+        part = parts[index]
+        if part == "--thinking-effort":
+            if index + 1 >= len(parts):
+                raise ValueError("--thinking-effort requires a value")
+            thinking_effort = parts[index + 1]
+            index += 2
+            continue
+        if part.startswith("--thinking-effort="):
+            thinking_effort = part.split("=", 1)[1]
+            index += 1
+            continue
+        if part.startswith("--"):
+            raise ValueError(f"unsupported option: {part}")
+        if model is not None:
+            raise ValueError("usage: /model <model> [--thinking-effort low|medium|high|xhigh]")
+        model = part
+        index += 1
+    return model, thinking_effort
 
 
 def run_repl(

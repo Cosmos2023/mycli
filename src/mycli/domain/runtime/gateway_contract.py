@@ -32,9 +32,13 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "approval.respond",
         "clarify.request",
         "clarify.respond",
+        "compaction.completed",
+        "compaction.started",
         "gateway.error",
         "message.complete",
         "message.delta",
+        "plan.proposed",
+        "plan.updated",
         "reasoning.delta",
         "runtime.event",
         "session.changed",
@@ -172,6 +176,16 @@ _TOOL_COMPLETION_REQUIRED = (
     "summary_truncated",
     "success",
 )
+_COMPACTION_BASE_PROPERTIES = {
+    "client_turn_id": _STRING,
+    "source": _STRING,
+    "before_tokens": _INTEGER,
+    "max_tokens": _INTEGER,
+}
+_COMPACTION_COMPLETED_STATUS = {
+    "type": "string",
+    "enum": ["compressed", "skipped", "failed"],
+}
 
 GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     "approval.request": _schema(
@@ -217,6 +231,29 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         required=("request_id", "response"),
         properties=_with_client_turn({"request_id": _STRING, "response": _STRING}),
     ),
+    "compaction.started": _schema(
+        "compaction.started",
+        required=("client_turn_id", "source", "before_tokens", "max_tokens"),
+        properties=_COMPACTION_BASE_PROPERTIES,
+    ),
+    "compaction.completed": _schema(
+        "compaction.completed",
+        required=(
+            "client_turn_id",
+            "source",
+            "status",
+            "before_tokens",
+            "after_tokens",
+            "max_tokens",
+            "duration_s",
+        ),
+        properties={
+            **_COMPACTION_BASE_PROPERTIES,
+            "status": _COMPACTION_COMPLETED_STATUS,
+            "after_tokens": _INTEGER,
+            "duration_s": _NUMBER,
+        },
+    ),
     "gateway.error": _schema(
         "gateway.error",
         required=("code", "message"),
@@ -235,6 +272,21 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         "message.delta",
         required=("text",),
         properties=_with_client_turn({"text": _STRING}),
+    ),
+    "plan.proposed": _schema(
+        "plan.proposed",
+        required=("client_turn_id", "text"),
+        properties=_with_client_turn(
+            {
+                "text": _STRING,
+                "source": _STRING,
+            }
+        ),
+    ),
+    "plan.updated": _schema(
+        "plan.updated",
+        required=("client_turn_id", "plan_steps"),
+        properties=_with_client_turn({"plan_steps": _ARRAY, "source": _STRING}),
     ),
     "reasoning.delta": _schema(
         "reasoning.delta",

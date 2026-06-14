@@ -10,9 +10,11 @@ from mycli.domain.conversation import Conversation, Message
 from mycli.domain.logging import LogLevel
 from mycli.domain.runtime import (
     AgentConfig,
+    CollaborationMode,
     DecisionAction,
     HistoryItem,
     HistoryItemType,
+    ReasoningEffort,
     RuntimeTraceEvent,
     RuntimeStreamEvent,
     TurnItemType,
@@ -252,6 +254,30 @@ class TurnService:
                 f"risk={risk} availability={status} approval={approval}"
             )
         return tuple(lines or ("no tools available",))
+
+    def inspect_permissions(self) -> tuple[str, ...]:
+        lines: list[str] = []
+        load_allowances = getattr(self._session_service, "load_command_allowances", None)
+        allowances = tuple(load_allowances(self._config.session_id)) if callable(load_allowances) else ()
+        if allowances:
+            lines.append(f"session_allowances={len(allowances)}")
+            lines.extend(f"allow_session pattern={pattern}" for pattern in allowances)
+        else:
+            lines.append("session_allowances=0")
+
+        rules = tuple(getattr(getattr(self._runtime, "_execpolicy_rules", None), "rules", ()))
+        if rules:
+            lines.append(f"execpolicy_rules={len(rules)}")
+            lines.extend(
+                "execpolicy "
+                f"source={getattr(rule.source, 'value', str(rule.source))} "
+                f"decision={getattr(rule.decision, 'value', str(rule.decision))} "
+                f"pattern_length={len(rule.pattern)}"
+                for rule in rules
+            )
+        else:
+            lines.append("execpolicy_rules=0")
+        return tuple(lines)
 
     def inspect_hooks(self) -> tuple[str, ...]:
         inspect = getattr(self._runtime, "inspect_hooks", None)
@@ -633,6 +659,20 @@ class TurnService:
     def inspect_view(self) -> tuple[str, ...]:
         return (f"view_mode={self._config.view_mode.value}",)
 
+    def inspect_mode(self) -> tuple[str, ...]:
+        return (f"collaboration_mode={self._config.collaboration_mode.value}",)
+
+    def set_collaboration_mode(self, mode: str) -> tuple[str, ...]:
+        try:
+            collaboration_mode = CollaborationMode(mode.strip().lower())
+        except ValueError:
+            allowed = ", ".join(item.value for item in CollaborationMode)
+            return (f"unsupported collaboration_mode={mode}; allowed={allowed}",)
+        self._config = replace(self._config, collaboration_mode=collaboration_mode)
+        if self._runtime is not None:
+            self._runtime.rebind_session(self._config)
+        return (f"collaboration_mode={collaboration_mode.value}",)
+
     def set_view_mode(self, mode: str) -> tuple[str, ...]:
         try:
             view_mode = ViewMode(mode.strip().lower())
@@ -643,6 +683,37 @@ class TurnService:
         if self._runtime is not None:
             self._runtime.rebind_session(self._config)
         return (f"view_mode={view_mode.value}",)
+
+    def set_model_settings(
+        self,
+        *,
+        model: str | None = None,
+        thinking_effort: str | None = None,
+    ) -> tuple[str, ...]:
+        model_value = model.strip() if isinstance(model, str) else None
+        if model_value == "":
+            model_value = None
+        reasoning_effort: ReasoningEffort | None = None
+        if thinking_effort is not None:
+            try:
+                reasoning_effort = ReasoningEffort(thinking_effort.strip().lower())
+            except ValueError:
+                allowed = ", ".join(item.value for item in ReasoningEffort)
+                return (f"unsupported thinking_effort={thinking_effort}; allowed={allowed}",)
+        updates: dict[str, object] = {}
+        if model_value is not None:
+            updates["model"] = model_value
+        if reasoning_effort is not None:
+            updates["reasoning_effort"] = reasoning_effort
+            updates["thinking_effort"] = reasoning_effort if self._config.thinking_enabled else None
+        if updates:
+            self._config = replace(self._config, **updates)
+            if self._runtime is not None:
+                self._runtime.rebind_session(self._config)
+        return (
+            f"model={self._config.model}",
+            f"thinking_effort={self._config.thinking_effort.value if self._config.thinking_effort is not None else 'off'}",
+        )
 
     def inspect_usage(self) -> tuple[str, ...]:
         turn_count = 0

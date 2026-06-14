@@ -44,6 +44,16 @@ class TurnContextAssembler:
                 scope=CanonicalTimelineScope.TRANSCRIPT,
             ),
             TurnContextSection(
+                type=TurnContextSectionType.COLLABORATION_MODE,
+                title="Collaboration mode",
+                content=context.config.collaboration_mode.value,
+                enabled=True,
+                source="runtime",
+                metadata={"mode": context.config.collaboration_mode.value},
+                cache_class=TurnContextCacheClass.STATIC,
+                scope=CanonicalTimelineScope.SESSION,
+            ),
+            TurnContextSection(
                 type=TurnContextSectionType.WORKSPACE_INSTRUCTIONS,
                 title="Workspace instructions",
                 content=workspace_content,

@@ -8,8 +8,11 @@ from mycli.domain.conversation import Message
 
 
 class InstructionFragmentKind(StrEnum):
+    COLLABORATION_MODE = "collaboration_mode"
     CONVERSATION_CONTEXT = "conversation_context"
+    PERMISSIONS = "permissions"
     MEMORY = "memory"
+    PERSONALITY = "personality"
     PLAN = "plan"
     COMPACTION_REHYDRATION = "compaction_rehydration"
     RUNTIME_REMINDERS = "runtime_reminders"

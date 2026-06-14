@@ -10,6 +10,7 @@ from mycli.domain.runtime import (
     ModelTurnResult,
     RuntimeBlock,
     RuntimeItem,
+    RuntimeStreamEvent,
     StopReason,
 )
 from mycli.domain.tooling.calls import ToolCall
@@ -301,6 +302,55 @@ def test_agent_runtime_l4_triggers_from_full_provider_request_budget(
     snapshot = runtime._observability_service.snapshot()
     assert snapshot.l4_last_decision == "summarize"
     assert snapshot.l4_last_source == "pre_request"
+
+
+def test_agent_runtime_emits_compaction_activity_before_continuing_model_turn(
+    tmp_path: Path,
+) -> None:
+    adapter = SummarizingDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="deepseek-v4-flash",
+            max_prompt_tokens=10_000,
+            compaction_l4_trigger_ratio=0.5,
+        )
+    )
+    conversation = Conversation(session_id=runtime._config.session_id)
+    for index in range(36):
+        conversation.append(
+            Message(
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("token " * 80),
+            )
+        )
+    runtime._session_service.save_conversation(conversation)
+    stream_events: list[RuntimeStreamEvent] = []
+
+    response = runtime.handle_user_turn(
+        "finish from the current context",
+        stream_sink=stream_events.append,
+    )
+
+    assert response.assistant_message == "done"
+    assert [event.kind for event in stream_events[:2]] == [
+        "compaction_started",
+        "compaction_completed",
+    ]
+    assert stream_events[0].metadata["source"] == "request_budget"
+    assert stream_events[1].metadata["status"] == "compressed"
+    assert stream_events[1].metadata["after_tokens"] < stream_events[1].metadata["before_tokens"]
+    assert adapter.main_requests
+    rendered_main_request = "\n".join(message.content for message in adapter.main_requests[0])
+    assert "Full-context L4 summary." in rendered_main_request
+    assert any(event.kind == "compaction" for event in response.activity_events)
 
 
 def test_agent_runtime_appends_followup_tools_to_compacted_conversation(

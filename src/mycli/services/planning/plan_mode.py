@@ -24,11 +24,6 @@ class PlanModeService:
             return PlanState()
         return self.parse_plan(self.plan_path.read_text(encoding="utf-8"))
 
-    def recover_current_plan(self, existing_state: PlanState | None = None) -> PlanState:
-        if existing_state is not None and existing_state.items:
-            return existing_state
-        return self.load_current_plan()
-
     def render_plan(self, state: PlanState) -> str:
         lines = ["# Current Plan", ""]
         for item in state.items:

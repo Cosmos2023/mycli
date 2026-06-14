@@ -629,6 +629,22 @@ class TurnExecutor:
                 budget=pre_compaction_budget,
                 source="pre_request",
             )
+            pre_compaction_started_at: float | None = None
+            if runtime._compaction_pipeline.llm_summarization.should_compress(
+                pre_compaction_budget
+            ):
+                pre_compaction_started_at = runtime._monotonic()
+                self._emit_compaction_event(
+                    stream_sink=stream_sink,
+                    activity_events=activity_events,
+                    event_kind="compaction_started",
+                    source="pre_request",
+                    before_tokens=pre_compaction_budget.total_tokens,
+                    after_tokens=None,
+                    max_tokens=pre_compaction_budget.max_tokens,
+                    status=None,
+                    duration_s=None,
+                )
             try:
                 conversation_for_model = runtime._compaction_pipeline.apply(
                     conversation,
@@ -646,6 +662,23 @@ class TurnExecutor:
                     activity_events=activity_events,
                     streamed_chunks=streamed_chunks,
                     progress_updates=progress_updates,
+                )
+            if pre_compaction_started_at is not None:
+                after_compaction_budget = runtime._estimate_window_budget(conversation_for_model)
+                self._emit_compaction_event(
+                    stream_sink=stream_sink,
+                    activity_events=activity_events,
+                    event_kind="compaction_completed",
+                    source="pre_request",
+                    before_tokens=pre_compaction_budget.total_tokens,
+                    after_tokens=after_compaction_budget.total_tokens,
+                    max_tokens=pre_compaction_budget.max_tokens,
+                    status=(
+                        "compressed"
+                        if conversation_for_model is not conversation_before_compaction
+                        else "skipped"
+                    ),
+                    duration_s=runtime._monotonic() - pre_compaction_started_at,
                 )
             runtime._record_compaction_metric(
                 before_messages=conversation_before_compaction,
@@ -723,6 +756,22 @@ class TurnExecutor:
                     budget=request_budget,
                     source="request_budget",
                 )
+                request_compaction_started_at: float | None = None
+                if runtime._compaction_pipeline.llm_summarization.should_compress(
+                    request_budget
+                ):
+                    request_compaction_started_at = runtime._monotonic()
+                    self._emit_compaction_event(
+                        stream_sink=stream_sink,
+                        activity_events=activity_events,
+                        event_kind="compaction_started",
+                        source="request_budget",
+                        before_tokens=request_budget.total_tokens,
+                        after_tokens=None,
+                        max_tokens=request_budget.max_tokens,
+                        status=None,
+                        duration_s=None,
+                    )
                 try:
                     conversation_for_model = runtime._compaction_pipeline.llm_summarization.apply(
                         conversation_for_model,
@@ -742,6 +791,25 @@ class TurnExecutor:
                         activity_events=activity_events,
                         streamed_chunks=streamed_chunks,
                         progress_updates=progress_updates,
+                    )
+                if request_compaction_started_at is not None:
+                    after_request_compaction_budget = runtime._estimate_window_budget(
+                        conversation_for_model
+                    )
+                    self._emit_compaction_event(
+                        stream_sink=stream_sink,
+                        activity_events=activity_events,
+                        event_kind="compaction_completed",
+                        source="request_budget",
+                        before_tokens=request_budget.total_tokens,
+                        after_tokens=after_request_compaction_budget.total_tokens,
+                        max_tokens=request_budget.max_tokens,
+                        status=(
+                            "compressed"
+                            if conversation_for_model is not conversation_before_request_compaction
+                            else "skipped"
+                        ),
+                        duration_s=runtime._monotonic() - request_compaction_started_at,
                     )
             if request_needs_l4 and conversation_for_model is not conversation_before_request_compaction:
                 runtime._record_compaction_metric(
@@ -1398,6 +1466,47 @@ class TurnExecutor:
                 ActivityEvent(kind="stream_sink_error", message="heartbeat sink failed")
             )
 
+    def _emit_compaction_event(
+        self,
+        *,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        activity_events: list[ActivityEvent],
+        event_kind: str,
+        source: str,
+        before_tokens: int,
+        after_tokens: int | None,
+        max_tokens: int,
+        status: str | None,
+        duration_s: float | None,
+    ) -> None:
+        message = _compaction_activity_message(
+            event_kind=event_kind,
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            status=status,
+            duration_s=duration_s,
+        )
+        activity_events.append(ActivityEvent(kind="compaction", message=message))
+        if stream_sink is None:
+            return
+        metadata: dict[str, object] = {
+            "source": source,
+            "before_tokens": before_tokens,
+            "max_tokens": max_tokens,
+        }
+        if after_tokens is not None:
+            metadata["after_tokens"] = after_tokens
+        if status is not None:
+            metadata["status"] = status
+        if duration_s is not None:
+            metadata["duration_s"] = duration_s
+        try:
+            stream_sink(RuntimeStreamEvent(kind=event_kind, metadata=metadata))
+        except Exception:
+            activity_events.append(
+                ActivityEvent(kind="stream_sink_error", message="compaction sink failed")
+            )
+
     def _finalize_interrupted_turn(
         self,
         *,
@@ -1707,6 +1816,31 @@ def _record_turn_interrupted(
         message="Interrupted turn state was saved for resume.",
         context=payload,
     )
+
+
+def _compaction_activity_message(
+    *,
+    event_kind: str,
+    before_tokens: int,
+    after_tokens: int | None,
+    status: str | None,
+    duration_s: float | None,
+) -> str:
+    if event_kind == "compaction_started":
+        return f"Compressing context ({before_tokens:,} tokens)"
+    duration = "" if duration_s is None else f" for {_format_seconds(duration_s)}"
+    if status == "failed":
+        return f"Context compression failed{duration}"
+    if status == "skipped":
+        return f"Context compression skipped{duration}"
+    if after_tokens is None:
+        return f"Context compressed{duration}"
+    return f"Context compressed{duration}: {before_tokens:,} -> {after_tokens:,} tokens"
+
+
+def _format_seconds(value: float) -> str:
+    rounded = round(value, 1) if value < 10 else round(value)
+    return f"{rounded:g} s"
 
 
 @dataclass(slots=True, frozen=True)

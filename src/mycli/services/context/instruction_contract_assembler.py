@@ -3,12 +3,19 @@ from __future__ import annotations
 from mycli.domain.conversation import Message
 from mycli.domain.runtime import (
     CanonicalTimelineDurability,
+    CollaborationMode,
     InstructionContract,
     InstructionFragment,
     InstructionFragmentKind,
     TurnContext,
     TurnContextSection,
     TurnContextSectionType,
+)
+from mycli.services.context.developer_instructions import (
+    DeveloperInstructionSection,
+    render_collaboration_mode,
+    render_permissions_instructions,
+    render_skills_instructions,
 )
 
 
@@ -29,6 +36,13 @@ class InstructionContractAssembler:
             if section.durability is CanonicalTimelineDurability.API_ONLY:
                 continue
             if section.type is TurnContextSectionType.BASE_INSTRUCTIONS:
+                continue
+            if section.type is TurnContextSectionType.COLLABORATION_MODE:
+                developer_sections.append(
+                    self._developer_instruction_fragment(
+                        render_collaboration_mode(self._collaboration_mode(section))
+                    )
+                )
                 continue
             if section.type is TurnContextSectionType.RUNTIME_REMINDERS:
                 contextual_user_sections.append(
@@ -87,6 +101,11 @@ class InstructionContractAssembler:
                 )
                 continue
             if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT:
+                permissions = render_permissions_instructions(section)
+                if permissions is not None:
+                    developer_sections.append(
+                        self._developer_instruction_fragment(permissions)
+                    )
                 contextual_user_sections.append(
                     self._directed_fragment(
                         section=section,
@@ -97,17 +116,11 @@ class InstructionContractAssembler:
                 )
                 continue
             if section.type is TurnContextSectionType.SKILL_CATALOG:
-                contextual_user_sections.append(
-                    self._directed_fragment(
-                        section=section,
-                        kind=InstructionFragmentKind.SKILL_CATALOG,
-                        include_in_memory=False,
-                        prefix=(
-                            "这是本轮可用的 skill 目录。目录只包含名称和描述；"
-                            "需要详细指令时，调用 Skill 工具加载对应 skill。"
-                        ),
+                skill_instructions = render_skills_instructions(section.content)
+                if skill_instructions is not None:
+                    developer_sections.append(
+                        self._developer_instruction_fragment(skill_instructions)
                     )
-                )
                 continue
             if section.type is TurnContextSectionType.USER_REQUEST:
                 current_user_request = turn_context.user_message
@@ -119,6 +132,32 @@ class InstructionContractAssembler:
             conversation_messages=conversation_messages,
             current_user_request=current_user_request,
             assistant_scaffold=assistant_scaffold,
+        )
+
+    def _collaboration_mode(self, section: TurnContextSection) -> CollaborationMode:
+        value = section.metadata.get("mode") or section.content
+        try:
+            return CollaborationMode(str(value).strip().lower())
+        except ValueError:
+            return CollaborationMode.DEFAULT
+
+    def _developer_instruction_fragment(
+        self,
+        section: DeveloperInstructionSection,
+    ) -> InstructionFragment:
+        metadata = dict(section.metadata)
+        metadata.setdefault("cache_class", section.cache_class.value)
+        metadata.setdefault("durability", CanonicalTimelineDurability.PERSISTENT.value)
+        metadata.setdefault("scope", "turn")
+        metadata.setdefault("model_visible", True)
+        metadata.setdefault("replayable", False)
+        return InstructionFragment(
+            kind=section.kind,
+            title=section.title,
+            content=section.content,
+            source=section.source,
+            metadata=metadata,
+            include_in_memory=False,
         )
 
     def _fragment(

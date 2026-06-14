@@ -42,6 +42,7 @@ from mycli.domain.runtime import (
     TurnStatus,
     ExecPolicyRuleSet,
     ToolRuntimeDecision,
+    ToolRuntimeDecisionKind,
     stable_hash,
 )
 from mycli.domain.logging import LogLevel
@@ -86,7 +87,7 @@ from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.application.runtime.tools.contributed_tool_provider import ToolContributionProvider
 from mycli.memory.service import MemoryService
-from mycli.services.planning import PlanModeService, PlanningService
+from mycli.services.planning import PlanningService
 from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.skills import SkillRegistry
@@ -354,6 +355,7 @@ class AgentRuntime:
             approval_service=self._approval_service,
             workspace_root=config.workspace_root,
             execpolicy_rules=self._execpolicy_rules,
+            collaboration_mode=config.collaboration_mode,
         )
         self._planning_effects = RuntimePlanningEffects(
             session_id=config.session_id,
@@ -494,7 +496,6 @@ class AgentRuntime:
             trace_service=self._trace_service,
             execpolicy_rules=self._execpolicy_rules,
         )
-        self._recover_plan_mode_anchor()
         self._closed = False
         self._execute_session_hook(HookPoint.SESSION_START)
 
@@ -528,20 +529,20 @@ class AgentRuntime:
     ) -> AgentRuntime:
         from mycli.tools.bash import BashTool
         from mycli.tools.edit import EditTool
-        from mycli.tools.file_snapshot import FileSnapshotStore
+        from mycli.services.filesystem import FileSystemRuntime
         from mycli.tools.grep import GrepTool
         from mycli.tools.ls import LSTool
         from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
         from mycli.tools.plan import PlanTool
         from mycli.tools.read import ReadTool
 
-        snapshot_store = FileSnapshotStore()
+        filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
         tool_registry = ToolRegistry.from_tools(
             [
                 LSTool(workspace_root),
-                ReadTool(workspace_root, snapshot_store=snapshot_store),
+                ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
                 GrepTool(workspace_root),
-                EditTool(workspace_root, snapshot_store=snapshot_store),
+                EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
                 BashTool(workspace_root),
                 PlanTool(),
                 EnterPlanModeTool(workspace_root),
@@ -559,13 +560,6 @@ class AgentRuntime:
     def _set_model_log_context(self, turn_id: str) -> None:
         self._model_state.set_config(self._config)
         self._model_state.set_log_context(turn_id)
-
-    def _recover_plan_mode_anchor(self) -> None:
-        plan_mode = PlanModeService(workspace_root=self._config.workspace_root)
-        existing = self._session_service.load_plan_state(self._config.session_id)
-        recovered = plan_mode.recover_current_plan(existing)
-        if recovered.items and not existing.items:
-            self._session_service.save_plan_state(self._config.session_id, recovered)
 
     def _set_model_runtime_event_recorder(self, turn_id: str) -> None:
         self._model_state.set_config(self._config)
@@ -1738,12 +1732,17 @@ class AgentRuntime:
         self,
         *,
         call: ToolCall,
+        tool_router: ToolRouter,
         tool_exposure: ToolExposure,
         turn_id: str,
     ) -> ToolRuntimeDecision | None:
-        del tool_exposure
-        decision = self._runtime_policy_gate.decide_execpolicy(call)
-        if decision is None:
+        effect_profile = tool_router.effect_profile(call, exposure=tool_exposure)
+        decision = self._runtime_policy_gate.decide(
+            call,
+            tool_exposure=tool_exposure,
+            effect_profile=effect_profile,
+        )
+        if decision.kind is ToolRuntimeDecisionKind.ALLOWED:
             return None
         self._trace_service.append(
             self._config.session_id,
@@ -1772,6 +1771,7 @@ class AgentRuntime:
         self._runtime_policy_gate.set_workspace_policy(
             workspace_root=config.workspace_root,
             execpolicy_rules=self._execpolicy_rules,
+            collaboration_mode=config.collaboration_mode,
         )
         self._request_pipeline.set_config(config)
         self._runtime_error_logger.set_config(config)

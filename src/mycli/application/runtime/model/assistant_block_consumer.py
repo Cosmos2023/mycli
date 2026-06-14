@@ -25,7 +25,10 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.domain.tooling.calls import ToolCall
-from mycli.application.runtime.tools.tool_execution_service import CONCURRENCY_SAFE_TOOLS
+from mycli.application.runtime.tools.tool_execution_service import (
+    CONCURRENCY_SAFE_TOOLS,
+    runtime_policy_denial_message,
+)
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.tracing import TraceService
 from mycli.state.session_service import SessionService
@@ -274,6 +277,7 @@ class AssistantBlockConsumer:
                 ):
                     runtime_decision = self._runtime_policy_decision(
                         call=tool_call,
+                        tool_router=tool_router,
                         tool_exposure=tool_exposure,
                         turn_id=turn_id,
                     )
@@ -572,7 +576,7 @@ class AssistantBlockConsumer:
     ] | None:
         if runtime_decision.kind is ToolRuntimeDecisionKind.DENIED:
             flush_pending_safe_tool_calls()
-            warning_message = "Denied: Tool denied by runtime policy."
+            warning_message = f"Denied: {runtime_policy_denial_message(runtime_decision)}"
             self._append_turn_item(
                 turn_id=turn_id,
                 turn_items=turn_items,

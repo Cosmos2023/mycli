@@ -30,10 +30,15 @@ class RuntimePlanningEffects:
     ) -> PlanState:
         if call.name != "Plan":
             return plan_state
-        items = result_payload.get("items", [])
-        if not isinstance(items, list):
-            return plan_state
-        next_plan = self._planning_service.replace(items)
+        if "op" in result_payload:
+            next_plan = self._planning_service.apply_operation(plan_state, result_payload)
+        else:
+            items = result_payload.get("items")
+            if not isinstance(items, list):
+                items = result_payload.get("plan")
+            if not isinstance(items, list):
+                return plan_state
+            next_plan = self._planning_service.replace(items)
         self._session_service.save_plan_state(self._session_id, next_plan)
         return next_plan
 

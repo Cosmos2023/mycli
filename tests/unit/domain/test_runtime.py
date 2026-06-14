@@ -116,7 +116,9 @@ def test_compaction_rehydration_types_are_exported() -> None:
     assert context.invoked_skills[0].name == "code-review"
     assert RehydrationBudget(max_total_tokens=10, max_item_tokens=5).max_item_tokens == 5
     assert FileRehydrationCandidate(path="src/app.py", tool_name="Edit", sequence=1).kind == "edit"
+    assert TurnContextSectionType.COLLABORATION_MODE == "collaboration_mode"
     assert TurnContextSectionType.COMPACTION_REHYDRATION == "compaction_rehydration"
+    assert InstructionFragmentKind.COLLABORATION_MODE == "collaboration_mode"
     assert InstructionFragmentKind.COMPACTION_REHYDRATION == "compaction_rehydration"
 
 

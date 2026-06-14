@@ -15,6 +15,7 @@ class PlanItem:
     id: str
     content: str
     status: PlanStatus = PlanStatus.PENDING
+    evidence: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(slots=True, frozen=True)
@@ -35,6 +36,7 @@ class PlanState:
                     id=item.id,
                     content=item.content,
                     status=status if item.id == item_id else item.status,
+                    evidence=item.evidence,
                 )
                 for item in self.items
             )

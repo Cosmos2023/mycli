@@ -23,6 +23,7 @@ from mycli.domain.runtime import (
     ActivityEvent,
     AgentConfig,
     BaselineFragment,
+    CollaborationMode,
     ContextBaseline,
     HistoryItem,
     HistoryItemType,
@@ -315,6 +316,71 @@ def test_agent_runtime_requires_approval_for_medium_risk_write_when_strict(
 
     assert resumed.assistant_message == "Write finished."
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_agent_runtime_plan_mode_denies_mutating_tool_without_approval(
+    tmp_path: Path,
+) -> None:
+    class WriteThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(
+                                RuntimeBlock(
+                                    type="tool_call",
+                                    tool_name="Write",
+                                    tool_arguments={
+                                        "file_path": "notes.txt",
+                                        "content": "hello\n",
+                                    },
+                                    call_id="call_write_1",
+                                ),
+                            ),
+                        ),
+                    ),
+                    done=False,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Plan mode stayed read-only."),),
+                    ),
+                ),
+                done=True,
+            )
+
+    runtime = AgentRuntime(
+        model_adapter=WriteThenDoneAdapter(),
+        tool_registry=ToolRegistry.from_tools([WriteTool(tmp_path)]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            collaboration_mode=CollaborationMode.PLAN,
+            auto_approve_medium=False,
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    response = runtime.handle_user_turn("write notes")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == (
+        "Denied: Plan mode is read-only; blocked Write. Switch to /mode default to allow mutating tools."
+    )
+    assert not (tmp_path / "notes.txt").exists()
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "denied"
+    assert policy_trace.payload["policy"] == "collaboration_mode"
+    assert policy_trace.payload["reason_code"] == "plan_mode_blocks_mutating_tool"
 
 
 def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(
@@ -2700,14 +2766,94 @@ class ProviderStylePlanThenDoneAdapter:
         )()
 
 
+class CodexStylePlanThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_action(self, *, messages, tools):
+        del messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return type(
+                "Action",
+                (),
+                {
+                    "assistant_message": None,
+                    "progress_message": "Updating the plan",
+                    "tool_call": ToolCall(
+                        name="Plan",
+                        arguments={
+                            "plan": [
+                                {"step": "Map runtime state", "status": "completed"},
+                                {"step": "Render active plan", "status": "in_progress"},
+                            ]
+                        },
+                        reason="track progress explicitly",
+                    ),
+                    "done": False,
+                },
+            )()
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": "Plan recorded",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
+class PartialPlanUpdateThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_action(self, *, messages, tools):
+        del messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return type(
+                "Action",
+                (),
+                {
+                    "assistant_message": None,
+                    "progress_message": "Updating the plan",
+                    "tool_call": ToolCall(
+                        name="Plan",
+                        arguments={
+                            "op": "update",
+                            "item_id": "verify",
+                            "status": "in_progress",
+                            "content": "Run focused tests",
+                            "evidence": ["pytest targeted tests"],
+                        },
+                        reason="track progress explicitly",
+                    ),
+                    "done": False,
+                },
+            )()
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": "Plan recorded",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
 def test_agent_runtime_applies_update_plan_tool_and_returns_plan_steps(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
         model_adapter=PlanThenDoneAdapter(),
     )
+    events = []
 
-    response = runtime.handle_user_turn("plan the repository analysis")
+    response = runtime.handle_user_turn("plan the repository analysis", stream_sink=events.append)
     stored = runtime._session_service.load_plan_state(runtime._config.session_id)
 
     assert response.assistant_message == "Plan recorded"
@@ -2716,6 +2862,44 @@ def test_agent_runtime_applies_update_plan_tool_and_returns_plan_steps(tmp_path:
         "pending: Summarize the findings",
     )
     assert stored.items[0].status is PlanStatus.IN_PROGRESS
+    plan_event = next(event for event in events if event.kind == "plan_updated")
+    assert plan_event.metadata == {
+        "plan_steps": [
+            "in_progress: Inspect the repository layout",
+            "pending: Summarize the findings",
+        ],
+        "plan": {
+            "items": [
+                {
+                    "id": "inspect",
+                    "text": "Inspect the repository layout",
+                    "status": "in_progress",
+                },
+                {
+                    "id": "summarize",
+                    "text": "Summarize the findings",
+                    "status": "pending",
+                },
+            ],
+        },
+        "source": "Plan",
+    }
+
+
+def test_agent_runtime_does_not_recover_plan_anchor_for_new_session(tmp_path: Path) -> None:
+    plan_path = tmp_path / "docs" / "tasks" / "current.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Current Plan\n\n- [~] Old workspace plan\n", encoding="utf-8")
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PlanThenDoneAdapter(),
+    )
+
+    stored = runtime._session_service.load_plan_state(runtime._config.session_id)
+
+    assert stored == PlanState()
 
 
 def test_agent_runtime_accepts_provider_style_update_plan_payload(tmp_path: Path) -> None:
@@ -2735,6 +2919,68 @@ def test_agent_runtime_accepts_provider_style_update_plan_payload(tmp_path: Path
         "pending: Run smoke validation",
     )
     assert tuple(item.id for item in stored.items) == ("step-1", "step-2", "step-3")
+
+
+def test_agent_runtime_accepts_codex_style_plan_payload(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=CodexStylePlanThenDoneAdapter(),
+    )
+
+    response = runtime.handle_user_turn("record a codex style plan")
+    stored = runtime._session_service.load_plan_state(runtime._config.session_id)
+
+    assert response.assistant_message == "Plan recorded"
+    assert response.plan_steps == (
+        "completed: Map runtime state",
+        "in_progress: Render active plan",
+    )
+    assert tuple(item.id for item in stored.items) == ("step-1", "step-2")
+
+
+def test_agent_runtime_applies_partial_plan_update_without_dropping_items(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PartialPlanUpdateThenDoneAdapter(),
+    )
+    runtime._session_service.save_plan_state(
+        runtime._config.session_id,
+        PlanState(
+            items=(
+                PlanItem(id="inspect", content="Inspect repo", status=PlanStatus.IN_PROGRESS),
+                PlanItem(id="verify", content="Run tests", status=PlanStatus.PENDING),
+            )
+        ),
+    )
+
+    events = []
+    response = runtime.handle_user_turn("update current plan", stream_sink=events.append)
+    stored = runtime._session_service.load_plan_state(runtime._config.session_id)
+
+    assert response.assistant_message == "Plan recorded"
+    assert response.plan_steps == (
+        "pending: Inspect repo",
+        "in_progress: Run focused tests",
+    )
+    assert stored.items[1].evidence == ("pytest targeted tests",)
+    plan_event = next(event for event in events if event.kind == "plan_updated")
+    assert plan_event.metadata["plan"] == {
+        "items": [
+            {
+                "id": "inspect",
+                "text": "Inspect repo",
+                "status": "pending",
+            },
+            {
+                "id": "verify",
+                "text": "Run focused tests",
+                "status": "in_progress",
+                "evidence": ["pytest targeted tests"],
+            },
+        ],
+    }
 
 
 class SkillCaptureAdapter:

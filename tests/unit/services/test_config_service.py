@@ -1,8 +1,9 @@
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
-from mycli.domain.runtime import ProviderCachePolicyCapability, ViewMode
+from mycli.domain.runtime import CollaborationMode, ProviderCachePolicyCapability, ViewMode
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.config.settings import resolve_config
 
@@ -49,6 +50,41 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
     assert config.max_prompt_tokens == 5000
     assert config.compression_threshold_tokens == 3200
     assert config.max_output_tokens == 1500
+
+
+def test_resolve_config_generates_new_session_when_cli_session_is_omitted(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.session_id != "default"
+    assert str(UUID(config.session_id)) == config.session_id
+
+
+def test_resolve_config_keeps_explicit_cli_session(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.session_id == "demo"
 
 
 def test_resolve_config_reads_compaction_l4_settings(tmp_path: Path) -> None:
@@ -256,6 +292,40 @@ def test_config_service_reads_cli_view_settings(tmp_path: Path) -> None:
 
     assert config.view_mode is ViewMode.FOCUS
     assert config.statusline_enabled is False
+
+
+def test_config_service_reads_collaboration_mode(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    config_path = workspace / ".mycli" / "config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text('collaboration_mode = "plan"\n', encoding="utf-8")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.collaboration_mode is CollaborationMode.PLAN
+
+
+def test_config_service_rejects_unknown_collaboration_mode(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="Unsupported collaboration_mode"):
+        resolve_config(
+            cli_args={"session": "demo"},
+            env={"MYCLI_COLLABORATION_MODE": "execute"},
+            cwd=workspace,
+            home=home_dir,
+        )
 
 
 def test_config_service_reads_tui_startup_mark(tmp_path: Path) -> None:

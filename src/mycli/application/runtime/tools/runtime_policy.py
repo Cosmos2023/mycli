@@ -4,6 +4,7 @@ from pathlib import Path
 import shlex
 
 from mycli.domain.runtime import (
+    CollaborationMode,
     ExecPolicyRuleSet,
     ExecutionPolicy,
     SandboxProfile,
@@ -29,10 +30,12 @@ class RuntimePolicyGate:
         approval_service: ApprovalService,
         workspace_root: Path | None = None,
         execpolicy_rules: ExecPolicyRuleSet | None = None,
+        collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
     ) -> None:
         self._approval_service = approval_service
         self._workspace_root = workspace_root
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
+        self._collaboration_mode = collaboration_mode
 
     def default_policy(self) -> ExecutionPolicy:
         root = self._workspace_root or Path.cwd()
@@ -43,9 +46,12 @@ class RuntimePolicyGate:
         *,
         workspace_root: Path,
         execpolicy_rules: ExecPolicyRuleSet,
+        collaboration_mode: CollaborationMode | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._execpolicy_rules = execpolicy_rules
+        if collaboration_mode is not None:
+            self._collaboration_mode = collaboration_mode
 
     def decide(
         self,
@@ -57,6 +63,13 @@ class RuntimePolicyGate:
     ) -> ToolRuntimeDecision:
         resolved_policy = policy or self.default_policy()
         runtime_effect = _runtime_effect(effect_profile)
+        collaboration_decision = self._collaboration_mode_decision(
+            call=call,
+            sandbox=resolved_policy.sandbox,
+            effect=runtime_effect,
+        )
+        if collaboration_decision is not None:
+            return collaboration_decision
         sandbox_decision = self._sandbox_decision(
             call=call,
             sandbox=resolved_policy.sandbox,
@@ -204,6 +217,33 @@ class RuntimePolicyGate:
                 continue
             return entry.source in {ToolRouteSource.RUNTIME, ToolRouteSource.PROVIDER}
         return False
+
+    def _collaboration_mode_decision(
+        self,
+        *,
+        call: ToolCall,
+        sandbox: SandboxProfile,
+        effect: ToolRuntimeEffect | None,
+    ) -> ToolRuntimeDecision | None:
+        if self._collaboration_mode is not CollaborationMode.PLAN:
+            return None
+        if effect is None:
+            return None
+        if (
+            effect.filesystem in {"write", "unknown"}
+            or effect.network
+            or effect.process
+            or call.name in SHELL_TOOL_NAMES
+        ):
+            return ToolRuntimeDecision.denied(
+                tool_call=call,
+                policy="collaboration_mode",
+                risk_level="medium",
+                reason_code="plan_mode_blocks_mutating_tool",
+                sandbox=sandbox,
+                effect=effect,
+            )
+        return None
 
 
 def _metadata_string(value: object) -> str | None:

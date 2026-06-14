@@ -18,6 +18,7 @@ from mycli.llms.clients.anthropic_messages import AnthropicMessagesClient
 from mycli.llms.clients.openai_chat import OpenAIChatClient
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.services.storage_layout import MycliStorageLayout
+from mycli.services.filesystem import FileSystemRuntime
 from mycli.services.mcp import (
     McpClient,
     McpToolAdapter,
@@ -29,7 +30,6 @@ from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.bash import BashTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.edit import EditTool
-from mycli.tools.file_snapshot import FileSnapshotStore
 from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
 from mycli.tools.glob import GlobTool
 from mycli.tools.grep import GrepTool
@@ -110,13 +110,13 @@ def build_turn_service(
                 log_service=workspace_log_service,
             ),
         )
-    snapshot_store = FileSnapshotStore()
+    filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
     tool_registry = ToolRegistry.from_tools(
         [
-            ReadTool(workspace_root, snapshot_store=snapshot_store),
-            EditTool(workspace_root, snapshot_store=snapshot_store),
-            PatchTool(workspace_root, snapshot_store=snapshot_store),
-            WriteTool(workspace_root),
+            ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
+            EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
+            PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
+            WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
             GrepTool(workspace_root),
             GlobTool(workspace_root),
             LSTool(workspace_root),

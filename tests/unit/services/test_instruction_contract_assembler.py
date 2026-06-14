@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
     AgentConfig,
     CanonicalTimelineDurability,
     CanonicalTimelineScope,
+    CollaborationMode,
     CompactionRehydrationContext,
     ExecutionContext,
     PlanItem,
@@ -64,17 +65,29 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
 
     assert contract.base_instructions == "You are mycli."
     assert [section.kind for section in contract.developer_sections] == [
+        "collaboration_mode",
+        "permissions",
+        "skill_catalog",
         "tool_exposure",
     ]
-    assert "本轮只使用已暴露且可调用的工具" in contract.developer_sections[0].content
-    assert "所有工具都属于同一个平等工具集" in contract.developer_sections[0].content
-    assert "direct/deferred" not in contract.developer_sections[0].content
-    assert "动态工具" not in contract.developer_sections[0].content
+    collaboration_fragment = contract.developer_sections[0]
+    assert "<collaboration_mode>" in collaboration_fragment.content
+    assert "Collaboration Mode: Default" in collaboration_fragment.content
+    permissions_fragment = contract.developer_sections[1]
+    assert "<permissions instructions>" in permissions_fragment.content
+    assert "filesystem:" in permissions_fragment.content
+    skill_fragment = contract.developer_sections[2]
+    assert "<skills_instructions>" in skill_fragment.content
+    assert "code-review" in skill_fragment.content
+    tool_fragment = contract.developer_sections[3]
+    assert "本轮只使用已暴露且可调用的工具" in tool_fragment.content
+    assert "所有工具都属于同一个平等工具集" in tool_fragment.content
+    assert "direct/deferred" not in tool_fragment.content
+    assert "动态工具" not in tool_fragment.content
     assert [fragment.kind for fragment in contract.contextual_user_sections] == [
         "workspace_instructions",
         "environment_context",
         "runtime_reminders",
-        "skill_catalog",
     ]
     assert contract.current_user_request == "inspect this repo with $repository-analysis"
     assert contract.contextual_user_sections[0].include_in_memory is False
@@ -86,13 +99,60 @@ def test_instruction_contract_assembler_layers_turn_context_into_base_developer_
         if fragment.kind == "runtime_reminders"
     )
     assert "Prefer source files before logs." in reminder_fragment.content
-    skill_catalog_fragment = next(
-        fragment
-        for fragment in contract.contextual_user_sections
-        if fragment.kind == "skill_catalog"
+
+
+def test_instruction_contract_assembler_promotes_skill_catalog_to_developer_instructions() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="review this repo",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            skill_catalog="Available skills:\n- code-review: Review code",
+        ),
     )
-    assert "调用 Skill 工具" in skill_catalog_fragment.content
-    assert "code-review" in skill_catalog_fragment.content
+
+    contract = InstructionContractAssembler().assemble(
+        turn_context=turn_context,
+        base_instructions="You are mycli.",
+        conversation_messages=(),
+    )
+
+    skill_fragment = next(
+        fragment for fragment in contract.developer_sections if fragment.kind == "skill_catalog"
+    )
+    assert "<skills_instructions>" in skill_fragment.content
+    assert "Skill tool" in skill_fragment.content
+    assert "code-review" in skill_fragment.content
+    assert not any(
+        fragment.kind == "skill_catalog"
+        for fragment in contract.contextual_user_sections
+    )
+
+
+def test_instruction_contract_assembler_uses_configured_plan_collaboration_mode() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="plan this change",
+        context=ExecutionContext(
+            config=AgentConfig(
+                workspace_root=Path("/tmp/workspace"),
+                collaboration_mode=CollaborationMode.PLAN,
+            ),
+        ),
+    )
+
+    contract = InstructionContractAssembler().assemble(
+        turn_context=turn_context,
+        base_instructions="You are mycli.",
+        conversation_messages=(),
+    )
+
+    mode_fragment = next(
+        fragment
+        for fragment in contract.developer_sections
+        if fragment.kind == "collaboration_mode"
+    )
+    assert mode_fragment.metadata["mode"] == "plan"
+    assert "Collaboration Mode: Plan" in mode_fragment.content
+    assert "Not allowed actions:" in mode_fragment.content
 
 
 def test_instruction_contract_assembler_excludes_api_only_sections_from_model_context() -> None:

@@ -25,6 +25,7 @@ def test_render_skill_catalog_lists_names_and_descriptions(tmp_path: Path) -> No
 
     assert "Available skills:" in catalog
     assert "- code-review: Review code for correctness risks" in catalog
+    assert f"(file: {builtin / 'code-review.md'})" in catalog
     assert "Body is not part of catalog" not in catalog
     assert "Use the Skill tool" in catalog
 

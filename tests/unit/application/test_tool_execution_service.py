@@ -12,6 +12,7 @@ from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import (
+    CollaborationMode,
     ExecutionPolicy,
     ExecPolicyDecision,
     ExecPolicyRule,
@@ -392,6 +393,120 @@ def test_tool_execution_service_runtime_policy_denial_blocks_execution(
     assert policy_trace.payload["tool_name"] == "Write"
     assert policy_trace.payload["argument_keys"] == ["content", "file_path"]
     assert "outside.txt" not in str(policy_trace.payload)
+
+
+def test_runtime_policy_gate_plan_mode_denies_mutating_tools_and_allows_read_only(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        collaboration_mode=CollaborationMode.PLAN,
+    )
+
+    write_decision = gate.decide(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "hello\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="write"),
+    )
+    read_decision = gate.decide(
+        ToolCall(
+            name="Read",
+            arguments={"file_path": "notes.txt"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert write_decision.kind.value == "denied"
+    assert write_decision.policy == "collaboration_mode"
+    assert write_decision.reason_code == "plan_mode_blocks_mutating_tool"
+    assert write_decision.to_trace_payload()["collaboration_mode"] == "plan"
+    assert read_decision.kind.value == "allowed"
+
+
+def test_runtime_policy_gate_workspace_policy_update_refreshes_collaboration_mode(
+    tmp_path: Path,
+) -> None:
+    call = ToolCall(
+        name="Write",
+        arguments={"file_path": "notes.txt", "content": "hello\n"},
+        reason="write",
+        call_id="call_write_1",
+    )
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(
+            SafetyPolicy(workspace_root=tmp_path, auto_approve_medium=True),
+        ),
+        workspace_root=tmp_path,
+    )
+
+    assert gate.decide(call, effect_profile=ToolEffectProfile(filesystem="write")).kind.value == "allowed"
+
+    gate.set_workspace_policy(
+        workspace_root=tmp_path,
+        execpolicy_rules=ExecPolicyRuleSet(),
+        collaboration_mode=CollaborationMode.PLAN,
+    )
+
+    decision = gate.decide(call, effect_profile=ToolEffectProfile(filesystem="write"))
+    assert decision.kind.value == "denied"
+    assert decision.policy == "collaboration_mode"
+
+
+def test_tool_execution_service_plan_mode_denial_uses_actionable_summary(
+    tmp_path: Path,
+) -> None:
+    write_tool = WriteTool(tmp_path)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+            workspace_root=tmp_path,
+            collaboration_mode=CollaborationMode.PLAN,
+        ),
+        registry=ToolRegistry.from_tools([write_tool]),
+    )
+    conversation = Conversation(session_id="demo")
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "notes.txt", "content": "hello\n"},
+            reason="write",
+            call_id="call_write_1",
+        ),
+        tool_router=service._test_router,  # type: ignore[attr-defined]
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+    )
+
+    assert not (tmp_path / "notes.txt").exists()
+    assert "Plan mode is read-only; blocked Write" in conversation.messages[-1].content
+    assert turn_items[-1].metadata["summary"] == (
+        "Plan mode is read-only; blocked Write. "
+        "Switch to /mode default to allow mutating tools."
+    )
+    assert turn_items[-1].metadata["raw_payload"]["runtime_policy"]["collaboration_mode"] == "plan"
 
 
 def test_tool_execution_service_sandbox_read_only_blocks_write_tool(

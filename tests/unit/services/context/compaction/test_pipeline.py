@@ -599,6 +599,47 @@ class TestLLMSummarization:
 
 
 class TestCompactionPipeline:
+    def test_pipeline_skips_pruning_below_compression_threshold(self) -> None:
+        pipeline = CompactionPipeline(
+            tool_result_budget=ToolResultBudget(
+                ToolResultFormatter(read_file_max_chars=80)
+            ),
+            cheap_pruning=CheapPruning(protected_tail_messages=1, tool_result_max_chars=80),
+            context_window_analyzer=ContextWindowAnalyzer(
+                dedup_trigger_ratio=0.01,
+                eviction_trigger_ratio=0.1,
+                keep_recent_tool_results=1,
+            ),
+            llm_summarization=LLMSummarization(trigger_ratio=0.9),
+            token_counter=TokenCounter(),
+        )
+        budget = ContextBudget(max_tokens=1000)
+        budget.record({"total_tokens": 500})
+        conversation = Conversation(
+            session_id="test",
+            messages=[
+                Message(role="user", content="inspect", metadata={"cache_policy": "DYNAMIC"}),
+                _tool_msg(
+                    "old1",
+                    tool_name="read_file",
+                    path="/big.py",
+                    content="x = 1\n" * 400,
+                    summary="Read big.py",
+                ),
+                Message(role="assistant", content="done", metadata={"cache_policy": "DYNAMIC"}),
+            ],
+        )
+
+        result = pipeline.apply(conversation, budget)
+
+        assert result is conversation
+        assert result.messages[1].content == "x = 1\n" * 400
+        assert "append_only" not in result.messages[1].metadata
+        assert "cheap_pruned" not in result.messages[1].metadata
+        assert pipeline.last_context_window_metrics is None
+        assert pipeline.llm_summarization.last_cost_metrics is not None
+        assert pipeline.llm_summarization.last_cost_metrics["decision"] == "skip_threshold"
+
     def test_pipeline_applies_strategies_in_order(self) -> None:
         pipeline = CompactionPipeline(
             tool_result_budget=ToolResultBudget(ToolResultFormatter()),
@@ -607,10 +648,10 @@ class TestCompactionPipeline:
                 eviction_trigger_ratio=0.1,
                 keep_recent_tool_results=2,
             ),
-            llm_summarization=LLMSummarization(trigger_ratio=0.99),
+            llm_summarization=LLMSummarization(trigger_ratio=0.5),
         )
         budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 500})
+        budget.record({"total_tokens": 900})
         conversation = Conversation(
             session_id="test",
             messages=[
@@ -645,11 +686,11 @@ class TestCompactionPipeline:
                 eviction_trigger_ratio=0.1,
                 keep_recent_tool_results=2,
             ),
-            llm_summarization=LLMSummarization(trigger_ratio=0.99),
+            llm_summarization=LLMSummarization(trigger_ratio=0.5),
             hook_manager=hook_manager,
         )
         budget = ContextBudget(max_tokens=1000)
-        budget.record({"total_tokens": 500})
+        budget.record({"total_tokens": 900})
         conversation = Conversation(
             session_id="test",
             messages=[Message(role="user", content="hi", metadata={"cache_policy": "DYNAMIC"})],

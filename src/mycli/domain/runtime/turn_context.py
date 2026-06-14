@@ -12,6 +12,7 @@ from mycli.domain.runtime.canonical_timeline import (
 
 class TurnContextSectionType(StrEnum):
     BASE_INSTRUCTIONS = "base_instructions"
+    COLLABORATION_MODE = "collaboration_mode"
     WORKSPACE_INSTRUCTIONS = "workspace_instructions"
     ENVIRONMENT_CONTEXT = "environment_context"
     CONVERSATION_CONTEXT = "conversation_context"

@@ -338,6 +338,18 @@ class RequestShapeBuilder:
                     source_content=message.content,
                 )
                 messages.append(provider_message)
+        dynamic_context = self._transcript_dynamic_context(contract)
+        if dynamic_context:
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=dynamic_context,
+                    metadata={
+                        "cache_class": "dynamic",
+                        "source": "provider_transcript_projection",
+                    },
+                )
+            )
         compaction_rehydration = self._transcript_compaction_rehydration_context(contract)
         if compaction_rehydration:
             messages.append(
@@ -610,6 +622,18 @@ class RequestShapeBuilder:
                     contract=contract,
                 )
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        dynamic_context = self._transcript_dynamic_context(contract)
+        if dynamic_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=dynamic_context),),
+                    metadata={
+                        "cache_class": "dynamic",
+                        "source": "provider_transcript_projection",
+                    },
+                )
+            )
         compaction_rehydration = self._transcript_compaction_rehydration_context(contract)
         if compaction_rehydration:
             items.append(
@@ -720,12 +744,33 @@ class RequestShapeBuilder:
         self,
         section: InstructionFragment,
     ) -> bool:
+        if self._cache_class(section) != "static":
+            return False
+        return str(section.kind) in {
+            "skill_catalog",
+            "workspace_instructions",
+        }
+
+    def _transcript_dynamic_context(
+        self,
+        contract: InstructionContract,
+    ) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) == "dynamic"
+            if str(section.kind) != "compaction_rehydration"
+            if self._transcript_dynamic_section_is_model_visible(section)
+        )
+
+    def _transcript_dynamic_section_is_model_visible(
+        self,
+        section: InstructionFragment,
+    ) -> bool:
         return str(section.kind) in {
             "environment_context",
             "memory",
             "plan",
-            "skill_catalog",
-            "workspace_instructions",
         }
 
     def _current_user_api_content(self, contract: InstructionContract) -> str:

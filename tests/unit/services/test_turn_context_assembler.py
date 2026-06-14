@@ -109,6 +109,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
 
     assert [section.type for section in turn_context.sections] == [
         TurnContextSectionType.BASE_INSTRUCTIONS,
+        TurnContextSectionType.COLLABORATION_MODE,
         TurnContextSectionType.WORKSPACE_INSTRUCTIONS,
         TurnContextSectionType.ENVIRONMENT_CONTEXT,
         TurnContextSectionType.CONVERSATION_CONTEXT,
@@ -120,7 +121,18 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         TurnContextSectionType.TOOL_EXPOSURE,
         TurnContextSectionType.USER_REQUEST,
     ]
-    assert turn_context.sections[1].enabled is True
+    workspace_section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.WORKSPACE_INSTRUCTIONS
+    )
+    collaboration_section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.COLLABORATION_MODE
+    )
+    assert workspace_section.enabled is True
+    assert collaboration_section.content == "default"
     skill_catalog_section = next(
         section
         for section in turn_context.sections
@@ -139,6 +151,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
     assert "workspace_summary" in tool_exposure_section.content
     assert turn_context.debug_summary()["enabled_sections"] == [
         "base_instructions",
+        "collaboration_mode",
         "workspace_instructions",
         "environment_context",
         "conversation_context",
@@ -150,6 +163,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
     ]
     assert turn_context.debug_summary()["cache_classes"] == {
         "base_instructions": "static",
+        "collaboration_mode": "static",
         "workspace_instructions": "static",
         "environment_context": "dynamic",
         "conversation_context": "dynamic",
@@ -163,6 +177,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
     }
     assert turn_context.debug_summary()["scopes"] == {
         "base_instructions": "transcript",
+        "collaboration_mode": "session",
         "workspace_instructions": "transcript",
         "environment_context": "turn",
         "conversation_context": "turn",

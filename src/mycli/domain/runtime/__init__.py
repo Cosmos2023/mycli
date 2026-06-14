@@ -145,6 +145,11 @@ class ViewMode(StrEnum):
     FOCUS = "focus"
 
 
+class CollaborationMode(StrEnum):
+    DEFAULT = "default"
+    PLAN = "plan"
+
+
 class DecisionKind(StrEnum):
     NEEDS_CHOICE = "needs_choice"
     AUTO_ALLOW = "auto_allow"
@@ -176,6 +181,7 @@ class AgentConfig:
     heartbeat_enabled: bool = True
     heartbeat_interval_seconds: float = 30.0
     view_mode: ViewMode = ViewMode.DEFAULT
+    collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT
     statusline_enabled: bool = True
     tui_startup_mark: str = "default"
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM

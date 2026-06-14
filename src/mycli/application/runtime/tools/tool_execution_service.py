@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
     ActivityEvent,
     InvokedSkillSnapshot,
     PendingClarification,
+    PlanItem,
     PlanState,
     RuntimeBlock,
     RuntimeStreamEvent,
@@ -722,6 +723,18 @@ class ToolExecutionService:
             result_payload=result.raw_payload,
             plan_state=plan_state,
         )
+        if next_plan_state != plan_state:
+            self._notify_lifecycle_sink(
+                lifecycle_sink,
+                RuntimeStreamEvent(
+                    kind="plan_updated",
+                    metadata={
+                        "plan_steps": _render_plan_steps(next_plan_state),
+                        "plan": _plan_payload(next_plan_state),
+                        "source": normalized_call.name,
+                    },
+                ),
+            )
         tool_transcript_content = self._context_manager.render_tool_result(
             result,
             tool_name=normalized_call.name,
@@ -878,7 +891,7 @@ class ToolExecutionService:
             summary = "Tool needs approval before execution."
             error_kind = "tool_needs_approval"
         else:
-            summary = "Tool denied by runtime policy."
+            summary = runtime_policy_denial_message(decision)
             error_kind = "tool_denied_by_policy"
         return ToolResult(
             success=False,
@@ -1588,6 +1601,8 @@ class ToolExecutionService:
             if snapshot.error:
                 errors.append(snapshot.error)
                 continue
+            if not snapshot.retained or not snapshot.snapshot_id:
+                continue
             snapshot_ids.append(snapshot.snapshot_id)
         if snapshot_ids:
             turn_metadata["file_history_snapshot_ids"] = snapshot_ids
@@ -1989,6 +2004,42 @@ def _apply_post_hook_results(
         elif action is HookAction.MODIFY and isinstance(modified_args, dict):
             updated = _with_post_hook_modifications(updated, modified_args)
     return updated
+
+
+def runtime_policy_denial_message(decision: ToolRuntimeDecision) -> str:
+    if (
+        decision.policy == "collaboration_mode"
+        and decision.reason_code == "plan_mode_blocks_mutating_tool"
+    ):
+        return (
+            f"Plan mode is read-only; blocked {decision.tool_call.name}. "
+            "Switch to /mode default to allow mutating tools."
+        )
+    return "Tool denied by runtime policy."
+
+
+def _render_plan_steps(plan_state: PlanState) -> list[str]:
+    return [f"{item.status.value}: {item.content}" for item in plan_state.items]
+
+
+def _plan_payload(plan_state: PlanState) -> dict[str, object]:
+    return {
+        "items": [
+            _plan_item_payload(item)
+            for item in plan_state.items
+        ],
+    }
+
+
+def _plan_item_payload(item: PlanItem) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": item.id,
+        "text": item.content,
+        "status": item.status.value,
+    }
+    if item.evidence:
+        payload["evidence"] = list(item.evidence)
+    return payload
 
 
 def _visible_tool_arguments(arguments: dict[str, object]) -> dict[str, object]:
