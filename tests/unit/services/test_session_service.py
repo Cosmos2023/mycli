@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 import sqlite3
 
@@ -62,6 +63,133 @@ def test_session_service_round_trips_conversation_tree_metadata(tmp_path: Path) 
     assert loaded.parent_id == "root"
     assert loaded.fork_point == 1
     assert loaded.messages[0].content == "hello"
+
+
+def test_session_service_writes_readable_session_snapshot(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = SessionService(home_dir=home_dir, workspace_root=workspace)
+    conversation = Conversation(
+        session_id="3ff83220-447c-4b12-ab27-6e14079b39c7",
+        parent_id="root",
+        fork_point=2,
+        messages=[
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="hi"),
+        ],
+    )
+
+    service.save_conversation(conversation)
+
+    path = (
+        home_dir
+        / ".mycli"
+        / "sessions"
+        / "3ff83220-447c-4b12-ab27-6e14079b39c7"
+        / "session.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["session_id"] == "3ff83220-447c-4b12-ab27-6e14079b39c7"
+    assert payload["cwd"] == str(workspace)
+    assert payload["lineage"] == {
+        "parent_session_id": "root",
+        "forked_from_turn_id": None,
+        "fork_point": 2,
+        "branch_name": "main",
+    }
+    assert payload["message_count"] == 2
+    assert payload["messages"] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    assert payload["links"]["events"] == "events.jsonl"
+    assert payload["links"]["trace"] == (
+        "../../traces/3ff83220-447c-4b12-ab27-6e14079b39c7-trace.jsonl"
+    )
+
+
+def test_session_service_appends_session_events_jsonl(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+    session_id = "3ff83220-447c-4b12-ab27-6e14079b39c7"
+
+    service.save_conversation(
+        Conversation(
+            session_id=session_id,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+    service.save_plan_state(
+        session_id,
+        PlanState(items=(PlanItem(id="p1", content="Do work", status=PlanStatus.IN_PROGRESS),)),
+    )
+
+    events_path = home_dir / ".mycli" / "sessions" / session_id / "events.jsonl"
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert [event["type"] for event in events] == [
+        "conversation.saved",
+        "plan.updated",
+    ]
+    assert events[0]["session_id"] == session_id
+    assert events[0]["message_count"] == 1
+    assert events[1]["plan"]["items"] == [
+        {"id": "p1", "status": "in_progress", "text": "Do work"}
+    ]
+
+
+def test_session_service_writes_subagent_snapshot_under_parent_session(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+
+    service.write_subagent_snapshot(
+        parent_session_id="parent-session",
+        child_session_id="parent-session:sub:turn_1:abcd1234",
+        parent_turn_id="turn_1",
+        agent_type="explore",
+        status="completed",
+        mode="sync",
+        description="Inspect repo",
+        report="Found README.",
+        tool_calls=1,
+        error=None,
+        started_at="2026-06-11T00:00:00+00:00",
+        completed_at="2026-06-11T00:00:01+00:00",
+        context_diagnostics={"tool_count": 1},
+    )
+
+    session_dir = home_dir / ".mycli" / "sessions" / "parent-session"
+    subagent_files = list((session_dir / "subagents").glob("*.json"))
+    assert len(subagent_files) == 1
+    payload = json.loads(subagent_files[0].read_text(encoding="utf-8"))
+    assert payload["parent_session_id"] == "parent-session"
+    assert payload["child_session_id"] == "parent-session:sub:turn_1:abcd1234"
+    assert payload["parent_turn_id"] == "turn_1"
+    assert payload["role"] == "explore"
+    assert payload["status"] == "completed"
+    assert payload["tool_calls"] == 1
+
+    snapshot = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
+    assert snapshot["subagents"] == [
+        {
+            "run_id": payload["run_id"],
+            "child_session_id": "parent-session:sub:turn_1:abcd1234",
+            "parent_turn_id": "turn_1",
+            "role": "explore",
+            "status": "completed",
+            "mode": "sync",
+            "summary": "Found README.",
+            "path": f"subagents/{payload['run_id']}.json",
+        }
+    ]
 
 
 def test_session_service_persists_conversation_tree_in_dedicated_table(
@@ -1069,6 +1197,7 @@ def test_session_service_round_trips_plan_state(tmp_path: Path) -> None:
                 id="inspect",
                 content="Inspect runtime entrypoints",
                 status=PlanStatus.IN_PROGRESS,
+                evidence=("read runtime entrypoints",),
             ),
             PlanItem(
                 id="summarize",
@@ -1084,6 +1213,7 @@ def test_session_service_round_trips_plan_state(tmp_path: Path) -> None:
     assert loaded.items[0].id == "inspect"
     assert loaded.items[0].content == "Inspect runtime entrypoints"
     assert loaded.items[0].status is PlanStatus.IN_PROGRESS
+    assert loaded.items[0].evidence == ("read runtime entrypoints",)
     assert loaded.items[1].status is PlanStatus.PENDING
 
 

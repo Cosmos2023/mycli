@@ -36,6 +36,10 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.context.context_manager import ContextManager
+from mycli.services.session_snapshot import (
+    SessionSnapshotContext,
+    SessionSnapshotService,
+)
 from mycli.state.session_serialization import (
     deserialize_message,
     optional_str,
@@ -62,6 +66,7 @@ class SessionService:
     ) -> None:
         self._workspace_root = workspace_root or Path.cwd()
         self._store = session_store or SQLiteSessionStore(home_dir / ".mycli" / "sessions.db")
+        self._snapshot_service = SessionSnapshotService(home_dir=home_dir)
 
     def save_conversation(self, conversation: Conversation) -> None:
         self._store.replace_conversation(
@@ -69,6 +74,12 @@ class SessionService:
             workspace_root=self._workspace_root,
             thread_id=conversation.session_id,
             messages=[serialize_message(message) for message in conversation.messages],
+        )
+        self._write_snapshot(conversation)
+        self._snapshot_service.append_event(
+            session_id=conversation.session_id,
+            event_type="conversation.saved",
+            payload={"message_count": len(conversation.messages)},
         )
 
     def load_conversation(self, session_id: str) -> Conversation:
@@ -91,6 +102,15 @@ class SessionService:
             workspace_root=self._workspace_root,
             thread_id=self._history_thread_id(session_id, items),
             items=[item.to_dict() for item in items],
+        )
+        self._refresh_snapshot(session_id)
+        self._snapshot_service.append_event(
+            session_id=session_id,
+            event_type="history.appended",
+            payload={
+                "item_count": len(items),
+                "turn_id": items[-1].turn_id if items else None,
+            },
         )
 
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
@@ -123,6 +143,12 @@ class SessionService:
             workspace_root=self._workspace_root,
             thread_id=compacted_item.thread_id,
             items=remaining,
+        )
+        self._refresh_snapshot(session_id)
+        self._snapshot_service.append_event(
+            session_id=session_id,
+            event_type="history.compacted",
+            payload={"replaced_item_count": len(replaced_item_ids)},
         )
 
     def save_context_baseline(
@@ -182,6 +208,16 @@ class SessionService:
             workspace_root=self._workspace_root,
             thread_id=rollout.thread_id,
             rollout=rollout.to_dict(),
+        )
+        self._refresh_snapshot(session_id)
+        self._snapshot_service.append_event(
+            session_id=session_id,
+            event_type="turn.rollout",
+            payload={
+                "turn_id": rollout.turn_id,
+                "status": rollout.status.value,
+                "stop_reason": None if rollout.stop_reason is None else rollout.stop_reason.value,
+            },
         )
 
     def load_turn_rollouts(self, session_id: str) -> tuple[TurnRollout, ...]:
@@ -285,9 +321,16 @@ class SessionService:
                     "id": item.id,
                     "content": item.content,
                     "status": item.status.value,
+                    "evidence": list(item.evidence),
                 }
                 for item in plan_state.items
             ],
+        )
+        self._refresh_snapshot(session_id)
+        self._snapshot_service.append_event(
+            session_id=session_id,
+            event_type="plan.updated",
+            payload={"plan": self._plan_event_payload(plan_state)},
         )
 
     def load_plan_state(self, session_id: str) -> PlanState:
@@ -298,6 +341,11 @@ class SessionService:
                     id=str(item["id"]),
                     content=str(item["content"]),
                     status=PlanStatus(str(item["status"])),
+                    evidence=tuple(
+                        str(entry)
+                        for entry in item.get("evidence", ())
+                        if isinstance(entry, str) and entry
+                    ),
                 )
                 for item in payload
                 if isinstance(item, dict)
@@ -662,6 +710,78 @@ class SessionService:
         if items:
             return items[-1].thread_id
         return session_id
+
+    def _refresh_snapshot(self, session_id: str) -> None:
+        conversation = self.load_conversation(session_id)
+        self._write_snapshot(conversation)
+
+    def _write_snapshot(self, conversation: Conversation) -> None:
+        self._snapshot_service.write_conversation_snapshot(
+            conversation=conversation,
+            context=SessionSnapshotContext(
+                workspace_root=self._workspace_root,
+                plan_state=self.load_plan_state(conversation.session_id),
+            ),
+        )
+
+    def write_subagent_snapshot(
+        self,
+        *,
+        parent_session_id: str,
+        child_session_id: str,
+        parent_turn_id: str,
+        agent_type: str,
+        status: str,
+        mode: str,
+        description: str,
+        report: str,
+        tool_calls: int,
+        error: str | None,
+        started_at: str | None,
+        completed_at: str | None,
+        context_diagnostics: dict[str, object],
+    ) -> None:
+        entry = self._snapshot_service.write_subagent_snapshot(
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            parent_turn_id=parent_turn_id,
+            agent_type=agent_type,
+            status=status,
+            mode=mode,
+            description=description,
+            report=report,
+            tool_calls=tool_calls,
+            error=error,
+            started_at=started_at,
+            completed_at=completed_at,
+            context_diagnostics=context_diagnostics,
+            transcript_items=tuple(
+                item.to_dict() for item in self.load_history_items(child_session_id)
+            ),
+        )
+        self._refresh_snapshot(parent_session_id)
+        self._snapshot_service.append_event(
+            session_id=parent_session_id,
+            event_type="subagent.updated",
+            payload={"subagent": entry},
+        )
+
+    def _plan_event_payload(self, plan_state: PlanState) -> dict[str, object]:
+        status = "active" if plan_state.current_in_progress_item_id() else "idle"
+        return {
+            "status": status,
+            "items": [self._plan_event_item_payload(item) for item in plan_state.items],
+        }
+
+    def _plan_event_item_payload(self, item: PlanItem) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": item.id,
+            "text": item.content,
+            "status": item.status.value,
+        }
+        if item.evidence:
+            payload["evidence"] = list(item.evidence)
+        return payload
 
     def _save_state(
         self,

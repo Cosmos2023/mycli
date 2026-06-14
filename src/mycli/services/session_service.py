@@ -21,6 +21,9 @@ class SessionService(StateSessionService):
             parent_id=parent_id,
             fork_point=fork_point,
         )
+        conversation.parent_id = parent_id
+        conversation.fork_point = fork_point
+        self._write_snapshot(conversation)
 
     def load_conversation(self, session_id: str) -> Conversation:
         conversation = super().load_conversation(session_id)

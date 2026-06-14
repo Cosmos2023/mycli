@@ -4,6 +4,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def validate_storage_session_id(session_id: str) -> None:
+    if (
+        not session_id
+        or session_id.startswith("<")
+        or session_id.endswith(">")
+        or "/" in session_id
+        or "\\" in session_id
+        or ".." in session_id
+    ):
+        raise ValueError(f"invalid storage session id: {session_id!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class MycliStorageLayout:
     """Centralized paths under the user's mycli home."""
@@ -23,6 +35,10 @@ class MycliStorageLayout:
         return self.root / "sessions"
 
     @property
+    def sessions_dir(self) -> Path:
+        return self.root / "sessions"
+
+    @property
     def traces_dir(self) -> Path:
         return self.root / "traces"
 
@@ -35,10 +51,22 @@ class MycliStorageLayout:
         return self.root / "logs"
 
     def trace_path(self, session_id: str) -> Path:
+        validate_storage_session_id(session_id)
         return self.traces_dir / f"{session_id}-trace.jsonl"
 
     def legacy_trace_path(self, session_id: str) -> Path:
+        validate_storage_session_id(session_id)
         return self.legacy_sessions_dir / f"{session_id}-trace.jsonl"
+
+    def session_dir(self, session_id: str) -> Path:
+        validate_storage_session_id(session_id)
+        return self.sessions_dir / session_id
+
+    def session_snapshot_path(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "session.json"
+
+    def session_events_path(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "events.jsonl"
 
 
 __all__ = ["MycliStorageLayout"]
