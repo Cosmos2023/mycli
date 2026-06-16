@@ -18,6 +18,8 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
+from mycli.domain.memory import MemoryKind
+from mycli.memory.service import MemoryService
 from mycli.domain.tools import ToolCall
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.base import ToolResult, ToolSpec
@@ -76,6 +78,8 @@ class SkillAwareModel:
 
     def decide(self, prompt: str) -> ModelDecision:
         self.prompts.append(prompt)
+        if "Select up to 5 memory files. Return JSON only." in prompt:
+            return ModelDecision(assistant_message='{"files":["repository_entrypoint.md"]}', done=True)
         return self._decisions.pop(0)
 
 
@@ -817,15 +821,12 @@ def test_turn_service_injects_memory_and_skill_context(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
     workspace.mkdir()
-    (home_dir / ".mycli").mkdir()
-    (workspace / ".mycli").mkdir()
-    (home_dir / ".mycli" / "preferences.json").write_text(
-        '{"tone": "concise"}',
-        encoding="utf-8",
-    )
-    (workspace / ".mycli" / "project_memory.json").write_text(
-        '[{"kind": "project_note", "key": "entrypoint", "value": "src/mycli/cli/main.py", "tags": []}]',
-        encoding="utf-8",
+    memory_service = MemoryService(home_dir=home_dir, workspace_root=workspace)
+    memory_service.add_file_memory(
+        kind=MemoryKind.PROJECT,
+        name="repository entrypoint",
+        description="Repository entrypoint",
+        content="The repository entrypoint is src/mycli/cli/main.py.",
     )
 
     model = SkillAwareModel()
@@ -836,15 +837,15 @@ def test_turn_service_injects_memory_and_skill_context(tmp_path: Path) -> None:
         config=AgentConfig(workspace_root=workspace),
         home_dir=home_dir,
     )
+    service._memory_service = memory_service
 
     response = service.handle_user_turn("Help me understand this repository")
 
     assert "src/mycli/cli/main.py" in response.assistant_message
-    assert "repository-analysis" in model.prompts[0]
-    assert "src/mycli/cli/main.py" in model.prompts[0]
-    assert "concise" in model.prompts[0]
-    assert "Bash" in model.prompts[0]
-    assert "批量读取相关文件" in model.prompts[0]
+    runtime_prompt = next(prompt for prompt in model.prompts if "repository-analysis" in prompt)
+    assert "src/mycli/cli/main.py" in runtime_prompt
+    assert "Bash" in runtime_prompt
+    assert "批量读取相关文件" in runtime_prompt
 
 
 def test_turn_service_includes_recent_conversation_in_prompt(tmp_path: Path) -> None:

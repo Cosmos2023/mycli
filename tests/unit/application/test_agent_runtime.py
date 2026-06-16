@@ -13,7 +13,7 @@ from mycli.domain.contributed_tools import (
     ToolContributionScope,
     ToolContributionSource,
 )
-from mycli.domain.memory import MemoryKind, MemoryRecord
+from mycli.domain.memory import MemoryKind
 from mycli.domain.logging import LogLevel
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
@@ -3494,14 +3494,11 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
         home_dir=tmp_path / "home",
         workspace_root=tmp_path,
     )
-    memory_service.save_preference("tone", "concise")
-    memory_service.save_project_note(
-        MemoryRecord(
-            kind=MemoryKind.PROJECT_NOTE,
-            key="entrypoint",
-            value="src/mycli/cli/main.py",
-            tags=("repo",),
-        )
+    memory_service.add_file_memory(
+        kind=MemoryKind.PROJECT,
+        name="repository entrypoint",
+        description="Repository entrypoint",
+        content="The repository entrypoint is src/mycli/cli/main.py.",
     )
     memory_service.append_session_summary("demo", "Inspected the repo root")
 
@@ -3517,13 +3514,19 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
     response = runtime.handle_user_turn("inspect this repo")
 
     assert response.assistant_message == "Memory captured"
-    user_messages = [
-        str(getattr(message, "content", ""))
-        for message in adapter.seen_messages[0]
-        if getattr(message, "role", None) == "user"
-    ]
+    user_messages = next(
+        [
+            str(getattr(message, "content", ""))
+            for message in messages
+            if getattr(message, "role", None) == "user"
+        ]
+        for messages in adapter.seen_messages
+        if any(
+            "<memory-context>" in str(getattr(message, "content", ""))
+            for message in messages
+        )
+    )
     contextual_user_content = "\n".join(user_messages)
-    assert "concise" in contextual_user_content
     assert "src/mycli/cli/main.py" in contextual_user_content
     assert "<memory-context>" in contextual_user_content
     assert "Inspected the repo root" in contextual_user_content

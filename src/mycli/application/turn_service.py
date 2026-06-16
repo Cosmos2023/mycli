@@ -363,12 +363,7 @@ class TurnService:
         )
 
     def inspect_memory(self) -> tuple[str, ...]:
-        records = self._memory_service.list_records(self._config.session_id)
-        lines = [f"{record.kind.value} {record.key}={record.value}" for record in records[:10]]
-        file_lines = self._memory_service.inspect_file_memory()
-        if not lines:
-            lines = ["no legacy memory stored"]
-        return (*lines, *file_lines)
+        return self._memory_service.inspect_file_memory()
 
     def add_memory(
         self,

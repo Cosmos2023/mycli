@@ -294,21 +294,6 @@ export MYCLI_MEMORY_ENABLED=false
 
 关闭后，runtime 不再注入 file memory，也不会启动后台 memory extraction/dream。
 
-### Legacy runtime records
-
-这些是较早的 runtime 结构化记录，仍可能被读取或写入，但不是当前主线长期记忆系统：
-
-- 用户偏好：`~/.mycli/preferences.json`
-  - `save_preference()` 会把 key/value 写到这个 JSON 文件。
-  - 即使 `memory_enabled = false`，runtime 仍会读取这些偏好作为基础上下文。
-- 项目笔记：`<workspace>/.mycli/project_memory.json`
-  - `save_project_note()` 会向这个 JSON 数组追加 `MemoryRecord`。
-- 短期记忆：`~/.mycli/memory.db`
-  - `remember_short_term()` 会写入 SQLite 表 `short_term_memories`。
-  - 每个 session 默认只保留最近 100 条。
-- session summary：`~/.mycli/sessions.db`
-  - `append_session_summary()` 会写入 SQLite session store。
-
 ## Sessions、Trace 与持久化
 
 主要数据位置：
@@ -316,10 +301,8 @@ export MYCLI_MEMORY_ENABLED=false
 | 数据 | 路径 |
 | --- | --- |
 | Session DB | `~/.mycli/sessions.db` |
-| Short-term memory DB | `~/.mycli/memory.db` |
 | File memory | `~/.mycli/projects/<workspace-key>/memory/` |
 | Workspace trace | `~/.mycli/traces/` |
-| Workspace/project memory | `<workspace>/.mycli/project_memory.json` |
 | Workspace config | `<workspace>/.mycli/config.toml` |
 
 SQLite session store 会保存：
