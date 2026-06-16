@@ -4,6 +4,7 @@ import stat
 import tomllib
 from pathlib import Path
 
+from mycli.config.auth_store import AuthStore
 from mycli.cli.setup_wizard import default_user_config_path, run_setup_wizard
 from mycli.domain.providers import ProviderId
 
@@ -34,8 +35,8 @@ def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> No
         "protocol": "chat_completions",
         "model": "deepseek-v4-flash",
         "api_base_url": "https://api.deepseek.com",
-        "api_key": "sk-test",
     }
+    assert AuthStore.from_home(tmp_path).get_api_key("deepseek") == "sk-test"
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
     assert any("Saved configuration" in line for line in outputs)
 
@@ -71,7 +72,8 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: P
     assert payload["provider"] == "openai"
     assert payload["api_base_url"] == "https://api.openai.com/v1"
     assert payload["model"] == 'gpt-"quoted"'
-    assert payload["api_key"] == 'sk-"quoted"'
+    assert "api_key" not in payload
+    assert AuthStore.from_home(tmp_path).get_api_key("openai") == 'sk-"quoted"'
     assert payload["statusline_enabled"] is True
     assert payload["allowed_tools"] == ["Read", "Grep"]
     assert payload["mcp_servers"]["filesystem"] == {
@@ -96,5 +98,5 @@ def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(tmp_path: 
     payload = tomllib.loads(result.config_path.read_text(encoding="utf-8"))
     assert result.provider is ProviderId.COMPATIBLE
     assert payload["provider"] == "compatible"
-    assert payload["api_key"] == "sk-compatible"
+    assert AuthStore.from_home(tmp_path).get_api_key("compatible") == "sk-compatible"
     assert any("Unsupported provider" in line for line in outputs)

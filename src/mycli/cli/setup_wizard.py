@@ -6,6 +6,7 @@ import getpass
 from pathlib import Path
 import tomllib
 
+from mycli.config.auth_store import AuthStore
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
 
@@ -66,10 +67,12 @@ def run_setup_wizard(
         protocol=profile.default_protocol.value,
         model=model,
         api_base_url=api_base_url,
-        api_key=api_key,
     )
+    auth_store = AuthStore.from_home(home_dir)
+    auth_store.set_api_key(provider.value, api_key)
     output_func("")
     output_func(f"Saved configuration to {config_path}")
+    output_func(f"Saved API key to {auth_store.path}")
     output_func("Run `mycli doctor` if you want to verify the provider connection.")
     return SetupResult(
         config_path=config_path,
@@ -132,16 +135,15 @@ def _write_user_config(
     protocol: str,
     model: str,
     api_base_url: str,
-    api_key: str,
 ) -> None:
     existing = _read_toml(path)
+    existing.pop("api_key", None)
     payload = {
         **existing,
         "provider": provider.value,
         "protocol": protocol,
         "model": model,
         "api_base_url": api_base_url.rstrip("/"),
-        "api_key": api_key,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_format_toml(payload), encoding="utf-8")
@@ -156,7 +158,7 @@ def _read_toml(path: Path) -> dict[str, object]:
 
 
 def _format_toml(payload: dict[str, object]) -> str:
-    preferred_order = ("provider", "protocol", "model", "api_base_url", "api_key")
+    preferred_order = ("provider", "protocol", "model", "api_base_url")
     lines: list[str] = []
     emitted: set[str] = set()
     for key in preferred_order:

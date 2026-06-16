@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Mapping
 from uuid import uuid4
 
+from mycli.config.auth_store import AuthStore
 from mycli.domain.providers import ProviderId, parse_protocol, parse_provider
 from mycli.domain.runtime import (
     AgentConfig,
@@ -230,6 +231,7 @@ def resolve_config(
         env.get("MYCLI_API_KEY")
         or project_config.get("api_key")
         or user_config.get("api_key")
+        or AuthStore.from_home(home).get_api_key(provider.value)
     )
     api_key = str(api_key_value) if api_key_value else None
     session_id = str(cli_args["session"]) if cli_args.get("session") else _new_session_id()

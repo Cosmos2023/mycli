@@ -1,8 +1,10 @@
 from pathlib import Path
 from uuid import UUID
+import json
 
 import pytest
 
+from mycli.config.auth_store import AuthStore
 from mycli.domain.runtime import CollaborationMode, ProviderCachePolicyCapability, ViewMode
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.config.settings import resolve_config
@@ -388,6 +390,104 @@ def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_pat
     )
 
     assert config.api_key == "project-token"
+
+
+def test_resolve_config_reads_api_key_from_auth_store_for_provider(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (home_dir / ".config" / "mycli").mkdir(parents=True)
+    (home_dir / ".config" / "mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'model = "deepseek-chat"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("deepseek", "sk-auth-store")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.DEEPSEEK
+    assert config.api_key == "sk-auth-store"
+
+
+def test_resolve_config_prefers_project_api_key_over_auth_store(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'api_key = "project-token"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("deepseek", "sk-auth-store")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.api_key == "project-token"
+
+
+def test_resolve_config_ignores_invalid_auth_store_json(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    auth_path = home_dir / ".mycli" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text("{invalid", encoding="utf-8")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.api_key is None
+
+
+def test_resolve_config_ignores_non_api_key_auth_store_credential(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    auth_path = home_dir / ".mycli" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text(
+        json.dumps({"openai": {"type": "oauth", "access": "token"}}),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.api_key is None
 
 
 def test_resolve_config_defaults_protocol_to_responses(tmp_path: Path) -> None:

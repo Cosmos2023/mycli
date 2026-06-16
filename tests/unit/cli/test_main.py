@@ -19,6 +19,7 @@ from mycli.cli.main import (
     main,
     render_activity_lines,
 )
+from mycli.config.auth_store import AuthStore
 from mycli.cli.node_tui import NodeTuiProcessError
 from mycli.cli.rendering import (
     RenderOptions,
@@ -126,7 +127,8 @@ def test_setup_command_writes_user_config(monkeypatch, tmp_path: Path) -> None:
     assert 'protocol = "chat_completions"' in config_text
     assert 'model = "deepseek-v4-flash"' in config_text
     assert 'api_base_url = "https://api.deepseek.com"' in config_text
-    assert 'api_key = "sk-test"' in config_text
+    assert "api_key" not in config_text
+    assert AuthStore.from_home(home).get_api_key("deepseek") == "sk-test"
     assert any("Saved configuration" in line for line in outputs)
 
 

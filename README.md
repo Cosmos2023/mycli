@@ -43,7 +43,7 @@ cd ../..
 uv run mycli setup
 ```
 
-setup 会询问 provider、API base URL、model 和 API key，并默认写入用户级配置 `~/.config/mycli/config.toml`。API key 输入不会回显。
+setup 会询问 provider、API base URL、model 和 API key。模型配置默认写入用户级配置 `~/.config/mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显。
 
 也可以手动把项目配置写到当前 workspace 的 `.mycli/config.toml`：
 
@@ -52,7 +52,6 @@ provider = "openai"
 protocol = "responses"
 model = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
-api_key = "your-api-key"
 
 max_prompt_tokens = 12000
 max_output_tokens = 2048
@@ -75,8 +74,9 @@ export MYCLI_BASE_URL="https://api.openai.com/v1"
 
 - 用户级：`~/.config/mycli/config.toml`
 - 项目级：`<workspace>/.mycli/config.toml`
+- 用户凭证：`~/.mycli/auth.json`
 
-项目级配置优先于用户级配置，命令行参数和环境变量优先级更高。
+项目级配置优先于用户级配置，命令行参数和环境变量优先级更高。API key 优先级是环境变量、项目/用户 config 中的旧式 `api_key`、再到 `~/.mycli/auth.json`；新配置推荐使用 setup 或环境变量，避免把密钥写进项目文件。
 
 ### 启动
 
@@ -182,7 +182,6 @@ provider = "openai"
 protocol = "responses"
 model = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
-api_key = "your-api-key"
 ```
 
 ### Qwen
@@ -192,7 +191,6 @@ provider = "qwen"
 protocol = "responses"
 model = "qwen3.6-plus"
 api_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-api_key = "your-qwen-key"
 ```
 
 如果 `api_base_url` 包含 `dashscope.aliyuncs.com`，未显式配置 provider 时会自动推断为 `qwen`。
@@ -206,7 +204,6 @@ provider = "deepseek"
 protocol = "chat_completions"
 model = "deepseek-v4-flash"
 api_base_url = "https://api.deepseek.com"
-api_key = "your-deepseek-key"
 thinking_enabled = true
 thinking_effort = "medium"
 ```
@@ -222,7 +219,6 @@ provider = "anthropic"
 protocol = "anthropic_messages"
 model = "claude-sonnet-4-6"
 api_base_url = "https://api.anthropic.com"
-api_key = "your-anthropic-key"
 max_output_tokens = 4096
 thinking_enabled = true
 thinking_effort = "medium"
@@ -309,6 +305,7 @@ export MYCLI_MEMORY_ENABLED=false
 | 数据 | 路径 |
 | --- | --- |
 | Session DB | `~/.mycli/sessions.db` |
+| Auth store | `~/.mycli/auth.json` |
 | File memory | `~/.mycli/projects/<workspace-key>/memory/` |
 | Workspace trace | `~/.mycli/traces/` |
 | Workspace config | `<workspace>/.mycli/config.toml` |
