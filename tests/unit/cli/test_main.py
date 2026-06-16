@@ -107,7 +107,7 @@ def test_build_parser_accepts_subagents_command() -> None:
 def test_setup_command_writes_user_config(monkeypatch, tmp_path: Path) -> None:
     home = tmp_path / "home"
     outputs: list[str] = []
-    scripted_inputs = iter(["2", "", "deepseek-v4-flash"])
+    scripted_inputs = iter(["1", "2", "", "deepseek-v4-flash"])
     monkeypatch.setattr("getpass.getpass", lambda _prompt: "sk-test")
 
     exit_code = main(

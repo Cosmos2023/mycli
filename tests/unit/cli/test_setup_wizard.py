@@ -14,13 +14,14 @@ def test_default_user_config_path_uses_xdg_config_home_layout(tmp_path: Path) ->
 
 
 def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> None:
-    inputs = iter(["deepseek", "", "deepseek-v4-flash"])
+    inputs = iter(["", "deepseek", "", "deepseek-v4-flash"])
+    secret_prompts: list[str] = []
     outputs: list[str] = []
 
     result = run_setup_wizard(
         home_dir=tmp_path,
         input_func=lambda _prompt: next(inputs),
-        secret_input_func=lambda _prompt: "sk-test",
+        secret_input_func=lambda prompt: secret_prompts.append(prompt) or "sk-test",
         output_func=outputs.append,
     )
 
@@ -39,6 +40,14 @@ def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> No
     assert AuthStore.from_home(tmp_path).get_api_key("deepseek") == "sk-test"
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
     assert any("Saved configuration" in line for line in outputs)
+    assert "Select authentication method:" in outputs
+    assert "  1. Use an API key" in outputs
+    assert "Select provider to configure:" in outputs
+    assert any("DeepSeek • unconfigured" in line for line in outputs)
+    assert "Login to DeepSeek" in outputs
+    assert "Enter API key:" in outputs
+    assert secret_prompts == ["API key: "]
+    assert outputs.count("────────────────────────────────────────") >= 6
 
 
 def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: Path) -> None:
@@ -59,7 +68,7 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: P
         ),
         encoding="utf-8",
     )
-    inputs = iter(["1", "https://api.openai.com/v1/", 'gpt-"quoted"'])
+    inputs = iter(["1", "1", "https://api.openai.com/v1/", 'gpt-"quoted"'])
 
     run_setup_wizard(
         home_dir=tmp_path,
@@ -84,7 +93,7 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: P
 
 
 def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(tmp_path: Path) -> None:
-    inputs = iter(["bad-provider", "5", "", "compatible-model"])
+    inputs = iter(["bad-method", "1", "bad-provider", "5", "", "compatible-model"])
     secrets = iter(["", "sk-compatible"])
     outputs: list[str] = []
 
@@ -99,4 +108,21 @@ def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(tmp_path: 
     assert result.provider is ProviderId.COMPATIBLE
     assert payload["provider"] == "compatible"
     assert AuthStore.from_home(tmp_path).get_api_key("compatible") == "sk-compatible"
+    assert any("Unsupported authentication method" in line for line in outputs)
     assert any("Unsupported provider" in line for line in outputs)
+
+
+def test_run_setup_wizard_marks_stored_api_key_provider_as_configured(tmp_path: Path) -> None:
+    AuthStore.from_home(tmp_path).set_api_key("openai", "sk-existing")
+    inputs = iter(["api key", "openai", "", "gpt-5"])
+    outputs: list[str] = []
+
+    run_setup_wizard(
+        home_dir=tmp_path,
+        input_func=lambda _prompt: next(inputs),
+        secret_input_func=lambda _prompt: "sk-updated",
+        output_func=outputs.append,
+    )
+
+    assert any("OpenAI ✓ configured" in line for line in outputs)
+    assert AuthStore.from_home(tmp_path).get_api_key("openai") == "sk-updated"

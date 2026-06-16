@@ -32,6 +32,16 @@ _PROVIDER_CHOICES: tuple[ProviderId, ...] = (
     ProviderId.COMPATIBLE,
 )
 
+_PROVIDER_DISPLAY_NAMES: dict[ProviderId, str] = {
+    ProviderId.OPENAI: "OpenAI",
+    ProviderId.DEEPSEEK: "DeepSeek",
+    ProviderId.QWEN: "Qwen",
+    ProviderId.ANTHROPIC: "Anthropic",
+    ProviderId.COMPATIBLE: "Compatible",
+}
+
+_BORDER = "────────────────────────────────────────"
+
 
 def default_user_config_path(home_dir: Path) -> Path:
     return home_dir / ".config" / "mycli" / "config.toml"
@@ -49,8 +59,15 @@ def run_setup_wizard(
     output_func("Configure a model provider for this user account.")
     output_func("")
 
-    provider = _prompt_provider(input_func=input_func, output_func=output_func)
+    _prompt_auth_method(input_func=input_func, output_func=output_func)
+    auth_store = AuthStore.from_home(home_dir)
+    provider = _prompt_provider(
+        input_func=input_func,
+        output_func=output_func,
+        auth_store=auth_store,
+    )
     profile = profile_for_provider(provider)
+    _render_panel_title(output_func, f"Login to {_provider_display_name(provider)}")
     api_base_url = _prompt_text(
         input_func=input_func,
         prompt="API base URL",
@@ -58,7 +75,9 @@ def run_setup_wizard(
     )
     model_default = profile.default_model or ""
     model = _prompt_text(input_func=input_func, prompt="Model", default=model_default)
+    output_func("Enter API key:")
     api_key = _prompt_secret(secret_reader, "API key")
+    output_func(_BORDER)
 
     config_path = default_user_config_path(home_dir)
     _write_user_config(
@@ -68,7 +87,6 @@ def run_setup_wizard(
         model=model,
         api_base_url=api_base_url,
     )
-    auth_store = AuthStore.from_home(home_dir)
     auth_store.set_api_key(provider.value, api_key)
     output_func("")
     output_func(f"Saved configuration to {config_path}")
@@ -82,16 +100,33 @@ def run_setup_wizard(
     )
 
 
+def _prompt_auth_method(
+    *,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+) -> None:
+    _render_panel_title(output_func, "Select authentication method:")
+    output_func("  1. Use an API key")
+    output_func(_BORDER)
+    while True:
+        raw = input_func("Authentication method [1]: ").strip().lower()
+        if raw in {"", "1", "api_key", "api-key", "api key", "key"}:
+            return
+        output_func("Unsupported authentication method. Choose 1 or API key.")
+
+
 def _prompt_provider(
     *,
     input_func: InputFunc,
     output_func: OutputFunc,
+    auth_store: AuthStore,
 ) -> ProviderId:
-    output_func("Select provider:")
+    _render_panel_title(output_func, "Select provider to configure:")
     for index, provider in enumerate(_PROVIDER_CHOICES, start=1):
         profile = profile_for_provider(provider)
         default_model = f" · default model {profile.default_model}" if profile.default_model else ""
-        output_func(f"  {index}. {provider.value}{default_model}")
+        output_func(f"  {index}. {_provider_display_name(provider)}{_provider_status(provider, auth_store)}{default_model}")
+    output_func(_BORDER)
     while True:
         raw = input_func("Provider [1]: ").strip()
         if not raw:
@@ -105,6 +140,22 @@ def _prompt_provider(
         except ValueError:
             allowed = ", ".join(provider.value for provider in _PROVIDER_CHOICES)
             output_func(f"Unsupported provider. Choose 1-{len(_PROVIDER_CHOICES)} or one of: {allowed}.")
+
+
+def _provider_status(provider: ProviderId, auth_store: AuthStore) -> str:
+    if auth_store.get_api_key(provider.value):
+        return " ✓ configured"
+    return " • unconfigured"
+
+
+def _provider_display_name(provider: ProviderId) -> str:
+    return _PROVIDER_DISPLAY_NAMES.get(provider, provider.value)
+
+
+def _render_panel_title(output_func: OutputFunc, title: str) -> None:
+    output_func(_BORDER)
+    output_func(title)
+    output_func("")
 
 
 def _prompt_text(
