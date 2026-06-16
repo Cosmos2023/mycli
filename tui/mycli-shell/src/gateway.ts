@@ -326,6 +326,18 @@ async function respondApproval(decisionId: string, choice: string): Promise<void
 	await send("approval.respond", { decision_id: decisionId, choice });
 }
 
+async function saveApiKey(providerId: string, apiKey: string): Promise<{ message?: string }> {
+	const result = await send("auth.api_key.save", { provider_id: providerId, api_key: apiKey });
+	runtimeState = {
+		...runtimeState,
+		authProviders: runtimeState.authProviders.map((provider) =>
+			provider.id === providerId ? { ...provider, configured: true } : provider,
+		),
+	};
+	refreshRuntime();
+	return { message: typeof result.message === "string" ? result.message : undefined };
+}
+
 function stringArrayValue(value: unknown): string[] {
 	if (typeof value === "string" && value.trim()) {
 		return [value.trim()];
@@ -423,6 +435,7 @@ async function main(): Promise<void> {
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
 		onApprovalRespond: respondApproval,
+		onApiKeyLogin: saveApiKey,
 		onModelSelect: async (model) => {
 			const thinking = model.thinkingLevel ? ` --thinking-effort ${model.thinkingLevel}` : "";
 			await runCommand(`/model ${model.id}${thinking}`);

@@ -117,6 +117,13 @@ export type MycliShellModel = {
 	scoped?: boolean;
 };
 
+export type MycliShellAuthProvider = {
+	id: string;
+	name: string;
+	configured?: boolean;
+	defaultModel?: string;
+};
+
 export type MycliShellVisualSettings = {
 	statusbarMode?: "off" | "compact" | "full";
 	viewMode?: "default" | "verbose" | "focus";
@@ -160,6 +167,7 @@ export type MycliShellState = {
 	pendingNotice?: string;
 	pendingApproval?: MycliShellPendingApproval;
 	models?: MycliShellModel[];
+	authProviders?: MycliShellAuthProvider[];
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;
 	sessions?: MycliShellSession[];

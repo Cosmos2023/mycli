@@ -7,6 +7,7 @@ import { Container, TUI, type Component } from "./tui-core/tui.ts";
 import { matchesKey } from "./tui-core/keys.ts";
 import { installMycliKeybindings } from "./keybindings.ts";
 import type {
+	MycliShellAuthProvider,
 	MycliShellCommand,
 	MycliShellMessage,
 	MycliShellModel,
@@ -22,6 +23,7 @@ import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.t
 import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
+import { LoginFlowComponent } from "./components/login-flow.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { PlanPanelComponent } from "./components/plan-panel.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
@@ -48,6 +50,7 @@ export type MycliShellRuntimeOptions = {
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
 	onModelSelect?: (model: MycliShellModel) => void | Promise<void>;
+	onApiKeyLogin?: (providerId: string, apiKey: string) => void | { message?: string } | Promise<void | { message?: string }>;
 	onSessionSelect?: (sessionId: string) => void | Promise<void>;
 	onApprovalRespond?: (decisionId: string, choice: string) => void | Promise<void>;
 	commands?: MycliShellCommand[];
@@ -557,6 +560,20 @@ export class MycliShellRuntime {
 		});
 	}
 
+	showLoginFlow(): void {
+		this.showSelector((done) => {
+			const selector = new LoginFlowComponent({
+				tui: this.ui,
+				providers: this.authProviders(),
+				onSubmit: ({ providerId, apiKey }) => {
+					void this.submitApiKeyLogin(providerId, apiKey, done);
+				},
+				onCancel: () => done(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
 	showSettingsSelector(): void {
 		this.showSelector((done) => {
 			const selector = new SettingsSelectorComponent(this.state.settings, {
@@ -1056,6 +1073,12 @@ export class MycliShellRuntime {
 				this.showModelSelector(searchTerm);
 				return;
 			}
+			if (commandId === "login") {
+				this.editor.addToHistory(input);
+				this.editor.setText("");
+				this.showLoginFlow();
+				return;
+			}
 			if (commandId === "view") {
 				this.editor.addToHistory(input);
 				this.editor.setText("");
@@ -1165,6 +1188,12 @@ export class MycliShellRuntime {
 				label: "/model",
 				description: "Select model",
 				run: () => this.showModelSelector(),
+			},
+			{
+				id: "login",
+				label: "/login",
+				description: "Configure provider credentials",
+				run: () => this.showLoginFlow(),
 			},
 			{
 				id: "trust",
@@ -1385,6 +1414,42 @@ export class MycliShellRuntime {
 
 	private patchFooter(footerPatch: Partial<MycliShellState["footer"]>): void {
 		this.setState({ ...this.state, footer: { ...this.state.footer, ...footerPatch } });
+	}
+
+	private authProviders(): MycliShellAuthProvider[] {
+		if (this.state.authProviders?.length) {
+			return this.state.authProviders;
+		}
+		return [
+			{ id: "openai", name: "OpenAI", defaultModel: "gpt-5" },
+			{ id: "deepseek", name: "DeepSeek", defaultModel: "deepseek-v4-flash" },
+			{ id: "qwen", name: "Qwen", defaultModel: "qwen-plus" },
+			{ id: "anthropic", name: "Anthropic", defaultModel: "claude-sonnet-4-5" },
+			{ id: "compatible", name: "Compatible" },
+		];
+	}
+
+	private async submitApiKeyLogin(providerId: string, apiKey: string, done: () => void): Promise<void> {
+		try {
+			const result = await this.options.onApiKeyLogin?.(providerId, apiKey);
+			done();
+			const message = result && "message" in result && result.message
+				? result.message
+				: `Saved API key for ${this.authProviderName(providerId)}.`;
+			this.addSystemNotice(message);
+			this.setState({
+				...this.state,
+				authProviders: this.authProviders().map((provider) =>
+					provider.id === providerId ? { ...provider, configured: true } : provider,
+				),
+			});
+		} catch (error) {
+			this.addSystemNotice(`Failed to save API key: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private authProviderName(providerId: string): string {
+		return this.authProviders().find((provider) => provider.id === providerId)?.name ?? providerId;
 	}
 
 	private async selectModel(model: MycliShellModel): Promise<void> {

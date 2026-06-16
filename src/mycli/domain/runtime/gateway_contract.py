@@ -6,6 +6,7 @@ from typing import Any
 SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
     {
         "approval.respond",
+        "auth.api_key.save",
         "clarify.respond",
         "command.run",
         "completion.path",

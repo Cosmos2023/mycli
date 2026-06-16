@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+from mycli.config.auth_store import AuthStore
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.gateway import (
     NodeTuiGateway,
@@ -206,7 +207,29 @@ def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> N
         "source": "fallback",
         "enforced": False,
     }
+    assert {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "configured": False,
+        "default_model": "deepseek-chat",
+    } in response.result["auth_providers"]
     assert response.error is None
+
+
+def test_gateway_auth_api_key_save_persists_credentials(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="auth.api_key.save",
+            params={"provider_id": "deepseek", "api_key": "sk-test"},
+        )
+    )
+
+    assert response.error is None
+    assert response.result == {"ok": True, "provider_id": "deepseek", "message": "Saved API key for DeepSeek."}
+    assert AuthStore.from_home(tmp_path).get_api_key("deepseek") == "sk-test"
 
 
 def test_gateway_bootstrap_and_status_include_optional_session_title(tmp_path: Path) -> None:

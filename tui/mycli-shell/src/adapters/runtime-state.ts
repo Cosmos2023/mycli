@@ -1,4 +1,5 @@
 import type {
+	MycliShellAuthProvider,
 	MycliShellBash,
 	MycliShellMessage,
 	MycliShellModel,
@@ -43,6 +44,7 @@ export type RuntimeShellState = {
 	pendingApproval: Record<string, unknown> | null;
 	pendingClarification: Record<string, unknown> | null;
 	activePlan: MycliShellPlanStep[];
+	authProviders: MycliShellAuthProvider[];
 };
 
 export function initialRuntimeState(): RuntimeShellState {
@@ -69,6 +71,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		pendingApproval: null,
 		pendingClarification: null,
 		activePlan: [],
+		authProviders: [],
 	};
 }
 
@@ -165,6 +168,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		pendingNotice: pendingNotice(state),
 		pendingApproval: pendingApprovalFromRecord(state.pendingApproval),
 		models: modelListFromStatus(state.status, state.provider, state.model),
+		authProviders: state.authProviders,
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
 		settings: {
 			viewMode: state.viewMode,
@@ -211,6 +215,7 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		model: stringValue(payload.model) ?? state.model,
 		collaborationMode: collaborationModeValue(payload.collaboration_mode) ?? collaborationModeValue(status.collaboration_mode) ?? state.collaborationMode,
 		provider: stringValue(payload.provider) ?? state.provider,
+		authProviders: authProvidersFromUnknown(payload.auth_providers),
 		status,
 		trust,
 		trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
@@ -1147,6 +1152,23 @@ function modelFromUnknown(value: unknown): MycliShellModel | null {
 		name: stringValue(record.name) ?? undefined,
 		thinkingLevel: stringValue(record.thinking_level) ?? stringValue(record.thinking_effort) ?? undefined,
 		scoped: typeof record.scoped === "boolean" ? record.scoped : undefined,
+	};
+}
+
+function authProvidersFromUnknown(value: unknown): MycliShellAuthProvider[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(authProviderFromUnknown).filter((item): item is MycliShellAuthProvider => item !== null);
+}
+
+function authProviderFromUnknown(value: unknown): MycliShellAuthProvider | null {
+	const record = recordValue(value);
+	const id = stringValue(record.id) ?? stringValue(record.provider_id);
+	if (!id) return null;
+	return {
+		id,
+		name: stringValue(record.name) ?? id,
+		configured: typeof record.configured === "boolean" ? record.configured : undefined,
+		defaultModel: stringValue(record.default_model) ?? stringValue(record.defaultModel) ?? undefined,
 	};
 }
 

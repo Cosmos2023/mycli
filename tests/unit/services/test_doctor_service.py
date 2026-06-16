@@ -1037,7 +1037,7 @@ def test_doctor_service_fails_runtime_contract_manifest_mismatch(
     check = next(check for check in report.checks if check.name == "runtime_contract")
     assert check.status is DoctorStatus.FAILED
     assert check.message == (
-        "manifest RPC mismatch: missing approval.respond, clarify.respond, command.run, ...; "
+        "manifest RPC mismatch: missing approval.respond, auth.api_key.save, clarify.respond, ...; "
         "extra ghost.rpc"
     )
     assert check.detail == (

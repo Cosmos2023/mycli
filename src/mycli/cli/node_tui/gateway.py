@@ -8,6 +8,7 @@ from typing import Any, Protocol, cast
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
+from mycli.config.auth_store import AuthStore
 from mycli.cli.node_tui.protocol import (
     JsonRpcError,
     RpcRequest,
@@ -35,6 +36,8 @@ from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_RPC_METHODS,
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
+from mycli.domain.providers import ProviderId, parse_provider
+from mycli.infrastructure.providers import profile_for_provider
 
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {
@@ -215,6 +218,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_completion_slash(request.params))
             if request.method == "completion.path":
                 return result_response(request.id, self._handle_completion_path(request.params))
+            if request.method == "auth.api_key.save":
+                return result_response(request.id, self._handle_auth_api_key_save(request.params))
             if request.method == "status.inspect":
                 return result_response(request.id, self._status_payload())
             if request.method == "extension.manifest":
@@ -306,11 +311,49 @@ class NodeTuiGateway:
             ),
             "status": self._status_payload(),
             "welcome": self._welcome_payload(),
+            "auth_providers": self._auth_providers_payload(),
         }
         title = self._session_title()
         if title:
             payload["session_title"] = title
         return payload
+
+    def _handle_auth_api_key_save(self, params: dict[str, object]) -> dict[str, object]:
+        provider = parse_provider(_required_str(params, "provider_id"))
+        api_key = _required_str(params, "api_key").strip()
+        if not api_key:
+            raise ValueError("api_key is required.")
+        AuthStore.from_home(self._home_dir()).set_api_key(provider.value, api_key)
+        return {
+            "ok": True,
+            "provider_id": provider.value,
+            "message": f"Saved API key for {_provider_display_name(provider)}.",
+        }
+
+    def _auth_providers_payload(self) -> list[dict[str, object]]:
+        auth_store = AuthStore.from_home(self._home_dir())
+        providers: list[dict[str, object]] = []
+        for provider in ProviderId:
+            profile = profile_for_provider(provider)
+            payload: dict[str, object] = {
+                "id": provider.value,
+                "name": _provider_display_name(provider),
+                "configured": bool(auth_store.get_api_key(provider.value)),
+            }
+            if profile.default_model:
+                payload["default_model"] = profile.default_model
+            providers.append(payload)
+        return providers
+
+    def _home_dir(self) -> Path:
+        runtime = getattr(cast(object, self.service), "_runtime", None)
+        runtime_home = getattr(runtime, "_home_dir", None)
+        if isinstance(runtime_home, Path):
+            return runtime_home
+        service_home = getattr(cast(object, self.service), "_home_dir", None)
+        if isinstance(service_home, Path):
+            return service_home
+        return Path(self.service._config.workspace_root)
 
     def _welcome_payload(self) -> dict[str, object]:
         mark_name = str(getattr(self.service._config, "tui_startup_mark", "default") or "default")
@@ -1272,6 +1315,16 @@ def _required_str(params: dict[str, object], key: str) -> str:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _provider_display_name(provider: ProviderId) -> str:
+    return {
+        ProviderId.OPENAI: "OpenAI",
+        ProviderId.DEEPSEEK: "DeepSeek",
+        ProviderId.QWEN: "Qwen",
+        ProviderId.ANTHROPIC: "Anthropic",
+        ProviderId.COMPATIBLE: "Compatible",
+    }.get(provider, provider.value)
 
 
 def _string_list(value: object) -> list[str]:

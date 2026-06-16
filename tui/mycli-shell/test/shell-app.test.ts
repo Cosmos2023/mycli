@@ -1249,6 +1249,50 @@ test("mycli shell model selector opens from slash command and selects model", as
 	assert.equal(selected, "openai/gpt-5.4/medium");
 });
 
+test("mycli shell login flow replaces editor with auth selectors", async () => {
+	const terminal = new TestTerminal();
+	const saved: Array<[string, string]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onApiKeyLogin: async (providerId, apiKey) => {
+			saved.push([providerId, apiKey]);
+			return { message: `Saved API key for ${providerId}` };
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await runtime.editor.onSubmit?.("/login");
+
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	assert.match(output, /Select authentication method:/);
+	assert.match(output, /Use an API key/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Select provider to configure:/);
+	assert.match(output, /OpenAI • unconfigured/);
+	assert.match(output, /DeepSeek • unconfigured/);
+
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Login to DeepSeek/);
+	assert.match(output, /Enter API key:/);
+
+	terminal.input?.("sk-deepseek");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	assert.deepEqual(saved, [["deepseek", "sk-deepseek"]]);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Saved API key for deepseek/);
+});
+
 test("mycli shell model selector can change thinking effort with model selection", async () => {
 	const terminal = new TestTerminal();
 	let selected = "";

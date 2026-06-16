@@ -1,5 +1,6 @@
 export type {
 	MycliShellBash,
+	MycliShellAuthProvider,
 	MycliShellCommand,
 	MycliShellFooterData,
 	MycliShellMessage,
@@ -16,6 +17,7 @@ export { AssistantMessageComponent } from "./components/assistant-message.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { FooterComponent } from "./components/footer.ts";
+export { LoginFlowComponent } from "./components/login-flow.ts";
 export { ModelSelectorComponent } from "./components/model-selector.ts";
 export { PlanPanelComponent } from "./components/plan-panel.ts";
 export { ProposedPlanComponent } from "./components/proposed-plan.ts";
