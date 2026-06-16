@@ -262,26 +262,9 @@ File memory 目录会被加入允许根目录，因此 Agent 可以读写自己�
 
 ## Memory
 
-`mycli` 有两类记忆：
+主线长期记忆采用 Claude-style file memory。
 
-### Built-in runtime records
-
-这些是运行时已有的结构化记忆，不是 Claude-style file memory：
-
-- 用户偏好：`~/.mycli/preferences.json`
-  - `save_preference()` 会把 key/value 写到这个 JSON 文件。
-  - 即使 `memory_enabled = false`，runtime 仍会读取这些偏好作为基础上下文。
-- 项目笔记：`<workspace>/.mycli/project_memory.json`
-  - `save_project_note()` 会向这个 JSON 数组追加 `MemoryRecord`。
-- 短期记忆：`~/.mycli/memory.db`
-  - `remember_short_term()` 会写入 SQLite 表 `short_term_memories`。
-  - 每个 session 默认只保留最近 100 条。
-- session summary：`~/.mycli/sessions.db`
-  - `append_session_summary()` 会写入 SQLite session store。
-
-### File memory
-
-Claude-style file memory 保存在：
+File memory 保存在：
 
 ```text
 ~/.mycli/projects/<workspace-key>/memory/
@@ -310,6 +293,21 @@ export MYCLI_MEMORY_ENABLED=false
 ```
 
 关闭后，runtime 不再注入 file memory，也不会启动后台 memory extraction/dream。
+
+### Legacy runtime records
+
+这些是较早的 runtime 结构化记录，仍可能被读取或写入，但不是当前主线长期记忆系统：
+
+- 用户偏好：`~/.mycli/preferences.json`
+  - `save_preference()` 会把 key/value 写到这个 JSON 文件。
+  - 即使 `memory_enabled = false`，runtime 仍会读取这些偏好作为基础上下文。
+- 项目笔记：`<workspace>/.mycli/project_memory.json`
+  - `save_project_note()` 会向这个 JSON 数组追加 `MemoryRecord`。
+- 短期记忆：`~/.mycli/memory.db`
+  - `remember_short_term()` 会写入 SQLite 表 `short_term_memories`。
+  - 每个 session 默认只保留最近 100 条。
+- session summary：`~/.mycli/sessions.db`
+  - `append_session_summary()` 会写入 SQLite session store。
 
 ## Sessions、Trace 与持久化
 
