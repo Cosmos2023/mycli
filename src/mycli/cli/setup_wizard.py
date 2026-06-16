@@ -160,22 +160,57 @@ def _format_toml(payload: dict[str, object]) -> str:
     lines: list[str] = []
     emitted: set[str] = set()
     for key in preferred_order:
-        if key in payload:
+        if key in payload and not isinstance(payload[key], dict):
             lines.append(_format_toml_item(key, payload[key]))
             emitted.add(key)
     for key in sorted(payload):
         if key in emitted:
             continue
-        lines.append(_format_toml_item(key, payload[key]))
+        value = payload[key]
+        if not isinstance(value, dict):
+            lines.append(_format_toml_item(key, value))
+            emitted.add(key)
+    for key in sorted(payload):
+        if key in emitted:
+            continue
+        value = payload[key]
+        if isinstance(value, dict):
+            lines.extend(_format_toml_table((key,), value))
     return "\n".join(lines) + "\n"
 
 
 def _format_toml_item(key: str, value: object) -> str:
+    return f"{key} = {_format_toml_value(value)}"
+
+
+def _format_toml_value(value: object) -> str:
     if isinstance(value, bool):
-        return f"{key} = {str(value).lower()}"
+        return str(value).lower()
     if isinstance(value, int | float):
-        return f"{key} = {value}"
-    return f'{key} = "{_escape_toml_string(str(value))}"'
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_format_toml_value(item) for item in value) + "]"
+    return f'"{_escape_toml_string(str(value))}"'
+
+
+def _format_toml_table(path: tuple[str, ...], payload: dict[str, object]) -> list[str]:
+    scalar_lines: list[str] = []
+    nested_tables: list[tuple[str, dict[str, object]]] = []
+    for key in sorted(payload):
+        value = payload[key]
+        if isinstance(value, dict):
+            nested_tables.append((key, value))
+        else:
+            scalar_lines.append(_format_toml_item(key, value))
+
+    lines: list[str] = []
+    if scalar_lines:
+        lines.append("")
+        lines.append(f"[{'.'.join(path)}]")
+        lines.extend(scalar_lines)
+    for key, value in nested_tables:
+        lines.extend(_format_toml_table((*path, key), value))
+    return lines
 
 
 def _escape_toml_string(value: str) -> str:
