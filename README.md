@@ -264,13 +264,20 @@ File memory 目录会被加入允许根目录，因此 Agent 可以读写自己�
 
 `mycli` 有两类记忆：
 
-### Runtime records
+### Built-in runtime records
 
-旧式 memory records 包括：
+这些是运行时已有的结构化记忆，不是 Claude-style file memory：
 
 - 用户偏好：`~/.mycli/preferences.json`
-- 项目记忆：`<workspace>/.mycli/project_memory.json`
-- session summary：保存在 `~/.mycli/sessions.db`
+  - `save_preference()` 会把 key/value 写到这个 JSON 文件。
+  - 即使 `memory_enabled = false`，runtime 仍会读取这些偏好作为基础上下文。
+- 项目笔记：`<workspace>/.mycli/project_memory.json`
+  - `save_project_note()` 会向这个 JSON 数组追加 `MemoryRecord`。
+- 短期记忆：`~/.mycli/memory.db`
+  - `remember_short_term()` 会写入 SQLite 表 `short_term_memories`。
+  - 每个 session 默认只保留最近 100 条。
+- session summary：`~/.mycli/sessions.db`
+  - `append_session_summary()` 会写入 SQLite session store。
 
 ### File memory
 
@@ -311,6 +318,7 @@ export MYCLI_MEMORY_ENABLED=false
 | 数据 | 路径 |
 | --- | --- |
 | Session DB | `~/.mycli/sessions.db` |
+| Short-term memory DB | `~/.mycli/memory.db` |
 | File memory | `~/.mycli/projects/<workspace-key>/memory/` |
 | Workspace trace | `~/.mycli/traces/` |
 | Workspace/project memory | `<workspace>/.mycli/project_memory.json` |
