@@ -100,6 +100,7 @@ class RuntimeContextBuilder:
             memory_records=self._memory_service.collect_runtime_context(
                 user_message=user_message,
                 session_id=self._config.session_id,
+                enabled=self._config.memory_enabled,
             ),
             skill_catalog=render_skill_catalog(self._skill_registry),
             tool_exposure=tool_exposure,

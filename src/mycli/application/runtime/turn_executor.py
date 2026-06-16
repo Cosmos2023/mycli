@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -36,6 +37,8 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
+from mycli.memory.dream_service import MemoryDreamRequest
+from mycli.memory.extraction_service import MemoryExtractionRequest
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
 from mycli.domain.logging import LogLevel
 from mycli.services.context.compaction import CacheZones, ContextBudget
@@ -1175,10 +1178,32 @@ class TurnExecutor:
                     conversation=conversation,
                     plan_state=current_plan_state,
                 )
-                runtime._memory_service.append_session_summary(
-                    runtime._config.session_id,
-                    assistant_message,
-                )
+                if runtime._config.memory_enabled:
+                    runtime._memory_service.append_session_summary(
+                        runtime._config.session_id,
+                        assistant_message,
+                    )
+                    memory_updates = (
+                        runtime._memory_extraction_service.maybe_start_background_extraction(
+                            MemoryExtractionRequest(
+                                session_id=runtime._config.session_id,
+                                turn_id=turn_id,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                                turn_items=tuple(turn_items),
+                            )
+                        )
+                    )
+                    progress_updates.extend(f"[memory] {update}" for update in memory_updates)
+                    dream_updates = runtime._memory_dream_service.maybe_start_background_dream(
+                        MemoryDreamRequest(
+                            session_id=runtime._config.session_id,
+                            turn_id=turn_id,
+                            recent_session_ids=runtime._recent_session_ids_for_memory_dream(),
+                            now=datetime.now(UTC),
+                        )
+                    )
+                    progress_updates.extend(f"[memory] {update}" for update in dream_updates)
                 runtime._session_service.clear_pending_decision(runtime._config.session_id)
                 runtime._session_service.clear_suspended_turn(runtime._config.session_id)
                 return runtime._finalize_response(

@@ -5,8 +5,9 @@ from mycli.tools.task import TaskTool
 
 
 class FakeSubAgentService:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "completed") -> None:
         self.calls: list[dict[str, object]] = []
+        self.status = status
 
     def run_task(
         self,
@@ -25,10 +26,10 @@ class FakeSubAgentService:
             }
         )
         return SubAgentResult(
-            status="completed",
-            report='<sub-agent-report agent="explore" status="completed">ok</sub-agent-report>',
+            status=self.status,
+            report=f'<sub-agent-report agent="explore" status="{self.status}">ok</sub-agent-report>',
             child_session_id="demo:sub:turn_1:abcd1234",
-            tool_calls=1,
+            tool_calls=0 if self.status == "running" else 1,
             context_diagnostics={
                 "baseline_fragment_count": 1,
                 "tool_count": 2,
@@ -73,7 +74,7 @@ def test_task_tool_delegates_to_bound_service() -> None:
                 "description": "Find tests",
                 "agent_type": "explore",
                 "allowed_tools": ("Read", "Grep"),
-                "mode": "sync",
+                "mode": "background",
             }
         ]
 
@@ -106,3 +107,38 @@ def test_task_tool_passes_background_mode() -> None:
 
     assert result.raw_payload["kind"] == "sub_agent_report"
     assert service.calls[0]["mode"] == "background"
+
+
+def test_task_tool_coerces_explicit_sync_to_background() -> None:
+    service = FakeSubAgentService()
+    tool = TaskTool(service=service)
+
+    tool.execute(
+        {
+            "description": "Inspect repo",
+            "agent_type": "explore",
+            "allowed_tools": ["Read"],
+            "mode": "sync",
+        }
+    )
+
+    assert service.calls[0]["mode"] == "background"
+
+
+def test_task_tool_treats_background_running_as_started_success() -> None:
+    service = FakeSubAgentService(status="running")
+    tool = TaskTool(service=service)
+
+    result = tool.execute(
+        {
+            "description": "Inspect repo",
+            "agent_type": "explore",
+            "allowed_tools": ["Read"],
+        }
+    )
+
+    assert result.success is True
+    assert result.summary == "Sub-agent explore started in background."
+    assert "notified automatically" in result.raw_payload["report"]
+    assert "do not call SubagentOutput" in result.raw_payload["report"]
+    assert result.raw_payload["status"] == "running"

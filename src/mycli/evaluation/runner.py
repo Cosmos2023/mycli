@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from importlib import import_module
@@ -44,8 +45,8 @@ class EvaluationTurnResult:
     prompt: str
     assistant_message: str
     rendered_lines: tuple[str, ...] = ()
-    tool_events: tuple["EvaluationToolEvent", ...] = ()
-    timeline: tuple["EvaluationTimelineEvent", ...] = ()
+    tool_events: tuple[EvaluationToolEvent, ...] = ()
+    timeline: tuple[EvaluationTimelineEvent, ...] = ()
     turn_status: str | None = None
     stop_reason: str | None = None
 
@@ -193,10 +194,7 @@ class EvaluationRunReport:
     def score(self) -> EvaluationScore:
         passed_checks = sum(1 for check in self.checks if check.passed)
         total_checks = len(self.checks)
-        if total_checks:
-            value = round((passed_checks / total_checks) * 100)
-        else:
-            value = 100
+        value = round((passed_checks / total_checks) * 100) if total_checks else 100
         failures = self.failures
         if failures:
             value = max(0, value - _runtime_failure_penalty(failures))
@@ -985,14 +983,17 @@ def _extract_timeline_events(
                     call_id=item.call_id,
                 ),
             )
-    if not any(event.event_type == TurnItemType.ASSISTANT_MESSAGE.value for event in events):
-        if isinstance(assistant_message, str) and assistant_message:
-            events.append(
-                EvaluationTimelineEvent(
-                    event_type=TurnItemType.ASSISTANT_MESSAGE.value,
-                    text=assistant_message,
-                )
+    if (
+        not any(event.event_type == TurnItemType.ASSISTANT_MESSAGE.value for event in events)
+        and isinstance(assistant_message, str)
+        and assistant_message
+    ):
+        events.append(
+            EvaluationTimelineEvent(
+                event_type=TurnItemType.ASSISTANT_MESSAGE.value,
+                text=assistant_message,
             )
+        )
     return tuple(events)
 
 
@@ -1179,7 +1180,5 @@ class _sys_path_prepended:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        try:
+        with suppress(ValueError):
             sys.path.remove(self._path)
-        except ValueError:
-            pass

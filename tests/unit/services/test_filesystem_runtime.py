@@ -55,6 +55,32 @@ def test_filesystem_runtime_writes_full_content_with_diff(tmp_path: Path) -> Non
     assert target.read_text(encoding="utf-8") == "new\n"
 
 
+def test_filesystem_runtime_allows_explicit_memory_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    memory = tmp_path / "home" / ".mycli" / "projects" / "demo" / "memory"
+    workspace.mkdir(parents=True)
+    memory.mkdir(parents=True)
+    runtime = FileSystemRuntime(workspace_root=workspace, allowed_roots=(memory,))
+
+    target = runtime.resolve_path(str(memory / "MEMORY.md"))
+    result = runtime.write_full_content(target=target, content="- [Tone](tone.md) - terse\n")
+
+    assert result.status == "created"
+    assert (memory / "MEMORY.md").read_text(encoding="utf-8") == "- [Tone](tone.md) - terse\n"
+    assert runtime.relative_path(memory / "MEMORY.md") == "memory/MEMORY.md"
+
+
+def test_filesystem_runtime_still_rejects_non_memory_workspace_escape(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    memory = tmp_path / "home" / ".mycli" / "projects" / "demo" / "memory"
+    workspace.mkdir(parents=True)
+    memory.mkdir(parents=True)
+    runtime = FileSystemRuntime(workspace_root=workspace, allowed_roots=(memory,))
+
+    with pytest.raises(ValueError):
+        runtime.resolve_path(str(tmp_path / "outside.txt"))
+
+
 def test_filesystem_runtime_replace_text_reports_stable_error_kind(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

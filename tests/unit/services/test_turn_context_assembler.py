@@ -689,6 +689,32 @@ def test_turn_context_assembler_filters_memory_values_already_present_in_replay(
     assert "I found README.md and pyproject.toml." not in memory_section.content
 
 
+def test_turn_context_assembler_fences_claude_style_file_memory() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            memory_records=(
+                MemoryRecord(
+                    kind=MemoryKind.FEEDBACK,
+                    key="terse_replies.md",
+                    value="Keep final replies short.\n\nMemory file: /tmp/memory/terse_replies.md",
+                    tags=("file-memory", "terse_replies.md"),
+                ),
+            ),
+        ),
+    )
+
+    memory_section = next(
+        section for section in turn_context.sections if section.type is TurnContextSectionType.MEMORY
+    )
+
+    assert memory_section.enabled is True
+    assert "<memory-context>" in memory_section.content
+    assert "not new user input" in memory_section.content
+    assert "feedback:terse_replies.md" in memory_section.content
+
+
 def test_turn_context_assembler_disables_memory_when_all_records_are_replay_duplicates() -> None:
     turn_context = TurnContextAssembler().assemble(
         user_message="continue",

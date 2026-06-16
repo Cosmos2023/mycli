@@ -34,7 +34,7 @@ def test_budget_defaults_match_p3_spec() -> None:
     budget = SubAgentBudget()
 
     assert budget.max_turns == 8
-    assert budget.max_tool_calls == 20
+    assert budget.max_tool_calls is None
     assert budget.no_progress_turn_limit == 3
     assert budget.report_char_limit == 8000
 

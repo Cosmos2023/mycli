@@ -163,6 +163,8 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
             if message.method == "shutdown":
                 gateway.wait_for_current_turn(timeout=None)
                 return process.wait()
+    except KeyboardInterrupt:
+        return 130
     finally:
         process.terminate()
 
@@ -618,12 +620,18 @@ class NodeTuiGateway:
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
             return
+        if event.kind == "subagent_update":
+            self._emit_event(
+                "subagent.updated",
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            return
         if event.kind == "queue_updated":
             self._emit_event(
                 "turn.queue.updated",
                 {
-                    "steering": list(event.metadata.get("steering", [])),
-                    "follow_up": list(event.metadata.get("follow_up", [])),
+                    "steering": _string_list(event.metadata.get("steering")),
+                    "follow_up": _string_list(event.metadata.get("follow_up")),
                 },
             )
             return
@@ -777,7 +785,7 @@ class NodeTuiGateway:
         if builtin == "quit":
             lines = ["Bye."]
         elif builtin.startswith("Unknown command:"):
-            lines = [line for line in self._command_handler(command)]
+            lines = list(self._command_handler(command))
         else:
             lines = builtin.splitlines()
         mutated_session = command.startswith(("/resume", "/fork"))
@@ -1264,6 +1272,12 @@ def _required_str(params: dict[str, object], key: str) -> str:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _int_metric(value: object) -> int:

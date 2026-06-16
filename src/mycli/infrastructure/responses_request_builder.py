@@ -307,7 +307,7 @@ class ResponsesRequestBuilder:
         if len(normalized_input) <= output_len:
             return None
         last_match_start: int | None = None
-        for start in range(0, len(normalized_input) - output_len):
+        for start in range(len(normalized_input) - output_len):
             if tuple(normalized_input[start : start + output_len]) == response_output:
                 last_match_start = start
         if last_match_start is None:

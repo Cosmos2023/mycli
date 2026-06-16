@@ -187,6 +187,7 @@ class AgentConfig:
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
     thinking_enabled: bool = True
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
+    memory_enabled: bool = True
     compression_threshold_tokens: int = 8000
     compaction_l4_trigger_ratio: float = 0.9
     compaction_l4_buffer_tokens: int = 13_000

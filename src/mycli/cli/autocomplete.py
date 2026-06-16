@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -55,10 +56,8 @@ def install_path_autocomplete(*, workspace_root: Path) -> Callable[[], None]:
         return None
 
     readline.set_completer(completer)
-    try:
+    with suppress(Exception):
         readline.parse_and_bind("tab: complete")
-    except Exception:
-        pass
 
     def cleanup() -> None:
         readline.set_completer(previous_completer)

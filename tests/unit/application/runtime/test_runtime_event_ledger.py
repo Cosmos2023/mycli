@@ -18,7 +18,6 @@ class _NoopSessionService(SessionService):
 
     def load_context_baseline(self, session_id: str):  # type: ignore[no-untyped-def]
         del session_id
-        return None
 
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
         del session_id

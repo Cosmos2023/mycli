@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 
 from mycli.domain.conversation import Message
@@ -166,12 +167,10 @@ class CompactionRehydrationService:
 
     def _skill_body(self, snapshot: InvokedSkillSnapshot) -> str:
         if snapshot.source_path:
-            try:
+            with suppress(OSError):
                 path = Path(snapshot.source_path)
                 if path.is_file():
                     return path.read_text(encoding="utf-8", errors="replace").strip()
-            except OSError:
-                pass
         return (snapshot.cached_body_excerpt or "").strip()
 
     def _truncate(self, *, content: str, max_item_tokens: int) -> tuple[str, int, bool]:

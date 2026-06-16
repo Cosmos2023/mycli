@@ -5,18 +5,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionRegistration,
     ToolContributionSource,
 )
-from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelToolDefinition, ModelToolParameter
 from mycli.tools.base import (
     SchemaTool,
     ToolEffectProfile,
     ToolParameter,
-    ToolSpec,
     ToolResult,
+    ToolSpec,
     mutation_targets_for_tool,
     tool_effects_for_tool,
     tool_has_mutation_contract,
@@ -133,6 +133,11 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "auto_allow_or_request",
         "capability_tags": ("task", "workflow", "subagent_foundation"),
     },
+    "SubagentOutput": {
+        "toolset": "workflow",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("task", "workflow", "subagent", "background"),
+    },
 }
 
 
@@ -164,7 +169,7 @@ class ToolsetRegistry:
         manifest: dict[str, object],
         *,
         policies: dict[str, ToolsetPolicy] | None = None,
-    ) -> "ToolsetRegistry":
+    ) -> ToolsetRegistry:
         tools = manifest.get("tools")
         entries = tuple(item for item in tools if isinstance(item, dict)) if isinstance(tools, list) else ()
         return cls(tool_entries=entries, policies={} if policies is None else dict(policies))
@@ -546,7 +551,7 @@ class ToolRegistry:
             "parameters": [_parameter_manifest(parameter) for parameter in spec.parameters],
             "risk_level": spec.risk_level,
             "approval_policy": _approval_policy_for(spec=spec, metadata=metadata),
-            "capability_tags": _capability_tags_for(spec=spec, metadata=metadata),
+            "capability_tags": _capability_tags_for(metadata=metadata),
             "effects": {
                 "filesystem": effect_profile.filesystem,
                 "network": effect_profile.network,
@@ -596,11 +601,11 @@ class ToolRegistry:
 
 
 def default_tools(workspace_root: Path) -> list[SchemaTool]:
+    from mycli.services.filesystem import FileSystemRuntime
     from mycli.tools.ask_user_question import AskUserQuestionTool
     from mycli.tools.bash import BashTool
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
-    from mycli.services.filesystem import FileSystemRuntime
     from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
     from mycli.tools.glob import GlobTool
     from mycli.tools.grep import GrepTool
@@ -611,6 +616,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
+    from mycli.tools.subagent_output import SubagentOutputTool
     from mycli.tools.task import TaskTool
     from mycli.tools.web_fetch import WebFetchTool
     from mycli.tools.web_search import WebSearchTool
@@ -640,6 +646,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         EnterPlanModeTool(workspace_root),
         ExitPlanModeTool(workspace_root),
         TaskTool(),
+        SubagentOutputTool(),
     ]
 
 
@@ -684,7 +691,7 @@ def _approval_policy_for(*, spec: ToolSpec, metadata: dict[str, object]) -> str:
     return "auto_allow"
 
 
-def _capability_tags_for(*, spec: ToolSpec, metadata: dict[str, object]) -> list[str]:
+def _capability_tags_for(*, metadata: dict[str, object]) -> list[str]:
     value = metadata.get("capability_tags")
     if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
         return sorted(set(value))

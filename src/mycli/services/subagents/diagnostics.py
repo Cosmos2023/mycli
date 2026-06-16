@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from mycli.domain.subagents import SubAgentProfile
 from mycli.domain.subagent_profiles import list_sub_agent_profiles
+from mycli.domain.subagents import SubAgentProfile
 from mycli.services.subagents.registry import (
     HIGH_RISK_SUBAGENT_TOOLS,
     SubAgentProfileDiscovery,
@@ -18,7 +18,7 @@ class SubAgentProfileDiagnostic:
     default_tools: tuple[str, ...]
     denied_tool_count: int
     budget_max_turns: int
-    budget_max_tool_calls: int
+    budget_max_tool_calls: int | None
     availability: str = "available"
     source: str = "builtin"
     enabled: bool = True
@@ -26,7 +26,7 @@ class SubAgentProfileDiagnostic:
     high_risk_tools: tuple[str, ...] = ()
 
     @classmethod
-    def from_profile(cls, profile: SubAgentProfile) -> "SubAgentProfileDiagnostic":
+    def from_profile(cls, profile: SubAgentProfile) -> SubAgentProfileDiagnostic:
         return cls(
             name=profile.name,
             default_tools=profile.default_tools,
@@ -42,7 +42,7 @@ class SubAgentProfileDiagnostic:
         return (
             f"{self.name}:{self.source}:{self.availability}:tools={tools}:"
             f"denied={self.denied_tool_count}:budget={self.budget_max_turns}/"
-            f"{self.budget_max_tool_calls}{risk}{issues}"
+            f"{self.budget_max_tool_calls or 'unlimited'}{risk}{issues}"
         )
 
 
@@ -111,7 +111,7 @@ def diagnostics_from_discovery(
                 default_tools=tools,
                 denied_tool_count=len(record.denied_tools),
                 budget_max_turns=profile.budget.max_turns if profile is not None else 0,
-                budget_max_tool_calls=profile.budget.max_tool_calls if profile is not None else 0,
+                budget_max_tool_calls=profile.budget.max_tool_calls if profile is not None else None,
                 availability=record.status,
                 source=record.source,
                 enabled=record.enabled,

@@ -192,9 +192,10 @@ class RuntimeChildTurnRequester:
         return tuple(call for call in calls if isinstance(call, ToolCall))
 
     def _project_turn(self, turn_result: ModelTurnResult) -> RuntimeChildTurn:
-        text_parts: list[str] = []
+        item_texts: list[str] = []
         calls: list[ToolCall] = []
         for item in turn_result.items:
+            text_parts: list[str] = []
             for block in item.blocks:
                 if block.type == "text" and block.text:
                     text_parts.append(block.text)
@@ -207,7 +208,10 @@ class RuntimeChildTurnRequester:
                             call_id=block.call_id,
                         )
                     )
-        return RuntimeChildTurn(text="\n".join(text_parts).strip(), tool_calls=tuple(calls))
+            item_text = "".join(text_parts).strip()
+            if item_text:
+                item_texts.append(item_text)
+        return RuntimeChildTurn(text="\n\n".join(item_texts).strip(), tool_calls=tuple(calls))
 
     def _runtime_role(self, role: str) -> RuntimeRole:
         if role in {"system", "developer", "user", "assistant", "tool"}:
@@ -319,8 +323,12 @@ class SubAgentChildLoop:
             no_progress_turns = 0
             if text and transcript is not None:
                 transcript.record_assistant_text(text)
+            tool_messages: list[dict[str, object]] = []
             for call in calls:
-                if tool_calls >= profile.budget.max_tool_calls:
+                if (
+                    profile.budget.max_tool_calls is not None
+                    and tool_calls >= profile.budget.max_tool_calls
+                ):
                     report = "Child sub-agent reached the max tool call limit."
                     self._record_final(
                         transcript,
@@ -354,8 +362,24 @@ class SubAgentChildLoop:
                         tool_name=call.name,
                         content=formatted_result,
                     )
+                tool_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_name": call.name,
+                        "tool_call_id": call.call_id,
+                        "content": formatted_result,
+                    }
+                )
                 if result.raw_payload.get("error_kind") == "approval_required":
                     report = f"Child sub-agent stopped because {call.name} requires approval."
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": text,
+                            "tool_calls": calls,
+                        }
+                    )
+                    messages.extend(tool_messages)
                     self._record_final(
                         transcript,
                         status="approval_required",
@@ -370,21 +394,14 @@ class SubAgentChildLoop:
                         error=result.error,
                         context_diagnostics=self._context_diagnostics(context_snapshot),
                     )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": text,
-                        "tool_calls": [call],
-                    }
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_name": call.name,
-                        "tool_call_id": call.call_id,
-                        "content": formatted_result,
-                    }
-                )
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": text,
+                    "tool_calls": calls,
+                }
+            )
+            messages.extend(tool_messages)
 
         report = "Child sub-agent reached the max turn limit."
         self._record_final(

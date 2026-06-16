@@ -676,24 +676,76 @@ class RequestShapeBuilder:
         self,
         contract: InstructionContract,
     ) -> tuple[Message, ...]:
-        pending_tool_call_ids: set[str] = set()
         filtered: list[Message] = []
+        pending_assistant: Message | None = None
+        pending_tool_call_ids: set[str] = set()
+        pending_tool_messages: list[Message] = []
+        deferred_messages: list[Message] = []
+
+        def flush_pending() -> None:
+            nonlocal pending_assistant, pending_tool_call_ids
+            nonlocal pending_tool_messages, deferred_messages
+            if pending_assistant is None:
+                return
+            if not pending_tool_call_ids:
+                filtered.append(pending_assistant)
+                filtered.extend(pending_tool_messages)
+            filtered.extend(deferred_messages)
+            pending_assistant = None
+            pending_tool_call_ids = set()
+            pending_tool_messages = []
+            deferred_messages = []
+
+        def discard_pending_keep_deferred() -> None:
+            nonlocal pending_assistant, pending_tool_call_ids
+            nonlocal pending_tool_messages, deferred_messages
+            filtered.extend(deferred_messages)
+            pending_assistant = None
+            pending_tool_call_ids = set()
+            pending_tool_messages = []
+            deferred_messages = []
+
         for message in self._replay_messages(contract):
+            if pending_assistant is not None:
+                if message.role == "tool":
+                    if message.tool_call_id and message.tool_call_id in pending_tool_call_ids:
+                        pending_tool_messages.append(message)
+                        pending_tool_call_ids.remove(message.tool_call_id)
+                        flush_pending()
+                    continue
+                if message.role == "assistant":
+                    tool_call_ids = self._chat_tool_call_ids(message)
+                    if tool_call_ids and tool_call_ids == pending_tool_call_ids:
+                        continue
+                    discard_pending_keep_deferred()
+                    if tool_call_ids:
+                        pending_assistant = message
+                        pending_tool_call_ids = tool_call_ids
+                    else:
+                        filtered.append(message)
+                    continue
+                deferred_messages.append(message)
+                continue
             if message.role == "tool":
-                if message.tool_call_id and message.tool_call_id in pending_tool_call_ids:
+                continue
+            if message.role == "assistant":
+                tool_call_ids = self._chat_tool_call_ids(message)
+                if tool_call_ids:
+                    pending_assistant = message
+                    pending_tool_call_ids = tool_call_ids
+                else:
                     filtered.append(message)
-                    pending_tool_call_ids.remove(message.tool_call_id)
                 continue
             filtered.append(message)
-            if message.role == "assistant":
-                pending_tool_call_ids = {
-                    call.call_id
-                    for call in self._messages.tool_calls_from_message(message)
-                    if call.call_id
-                }
-            else:
-                pending_tool_call_ids.clear()
+        discard_pending_keep_deferred()
         return tuple(filtered)
+
+    def _chat_tool_call_ids(self, message: Message) -> set[str]:
+        return {
+            call.call_id
+            for call in self._messages.tool_calls_from_message(message)
+            if call.call_id
+        }
 
     def _replay_contains_current_user_request(
         self,

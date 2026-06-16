@@ -21,11 +21,13 @@ class FakeSessionService:
 
 def test_recorder_writes_child_history_items_only() -> None:
     session_service = FakeSessionService()
+    progress: list[dict[str, object]] = []
     recorder = SubAgentTranscriptRecorder(
         session_service=session_service,
         parent_session_id="parent",
         child_session_id="parent:sub:turn_1:abcd",
         parent_turn_id="turn_1",
+        progress_callback=progress.append,
     )
 
     recorder.record_user_text("explore repo")
@@ -63,6 +65,13 @@ def test_recorder_writes_child_history_items_only() -> None:
     assert items[3].call_id == "call_1"
     assert items[4].metadata["sub_agent_status"] == "completed"
     assert items[4].metadata["tool_calls"] == 1
+    assert [event["kind"] for event in progress] == [
+        "assistant",
+        "tool_call",
+        "tool_result",
+        "final",
+    ]
+    assert progress[1]["summary"] == "Read path=pyproject.toml"
 
 
 def test_recorder_uses_write_lock() -> None:

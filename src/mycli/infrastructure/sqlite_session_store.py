@@ -6,10 +6,11 @@ import re
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterator, TypeVar, cast
+from typing import TypeVar, cast
 
 from mycli.domain.session_store import (
     JsonArray,
@@ -111,10 +112,8 @@ class SQLiteSessionStore:
         return "locked" in message or "busy" in message
 
     def _try_passive_checkpoint(self, connection: sqlite3.Connection) -> None:
-        try:
+        with suppress(sqlite3.DatabaseError):
             connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        except sqlite3.DatabaseError:
-            pass
 
     def _timestamp(self) -> str:
         return datetime.now(UTC).isoformat()

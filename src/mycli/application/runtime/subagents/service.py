@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import TimeoutError, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import hashlib
 from html import escape
 from html.parser import HTMLParser
 from threading import Lock
@@ -14,22 +15,27 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from mycli.application.runtime.subagents.loop import SubAgentChildLoop
-from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.application.runtime.subagents.tool_scope import resolve_child_tool_scope
+from mycli.application.runtime.subagents.transcript import SubAgentTranscriptRecorder
 from mycli.domain.runtime import (
     BackgroundJobSummary,
     ContextBaseline,
     HistoryItem,
     HistoryItemType,
+    RuntimeStreamEvent,
 )
 from mycli.domain.runtime.background_jobs import BackgroundJobState
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.subagents import (
     SubAgentContextSnapshot,
     SubAgentInvocation,
+    SubAgentOutput,
     SubAgentProfile,
     SubAgentResult,
     SubAgentRunSummary,
+)
+from mycli.services.subagents.tool_result_payload import (
+    BACKGROUND_SUBAGENT_NOTIFICATION_GUIDANCE,
 )
 
 
@@ -85,6 +91,7 @@ class SubAgentService:
         background_executor: SupportsBackgroundExecutor | None = None,
         max_concurrent_background_tasks: int = 2,
         run_state_lock: SupportsLock | None = None,
+        notification_sink: Callable[[str], tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
     ) -> None:
         self._session_id = session_id
         self._turn_id_provider = turn_id_provider
@@ -98,6 +105,7 @@ class SubAgentService:
         self._session_service = session_service
         self._child_loop = child_loop
         self._recent_runs: deque[SubAgentRunSummary] = deque(maxlen=max_recent_runs)
+        self._outputs: dict[str, SubAgentOutput] = {}
         self._background_executor = background_executor or ThreadPoolExecutor(
             max_workers=max_concurrent_background_tasks,
             thread_name_prefix="mycli-subagent",
@@ -106,6 +114,11 @@ class SubAgentService:
         self._max_concurrent_background_tasks = max_concurrent_background_tasks
         self._running_background: dict[str, _BackgroundRun] = {}
         self._run_state_lock = run_state_lock or Lock()
+        self._stream_sink: Callable[[RuntimeStreamEvent], None] | None = None
+        self._notification_sink = notification_sink
+
+    def set_stream_sink(self, stream_sink: Callable[[RuntimeStreamEvent], None] | None) -> None:
+        self._stream_sink = stream_sink
 
     def run_task(
         self,
@@ -240,6 +253,46 @@ class SubAgentService:
             self._format_transcript_item(item) for item in items
         )
 
+    def read_output(self, child_session_id: str) -> SubAgentOutput:
+        with self._run_state_lock:
+            summary = self._summary_for_child_unlocked(child_session_id)
+            running = child_session_id in self._running_background
+            cached = self._outputs.get(child_session_id)
+        transcript_lines = self.inspect_transcript(child_session_id)
+        report = self._final_report_from_transcript(child_session_id)
+        if summary is None:
+            return SubAgentOutput(
+                child_session_id=child_session_id,
+                status="missing",
+                report=f"sub-agent output not found: {child_session_id}",
+                tool_calls=0,
+                error=f"sub-agent output not found: {child_session_id}",
+                transcript_lines=transcript_lines,
+            )
+        status = "running" if running else summary.status
+        if cached is not None:
+            cached_report = (
+                self._output_report_from_summary(summary)
+                if status == "running"
+                else cached.report
+            )
+            return SubAgentOutput(
+                child_session_id=child_session_id,
+                status=status,
+                report=cached_report,
+                tool_calls=summary.tool_calls,
+                error=summary.error,
+                transcript_lines=transcript_lines,
+            )
+        return SubAgentOutput(
+            child_session_id=child_session_id,
+            status=status,
+            report=report or self._output_report_from_summary(summary),
+            tool_calls=summary.tool_calls,
+            error=summary.error,
+            transcript_lines=transcript_lines,
+        )
+
     def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
         deadline = monotonic() + timeout_seconds
         with self._run_state_lock:
@@ -323,10 +376,8 @@ class SubAgentService:
             self._mark_background_finished(invocation, final_result, started_at)
 
         future = self._background_executor.submit(run_child)
-        try:
+        with suppress(TimeoutError):
             future.result(timeout=0)
-        except TimeoutError:
-            pass
         with self._run_state_lock:
             if self._has_finished_record_unlocked(child_session_id):
                 return running
@@ -382,6 +433,11 @@ class SubAgentService:
             completed_at=completed_at,
             snapshot_report=self._snapshot_report(result.report),
         )
+        self._emit_completion_notification(
+            invocation,
+            result,
+            completed_at=completed_at,
+        )
 
     def _record(
         self,
@@ -418,6 +474,14 @@ class SubAgentService:
         started_at: str | None,
         completed_at: str | None,
     ) -> None:
+        self._outputs[result.child_session_id] = SubAgentOutput(
+            child_session_id=result.child_session_id,
+            status=result.status,
+            report=self._snapshot_report(result.report),
+            tool_calls=result.tool_calls,
+            error=result.error,
+            transcript_lines=(),
+        )
         self._recent_runs.appendleft(
             SubAgentRunSummary.from_result(
                 invocation=invocation,
@@ -501,7 +565,46 @@ class SubAgentService:
             parent_session_id=invocation.parent_session_id,
             child_session_id=child_session_id,
             parent_turn_id=invocation.parent_turn_id,
+            progress_callback=lambda event: self._emit_progress_event(
+                invocation=invocation,
+                child_session_id=child_session_id,
+                event=event,
+            ),
         )
+
+    def _emit_progress_event(
+        self,
+        *,
+        invocation: SubAgentInvocation,
+        child_session_id: str,
+        event: dict[str, object],
+    ) -> None:
+        sink = self._stream_sink
+        if sink is None:
+            return
+        tool_calls = event.get("tool_calls")
+        payload: dict[str, object] = {
+            "subagent": {
+                "run_id": self._snapshot_run_id(child_session_id),
+                "child_session_id": child_session_id,
+                "parent_turn_id": invocation.parent_turn_id,
+                "role": invocation.agent_type,
+                "description": invocation.description,
+                "status": str(event.get("status") or "running"),
+                "mode": invocation.mode,
+                "summary": str(event.get("summary") or ""),
+                "tool_calls": tool_calls if isinstance(tool_calls, int) else None,
+                "progress": [event],
+            }
+        }
+        try:
+            sink(RuntimeStreamEvent(kind="subagent_update", metadata=payload))
+        except Exception:
+            return
+
+    def _snapshot_run_id(self, child_session_id: str) -> str:
+        digest = hashlib.sha256(child_session_id.encode("utf-8")).hexdigest()[:16]
+        return f"subagent-{digest}"
 
     def _transcript_header(self, child_session_id: str) -> str:
         for summary in self._recent_runs:
@@ -534,6 +637,85 @@ class SubAgentService:
         if item.type is HistoryItemType.USER_MESSAGE and item.metadata.get("role") == "system":
             return f"  system {(item.text or '').replace(chr(10), ' ')[:500]}"
         return f"  user {(item.text or '').replace(chr(10), ' ')[:500]}"
+
+    def _summary_for_child_unlocked(
+        self,
+        child_session_id: str,
+    ) -> SubAgentRunSummary | None:
+        for summary in self._recent_runs:
+            if summary.child_session_id == child_session_id:
+                return summary
+        return None
+
+    def _final_report_from_transcript(self, child_session_id: str) -> str:
+        if self._session_service is None:
+            return ""
+        items = self._session_service.load_history_items(child_session_id)
+        for item in reversed(items):
+            if item.type is not HistoryItemType.ASSISTANT_MESSAGE:
+                continue
+            if isinstance(item.metadata.get("sub_agent_status"), str):
+                return item.text or ""
+        return ""
+
+    def _output_report_from_summary(self, summary: SubAgentRunSummary) -> str:
+        if summary.status == "running":
+            return (
+                f"Sub-agent {summary.agent_type} is still running. "
+                f"{BACKGROUND_SUBAGENT_NOTIFICATION_GUIDANCE} "
+                "Do not call SubagentOutput again unless the user explicitly asks "
+                "for another progress check."
+            )
+        if summary.error:
+            return summary.error
+        return f"Sub-agent {summary.agent_type} finished with status {summary.status}."
+
+    def _emit_completion_notification(
+        self,
+        invocation: SubAgentInvocation,
+        result: SubAgentResult,
+        *,
+        completed_at: str,
+    ) -> None:
+        message = self._task_notification(invocation, result, completed_at=completed_at)
+        steering: tuple[str, ...] = (message,)
+        follow_up: tuple[str, ...] = ()
+        if self._notification_sink is not None:
+            with suppress(Exception):
+                steering, follow_up = self._notification_sink(message)
+        sink = self._stream_sink
+        if sink is None:
+            return
+        try:
+            sink(
+                RuntimeStreamEvent(
+                    kind="queue_updated",
+                    metadata={"steering": list(steering), "follow_up": list(follow_up)},
+                )
+            )
+        except Exception:
+            return
+
+    def _task_notification(
+        self,
+        invocation: SubAgentInvocation,
+        result: SubAgentResult,
+        *,
+        completed_at: str,
+    ) -> str:
+        report = self._snapshot_report(result.report)
+        summary = report.splitlines()[0].strip() if report.strip() else result.status
+        return (
+            "<task-notification>\n"
+            f"<task-id>{escape(result.child_session_id)}</task-id>\n"
+            f"<agent>{escape(invocation.agent_type)}</agent>\n"
+            f"<status>{escape(result.status)}</status>\n"
+            f"<completed-at>{escape(completed_at)}</completed-at>\n"
+            f"<tool-calls>{result.tool_calls}</tool-calls>\n"
+            f"<summary>{escape(summary[:500])}</summary>\n"
+            f"<result>{escape(report)}</result>\n"
+            "</task-notification>"
+        )
 
     def _context_snapshot(self, tool_names: tuple[str, ...]) -> SubAgentContextSnapshot:
         baseline = self._context_baseline_provider()

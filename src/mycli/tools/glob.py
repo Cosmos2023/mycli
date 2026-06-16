@@ -56,8 +56,9 @@ class GlobTool:
         risk_level="low",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, workspace_root: Path, *, allowed_roots: tuple[Path, ...] = ()) -> None:
         self._workspace_root = workspace_root
+        self._allowed_roots = allowed_roots
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="read")
@@ -68,7 +69,11 @@ class GlobTool:
             return ToolResult(success=False, summary="Failed to glob", error="Glob requires pattern.")
         raw_path = str(arguments.get("path", "."))
         try:
-            root = resolve_workspace_path(self._workspace_root, raw_path)
+            root = resolve_workspace_path(
+                self._workspace_root,
+                raw_path,
+                allowed_roots=self._allowed_roots,
+            )
             payload = glob(pattern, path=str(root))
         except (OSError, ValueError) as exc:
             return ToolResult(success=False, summary="Failed to glob", error=str(exc))

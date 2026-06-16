@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import hashlib
 from time import monotonic
-from typing import Callable
 
+from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     ActivityEvent,
@@ -22,8 +23,7 @@ from mycli.domain.runtime import (
     TurnItem,
     TurnItemType,
 )
-from mycli.domain.tooling.calls import ToolCall
-from mycli.domain.tooling.calls import ToolEvidence
+from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.domain.tooling.exposure import ToolExposure
 from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
 from mycli.services.context.context_manager import ContextManager
@@ -37,10 +37,9 @@ from mycli.services.hooks import (
     HookResult,
 )
 from mycli.services.security import InjectionGuard
-from mycli.tools.routing.tool_router import ToolRouter
-from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
+from mycli.tools.routing.tool_router import ToolRouter
 
 CONCURRENCY_SAFE_TOOLS = frozenset(
     {
@@ -74,6 +73,8 @@ WriteDiagnosticsRunner = Callable[[tuple[str, ...]], dict[str, object]]
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_WRITE_DIAGNOSTICS = 30
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
+MAX_LIFECYCLE_CONTENT_PREVIEW_CHARS = 12_000
+MAX_LIFECYCLE_DIFF_PREVIEW_CHARS = 12_000
 MAX_CLARIFY_OPTIONS = 5
 _DENIED_ERROR_KINDS = frozenset(
     {
@@ -719,7 +720,6 @@ class ToolExecutionService:
         result = _apply_post_hook_results(result, post_hook_execution.results)
         next_plan_state = self._apply_tool_effects(
             call=normalized_call,
-            result_summary=result.summary,
             result_payload=result.raw_payload,
             plan_state=plan_state,
         )
@@ -969,6 +969,7 @@ class ToolExecutionService:
         args_preview = self._tool_args_preview(call)
         if args_preview:
             metadata["args_preview"] = args_preview
+        metadata.update(_write_content_lifecycle_metadata(call))
         return RuntimeStreamEvent(kind="tool_start", tool_name=call.name, metadata=metadata)
 
     def _interrupted_tool_result(self, call: ToolCall) -> ToolResult:
@@ -1021,6 +1022,7 @@ class ToolExecutionService:
             error_kind = result.raw_payload.get("error_kind")
             if isinstance(error_kind, str) and error_kind:
                 metadata["error_kind"] = error_kind
+        metadata.update(_mutation_diff_lifecycle_metadata(call=call, result=result))
         return RuntimeStreamEvent(
             kind="tool_complete" if result.success else "tool_failed",
             tool_name=call.name,
@@ -2015,7 +2017,15 @@ def runtime_policy_denial_message(decision: ToolRuntimeDecision) -> str:
             f"Plan mode is read-only; blocked {decision.tool_call.name}. "
             "Switch to /mode default to allow mutating tools."
         )
-    return "Tool denied by runtime policy."
+    parts = [f"Tool denied by runtime policy: {decision.tool_call.name}"]
+    details: list[str] = []
+    if decision.policy:
+        details.append(f"policy={decision.policy}")
+    if decision.reason_code:
+        details.append(f"reason={decision.reason_code}")
+    if details:
+        parts.append(f"({', '.join(details)})")
+    return " ".join(parts) + "."
 
 
 def _render_plan_steps(plan_state: PlanState) -> list[str]:
@@ -2048,6 +2058,54 @@ def _visible_tool_arguments(arguments: dict[str, object]) -> dict[str, object]:
         for key, value in arguments.items()
         if not str(key).startswith("_")
     }
+
+
+def _write_content_lifecycle_metadata(call: ToolCall) -> dict[str, object]:
+    if call.name not in {"Write", "write_file"}:
+        return {}
+    content = call.arguments.get("content")
+    if not isinstance(content, str):
+        return {}
+    preview, truncated = _bounded_lifecycle_text(
+        content,
+        max_chars=MAX_LIFECYCLE_CONTENT_PREVIEW_CHARS,
+    )
+    return {
+        "content_preview": preview,
+        "content_line_count": _line_count(content),
+        "content_chars": len(content),
+        "content_truncated": truncated,
+    }
+
+
+def _mutation_diff_lifecycle_metadata(*, call: ToolCall, result: ToolResult) -> dict[str, object]:
+    if call.name not in FILE_MUTATION_TOOLS:
+        return {}
+    diff = result.raw_payload.get("diff")
+    if not isinstance(diff, str) or not diff:
+        return {}
+    preview, truncated = _bounded_lifecycle_text(
+        diff,
+        max_chars=MAX_LIFECYCLE_DIFF_PREVIEW_CHARS,
+    )
+    return {
+        "diff": preview,
+        "diff_chars": len(diff),
+        "diff_truncated": truncated,
+    }
+
+
+def _bounded_lifecycle_text(value: str, *, max_chars: int) -> tuple[str, bool]:
+    if len(value) <= max_chars:
+        return value, False
+    return value[:max_chars], True
+
+
+def _line_count(value: str) -> int:
+    stripped = value.rstrip("\n")
+    if not stripped:
+        return 0
+    return stripped.count("\n") + 1
 
 
 def _with_post_hook_modifications(

@@ -23,6 +23,21 @@ class SupportsSubAgentService(Protocol):
         ...
 
 
+def _model_task_mode(value: object) -> str:
+    mode = str(value).strip().lower() if value is not None else ""
+    return "background" if mode in {"", "sync", "background"} else "background"
+
+
+def _task_success(status: str) -> bool:
+    return status in {"completed", "running"}
+
+
+def _task_summary(agent_type: str, status: str) -> str:
+    if status == "running":
+        return f"Sub-agent {agent_type} started in background."
+    return f"Sub-agent {agent_type} completed with status {status}."
+
+
 class TaskTool(SchemaTool):
     spec = ToolSpec(
         name="Task",
@@ -41,7 +56,11 @@ class TaskTool(SchemaTool):
                 "mode",
                 "string",
                 False,
-                "Task execution mode: sync or background.",
+                (
+                    "Task execution mode. Model-facing task calls run in background; "
+                    "the parent is notified automatically on completion and should "
+                    "not poll SubagentOutput unless the user explicitly asks."
+                ),
             ),
         ),
         risk_level="medium",
@@ -65,7 +84,7 @@ class TaskTool(SchemaTool):
         description = str(arguments["description"])
         agent_type = str(arguments["agent_type"])
         allowed_tools = tuple(str(tool) for tool in arguments.get("allowed_tools", ()))
-        mode = str(arguments.get("mode", "sync"))
+        mode = _model_task_mode(arguments.get("mode"))
         result = self._service.run_task(
             description=description,
             agent_type=agent_type,
@@ -73,8 +92,8 @@ class TaskTool(SchemaTool):
             mode=mode,
         )
         return ToolResult(
-            success=result.status == "completed",
-            summary=f"Sub-agent {agent_type} completed with status {result.status}.",
+            success=_task_success(result.status),
+            summary=_task_summary(agent_type, result.status),
             artifacts=subagent_tool_artifacts(result),
             error=result.error,
             raw_payload=subagent_tool_payload(profile=agent_type, result=result),

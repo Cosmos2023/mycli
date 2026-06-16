@@ -557,6 +557,9 @@ def test_runtime_registers_bound_task_tool(tmp_path: Path) -> None:
     assert "Task" in runtime._tool_registry.list_names()
     task_tool = runtime._tool_registry.executors["Task"]
     assert getattr(task_tool, "_service", None) is runtime._sub_agent_service
+    assert "SubagentOutput" in runtime._tool_registry.list_names()
+    output_tool = runtime._tool_registry.executors["SubagentOutput"]
+    assert getattr(output_tool, "_service", None) is runtime._sub_agent_service
 
 
 def test_runtime_extension_manifest_exposes_live_subagent_contributed_tools(
@@ -1024,6 +1027,36 @@ class FollowUpCaptureAdapter:
                 RuntimeItem(
                     role="assistant",
                     blocks=(RuntimeBlock(type="text", text="follow-up answer"),),
+                ),
+            ),
+            done=True,
+        )
+
+
+class SteeringNotificationCaptureAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_items: list[list[RuntimeItem]] = []
+
+    def next_turn(self, *, items, tools):
+        del tools
+        self.calls += 1
+        self.seen_items.append(items)
+        if self.calls == 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="first answer"),),
+                    ),
+                ),
+                done=True,
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="notification handled"),),
                 ),
             ),
             done=True,
@@ -1710,6 +1743,39 @@ def test_agent_runtime_consumes_follow_up_after_answer_completion(
         if block.type == "text"
     ]
     assert "now summarize risks" in second_request_user_texts
+    assert runtime.queued_messages() == ((), ())
+
+
+def test_agent_runtime_places_subagent_notification_in_next_request(
+    tmp_path: Path,
+) -> None:
+    adapter = SteeringNotificationCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    notification = (
+        "<task-notification>\n"
+        "<task-id>demo:sub:turn_1:abcd</task-id>\n"
+        "<status>completed</status>\n"
+        "<result>done</result>\n"
+        "</task-notification>"
+    )
+    runtime.queue_steering_message(notification)
+
+    response = runtime.handle_user_turn("answer first")
+
+    assert response.assistant_message == "first answer"
+    assert adapter.calls == 1
+    request_user_texts = [
+        block.text
+        for item in adapter.seen_items[0]
+        if item.role == "user"
+        for block in item.blocks
+        if block.type == "text"
+    ]
+    assert notification in request_user_texts
     assert runtime.queued_messages() == ((), ())
 
 
@@ -3465,6 +3531,99 @@ def test_agent_runtime_uses_unified_memory_context_records(tmp_path: Path) -> No
         message for message in user_messages if message == "inspect this repo"
     ]
     assert current_request_messages == ["inspect this repo"]
+
+
+def test_agent_runtime_wires_model_file_memory_selector_by_default(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+
+    assert runtime._memory_service._file_memory_selector is not None
+
+
+def test_agent_runtime_extracts_explicit_memory_after_successful_turn(tmp_path: Path) -> None:
+    memory_service = MemoryService(
+        home_dir=tmp_path / "home",
+        workspace_root=tmp_path,
+    )
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+    runtime._memory_service = memory_service
+
+    response = runtime.handle_user_turn("remember that I prefer terse final answers")
+
+    assert response.assistant_message == "Memory captured"
+    assert "[memory] memory_extract_started" in response.progress_updates
+    trace = runtime._trace_service.load(runtime._config.session_id)
+    event = next(event for event in trace if event.kind == "memory_extraction")
+    assert event.payload["result"] == "started"
+    assert event.payload["mode"] == "background_agent"
+    assert "terse final answers" not in json.dumps(event.payload)
+
+
+class FakeMemoryDreamService:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def maybe_start_background_dream(self, request):
+        self.requests.append(request)
+        return ("memory_dream_started",)
+
+
+class FakeMemoryExtractionService:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def maybe_start_background_extraction(self, request):
+        self.requests.append(request)
+        return ("memory_extract_started",)
+
+
+def test_agent_runtime_skips_automatic_memory_when_disabled(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="demo",
+        memory_enabled=False,
+    )
+    extraction_service = FakeMemoryExtractionService()
+    dream_service = FakeMemoryDreamService()
+    runtime._memory_extraction_service = extraction_service
+    runtime._memory_dream_service = dream_service
+
+    response = runtime.handle_user_turn("continue")
+
+    assert "[memory] memory_extract_started" not in response.progress_updates
+    assert "[memory] memory_dream_started" not in response.progress_updates
+    assert extraction_service.requests == []
+    assert dream_service.requests == []
+
+
+def test_agent_runtime_checks_memory_dream_after_successful_turn(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+    dream_service = FakeMemoryDreamService()
+    runtime._memory_dream_service = dream_service
+
+    response = runtime.handle_user_turn("continue")
+
+    assert "[memory] memory_dream_started" in response.progress_updates
+    assert dream_service.requests
+    request = dream_service.requests[0]
+    assert request.session_id == runtime._config.session_id
+    assert request.turn_id
 
 
 def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:

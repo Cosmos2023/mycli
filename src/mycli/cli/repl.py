@@ -14,7 +14,7 @@ def handle_slash_command(command: str) -> str:
                 "/help",
                 "/skill",
                 "/skills",
-                "/memory",
+                "/memory [list|path|search|add|forget]",
                 "/plan",
                 "/mode [default|plan]",
                 "/subagents",
@@ -71,8 +71,18 @@ def build_command_handler(
             return [f"[bash] {line}" for line in service.inspect_bashes()]
         if command == "/changes":
             return [f"[change] {line}" for line in service.inspect_file_changes()]
-        if command == "/memory":
+        if command == "/memory" or command == "/memory list":
             return [f"[memory] {line}" for line in service.inspect_memory()]
+        if command == "/memory path":
+            return [f"[memory] {line}" for line in service.inspect_memory_path()]
+        if command.startswith("/memory search "):
+            query = command.split(maxsplit=2)[2]
+            return [f"[memory] {line}" for line in service.search_memory(query)]
+        if command.startswith("/memory forget "):
+            query = command.split(maxsplit=2)[2]
+            return [f"[memory] {line}" for line in service.forget_memory(query)]
+        if command.startswith("/memory add "):
+            return [f"[memory] {line}" for line in _handle_memory_add(service, command)]
         if command == "/extensions":
             return [f"[extension] {line}" for line in service.inspect_extensions()]
         if command == "/plugin":
@@ -188,6 +198,21 @@ def build_command_handler(
     return handle
 
 
+def _handle_memory_add(service: TurnService, command: str) -> Iterable[str]:
+    payload = command.removeprefix("/memory add ").strip()
+    if "::" not in payload:
+        return ("usage: /memory add <type> <name> :: <content>",)
+    header, content = payload.split("::", 1)
+    parts = header.strip().split(maxsplit=1)
+    if len(parts) != 2:
+        return ("usage: /memory add <type> <name> :: <content>",)
+    return service.add_memory(
+        kind=parts[0],
+        name=parts[1],
+        content=content.strip(),
+    )
+
+
 def _parse_model_command(command: str) -> tuple[str | None, str | None]:
     parts = shlex.split(command)
     if len(parts) == 1:
@@ -228,6 +253,7 @@ def run_repl(
     command_handler: Callable[[str], Iterable[str]] | None = None,
     statusline_provider: Callable[[], Iterable[str]] | None = None,
 ) -> None:
+    del session_id  # Kept for the existing CLI embedding contract.
     while True:
         try:
             if statusline_provider is not None:

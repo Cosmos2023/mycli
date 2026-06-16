@@ -57,6 +57,10 @@ from mycli.domain.tooling.exposure import (
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
+from mycli.memory.dream_service import MemoryDreamService
+from mycli.memory.extraction_service import MemoryExtractionService
+from mycli.memory.memdir import ensure_memory_dir, memory_dir_for
+from mycli.memory.selector import ModelFileMemorySelector
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.approval.safety_policy import SafetyPolicy
 from mycli.services.execpolicy import ExecPolicyLoadError, ExecPolicyLoader
@@ -130,6 +134,7 @@ from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.tools.task import TaskTool
+from mycli.tools.subagent_output import SubagentOutputTool
 
 
 class _SummarizerClientAdapter:
@@ -194,13 +199,12 @@ class _SummarizerClientAdapter:
                 self._restore_max_output_tokens()
             if self._restore_model is not None:
                 self._restore_model()
-        content = "\n".join(
+        return "\n".join(
             block.text or ""
             for item in turn_result.items
             for block in item.blocks
             if block.type == "text" and block.text
         ).strip()
-        return content
 
 
 def _runtime_role(role: str) -> RuntimeRole:
@@ -297,10 +301,23 @@ class AgentRuntime:
             workspace_root=config.workspace_root,
             session_store=self._session_store,
         )
+        memory_selector = ModelFileMemorySelector(
+            client=_SummarizerClientAdapter(
+                self._model_turn_requester,
+                set_model=self._set_model,
+                restore_model=self._restore_model,
+                set_max_output_tokens=self._set_model_max_output_tokens,
+                restore_max_output_tokens=self._restore_model_max_output_tokens,
+                disable_thinking=self._disable_model_thinking,
+                restore_thinking=self._restore_model_thinking,
+            ),
+            model=config.compaction_l4_summarizer_model or config.model,
+        )
         self._memory_service = memory_service or MemoryService(
             home_dir=home_dir,
             workspace_root=config.workspace_root,
             session_store=self._session_store,
+            file_memory_selector=memory_selector,
         )
         self._planning_service = planning_service or PlanningService()
         self._skill_registry = skill_registry or SkillRegistry(
@@ -428,6 +445,17 @@ class AgentRuntime:
             requester=child_requester,
             executor=child_executor,
         )
+        self._memory_extraction_service = MemoryExtractionService(
+            memory_service=self._memory_service,
+            child_loop=self._sub_agent_child_loop,
+            memory_dir=self._memory_service.file_memory_dir(),
+            trace_service=self._trace_service,
+        )
+        self._memory_dream_service = MemoryDreamService(
+            child_loop=self._sub_agent_child_loop,
+            memory_dir=self._memory_service.file_memory_dir(),
+            trace_service=self._trace_service,
+        )
         self._sub_agent_service = SubAgentService(
             session_id=config.session_id,
             turn_id_provider=lambda: getattr(self, "_current_turn_id", "turn_unknown"),
@@ -440,8 +468,10 @@ class AgentRuntime:
             context_baseline_provider=self._inherited_subagent_context_baseline,
             trace_service=self._trace_service,
             session_service=self._session_service,
+            notification_sink=self.queue_steering_message,
         )
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
+        self._tool_registry.register(SubagentOutputTool(service=self._sub_agent_service))
         self._contributed_tool_providers = (
             *self._contributed_tool_providers,
             SubAgentToolContributionProvider(
@@ -540,12 +570,18 @@ class AgentRuntime:
         from mycli.tools.plan import PlanTool
         from mycli.tools.read import ReadTool
 
-        filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
+        memory_dir = memory_dir_for(home_dir, workspace_root)
+        ensure_memory_dir(memory_dir)
+        allowed_roots = (memory_dir,)
+        filesystem_runtime = FileSystemRuntime(
+            workspace_root=workspace_root,
+            allowed_roots=allowed_roots,
+        )
         tool_registry = ToolRegistry.from_tools(
             [
-                LSTool(workspace_root),
+                LSTool(workspace_root, allowed_roots=allowed_roots),
                 ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
-                GrepTool(workspace_root),
+                GrepTool(workspace_root, allowed_roots=allowed_roots),
                 EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
                 BashTool(workspace_root),
                 PlanTool(),
@@ -627,6 +663,12 @@ class AgentRuntime:
 
     def _set_model_tool_choice(self, tool_choice: str | None) -> None:
         self._model_state.set_tool_choice(tool_choice)
+
+    def _recent_session_ids_for_memory_dream(self, *, limit: int = 20) -> tuple[str, ...]:
+        return tuple(
+            overview.session_id
+            for overview in self._session_service.list_sessions(limit=limit)
+        )
 
     def _load_model_continuation_state(self, *, turn_id: str) -> None:
         self._model_state.set_config(self._config)
@@ -1794,7 +1836,6 @@ class AgentRuntime:
         self,
         *,
         call: ToolCall,
-        result_summary: str,
         result_payload: dict[str, object],
         plan_state: PlanState,
     ) -> PlanState:
@@ -1885,6 +1926,7 @@ class AgentRuntime:
     ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
+        self._sub_agent_service.set_stream_sink(stream_sink)
         return TurnExecutor(self).execute_user_turn(user_message, stream_sink=stream_sink)
 
     def resolve_pending_approval(self, choice: str) -> TurnResponse:

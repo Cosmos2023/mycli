@@ -1376,6 +1376,110 @@ def test_request_shape_builder_filters_orphan_tool_messages_for_chat_completions
     assert shape.provider_messages[3].metadata["tool_call_id"] == "call_kept"
 
 
+def test_request_shape_builder_deduplicates_pending_tool_calls_for_chat_completions(
+    tmp_path: Path,
+) -> None:
+    duplicated_call = ToolCall(
+        name="Bash",
+        arguments={"command": "identify image.jpg"},
+        reason="inspect image",
+        call_id="call_identify",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(),
+            contextual_user_sections=(),
+            conversation_messages=(
+                Message(role="user", content="what is this image"),
+                Message(role="assistant", content="", tool_calls=(duplicated_call,)),
+                Message(role="assistant", content="", tool_calls=(duplicated_call,)),
+                Message(
+                    role="tool",
+                    content="identify failed: command not found",
+                    tool_call_id="call_identify",
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("Bash"),),
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    tool_call_messages = [
+        message
+        for message in shape.provider_messages
+        if message.role == "assistant" and message.metadata.get("tool_calls")
+    ]
+    assert len(tool_call_messages) == 1
+    assert shape.provider_messages[3].metadata["tool_call_id"] == "call_identify"
+
+
+def test_request_shape_builder_moves_interleaved_skill_context_after_tool_result_for_chat_completions(
+    tmp_path: Path,
+) -> None:
+    skill_call = ToolCall(
+        name="Skill",
+        arguments={"skill_name": "repository-analysis"},
+        reason="load skill",
+        call_id="call_skill",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            developer_sections=(),
+            contextual_user_sections=(),
+            conversation_messages=(
+                Message(role="user", content="load repo skill"),
+                Message(role="assistant", content="", tool_calls=(skill_call,)),
+                Message(
+                    role="user",
+                    content="<skill_instructions>repository-analysis</skill_instructions>",
+                    metadata={"kind": "skill_instructions"},
+                ),
+                Message(
+                    role="tool",
+                    content="Inspect the repository before answering.",
+                    tool_call_id="call_skill",
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("Skill"),),
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "user",
+    ]
+    assert shape.provider_messages[3].metadata["tool_call_id"] == "call_skill"
+    assert shape.provider_messages[4].content == (
+        "<skill_instructions>repository-analysis</skill_instructions>"
+    )
+
+
 def test_request_shape_builder_keeps_current_user_query_in_replay_for_tool_loop_prefix(
     tmp_path: Path,
 ) -> None:

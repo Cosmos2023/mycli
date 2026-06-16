@@ -85,8 +85,9 @@ class GrepTool:
         risk_level="low",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, workspace_root: Path, *, allowed_roots: tuple[Path, ...] = ()) -> None:
         self._workspace_root = workspace_root
+        self._allowed_roots = allowed_roots
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="read")
@@ -98,7 +99,11 @@ class GrepTool:
 
         raw_path = str(arguments.get("path", "."))
         try:
-            search_path = resolve_workspace_path(self._workspace_root, raw_path)
+            search_path = resolve_workspace_path(
+                self._workspace_root,
+                raw_path,
+                allowed_roots=self._allowed_roots,
+            )
         except ValueError as exc:
             return ToolResult(success=False, summary="Failed to grep", error=str(exc))
 

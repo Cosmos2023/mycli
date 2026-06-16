@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import suppress
 
 from mycli.application.runtime.subagents.loop import RuntimeChildTurnRequester
 from mycli.domain.runtime import ModelTurnResult
@@ -17,10 +18,8 @@ class FakeConcurrentRequester:
         del runtime_items, legacy_messages, tools, stream_sink
         self.active += 1
         self.max_active = max(self.max_active, self.active)
-        try:
+        with suppress(threading.BrokenBarrierError):
             self.entered.wait(timeout=1)
-        except threading.BrokenBarrierError:
-            pass
         self.release.wait(timeout=1)
         self.active -= 1
         return ModelTurnResult(items=(), done=True), ()
@@ -31,8 +30,8 @@ def test_model_request_lock_serializes_concurrent_calls() -> None:
     lock = threading.Lock()
     child_requester = RuntimeChildTurnRequester(
         requester=requester,
-        tool_exposure_builder=lambda tool_names: None,
-        tool_renderer=lambda exposure: [],
+        tool_exposure_builder=lambda _: None,
+        tool_renderer=lambda _: [],
         model_request_lock=lock,
     )
 

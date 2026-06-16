@@ -36,6 +36,21 @@ class SupportsSubAgentTaskService(Protocol):
         ...
 
 
+def _model_subagent_mode(value: object) -> str:
+    mode = str(value).strip().lower() if value is not None else ""
+    return "background" if mode in {"", "sync", "background"} else "background"
+
+
+def _subagent_tool_success(status: str) -> bool:
+    return status in {"completed", "running"}
+
+
+def _subagent_tool_summary(profile: str, status: str) -> str:
+    if status == "running":
+        return f"Sub-agent {profile} started in background."
+    return f"Sub-agent {profile} completed with status {status}."
+
+
 @dataclass(slots=True)
 class _SubAgentContributionTool:
     service: SupportsSubAgentTaskService
@@ -59,7 +74,7 @@ class _SubAgentContributionTool:
             arguments.get("allowed_tools"),
             fallback=self.profile.default_tools,
         )
-        mode = str(arguments.get("mode", "sync")).strip() or "sync"
+        mode = _model_subagent_mode(arguments.get("mode"))
         result = self.service.run_task(
             description=description,
             agent_type=self.profile.name,
@@ -67,8 +82,8 @@ class _SubAgentContributionTool:
             mode=mode,
         )
         return ToolResult(
-            success=result.status == "completed",
-            summary=f"Sub-agent {self.profile.name} completed with status {result.status}.",
+            success=_subagent_tool_success(result.status),
+            summary=_subagent_tool_summary(self.profile.name, result.status),
             artifacts=subagent_tool_artifacts(result),
             error=result.error,
             raw_payload=subagent_tool_payload(profile=self.profile.name, result=result),
@@ -118,7 +133,12 @@ class SubAgentToolContributionProvider:
                     name="mode",
                     type="string",
                     required=False,
-                    description="Task execution mode: sync or background.",
+                    description=(
+                        "Task execution mode. Model-facing subagent calls start "
+                        "in background so the parent agent can continue. Completion "
+                        "is delivered automatically; do not poll SubagentOutput unless "
+                        "the user explicitly asks."
+                    ),
                 ),
             ),
             risk_level="medium",
@@ -140,6 +160,9 @@ class SubAgentToolContributionProvider:
                     "availability": "available",
                     "max_turns": profile.budget.max_turns,
                     "max_tool_calls": profile.budget.max_tool_calls,
+                    "tool_call_limit": "unlimited"
+                    if profile.budget.max_tool_calls is None
+                    else profile.budget.max_tool_calls,
                     "risk_level": "medium",
                     "approval_policy": "auto_allow_or_request",
                     "legacy_route_name": legacy_route_name,

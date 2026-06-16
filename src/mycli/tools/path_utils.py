@@ -3,12 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def resolve_workspace_path(workspace_root: Path, raw_path: str) -> Path:
-    candidate = (workspace_root / raw_path).resolve()
-    root = workspace_root.resolve()
-    if candidate != root and root not in candidate.parents:
-        raise ValueError("Path must stay within the current workspace.")
+def resolve_workspace_path(
+    workspace_root: Path,
+    raw_path: str,
+    *,
+    allowed_roots: tuple[Path, ...] = (),
+) -> Path:
+    raw_candidate = Path(raw_path)
+    candidate = (
+        raw_candidate if raw_candidate.is_absolute() else workspace_root / raw_candidate
+    ).resolve()
+    roots = (workspace_root, *allowed_roots)
+    if not any(_is_within(candidate, root) for root in roots):
+        raise ValueError("Path must stay within the current workspace or allowed roots.")
     return candidate
+
+
+def _is_within(candidate: Path, root: Path) -> bool:
+    resolved_root = root.resolve()
+    return candidate == resolved_root or resolved_root in candidate.parents
 
 
 def require_text_file(path: Path) -> None:

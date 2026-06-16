@@ -330,6 +330,14 @@ def resolve_config(
     if thinking_enabled is False and thinking_effort_value is not None:
         raise ValueError("thinking_effort requires thinking_enabled=true")
     thinking_effort = reasoning_effort if thinking_enabled else None
+    memory_enabled_raw: object | None = env.get("MYCLI_MEMORY_ENABLED")
+    if memory_enabled_raw is None:
+        memory_enabled_raw = (
+            project_config["memory_enabled"]
+            if "memory_enabled" in project_config
+            else user_config.get("memory_enabled")
+        )
+    memory_enabled_value = _parse_optional_bool(memory_enabled_raw)
     compression_threshold_tokens_value = (
         env.get("MYCLI_COMPRESSION_THRESHOLD_TOKENS")
         or project_config.get("compression_threshold_tokens")
@@ -465,6 +473,7 @@ def resolve_config(
         reasoning_effort=reasoning_effort,
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,
+        memory_enabled=True if memory_enabled_value is None else memory_enabled_value,
         compression_threshold_tokens=int(str(compression_threshold_tokens_value)),
         compaction_l4_trigger_ratio=float(str(compaction_l4_trigger_ratio_value)),
         compaction_l4_buffer_tokens=int(str(compaction_l4_buffer_tokens_value)),

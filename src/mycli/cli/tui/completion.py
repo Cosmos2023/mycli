@@ -92,7 +92,6 @@ class CompletionState:
         self.visible = False
         self.candidates = ()
         self.selected_index = 0
-        return None
 
 
 def _current_token(value: str) -> str:

@@ -45,9 +45,11 @@ class FileSystemRuntime:
         self,
         *,
         workspace_root: Path,
+        allowed_roots: tuple[Path, ...] = (),
         snapshot_store: FileSnapshotStore | None = None,
     ) -> None:
         self._workspace_root = workspace_root
+        self._allowed_roots = allowed_roots
         self._snapshot_store = snapshot_store or FileSnapshotStore()
 
     @property
@@ -58,15 +60,30 @@ class FileSystemRuntime:
     def snapshot_store(self) -> FileSnapshotStore:
         return self._snapshot_store
 
+    @property
+    def allowed_roots(self) -> tuple[Path, ...]:
+        return self._allowed_roots
+
     def resolve_path(self, raw_path: str) -> Path:
-        return resolve_workspace_path(self._workspace_root, raw_path)
+        return resolve_workspace_path(
+            self._workspace_root,
+            raw_path,
+            allowed_roots=self._allowed_roots,
+        )
 
     def relative_path(self, target: Path) -> str:
+        resolved_target = target.resolve()
         try:
-            return target.resolve().relative_to(self._workspace_root.resolve()).as_posix()
+            return resolved_target.relative_to(self._workspace_root.resolve()).as_posix()
         except ValueError as exc:
+            for root in self._allowed_roots:
+                try:
+                    relative = resolved_target.relative_to(root.resolve()).as_posix()
+                except ValueError:
+                    continue
+                return f"{root.name}/{relative}" if relative else root.name
             raise FileSystemRuntimeError(
-                "Path must stay within the current workspace.",
+                "Path must stay within the current workspace or allowed roots.",
                 error_kind="workspace_escape",
             ) from exc
 

@@ -49,6 +49,8 @@ class SafetyPolicy:
             "ExitPlanMode",
             "Skill",
             "Task",
+            "BashOutput",
+            "SubagentOutput",
         }:
             return RiskLevel.LOW
         if name in {"Edit", "Patch", "Write", "KillShell"}:
@@ -77,6 +79,8 @@ class SafetyPolicy:
             "ExitPlanMode",
             "Skill",
             "Task",
+            "BashOutput",
+            "SubagentOutput",
         }:
             return ToolSafetyDecision(
                 kind=DecisionKind.AUTO_ALLOW,

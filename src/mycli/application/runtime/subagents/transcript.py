@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Protocol
@@ -21,6 +21,7 @@ class SubAgentTranscriptRecorder:
     child_session_id: str
     parent_turn_id: str
     write_lock: Lock | None = None
+    progress_callback: Callable[[dict[str, object]], None] | None = None
 
     def record_system_text(self, text: str) -> None:
         self._append(HistoryItemType.USER_MESSAGE, text=text, metadata={"role": "system"})
@@ -41,6 +42,7 @@ class SubAgentTranscriptRecorder:
 
     def record_assistant_text(self, text: str) -> None:
         self._append(HistoryItemType.ASSISTANT_MESSAGE, text=text)
+        self._emit_progress({"kind": "assistant", "summary": text})
 
     def record_tool_call(
         self,
@@ -54,6 +56,15 @@ class SubAgentTranscriptRecorder:
             tool_name=tool_name,
             call_id=call_id,
             metadata={"arguments": dict(arguments)},
+        )
+        self._emit_progress(
+            {
+                "kind": "tool_call",
+                "tool_name": tool_name,
+                "call_id": call_id,
+                "arguments": dict(arguments),
+                "summary": _tool_call_summary(tool_name, arguments),
+            }
         )
 
     def record_tool_result(
@@ -69,6 +80,14 @@ class SubAgentTranscriptRecorder:
             tool_name=tool_name,
             call_id=call_id,
         )
+        self._emit_progress(
+            {
+                "kind": "tool_result",
+                "tool_name": tool_name,
+                "call_id": call_id,
+                "summary": content,
+            }
+        )
 
     def record_final(self, *, status: str, report: str, tool_calls: int) -> None:
         self._append(
@@ -76,6 +95,19 @@ class SubAgentTranscriptRecorder:
             text=report,
             metadata={"sub_agent_status": status, "tool_calls": tool_calls},
         )
+        self._emit_progress(
+            {
+                "kind": "final",
+                "status": status,
+                "summary": report,
+                "tool_calls": tool_calls,
+            }
+        )
+
+    def _emit_progress(self, event: dict[str, object]) -> None:
+        if self.progress_callback is None:
+            return
+        self.progress_callback(event)
 
     def _append(
         self,
@@ -106,6 +138,12 @@ class SubAgentTranscriptRecorder:
             return
         with self.write_lock:
             self.session_service.append_history_items(self.child_session_id, (item,))
+
+
+def _tool_call_summary(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    preview_parts = [f"{key}={value}" for key, value in arguments.items()]
+    preview = " ".join(preview_parts)
+    return f"{tool_name} {preview}".strip()
 
 
 __all__ = ["SubAgentTranscriptRecorder", "SupportsHistoryAppend"]

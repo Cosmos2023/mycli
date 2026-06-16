@@ -386,13 +386,61 @@ def test_tool_execution_service_runtime_policy_denial_blocks_execution(
 
     assert fake_tool.seen_arguments == []
     assert conversation.messages[-1].role == "tool"
-    assert "Tool denied by runtime policy." in conversation.messages[-1].content
+    assert (
+        "Tool denied by runtime policy: Write "
+        "(policy=workspace_boundary, reason=deny)."
+    ) in conversation.messages[-1].content
     trace = TraceService(home_dir=tmp_path / "home").load("demo")
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
     assert policy_trace.payload["decision"] == "denied"
     assert policy_trace.payload["tool_name"] == "Write"
     assert policy_trace.payload["argument_keys"] == ["content", "file_path"]
     assert "outside.txt" not in str(policy_trace.payload)
+
+
+def test_runtime_policy_denial_message_includes_tool_policy_and_reason(
+    tmp_path: Path,
+) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        ),
+        registry=ToolRegistry.from_tools([FakeUnknownEffectTool()]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="MysteryTool",
+            arguments={"payload": "secret-payload"},
+            reason="unknown",
+            call_id="call_unknown_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("MysteryTool"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=FakeUnknownEffectTool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    assert (
+        "Tool denied by runtime policy: MysteryTool "
+        "(policy=unsupported_tool, reason=deny)."
+    ) in conversation.messages[-1].content
 
 
 def test_runtime_policy_gate_plan_mode_denies_mutating_tools_and_allows_read_only(
@@ -428,6 +476,28 @@ def test_runtime_policy_gate_plan_mode_denies_mutating_tools_and_allows_read_onl
     assert write_decision.reason_code == "plan_mode_blocks_mutating_tool"
     assert write_decision.to_trace_payload()["collaboration_mode"] == "plan"
     assert read_decision.kind.value == "allowed"
+
+
+def test_runtime_policy_gate_allows_background_shell_output_reads(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="BashOutput",
+            arguments={"shell_id": "shell_123"},
+            reason="read background shell output",
+            call_id="call_output_1",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind.value == "allowed"
+    assert decision.policy == "builtin_safe_tool"
 
 
 def test_runtime_policy_gate_workspace_policy_update_refreshes_collaboration_mode(
@@ -1987,6 +2057,59 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         "success": True,
     }
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
+
+
+def test_tool_execution_service_exposes_write_preview_and_diff_lifecycle_metadata(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hook_manager = HookManager()
+    write_tool = WriteTool(workspace)
+    registry = ToolRegistry.from_tools([write_tool])
+    service, _fake_tool = _service(tmp_path, hook_manager=hook_manager, registry=registry)
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((10.0, 10.125)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+    turn_items = []
+    content = "\n".join(f"line {index}" for index in range(1, 13))
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Write",
+            arguments={"file_path": "docs/notes.md", "content": content},
+            reason="create notes",
+            call_id="call_write_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Write"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=write_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+        lifecycle_sink=events.append,
+    )
+
+    start = events[0]
+    complete = events[-1]
+    assert start.kind == "tool_start"
+    assert start.metadata["content_preview"] == content
+    assert start.metadata["content_line_count"] == 12
+    assert start.metadata["content_truncated"] is False
+    assert "arguments" not in start.metadata
+    assert complete.kind == "tool_complete"
+    assert "@@" in str(complete.metadata["diff"])
+    assert "+line 12" in str(complete.metadata["diff"])
+    assert complete.metadata["diff_truncated"] is False
 
 
 def test_tool_execution_service_notifies_clarify_request_after_question_tool(

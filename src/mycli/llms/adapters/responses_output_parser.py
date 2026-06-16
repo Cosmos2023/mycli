@@ -68,11 +68,7 @@ class ResponsesOutputParser:
                 index,
             )
 
-        runtime_items: tuple[RuntimeItem, ...]
-        if blocks:
-            runtime_items = (RuntimeItem(role="assistant", blocks=tuple(blocks)),)
-        else:
-            runtime_items = ()
+        runtime_items = (RuntimeItem(role="assistant", blocks=tuple(blocks)),) if blocks else ()
 
         response_id = None if payload.get("id") is None else str(payload["id"])
         return ModelTurnResult(

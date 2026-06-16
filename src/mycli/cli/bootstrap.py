@@ -19,6 +19,7 @@ from mycli.llms.clients.openai_chat import OpenAIChatClient
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.services.filesystem import FileSystemRuntime
+from mycli.memory.memdir import ensure_memory_dir, memory_dir_for
 from mycli.services.mcp import (
     McpClient,
     McpToolAdapter,
@@ -41,6 +42,7 @@ from mycli.tools.plan import PlanTool
 from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
 from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.subagent_output import SubagentOutputTool
 from mycli.tools.web_fetch import WebFetchTool
 from mycli.tools.web_search import WebSearchTool
 from mycli.tools.write import WriteTool
@@ -110,16 +112,22 @@ def build_turn_service(
                 log_service=workspace_log_service,
             ),
         )
-    filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
+    memory_dir = memory_dir_for(home_dir, workspace_root)
+    ensure_memory_dir(memory_dir)
+    allowed_roots = (memory_dir,)
+    filesystem_runtime = FileSystemRuntime(
+        workspace_root=workspace_root,
+        allowed_roots=allowed_roots,
+    )
     tool_registry = ToolRegistry.from_tools(
         [
             ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
             EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
             PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
             WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            GrepTool(workspace_root),
-            GlobTool(workspace_root),
-            LSTool(workspace_root),
+            GrepTool(workspace_root, allowed_roots=allowed_roots),
+            GlobTool(workspace_root, allowed_roots=allowed_roots),
+            LSTool(workspace_root, allowed_roots=allowed_roots),
             BashTool(workspace_root),
             BashOutputTool(),
             KillShellTool(),
@@ -134,6 +142,7 @@ def build_turn_service(
             PlanTool(),
             EnterPlanModeTool(workspace_root),
             ExitPlanModeTool(workspace_root),
+            SubagentOutputTool(),
         ]
     )
     skill_registry = SkillRegistry(

@@ -14,8 +14,9 @@ from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
 
 
 class FakeSubAgentService:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "completed") -> None:
         self.calls: list[dict[str, object]] = []
+        self.status = status
 
     def run_task(
         self,
@@ -34,10 +35,10 @@ class FakeSubAgentService:
             }
         )
         return SubAgentResult(
-            status="completed",
-            report='<sub-agent-report agent="explore" status="completed">ok</sub-agent-report>',
+            status=self.status,
+            report=f'<sub-agent-report agent="explore" status="{self.status}">ok</sub-agent-report>',
             child_session_id="demo:sub:turn_1:abcd1234",
-            tool_calls=1,
+            tool_calls=0 if self.status == "running" else 1,
         )
 
 
@@ -109,13 +110,13 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
             "description": "Map repository docs",
             "agent_type": "explore",
             "allowed_tools": ("Read", "Grep"),
-            "mode": "sync",
+            "mode": "background",
         },
         {
             "description": "Map repository docs again",
             "agent_type": "explore",
             "allowed_tools": ("Read",),
-            "mode": "sync",
+            "mode": "background",
         },
     ]
     assert planned.exposure.callable_tool_names() == (
@@ -132,3 +133,82 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
         ToolContributionLifecycleState.COMPLETED,
     ]
     assert contribution_registry.snapshot()[1]["tool_id"] == "subagent:explore"
+
+
+def test_subagent_provider_tool_coerces_explicit_sync_to_background(tmp_path) -> None:
+    service = FakeSubAgentService()
+    contribution_registry = ToolContributionRegistry()
+    tool_registry = ToolRegistry(specs={}, executors={})
+    provider = SubAgentToolContributionProvider(service=service)
+    orchestrator = ToolOrchestrator(
+        session_id="subagent-session",
+        tool_registry=tool_registry,
+        tool_exposure_planner=ToolExposurePlanner(tool_registry=tool_registry),
+        contributed_tool_registry=contribution_registry,
+        contributed_tool_providers=(provider,),
+        trace_service=TraceService(tmp_path / "traces"),
+        append_turn_item=lambda **_kwargs: None,
+    )
+    planned = orchestrator.plan_tool_exposure(
+        user_message="explore this repo",
+        conversation=Conversation(session_id="subagent-session"),
+        plan_state=PlanState(),
+    )
+
+    router = orchestrator.build_tool_router(planned)
+    router.execute(
+        ToolCall(
+            name="subagent_explore",
+            arguments={
+                "description": "Map repository docs",
+                "allowed_tools": ["Read"],
+                "mode": "sync",
+            },
+            reason="Verify subagent provider mode coercion",
+        ),
+        exposure=planned.exposure,
+    )
+
+    assert service.calls[0]["mode"] == "background"
+
+
+def test_subagent_provider_tool_treats_running_background_as_started_success(
+    tmp_path,
+) -> None:
+    service = FakeSubAgentService(status="running")
+    contribution_registry = ToolContributionRegistry()
+    tool_registry = ToolRegistry(specs={}, executors={})
+    provider = SubAgentToolContributionProvider(service=service)
+    orchestrator = ToolOrchestrator(
+        session_id="subagent-session",
+        tool_registry=tool_registry,
+        tool_exposure_planner=ToolExposurePlanner(tool_registry=tool_registry),
+        contributed_tool_registry=contribution_registry,
+        contributed_tool_providers=(provider,),
+        trace_service=TraceService(tmp_path / "traces"),
+        append_turn_item=lambda **_kwargs: None,
+    )
+    planned = orchestrator.plan_tool_exposure(
+        user_message="explore this repo",
+        conversation=Conversation(session_id="subagent-session"),
+        plan_state=PlanState(),
+    )
+
+    router = orchestrator.build_tool_router(planned)
+    result = router.execute(
+        ToolCall(
+            name="subagent_explore",
+            arguments={
+                "description": "Map repository docs",
+                "allowed_tools": ["Read"],
+            },
+            reason="Verify subagent provider running result",
+        ),
+        exposure=planned.exposure,
+    )
+
+    assert result.success is True
+    assert result.summary == "Sub-agent explore started in background."
+    assert "notified automatically" in result.raw_payload["report"]
+    assert "do not call SubagentOutput" in result.raw_payload["report"]
+    assert result.raw_payload["status"] == "running"

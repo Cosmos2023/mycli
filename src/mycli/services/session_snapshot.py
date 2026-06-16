@@ -238,9 +238,14 @@ class SessionSnapshotService:
             "child_session_id": str(payload.get("child_session_id", "")),
             "parent_turn_id": str(payload.get("parent_turn_id", "")),
             "role": str(payload.get("role", "")),
+            "description": str(payload.get("description", "")),
             "status": str(payload.get("status", "")),
             "mode": str(payload.get("mode", "")),
             "summary": summary.strip()[:160],
+            "tool_calls": payload.get("tool_calls", 0),
+            "error": payload.get("error"),
+            "started_at": payload.get("started_at"),
+            "completed_at": payload.get("completed_at"),
             "path": f"subagents/{run_id}.json",
         }
 

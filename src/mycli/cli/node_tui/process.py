@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from contextlib import suppress
 import os
 import subprocess
 from typing import Protocol
@@ -60,8 +61,28 @@ class NodeTuiProcess:
         return self._process.wait()
 
     def terminate(self) -> None:
-        if self._process is not None and self._process.poll() is None:
-            self._process.terminate()
+        process = self._process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+        finally:
+            _close_process_pipe(process.stdin)
+            process.stdin = None
+            _close_process_pipe(process.stdout)
+            process.stdout = None
+            self._process = None
+
+
+def _close_process_pipe(pipe: object | None) -> None:
+    if pipe is None:
+        return
+    close = getattr(pipe, "close", None)
+    if not callable(close):
+        return
+    with suppress(BrokenPipeError, OSError, ValueError):
+        close()
 
 
 def check_node_version(

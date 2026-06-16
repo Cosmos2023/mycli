@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from mycli.cli.node_tui.process import (
+    NodeTuiProcess,
     NodeTuiProcessError,
     build_node_command,
     node_tui_child_env,
@@ -14,11 +15,50 @@ from mycli.cli.node_tui.process import (
 )
 
 
+class BrokenPipeOnClose:
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        raise BrokenPipeError
+
+
+class FakePopenWithBrokenPipeClose:
+    def __init__(self) -> None:
+        self.stdin = BrokenPipeOnClose()
+        self.stdout = BrokenPipeOnClose()
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self) -> int:
+        return 0
+
+
 def test_check_node_version_accepts_node_20() -> None:
     def runner(_cmd):
         return SimpleNamespace(returncode=0, stdout="v20.11.1\n", stderr="")
 
     assert check_node_version(runner=runner) == "v20.11.1"
+
+
+def test_node_tui_process_terminate_suppresses_broken_pipe_during_pipe_close() -> None:
+    process = NodeTuiProcess(args=["node", "fake.js"], env={}, cwd=Path.cwd())
+    popen = FakePopenWithBrokenPipeClose()
+    stdin = popen.stdin
+    stdout = popen.stdout
+    process._process = popen  # pyright: ignore[reportPrivateUsage]
+
+    process.terminate()
+
+    assert stdin.closed is True
+    assert stdout.closed is True
+    assert popen.terminated is True
+    assert process._process is None  # pyright: ignore[reportPrivateUsage]
 
 
 def test_check_node_version_rejects_old_node() -> None:

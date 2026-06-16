@@ -32,7 +32,7 @@ def _mode(value: str) -> str:
 @dataclass(slots=True, frozen=True)
 class SubAgentBudget:
     max_turns: int = 8
-    max_tool_calls: int = 20
+    max_tool_calls: int | None = None
     no_progress_turn_limit: int = 3
     report_char_limit: int = 8000
     max_concurrent_background_tasks: int = 2
@@ -40,13 +40,14 @@ class SubAgentBudget:
     def __post_init__(self) -> None:
         for field_name in (
             "max_turns",
-            "max_tool_calls",
             "no_progress_turn_limit",
             "report_char_limit",
             "max_concurrent_background_tasks",
         ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"Sub-agent {field_name} must be positive.")
+        if self.max_tool_calls is not None and self.max_tool_calls <= 0:
+            raise ValueError("Sub-agent max_tool_calls must be positive when set.")
 
 
 @dataclass(slots=True, frozen=True)
@@ -170,6 +171,31 @@ class SubAgentResult:
 
 
 @dataclass(slots=True, frozen=True)
+class SubAgentOutput:
+    child_session_id: str
+    status: SubAgentStatus
+    report: str
+    tool_calls: int
+    error: str | None = None
+    transcript_lines: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "child_session_id",
+            _non_blank(self.child_session_id, "child_session_id"),
+        )
+        object.__setattr__(self, "status", _non_blank(self.status, "status"))
+        if self.tool_calls < 0:
+            raise ValueError("Sub-agent tool_calls cannot be negative.")
+        object.__setattr__(
+            self,
+            "transcript_lines",
+            tuple(str(line) for line in self.transcript_lines if str(line).strip()),
+        )
+
+
+@dataclass(slots=True, frozen=True)
 class SubAgentRunSummary:
     agent_type: str
     description: str
@@ -214,6 +240,7 @@ __all__ = [
     "SubAgentContextSnapshot",
     "SubAgentInvocation",
     "SubAgentMode",
+    "SubAgentOutput",
     "SubAgentProfile",
     "SubAgentResult",
     "SubAgentRunSummary",

@@ -184,9 +184,14 @@ def test_session_service_writes_subagent_snapshot_under_parent_session(
             "child_session_id": "parent-session:sub:turn_1:abcd1234",
             "parent_turn_id": "turn_1",
             "role": "explore",
+            "description": "Inspect repo",
             "status": "completed",
             "mode": "sync",
             "summary": "Found README.",
+            "tool_calls": 1,
+            "error": None,
+            "started_at": "2026-06-11T00:00:00+00:00",
+            "completed_at": "2026-06-11T00:00:01+00:00",
             "path": f"subagents/{payload['run_id']}.json",
         }
     ]

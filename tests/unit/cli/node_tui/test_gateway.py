@@ -698,6 +698,34 @@ def test_gateway_session_resume_reemits_pending_approval_payload(tmp_path: Path)
     assert approval["client_turn_id"] == "demo"
 
 
+def test_gateway_forwards_subagent_progress_updates(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._forward_stream_event(
+        "client_1",
+        RuntimeStreamEvent(
+            kind="subagent_update",
+            metadata={
+                "subagent": {
+                    "run_id": "subagent-a1",
+                    "child_session_id": "child-session-1",
+                    "role": "explore",
+                    "status": "running",
+                    "progress": [{"kind": "tool_call", "summary": "Read path=src/app.py"}],
+                }
+            },
+        ),
+    )
+
+    params = next(params for method, params in events if method == "subagent.updated")
+    assert params["client_turn_id"] == "client_1"
+    assert params["subagent"]["progress"][0]["summary"] == "Read path=src/app.py"
+
+
 def test_gateway_session_resume_reemits_pending_clarification_payload(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = FakeService(tmp_path)

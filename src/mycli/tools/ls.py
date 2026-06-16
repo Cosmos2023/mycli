@@ -59,8 +59,9 @@ class LSTool:
         risk_level="low",
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, workspace_root: Path, *, allowed_roots: tuple[Path, ...] = ()) -> None:
         self._workspace_root = workspace_root
+        self._allowed_roots = allowed_roots
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="read")
@@ -70,7 +71,11 @@ class LSTool:
         try:
             if not raw_path:
                 raise LSError("LS requires path.")
-            target = resolve_workspace_path(self._workspace_root, raw_path)
+            target = resolve_workspace_path(
+                self._workspace_root,
+                raw_path,
+                allowed_roots=self._allowed_roots,
+            )
             payload = ls(str(target))
         except (OSError, ValueError, LSError) as exc:
             return ToolResult(

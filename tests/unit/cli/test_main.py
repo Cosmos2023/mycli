@@ -313,6 +313,7 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "Plan",
         "Read",
         "Skill",
+        "SubagentOutput",
         "Task",
         "WebFetch",
         "WebSearch",
@@ -320,6 +321,17 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "enter_plan_mode",
         "exit_plan_mode",
     ]
+    memory_dir = home_dir / ".mycli" / "projects"
+    write_tool = service._tool_registry.executors["Write"]
+    target = next(memory_dir.rglob("memory")) / "MEMORY.md"
+    result = write_tool.execute(
+        {
+            "file_path": str(target),
+            "content": "- [Tone](tone.md) - terse\n",
+        }
+    )
+    assert result.success is True
+    assert target.read_text(encoding="utf-8") == "- [Tone](tone.md) - terse\n"
 
 
 def test_build_turn_service_defaults_to_responses_protocol(tmp_path: Path) -> None:
@@ -473,6 +485,50 @@ def test_build_turn_service_uses_protocol_from_project_config_file(tmp_path: Pat
     )
 
     assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
+
+
+def test_build_turn_service_can_disable_memory_from_project_config(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "memory_enabled = false\n",
+        encoding="utf-8",
+    )
+
+    service = build_turn_service(
+        cli_args={"session": "demo"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+        },
+    )
+
+    assert service._config.memory_enabled is False
+
+
+def test_build_turn_service_can_disable_memory_from_env(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = build_turn_service(
+        cli_args={"session": "demo"},
+        cwd=workspace,
+        home=home_dir,
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_MEMORY_ENABLED": "false",
+        },
+    )
+
+    assert service._config.memory_enabled is False
 
 
 def test_build_turn_service_passes_cli_env_to_mcp_config_loader(tmp_path: Path) -> None:
@@ -1354,6 +1410,26 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_memory(self) -> tuple[str, ...]:
             return ("preference tone=concise",)
 
+        def add_memory(
+            self,
+            *,
+            kind: str,
+            name: str,
+            content: str,
+            description: str | None = None,
+        ) -> tuple[str, ...]:
+            del description
+            return (f"added {kind} {name}: {content}",)
+
+        def search_memory(self, query: str) -> tuple[str, ...]:
+            return (f"match {query}",)
+
+        def forget_memory(self, query: str) -> tuple[str, ...]:
+            return (f"removed {query}",)
+
+        def inspect_memory_path(self) -> tuple[str, ...]:
+            return ("path=/tmp/mycli-memory", "entrypoint=/tmp/mycli-memory/MEMORY.md")
+
         def inspect_extensions(self) -> tuple[str, ...]:
             manifest = ExtensionManifestService().manifest()
             return (
@@ -1478,6 +1554,16 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/bashes")) == ["[bash] no background shells"]
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
     assert list(handler("/memory")) == ["[memory] preference tone=concise"]
+    assert list(handler("/memory list")) == ["[memory] preference tone=concise"]
+    assert list(handler("/memory path")) == [
+        "[memory] path=/tmp/mycli-memory",
+        "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
+    ]
+    assert list(handler("/memory search terse")) == ["[memory] match terse"]
+    assert list(handler("/memory forget terse.md")) == ["[memory] removed terse.md"]
+    assert list(handler("/memory add feedback terse :: Keep replies concise")) == [
+        "[memory] added feedback terse: Keep replies concise"
+    ]
     assert list(handler("/plugin")) == [
         "[plugin] plugin:demo:DemoCommand plugin=demo name=DemoCommand kind=slash"
     ]

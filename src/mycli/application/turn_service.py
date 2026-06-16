@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.logging import LogLevel
+from mycli.domain.memory import MemoryKind
 from mycli.domain.runtime import (
     AgentConfig,
     CollaborationMode,
@@ -364,9 +365,77 @@ class TurnService:
     def inspect_memory(self) -> tuple[str, ...]:
         records = self._memory_service.list_records(self._config.session_id)
         lines = [f"{record.kind.value} {record.key}={record.value}" for record in records[:10]]
+        file_lines = self._memory_service.inspect_file_memory()
         if not lines:
-            return ("no memory stored",)
-        return tuple(lines)
+            lines = ["no legacy memory stored"]
+        return (*lines, *file_lines)
+
+    def add_memory(
+        self,
+        *,
+        kind: str,
+        name: str,
+        content: str,
+        description: str | None = None,
+    ) -> tuple[str, ...]:
+        try:
+            memory_kind = MemoryKind(kind)
+        except ValueError:
+            return ("unsupported memory type; allowed=user, feedback, project, reference",)
+        if memory_kind not in {
+            MemoryKind.USER,
+            MemoryKind.FEEDBACK,
+            MemoryKind.PROJECT,
+            MemoryKind.REFERENCE,
+        }:
+            return ("unsupported memory type; allowed=user, feedback, project, reference",)
+        if not name.strip() or not content.strip():
+            return ("usage: /memory add <type> <name> :: <content>",)
+        memory = self._memory_service.add_file_memory(
+            kind=memory_kind,
+            name=name.strip(),
+            description=(description or self._memory_description(content)).strip(),
+            content=content.strip(),
+        )
+        return (f"added {memory.kind.value if memory.kind else kind} {memory.filename}",)
+
+    def search_memory(self, query: str) -> tuple[str, ...]:
+        if not query.strip():
+            return ("usage: /memory search <query>",)
+        memories = self._memory_service.search_file_memories(query, limit=5)
+        if not memories:
+            return ("no matching file memories",)
+        return tuple(
+            (
+                f"{memory.kind.value if memory.kind else 'unknown'} "
+                f"{memory.filename}: {memory.description or self._preview(memory.content)}"
+            )
+            for memory in memories
+        )
+
+    def forget_memory(self, query: str) -> tuple[str, ...]:
+        if not query.strip():
+            return ("usage: /memory forget <filename-or-query>",)
+        removed = self._memory_service.forget_file_memory(query)
+        if not removed:
+            return ("no matching file memories removed",)
+        return tuple(f"removed {memory.filename}" for memory in removed)
+
+    def inspect_memory_path(self) -> tuple[str, ...]:
+        return (
+            f"path={self._memory_service.file_memory_dir()}",
+            f"entrypoint={self._memory_service.file_memory_entrypoint_path()}",
+        )
+
+    def _memory_description(self, content: str) -> str:
+        line = next((line.strip() for line in content.splitlines() if line.strip()), "")
+        return self._preview(line or content)
+
+    def _preview(self, value: str, *, limit: int = 160) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 3].rstrip() + "..."
 
     def inspect_session(self) -> tuple[str, ...]:
         conversation = self._session_service.load_conversation(self._config.session_id)

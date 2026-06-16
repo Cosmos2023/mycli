@@ -35,6 +35,34 @@ def test_safety_policy_auto_allows_task_delegation() -> None:
     assert decision.kind is DecisionKind.AUTO_ALLOW
 
 
+def test_safety_policy_auto_allows_background_shell_output_reads() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(
+            name="BashOutput",
+            arguments={"shell_id": "shell_123"},
+            reason="read background shell output",
+        )
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.metadata["policy"] == "builtin_safe_tool"
+    assert decision.metadata["risk_level"] == "low"
+
+
+def test_safety_policy_auto_allows_subagent_output_reads() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(
+            name="SubagentOutput",
+            arguments={"child_session_id": "demo:sub:turn_1:abcd"},
+            reason="read sub-agent output",
+        )
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.metadata["policy"] == "builtin_safe_tool"
+    assert decision.metadata["risk_level"] == "low"
+
+
 def test_safety_policy_requires_choice_for_git_push() -> None:
     decision = SafetyPolicy().evaluate(
         ToolCall(name="Bash", arguments={"command": "git push origin main"}, reason="publish")

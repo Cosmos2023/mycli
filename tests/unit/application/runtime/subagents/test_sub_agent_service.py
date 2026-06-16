@@ -522,6 +522,111 @@ def test_background_task_projects_bounded_job_summary() -> None:
     assert "sensitive raw details" not in str(payload)
 
 
+def test_service_reads_completed_subagent_output() -> None:
+    session_service = FakeHistorySessionService()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="ignored",
+                child_session_id="ignored",
+                tool_calls=0,
+            )
+        ),
+        background_executor=InlineBackgroundExecutor(),
+        session_service=session_service,
+    )
+    service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    child_session_id = service.recent_runs()[0].child_session_id
+
+    output = service.read_output(child_session_id)
+
+    assert output.status == "completed"
+    assert output.report == "ignored"
+    assert output.tool_calls == 0
+    assert output.child_session_id == child_session_id
+    assert output.transcript_lines[0].startswith("explore completed")
+
+
+def test_service_reads_running_subagent_output() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=HoldingBackgroundExecutor(),
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    output = service.read_output(started.child_session_id)
+
+    assert output.status == "running"
+    assert "Sub-agent explore is still running." in output.report
+    assert "notified automatically" in output.report
+    assert "Do not call SubagentOutput again" in output.report
+    assert output.tool_calls == 0
+    assert output.error is None
+
+
+def test_background_task_completion_enqueues_task_notification() -> None:
+    notifications: list[str] = []
+
+    def notification_sink(message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        notifications.append(message)
+        return (message,), ()
+
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=InlineBackgroundExecutor(),
+        notification_sink=notification_sink,
+    )
+
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    assert started.status == "running"
+    assert len(notifications) == 1
+    assert notifications[0].startswith("<task-notification>")
+    assert f"<task-id>{started.child_session_id}</task-id>" in notifications[0]
+    assert "<agent>explore</agent>" in notifications[0]
+    assert "<status>completed</status>" in notifications[0]
+    assert "<result>done</result>" in notifications[0]
+
+
 def test_background_task_rejects_when_concurrency_cap_is_reached() -> None:
     service = SubAgentService(
         session_id="demo",
