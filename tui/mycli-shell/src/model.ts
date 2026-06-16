@@ -27,6 +27,8 @@ export type MycliShellTool = {
 	status: MycliShellToolStatus;
 	durationMs?: number;
 	mutating?: boolean;
+	contentPreview?: string;
+	contentLineCount?: number;
 	diffPreview?: string;
 	outputPreview?: string;
 	errorPreview?: string;
@@ -45,11 +47,41 @@ export type MycliShellBash = {
 	expanded?: boolean;
 };
 
+export type MycliShellSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "max_tool_calls" | string;
+
+export type MycliShellSubagent = {
+	id: string;
+	role: string;
+	description?: string;
+	status: MycliShellSubagentStatus;
+	mode?: "sync" | "background" | string;
+	childSessionId: string;
+	parentTurnId?: string;
+	summary?: string;
+	toolCalls?: number;
+	tokens?: number;
+	durationMs?: number;
+	error?: string;
+	path?: string;
+	startedAt?: string;
+	completedAt?: string;
+	progress?: MycliShellSubagentProgress[];
+};
+
+export type MycliShellSubagentProgress = {
+	kind: string;
+	toolName?: string;
+	callId?: string;
+	summary?: string;
+	status?: string;
+};
+
 export type MycliShellTranscriptBlock =
 	| { id: string; kind: "message"; message: MycliShellMessage }
 	| { id: string; kind: "plan"; plan: MycliShellPlan }
 	| { id: string; kind: "tool"; tool: MycliShellTool }
-	| { id: string; kind: "bash"; bash: MycliShellBash };
+	| { id: string; kind: "bash"; bash: MycliShellBash }
+	| { id: string; kind: "subagent"; subagent: MycliShellSubagent };
 
 export type MycliShellFooterData = {
 	cwd: string;
@@ -99,6 +131,24 @@ export type MycliShellSession = {
 	modified?: string;
 };
 
+export type MycliShellApprovalOption = {
+	choice: string;
+	label: string;
+};
+
+export type MycliShellPendingApproval = {
+	decisionId: string;
+	preview: string;
+	reason?: string;
+	toolName?: string;
+	workerName?: string;
+	workerColor?: string;
+	childSessionId?: string;
+	options: MycliShellApprovalOption[];
+	risk?: string;
+	riskReason?: string;
+};
+
 export type MycliShellState = {
 	title?: string;
 	messages: MycliShellMessage[];
@@ -108,6 +158,7 @@ export type MycliShellState = {
 	activePlan?: MycliShellPlanStep[];
 	footer: MycliShellFooterData;
 	pendingNotice?: string;
+	pendingApproval?: MycliShellPendingApproval;
 	models?: MycliShellModel[];
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;

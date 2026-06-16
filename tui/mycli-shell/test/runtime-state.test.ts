@@ -152,6 +152,112 @@ test("runtime adapter renders compaction lifecycle as an in-turn block", () => {
 	assert.match(shell.tools[0]?.outputPreview ?? "", /120,000 -> 42,000/);
 });
 
+test("runtime adapter projects approval requests into shell approval state", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "decision-1",
+		preview: "file /tmp/image.jpg 2>&1",
+		reason: "Shell command requires approval",
+		tool_name: "Bash",
+		worker_name: "explore",
+		child_session_id: "demo:sub:turn_1:abcd1234",
+		risk: "medium",
+		risk_reason: "External command execution",
+		options: [
+			{ choice: "approve_once", label: "Allow once" },
+			{ choice: "reject", label: "Reject" },
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.pendingApproval?.decisionId, "decision-1");
+	assert.equal(shell.pendingApproval?.preview, "file /tmp/image.jpg 2>&1");
+	assert.equal(shell.pendingApproval?.toolName, "Bash");
+	assert.equal(shell.pendingApproval?.workerName, "explore");
+	assert.equal(shell.pendingApproval?.childSessionId, "demo:sub:turn_1:abcd1234");
+	assert.equal(shell.pendingApproval?.riskReason, "External command execution");
+	assert.deepEqual(shell.pendingApproval?.options, [
+		{ choice: "approve_once", label: "Allow once" },
+		{ choice: "reject", label: "Reject" },
+	]);
+	assert.match(shell.pendingNotice ?? "", /Approval required/);
+	assert.equal(shell.footer.liveState, "Waiting approval");
+});
+
+test("runtime adapter projects subagent updates into dedicated transcript blocks", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "subagent-a1",
+			child_session_id: "child-session-1",
+			parent_turn_id: "turn-1",
+			role: "explore",
+			description: "Inspect Claude Code",
+			status: "completed",
+			mode: "background",
+			summary: "Inspected Claude Code worker rendering and found permission badges.",
+			path: "subagents/subagent-a1.json",
+			tool_calls: 3,
+			total_tokens: 1200,
+			duration_ms: 3500,
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+	const block = shell.transcript?.[0];
+
+	assert.equal(block?.kind, "subagent");
+	assert.equal(block?.kind === "subagent" ? block.subagent.role : "", "explore");
+	assert.equal(block?.kind === "subagent" ? block.subagent.description : "", "Inspect Claude Code");
+	assert.equal(block?.kind === "subagent" ? block.subagent.status : "", "completed");
+	assert.equal(block?.kind === "subagent" ? block.subagent.mode : "", "background");
+	assert.equal(block?.kind === "subagent" ? block.subagent.childSessionId : "", "child-session-1");
+	assert.equal(block?.kind === "subagent" ? block.subagent.toolCalls : undefined, 3);
+	assert.equal(block?.kind === "subagent" ? block.subagent.tokens : undefined, 1200);
+	assert.equal(block?.kind === "subagent" ? block.subagent.durationMs : undefined, 3500);
+	assert.match(block?.kind === "subagent" ? block.subagent.summary ?? "" : "", /permission badges/);
+});
+
+test("runtime adapter accumulates subagent progress updates", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "subagent-a1",
+			child_session_id: "child-session-1",
+			parent_turn_id: "turn-1",
+			role: "explore",
+			description: "Inspect auth bug",
+			status: "running",
+			mode: "sync",
+			summary: "Read path=src/auth/session.py",
+			progress: [{ kind: "tool_call", tool_name: "Read", summary: "Read path=src/auth/session.py" }],
+		},
+	});
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "subagent-a1",
+			child_session_id: "child-session-1",
+			parent_turn_id: "turn-1",
+			role: "explore",
+			description: "Inspect auth bug",
+			status: "running",
+			mode: "sync",
+			summary: "Found token refresh logic",
+			progress: [{ kind: "tool_result", tool_name: "Read", summary: "Found token refresh logic" }],
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+	const block = shell.transcript?.[0];
+
+	assert.equal(block?.kind, "subagent");
+	assert.deepEqual(block?.kind === "subagent" ? block.subagent.progress?.map((item) => item.summary) : [], [
+		"Read path=src/auth/session.py",
+		"Found token refresh logic",
+	]);
+});
+
 test("runtime adapter keeps tool calls between assistant text segments", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithUserMessage(state, "inspect then answer");
@@ -182,6 +288,93 @@ test("runtime adapter keeps tool calls between assistant text segments", () => {
 		}),
 		["user:inspect then answer", "assistant:I'll inspect first.", "tool:Read", "assistant:Done."],
 	);
+});
+
+test("runtime adapter projects write content preview from tool call arguments", () => {
+	let state = initialRuntimeState();
+	state = { ...state, workspace: "/repo" };
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "write-call",
+				type: "tool_summary",
+				text: "Write /repo/docs/notes.md",
+				folded: true,
+				metadata: {
+					tool_name: "Write",
+					arguments: {
+						file_path: "/repo/docs/notes.md",
+						content: Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"),
+					},
+					success: true,
+					summary: "Wrote 86 bytes to /repo/docs/notes.md",
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	const tool = shell.tools[0];
+
+	assert.equal(tool?.name, "Write");
+	assert.equal(tool?.args, "docs/notes.md");
+	assert.match(tool?.contentPreview ?? "", /line 1/);
+	assert.equal(tool?.contentLineCount, 12);
+	assert.equal(tool?.hiddenLineCount, 2);
+	assert.equal(tool?.outputPreview, undefined);
+});
+
+test("runtime adapter projects live write content preview from lifecycle event", () => {
+	let state = initialRuntimeState();
+	state = { ...state, workspace: "/repo" };
+	state = reduceRuntimeEvent(state, "tool.start", {
+		client_turn_id: "c1",
+		tool_id: "call-write-1",
+		call_id: "call-write-1",
+		name: "Write",
+		args_preview: "file_path=docs/notes.md",
+		content_preview: "line 1\nline 2",
+		content_line_count: 2,
+		content_truncated: false,
+	});
+
+	const shell = projectRuntimeState(state);
+	const tool = shell.tools[0];
+
+	assert.equal(tool?.name, "Write");
+	assert.equal(tool?.contentPreview, "line 1\nline 2");
+	assert.equal(tool?.contentLineCount, 2);
+});
+
+test("runtime adapter projects mutation diff preview from raw payload", () => {
+	let state = initialRuntimeState();
+	state = { ...state, workspace: "/repo" };
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "edit-result",
+				type: "tool_summary",
+				text: "Edit /repo/app.py",
+				folded: true,
+				metadata: {
+					tool_name: "Edit",
+					raw_payload: {
+						path: "/repo/app.py",
+						diff: "@@ -1 +1 @@\n-old\n+new",
+					},
+					success: true,
+					summary: "Edited /repo/app.py",
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	const tool = shell.tools[0];
+
+	assert.equal(tool?.args, "app.py");
+	assert.equal(tool?.diffPreview, "@@ -1 +1 @@\n-old\n+new");
+	assert.equal(tool?.outputPreview, undefined);
 });
 
 test("runtime adapter projects proposed plan as a dedicated transcript block", () => {
@@ -234,6 +427,59 @@ test("runtime adapter projects turn plan steps into active plan panel state", ()
 		{ id: "step-1", status: "completed", text: "Inspect runtime state" },
 		{ id: "step-2", status: "in_progress", text: "Render active plan" },
 		{ id: "step-3", status: "pending", text: "Verify shell tests" },
+	]);
+});
+
+test("runtime adapter clears active plan when terminal turn completes every step", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "c1",
+		plan_steps: [
+			"completed: Inspect runtime state",
+			"in_progress: Render active plan",
+		],
+		source: "Plan",
+	});
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		client_turn_id: "c1",
+		assistant_message: "done",
+		activity_events: [],
+		progress_updates: [],
+		plan_steps: [
+			"completed: Inspect runtime state",
+			"completed: Render active plan",
+		],
+		pending_decision: false,
+		turn_state: "completed",
+		usage: {},
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.activePlan, undefined);
+});
+
+test("runtime adapter keeps active plan when terminal turn still has pending work", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		client_turn_id: "c1",
+		assistant_message: "done",
+		activity_events: [],
+		progress_updates: [],
+		plan_steps: [
+			"completed: Inspect runtime state",
+			"pending: Verify shell tests",
+		],
+		pending_decision: false,
+		turn_state: "completed",
+		usage: {},
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.activePlan, [
+		{ id: "step-1", status: "completed", text: "Inspect runtime state" },
+		{ id: "step-2", status: "pending", text: "Verify shell tests" },
 	]);
 });
 

@@ -74,7 +74,6 @@ export class StreamTerminal implements Terminal {
 		}
 		this.streams.input.setEncoding("utf8");
 		this.streams.input.resume();
-		this.write("\x1b[2J\x1b[H");
 		this.write("\x1b[?2004h");
 		this.streams.output.on("resize", this.resizeHandler);
 		this.stdinBuffer = new StdinBuffer({ timeout: 10 });
@@ -154,7 +153,8 @@ export class StreamTerminal implements Terminal {
 	}
 
 	clearScreen(): void {
-		this.write("\x1b[2J\x1b[H");
+		// Keep the host terminal scrollback intact. The renderer updates the
+		// working area incrementally instead of clearing the screen.
 	}
 
 	setTitle(title: string): void {

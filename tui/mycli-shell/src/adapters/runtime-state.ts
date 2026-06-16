@@ -2,9 +2,11 @@ import type {
 	MycliShellBash,
 	MycliShellMessage,
 	MycliShellModel,
+	MycliShellPendingApproval,
 	MycliShellPlanStep,
 	MycliShellSession,
 	MycliShellState,
+	MycliShellSubagent,
 	MycliShellTranscriptBlock,
 	MycliShellTool,
 	MycliShellToolStatus,
@@ -130,6 +132,11 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 				tools.push(tool);
 				transcript.push({ id: item.id, kind: "tool", tool });
 			}
+		} else if (item.type === "subagent") {
+			const subagent = subagentFromTranscriptItem(item);
+			if (subagent) {
+				transcript.push({ id: item.id, kind: "subagent", subagent });
+			}
 		}
 	}
 
@@ -156,6 +163,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			autoCompact: true,
 		},
 		pendingNotice: pendingNotice(state),
+		pendingApproval: pendingApprovalFromRecord(state.pendingApproval),
 		models: modelListFromStatus(state.status, state.provider, state.model),
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
 		settings: {
@@ -265,6 +273,17 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		const planSteps = planStepsFromEvent(params);
 		return planSteps.length > 0 ? { ...state, activePlan: planSteps } : state;
 	}
+	if (method === "subagent.updated") {
+		const subagent = recordValue(params.subagent);
+		const item = transcriptItemFromSubagent(subagent);
+		if (!item) {
+			return state;
+		}
+		return {
+			...state,
+			transcript: upsertSubagentTranscriptItem(state.transcript, item),
+		};
+	}
 	if (method === "reasoning.delta" || method === "thinking.delta") {
 		const text = reasoningText(params);
 		const transcript =
@@ -304,6 +323,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		const planSteps = planStepsFromEvent(params);
 		const turnState = stringValue(params.turn_state);
 		const assistantMessage = stringValue(params.assistant_message);
+		const nextActivePlan = planSteps.length > 0 ? planSteps : state.activePlan;
 		const failedTranscript =
 			turnState === "failed" && assistantMessage
 				? [...state.transcript, { id: nextId("error"), type: "error", text: assistantMessage, folded: false, metadata: params }]
@@ -317,7 +337,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 				turnState === "failed" && assistantMessage
 					? { state: "failed", kind: "failed", text: assistantMessage, message: assistantMessage }
 					: { state: "completed", kind: "completed", text: "Completed" },
-			activePlan: planSteps.length > 0 ? planSteps : state.activePlan,
+			activePlan: shouldClearCompletedPlan(turnState, nextActivePlan) ? [] : nextActivePlan,
 			pendingApproval: params.pending_decision === true || params.turn_state === "waiting_approval" ? state.pendingApproval : null,
 			pendingClarification: params.turn_state === "waiting_clarification" ? state.pendingClarification : null,
 			transcript: failedTranscript,
@@ -455,6 +475,13 @@ function queuedInputCount(state: RuntimeShellState): number {
 	return splitQueueCount > 0 ? splitQueueCount : state.queuedInputs.length;
 }
 
+function shouldClearCompletedPlan(turnState: string | null, planSteps: MycliShellPlanStep[] | undefined): boolean {
+	if (turnState !== "completed" || !planSteps?.length) {
+		return false;
+	}
+	return planSteps.every((step) => step.status === "completed");
+}
+
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
 	const lines = Array.isArray(result.lines) ? result.lines.map((line) => String(line)) : [String(result.message ?? "Done")];
 	const collaborationMode = collaborationModeValue(result.collaboration_mode);
@@ -492,18 +519,82 @@ function pendingNotice(state: RuntimeShellState): string | undefined {
 	return undefined;
 }
 
+function pendingApprovalFromRecord(value: Record<string, unknown> | null): MycliShellPendingApproval | undefined {
+	if (!value) {
+		return undefined;
+	}
+	const decisionId = stringValue(value.decision_id) ?? stringValue(value.decisionId);
+	if (!decisionId) {
+		return undefined;
+	}
+	const options = approvalOptionsFromPayload(value.options);
+	return {
+		decisionId,
+		preview: stringValue(value.preview) ?? stringValue(value.action) ?? stringValue(value.tool_name) ?? "Approval required",
+		reason: stringValue(value.reason) ?? undefined,
+		toolName: stringValue(value.tool_name) ?? stringValue(value.toolName) ?? undefined,
+		workerName:
+			stringValue(value.worker_name) ??
+			stringValue(value.workerName) ??
+			stringValue(value.agent_name) ??
+			stringValue(value.agentName) ??
+			stringValue(value.role) ??
+			undefined,
+		workerColor: stringValue(value.worker_color) ?? stringValue(value.workerColor) ?? undefined,
+		childSessionId: stringValue(value.child_session_id) ?? stringValue(value.childSessionId) ?? undefined,
+		options: options.length > 0 ? options : defaultApprovalOptions(),
+		risk: stringValue(value.risk) ?? undefined,
+		riskReason: stringValue(value.risk_reason) ?? stringValue(value.riskReason) ?? undefined,
+	};
+}
+
+function approvalOptionsFromPayload(value: unknown): MycliShellPendingApproval["options"] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.map((item) => {
+			const record = recordValue(item);
+			const choice = stringValue(record.choice) ?? stringValue(record.value);
+			if (!choice) {
+				return null;
+			}
+			return {
+				choice,
+				label: stringValue(record.label) ?? choice,
+			};
+		})
+		.filter((item): item is MycliShellPendingApproval["options"][number] => item !== null);
+}
+
+function defaultApprovalOptions(): MycliShellPendingApproval["options"] {
+	return [
+		{ choice: "approve_once", label: "Allow once" },
+		{ choice: "reject", label: "Reject" },
+	];
+}
+
 function toolFromTranscriptItem(item: RuntimeTranscriptItem, workspace: string, viewMode: RuntimeShellState["viewMode"]): MycliShellTool {
 	const metadata = recordValue(item.metadata);
 	const status = toolStatus(metadata);
 	const name = stringValue(metadata.tool_name) ?? stringValue(metadata.name) ?? item.text.split(/\s+/, 1)[0] ?? "Tool";
+	const rawPayload = recordValue(metadata.raw_payload);
+	const argumentsPayload = recordValue(metadata.arguments);
 	const target =
 		stringValue(metadata.path) ??
+		stringValue(rawPayload.path) ??
+		stringValue(argumentsPayload.file_path) ??
+		stringValue(argumentsPayload.path) ??
 		stringValue(metadata.command) ??
+		stringValue(rawPayload.command) ??
 		stringValue(metadata.query) ??
+		stringValue(rawPayload.query) ??
 		stringValue(metadata.context) ??
 		stringValue(metadata.args_preview) ??
 		item.text.replace(new RegExp(`^${escapeRegExp(name)}\\s*`), "");
-	const outputPreview = stringValue(metadata.summary) ?? (status === "success" ? item.text : undefined);
+	const contentPreview = contentPreviewForTool(name, metadata);
+	const diffPreview = diffPreviewForTool(metadata);
+	const outputPreview = outputPreviewForTool(name, status, metadata, item.text, contentPreview, diffPreview);
 	const errorPreview = stringValue(metadata.error) ?? (status === "error" ? item.text : undefined);
 	return {
 		id: item.id,
@@ -512,12 +603,142 @@ function toolFromTranscriptItem(item: RuntimeTranscriptItem, workspace: string, 
 		status,
 		durationMs: durationMs(metadata),
 		mutating: mutatingTool(name, metadata),
+		contentPreview,
+		contentLineCount: numberValue(metadata.content_line_count) ?? (contentPreview ? lineCount(contentPreview) : undefined),
+		diffPreview,
 		hidden: shouldHideTool(name, status, mutatingTool(name, metadata), viewMode),
 		outputPreview,
 		errorPreview,
-		hiddenLineCount: metadata.summary_truncated === true || metadata.error_truncated === true ? 1 : undefined,
+		hiddenLineCount: hiddenLineCountForTool(metadata, contentPreview),
 		expanded: item.folded === false,
 	};
+}
+
+function transcriptItemFromSubagent(subagent: Record<string, unknown>): RuntimeTranscriptItem | null {
+	const childSessionId = stringValue(subagent.child_session_id) ?? stringValue(subagent.childSessionId);
+	const role = stringValue(subagent.role) ?? stringValue(subagent.agent_type) ?? stringValue(subagent.name);
+	if (!childSessionId || !role) {
+		return null;
+	}
+	const id = stringValue(subagent.run_id) ?? `subagent:${childSessionId}`;
+	return {
+		id,
+		type: "subagent",
+		text: stringValue(subagent.summary) ?? stringValue(subagent.report) ?? "",
+		folded: true,
+		metadata: subagent,
+	};
+}
+
+function subagentFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellSubagent | null {
+	const metadata = recordValue(item.metadata);
+	const childSessionId = stringValue(metadata.child_session_id) ?? stringValue(metadata.childSessionId);
+	const role = stringValue(metadata.role) ?? stringValue(metadata.agent_type) ?? stringValue(metadata.name);
+	if (!childSessionId || !role) {
+		return null;
+	}
+	const status = stringValue(metadata.status) ?? "completed";
+	return {
+		id: stringValue(metadata.run_id) ?? item.id,
+		role,
+		description: stringValue(metadata.description) ?? undefined,
+		status,
+		mode: stringValue(metadata.mode) ?? undefined,
+		childSessionId,
+		parentTurnId: stringValue(metadata.parent_turn_id) ?? stringValue(metadata.parentTurnId) ?? undefined,
+		summary: (stringValue(metadata.summary) ?? stringValue(metadata.report) ?? item.text) || undefined,
+		toolCalls: numberValue(metadata.tool_calls) ?? numberValue(metadata.toolCalls) ?? undefined,
+		tokens: numberValue(metadata.total_tokens) ?? numberValue(metadata.tokens) ?? undefined,
+		durationMs: numberValue(metadata.duration_ms) ?? durationSecondsToMs(metadata.duration_s),
+		error: stringValue(metadata.error) ?? undefined,
+		path: stringValue(metadata.path) ?? undefined,
+		startedAt: stringValue(metadata.started_at) ?? stringValue(metadata.startedAt) ?? undefined,
+		completedAt: stringValue(metadata.completed_at) ?? stringValue(metadata.completedAt) ?? undefined,
+		progress: subagentProgressFromMetadata(metadata),
+	};
+}
+
+function subagentProgressFromMetadata(metadata: Record<string, unknown>): MycliShellSubagent["progress"] {
+	const raw = Array.isArray(metadata.progress) ? metadata.progress : [];
+	return raw
+		.map((item): NonNullable<MycliShellSubagent["progress"]>[number] | null => {
+			const record = recordValue(item);
+			const kind = stringValue(record.kind);
+			if (!kind) {
+				return null;
+			}
+			return {
+				kind,
+				toolName: stringValue(record.tool_name) ?? stringValue(record.toolName) ?? undefined,
+				callId: stringValue(record.call_id) ?? stringValue(record.callId) ?? undefined,
+				summary: stringValue(record.summary) ?? undefined,
+				status: stringValue(record.status) ?? undefined,
+			};
+		})
+		.filter((item): item is NonNullable<MycliShellSubagent["progress"]>[number] => item !== null);
+}
+
+function durationSecondsToMs(value: unknown): number | undefined {
+	const seconds = numberValue(value);
+	return seconds === null ? undefined : Math.round(seconds * 1000);
+}
+
+function contentPreviewForTool(name: string, metadata: Record<string, unknown>): string | undefined {
+	if (!isWriteTool(name)) {
+		return undefined;
+	}
+	return (
+		stringValue(metadata.content_preview) ??
+		stringValue(recordValue(metadata.arguments).content) ??
+		stringValue(metadata.content) ??
+		stringValue(recordValue(metadata.raw_payload).content) ??
+		stringValue(recordValue(recordValue(metadata.raw_payload).arguments).content) ??
+		undefined
+	);
+}
+
+function diffPreviewForTool(metadata: Record<string, unknown>): string | undefined {
+	return (
+		stringValue(metadata.diff) ??
+		stringValue(recordValue(metadata.raw_payload).diff) ??
+		stringValue(recordValue(metadata.details).diff) ??
+		stringValue(recordValue(recordValue(metadata.raw_payload).details).diff) ??
+		undefined
+	);
+}
+
+function outputPreviewForTool(
+	name: string,
+	status: MycliShellToolStatus,
+	metadata: Record<string, unknown>,
+	itemText: string,
+	contentPreview: string | undefined,
+	diffPreview: string | undefined,
+): string | undefined {
+	if (status === "success" && (contentPreview || diffPreview) && mutatingTool(name, metadata)) {
+		return undefined;
+	}
+	return stringValue(metadata.summary) ?? (status === "success" ? itemText : undefined);
+}
+
+function hiddenLineCountForTool(metadata: Record<string, unknown>, contentPreview: string | undefined): number | undefined {
+	if (metadata.summary_truncated === true || metadata.error_truncated === true) {
+		return 1;
+	}
+	if (!contentPreview) {
+		return undefined;
+	}
+	const hidden = lineCount(contentPreview) - 10;
+	return hidden > 0 ? hidden : undefined;
+}
+
+function isWriteTool(name: string): boolean {
+	return name.toLowerCase() === "write";
+}
+
+function lineCount(text: string): number {
+	const trimmed = text.replace(/\n+$/g, "");
+	return trimmed ? trimmed.split("\n").length : 0;
 }
 
 function shouldHideTool(
@@ -801,6 +1022,31 @@ function applyCompactionLifecycle(items: RuntimeTranscriptItem[], method: string
 		metadata: matchIndex >= 0 ? { ...recordValue(items[matchIndex]!.metadata), ...metadata } : metadata,
 	};
 	return matchIndex >= 0 ? [...items.slice(0, matchIndex), item, ...items.slice(matchIndex + 1)] : [...items, item];
+}
+
+function upsertSubagentTranscriptItem(items: RuntimeTranscriptItem[], item: RuntimeTranscriptItem): RuntimeTranscriptItem[] {
+	const existingIndex = items.findIndex((candidate) => candidate.id === item.id);
+	if (existingIndex < 0) {
+		return [...items, item];
+	}
+	const existing = items[existingIndex]!;
+	const existingMetadata = recordValue(existing.metadata);
+	const nextMetadata = recordValue(item.metadata);
+	const progress = [
+		...(Array.isArray(existingMetadata.progress) ? existingMetadata.progress : []),
+		...(Array.isArray(nextMetadata.progress) ? nextMetadata.progress : []),
+	].slice(-40);
+	const merged: RuntimeTranscriptItem = {
+		...existing,
+		...item,
+		text: item.text || existing.text,
+		metadata: {
+			...existingMetadata,
+			...nextMetadata,
+			progress,
+		},
+	};
+	return [...items.slice(0, existingIndex), merged, ...items.slice(existingIndex + 1)];
 }
 
 function findToolIndex(items: RuntimeTranscriptItem[], metadata: Record<string, unknown>): number {

@@ -283,7 +283,6 @@ export class TUI extends Container {
 	private clearOnShrink = process.env.MYCLI_TUI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
-	private renderedLogicalLineCount = 0;
 	private fullRedrawCount = 0;
 	private stopped = false;
 
@@ -1131,24 +1130,19 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
-		let prevViewportTop = 0;
-		let viewportTop = 0;
-		let hardwareCursorRow = Math.max(0, Math.min(this.hardwareCursorRow, height - 1));
+		const previousBufferLength = this.previousHeight > 0 ? this.previousViewportTop + this.previousHeight : height;
+		let prevViewportTop = heightChanged ? Math.max(0, previousBufferLength - height) : this.previousViewportTop;
+		let viewportTop = prevViewportTop;
+		let hardwareCursorRow = this.hardwareCursorRow;
 		const computeLineDiff = (targetRow: number): number => {
 			const currentScreenRow = hardwareCursorRow - prevViewportTop;
 			const targetScreenRow = targetRow - viewportTop;
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines. On the real shell TTY we keep the
-		// first render on the main screen so earlier transcript lines enter native
-		// terminal scrollback and can be copied or mouse-scrolled like Claude Code.
-		const logicalLines = this.render(width);
-		const useNativeScrollbackFirstRender = this.terminal.nativeScrollback && this.previousLines.length === 0;
-		const logicalViewportTop = useNativeScrollbackFirstRender
-			? 0
-			: this.viewportTopFor(Math.max(height, logicalLines.length), height);
-		let newLines = useNativeScrollbackFirstRender ? logicalLines : logicalLines.slice(logicalViewportTop, logicalViewportTop + height);
+		// Render the full logical buffer. Keeping this uncropped lets the host
+		// terminal own scrollback and text selection.
+		let newLines = this.render(width);
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {
@@ -1160,13 +1154,13 @@ export class TUI extends Container {
 
 		newLines = this.applyLineResets(newLines);
 
-		// Helper to clear scrollback and viewport and render all new lines
+		// Helper to clear scrollback and viewport and render all new lines.
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			if (clear) {
+			if (clear && !this.terminal.nativeScrollback) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
-				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
+				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback.
 			}
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
@@ -1182,13 +1176,13 @@ export class TUI extends Container {
 			} else {
 				this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
 			}
-			this.previousViewportTop = 0;
+			const bufferLength = Math.max(height, newLines.length);
+			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
 			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
-			this.renderedLogicalLineCount = logicalLines.length;
 		};
 
 		const debugRedraw = process.env.MYCLI_TUI_DEBUG_REDRAW === "1";
@@ -1312,7 +1306,6 @@ export class TUI extends Container {
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this.previousViewportTop = prevViewportTop;
-			this.renderedLogicalLineCount = logicalLines.length;
 			return;
 		}
 
@@ -1452,7 +1445,7 @@ export class TUI extends Container {
 		this.hardwareCursorRow = finalCursorRow;
 		// Track terminal's working area (grows but doesn't shrink unless cleared)
 		this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
-		this.previousViewportTop = 0;
+		this.previousViewportTop = Math.max(prevViewportTop, finalCursorRow - height + 1);
 
 		// Position hardware cursor for IME
 		this.positionHardwareCursor(cursorPos, newLines.length);
@@ -1461,11 +1454,6 @@ export class TUI extends Container {
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
-		this.renderedLogicalLineCount = logicalLines.length;
-	}
-
-	private viewportTopFor(bufferLength: number, height: number): number {
-		return Math.max(0, bufferLength - height);
 	}
 
 	/**

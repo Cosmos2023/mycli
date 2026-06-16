@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
+import { join } from "node:path";
 import type { Terminal } from "../src/tui-core/terminal.ts";
 import { visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
-import { FooterComponent, MycliShellRuntime, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
+import { BashExecutionComponent, FooterComponent, MycliShellRuntime, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
+}
+
+function assertNativeScrollbackSafeOutput(output: string): void {
+	assert.doesNotMatch(output, /\x1b\[\?1049[hl]/);
+	assert.doesNotMatch(output, /\x1b\[\?(1000|1002|1003|1006)h/);
+	assert.doesNotMatch(output, /\x1b\[2J/);
+	assert.doesNotMatch(output, /\x1b\[3J/);
 }
 
 function sampleState(): MycliShellState {
@@ -71,6 +79,53 @@ function sampleState(): MycliShellState {
 			{ id: "session-b", title: "Session B", cwd: "~/Desktop/other", modified: "1h" },
 		],
 		pendingNotice: "Waiting for approval",
+	};
+}
+
+function subagentPanelState(): MycliShellState {
+	return {
+		...sampleState(),
+		transcript: [
+			{
+				id: "subagent-a1",
+				kind: "subagent",
+				subagent: {
+					id: "subagent-a1",
+					role: "explore",
+					description: "Inspect auth bug",
+					status: "running",
+					mode: "sync",
+					childSessionId: "child-session-1",
+					parentTurnId: "turn-1",
+					toolCalls: 2,
+					tokens: 18232,
+					durationMs: 12000,
+					summary: "Read src/auth/session.py",
+					progress: [
+						{ kind: "tool_call", toolName: "Read", summary: "Read path=src/auth/session.py" },
+						{ kind: "tool_result", toolName: "Read", summary: "Found token refresh logic" },
+					],
+				},
+			},
+			{
+				id: "subagent-a2",
+				kind: "subagent",
+				subagent: {
+					id: "subagent-a2",
+					role: "review",
+					description: "Research tests",
+					status: "completed",
+					mode: "sync",
+					childSessionId: "child-session-2",
+					parentTurnId: "turn-1",
+					toolCalls: 1,
+					tokens: 9120,
+					durationMs: 31000,
+					summary: "Done",
+				},
+			},
+		],
+		pendingNotice: undefined,
 	};
 }
 
@@ -142,9 +197,140 @@ test("mycli shell renders copied reference shell surfaces", () => {
 	assert.match(output, /Read/);
 	assert.match(output, /Edit/);
 	assert.match(output, /Patch did not apply/);
-	assert.match(output, /\$ pytest -q/);
+	assert.match(output, /⏺ Bash/);
+	assert.match(output, /⎿ pytest -q · exit 1/);
 	assert.match(output, /Waiting for approval/);
 	assert.match(output, /deepseek-v4-flash/);
+});
+
+test("mycli shell renders subagent transcript blocks compactly", () => {
+	const output = stripAnsi(
+		renderMycliShell(
+			{
+				...sampleState(),
+				transcript: [
+					{
+						id: "subagent-a1",
+						kind: "subagent",
+						subagent: {
+							id: "subagent-a1",
+							role: "explore",
+							status: "completed",
+							mode: "sync",
+							childSessionId: "child-session-1",
+							toolCalls: 3,
+							summary: "Mapped Claude Code worker badge behavior.",
+						},
+					},
+				],
+			},
+			100,
+		).join("\n"),
+	);
+
+	assert.match(output, /Agent finished/);
+	assert.match(output, /└─ explore · 3 tool uses/);
+	assert.match(output, /⎿ Done/);
+	assert.doesNotMatch(output, /child-session-1/);
+	assert.doesNotMatch(output, /Mapped Claude Code worker badge behavior/);
+});
+
+test("mycli shell groups same-turn subagents like Claude Code agent progress", () => {
+	const output = stripAnsi(
+		renderMycliShell(
+			subagentPanelState(),
+			100,
+		).join("\n"),
+	);
+
+	assert.match(output, /Running 2 agents/);
+	assert.match(output, /├─ explore \(Inspect auth bug\) · 2 tool uses/);
+	assert.match(output, /│  ⎿ Read path=src\/auth\/session\.py/);
+	assert.match(output, /│  ⎿ Found token refresh logic/);
+	assert.match(output, /└─ review \(Research tests\) · 1 tool use/);
+	assert.match(output, /   ⎿ Done/);
+	assert.match(output, /agents @explore @review · 1 running · shift\+↓ manage/);
+});
+
+test("mycli shell runtime expands Claude Code-like subagent task panel", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: subagentPanelState(),
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /agents @explore @review · 1 running · shift\+↓ manage/);
+	assert.doesNotMatch(output, /agents · ↑↓ select/);
+
+	terminal.input?.("\x1b[b");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /agents · ↑↓ select · enter view · x clear · esc close/);
+	assert.match(output, /● main/);
+	assert.match(output, /○ explore: Inspect auth bug ▶ · 12s · ↓ 18,232 tokens · 2 tools/);
+	assert.match(output, /○ review: Research tests ⏸ · 31s · ↓ 9,120 tokens · 1 tools/);
+
+	terminal.input?.("\x1b[B");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /⎿ Found token refresh logic/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /view @explore/);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /agents @explore @review · 1 running · shift\+↓ manage/);
+
+	terminal.input?.("\x1b[b");
+	await setTimeout(25);
+	terminal.input?.("\x1b[B");
+	await setTimeout(25);
+	terminal.input?.("\x1b[B");
+	await setTimeout(25);
+	terminal.input?.("x");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.doesNotMatch(output, /review: Research tests/);
+	assert.match(output, /explore: Inspect auth bug/);
+});
+
+test("mycli shell renders completed background subagent notification like Claude Code", () => {
+	const output = stripAnsi(
+		renderMycliShell(
+			{
+				...sampleState(),
+				transcript: [
+					{
+						id: "subagent-bg",
+						kind: "subagent",
+						subagent: {
+							id: "subagent-bg",
+							role: "explore",
+							description: "Inspect repo",
+							status: "completed",
+							mode: "background",
+							childSessionId: "child-session-bg",
+							parentTurnId: "turn-2",
+							toolCalls: 4,
+							summary: "Agent \"Inspect repo\" completed",
+						},
+					},
+				],
+				pendingNotice: undefined,
+			},
+			100,
+		).join("\n"),
+	);
+
+	assert.match(output, /Agent "Inspect repo" completed/);
+	assert.doesNotMatch(output, /Subagent explore/);
 });
 
 test("mycli shell renders active plan panel above the composer", () => {
@@ -223,6 +409,18 @@ test("mycli shell keeps long active plans compact", () => {
 	assert.doesNotMatch(output, /Plan item 12/);
 });
 
+test("mycli shell omits completed active plan panel", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		pendingNotice: undefined,
+		activePlan: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.doesNotMatch(output, /\[plan\] 2\/2/);
+});
+
 test("mycli shell renders transcript blocks in event order", () => {
 	const state: MycliShellState = {
 		...sampleState(),
@@ -244,8 +442,8 @@ test("mycli shell renders transcript blocks in event order", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
 	const userIndex = output.indexOf("read word.txt");
-	const toolIndex = output.indexOf("Read word.txt");
-	const assistantIndex = output.indexOf("done");
+	const toolIndex = output.indexOf("⏺ Read");
+	const assistantIndex = output.lastIndexOf("done");
 
 	assert.ok(userIndex >= 0, output);
 	assert.ok(toolIndex > userIndex, output);
@@ -272,6 +470,116 @@ test("mycli shell renders proposed plans as dedicated blocks", () => {
 	assert.match(output, /# Plan/);
 	assert.match(output, /Add parser/);
 	assert.doesNotMatch(output, /proposed_plan/);
+});
+
+test("mycli shell collapses consecutive context tool calls like Claude Code", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "read-1", kind: "tool", tool: { id: "read-1", name: "Read", args: "src/app.py", status: "success" } },
+			{ id: "grep-1", kind: "tool", tool: { id: "grep-1", name: "Grep", args: "TODO", status: "success" } },
+			{ id: "glob-1", kind: "tool", tool: { id: "glob-1", name: "Glob", args: "**/*.py", status: "success" } },
+		],
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.match(output, /⏺ Read 1 file, searched 1 pattern, matched 1 glob/);
+	assert.match(output, /⎿ src\/app\.py/);
+	assert.match(output, /ctrl\+o to expand/);
+	assert.doesNotMatch(output, /⏺ Grep/);
+	assert.doesNotMatch(output, /⏺ Glob/);
+});
+
+test("mycli shell applies context tool grouping to legacy tool arrays", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [
+			{ id: "read-1", name: "Read", args: "src/app.py", status: "success" },
+			{ id: "grep-1", name: "Grep", args: "TODO", status: "success" },
+		],
+		bash: [],
+		transcript: undefined,
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.match(output, /⏺ Read 1 file, searched 1 pattern/);
+	assert.doesNotMatch(output, /⏺ Grep/);
+});
+
+test("mycli shell labels running and failed collapsed context groups", () => {
+	const runningState: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "read-1", kind: "tool", tool: { id: "read-1", name: "Read", args: "src/app.py", status: "running" } },
+			{ id: "grep-1", kind: "tool", tool: { id: "grep-1", name: "Grep", args: "TODO", status: "success" } },
+		],
+		pendingNotice: undefined,
+	};
+	const runningOutput = stripAnsi(renderMycliShell(runningState, 100).join("\n"));
+	assert.match(runningOutput, /⏺ Reading 1 file, searching 1 pattern · Running/);
+
+	const failedState: MycliShellState = {
+		...runningState,
+		transcript: [
+			{ id: "read-1", kind: "tool", tool: { id: "read-1", name: "Read", args: "src/app.py", status: "success" } },
+			{ id: "grep-1", kind: "tool", tool: { id: "grep-1", name: "Grep", args: "TODO", status: "error", errorPreview: "boom" } },
+		],
+	};
+	const failedOutput = stripAnsi(renderMycliShell(failedState, 100).join("\n"));
+	assert.match(failedOutput, /⏺ Read 1 file, searched 1 pattern · Failed/);
+});
+
+test("mycli shell does not collapse context tools across mutating tools", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "read-1", kind: "tool", tool: { id: "read-1", name: "Read", args: "src/app.py", status: "success" } },
+			{ id: "write-1", kind: "tool", tool: { id: "write-1", name: "Write", args: "src/app.py", status: "success", mutating: true, contentPreview: "x", contentLineCount: 1 } },
+			{ id: "grep-1", kind: "tool", tool: { id: "grep-1", name: "Grep", args: "TODO", status: "success" } },
+		],
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.match(output, /⏺ Read/);
+	assert.match(output, /⏺ Write/);
+	assert.match(output, /⏺ Grep/);
+	assert.doesNotMatch(output, /Read 1 file, searched 1 pattern/);
+});
+
+test("mycli shell expands collapsed context tool groups into individual tools", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "read-1", kind: "tool", tool: { id: "read-1", name: "Read", args: "src/app.py", status: "success", expanded: true } },
+			{ id: "grep-1", kind: "tool", tool: { id: "grep-1", name: "Grep", args: "TODO", status: "success", expanded: true } },
+		],
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.match(output, /⏺ Read/);
+	assert.match(output, /⏺ Grep/);
+	assert.doesNotMatch(output, /Read 1 file, searched 1 pattern/);
 });
 
 test("mycli shell rendered lines stay width safe", () => {
@@ -343,7 +651,7 @@ test("tool rendering stays collapsed until expanded and marks failure", () => {
 	});
 	let output = stripAnsi(collapsed.render(80).join("\n"));
 	assert.match(output, /Edit/);
-	assert.match(output, /changed/);
+	assert.match(output, /⎿ \/Users\/cosmos\/Desktop\/mycli\/word\.txt · line 1/);
 	assert.match(output, /more lines/);
 	assert.doesNotMatch(output, /line 1\n/);
 
@@ -369,9 +677,77 @@ test("tool rendering stays collapsed until expanded and marks failure", () => {
 		durationMs: 1250,
 	});
 	output = stripAnsi(failed.render(80).join("\n"));
-	assert.match(output, /failed/);
+	assert.match(output, /⎿ pytest -q · Traceback/);
 	assert.match(output, /boom/);
 	assert.match(output, /1\.3s/);
+});
+
+test("tool rendering previews write content like coding-agent", () => {
+	const content = Array.from({ length: 13 }, (_, index) => `doc line ${index + 1}`).join("\n");
+	const collapsed = new ToolExecutionComponent({
+		id: "write",
+		name: "Write",
+		args: "docs/notes.md",
+		status: "success",
+		mutating: true,
+		contentPreview: content,
+		contentLineCount: 13,
+	});
+
+	let output = stripAnsi(collapsed.render(100).join("\n"));
+	assert.match(output, /⏺ Write/);
+	assert.doesNotMatch(output, /⏺ Write\(docs\/notes\.md\)/);
+	assert.match(output, /⎿ docs\/notes\.md · Wrote 13 lines/);
+	assert.match(output, /doc line 1/);
+	assert.match(output, /doc line 10/);
+	assert.doesNotMatch(output, /doc line 13/);
+	assert.match(output, /\(3 more lines, 13 total,/);
+
+	const expanded = new ToolExecutionComponent({
+		id: "write",
+		name: "Write",
+		args: "docs/notes.md",
+		status: "success",
+		mutating: true,
+		contentPreview: content,
+		contentLineCount: 13,
+		expanded: true,
+	});
+	output = stripAnsi(expanded.render(100).join("\n"));
+	assert.match(output, /doc line 13/);
+});
+
+test("tool rendering shows mutation diffs instead of success summaries", () => {
+	const rendered = new ToolExecutionComponent({
+		id: "edit",
+		name: "Edit",
+		args: "src/app.py",
+		status: "success",
+		mutating: true,
+		diffPreview: "@@ -1 +1 @@\n-old\n+new",
+		outputPreview: undefined,
+	});
+
+	const output = stripAnsi(rendered.render(100).join("\n"));
+	assert.match(output, /⎿ Updated src\/app\.py/);
+	assert.match(output, /@@ -1 \+1 @@/);
+	assert.match(output, /-old/);
+	assert.match(output, /\+new/);
+});
+
+test("bash rendering keeps long commands folded to a Claude-like preview", () => {
+	const longCommand = ["python - <<'PY'", ...Array.from({ length: 20 }, () => "print('hello')"), "PY"].join("\n");
+	const rendered = new BashExecutionComponent({
+		id: "bash",
+		command: longCommand,
+		status: "running",
+	});
+
+	const output = stripAnsi(rendered.render(100).join("\n"));
+
+	assert.match(output, /⏺ Bash/);
+	assert.match(output, /⎿ python - <<'PY'… · Running/);
+	assert.doesNotMatch(output, /print\('hello'\)/);
 });
 
 test("trust selector owns keyboard selection", () => {
@@ -415,7 +791,8 @@ test("mycli shell runtime assembles copied reference mounted containers", () => 
 	assert.equal(runtime.ui.children[2], runtime.pendingMessagesContainer);
 	assert.equal(runtime.ui.children[3], runtime.statusContainer);
 	assert.equal(runtime.ui.children[4], runtime.editorContainer);
-	assert.equal(runtime.ui.children[5], runtime.footerContainer);
+	assert.equal(runtime.ui.children[5], runtime.subagentTaskContainer);
+	assert.equal(runtime.ui.children[6], runtime.footerContainer);
 
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /mycli/);
@@ -451,7 +828,7 @@ test("mycli shell runtime updates transcript tool components in place", () => {
 	});
 
 	assert.equal(runtime.chatContainer.children[0], component);
-	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /done/);
+	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /⎿ word\.txt · 3 lines/);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /3 lines/);
 });
 
@@ -655,7 +1032,7 @@ test("mycli shell runtime enters main UI only after trust selection", async () =
 	assert.equal(runtime.getState().footer.trust, "trusted");
 	assert.equal(runtime.ui.children[0], runtime.headerContainer);
 	assert.equal(runtime.ui.children[4], runtime.editorContainer);
-	assert.equal(runtime.ui.children.length, 6);
+	assert.equal(runtime.ui.children.length, 7);
 });
 
 test("mycli shell command palette replaces editor like coding-agent selector", async () => {
@@ -674,6 +1051,128 @@ test("mycli shell command palette replaces editor like coding-agent selector", a
 
 	terminal.input?.("\x1b");
 	await setTimeout(25);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+});
+
+test("mycli shell approval selector replaces editor and submits selected choice", async () => {
+	const terminal = new TestTerminal();
+	const approvals: Array<[string, string]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingApproval: {
+				decisionId: "decision-1",
+				preview: "file /tmp/image.jpg 2>&1",
+				reason: "Shell command requires approval",
+				toolName: "Bash",
+				workerName: "explore",
+				childSessionId: "demo:sub:turn_1:abcd1234",
+				options: [
+					{ choice: "approve_once", label: "Allow once" },
+					{ choice: "reject", label: "Reject" },
+				],
+				risk: "medium",
+				riskReason: "External command execution",
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting approval" },
+		},
+		terminal,
+		onApprovalRespond: (decisionId, choice) => {
+			approvals.push([decisionId, choice]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Permission required · Bash · @explore/);
+	assert.match(output, /demo:sub:turn_1:abcd1234/);
+	assert.match(output, /⎿ file \/tmp\/image\.jpg 2>&1/);
+	assert.match(output, /→ Allow once/);
+	assert.match(output, /1 allow\s+2 reject\s+↑↓ navigate\s+enter confirm\s+esc reject/);
+	assert.doesNotMatch(output, /Approval required:/);
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	assert.equal((output.match(/^─{10,}/gm) ?? []).length, 1);
+
+	terminal.input?.("\x1b[B");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /→ Reject/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.deepEqual(approvals, [["decision-1", "reject"]]);
+});
+
+test("mycli shell approval selector supports numeric and mnemonic shortcuts", async () => {
+	const terminal = new TestTerminal();
+	const approvals: Array<[string, string]> = [];
+	const approvalState: MycliShellState = {
+		...sampleState(),
+		pendingApproval: {
+			decisionId: "decision-3",
+			preview: "python script.py",
+			options: [
+				{ choice: "approve_once", label: "Allow once" },
+				{ choice: "reject", label: "Reject" },
+			],
+		},
+		footer: { ...sampleState().footer, liveState: "Waiting approval" },
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: approvalState,
+		terminal,
+		onApprovalRespond: (decisionId, choice) => {
+			approvals.push([decisionId, choice]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("1");
+	await setTimeout(25);
+	terminal.input?.("n");
+	await setTimeout(25);
+
+	assert.deepEqual(approvals, [["decision-3", "approve_once"]]);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Approved\./);
+});
+
+test("mycli shell approval selector maps escape to reject and stays mounted until backend clears it", async () => {
+	const terminal = new TestTerminal();
+	const approvals: Array<[string, string]> = [];
+	const approvalState: MycliShellState = {
+		...sampleState(),
+		pendingApproval: {
+			decisionId: "decision-2",
+			preview: "rm generated.tmp",
+			options: [
+				{ choice: "approve_once", label: "Allow once" },
+				{ choice: "reject", label: "Reject" },
+			],
+		},
+		footer: { ...sampleState().footer, liveState: "Waiting approval" },
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: approvalState,
+		terminal,
+		onApprovalRespond: (decisionId, choice) => {
+			approvals.push([decisionId, choice]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	const selector = runtime.editorContainer.children[0];
+	assert.notEqual(selector, runtime.editor);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.deepEqual(approvals, [["decision-2", "reject"]]);
+	assert.equal(runtime.editorContainer.children[0], selector);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Rejected\./);
+
+	runtime.setState({ ...approvalState, pendingApproval: undefined, pendingNotice: undefined, footer: { ...approvalState.footer, liveState: "Idle" } });
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 });
 
@@ -870,6 +1369,19 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.equal(runtime.getState().messages.length, 0);
 	assert.equal(runtime.getState().tools.length, 0);
 	assert.equal(runtime.getState().transcript?.length, 0);
+});
+
+test("mycli shell runtime normalizes dropped workspace file paths in editor", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+	runtime.start();
+
+	terminal.input?.(`\x1b[200~${join(process.cwd(), "src/app.ts")}\x1b[201~`);
+
+	assert.equal(runtime.editor.getText(), "@src/app.ts");
 });
 
 test("mycli shell runtime forwards running-turn messages for steering queueing", async () => {
@@ -1164,15 +1676,21 @@ test("mycli shell runtime supports internal transcript page scrolling", async ()
 	runtime.start();
 	await setTimeout(25);
 	assert.match(stripAnsi(terminal.output), /message 19/);
+	const redrawsAfterStart = runtime.ui.fullRedraws;
+	const clearsAfterStart = terminal.fullClearCount();
 
 	terminal.input?.("\x1b[5~");
 	await setTimeout(25);
 	assert.ok(runtime.getTranscriptScrollOffset() > 0);
 	assert.match(stripAnsi(terminal.output), /message 1[0-8]/);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assert.equal(terminal.fullClearCount(), clearsAfterStart);
 
 	terminal.input?.("\x1b[6~");
 	await setTimeout(25);
 	assert.equal(runtime.getTranscriptScrollOffset(), 0);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assert.equal(terminal.fullClearCount(), clearsAfterStart);
 });
 
 test("mycli shell writes full initial history when terminal has native scrollback", async () => {
@@ -1203,6 +1721,119 @@ test("mycli shell writes full initial history when terminal has native scrollbac
 	assert.match(output, /history message 17/);
 });
 
+test("mycli shell appends new history into native scrollback without mouse capture", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	const initial = {
+		...sampleState(),
+		messages: Array.from({ length: 12 }, (_, index) => ({
+			id: `history-${index}`,
+			role: index % 2 === 0 ? "user" as const : "assistant" as const,
+			text: `history message ${index}`,
+		})),
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: initial,
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+	runtime.setState({
+		...initial,
+		messages: [
+			...initial.messages,
+			{ id: "history-new", role: "assistant" as const, text: "new appended history" },
+		],
+	});
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /new appended history/);
+	assertNativeScrollbackSafeOutput(terminal.output);
+	assert.equal(terminal.fullClearCount(), 0);
+});
+
+test("mycli shell does not clear screen when submitting into long native scrollback history", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	const initial = {
+		...sampleState(),
+		messages: Array.from({ length: 40 }, (_, index) => ({
+			id: `history-${index}`,
+			role: index % 2 === 0 ? "user" as const : "assistant" as const,
+			text: `history message ${index}`,
+		})),
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: initial,
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+	runtime.setState({
+		...initial,
+		messages: [
+			...initial.messages,
+			{ id: "submitted-user", role: "user" as const, text: "new submitted message" },
+		],
+		footer: {
+			...initial.footer,
+			liveState: "Running",
+		},
+	});
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /new submitted message/);
+	assertNativeScrollbackSafeOutput(terminal.output);
+	assert.equal(terminal.fullClearCount(), 0);
+});
+
+test("mycli shell does not clear native scrollback terminal across full redraws", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	terminal.columns = 80;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 12 }, (_, index) => ({
+				id: `history-${index}`,
+				role: index % 2 === 0 ? "user" as const : "assistant" as const,
+				text: `history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+	terminal.columns = 100;
+	terminal.resize?.();
+	await setTimeout(25);
+
+	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
 test("mycli shell runtime scrolls only transcript and keeps chrome visible", async () => {
 	const terminal = new TestTerminal();
 	terminal.rows = 12;
@@ -1229,10 +1860,11 @@ test("mycli shell runtime scrolls only transcript and keeps chrome visible", asy
 	await setTimeout(25);
 
 	const output = stripAnsi(terminal.output);
-	assert.match(output, /mycli/);
-	assert.match(output, /Message mycli/);
-	assert.match(output, /deepseek-v4-flash/);
 	assert.match(output, /message 1[0-9]/);
+	const screen = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(screen, /mycli/);
+	assert.match(screen, /Message mycli/);
+	assert.match(screen, /deepseek-v4-flash/);
 });
 
 test("mycli shell runtime supports terminal wheel-style transcript scrolling", async () => {
@@ -1255,14 +1887,56 @@ test("mycli shell runtime supports terminal wheel-style transcript scrolling", a
 	});
 	runtime.start();
 	await setTimeout(25);
+	const redrawsAfterStart = runtime.ui.fullRedraws;
+	const clearsAfterStart = terminal.fullClearCount();
 
 	terminal.input?.("\x1b[A");
 	await setTimeout(25);
 	assert.ok(runtime.getTranscriptScrollOffset() > 0);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assert.equal(terminal.fullClearCount(), clearsAfterStart);
 
 	terminal.input?.("\x1b[B");
 	await setTimeout(25);
 	assert.equal(runtime.getTranscriptScrollOffset(), 0);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assert.equal(terminal.fullClearCount(), clearsAfterStart);
+});
+
+test("mycli shell runtime supports SGR mouse wheel transcript scrolling", async () => {
+	const terminal = new TestTerminal();
+	terminal.rows = 12;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 20 }, (_, index) => ({
+				id: `m${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				text: `message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+	runtime.start();
+	await setTimeout(25);
+	const redrawsAfterStart = runtime.ui.fullRedraws;
+	const clearsAfterStart = terminal.fullClearCount();
+
+	terminal.input?.("\x1b[<64;10;5M");
+	await setTimeout(25);
+	assert.ok(runtime.getTranscriptScrollOffset() > 0);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assert.equal(terminal.fullClearCount(), clearsAfterStart);
+
+	terminal.input?.("\x1b[<65;10;5M");
+	await setTimeout(25);
+	assert.equal(runtime.getTranscriptScrollOffset(), 0);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assert.equal(terminal.fullClearCount(), clearsAfterStart);
 });
 
 test("promoted compiled code and tests do not keep legacy copied naming", () => {

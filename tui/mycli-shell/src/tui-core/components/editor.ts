@@ -2,6 +2,7 @@ import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocompl
 import { getKeybindings } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
 import { getGraphemeSegmenter, getWordSegmenter, isWhitespaceChar, truncateToWidth, visibleWidth } from "../utils.ts";
@@ -219,6 +220,39 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 };
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
+
+export function normalizeDroppedFilePaste(text: string, options: { cwd?: string } = {}): string {
+	const trimmed = text.trim();
+	if (!trimmed || trimmed.includes("\n")) {
+		return text;
+	}
+	const pathText = filePathFromPaste(trimmed);
+	if (!pathText || !isAbsolute(pathText)) {
+		return text;
+	}
+	const cwd = resolve(options.cwd ?? process.cwd());
+	const resolvedPath = resolve(pathText);
+	const relativePath = relative(cwd, resolvedPath);
+	if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+		return text;
+	}
+	const displayPath = relativePath.split(sep).join("/");
+	if (/[\s"]/u.test(displayPath)) {
+		return `@"${displayPath.replaceAll('"', '\\"')}"`;
+	}
+	return `@${displayPath}`;
+}
+
+function filePathFromPaste(text: string): string | null {
+	if (!text.startsWith("file://")) {
+		return text;
+	}
+	try {
+		return decodeURIComponent(new URL(text).pathname);
+	} catch {
+		return null;
+	}
+}
 
 export class Editor implements Component, Focusable {
 	private state: EditorState = {
@@ -1114,10 +1148,11 @@ export class Editor implements Component, Focusable {
 			.split("")
 			.filter((char) => char === "\n" || char.charCodeAt(0) >= 32)
 			.join("");
+		filteredText = normalizeDroppedFilePaste(filteredText);
 
 		// If pasting a file path (starts with /, ~, or .) and the character before
 		// the cursor is a word character, prepend a space for better readability
-		if (/^[/~.]/.test(filteredText)) {
+		if (/^[/~.@]/.test(filteredText)) {
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
 			const charBeforeCursor = this.state.cursorCol > 0 ? currentLine[this.state.cursorCol - 1] : "";
 			if (charBeforeCursor && /\w/.test(charBeforeCursor)) {

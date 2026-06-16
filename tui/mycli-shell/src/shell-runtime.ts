@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { Editor } from "./tui-core/components/editor.ts";
 import { SelectList, type SelectItem } from "./tui-core/components/select-list.ts";
 import { Spacer } from "./tui-core/components/spacer.ts";
 import { Text } from "./tui-core/components/text.ts";
@@ -11,11 +10,15 @@ import type {
 	MycliShellCommand,
 	MycliShellMessage,
 	MycliShellModel,
+	MycliShellPendingApproval,
 	MycliShellState,
+	MycliShellSubagent,
 	MycliShellTranscriptBlock,
 } from "./model.ts";
+import { ApprovalSelectorComponent } from "./components/approval-selector.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
+import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
@@ -24,10 +27,13 @@ import { PlanPanelComponent } from "./components/plan-panel.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
+import { SubagentExecutionComponent, SubagentGroupComponent } from "./components/subagent-execution.ts";
+import { SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { getEditorTheme, getSelectListTheme, theme } from "./theme/theme.ts";
+import { projectTranscriptBlocks, type ProjectedTranscriptBlock } from "./transcript-projection.ts";
 
 export type MycliShellRuntimeOptions = {
 	initialState: MycliShellState;
@@ -43,6 +49,7 @@ export type MycliShellRuntimeOptions = {
 	onExit?: () => void | Promise<void>;
 	onModelSelect?: (model: MycliShellModel) => void | Promise<void>;
 	onSessionSelect?: (sessionId: string) => void | Promise<void>;
+	onApprovalRespond?: (decisionId: string, choice: string) => void | Promise<void>;
 	commands?: MycliShellCommand[];
 	now?: () => number;
 };
@@ -80,7 +87,10 @@ type ChatBlockComponent =
 	| { kind: "message"; signature: string; role: MycliShellMessage["role"]; component: Component }
 	| { kind: "plan"; signature: string; component: ProposedPlanComponent }
 	| { kind: "tool"; signature: string; component: ToolExecutionComponent }
-	| { kind: "bash"; signature: string; component: BashExecutionComponent };
+	| { kind: "bash"; signature: string; component: BashExecutionComponent }
+	| { kind: "subagent"; signature: string; component: SubagentExecutionComponent }
+	| { kind: "agent_group"; signature: string; component: SubagentGroupComponent }
+	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
 class TurnActivityComponent implements Component {
 	private readonly frames = ["◐", "◓", "◑", "◒"];
@@ -171,7 +181,6 @@ class TranscriptViewportComponent implements Component {
 		}
 		this.lastLineCount = lines.length;
 		if (this.renderFullOnce) {
-			this.renderFullOnce = false;
 			this.scrollOffset = 0;
 			return lines;
 		}
@@ -194,6 +203,7 @@ export class MycliShellRuntime {
 	readonly pendingMessagesContainer = new Container();
 	readonly statusContainer = new Container();
 	readonly editorContainer = new Container();
+	readonly subagentTaskContainer = new Container();
 	readonly footerContainer = new Container();
 	readonly editor: CustomEditor;
 
@@ -205,8 +215,13 @@ export class MycliShellRuntime {
 	private turnStartedAtMs: number | null = null;
 	private completedDurationMs: number | null = null;
 	private selectorActive = false;
+	private approvalSurfaceDecisionId: string | null = null;
 	private readonly now: () => number;
 	private lastCtrlCAtMs: number | null = null;
+	private subagentPanelExpanded = false;
+	private subagentPanelIndex = 0;
+	private viewingSubagentId: string | null = null;
+	private dismissedSubagentIds = new Set<string>();
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
@@ -259,7 +274,7 @@ export class MycliShellRuntime {
 		this.ui.start();
 		if (this.options.requireTrust) {
 			this.showTrustGate();
-		} else {
+		} else if (!this.selectorActive) {
 			this.ui.setFocus(this.editor);
 		}
 	}
@@ -309,6 +324,9 @@ export class MycliShellRuntime {
 		if (this.ui.hasOverlay() || this.selectorActive) {
 			return undefined;
 		}
+		if (this.handleSubagentPanelInput(data)) {
+			return { consume: true };
+		}
 		if (matchesKey(data, "ctrl+c")) {
 			void this.handleCtrlC();
 			return { consume: true };
@@ -348,9 +366,87 @@ export class MycliShellRuntime {
 		return undefined;
 	}
 
+	private handleSubagentPanelInput(data: string): boolean {
+		const agents = this.visibleSubagents();
+		if (agents.length === 0) {
+			this.subagentPanelExpanded = false;
+			this.subagentPanelIndex = 0;
+			this.viewingSubagentId = null;
+			return false;
+		}
+		if (matchesKey(data, "shift+down")) {
+			if (this.editor.getText().length > 0) {
+				return false;
+			}
+			this.subagentPanelExpanded = true;
+			this.clampSubagentPanelIndex(agents);
+			this.rebuildSubagentTasks();
+			this.ui.requestRender();
+			return true;
+		}
+		if (!this.subagentPanelExpanded) {
+			if (matchesKey(data, "escape") && this.viewingSubagentId !== null && this.editor.getText().length === 0) {
+				this.viewingSubagentId = null;
+				this.rebuildSubagentTasks();
+				this.ui.requestRender();
+				return true;
+			}
+			return false;
+		}
+		if (this.editor.getText().length > 0) {
+			return false;
+		}
+		if (matchesKey(data, "escape")) {
+			if (this.viewingSubagentId !== null) {
+				this.viewingSubagentId = null;
+			} else {
+				this.subagentPanelExpanded = false;
+				this.subagentPanelIndex = 0;
+			}
+			this.rebuildSubagentTasks();
+			this.ui.requestRender();
+			return true;
+		}
+		if (matchesKey(data, "up")) {
+			this.subagentPanelIndex = Math.max(0, this.subagentPanelIndex - 1);
+			this.rebuildSubagentTasks();
+			this.ui.requestRender();
+			return true;
+		}
+		if (matchesKey(data, "down")) {
+			this.subagentPanelIndex = Math.min(agents.length, this.subagentPanelIndex + 1);
+			this.rebuildSubagentTasks();
+			this.ui.requestRender();
+			return true;
+		}
+		if (matchesKey(data, "enter")) {
+			this.viewingSubagentId = this.subagentPanelIndex === 0 ? null : (agents[this.subagentPanelIndex - 1]?.id ?? null);
+			this.subagentPanelExpanded = false;
+			this.rebuildSubagentTasks();
+			this.ui.requestRender();
+			return true;
+		}
+		if (data === "x" || data === "X") {
+			const selected = agents[this.subagentPanelIndex - 1];
+			if (selected && this.isResolvedSubagent(selected)) {
+				this.dismissedSubagentIds.add(selected.id);
+				if (this.viewingSubagentId === selected.id) {
+					this.viewingSubagentId = null;
+				}
+				const nextAgents = this.visibleSubagents();
+				this.clampSubagentPanelIndex(nextAgents);
+				this.subagentPanelExpanded = nextAgents.length > 0 && this.subagentPanelExpanded;
+				this.rebuildSubagentTasks();
+				this.ui.requestRender();
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private scrollTranscript(deltaLines: number): void {
 		this.transcriptViewport.scrollBy(deltaLines);
-		this.ui.requestRender(true);
+		this.ui.requestRender();
 	}
 
 	private transcriptPageSize(): number {
@@ -366,6 +462,7 @@ export class MycliShellRuntime {
 			this.pendingMessagesContainer.render(width).length +
 			this.statusContainer.render(width).length +
 			this.editorContainer.render(width).length +
+			this.subagentTaskContainer.render(width).length +
 			this.footerContainer.render(width).length;
 		return Math.max(1, this.ui.terminal.rows - chromeHeight);
 	}
@@ -498,6 +595,7 @@ export class MycliShellRuntime {
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.editorContainer);
+		this.ui.addChild(this.subagentTaskContainer);
 		this.ui.addChild(this.footerContainer);
 		this.rebuildAll();
 	}
@@ -545,7 +643,9 @@ export class MycliShellRuntime {
 		this.rebuildChat();
 		this.rebuildPending();
 		this.rebuildStatus();
+		this.rebuildSubagentTasks();
 		this.rebuildFooter();
+		this.syncApprovalSurface(null, this.state);
 	}
 
 	private rebuildChangedSections(previousState: MycliShellState, nextState: MycliShellState): void {
@@ -555,15 +655,23 @@ export class MycliShellRuntime {
 		if (this.chatSignature(previousState) !== this.chatSignature(nextState) || this.liveStateSignature(previousState) !== this.liveStateSignature(nextState)) {
 			this.rebuildChat();
 		}
-		if (previousState.pendingNotice !== nextState.pendingNotice || this.activePlanSignature(previousState) !== this.activePlanSignature(nextState)) {
+		if (
+			previousState.pendingNotice !== nextState.pendingNotice ||
+			this.approvalSignature(previousState) !== this.approvalSignature(nextState) ||
+			this.activePlanSignature(previousState) !== this.activePlanSignature(nextState)
+		) {
 			this.rebuildPending();
 		}
 		if (previousState.footer.liveState !== nextState.footer.liveState) {
 			this.rebuildStatus();
 		}
+		if (this.subagentTaskSignature(previousState) !== this.subagentTaskSignature(nextState)) {
+			this.rebuildSubagentTasks();
+		}
 		if (this.footerSignature(previousState) !== this.footerSignature(nextState)) {
 			this.rebuildFooter();
 		}
+		this.syncApprovalSurface(previousState, nextState);
 	}
 
 	private chatSignature(state: MycliShellState): string {
@@ -589,6 +697,60 @@ export class MycliShellRuntime {
 
 	private activePlanSignature(state: MycliShellState): string {
 		return JSON.stringify(state.activePlan ?? []);
+	}
+
+	private approvalSignature(state: MycliShellState): string {
+		return JSON.stringify(state.pendingApproval ?? null);
+	}
+
+	private subagentTaskSignature(state: MycliShellState): string {
+		return JSON.stringify({
+			transcript: state.transcript?.filter((block) => block.kind === "subagent") ?? [],
+			dismissed: [...this.dismissedSubagentIds].sort(),
+			expanded: this.subagentPanelExpanded,
+			index: this.subagentPanelIndex,
+			viewing: this.viewingSubagentId,
+		});
+	}
+
+	private syncApprovalSurface(previousState: MycliShellState | null, nextState: MycliShellState): void {
+		if (previousState && this.approvalSignature(previousState) === this.approvalSignature(nextState)) {
+			return;
+		}
+		if (!nextState.pendingApproval) {
+			if (this.approvalSurfaceDecisionId !== null) {
+				this.approvalSurfaceDecisionId = null;
+				this.restoreEditor();
+			}
+			return;
+		}
+		this.showApprovalSelector(nextState.pendingApproval);
+	}
+
+	private showApprovalSelector(approval: MycliShellPendingApproval): void {
+		const selector = new ApprovalSelectorComponent({
+			approval,
+			onSelect: (choice) => {
+				void this.respondApproval(approval.decisionId, choice);
+			},
+			onCancel: () => {
+				this.addSystemNotice("Approval still pending.");
+			},
+		});
+		this.approvalSurfaceDecisionId = approval.decisionId;
+		this.selectorActive = true;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(selector);
+		this.ui.setFocus(selector);
+	}
+
+	private async respondApproval(decisionId: string, choice: string): Promise<void> {
+		try {
+			await this.options.onApprovalRespond?.(decisionId, choice);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unable to submit approval response.";
+			this.addSystemNotice(message);
+		}
 	}
 
 	private rebuildHeader(): void {
@@ -632,7 +794,7 @@ export class MycliShellRuntime {
 		this.stopTurnActivity();
 		const nextBlocks = new Map<string, ChatBlockComponent>();
 		const children: Component[] = [];
-		for (const block of blocks) {
+		for (const block of projectTranscriptBlocks(blocks)) {
 			const cached = this.chatBlocks.get(block.id);
 			const next = this.syncChatBlock(block, cached);
 			nextBlocks.set(block.id, next);
@@ -659,7 +821,7 @@ export class MycliShellRuntime {
 		return null;
 	}
 
-	private syncChatBlock(block: MycliShellTranscriptBlock, cached?: ChatBlockComponent): ChatBlockComponent {
+	private syncChatBlock(block: ProjectedTranscriptBlock, cached?: ChatBlockComponent): ChatBlockComponent {
 		const signature = this.blockSignature(block);
 		if (cached?.kind === block.kind) {
 			if (block.kind === "tool" && cached.component instanceof ToolExecutionComponent) {
@@ -669,6 +831,21 @@ export class MycliShellRuntime {
 			}
 			if (block.kind === "bash" && cached.component instanceof BashExecutionComponent) {
 				cached.component.updateBash(block.bash);
+				cached.signature = signature;
+				return cached;
+			}
+			if (block.kind === "tool_group" && cached.component instanceof CollapsedToolGroupComponent) {
+				cached.component.updateGroup(block.group);
+				cached.signature = signature;
+				return cached;
+			}
+			if (block.kind === "subagent" && cached.component instanceof SubagentExecutionComponent) {
+				cached.component.updateSubagent(block.subagent);
+				cached.signature = signature;
+				return cached;
+			}
+			if (block.kind === "agent_group" && cached.component instanceof SubagentGroupComponent) {
+				cached.component.updateGroup(block.group);
 				cached.signature = signature;
 				return cached;
 			}
@@ -696,10 +873,19 @@ export class MycliShellRuntime {
 		if (block.kind === "plan") {
 			return { kind: "plan", signature, component: new ProposedPlanComponent(block.plan) };
 		}
+		if (block.kind === "tool_group") {
+			return { kind: "tool_group", signature, component: new CollapsedToolGroupComponent(block.group) };
+		}
+		if (block.kind === "subagent") {
+			return { kind: "subagent", signature, component: new SubagentExecutionComponent(block.subagent) };
+		}
+		if (block.kind === "agent_group") {
+			return { kind: "agent_group", signature, component: new SubagentGroupComponent(block.group) };
+		}
 		return { kind: "message", signature, role: block.message.role, component: this.createMessageComponent(block.message) };
 	}
 
-	private blockSignature(block: MycliShellTranscriptBlock): string {
+	private blockSignature(block: ProjectedTranscriptBlock): string {
 		return JSON.stringify(block);
 	}
 
@@ -716,7 +902,7 @@ export class MycliShellRuntime {
 
 	private rebuildPending(): void {
 		this.pendingMessagesContainer.clear();
-		if (this.state.pendingNotice) {
+		if (this.state.pendingNotice && !this.state.pendingApproval) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			this.pendingMessagesContainer.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
 		}
@@ -746,6 +932,53 @@ export class MycliShellRuntime {
 		if (this.state.footer.liveState && this.state.footer.liveState !== "Idle") {
 			this.statusContainer.addChild(new Text(theme.fg("muted", this.state.footer.liveState), 1, 0));
 		}
+	}
+
+	private rebuildSubagentTasks(): void {
+		this.subagentTaskContainer.clear();
+		const agents = this.visibleSubagents();
+		if (agents.length === 0) {
+			this.subagentPanelExpanded = false;
+			this.subagentPanelIndex = 0;
+			this.viewingSubagentId = null;
+			return;
+		}
+		this.clampSubagentPanelIndex(agents);
+		this.subagentTaskContainer.addChild(
+			new SubagentTaskPanelComponent({
+				agents,
+				mode: this.subagentPanelExpanded ? "expanded" : "compact",
+				selectedIndex: this.subagentPanelIndex,
+				viewingSubagentId: this.viewingSubagentId,
+			}),
+		);
+	}
+
+	private visibleSubagents(): MycliShellSubagent[] {
+		const transcript = this.state.transcript ?? [];
+		const seen = new Map<string, MycliShellSubagent>();
+		for (const block of transcript) {
+			if (block.kind !== "subagent") {
+				continue;
+			}
+			if (this.dismissedSubagentIds.has(block.subagent.id)) {
+				continue;
+			}
+			seen.set(block.subagent.id, block.subagent);
+		}
+		return [...seen.values()];
+	}
+
+	private clampSubagentPanelIndex(agents: MycliShellSubagent[]): void {
+		this.subagentPanelIndex = Math.min(Math.max(0, this.subagentPanelIndex), agents.length);
+		if (this.viewingSubagentId && !agents.some((agent) => agent.id === this.viewingSubagentId)) {
+			this.viewingSubagentId = null;
+		}
+	}
+
+	private isResolvedSubagent(agent: MycliShellSubagent): boolean {
+		const normalized = agent.status.toLowerCase();
+		return !["running", "pending", "queued"].includes(normalized);
 	}
 
 	private updateStatusTiming(previousState: MycliShellState, nextState: MycliShellState): void {
@@ -869,6 +1102,9 @@ export class MycliShellRuntime {
 
 	private async handleInterrupt(): Promise<void> {
 		if (this.selectorActive) {
+			if (this.approvalSurfaceDecisionId !== null) {
+				return;
+			}
 			this.restoreEditor();
 			return;
 		}

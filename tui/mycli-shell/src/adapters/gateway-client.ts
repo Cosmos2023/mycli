@@ -74,6 +74,7 @@ export class GatewayClient {
 	private readonly pendingEvents: PendingEvent[] = [];
 	private readonly events: GatewayEvent[] = [];
 	private readline: Interface | null = null;
+	private closed = false;
 
 	constructor(
 		private readonly options: {
@@ -84,20 +85,51 @@ export class GatewayClient {
 	) {}
 
 	start(): void {
+		this.options.output.on?.("error", (error) => {
+			this.closeFromError(error instanceof Error ? error : new Error("Gateway output closed."));
+		});
+		this.options.input.on?.("error", (error) => {
+			this.closeFromError(error instanceof Error ? error : new Error("Gateway input closed."));
+		});
 		this.readline = createInterface({ input: this.options.input, crlfDelay: Infinity });
 		this.readline.on("line", (line) => this.handleLine(line));
+		this.readline.on("error", (error) => {
+			this.closeFromError(error instanceof Error ? error : new Error("Gateway input closed."));
+		});
+		this.readline.on("close", () => {
+			this.closeFromError(new Error("Gateway input closed."));
+		});
 	}
 
 	stop(): void {
+		this.closed = true;
 		this.readline?.close();
 		this.readline = null;
+		this.rejectAll(new Error("Gateway closed."));
 	}
 
 	send(method: string, params: JsonObject = {}): Promise<JsonObject> {
 		const id = String(this.nextId++);
 		return new Promise((resolve, reject) => {
+			if (this.closed || (this.options.output as { destroyed?: boolean }).destroyed) {
+				reject(new GatewayRequestError({ code: "pipe_closed", message: "Gateway output closed.", method }));
+				return;
+			}
 			this.pending.set(id, { method, resolve, reject });
-			this.options.output.write(encodeMessage(request(id, method, params)));
+			let ok = false;
+			try {
+				ok = this.options.output.write(encodeMessage(request(id, method, params)));
+			} catch (error) {
+				this.pending.delete(id);
+				this.closeFromError(error instanceof Error ? error : new Error("Gateway output closed."));
+				reject(new GatewayRequestError({ code: "pipe_closed", message: "Gateway output closed.", method }));
+				return;
+			}
+			if (!ok && (this.options.output as { destroyed?: boolean }).destroyed) {
+				this.pending.delete(id);
+				this.closeFromError(new Error("Gateway output closed."));
+				reject(new GatewayRequestError({ code: "pipe_closed", message: "Gateway output closed.", method }));
+			}
 		});
 	}
 
@@ -126,6 +158,9 @@ export class GatewayClient {
 	}
 
 	private handleLine(line: string): void {
+		if (this.closed) {
+			return;
+		}
 		const message = decodeMessage(line);
 		if ("id" in message && this.pending.has(String(message.id))) {
 			const pending = this.pending.get(String(message.id));
@@ -169,5 +204,27 @@ export class GatewayClient {
 			this.pendingEvents.splice(index, 1);
 		}
 		clearTimeout(pending.timer);
+	}
+
+	private rejectAll(error: Error): void {
+		for (const pending of this.pending.values()) {
+			pending.reject(error);
+		}
+		this.pending.clear();
+		for (const pending of this.pendingEvents) {
+			pending.reject(error);
+			clearTimeout(pending.timer);
+		}
+		this.pendingEvents.length = 0;
+	}
+
+	private closeFromError(error: Error): void {
+		if (this.closed) {
+			return;
+		}
+		this.closed = true;
+		this.rejectAll(error);
+		this.readline?.close();
+		this.readline = null;
 	}
 }

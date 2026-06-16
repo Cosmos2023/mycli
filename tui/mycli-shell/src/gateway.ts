@@ -13,6 +13,7 @@ import {
 	type RuntimeShellState,
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
+import { NativeChatRuntime } from "./native-chat-runtime.ts";
 import type { MycliShellSession, MycliShellState } from "./model.ts";
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
@@ -27,6 +28,7 @@ const client = new GatewayClient({
 let runtimeState: RuntimeShellState = initialRuntimeState();
 let sessions: MycliShellSession[] = [];
 let runtime: MycliShellRuntime | null = null;
+let nativeRuntime: NativeChatRuntime | null = null;
 let ttyStreams: TtyStreams | null = null;
 let bootstrapped = false;
 const eventDeduper = new GatewayEventDeduper();
@@ -46,10 +48,14 @@ function setRuntimeState(nextState: RuntimeShellState): void {
 	if (runtime) {
 		runtime.setState(currentShellState());
 	}
+	if (nativeRuntime) {
+		nativeRuntime.setState(currentShellState());
+	}
 }
 
 function refreshRuntime(): void {
 	runtime?.setState(currentShellState());
+	nativeRuntime?.setState(currentShellState());
 }
 
 function handleGatewayEvent(event: GatewayEvent): void {
@@ -316,6 +322,10 @@ async function interruptTurn(): Promise<void> {
 	await send("turn.interrupt", {});
 }
 
+async function respondApproval(decisionId: string, choice: string): Promise<void> {
+	await send("approval.respond", { decision_id: decisionId, choice });
+}
+
 function stringArrayValue(value: unknown): string[] {
 	if (typeof value === "string" && value.trim()) {
 		return [value.trim()];
@@ -356,18 +366,49 @@ async function shutdown(exitCode = 0): Promise<void> {
 	} catch {
 		// Best-effort shutdown.
 	} finally {
-		if (runtime?.isStarted()) {
-			runtime.ui.stop();
-		}
-		ttyStreams?.close();
-		ttyStreams = null;
-		client.stop();
+		await stopLocalRuntime();
 		process.exitCode = exitCode;
 	}
 }
 
+async function interruptExit(exitCode = 130): Promise<void> {
+	await stopLocalRuntime();
+	process.exitCode = exitCode;
+	process.exit(exitCode);
+}
+
+async function stopLocalRuntime(): Promise<void> {
+	if (runtime?.isStarted()) {
+		runtime.ui.stop();
+	}
+	if (nativeRuntime?.isStarted()) {
+		await nativeRuntime.stop({ notifyExit: false });
+	}
+	ttyStreams?.close();
+	ttyStreams = null;
+	client.stop();
+}
+
 async function main(): Promise<void> {
 	await bootstrap();
+	if (process.env.MYCLI_TUI_NATIVE === "1") {
+		ttyStreams = openTtyStreams();
+		nativeRuntime = new NativeChatRuntime({
+			initialState: currentShellState(),
+			streams: {
+				input: ttyStreams.input,
+				output: ttyStreams.output,
+			},
+			columns: () => ttyStreams?.output.columns || Number(process.env.COLUMNS) || 100,
+			onSubmit: submitTurn,
+			onFollowUp: submitFollowUp,
+			onCommandSubmit: runCommand,
+			onExit: () => shutdown(0),
+			onInterruptExit: () => interruptExit(130),
+		});
+		nativeRuntime.start();
+		return;
+	}
 	ttyStreams = openTtyStreams();
 	runtime = new MycliShellRuntime({
 		initialState: currentShellState(),
@@ -381,6 +422,7 @@ async function main(): Promise<void> {
 		onDequeueQueuedInput: dequeueQueuedInput,
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
+		onApprovalRespond: respondApproval,
 		onModelSelect: async (model) => {
 			const thinking = model.thinkingLevel ? ` --thinking-effort ${model.thinkingLevel}` : "";
 			await runCommand(`/model ${model.id}${thinking}`);
@@ -414,7 +456,7 @@ process.on("SIGINT", () => {
 	if (runtime?.isStarted()) {
 		return;
 	}
-	void shutdown(0).finally(() => process.exit(0));
+	void interruptExit(130);
 });
 
 process.once("SIGTERM", () => {
