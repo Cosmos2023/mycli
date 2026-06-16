@@ -37,7 +37,15 @@ cd ../..
 
 ### 配置模型
 
-推荐把项目配置写到当前 workspace 的 `.mycli/config.toml`：
+首次启动时，如果没有检测到 API key，`mycli` 会进入交互式 setup wizard。也可以手动运行：
+
+```bash
+uv run mycli setup
+```
+
+setup 会询问 provider、API base URL、model 和 API key，并默认写入用户级配置 `~/.config/mycli/config.toml`。API key 输入不会回显。
+
+也可以手动把项目配置写到当前 workspace 的 `.mycli/config.toml`：
 
 ```toml
 provider = "openai"

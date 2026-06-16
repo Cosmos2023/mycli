@@ -19,6 +19,7 @@ from mycli.cli.repl import (
     run_repl,
 )
 from mycli.cli.node_tui import NodeTuiProcessError, run_node_tui
+from mycli.cli.setup_wizard import run_setup_wizard
 from mycli.cli.tui import run_tui
 from mycli.cli.rendering import (
     RenderOptions,
@@ -72,6 +73,7 @@ __all__ = [
     "handle_hooks_command",
     "handle_mcp_command",
     "handle_plugins_command",
+    "handle_setup_command",
     "handle_subagents_command",
     "handle_slash_command",
     "main",
@@ -105,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["doctor", "hooks", "plugins", "mcp", "subagents"],
+        choices=["doctor", "hooks", "plugins", "mcp", "subagents", "setup"],
         help="Run a utility command",
     )
     parser.add_argument("utility_args", nargs="*", help=argparse.SUPPRESS)
@@ -115,6 +117,10 @@ def build_parser() -> argparse.ArgumentParser:
 def should_use_tui(cli_args: dict[str, object]) -> bool:
     if bool(cli_args.get("plain")):
         return False
+    return stdin.isatty() and stdout.isatty()
+
+
+def should_run_setup_wizard() -> bool:
     return stdin.isatty() and stdout.isatty()
 
 
@@ -291,6 +297,23 @@ def handle_subagents_command(
         for line in render_subagent_management_response(response):
             output_func(line)
     return 0 if response.ok else 1
+
+
+def handle_setup_command(
+    cli_args: dict[str, object],
+    *,
+    home: Path | None = None,
+    input_func: Callable[[str], str] = input,
+    output_func: Callable[[str], Any] = print,
+) -> int | None:
+    if cli_args.get("command") != "setup":
+        return None
+    run_setup_wizard(
+        home_dir=home or Path.home(),
+        input_func=input_func,
+        output_func=output_func,
+    )
+    return 0
 
 
 def _dispatch_subagents_command(
@@ -642,10 +665,33 @@ def main(
     )
     if subagents_exit_code is not None:
         return subagents_exit_code
+    setup_exit_code = handle_setup_command(
+        args,
+        home=home,
+        input_func=input_func,
+        output_func=output_func,
+    )
+    if setup_exit_code is not None:
+        return setup_exit_code
     eval_exit_code = handle_evaluation_command(args, cwd=cwd, home=home, env=env)
     if eval_exit_code is not None:
         return eval_exit_code
-    service = build_turn_service(args, cwd=cwd, home=home, env=env)
+    try:
+        service = build_turn_service(args, cwd=cwd, home=home, env=env)
+    except RuntimeError as exc:
+        if str(exc) != "MYCLI_API_KEY is required" or not should_run_setup_wizard():
+            output_func(str(exc))
+            return 2
+        run_setup_wizard(
+            home_dir=home or Path.home(),
+            input_func=input_func,
+            output_func=output_func,
+        )
+        try:
+            service = build_turn_service(args, cwd=cwd, home=home, env=env)
+        except RuntimeError as retry_exc:
+            output_func(str(retry_exc))
+            return 2
     try:
         force_plain_after_node_failure = False
         if should_use_node_tui(args, env):

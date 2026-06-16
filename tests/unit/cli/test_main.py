@@ -80,6 +80,13 @@ def test_build_parser_accepts_doctor_command() -> None:
     assert args.command == "doctor"
 
 
+def test_build_parser_accepts_setup_command() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["setup"])
+
+    assert args.command == "setup"
+
+
 def test_build_parser_accepts_mcp_command() -> None:
     parser = build_parser()
     args = parser.parse_args(["mcp", "list"])
@@ -94,6 +101,33 @@ def test_build_parser_accepts_subagents_command() -> None:
 
     assert args.command == "subagents"
     assert args.utility_args == ["inspect", "explore"]
+
+
+def test_setup_command_writes_user_config(monkeypatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    outputs: list[str] = []
+    scripted_inputs = iter(["2", "", "deepseek-v4-flash"])
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: "sk-test")
+
+    exit_code = main(
+        argv=["setup"],
+        cwd=tmp_path,
+        home=home,
+        env={},
+        input_func=lambda _prompt: next(scripted_inputs),
+        output_func=outputs.append,
+    )
+
+    config_path = home / ".config" / "mycli" / "config.toml"
+    assert exit_code == 0
+    assert config_path.exists()
+    config_text = config_path.read_text(encoding="utf-8")
+    assert 'provider = "deepseek"' in config_text
+    assert 'protocol = "chat_completions"' in config_text
+    assert 'model = "deepseek-v4-flash"' in config_text
+    assert 'api_base_url = "https://api.deepseek.com"' in config_text
+    assert 'api_key = "sk-test"' in config_text
+    assert any("Saved configuration" in line for line in outputs)
 
 
 def test_subagents_command_is_provider_free_and_renders_json(tmp_path: Path) -> None:
@@ -711,6 +745,91 @@ def test_main_interactive_defaults_to_node_tui(monkeypatch, tmp_path: Path) -> N
 
     assert main([], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
     assert calls == ["node"]
+
+
+def test_main_interactive_missing_api_key_runs_setup_then_starts_node_tui(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    build_calls = 0
+
+    def fake_build_turn_service(*_args, **_kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        if build_calls == 1:
+            raise RuntimeError("MYCLI_API_KEY is required")
+        return object()
+
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", fake_build_turn_service)
+    monkeypatch.setattr(
+        "mycli.cli.main.run_setup_wizard",
+        lambda **_kwargs: calls.append("setup"),
+    )
+    monkeypatch.setattr(
+        "mycli.cli.main.run_node_tui",
+        lambda *args, **kwargs: calls.append("node") or 0,
+    )
+
+    assert main([], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
+    assert calls == ["setup", "node"]
+    assert build_calls == 2
+
+
+def test_main_plain_interactive_missing_api_key_runs_setup_then_repl(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    build_calls = 0
+    service = SimpleNamespace(
+        _config=SimpleNamespace(
+            session_id="demo",
+            workspace_root=tmp_path,
+            statusline_enabled=False,
+        ),
+        _session_service=SimpleNamespace(load_pending_decision=lambda _session_id: None),
+        close=lambda: calls.append("close"),
+    )
+
+    def fake_build_turn_service(*_args, **_kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        if build_calls == 1:
+            raise RuntimeError("MYCLI_API_KEY is required")
+        return service
+
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("mycli.cli.main.build_turn_service", fake_build_turn_service)
+    monkeypatch.setattr(
+        "mycli.cli.main.run_setup_wizard",
+        lambda **_kwargs: calls.append("setup"),
+    )
+    monkeypatch.setattr("mycli.cli.main.run_repl", lambda *args, **kwargs: calls.append("plain"))
+
+    assert main(["--plain"], cwd=tmp_path, home=tmp_path / "home", env={}) == 0
+    assert calls == ["setup", "plain", "close"]
+    assert build_calls == 2
+
+
+def test_main_noninteractive_missing_api_key_returns_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    outputs: list[str] = []
+
+    monkeypatch.setattr("mycli.cli.main.stdin", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr("mycli.cli.main.stdout", SimpleNamespace(isatty=lambda: False))
+    monkeypatch.setattr(
+        "mycli.cli.main.build_turn_service",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("MYCLI_API_KEY is required")),
+    )
+
+    assert main([], cwd=tmp_path, home=tmp_path / "home", env={}, output_func=outputs.append) == 2
+    assert outputs == ["MYCLI_API_KEY is required"]
 
 
 def test_main_plain_still_overrides_default_node_tui(monkeypatch, tmp_path: Path) -> None:
