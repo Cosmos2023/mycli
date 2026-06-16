@@ -1276,6 +1276,8 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 	assert.match(output, /Select provider to configure:/);
 	assert.match(output, /OpenAI • unconfigured/);
 	assert.match(output, /DeepSeek • unconfigured/);
+	assert.doesNotMatch(output, /default model/);
+	assert.doesNotMatch(output, /─{20,}/);
 
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\r");
@@ -1285,6 +1287,9 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 	assert.match(output, /Enter API key:/);
 
 	terminal.input?.("sk-deepseek");
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.doesNotMatch(output, /sk-deepseek/);
+	assert.match(output, /•••••••••••/);
 	terminal.input?.("\r");
 	await setTimeout(25);
 
