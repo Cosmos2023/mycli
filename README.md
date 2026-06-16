@@ -1,6 +1,6 @@
 # mycli
 
-`mycli` 是一个运行在终端里的本地优先 ReAct 个人 Agent。当前版本聚焦 CLI 对话、仓库分析、文件读写、Shell 执行、风险决策、基础记忆与 skill 加载，适合作为个人 coding assistant 的 v1 骨架。
+`mycli` 是一个运行在终端里的本地优先 ReAct 个人 Agent。当前版本聚焦 CLI/TUI 对话、仓库分析、文件读写、Shell 执行、风险决策、Claude Code-like 工具展示、后台 subagent、持久记忆与 skill 加载，适合作为个人 coding assistant 的 v1 骨架。
 
 ## 运行时架构
 
@@ -12,7 +12,9 @@
 - runtime 会把工具结果作为 `tool` transcript message 重新注入后续推理
 - planning 已经从静态字段升级为内建能力，当前提供 `update_plan` 工具
 - skill runtime 已支持 metadata 索引与正文按需加载，匹配到的 skill 会以独立指令消息注入当前 turn
+- Task/subagent 支持后台执行，完成后通过 `<task-notification>` 自动回到主对话
 - 高风险工具调用会挂起当前 turn，待确认后恢复执行
+- file-based memory 会按需注入当前 turn，也可以通过配置整体关闭
 - 默认协议已切换到 OpenAI 兼容 `responses`，运行时主链按 block 驱动
 - `chat_completions` 兼容路径用于 DeepSeek 等不支持 `responses` 的 provider
 - `anthropic_messages` 原生路径用于 Anthropic Messages API，支持 tool use、tool result replay 和 extended thinking
@@ -30,14 +32,17 @@
 ## 当前能力
 
 - 对话式 CLI REPL
+- 默认 Node TUI：保留终端原生 scrollback 和文字选择，支持鼠标滚轮查看会话历史
+- Claude Code-like 工具展示：`Read` / `Write` / `Edit` / `Bash` / `Task` 等工具以紧凑块展示，长 Bash 命令和文件 diff 默认折叠预览
 - grounded tool-result reinjection：搜索结果、文件内容和 diff 会被压缩后重新注入后续推理
 - task-aware planning：`update_plan` 可维护 `pending` / `in_progress` / `completed` 任务状态
+- background subagent：主 agent 不阻塞等待子 agent，子 agent 完成后自动投递任务通知
 - 结构化 workspace / git 工具：文件创建、移动、删除、目录创建、`git status`、`git diff`、`git log`
 - runtime trace：工具执行事件会写入 trace，并可通过 `/trace` 查看
 - Agent 自主调用工具：`list_directory`、`read_file`、`read_file_range`、`search_text`、`append_file`、`replace_in_file`、`edit_file`、`create_file`、`mkdir`、`move_path`、`delete_path`、`git_status`、`git_diff`、`git_log`、`run_shell`
-- 会话持久化、项目记忆、用户偏好记忆
+- 会话持久化、项目记忆、用户偏好记忆、Claude-style file memory
 - 内置 skills 与用户自定义 skills 加载
-- 风险操作数字决策流与会话级 allowlist
+- 风险操作选择器与会话级 allowlist
 - Responses-first provider 适配，provider 错误会尽量归一化输出
 
 ## 环境要求
@@ -125,6 +130,31 @@ uv run mycli --session demo
 uv run mycli --session demo --model gpt-5
 ```
 
+默认在交互终端里会启动 Node TUI。可以用以下方式切换：
+
+```bash
+# 行式 REPL
+uv run mycli --plain
+
+# 显式启动 Node TUI
+uv run mycli --node-tui
+
+# 强制使用旧 Textual TUI
+MYCLI_TUI_BACKEND=textual uv run mycli
+```
+
+Node TUI 的常用按键：
+
+- `enter`：发送消息
+- `option+enter`：运行中追加 follow-up
+- `esc`：中断/暂停当前 turn
+- `option+up`：取回 queued/follow-up 输入
+- `ctrl+p`：打开命令面板
+- `ctrl+l`：打开模型选择
+- `ctrl+o`：切换工具详情
+- `ctrl+c`：空输入时清空/退出；运行中不会直接杀掉后台 agent
+- 鼠标滚轮：查看会话历史
+
 ## 运行时配置
 
 `mycli` 会从以下位置读取配置：
@@ -145,6 +175,7 @@ max_prompt_tokens = 12000
 max_output_tokens = 2048
 compression_threshold_tokens = 8000
 recent_message_count = 6
+memory_enabled = true
 ```
 
 配置优先级：
@@ -159,6 +190,7 @@ recent_message_count = 6
 - `max_output_tokens`：`MYCLI_MAX_OUTPUT_TOKENS` > 项目配置 > 用户配置 > 默认值 `2048`
 - `thinking_enabled`：`MYCLI_THINKING_ENABLED` > 项目配置 > 用户配置 > 默认值 `true`
 - `thinking_effort`：`MYCLI_THINKING_EFFORT` > `MYCLI_REASONING_EFFORT` > 项目配置 > 用户配置 > 默认值 `medium`
+- `memory_enabled`：`MYCLI_MEMORY_ENABLED` > 项目配置 > 用户配置 > 默认值 `true`
 - `compression_threshold_tokens`：`MYCLI_COMPRESSION_THRESHOLD_TOKENS` > 项目配置 > 用户配置 > 默认值 `8000`
 - `recent_message_count`：`MYCLI_RECENT_MESSAGE_COUNT` > 项目配置 > 用户配置 > 默认值 `6`
 
@@ -347,40 +379,40 @@ Approved run_shell: ...
 
 - `/help`：查看帮助
 - `/skill`、`/skills`：查看当前可用 skills
-- `/memory`：查看已保存的偏好、项目记忆和近期 session 摘要
+- `/memory`、`/memory list`：查看旧式记忆、file memory 摘要和近期 session 摘要
+- `/memory path`：查看 file memory 目录和入口文件路径
+- `/memory search <query>`：搜索 file memory
+- `/memory add <type> <name> :: <content>`：写入 file memory，`type` 可为 `user`、`feedback`、`project`、`reference`
+- `/memory forget <filename-or-query>`：删除匹配的 file memory
 - `/plan`：查看当前 session 的计划状态
+- `/subagents [child_session_id]`：查看后台 subagent 状态或子会话 transcript
 - `/trace`：查看当前 session 最近的 runtime trace 事件
+- `/trace-jsonl`：导出当前 session trace JSONL
 - `/tools`：查看当前可用工具
+- `/permissions`：查看 approval/allowance 状态
 - `/session`：查看当前 session 概况
 - `/sessions`：查看当前 workspace 最近的 session 列表
+- `/view [default|verbose|focus]`：切换工具与活动展示密度
+- `/model <model> [--thinking-effort low|medium|high|xhigh]`：运行中切换模型或 thinking effort
 - `/quit`：退出 CLI
 
 ## 工具与安全模型
 
-当前内置工具：
+常用内置工具：
 
-- `create_file`
-- `mkdir`
-- `move_path`
-- `delete_path`
-- `list_directory`
-- `read_file`
-- `read_file_range`
-- `search_text`
-- `git_status`
-- `git_diff`
-- `git_log`
-- `append_file`
-- `replace_in_file`
-- `edit_file`
-- `run_shell`
-- `update_plan`
+- `Read` / `Write` / `Edit` / `Glob` / `Grep` / `LS`
+- `Bash`、`BashOutput`、`KillShell`
+- `GitStatus`、`GitDiff`、`GitLog`、`GitShow`
+- `Plan` / `update_plan`
+- `Task`：启动 subagent；模型侧默认按 background 语义运行
+- `SubagentOutput`：仅在用户明确要求查看后台 subagent 进度/结果时使用
+- `AskUserQuestion`
 
 当前风险分级：
 
-- 低风险：`list_directory`、`read_file`、`read_file_range`、`search_text`、`git_status`、`git_diff`、`git_log`
-- 中风险：`create_file`、`mkdir`、`move_path`、`delete_path`、`append_file`、`replace_in_file`、`edit_file`
-- 高风险：`run_shell`
+- 低风险：文件读取、搜索、状态查看、只读 git 操作
+- 中风险：文件创建、编辑、删除、移动、写入
+- 高风险：shell 命令、跨工作区或策略命中的操作
 
 当前默认行为：
 
@@ -390,7 +422,9 @@ Approved run_shell: ...
 - `3` 表示“本次会话内始终允许同类命令”，后续命中同一命令模式时会自动放行
 - 当存在待决策动作时，普通输入会被拦下，直到你输入有效选项
 
-## Skills 与记忆
+Node TUI 会把 approval 渲染为选择器；行式 REPL 会继续显示数字选项。
+
+## Skills、Subagents 与记忆
 
 内置 skills 位于：
 
@@ -401,17 +435,29 @@ Approved run_shell: ...
 
 - `~/.mycli/skills/*.md`
 
-内置工具包括：
+Subagent 目前以 `Task` 工具启动。默认语义接近 Claude Code 的 background agent：
 
-- `list_directory`：列出 workspace 相对目录中的文件与目录
-- `read_file`：读取整个 UTF-8 文本文件
-- `read_file_range`：读取文件的指定行区间
-- `search_text`：进行类似 `rg` 的关键词搜索，支持 `path`、`glob`、`case_sensitive`、`max_matches`
-- `append_file`：向文本文件末尾追加内容，父目录存在时可自动创建文件
-- `replace_in_file`：在文本文件内做精确字符串替换，并可约束命中次数
-- `edit_file`：整文件覆盖写入，作为专用编辑工具之外的兜底
-- `run_shell`：结构化 shell 执行兜底工具
-- `update_plan`：更新当前任务计划
+- 主 agent 只负责启动后台任务，不同步等待子 agent 完成
+- 子 agent 有独立 transcript，可以通过 `/subagents` 查看
+- 子 agent 完成后会向主对话投递 `<task-notification>`
+- 主 agent 不应该主动轮询 `SubagentOutput`，除非用户明确要求查看后台进度
+
+记忆系统包含两层：
+
+- 旧式 memory records：用户偏好、项目记忆、session summary
+- file memory：Claude-style Markdown 文件记忆，按 workspace 分目录保存
+
+file memory 目录形如：
+
+```text
+~/.mycli/projects/<workspace-key>/memory/
+```
+
+其中 `MEMORY.md` 是入口索引，具体记忆内容放在独立 Markdown 文件中。Agent 可以在用户明确要求“记住/忘记”时写入或删除这些文件，也会在 turn 成功后后台尝试提取值得长期保存的偏好或反馈。可以用以下配置关闭 runtime memory 注入和后台 memory 任务：
+
+```toml
+memory_enabled = false
+```
 
 ## Sessions and Persistence
 
@@ -439,6 +485,8 @@ Legacy JSON session 文件 `~/.mycli/sessions/*.json` 已不再作为 runtime �
 - 用户偏好：`~/.mycli/preferences.json`
 - Session 持久化：`~/.mycli/sessions.db`
 - 项目记忆：`<workspace>/.mycli/project_memory.json`
+- File memory：`~/.mycli/projects/<workspace-key>/memory/`
+- Memory 入口索引：`~/.mycli/projects/<workspace-key>/memory/MEMORY.md`
 
 ## 开发命令
 
@@ -453,4 +501,5 @@ uv run mypy src
 - OpenAI 主路径默认请求 `POST /responses`，不支持 Responses API 的 provider 需要配置 `protocol = "chat_completions"`。
 - `chat_completions` 兼容模式依赖 provider 的 OpenAI-compatible 行为，工具调用和 thinking metadata 的一致性取决于 provider 支持程度。
 - 当前上下文窗口使用的是轻量级近似 token 估算与压缩摘要，不是 provider 原生 tokenizer。
-- 当前版本重点是把 Agent 骨架跑通，不是完整复刻 Claude Code 或 Codex 的全部交互能力。
+- TUI 已尽量靠近 Claude Code 的工具和 subagent 展示语义，但不是完整复刻。
+- background subagent 完成通知依赖主 runtime 队列；不同 provider 对 tool-call replay 的严格程度仍可能暴露兼容性问题。
