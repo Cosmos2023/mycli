@@ -5,8 +5,6 @@ from enum import StrEnum
 
 
 class MemoryKind(StrEnum):
-    PREFERENCE = "preference"
-    PROJECT_NOTE = "project_note"
     SESSION_SUMMARY = "session_summary"
     USER = "user"
     FEEDBACK = "feedback"

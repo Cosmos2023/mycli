@@ -55,7 +55,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
             ),
             memory_records=(
                 MemoryRecord(
-                    kind=MemoryKind.PROJECT_NOTE,
+                    kind=MemoryKind.PROJECT,
                     key="repo",
                     value="This repo uses src layout.",
                 ),
@@ -670,7 +670,7 @@ def test_turn_context_assembler_filters_memory_values_already_present_in_replay(
                     value="I found README.md and pyproject.toml.",
                 ),
                 MemoryRecord(
-                    kind=MemoryKind.PROJECT_NOTE,
+                    kind=MemoryKind.PROJECT,
                     key="layout",
                     value="Project uses a src layout.",
                 ),

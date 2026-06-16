@@ -1408,7 +1408,11 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             return ("snapshot_1 turn_1 Edit notes.txt",)
 
         def inspect_memory(self) -> tuple[str, ...]:
-            return ("preference tone=concise",)
+            return (
+                "path=/tmp/mycli-memory",
+                "entrypoint=/tmp/mycli-memory/MEMORY.md",
+                "files=1",
+            )
 
         def add_memory(
             self,
@@ -1553,8 +1557,16 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     ]
     assert list(handler("/bashes")) == ["[bash] no background shells"]
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
-    assert list(handler("/memory")) == ["[memory] preference tone=concise"]
-    assert list(handler("/memory list")) == ["[memory] preference tone=concise"]
+    assert list(handler("/memory")) == [
+        "[memory] path=/tmp/mycli-memory",
+        "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
+        "[memory] files=1",
+    ]
+    assert list(handler("/memory list")) == [
+        "[memory] path=/tmp/mycli-memory",
+        "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
+        "[memory] files=1",
+    ]
     assert list(handler("/memory path")) == [
         "[memory] path=/tmp/mycli-memory",
         "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
