@@ -9,7 +9,11 @@ from mycli.domain.tooling.contributed_tools import (
 )
 from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.domain.tool_exposure import ToolRouteSource
-from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
+from mycli.tools.routing.tool_exposure_planner import (
+    HIDDEN_BY_DEFAULT_BUILTIN_TOOLS,
+    MODEL_VISIBLE_BUILTIN_TOOLS,
+    ToolExposurePlanner,
+)
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
 
@@ -49,6 +53,61 @@ def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> N
         "Edit",
     }
     assert [entry.source for entry in planned.exposure.entries] == [ToolRouteSource.REGISTRY] * 5
+
+
+def test_tool_exposure_planner_hides_legacy_builtin_tools_by_default() -> None:
+    registry = ToolRegistry.from_tools(
+        [
+            FakeTool(name, f"{name} description")
+            for name in (
+                "Read",
+                "Write",
+                "Edit",
+                "Patch",
+                "Bash",
+                "BashOutput",
+                "KillShell",
+                "Grep",
+                "Glob",
+                "LS",
+                "GitStatus",
+                "GitDiff",
+                "GitLog",
+                "GitShow",
+                "Lint",
+                "AskUserQuestion",
+                "Plan",
+                "enter_plan_mode",
+                "exit_plan_mode",
+                "Task",
+                "SubagentOutput",
+                "WebFetch",
+                "WebSearch",
+                "Skill",
+            )
+        ]
+    )
+    planner = ToolExposurePlanner(tool_registry=registry)
+
+    planned = planner.plan(user_message="inspect this repository")
+    visible_names = set(planned.exposure.callable_tool_names())
+
+    assert visible_names == MODEL_VISIBLE_BUILTIN_TOOLS
+    assert visible_names.isdisjoint(HIDDEN_BY_DEFAULT_BUILTIN_TOOLS)
+    assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.issubset(set(registry.list_names()))
+
+
+def test_tool_exposure_planner_filters_default_registry_without_unregistering_tools() -> None:
+    registry = ToolRegistry()
+    planner = ToolExposurePlanner(tool_registry=registry)
+
+    planned = planner.plan(user_message="check git status and inspect files")
+    visible_names = set(planned.exposure.callable_tool_names())
+    registered_names = set(registry.list_names())
+
+    assert (MODEL_VISIBLE_BUILTIN_TOOLS & registered_names).issubset(visible_names)
+    assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.isdisjoint(visible_names)
+    assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.issubset(registered_names)
 
 
 def test_tool_exposure_planner_keeps_write_tools_equal_for_chinese_modify_intent() -> None:

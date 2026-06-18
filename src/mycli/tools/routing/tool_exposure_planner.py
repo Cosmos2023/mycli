@@ -21,6 +21,45 @@ from mycli.tools.base import SchemaTool
 from mycli.tools.registry import ToolRegistry
 
 
+MODEL_VISIBLE_BUILTIN_TOOLS: frozenset[str] = frozenset(
+    {
+        "AskUserQuestion",
+        "Bash",
+        "BashOutput",
+        "Edit",
+        "Glob",
+        "Grep",
+        "KillShell",
+        "LS",
+        "Plan",
+        "Read",
+        "Skill",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "Write",
+    }
+)
+
+HIDDEN_BY_DEFAULT_BUILTIN_TOOLS: frozenset[str] = frozenset(
+    {
+        "GitDiff",
+        "GitLog",
+        "GitShow",
+        "GitStatus",
+        "Lint",
+        "Patch",
+        "SubagentOutput",
+        "enter_plan_mode",
+        "exit_plan_mode",
+    }
+)
+
+KNOWN_BUILTIN_TOOLS: frozenset[str] = (
+    MODEL_VISIBLE_BUILTIN_TOOLS | HIDDEN_BY_DEFAULT_BUILTIN_TOOLS
+)
+
+
 @dataclass(slots=True, frozen=True)
 class PlannedToolExposure:
     exposure: ToolExposure
@@ -46,6 +85,8 @@ class ToolExposurePlanner:
         specs = self._tool_registry.specs
         assert specs is not None
         for spec in specs.values():
+            if not _is_model_visible_registry_tool(spec.name):
+                continue
             entry = ToolExposureEntry(
                 route_key=ToolRouteKey.local(spec.name),
                 source=ToolRouteSource.REGISTRY,
@@ -179,3 +220,11 @@ class ToolExposurePlanner:
             return ToolRouteKey.local(name)
         namespace, local_name = name.rsplit(".", maxsplit=1)
         return ToolRouteKey(namespace=namespace, name=local_name)
+
+
+def _is_model_visible_registry_tool(name: str) -> bool:
+    if name in MODEL_VISIBLE_BUILTIN_TOOLS:
+        return True
+    if name in HIDDEN_BY_DEFAULT_BUILTIN_TOOLS:
+        return False
+    return name not in KNOWN_BUILTIN_TOOLS

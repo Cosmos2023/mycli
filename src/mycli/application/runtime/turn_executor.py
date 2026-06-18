@@ -41,8 +41,9 @@ from mycli.memory.dream_service import MemoryDreamRequest
 from mycli.memory.extraction_service import MemoryExtractionRequest
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
 from mycli.domain.logging import LogLevel
+from mycli.domain.tooling.exposure import ToolExposure
 from mycli.services.context.compaction import CacheZones, ContextBudget
-from mycli.services.hooks import HookContext, HookPoint
+from mycli.services.hooks import HookAction, HookContext, HookPoint, HookResult
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.services.turn_guard import ContinueReason, NoProgressTracker
 
@@ -94,6 +95,50 @@ class TurnExecutor:
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
         runtime._load_model_continuation_state(turn_id=turn_id)
+        prompt_hook_execution = runtime._hook_manager.execute_with_summary(
+            HookPoint.USER_PROMPT_SUBMIT,
+            HookContext(
+                hook_point=HookPoint.USER_PROMPT_SUBMIT,
+                session_id=runtime._config.session_id,
+                metadata={
+                    "turn_id": turn_id,
+                    "prompt_chars": len(user_message),
+                    "prompt": user_message,
+                },
+            ),
+        )
+        for hook_result in prompt_hook_execution.results:
+            if hook_result.action is HookAction.DENY:
+                assistant_message = hook_result.message or "User prompt blocked by hook."
+                runtime._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.WARNING,
+                        text=assistant_message,
+                        metadata={"hook_point": HookPoint.USER_PROMPT_SUBMIT.value},
+                    ),
+                )
+                return runtime._finalize_response(
+                    response=TurnResponse(
+                        assistant_message=assistant_message,
+                        activity_events=(
+                            ActivityEvent(
+                                kind="hook_blocked",
+                                message="user prompt blocked by hook",
+                            ),
+                        ),
+                    ),
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    started_at=started_at,
+                    status=TurnStatus.REJECTED,
+                    stop_reason=StopReason.RUNTIME_ERROR,
+                    turn_items=turn_items,
+                )
+        initial_hook_contexts = runtime._session_hook_additional_contexts(
+            source="startup"
+        ) + _hook_additional_contexts(prompt_hook_execution.results)
         conversation.append(Message(role="user", content=user_message))
         runtime._append_turn_item(
             turn_id=turn_id,
@@ -112,6 +157,7 @@ class TurnExecutor:
             activity_events=[],
             streamed_chunks=[],
             stream_sink=stream_sink,
+            initial_runtime_reminders=initial_hook_contexts,
         )
 
     def _resume_interrupted_turn(self, suspended: SuspendedTurn) -> TurnResponse:
@@ -152,7 +198,11 @@ class TurnExecutor:
             streamed_chunks=[],
         )
 
-    def resolve_pending_approval(self, choice: str) -> TurnResponse:
+    def resolve_pending_approval(
+        self,
+        choice: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
         runtime = self._runtime
         normalized = choice.strip()
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
@@ -357,6 +407,7 @@ class TurnExecutor:
             turn_id=turn_id,
             activity_events=activity_events,
             turn_items=turn_items,
+            lifecycle_sink=stream_sink,
             policy_approved=True,
         )
 
@@ -371,6 +422,7 @@ class TurnExecutor:
             progress_updates=progress_updates,
             activity_events=activity_events,
             streamed_chunks=streamed_chunks,
+            stream_sink=stream_sink,
             last_tool_exposure_summary=last_tool_exposure_summary,
         )
 
@@ -505,6 +557,7 @@ class TurnExecutor:
         streamed_chunks: list[str],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         last_tool_exposure_summary: dict[str, list[str]] | None = None,
+        initial_runtime_reminders: tuple[str, ...] = (),
     ) -> TurnResponse:
         runtime = self._runtime
         latest_context_baseline: ContextBaseline | None = None
@@ -512,7 +565,7 @@ class TurnExecutor:
         budget = ContextBudget(max_tokens=runtime._config.max_prompt_tokens)
         no_progress_tracker = NoProgressTracker()
         loop_state = LoopState()
-        carryover_runtime_reminders: tuple[str, ...] = ()
+        carryover_runtime_reminders: tuple[str, ...] = tuple(initial_runtime_reminders)
         fallback_model_active = False
         output_tokens_escalated = False
 
@@ -607,10 +660,12 @@ class TurnExecutor:
                     message="deciding next action",
                 )
             )
+            force_answer = checkpoint_result.continue_reason is ContinueReason.FORCE_ANSWER
+            supports_tool_choice = _supports_tool_choice(runtime._model_adapter)
             runtime._set_model_log_context(turn_id)
             runtime._set_model_runtime_event_recorder(turn_id)
             runtime._set_model_reasoning_effort(reasoning_effort)
-            runtime._set_model_tool_choice(None)
+            runtime._set_model_tool_choice("none" if force_answer and supports_tool_choice else None)
             planned_exposure = runtime._plan_tool_exposure(
                 user_message=user_message,
                 conversation=conversation,
@@ -746,9 +801,13 @@ class TurnExecutor:
             tools = runtime._render_model_tools(
                 tool_exposure=planned_exposure.exposure,
                 tool_router=tool_router,
-                allow_tools=True,
+                allow_tools=not force_answer or supports_tool_choice,
             )
-            model_tool_exposure = planned_exposure.exposure
+            model_tool_exposure = (
+                planned_exposure.exposure
+                if not force_answer or supports_tool_choice
+                else ToolExposure()
+            )
             request_shape = runtime._build_and_trace_request_shape(
                 turn_id=turn_id,
                 contract=contract,
@@ -1120,6 +1179,60 @@ class TurnExecutor:
             )
             if early_response is not None:
                 response, status, stop_reason = early_response
+                if (
+                    force_answer
+                    and status is TurnStatus.FAILED
+                    and stop_reason is StopReason.MODEL_ERROR
+                    and "unsupported tool" in response.assistant_message.lower()
+                ):
+                    assistant_message = (
+                        "I stopped due to repeated exploration: the model requested another "
+                        "tool after force-answer mode was already active. Summarize from the "
+                        "evidence gathered so far or narrow the request."
+                    )
+                    runtime._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.WARNING,
+                            text=assistant_message,
+                            metadata={
+                                "exit_reason": "force_answer_tool_request",
+                                "guardrail": {
+                                    "trigger": "tool_requested_during_force_answer",
+                                },
+                            },
+                        ),
+                    )
+                    runtime._save_runtime_state(
+                        conversation=conversation,
+                        plan_state=current_plan_state,
+                    )
+                    progress_updates.append("[guardrail] tool request during force-answer")
+                    activity_events.append(
+                        ActivityEvent(
+                            kind="guardrail",
+                            message="tool request during force-answer",
+                        )
+                    )
+                    return runtime._finalize_response(
+                        response=TurnResponse(
+                            assistant_message=assistant_message,
+                            activity_events=tuple(activity_events),
+                            streamed_chunks=tuple(streamed_chunks),
+                            progress_updates=tuple(progress_updates),
+                            plan_steps=runtime._planning_service.render_steps(
+                                current_plan_state
+                            ),
+                        ),
+                        turn_id=turn_id,
+                        user_message=user_message,
+                        started_at=started_at,
+                        status=TurnStatus.FAILED,
+                        stop_reason=StopReason.LOOP_DETECTED,
+                        turn_items=turn_items,
+                        context_baseline=latest_context_baseline,
+                    )
                 if status is not TurnStatus.WAITING_APPROVAL:
                     runtime._save_runtime_state(
                         conversation=conversation,
@@ -1174,6 +1287,45 @@ class TurnExecutor:
                     self._emit_queue_update(stream_sink=stream_sink)
                     step_index += 1
                     continue
+                if runtime._hook_manager.has_hooks(HookPoint.STOP):
+                    stop_hook_execution = runtime._hook_manager.execute_with_summary(
+                        HookPoint.STOP,
+                        HookContext(
+                            hook_point=HookPoint.STOP,
+                            session_id=runtime._config.session_id,
+                            metadata={
+                                "turn_id": turn_id,
+                                "assistant_message_chars": len(assistant_message),
+                            },
+                        ),
+                    )
+                    stop_block = next(
+                        (
+                            hook_result
+                            for hook_result in stop_hook_execution.results
+                            if hook_result.action is HookAction.DENY
+                        ),
+                        None,
+                    )
+                    if stop_block is not None:
+                        reminder = stop_block.message or "Stop hook requested continuation."
+                        carryover_runtime_reminders = tuple(
+                            dict.fromkeys(
+                                (
+                                    *carryover_runtime_reminders,
+                                    f"Stop hook requested continuation: {reminder}",
+                                )
+                            )
+                        )
+                        progress_updates.append("[hook] stop blocked; continuing")
+                        activity_events.append(
+                            ActivityEvent(
+                                kind="hook_blocked",
+                                message="stop hook requested continuation",
+                            )
+                        )
+                        step_index += 1
+                        continue
                 runtime._save_runtime_state(
                     conversation=conversation,
                     plan_state=current_plan_state,
@@ -1984,3 +2136,20 @@ def _set_max_output_tokens(model_adapter: object, value: int) -> None:
     setter = getattr(model_adapter, "set_max_output_tokens", None)
     if callable(setter):
         setter(value)
+
+
+def _supports_tool_choice(model_adapter: object) -> bool:
+    checker = getattr(model_adapter, "supports_tool_choice", None)
+    if callable(checker):
+        return bool(checker())
+    return False
+
+
+def _hook_additional_contexts(results: tuple[HookResult, ...]) -> tuple[str, ...]:
+    contexts: list[str] = []
+    for result in results:
+        contexts.extend(
+            f"[hook:user_prompt_submit] {context}"
+            for context in result.additional_contexts
+        )
+    return tuple(dict.fromkeys(context for context in contexts if context.strip()))

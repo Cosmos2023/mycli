@@ -21,7 +21,7 @@ from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.hooks import HookAllowlist, HookConfigRegistry, HookManager, HookPoint
 from mycli.services.hooks.config import HookEnvPolicy
-from mycli.services.hooks.builtin import permission_guard
+from mycli.services.hooks.builtin import permission_guard, post_tool_context
 from mycli.services.context.context_files import ContextFileLoader
 from mycli.infrastructure.providers import resolve_provider_quirk_profile
 from mycli.services.mcp.diagnostics import discover_mcp_servers, redact_mcp_diagnostic_text
@@ -2126,6 +2126,7 @@ class DoctorService:
     def _check_hooks(self) -> Iterable[DoctorCheck]:
         manager = HookManager()
         manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        manager.register(HookPoint.POST_TOOL_USE, post_tool_context)
         discovery = HookConfigRegistry(
             workspace_root=self._workspace_root,
             home_dir=self._home_dir,

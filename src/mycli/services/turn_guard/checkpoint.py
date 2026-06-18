@@ -97,11 +97,10 @@ class TurnCheckpoint:
         max_repeated = self._max_repeated_tool_signatures(conversation)
         if max_repeated >= self._max_same_tool_calls:
             return CheckpointResult(
-                exit_reason=ExitReason.LOOP_DETECTED,
-                stop_reason=StopReason.LOOP_DETECTED,
-                assistant_message=(
-                    "I stopped due to repeated exploration of the same path without new evidence. "
-                    "Please narrow the request or inspect a confirmed path."
+                continue_reason=ContinueReason.FORCE_ANSWER,
+                reminders=(
+                    "You have repeated the same successful tool call several times. "
+                    "Do not call more tools. Answer now using the evidence already gathered.",
                 ),
             )
 

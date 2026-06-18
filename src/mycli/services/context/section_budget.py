@@ -24,10 +24,12 @@ _TRIM_ORDER = {
     TurnContextSectionType.COMPACTION_REHYDRATION: 35,
     TurnContextSectionType.ENVIRONMENT_CONTEXT: 40,
     TurnContextSectionType.PLAN: 45,
+    TurnContextSectionType.HOOK_CONTEXT: 80,
     TurnContextSectionType.RUNTIME_REMINDERS: 90,
 }
 
 _MIN_SECTION_CHARS = {
+    TurnContextSectionType.HOOK_CONTEXT: 240,
     TurnContextSectionType.RUNTIME_REMINDERS: 240,
     TurnContextSectionType.WORKSPACE_INSTRUCTIONS: 320,
     TurnContextSectionType.CONVERSATION_CONTEXT: 320,

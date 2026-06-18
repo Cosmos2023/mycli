@@ -12,6 +12,9 @@ from mycli.domain.runtime import (
     RuntimeEnvironmentContract,
     RuntimeTraceEvent,
     TurnContext,
+    TurnContextSection,
+    TurnContextSectionType,
+    stable_hash,
 )
 from mycli.domain.tooling.exposure import ToolExposure
 from mycli.memory.service import MemoryService
@@ -110,6 +113,11 @@ class RuntimeContextBuilder:
             conversation_summary=managed.summary,
             history_items=history_items,
             context_baseline=context_baseline,
+            hook_contexts=tuple(
+                item
+                for item in runtime_reminders
+                if item.strip().startswith("[hook:")
+            ),
             runtime_reminders=runtime_reminders,
             compaction_rehydration=(
                 compaction_rehydration or CompactionRehydrationContext()
@@ -152,6 +160,10 @@ class RuntimeContextBuilder:
             context=context,
             workspace_instructions=context.context_file_content or None,
         )
+        turn_context = self._suppress_redundant_environment_context(
+            turn_id=turn_id,
+            turn_context=turn_context,
+        )
         turn_context, budget_diagnostic = self._turn_context_budgeter.apply(
             turn_context=turn_context,
             max_tokens=self._config.max_prompt_tokens,
@@ -185,3 +197,53 @@ class RuntimeContextBuilder:
                 ),
             )
         return context, turn_context
+
+    def _suppress_redundant_environment_context(
+        self,
+        *,
+        turn_id: str,
+        turn_context: TurnContext,
+    ) -> TurnContext:
+        environment = next(
+            (
+                section
+                for section in turn_context.sections
+                if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT
+            ),
+            None,
+        )
+        if environment is None or not environment.enabled:
+            return turn_context
+        content_hash = stable_hash(environment.content)
+        previous = self._session_service.load_runtime_environment_context_state(
+            self._config.session_id
+        )
+        if (
+            previous is not None
+            and previous.get("content_hash") == content_hash
+        ):
+            return TurnContext(
+                user_message=turn_context.user_message,
+                sections=tuple(
+                    section
+                    if section.type is not TurnContextSectionType.ENVIRONMENT_CONTEXT
+                    else TurnContextSection(
+                        type=section.type,
+                        title=section.title,
+                        content=section.content,
+                        enabled=section.enabled,
+                        source=section.source,
+                        metadata={
+                            **dict(section.metadata),
+                            "suppressed_by_runtime_environment_cache": True,
+                            "suppress_contextual_environment_fragment": True,
+                            "runtime_environment_hash": content_hash,
+                        },
+                        cache_class=section.cache_class,
+                        durability=section.durability,
+                        scope=section.scope,
+                    )
+                    for section in turn_context.sections
+                ),
+            )
+        return turn_context

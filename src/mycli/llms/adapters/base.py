@@ -73,6 +73,7 @@ class EventProducingModelClient(Protocol):
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        tool_choice: str | None = None,
     ) -> list[ModelEvent]:
         ...
 
@@ -81,6 +82,7 @@ class EventProducingModelClient(Protocol):
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        tool_choice: str | None = None,
     ) -> Iterator[ModelEvent]:
         ...
 

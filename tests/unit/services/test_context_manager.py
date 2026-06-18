@@ -70,6 +70,109 @@ def test_context_manager_keeps_provider_replay_append_only_while_recent_context_
     assert provider_replay == conversation
 
 
+def test_context_manager_prefers_live_conversation_over_stale_history_for_provider_replay() -> None:
+    manager = ContextManager()
+    stale_history = (
+        HistoryItem(
+            id="hist_user_1",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="inspect repo",
+        ),
+        HistoryItem(
+            id="hist_assistant_1",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.ASSISTANT_MESSAGE,
+            text="I will inspect.",
+        ),
+    )
+    live_tool_call = Message(
+        role="assistant",
+        content="",
+        tool_calls=(
+            ToolCall(
+                name="Glob",
+                arguments={"pattern": "**/*.py"},
+                reason="inspect python files",
+                call_id="call_glob_1",
+            ),
+        ),
+        blocks=(
+            RuntimeBlock(
+                type="tool_call",
+                tool_name="Glob",
+                tool_arguments={"pattern": "**/*.py"},
+                call_id="call_glob_1",
+            ),
+        ),
+    )
+    live_tool_result = Message(
+        role="tool",
+        content="src/mycli/__init__.py",
+        tool_call_id="call_glob_1",
+        blocks=(
+            RuntimeBlock(
+                type="tool_result",
+                text="src/mycli/__init__.py",
+                call_id="call_glob_1",
+            ),
+        ),
+    )
+    live_conversation = (
+        Message(role="user", content="inspect repo"),
+        Message(role="assistant", content="I will inspect."),
+        live_tool_call,
+        live_tool_result,
+    )
+
+    provider_replay = manager.provider_replay_messages(
+        conversation=live_conversation,
+        history_items=stale_history,
+    )
+
+    assert provider_replay == live_conversation
+
+
+def test_context_manager_prepends_replayable_baseline_updates_to_live_provider_replay() -> None:
+    manager = ContextManager()
+    environment = HistoryItem(
+        id="hist_environment_1",
+        thread_id="demo",
+        turn_id="turn_1",
+        type=HistoryItemType.CONTEXT_BASELINE_UPDATE,
+        text="Runtime environment:\n- shell: restricted",
+        metadata={
+            "context_kind": "environment_context",
+            "replayable": True,
+            "model_visible": True,
+        },
+    )
+    stale_user = HistoryItem(
+        id="hist_user_1",
+        thread_id="demo",
+        turn_id="turn_1",
+        type=HistoryItemType.USER_MESSAGE,
+        text="old request",
+    )
+    live_conversation = (
+        Message(role="user", content="new request"),
+        Message(role="assistant", content="new answer"),
+    )
+
+    provider_replay = manager.provider_replay_messages(
+        conversation=live_conversation,
+        history_items=(environment, stale_user),
+    )
+
+    assert [message.content for message in provider_replay] == [
+        "Runtime environment:\n- shell: restricted",
+        "new request",
+        "new answer",
+    ]
+
+
 def test_context_manager_expands_recent_messages_to_avoid_orphaned_tool_results() -> None:
     manager = ContextManager()
     tool_call_message = Message(
@@ -182,6 +285,51 @@ def test_context_manager_reconstructs_block_aware_messages_from_history_items() 
     assert messages[2].blocks[0].type == "tool_result"
     assert messages[2].blocks[0].provider_id == "tr_1"
     assert messages[3].blocks[0].type == "text"
+
+
+def test_context_manager_replays_context_baseline_updates_as_user_messages() -> None:
+    manager = ContextManager()
+
+    messages = manager.messages_from_history(
+        (
+            HistoryItem(
+                id="hist_environment_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.CONTEXT_BASELINE_UPDATE,
+                text="Runtime environment:\n- workspace_root: /repo",
+                metadata={
+                    "context_kind": "environment_context",
+                    "cache_class": "dynamic",
+                    "source": "runtime",
+                    "replayable": True,
+                },
+            ),
+            HistoryItem(
+                id="hist_user_1",
+                thread_id="demo",
+                turn_id="turn_1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="inspect repo",
+            ),
+        )
+    )
+
+    assert [message.role for message in messages] == ["user", "user"]
+    assert messages[0].content == "Runtime environment:\n- workspace_root: /repo"
+    assert messages[0].metadata["context_kind"] == "environment_context"
+    assert messages[0].blocks == (
+        RuntimeBlock(
+            type="text",
+            text="Runtime environment:\n- workspace_root: /repo",
+            metadata={
+                "context_kind": "environment_context",
+                "cache_class": "dynamic",
+                "source": "runtime",
+                "replayable": True,
+            },
+        ),
+    )
 
 
 def test_context_manager_rejoins_assistant_text_and_tool_call_history_items() -> None:

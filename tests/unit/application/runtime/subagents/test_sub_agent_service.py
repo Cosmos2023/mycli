@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.domain.runtime import BaselineFragment, ContextBaseline, HistoryItem, HistoryItemType
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
@@ -625,6 +627,45 @@ def test_background_task_completion_enqueues_task_notification() -> None:
     assert "<agent>explore</agent>" in notifications[0]
     assert "<status>completed</status>" in notifications[0]
     assert "<result>done</result>" in notifications[0]
+
+
+def test_background_task_completion_writes_output_file_notification(
+    tmp_path: Path,
+) -> None:
+    notifications: list[str] = []
+
+    def notification_sink(message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        notifications.append(message)
+        return (message,), ()
+
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done in file",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=InlineBackgroundExecutor(),
+        notification_sink=notification_sink,
+        task_output_path_provider=lambda task_id: tmp_path / task_id / "output.txt",
+    )
+
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    output_file = tmp_path / started.child_session_id / "output.txt"
+
+    assert output_file.read_text(encoding="utf-8") == "done in file"
+    assert f"<output-file>{output_file}</output-file>" in notifications[0]
+    assert "<task-type>local_agent</task-type>" in notifications[0]
 
 
 def test_background_task_rejects_when_concurrency_cap_is_reached() -> None:

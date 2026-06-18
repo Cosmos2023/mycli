@@ -5,9 +5,10 @@ from pathlib import Path
 import shlex
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 
 from mycli.domain.runtime import ShellExecutionOptions
+from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.runtime.execution_policy import SAFE_SHELL_ENV_KEYS
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
@@ -56,6 +57,8 @@ def execute_bash(
     run_in_background: bool = False,
     env: dict[str, str] | None = None,
     command_pattern: str | None = None,
+    output_file: Path | None = None,
+    notification_sink: Callable[[TaskNotification], None] | None = None,
 ) -> dict[str, Any]:
     effective_cwd = workdir or os.getcwd()
     started = time.monotonic()
@@ -66,6 +69,8 @@ def execute_bash(
             effective_cwd,
             env=env,
             command_pattern=command_pattern,
+            output_file=output_file,
+            notification_sink=notification_sink,
         )
         background_payload["cwd"] = effective_cwd
         background_payload["duration_ms"] = _duration_ms(started)
@@ -144,6 +149,8 @@ def _run_background(
     workdir: str | None,
     env: dict[str, str] | None = None,
     command_pattern: str | None = None,
+    output_file: Path | None = None,
+    notification_sink: Callable[[TaskNotification], None] | None = None,
 ) -> dict[str, Any]:
     shell = SHELL_REGISTRY.start(
         command,
@@ -151,6 +158,8 @@ def _run_background(
         env=env,
         timeout_seconds=timeout,
         command_pattern=command_pattern,
+        output_file=output_file,
+        notification_sink=notification_sink,
     )
     _background_processes.clear()
     _background_processes.update(SHELL_REGISTRY.processes())
@@ -167,6 +176,8 @@ def _run_background(
         "command_length": shell.command_length,
         "command_pattern": shell.command_pattern,
         "output_chars": 0,
+        "task_id": f"shell:{shell.shell_id}",
+        "output_file": str(shell.output_file) if shell.output_file else None,
     }
 
 
@@ -234,6 +245,17 @@ class BashTool:
     def __init__(self, workspace_root: Path, shell_backend: ShellBackend | None = None) -> None:
         self._workspace_root = workspace_root
         self._shell_backend = shell_backend or LocalShellBackend()
+        self._background_output_dir: Path | None = None
+        self._notification_sink: Callable[[TaskNotification], None] | None = None
+
+    def configure_background_tasks(
+        self,
+        *,
+        output_dir: Path,
+        notification_sink: Callable[[TaskNotification], None],
+    ) -> None:
+        self._background_output_dir = output_dir
+        self._notification_sink = notification_sink
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="unknown", process=True)
@@ -291,6 +313,11 @@ class BashTool:
         timeout_value = arguments.get("timeout", 120)
         timeout, timeout_capped = shell_options.effective_timeout(timeout_value)
         env = _shell_env(shell_options)
+        background_output_file = (
+            self._next_background_output_file()
+            if bool(arguments.get("run_in_background", False))
+            else None
+        )
         payload = self._shell_backend.execute(
             ShellBackendRequest(
                 command=command_value,
@@ -299,6 +326,10 @@ class BashTool:
                 run_in_background=bool(arguments.get("run_in_background", False)),
                 env=env,
                 command_pattern=analysis.command_pattern,
+                output_file=background_output_file,
+                notification_sink=(
+                    self._notification_sink if background_output_file is not None else None
+                ),
             )
         )
         payload.setdefault("command_pattern", analysis.command_pattern)
@@ -325,6 +356,11 @@ class BashTool:
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)
+
+    def _next_background_output_file(self) -> Path | None:
+        if self._background_output_dir is None:
+            return None
+        return self._background_output_dir / f"shell-{time.time_ns()}" / "output.txt"
 
     def _resolve_cwd(self, raw_cwd: object) -> Path | ToolResult:
         if raw_cwd is None or raw_cwd == "":

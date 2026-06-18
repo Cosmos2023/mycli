@@ -10,6 +10,7 @@ from mycli.domain.runtime import (
     HistoryItemType,
     InstructionContract,
     InstructionFragment,
+    InstructionFragmentKind,
     RuntimeTraceEvent,
     StopReason,
     TurnItem,
@@ -18,6 +19,7 @@ from mycli.domain.runtime import (
     TurnRollout,
     TurnRolloutEvent,
     TurnStatus,
+    stable_hash,
 )
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.state.session_service import SessionService
@@ -177,7 +179,13 @@ class RuntimeEventLedger:
         started_at: str,
         context_baseline: ContextBaseline | None,
     ) -> None:
-        history_items = self.provider_history_items_from_turn(turn)
+        history_items = (
+            *self._runtime_environment_history_items(
+                turn,
+                context_baseline=context_baseline,
+            ),
+            *self.provider_history_items_from_turn(turn),
+        )
         if history_items:
             self._session_service.append_history_items(
                 self._session_id,
@@ -216,8 +224,70 @@ class RuntimeEventLedger:
         self._session_service.append_turn_rollout(self._session_id, rollout)
         self._session_service.sync_conversation_view_from_history(self._session_id)
 
+    def _runtime_environment_history_items(
+        self,
+        turn: TurnRecord,
+        *,
+        context_baseline: ContextBaseline | None,
+    ) -> tuple[HistoryItem, ...]:
+        environment = self._environment_fragment_from_baseline(context_baseline)
+        if environment is None:
+            return ()
+        content = environment.content.strip()
+        if not content:
+            return ()
+        content_hash = stable_hash(content)
+        raw_content_hash = environment.metadata.get("runtime_environment_raw_hash")
+        if not isinstance(raw_content_hash, str) or not raw_content_hash:
+            raw_content_hash = content_hash
+        previous = self._session_service.load_runtime_environment_context_state(
+            self._session_id
+        )
+        self._session_service.save_runtime_environment_context_state(
+            self._session_id,
+            content_hash=raw_content_hash,
+            turn_id=turn.turn_id,
+        )
+        if previous is not None and previous.get("content_hash") == raw_content_hash:
+            return ()
+        metadata = self._baseline_metadata(environment.metadata)
+        metadata.update(
+            {
+                "context_kind": InstructionFragmentKind.ENVIRONMENT_CONTEXT.value,
+                "cache_class": metadata.get("cache_class", "dynamic"),
+                "source": environment.source or "runtime",
+                "model_visible": True,
+                "replayable": True,
+                "runtime_environment_hash": content_hash,
+                "runtime_environment_raw_hash": raw_content_hash,
+            }
+        )
+        return (
+            HistoryItem(
+                id=f"{turn.turn_id}:environment_context",
+                thread_id=turn.thread_id,
+                turn_id=turn.turn_id,
+                type=HistoryItemType.CONTEXT_BASELINE_UPDATE,
+                text=content,
+                metadata=metadata,
+            ),
+        )
+
+    def _environment_fragment_from_baseline(
+        self,
+        baseline: ContextBaseline | None,
+    ) -> BaselineFragment | None:
+        if baseline is None:
+            return None
+        for fragment in baseline.fragments:
+            if fragment.kind == InstructionFragmentKind.ENVIRONMENT_CONTEXT.value:
+                return fragment
+        return None
+
     def _baseline_fragment_replayable(self, section: InstructionFragment) -> bool:
         kind = str(section.kind)
+        if kind == InstructionFragmentKind.ENVIRONMENT_CONTEXT.value:
+            return True
         if kind in self._BASELINE_HISTORY_KINDS:
             return False
         metadata = section.metadata

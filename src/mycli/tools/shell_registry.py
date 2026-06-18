@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+import contextlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import os
+from pathlib import Path
 import subprocess
 import threading
 import time
 from uuid import uuid4
 
 from mycli.domain.runtime.background_jobs import BackgroundJobState, BackgroundJobSummary
+from mycli.domain.runtime.task_notifications import TaskNotification
 
 
 @dataclass(slots=True)
@@ -26,6 +30,9 @@ class ShellProcess:
     last_observed_at: str | None = None
     terminal_state: str | None = None
     cleanup_result: str | None = None
+    output_file: Path | None = None
+    notification_sink: Callable[[TaskNotification], None] | None = None
+    notified: bool = False
     output: list[str] = field(default_factory=list)
     read_offset: int = 0
 
@@ -46,6 +53,8 @@ class ShellProcessRegistry:
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         command_pattern: str | None = None,
+        output_file: Path | None = None,
+        notification_sink: Callable[[TaskNotification], None] | None = None,
     ) -> ShellProcess:
         cwd = workdir or os.getcwd()
         process = subprocess.Popen(
@@ -70,7 +79,12 @@ class ShellProcessRegistry:
             cwd=cwd,
             timeout_seconds=timeout_seconds,
             last_observed_at=now,
+            output_file=output_file,
+            notification_sink=notification_sink,
         )
+        if output_file is not None:
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text("", encoding="utf-8")
         with self._lock:
             self._processes[shell.shell_id] = shell
         threading.Thread(target=self._drain_output, args=(shell,), daemon=True).start()
@@ -105,6 +119,7 @@ class ShellProcessRegistry:
                 "command_pattern": shell.command_pattern,
                 "terminal_state": shell.terminal_state,
                 "cleanup_result": shell.cleanup_result,
+                "output_file": str(shell.output_file) if shell.output_file else None,
             }
 
     def _wait_for_initial_output(self, shell_id: str) -> None:
@@ -141,6 +156,7 @@ class ShellProcessRegistry:
                     "output_chars": sum(len(part) for part in shell.output),
                     "terminal_state": shell.terminal_state,
                     "cleanup_result": shell.cleanup_result,
+                    "output_file": str(shell.output_file) if shell.output_file else None,
                 }
                 for shell in self._processes.values()
             ]
@@ -167,6 +183,10 @@ class ShellProcessRegistry:
             shell.terminal_state = "killed"
             shell.cleanup_result = cleanup_result
             shell.last_observed_at = _now_iso()
+            notification = self._notification_for_locked(shell)
+        if notification is not None and shell.notification_sink is not None:
+            with contextlib.suppress(Exception):
+                shell.notification_sink(notification)
         return {
             "status": "killed",
             "exit_code": shell.process.returncode,
@@ -182,6 +202,7 @@ class ShellProcessRegistry:
             "output_chars": sum(len(part) for part in shell.output),
             "terminal_state": shell.terminal_state,
             "cleanup_result": cleanup_result,
+            "output_file": str(shell.output_file) if shell.output_file else None,
         }
 
     def processes(self) -> dict[str, subprocess.Popen[str]]:
@@ -203,9 +224,18 @@ class ShellProcessRegistry:
         for line in stdout:
             with self._lock:
                 shell.output.append(line)
+                self._append_output_file_locked(shell, line)
                 shell.last_observed_at = _now_iso()
+        with contextlib.suppress(Exception):
+            shell.process.wait()
         with self._lock:
             self._observe_locked(shell)
+            notification = self._notification_for_locked(shell)
+        if notification is not None and shell.notification_sink is not None:
+            try:
+                shell.notification_sink(notification)
+            except Exception:
+                return
 
     def _observe_locked(self, shell: ShellProcess) -> int | None:
         exit_code = shell.process.poll()
@@ -216,6 +246,32 @@ class ShellProcessRegistry:
             shell.terminal_state = "completed" if exit_code == 0 else "failed"
         return exit_code
 
+    def _append_output_file_locked(self, shell: ShellProcess, text: str) -> None:
+        if shell.output_file is None:
+            return
+        with shell.output_file.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def _notification_for_locked(self, shell: ShellProcess) -> TaskNotification | None:
+        if shell.notified or shell.terminal_state not in _TERMINAL_STATES:
+            return None
+        shell.notified = True
+        status = shell.terminal_state or "completed"
+        summary = _shell_summary(status=status, exit_code=shell.process.poll())
+        return TaskNotification(
+            task_id=f"shell:{shell.shell_id}",
+            task_type="local_bash",
+            status=status,
+            summary=summary,
+            output_file=shell.output_file,
+            metadata={
+                "shell_id": shell.shell_id,
+                "exit_code": shell.process.poll(),
+                "command_hash": shell.command_hash,
+                "output_chars": sum(len(part) for part in shell.output),
+            },
+        )
+
 
 def _now_iso() -> str:
     return datetime.now(tz=UTC).isoformat()
@@ -223,6 +279,18 @@ def _now_iso() -> str:
 
 def _hash_command(command: str) -> str:
     return hashlib.sha256(command.encode("utf-8")).hexdigest()[:12]
+
+
+def _shell_summary(*, status: str, exit_code: int | None) -> str:
+    if status == "completed":
+        return "Background Bash command completed."
+    if status == "failed":
+        return f"Background Bash command failed with exit code {exit_code}."
+    if status == "killed":
+        return "Background Bash command was killed."
+    if status == "timed_out":
+        return "Background Bash command timed out."
+    return f"Background Bash command finished with status {status}."
 
 
 def _status_for_exit_code(exit_code: int | None, terminal_state: str | None) -> str:

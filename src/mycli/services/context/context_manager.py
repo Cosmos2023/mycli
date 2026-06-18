@@ -29,7 +29,10 @@ class ContextManager:
         max_summary_chars: int = 512,
     ) -> ManagedContext:
         if not conversation and history_items:
-            conversation = self.messages_from_history(history_items)
+            conversation = self.messages_from_history(
+                history_items,
+                include_context_baseline_updates=False,
+            )
 
         recent: tuple[Message, ...]
         older: tuple[Message, ...]
@@ -68,7 +71,8 @@ class ContextManager:
         history_items: tuple[HistoryItem, ...] = (),
     ) -> tuple[Message, ...]:
         if conversation:
-            return conversation
+            baseline_messages = self._baseline_messages_from_history(history_items)
+            return (*self._deduplicate_baseline_messages(baseline_messages, conversation), *conversation)
         if history_items:
             return self.messages_from_history(history_items)
         return ()
@@ -91,6 +95,8 @@ class ContextManager:
     def messages_from_history(
         self,
         history_items: tuple[HistoryItem, ...],
+        *,
+        include_context_baseline_updates: bool = True,
     ) -> tuple[Message, ...]:
         messages: list[Message] = []
         index = 0
@@ -141,6 +147,12 @@ class ContextManager:
             elif item.type is HistoryItemType.SKILL_INSTRUCTIONS:
                 messages.append(self._skill_instruction_message(item))
                 index += 1
+            elif item.type is HistoryItemType.CONTEXT_BASELINE_UPDATE:
+                if include_context_baseline_updates:
+                    message = self._context_baseline_update_message(item)
+                    if message is not None:
+                        messages.append(message)
+                index += 1
             elif item.type is HistoryItemType.TOOL_CALL:
                 index = self._append_tool_call_batch(
                     messages=messages,
@@ -153,6 +165,66 @@ class ContextManager:
             else:
                 index += 1
         return tuple(messages)
+
+    def _context_baseline_update_message(self, item: HistoryItem) -> Message | None:
+        if item.metadata.get("model_visible") is False:
+            return None
+        if item.metadata.get("replayable") is False:
+            return None
+        content = item.text or ""
+        if not content.strip():
+            return None
+        metadata = dict(item.metadata)
+        return Message(
+            role="user",
+            content=content,
+            blocks=(
+                RuntimeBlock(
+                    type="text",
+                    text=content,
+                    metadata=metadata,
+                ),
+            ),
+            metadata=metadata,
+        )
+
+    def _baseline_messages_from_history(
+        self,
+        history_items: tuple[HistoryItem, ...],
+    ) -> tuple[Message, ...]:
+        messages: list[Message] = []
+        for item in history_items:
+            if item.type is not HistoryItemType.CONTEXT_BASELINE_UPDATE:
+                continue
+            message = self._context_baseline_update_message(item)
+            if message is not None:
+                messages.append(message)
+        return tuple(messages)
+
+    def _deduplicate_baseline_messages(
+        self,
+        baseline_messages: tuple[Message, ...],
+        conversation: tuple[Message, ...],
+    ) -> tuple[Message, ...]:
+        existing = {
+            (
+                message.content,
+                str(message.metadata.get("context_kind") or ""),
+            )
+            for message in conversation
+            if message.role == "user"
+        }
+        deduplicated: list[Message] = []
+        for message in baseline_messages:
+            key = (
+                message.content,
+                str(message.metadata.get("context_kind") or ""),
+            )
+            if key in existing:
+                continue
+            existing.add(key)
+            deduplicated.append(message)
+        return tuple(deduplicated)
 
     def _skill_instruction_message(self, item: HistoryItem) -> Message:
         content = item.text or ""

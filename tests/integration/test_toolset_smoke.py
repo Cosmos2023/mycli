@@ -71,6 +71,7 @@ def test_all_tools_registered():
         "AskUserQuestion",
         "Plan",
         "Task",
+        "SubagentOutput",
         "enter_plan_mode",
         "exit_plan_mode",
     }

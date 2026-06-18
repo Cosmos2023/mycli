@@ -158,7 +158,7 @@ def test_tool_count_at_limit_gives_force_answer_not_hard_stop() -> None:
     assert any("MUST answer" in reminder for reminder in result.reminders)
 
 
-def test_loop_detected_when_same_tool_call_repeated_4_times() -> None:
+def test_repeated_successful_tool_calls_force_answer_without_loop_stop() -> None:
     checkpoint = TurnCheckpoint(max_same_tool_calls=4)
     repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated, repeated)
@@ -168,8 +168,10 @@ def test_loop_detected_when_same_tool_call_repeated_4_times() -> None:
         conversation=conversation,
     )
 
-    assert result.exit_reason == ExitReason.LOOP_DETECTED
-    assert result.stop_reason == StopReason.LOOP_DETECTED
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.continue_reason == ContinueReason.FORCE_ANSWER
+    assert any("Do not call more tools" in reminder for reminder in result.reminders)
 
 
 def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:

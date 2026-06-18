@@ -750,6 +750,42 @@ def test_session_service_rebuilds_tool_call_and_tool_result_messages_from_histor
     )
 
 
+def test_session_service_excludes_context_baseline_updates_from_conversation_view(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    session_id = "demo"
+    service.append_history_items(
+        session_id,
+        (
+            HistoryItem(
+                id="turn_1:environment_context",
+                thread_id=session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.CONTEXT_BASELINE_UPDATE,
+                text="Runtime environment:\n- workspace_root: /repo",
+                metadata={
+                    "context_kind": "environment_context",
+                    "model_visible": True,
+                    "replayable": True,
+                },
+            ),
+            HistoryItem(
+                id="turn_1:user",
+                thread_id=session_id,
+                turn_id="turn_1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="inspect the repo",
+            ),
+        ),
+    )
+
+    loaded = service.load_conversation(session_id)
+
+    assert [message.role for message in loaded.messages] == ["user"]
+    assert loaded.messages[0].content == "inspect the repo"
+
+
 def test_session_service_rebuilds_assistant_text_metadata_from_history(
     tmp_path: Path,
 ) -> None:

@@ -68,5 +68,13 @@ class MycliStorageLayout:
     def session_events_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "events.jsonl"
 
+    def task_output_dir(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "tasks"
+
+    def task_output_path(self, session_id: str, task_id: str) -> Path:
+        validate_storage_session_id(session_id)
+        validate_storage_session_id(task_id)
+        return self.task_output_dir(session_id) / task_id / "output.txt"
+
 
 __all__ = ["MycliStorageLayout"]

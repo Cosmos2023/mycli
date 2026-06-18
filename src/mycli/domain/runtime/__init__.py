@@ -266,6 +266,7 @@ class ExecutionContext:
     conversation_summary: str | None = None
     history_items: tuple[HistoryItem, ...] = ()
     context_baseline: ContextBaseline | None = None
+    hook_contexts: tuple[str, ...] = ()
     runtime_reminders: tuple[str, ...] = ()
     compaction_rehydration: CompactionRehydrationContext = field(
         default_factory=CompactionRehydrationContext

@@ -46,6 +46,7 @@ from mycli.domain.runtime import (
     ToolRuntimeDecisionKind,
     stable_hash,
 )
+from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.logging import LogLevel
 from mycli.domain.subagents import SubAgentRunSummary
 from mycli.domain.tooling.exposure import (
@@ -86,7 +87,7 @@ from mycli.services.hooks import (
     HookPoint,
     register_configured_hooks,
 )
-from mycli.services.hooks.builtin import permission_guard
+from mycli.services.hooks.builtin import permission_guard, post_tool_context
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
@@ -95,6 +96,7 @@ from mycli.memory.service import MemoryService
 from mycli.services.planning import PlanningService
 from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
+from mycli.services.storage_layout import MycliStorageLayout
 from mycli.services.skills import SkillRegistry
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.subagents import SubAgentProfileRegistry, SubAgentToolContributionProvider
@@ -242,6 +244,7 @@ class AgentRuntime:
         self._tool_registry = tool_registry
         self._config = config
         self._home_dir = home_dir
+        self._storage_layout = MycliStorageLayout.from_home_dir(home_dir)
         self._message_queue_lock = Lock()
         self._steering_messages: list[str] = []
         self._follow_up_messages: list[str] = []
@@ -258,6 +261,7 @@ class AgentRuntime:
         self._observability_service = observability_service or ObservabilityService()
         self._hook_manager = HookManager()
         self._hook_manager.register(HookPoint.PRE_TOOL_USE, permission_guard)
+        self._hook_manager.register(HookPoint.POST_TOOL_USE, post_tool_context)
         self._hook_config_discovery = HookConfigDiscovery(hooks=(), issues=())
         self._plugin_command_registry = PluginCommandRegistry()
         self._model_turn_requester = ModelTurnRequester(
@@ -469,7 +473,9 @@ class AgentRuntime:
             trace_service=self._trace_service,
             session_service=self._session_service,
             notification_sink=self.queue_steering_message,
+            task_output_path_provider=self._task_output_path,
         )
+        self._configure_background_shell_tasks()
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
         self._tool_registry.register(SubagentOutputTool(service=self._sub_agent_service))
         self._contributed_tool_providers = (
@@ -531,6 +537,7 @@ class AgentRuntime:
             execpolicy_rules=self._execpolicy_rules,
         )
         self._closed = False
+        self._session_hook_contexts: dict[str, tuple[str, ...]] = {}
         self._execute_session_hook(HookPoint.SESSION_START)
 
     def _load_execpolicy_rules(
@@ -572,7 +579,8 @@ class AgentRuntime:
 
         memory_dir = memory_dir_for(home_dir, workspace_root)
         ensure_memory_dir(memory_dir)
-        allowed_roots = (memory_dir,)
+        task_output_dir = MycliStorageLayout.from_home_dir(home_dir).task_output_dir("default")
+        allowed_roots = (memory_dir, task_output_dir)
         filesystem_runtime = FileSystemRuntime(
             workspace_root=workspace_root,
             allowed_roots=allowed_roots,
@@ -822,6 +830,12 @@ class AgentRuntime:
             self._steering_messages.append(text)
             return tuple(self._steering_messages), tuple(self._follow_up_messages)
 
+    def queue_task_notification(
+        self,
+        notification: TaskNotification,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return self.queue_steering_message(notification.to_xml())
+
     def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         text = message.strip()
         if not text:
@@ -878,6 +892,20 @@ class AgentRuntime:
                 lines.append(f"plugin_issue {issue.safe_line()}")
         return tuple(lines) or ("no hooks registered",)
 
+    def _task_output_path(self, task_id: str) -> Path:
+        safe_task_id = task_id.replace(":", "-")
+        return self._storage_layout.task_output_path(self._config.session_id, safe_task_id)
+
+    def _configure_background_shell_tasks(self) -> None:
+        for tool in self._tool_registry.list_all():
+            configure = getattr(tool, "configure_background_tasks", None)
+            if not callable(configure):
+                continue
+            configure(
+                output_dir=self._storage_layout.task_output_dir(self._config.session_id),
+                notification_sink=self.queue_task_notification,
+            )
+
     def inspect_plugin_commands(self) -> tuple[str, ...]:
         lines = [
             (
@@ -908,14 +936,28 @@ class AgentRuntime:
         self._execute_session_hook(HookPoint.SESSION_END)
 
     def _execute_session_hook(self, hook_point: HookPoint) -> None:
-        self._hook_manager.execute_with_summary(
+        source = "startup" if hook_point is HookPoint.SESSION_START else "shutdown"
+        execution = self._hook_manager.execute_with_summary(
             hook_point,
             HookContext(
                 hook_point=hook_point,
                 session_id=self._config.session_id,
-                metadata={"turn_id": hook_point.value},
+                metadata={"turn_id": hook_point.value, "source": source},
             ),
         )
+        contexts = tuple(
+            dict.fromkeys(
+                context
+                for result in execution.results
+                for context in result.additional_contexts
+                if context.strip()
+            )
+        )
+        if contexts:
+            self._session_hook_contexts[source] = contexts
+
+    def _session_hook_additional_contexts(self, *, source: str) -> tuple[str, ...]:
+        return self._session_hook_contexts.get(source, ())
 
     def extension_manifest(self) -> dict[str, object]:
         contributed_tools = tuple(
@@ -1929,10 +1971,15 @@ class AgentRuntime:
         self._sub_agent_service.set_stream_sink(stream_sink)
         return TurnExecutor(self).execute_user_turn(user_message, stream_sink=stream_sink)
 
-    def resolve_pending_approval(self, choice: str) -> TurnResponse:
+    def resolve_pending_approval(
+        self,
+        choice: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
-        return TurnExecutor(self).resolve_pending_approval(choice)
+        self._sub_agent_service.set_stream_sink(stream_sink)
+        return TurnExecutor(self).resolve_pending_approval(choice, stream_sink=stream_sink)
 
     def resolve_pending_clarification(self, *, request_id: str, response: str) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor

@@ -55,6 +55,7 @@ class SessionService:
     _KEY_PENDING_DECISION = "pending_decision"
     _KEY_PLAN_STATE = "plan_state"
     _KEY_RESPONSES_CONTINUATION = "responses_continuation_state"
+    _KEY_RUNTIME_ENVIRONMENT_CONTEXT = "runtime_environment_context"
     _KEY_SUSPENDED_TURN = "suspended_turn"
     _KEY_TURN_RECORD = "turn_record"
 
@@ -354,6 +355,41 @@ class SessionService:
 
     def clear_plan_state(self, session_id: str) -> None:
         self._store.delete_state(session_id, self._KEY_PLAN_STATE)
+
+    def save_runtime_environment_context_state(
+        self,
+        session_id: str,
+        *,
+        content_hash: str,
+        turn_id: str,
+    ) -> None:
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_RUNTIME_ENVIRONMENT_CONTEXT,
+            payload={
+                "content_hash": content_hash,
+                "turn_id": turn_id,
+            },
+        )
+
+    def load_runtime_environment_context_state(
+        self,
+        session_id: str,
+    ) -> dict[str, str] | None:
+        payload = self._load_state_object(
+            session_id,
+            self._KEY_RUNTIME_ENVIRONMENT_CONTEXT,
+        )
+        if payload is None:
+            return None
+        content_hash = payload.get("content_hash")
+        turn_id = payload.get("turn_id")
+        if not isinstance(content_hash, str) or not content_hash:
+            return None
+        if not isinstance(turn_id, str):
+            turn_id = ""
+        return {"content_hash": content_hash, "turn_id": turn_id}
 
     def save_responses_continuation_state(
         self,
@@ -704,7 +740,12 @@ class SessionService:
         )
 
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
-        return list(ContextManager().messages_from_history(self.load_history_items(session_id)))
+        return list(
+            ContextManager().messages_from_history(
+                self.load_history_items(session_id),
+                include_context_baseline_updates=False,
+            )
+        )
 
     def _history_thread_id(self, session_id: str, items: tuple[HistoryItem, ...]) -> str:
         if items:

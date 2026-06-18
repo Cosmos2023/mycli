@@ -1,6 +1,8 @@
 from pathlib import Path
+import time
 
 from mycli.domain.runtime import RiskLevel, ShellExecutionOptions
+from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
@@ -40,6 +42,39 @@ def test_shell_tool_executes_with_workspace_cwd(tmp_path: Path) -> None:
     assert str(nested.resolve()) in result.raw_payload["output"]
 
 
+def test_shell_tool_background_writes_output_file_and_notifies(tmp_path: Path) -> None:
+    notifications: list[TaskNotification] = []
+    tool = BashTool(workspace_root=tmp_path)
+    tool.configure_background_tasks(
+        output_dir=tmp_path / ".mycli" / "sessions" / "demo" / "tasks",
+        notification_sink=notifications.append,
+    )
+
+    result = tool.execute(
+        {
+            "command": "python3 -c \"print('background-ready', flush=True)\"",
+            "run_in_background": True,
+        }
+    )
+
+    assert result.success is True
+    output_file = Path(str(result.raw_payload["output_file"]))
+    assert result.raw_payload["task_id"] == f"shell:{result.raw_payload['shell_id']}"
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and not notifications:
+        time.sleep(0.01)
+
+    assert output_file.exists()
+    assert "background-ready" in output_file.read_text(encoding="utf-8")
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification.task_id == result.raw_payload["task_id"]
+    assert notification.output_file == output_file
+    assert notification.status == "completed"
+    assert "<task-notification>" in notification.to_xml()
+    assert f"<output-file>{output_file}</output-file>" in notification.to_xml()
+
+
 def test_shell_tool_applies_runtime_enforcement_timeout_cap(
     monkeypatch,
     tmp_path: Path,
@@ -54,7 +89,9 @@ def test_shell_tool_applies_runtime_enforcement_timeout_cap(
         run_in_background: bool = False,
         env: dict[str, str] | None = None,
         command_pattern: str | None = None,
+        **kwargs: object,
     ) -> dict[str, object]:
+        del kwargs
         seen.update(
             {
                 "command": command,
@@ -135,8 +172,9 @@ def test_shell_tool_applies_sanitized_runtime_environment(
         run_in_background: bool = False,
         env: dict[str, str] | None = None,
         command_pattern: str | None = None,
+        **kwargs: object,
     ) -> dict[str, object]:
-        del command, timeout, workdir, run_in_background, command_pattern
+        del command, timeout, workdir, run_in_background, command_pattern, kwargs
         seen["env"] = dict(env or {})
         return {"exit_code": 0, "output": "ok", "truncated": False}
 
@@ -307,8 +345,9 @@ def test_bash_tool_does_not_reroute_confirm_level_command(monkeypatch, tmp_path:
         run_in_background: bool = False,
         env: dict[str, str] | None = None,
         command_pattern: str | None = None,
+        **kwargs: object,
     ) -> dict[str, object]:
-        del command, timeout, workdir, run_in_background, env, command_pattern
+        del command, timeout, workdir, run_in_background, env, command_pattern, kwargs
         return {"exit_code": 7, "output": "simulated", "truncated": False}
 
     monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from html.parser import HTMLParser
+from pathlib import Path
 from threading import Lock
 from time import monotonic
 from typing import Any, Protocol
@@ -25,6 +26,7 @@ from mycli.domain.runtime import (
     RuntimeStreamEvent,
 )
 from mycli.domain.runtime.background_jobs import BackgroundJobState
+from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.subagents import (
     SubAgentContextSnapshot,
@@ -92,6 +94,7 @@ class SubAgentService:
         max_concurrent_background_tasks: int = 2,
         run_state_lock: SupportsLock | None = None,
         notification_sink: Callable[[str], tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+        task_output_path_provider: Callable[[str], Path] | None = None,
     ) -> None:
         self._session_id = session_id
         self._turn_id_provider = turn_id_provider
@@ -116,6 +119,7 @@ class SubAgentService:
         self._run_state_lock = run_state_lock or Lock()
         self._stream_sink: Callable[[RuntimeStreamEvent], None] | None = None
         self._notification_sink = notification_sink
+        self._task_output_path_provider = task_output_path_provider
 
     def set_stream_sink(self, stream_sink: Callable[[RuntimeStreamEvent], None] | None) -> None:
         self._stream_sink = stream_sink
@@ -433,6 +437,7 @@ class SubAgentService:
             completed_at=completed_at,
             snapshot_report=self._snapshot_report(result.report),
         )
+        self._write_task_output(result)
         self._emit_completion_notification(
             invocation,
             result,
@@ -705,17 +710,33 @@ class SubAgentService:
     ) -> str:
         report = self._snapshot_report(result.report)
         summary = report.splitlines()[0].strip() if report.strip() else result.status
-        return (
-            "<task-notification>\n"
-            f"<task-id>{escape(result.child_session_id)}</task-id>\n"
-            f"<agent>{escape(invocation.agent_type)}</agent>\n"
-            f"<status>{escape(result.status)}</status>\n"
-            f"<completed-at>{escape(completed_at)}</completed-at>\n"
-            f"<tool-calls>{result.tool_calls}</tool-calls>\n"
-            f"<summary>{escape(summary[:500])}</summary>\n"
-            f"<result>{escape(report)}</result>\n"
-            "</task-notification>"
-        )
+        return TaskNotification(
+            task_id=result.child_session_id,
+            task_type="local_agent",
+            status=result.status,
+            summary=summary,
+            output_file=self._task_output_path(result.child_session_id),
+            result=report,
+            completed_at=completed_at,
+            metadata={
+                "agent": invocation.agent_type,
+                "tool_calls": result.tool_calls,
+            },
+        ).to_xml()
+
+    def _write_task_output(self, result: SubAgentResult) -> None:
+        path = self._task_output_path(result.child_session_id)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._snapshot_report(result.report), encoding="utf-8")
+
+    def _task_output_path(self, child_session_id: str) -> Path | None:
+        if self._task_output_path_provider is None:
+            return None
+        with suppress(Exception):
+            return self._task_output_path_provider(child_session_id)
+        return None
 
     def _context_snapshot(self, tool_names: tuple[str, ...]) -> SubAgentContextSnapshot:
         baseline = self._context_baseline_provider()

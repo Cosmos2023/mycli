@@ -43,6 +43,7 @@ class ResponsesClient(Protocol):
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
         prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
     ) -> dict[str, object]:
         ...
 
@@ -66,6 +67,7 @@ class ResponsesModelAdapter:
         self._stream_events = ResponsesStreamEventAdapter(self._output_parser)
         self._log_service = log_service
         self._log_context_provider: Callable[[], ModelLogContext] | None = None
+        self._tool_choice: str | None = None
 
     def set_log_context_provider(
         self,
@@ -88,6 +90,15 @@ class ResponsesModelAdapter:
         setter = getattr(self._client, "set_reasoning_effort", None)
         if callable(setter):
             setter(reasoning_effort)
+
+    def set_tool_choice(self, tool_choice: str | None) -> None:
+        self._tool_choice = tool_choice
+        setter = getattr(self._client, "set_tool_choice", None)
+        if callable(setter):
+            setter(tool_choice)
+
+    def supports_tool_choice(self) -> bool:
+        return callable(getattr(self._client, "set_tool_choice", None))
 
     def set_max_output_tokens(self, value: int) -> None:
         setter = getattr(self._client, "set_max_output_tokens", None)
@@ -131,32 +142,36 @@ class ResponsesModelAdapter:
         prompt_cache_key = self._prompt_cache_key_from_items(items)
         create_events = getattr(self._client, "create_events", None)
         if callable(create_events):
+            event_kwargs: dict[str, object] = {
+                "input_items": input_items,
+                "tools": serialized_tools,
+            }
             if prompt_cache_key and self._callable_accepts_prompt_cache_key(create_events):
-                turn_result = self._aggregator.collect(
-                    create_events(
-                        input_items=input_items,
-                        tools=serialized_tools,
-                        prompt_cache_key=prompt_cache_key,
-                    )
-                )
-            else:
-                turn_result = self._aggregator.collect(
-                    create_events(input_items=input_items, tools=serialized_tools)
-                )
+                event_kwargs["prompt_cache_key"] = prompt_cache_key
+            if self._tool_choice is not None and self._callable_accepts_tool_choice(
+                create_events
+            ):
+                event_kwargs["tool_choice"] = self._tool_choice
+            turn_result = self._aggregator.collect(create_events(**event_kwargs))
         else:
             if prompt_cache_key and self._callable_accepts_prompt_cache_key(
                 self._client.create_response
             ):
-                payload = self._client.create_response(
-                    input_items=input_items,
-                    tools=serialized_tools,
-                    prompt_cache_key=prompt_cache_key,
-                )
+                create_kwargs: dict[str, object] = {
+                    "input_items": input_items,
+                    "tools": serialized_tools,
+                    "prompt_cache_key": prompt_cache_key,
+                }
             else:
-                payload = self._client.create_response(
-                    input_items=input_items,
-                    tools=serialized_tools,
-                )
+                create_kwargs = {
+                    "input_items": input_items,
+                    "tools": serialized_tools,
+                }
+            if self._tool_choice is not None and self._callable_accepts_tool_choice(
+                self._client.create_response
+            ):
+                create_kwargs["tool_choice"] = self._tool_choice
+            payload = self._client.create_response(**create_kwargs)
             turn_result = self._output_parser.to_model_turn_result(payload)
         self._record_client_completion(turn_result)
         return turn_result
@@ -181,6 +196,10 @@ class ResponsesModelAdapter:
         prompt_cache_key = self._prompt_cache_key_from_items(items)
         if prompt_cache_key and self._callable_accepts_prompt_cache_key(stream_response):
             stream_kwargs["prompt_cache_key"] = prompt_cache_key
+        if self._tool_choice is not None and self._callable_accepts_tool_choice(
+            stream_response
+        ):
+            stream_kwargs["tool_choice"] = self._tool_choice
         for event in stream_response(**stream_kwargs):
             if isinstance(event, dict) and not event:
                 continue
@@ -463,6 +482,18 @@ class ResponsesModelAdapter:
             if parameter.kind is parameter.VAR_KEYWORD:
                 return True
             if parameter.name == "prompt_cache_key":
+                return True
+        return False
+
+    def _callable_accepts_tool_choice(self, func: Callable[..., object]) -> bool:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return False
+        for parameter in signature.parameters.values():
+            if parameter.kind is parameter.VAR_KEYWORD:
+                return True
+            if parameter.name == "tool_choice":
                 return True
         return False
 

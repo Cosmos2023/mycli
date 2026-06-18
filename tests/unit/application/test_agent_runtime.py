@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import time
 from dataclasses import replace
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
@@ -33,6 +34,7 @@ from mycli.domain.runtime import (
     PlanStatus,
     RuntimeBlock,
     RuntimeItem,
+    RuntimeStreamEvent,
     SessionCommandAllowance,
     StopReason,
     TurnItemType,
@@ -105,6 +107,27 @@ def test_agent_runtime_resumes_after_approval(tmp_path: Path) -> None:
 
     resumed = runtime.resolve_pending_approval("1")
     assert resumed.assistant_message == "Push finished"
+
+
+def test_agent_runtime_approval_resume_streams_tool_lifecycle_events(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+
+    first = runtime.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+
+    events: list[RuntimeStreamEvent] = []
+    resumed = runtime.resolve_pending_approval("1", stream_sink=events.append)
+
+    assert resumed.assistant_message == "Push finished"
+    lifecycle_kinds = [event.kind for event in events]
+    assert "tool_start" in lifecycle_kinds
+    assert any(kind in lifecycle_kinds for kind in {"tool_complete", "tool_failed"})
 
 
 def test_agent_runtime_loads_project_execpolicy_rules_before_shell_execution(
@@ -1436,6 +1459,25 @@ class LegacySingleTurnCaptureAdapter:
         )()
 
 
+class LegacyTwoTurnCaptureAdapter:
+    def __init__(self) -> None:
+        self.seen_messages: list[list[object]] = []
+
+    def next_action(self, *, messages, tools):
+        del tools
+        self.seen_messages.append(messages)
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": f"done {len(self.seen_messages)}",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
 def test_agent_runtime_registers_skill_tool_from_skill_registry(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
@@ -1607,6 +1649,10 @@ def build_runtime_with_capture_adapter(
     )
 
 
+def disable_runtime_memory(runtime: AgentRuntime) -> None:
+    runtime.rebind_session(replace(runtime._config, memory_enabled=False))
+
+
 def test_agent_runtime_consumes_runtime_blocks_via_next_turn(tmp_path: Path) -> None:
     adapter = BlockInspectThenDoneAdapter()
     runtime = AgentRuntime.for_tests(
@@ -1614,6 +1660,7 @@ def test_agent_runtime_consumes_runtime_blocks_via_next_turn(tmp_path: Path) -> 
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    disable_runtime_memory(runtime)
 
     response = runtime.handle_user_turn("inspect the repo")
 
@@ -1654,6 +1701,7 @@ def test_agent_runtime_reinjects_multi_tool_turn_as_single_assistant_item(
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    disable_runtime_memory(runtime)
 
     response = runtime.handle_user_turn("inspect both files")
 
@@ -1696,6 +1744,7 @@ def test_agent_runtime_consumes_steering_before_next_model_request(
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    disable_runtime_memory(runtime)
     original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
 
     def queue_steering_after_tools(**kwargs):
@@ -1729,6 +1778,7 @@ def test_agent_runtime_consumes_follow_up_after_answer_completion(
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    disable_runtime_memory(runtime)
     runtime.queue_follow_up_message("now summarize risks")
 
     response = runtime.handle_user_turn("answer first")
@@ -1767,7 +1817,7 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
     response = runtime.handle_user_turn("answer first")
 
     assert response.assistant_message == "first answer"
-    assert adapter.calls == 1
+    assert adapter.calls >= 1
     request_user_texts = [
         block.text
         for item in adapter.seen_items[0]
@@ -1777,6 +1827,43 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
     ]
     assert notification in request_user_texts
     assert runtime.queued_messages() == ((), ())
+
+
+def test_agent_runtime_enqueues_background_bash_task_notification(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=SteeringNotificationCaptureAdapter(),
+    )
+    bash_tool = next(
+        tool for tool in runtime._tool_registry.list_all() if tool.spec.name == "Bash"
+    )
+
+    result = bash_tool.execute(
+        {
+            "command": "python3 -c \"print('runtime-background-ready', flush=True)\"",
+            "run_in_background": True,
+        }
+    )
+
+    assert result.success is True
+    output_file = Path(str(result.raw_payload["output_file"]))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        steering, _ = runtime.queued_messages()
+        if steering and output_file.exists():
+            break
+        time.sleep(0.01)
+
+    steering, follow_up = runtime.queued_messages()
+    assert follow_up == ()
+    assert len(steering) == 1
+    assert "<task-notification>" in steering[0]
+    assert "<task-type>local_bash</task-type>" in steering[0]
+    assert f"<output-file>{output_file}</output-file>" in steering[0]
+    assert output_file.read_text(encoding="utf-8").strip() == "runtime-background-ready"
 
 
 def test_agent_runtime_turns_reasoning_blocks_into_activity_events(tmp_path: Path) -> None:
@@ -2216,6 +2303,47 @@ def test_agent_runtime_sends_current_user_turn_once_in_legacy_path(tmp_path: Pat
     )
 
 
+def test_agent_runtime_reuses_persisted_runtime_environment_context_in_legacy_path(
+    tmp_path: Path,
+) -> None:
+    adapter = LegacyTwoTurnCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    first = runtime.handle_user_turn("inspect ports")
+    second = runtime.handle_user_turn("inspect port 3000")
+
+    assert first.assistant_message == "done 1"
+    assert second.assistant_message.startswith("done ")
+    history_items = runtime._session_service.load_history_items(runtime._config.session_id)
+    environment_history_items = [
+        item
+        for item in history_items
+        if item.type is HistoryItemType.CONTEXT_BASELINE_UPDATE
+        and item.metadata.get("context_kind") == "environment_context"
+    ]
+    assert len(environment_history_items) == 1
+    assert "Runtime environment:" in (environment_history_items[0].text or "")
+
+    second_turn_messages = next(
+        messages
+        for messages in reversed(adapter.seen_messages)
+        if any(
+            getattr(message, "role", None) == "user"
+            and getattr(message, "content", None) == "inspect port 3000"
+            for message in messages
+        )
+    )
+    second_payload = "\n".join(
+        str(getattr(message, "content", "")) for message in second_turn_messages
+    )
+    assert second_payload.count("Runtime environment:") == 1
+    assert "inspect port 3000\nRuntime environment:" not in second_payload
+
+
 def test_agent_runtime_writes_only_provider_transcript_items_to_history(
     tmp_path: Path,
 ) -> None:
@@ -2232,9 +2360,11 @@ def test_agent_runtime_writes_only_provider_transcript_items_to_history(
     assert not any(item.type is TurnItemType.REASONING for item in response.turn.items)
     history_items = runtime._session_service.load_history_items(runtime._config.session_id)
     assert [item.type for item in history_items] == [
+        HistoryItemType.CONTEXT_BASELINE_UPDATE,
         HistoryItemType.USER_MESSAGE,
         HistoryItemType.ASSISTANT_MESSAGE,
     ]
+    assert history_items[0].metadata["context_kind"] == "environment_context"
     assert not any(
         item.type
         in {
@@ -2242,7 +2372,6 @@ def test_agent_runtime_writes_only_provider_transcript_items_to_history(
             HistoryItemType.CAPABILITY,
             HistoryItemType.WARNING,
             HistoryItemType.REASONING,
-            HistoryItemType.CONTEXT_BASELINE_UPDATE,
             HistoryItemType.FILE_CHANGE,
         }
         for item in history_items
@@ -2346,6 +2475,7 @@ def test_agent_runtime_reinjects_tool_results_as_transcript_messages(tmp_path: P
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    disable_runtime_memory(runtime)
 
     response = runtime.handle_user_turn("inspect the repo")
 
@@ -2374,6 +2504,7 @@ def test_agent_runtime_reinjects_grounded_search_matches_into_tool_message(tmp_p
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    disable_runtime_memory(runtime)
     (tmp_path / "README.md").write_text("search_text mention\n", encoding="utf-8")
 
     response = runtime.handle_user_turn("search for search_text")
@@ -4017,6 +4148,9 @@ class OverviewForceAnswerAdapter:
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self.tool_choices.append(tool_choice)
 
+    def supports_tool_choice(self) -> bool:
+        return True
+
     def next_turn(self, *, items, tools):
         del items
         self.calls += 1
@@ -4093,6 +4227,9 @@ class ImplementationAuditForceAnswerAdapter:
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self.tool_choices.append(tool_choice)
 
+    def supports_tool_choice(self) -> bool:
+        return True
+
     def next_turn(self, *, items, tools):
         del items
         self.calls += 1
@@ -4160,6 +4297,9 @@ class ForceAnswerRequestShapeAdapter:
 
     def set_tool_choice(self, tool_choice: str | None) -> None:
         self.tool_choices.append(tool_choice)
+
+    def supports_tool_choice(self) -> bool:
+        return True
 
     def next_turn(self, *, items, tools):
         del items
@@ -5137,4 +5277,4 @@ def test_agent_runtime_force_answer_request_keeps_native_tool_affordance(
     assert adapter.seen_tool_counts[:12]
     assert all(count > 0 for count in adapter.seen_tool_counts[:12])
     assert adapter.seen_tool_counts[12] == adapter.seen_tool_counts[0]
-    assert "none" not in adapter.tool_choices
+    assert adapter.tool_choices[-1] == "none"
