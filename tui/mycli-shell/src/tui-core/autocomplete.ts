@@ -321,7 +321,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 				const filtered = fuzzyFilter(commandItems, prefix, (item) => item.name).map((item) => ({
 					value: item.name,
-					label: item.label,
+					label: `/${item.label}`,
 					...(item.description && { description: item.description }),
 				}));
 

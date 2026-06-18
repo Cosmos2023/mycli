@@ -19,7 +19,7 @@ from mycli.cli.node_tui.protocol import (
     notification,
     result_response,
 )
-from mycli.cli.repl import build_command_handler, handle_slash_command
+from mycli.cli.repl import canonical_slash_command, build_command_handler, handle_slash_command
 from mycli.cli.tui.completion import slash_command_candidates
 from mycli.cli.tui.marks import startup_mark
 from mycli.domain.runtime import (
@@ -43,15 +43,16 @@ PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {
     "/help",
     "/status",
-    "/usage",
-    "/context",
-    "/permissions",
+    "/status usage",
+    "/status context",
+    "/status stats",
+    "/tools permissions",
     "/changes",
-    "/sessions",
-    "/session-maintenance",
-    "/session-maintenance --apply-empty",
-    "/session-maintenance --apply-orphans",
-    "/session-maintenance --apply-vacuum",
+    "/session list",
+    "/session maintenance",
+    "/session maintenance --apply-empty",
+    "/session maintenance --apply-orphans",
+    "/session maintenance --apply-vacuum",
     "/release-notes",
 }
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
@@ -102,7 +103,11 @@ class NodeTuiServiceLike(Protocol):
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> TurnResponse: ...
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse: ...
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse: ...
 
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse: ...
 
@@ -375,7 +380,7 @@ class NodeTuiGateway:
             ),
             "context_window": self._status_payload()["context_window"],
             "startup_mark": {"name": mark_name, "text": startup_mark(mark_name)},
-            "tips": ["/help", "/context", "/usage", "/sessions"],
+            "tips": ["/help", "/status context", "/status usage", "/session list"],
             "release_notes_hint": "Run /release-notes",
         }
         title = self._session_title()
@@ -823,7 +828,8 @@ class NodeTuiGateway:
         command = _required_str(params, "command").strip()
         if not command.startswith("/"):
             raise ValueError("command must start with '/'.")
-        command_name = command.split(maxsplit=1)[0]
+        canonical_command = canonical_slash_command(command)
+        command_name = canonical_command.split(maxsplit=1)[0]
         builtin = handle_slash_command(command)
         if builtin == "quit":
             lines = ["Bye."]
@@ -845,7 +851,7 @@ class NodeTuiGateway:
             "mutated_session": mutated_session,
             "mutated_model": mutated_model,
             "mutated_mode": mutated_mode,
-            "presentation": "overlay" if command_name in COMMAND_OVERLAYS else "transcript",
+            "presentation": "overlay" if canonical_command in COMMAND_OVERLAYS else "transcript",
             "exit_requested": builtin == "quit",
         }
         if command_name in {"/changes", "/diff"}:
@@ -947,8 +953,19 @@ class NodeTuiGateway:
             kind="running",
             text="Resolving approval",
         )
+        self._emit_event(
+            "approval.respond",
+            {
+                "client_turn_id": client_turn_id,
+                "decision_id": decision_id,
+                "choice": _choice_for_resolved_value(choice),
+            },
+        )
         try:
-            response = self.service.resolve_pending_decision(choice)
+            response = self.service.resolve_pending_decision(
+                choice,
+                stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
+            )
         except Exception as exc:
             self._emit_event(
                 "turn.failed",
@@ -966,14 +983,11 @@ class NodeTuiGateway:
                 text="Failed",
             )
         else:
-            self._emit_event(
-                "approval.respond",
-                {
-                    "client_turn_id": client_turn_id,
-                    "decision_id": decision_id,
-                    "choice": _choice_for_resolved_value(choice),
-                },
-            )
+            if response.pending_decision is not None:
+                self._emit_event(
+                    "approval.request",
+                    _approval_request_payload(client_turn_id, response.pending_decision),
+                )
             assistant_message, proposed_plan = _split_proposed_plan(response.assistant_message)
             if proposed_plan is not None:
                 self._emit_event(
@@ -1320,6 +1334,7 @@ def _optional_str(value: object) -> str | None:
 def _provider_display_name(provider: ProviderId) -> str:
     return {
         ProviderId.OPENAI: "OpenAI",
+        ProviderId.CODEX: "Codex Responses",
         ProviderId.DEEPSEEK: "DeepSeek",
         ProviderId.QWEN: "Qwen",
         ProviderId.ANTHROPIC: "Anthropic",
@@ -1544,15 +1559,15 @@ def _project_history_item(item: HistoryItem) -> dict[str, object]:
 def _slash_description(command: str) -> str:
     descriptions = {
         "/status": "Show runtime status",
-        "/stats": "Show aggregate stats",
-        "/usage": "Show usage for the current session",
-        "/context": "Show context-window diagnostics",
-        "/resume <session>": "Resume a saved session",
-        "/sessions": "List saved sessions",
-        "/session-maintenance": "Show session storage maintenance dry-run",
-        "/session-maintenance --apply-empty": "Delete empty session maintenance candidates",
-        "/session-maintenance --apply-orphans": "Delete orphan session child rows",
-        "/session-maintenance --apply-vacuum": "Run explicit SQLite vacuum for session storage",
+        "/status stats": "Show aggregate stats",
+        "/status usage": "Show usage for the current session",
+        "/status context": "Show context-window diagnostics",
+        "/session resume <session>": "Resume a saved session",
+        "/session list": "List saved sessions",
+        "/session maintenance": "Show session storage maintenance dry-run",
+        "/session maintenance --apply-empty": "Delete empty session maintenance candidates",
+        "/session maintenance --apply-orphans": "Delete orphan session child rows",
+        "/session maintenance --apply-vacuum": "Run explicit SQLite vacuum for session storage",
         "/quit": "Exit mycli",
     }
     return descriptions.get(command, "")

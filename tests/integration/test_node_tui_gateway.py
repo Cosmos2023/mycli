@@ -357,7 +357,12 @@ class E2EWaitingStateService:
             return TurnResponse(assistant_message="", turn=turn)
         raise AssertionError(f"unexpected message: {message}")
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.resolved_choices.append(choice)
         self._session_service.pending_decision = None
         if choice == "2":
@@ -1156,7 +1161,12 @@ class E2EFailureRecoveryService:
             )
         raise AssertionError(f"unexpected message: {message}")
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.resolved_choices.append(choice)
         self._session_service.pending_decision = None
         return TurnResponse(
@@ -1456,7 +1466,12 @@ class E2EResumeTipService:
         del message, stream_sink
         return TurnResponse(assistant_message="unexpected turn")
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.resolved_choices.append(choice)
         self._session_service.pending_decision = None
         return TurnResponse(assistant_message="approval resumed on branch")

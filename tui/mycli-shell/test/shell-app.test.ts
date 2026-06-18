@@ -191,7 +191,7 @@ test("mycli shell renders copied reference shell surfaces", () => {
 
 	assert.match(output, /mycli/);
 	assert.match(output, /Read word\.txt/);
-	assert.match(output, /Thinking\.\.\./);
+	assert.doesNotMatch(output, /Thinking\.\.\./);
 	assert.doesNotMatch(output, /I should inspect the file/);
 	assert.match(output, /Summary: hello/);
 	assert.match(output, /Read/);
@@ -1189,6 +1189,7 @@ test("mycli shell keeps slash editable and opens commands from question key", as
 	await setTimeout(25);
 	assert.equal(slashRuntime.editorContainer.children[0], slashRuntime.editor);
 	assert.equal(slashRuntime.editor.getText(), "/");
+	assert.match(stripAnsi(slashRuntime.ui.render(100).join("\n")), /\/settings/);
 
 	const questionTerminal = new TestTerminal();
 	const questionRuntime = new MycliShellRuntime({
@@ -1202,6 +1203,49 @@ test("mycli shell keeps slash editable and opens commands from question key", as
 	await setTimeout(25);
 	assert.notEqual(questionRuntime.editorContainer.children[0], questionRuntime.editor);
 	assert.match(stripAnsi(questionRuntime.ui.render(100).join("\n")), /\/settings/);
+});
+
+test("mycli shell slash autocomplete accepts selected command with tab", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("/");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /\/settings/);
+
+	terminal.input?.("\t");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "/settings ");
+});
+
+test("mycli shell slash autocomplete filters and submits with enter", async () => {
+	const terminal = new TestTerminal();
+	const commands: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onCommandSubmit: (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("/sta");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /\/status/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "");
+	assert.deepEqual(commands, ["/status"]);
 });
 
 test("mycli shell keeps slash as text when editor is not empty", async () => {
@@ -1252,12 +1296,16 @@ test("mycli shell model selector opens from slash command and selects model", as
 test("mycli shell login flow replaces editor with auth selectors", async () => {
 	const terminal = new TestTerminal();
 	const saved: Array<[string, string]> = [];
+	let selected = "";
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
 		onApiKeyLogin: async (providerId, apiKey) => {
 			saved.push([providerId, apiKey]);
 			return { message: `Saved API key for ${providerId}` };
+		},
+		onModelSelect: (model) => {
+			selected = `${model.provider}/${model.id}/${model.thinkingLevel ?? ""}`;
 		},
 	});
 
@@ -1267,35 +1315,42 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
-	assert.match(output, /Select authentication method:/);
-	assert.match(output, /Use an API key/);
-
-	terminal.input?.("\r");
-	await setTimeout(25);
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Select provider to configure:/);
 	assert.match(output, /OpenAI • unconfigured/);
 	assert.match(output, /DeepSeek • unconfigured/);
 	assert.doesNotMatch(output, /default model/);
-	assert.doesNotMatch(output, /─{20,}/);
 
-	terminal.input?.("\x1b[B");
+	terminal.input?.("deep");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /DeepSeek • unconfigured/);
+	assert.doesNotMatch(output, /OpenAI • unconfigured/);
+
 	terminal.input?.("\r");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Login to DeepSeek/);
 	assert.match(output, /Enter API key:/);
 
-	terminal.input?.("sk-deepseek");
+	terminal.input?.("\x1b[200~sk-deepseek\x1b[201~");
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.doesNotMatch(output, /sk-deepseek/);
 	assert.match(output, /•••••••••••/);
 	terminal.input?.("\r");
 	await setTimeout(25);
 
-	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.deepEqual(saved, [["deepseek", "sk-deepseek"]]);
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Saved API key for deepseek/);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	assert.match(output, /deepseek-v4-flash \[deepseek\]/);
+	assert.doesNotMatch(output, /gpt-5.4 \[openai\]/);
+	assert.match(output, /Saved API key for deepseek/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	assert.equal(selected, "deepseek/deepseek-v4-flash/medium");
 });
 
 test("mycli shell model selector can change thinking effort with model selection", async () => {
@@ -1598,11 +1653,11 @@ test("mycli shell forwards backend slash commands instead of chatting them", asy
 	});
 
 	await runtime.editor.onSubmit?.("/changes");
-	await runtime.editor.onSubmit?.("/subagents child-session");
-	await runtime.editor.onSubmit?.("/trace-jsonl");
+	await runtime.editor.onSubmit?.("/jobs subagents child-session");
+	await runtime.editor.onSubmit?.("/trace export");
 
 	assert.deepEqual(submitted, []);
-	assert.deepEqual(commands, ["/changes", "/subagents child-session", "/trace-jsonl"]);
+	assert.deepEqual(commands, ["/changes", "/jobs subagents child-session", "/trace export"]);
 });
 
 test("mycli shell cycles collaboration mode with shift tab", async () => {
@@ -1652,10 +1707,10 @@ test("mycli shell command palette includes backend-supported commands", async ()
 		assert.match(stripAnsi(runtime.ui.render(100).join("\n")), pattern);
 	};
 
-	await assertCommandVisible(/\/subagents/);
+	await assertCommandVisible(/\/jobs subagents/);
 	await assertCommandVisible(/\/changes/);
 	await assertCommandVisible(/\/trace/);
-	await assertCommandVisible(/\/session-maintenance/);
+	await assertCommandVisible(/\/session maintenance/);
 });
 
 test("mycli shell local view command switches tool visibility", async () => {

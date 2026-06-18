@@ -1,6 +1,5 @@
 import { Markdown } from "../tui-core/components/markdown.ts";
 import { Spacer } from "../tui-core/components/spacer.ts";
-import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
@@ -33,21 +32,18 @@ export class AssistantMessageComponent extends Container {
 		this.clear();
 		const hasThinking = Boolean(this.thinking?.trim());
 		const hasText = Boolean(this.text.trim());
-		if (hasThinking || hasText) {
+		const shouldRenderThinking = hasThinking && !this.thinkingHidden;
+		if (shouldRenderThinking || hasText) {
 			this.addChild(new Spacer(1));
 		}
-		if (hasThinking) {
+		if (shouldRenderThinking) {
 			this.addChild(
-				this.thinkingHidden
-					? new Text(theme.italic(theme.fg("thinkingText", "Thinking...")), 1, 0)
-					: new Markdown(this.thinking!.trim(), 1, 0, markdownTheme(), {
-							color: (content) => theme.fg("thinkingText", content),
-							italic: true,
-						}),
+				new Markdown(this.thinking!.trim(), 1, 0, markdownTheme(), {
+					color: (content) => theme.fg("thinkingText", content),
+					italic: true,
+				}),
 			);
-			if (hasText) {
-				this.addChild(new Spacer(1));
-			}
+			if (hasText) this.addChild(new Spacer(1));
 		}
 		if (hasText) {
 			this.addChild(new Markdown(this.text.trim(), 1, 0, markdownTheme()));

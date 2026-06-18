@@ -10,29 +10,34 @@ def test_slash_command_candidates_include_required_and_tui_only_commands() -> No
 
     assert "/status" in candidates
     assert "/view focus" in candidates
-    assert "/resume <session>" in candidates
-    assert "/session-maintenance" in candidates
-    assert "/session-maintenance --apply-orphans" in candidates
-    assert "/session-maintenance --apply-vacuum" in candidates
-    assert "/search <query>" in candidates
+    assert "/status usage" in candidates
+    assert "/status context" in candidates
+    assert "/status stats" in candidates
+    assert "/session resume <session>" in candidates
+    assert "/session maintenance" in candidates
+    assert "/session maintenance --apply-orphans" in candidates
+    assert "/session maintenance --apply-vacuum" in candidates
+    assert "/session search <query>" in candidates
     assert "/clear" in candidates
     assert "/theme" in candidates
     assert "/mark <name>" in candidates
     assert "/release-notes" in candidates
     assert "/tools" in candidates
-    assert "/hooks" in candidates
-    assert "/toolsets" in candidates
-    assert "/bashes" in candidates
+    assert "/tools hooks" in candidates
+    assert "/tools sets" in candidates
+    assert "/jobs bashes" in candidates
     assert "/changes" in candidates
-    assert "/undo" in candidates
+    assert "/changes undo" in candidates
     assert "/plan" in candidates
-    assert "/extensions" in candidates
-    assert "/subagents" in candidates
+    assert "/tools extensions" in candidates
+    assert "/jobs subagents" in candidates
     assert "/memory" in candidates
     assert "/trace" in candidates
-    assert "/trace-jsonl" in candidates
-    assert "/logs" in candidates
-    assert "/fork [source] <new-session> [message-index]" in candidates
+    assert "/trace export" in candidates
+    assert "/trace logs" in candidates
+    assert "/session fork [source] <new-session> [message-index]" in candidates
+    assert "/usage" not in candidates
+    assert "/sessions" not in candidates
     assert "/model" not in candidates
     assert "/init" not in candidates
     assert "/diff" not in candidates
@@ -44,7 +49,7 @@ def test_completion_state_filters_slash_commands_by_prefix() -> None:
     state.update("/sta")
 
     assert state.visible is True
-    assert state.candidates[:2] == ("/status", "/stats")
+    assert state.candidates[:2] == ("/status", "/status usage")
     assert state.selected == "/status"
 
 
@@ -54,8 +59,8 @@ def test_completion_state_arrow_selection_and_tab_accept() -> None:
 
     state.move_selection(1)
 
-    assert state.selected == "/stats"
-    assert state.accept_selected() == "/stats"
+    assert state.selected == "/status usage"
+    assert state.accept_selected() == "/status usage"
     assert state.visible is False
 
 

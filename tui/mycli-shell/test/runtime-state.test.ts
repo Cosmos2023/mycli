@@ -185,6 +185,25 @@ test("runtime adapter projects approval requests into shell approval state", () 
 	assert.equal(shell.footer.liveState, "Waiting approval");
 });
 
+test("runtime adapter clears pending approval when approved turn starts", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "decision-1",
+		preview: "python script.py",
+		options: [
+			{ choice: "approve_once", label: "Allow once" },
+			{ choice: "reject", label: "Reject" },
+		],
+	});
+
+	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "approval_1" });
+	const shell = projectRuntimeState(state);
+
+	assert.equal(state.pendingApproval, null);
+	assert.equal(shell.pendingApproval, undefined);
+	assert.equal(shell.footer.liveState, "Running");
+});
+
 test("runtime adapter projects subagent updates into dedicated transcript blocks", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "subagent.updated", {

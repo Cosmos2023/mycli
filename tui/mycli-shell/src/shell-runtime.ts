@@ -5,6 +5,7 @@ import { Text } from "./tui-core/components/text.ts";
 import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
 import { Container, TUI, type Component } from "./tui-core/tui.ts";
 import { matchesKey } from "./tui-core/keys.ts";
+import { CombinedAutocompleteProvider, type SlashCommand } from "./tui-core/autocomplete.ts";
 import { installMycliKeybindings } from "./keybindings.ts";
 import type {
 	MycliShellAuthProvider,
@@ -59,31 +60,32 @@ export type MycliShellRuntimeOptions = {
 
 const BACKEND_COMMANDS: MycliShellCommand[] = [
 	{ id: "status", label: "/status", description: "Inspect runtime status", run: () => undefined },
-	{ id: "stats", label: "/stats", description: "Inspect aggregate runtime stats", run: () => undefined },
-	{ id: "context", label: "/context", description: "Inspect context window diagnostics", run: () => undefined },
-	{ id: "usage", label: "/usage", description: "Inspect token usage", run: () => undefined },
-	{ id: "sessions", label: "/sessions", description: "List resumable sessions", run: () => undefined },
-	{ id: "search", label: "/search", description: "Search saved sessions", run: () => undefined },
-	{ id: "fork", label: "/fork", description: "Fork a saved session", run: () => undefined },
+	{ id: "status-usage", label: "/status usage", description: "Inspect token usage", run: () => undefined },
+	{ id: "status-context", label: "/status context", description: "Inspect context window diagnostics", run: () => undefined },
+	{ id: "status-stats", label: "/status stats", description: "Inspect aggregate runtime stats", run: () => undefined },
+	{ id: "session-list", label: "/session list", description: "List resumable sessions", run: () => undefined },
+	{ id: "session-search", label: "/session search", description: "Search saved sessions", run: () => undefined },
+	{ id: "session-fork", label: "/session fork", description: "Fork a saved session", run: () => undefined },
 	{ id: "plan", label: "/plan", description: "Enter Plan mode and inspect active plan", run: () => undefined },
 	{ id: "mode", label: "/mode", description: "Inspect or switch collaboration mode", run: () => undefined },
-	{ id: "subagents", label: "/subagents", description: "Inspect sub-agent runs", run: () => undefined },
+	{ id: "jobs", label: "/jobs", description: "Inspect background jobs", run: () => undefined },
+	{ id: "jobs-subagents", label: "/jobs subagents", description: "Inspect sub-agent runs", run: () => undefined },
+	{ id: "jobs-bashes", label: "/jobs bashes", description: "Inspect background shells", run: () => undefined },
 	{ id: "tools", label: "/tools", description: "Inspect backend tools", run: () => undefined },
-	{ id: "permissions", label: "/permissions", description: "Inspect approvals and command allowances", run: () => undefined },
-	{ id: "toolsets", label: "/toolsets", description: "Inspect backend toolsets", run: () => undefined },
-	{ id: "hooks", label: "/hooks", description: "Inspect configured hooks", run: () => undefined },
-	{ id: "extensions", label: "/extensions", description: "Inspect extension runtime", run: () => undefined },
-	{ id: "plugin", label: "/plugin", description: "Inspect or run plugin commands", run: () => undefined },
-	{ id: "skill", label: "/skill", description: "Inspect available skills", run: () => undefined },
+	{ id: "tools-permissions", label: "/tools permissions", description: "Inspect approvals and command allowances", run: () => undefined },
+	{ id: "tools-sets", label: "/tools sets", description: "Inspect backend toolsets", run: () => undefined },
+	{ id: "tools-hooks", label: "/tools hooks", description: "Inspect configured hooks", run: () => undefined },
+	{ id: "tools-extensions", label: "/tools extensions", description: "Inspect extension runtime", run: () => undefined },
+	{ id: "tools-plugins", label: "/tools plugins", description: "Inspect or run plugin commands", run: () => undefined },
+	{ id: "tools-skills", label: "/tools skills", description: "Inspect available skills", run: () => undefined },
 	{ id: "skills", label: "/skills", description: "Inspect available skills", run: () => undefined },
 	{ id: "memory", label: "/memory", description: "Inspect session memory", run: () => undefined },
 	{ id: "changes", label: "/changes", description: "Inspect file changes", run: () => undefined },
-	{ id: "undo", label: "/undo", description: "Undo last recoverable file change", run: () => undefined },
-	{ id: "bashes", label: "/bashes", description: "Inspect background shells", run: () => undefined },
+	{ id: "changes-undo", label: "/changes undo", description: "Undo last recoverable file change", run: () => undefined },
 	{ id: "trace", label: "/trace", description: "Inspect runtime trace", run: () => undefined },
-	{ id: "trace-jsonl", label: "/trace-jsonl", description: "Export runtime trace JSONL", run: () => undefined },
-	{ id: "logs", label: "/logs", description: "Inspect workspace logs", run: () => undefined },
-	{ id: "session-maintenance", label: "/session-maintenance", description: "Inspect session storage maintenance", run: () => undefined },
+	{ id: "trace-export", label: "/trace export", description: "Export runtime trace JSONL", run: () => undefined },
+	{ id: "trace-logs", label: "/trace logs", description: "Inspect workspace logs", run: () => undefined },
+	{ id: "session-maintenance", label: "/session maintenance", description: "Inspect session storage maintenance", run: () => undefined },
 ];
 
 type ChatBlockComponent =
@@ -236,6 +238,7 @@ export class MycliShellRuntime {
 		}
 		const keybindings = installMycliKeybindings();
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, { paddingX: 1, autocompleteMaxVisible: 8 });
+		this.refreshAutocompleteProvider();
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
@@ -1041,13 +1044,25 @@ export class MycliShellRuntime {
 		if (!input) {
 			return;
 		}
-		if (input === "/" || input === "/help") {
+		if (input === "/help") {
+			this.editor.setText("");
+			this.showCommandPalette();
+			return;
+		}
+		if (input === "/") {
 			this.editor.setText("");
 			this.showCommandPalette();
 			return;
 		}
 		if (input.startsWith("/")) {
 			const commandId = input.slice(1).split(/\s+/, 1)[0] ?? "";
+			const exactCommand = this.commands().find((candidate) => candidate.label === input);
+			if (exactCommand) {
+				this.editor.addToHistory(input);
+				this.editor.setText("");
+				await exactCommand.run();
+				return;
+			}
 			if (commandId === "settings") {
 				this.editor.addToHistory(input);
 				this.editor.setText("");
@@ -1056,6 +1071,12 @@ export class MycliShellRuntime {
 			}
 			if (commandId === "session" || commandId === "resume") {
 				if (commandId === "resume" && input.trim().includes(" ")) {
+					this.editor.addToHistory(input);
+					this.editor.setText("");
+					await this.submitCommand(input);
+					return;
+				}
+				if (commandId === "session" && input.trim().includes(" ")) {
 					this.editor.addToHistory(input);
 					this.editor.setText("");
 					await this.submitCommand(input);
@@ -1264,6 +1285,24 @@ export class MycliShellRuntime {
 		return commands;
 	}
 
+	private refreshAutocompleteProvider(): void {
+		const slashCommands: SlashCommand[] = this.commands().map((command) => ({
+			name: command.label.replace(/^\//, ""),
+			description: command.description,
+		}));
+		this.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(slashCommands, this.autocompleteBasePath()),
+		);
+	}
+
+	private autocompleteBasePath(): string {
+		const cwd = this.state.footer.cwd?.trim();
+		if (!cwd || cwd.startsWith("~")) {
+			return process.cwd();
+		}
+		return cwd;
+	}
+
 	private localCommandIds(): Set<string> {
 		return new Set([
 			"settings",
@@ -1283,7 +1322,7 @@ export class MycliShellRuntime {
 	}
 
 	private isBackendCommand(commandId: string): boolean {
-		return BACKEND_COMMANDS.some((command) => command.id === commandId);
+		return BACKEND_COMMANDS.some((command) => command.id === commandId || command.label === `/${commandId}`);
 	}
 
 	private async submitCommand(command: string): Promise<void> {
@@ -1432,17 +1471,23 @@ export class MycliShellRuntime {
 	private async submitApiKeyLogin(providerId: string, apiKey: string, done: () => void): Promise<void> {
 		try {
 			const result = await this.options.onApiKeyLogin?.(providerId, apiKey);
-			done();
 			const message = result && "message" in result && result.message
 				? result.message
 				: `Saved API key for ${this.authProviderName(providerId)}.`;
 			this.addSystemNotice(message);
-			this.setState({
+			const nextState = {
 				...this.state,
 				authProviders: this.authProviders().map((provider) =>
 					provider.id === providerId ? { ...provider, configured: true } : provider,
 				),
-			});
+			};
+			this.setState(nextState);
+			const providerModels = this.modelsForProvider(providerId);
+			if (providerModels.length > 0) {
+				this.showModelSelector(providerId);
+			} else {
+				done();
+			}
 		} catch (error) {
 			this.addSystemNotice(`Failed to save API key: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -1450,6 +1495,10 @@ export class MycliShellRuntime {
 
 	private authProviderName(providerId: string): string {
 		return this.authProviders().find((provider) => provider.id === providerId)?.name ?? providerId;
+	}
+
+	private modelsForProvider(providerId: string): MycliShellModel[] {
+		return (this.state.models ?? []).filter((model) => model.provider === providerId);
 	}
 
 	private async selectModel(model: MycliShellModel): Promise<void> {

@@ -14,7 +14,7 @@ test("recorded duplicate gateway mirrors replay as one assistant answer", () => 
 	assert.equal(assistantMessages.length, 1);
 	assert.equal(assistantMessages[0]?.text, "我是 mycli，你的本地编程助手。已经在待命了，有具体任务直接说。");
 	assert.equal(occurrences(output, "我是 mycli，你的本地编程助手。已经在待命了，有具体任务直接说。"), 1);
-	assert.equal(occurrences(output, "Thinking..."), 1);
+	assert.equal(occurrences(output, "Thinking..."), 0);
 });
 
 function stripAnsi(text: string): string {

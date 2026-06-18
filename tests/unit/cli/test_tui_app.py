@@ -92,7 +92,7 @@ def test_tui_slash_completion_filters_and_tab_accepts(tmp_path: Path) -> None:
             assert "/status" in app.suggestion_text
             await pilot.press("down")
             await pilot.press("tab")
-            assert app.query_one("#prompt-input").value == "/stats"
+            assert app.query_one("#prompt-input").value == "/status usage"
 
     asyncio.run(run())
 
@@ -125,8 +125,8 @@ def test_tui_slash_completion_window_tracks_selected_item(tmp_path: Path) -> Non
             for _ in range(9):
                 await pilot.press("down")
 
-            assert app.completion.selected == "/sessions"
-            assert "› /sessions" in app.suggestion_text
+            assert app.completion.selected == "/session"
+            assert "› /session" in app.suggestion_text
 
     asyncio.run(run())
 

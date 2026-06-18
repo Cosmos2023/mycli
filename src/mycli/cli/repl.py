@@ -12,40 +12,21 @@ def handle_slash_command(command: str) -> str:
         return "\n".join(
             [
                 "/help",
-                "/skill",
                 "/skills",
                 "/memory [list|path|search|add|forget]",
                 "/plan",
                 "/mode [default|plan]",
-                "/subagents",
-                "/trace",
-                "/trace-jsonl",
-                "/logs",
-                "/tools",
-                "/permissions",
-                "/hooks",
-                "/plugin",
-                "/toolsets",
-                "/bashes",
-                "/changes",
-                "/undo",
+                "/status [usage|context|stats]",
+                "/session [show|list|resume|fork|search|maintenance]",
+                "/tools [list|sets|permissions|hooks|extensions|plugins|skills]",
+                "/jobs [subagents|bashes]",
+                "/changes [undo]",
+                "/trace [export|logs]",
                 "/extensions",
-                "/resume <session>",
-                "/fork [source] <new-session> [message-index]",
-                "/status",
                 "/model <model> [--thinking-effort low|medium|high|xhigh]",
                 "/view [default|verbose|focus]",
-                "/stats",
-                "/context",
-                "/usage",
-                "/session",
-                "/sessions",
-                "/session-maintenance",
-                "/session-maintenance --apply-empty",
-                "/session-maintenance --apply-orphans",
-                "/session-maintenance --apply-vacuum",
-                "/search <query>",
                 "/quit",
+                "Aliases: /skill, /usage, /context, /stats, /sessions, /resume, /fork, /search, /session-maintenance, /permissions, /hooks, /toolsets, /bashes, /subagents, /trace-jsonl, /logs, /undo",
             ]
         )
     if command == "/quit":
@@ -57,17 +38,18 @@ def build_command_handler(
     service: TurnService,
 ) -> Callable[[str], Iterable[str]]:
     def handle(command: str) -> Iterable[str]:
-        if command in {"/skill", "/skills"}:
+        command = canonical_slash_command(command)
+        if command == "/skills":
             return [f"[skill] {line}" for line in service.inspect_skills()]
-        if command == "/tools":
+        if command in {"/tools", "/tools list"}:
             return [f"[tool] {line}" for line in service.inspect_tools()]
-        if command == "/permissions":
+        if command == "/tools permissions":
             return [f"[permission] {line}" for line in service.inspect_permissions()]
-        if command == "/hooks":
+        if command == "/tools hooks":
             return [f"[hook] {line}" for line in service.inspect_hooks()]
-        if command == "/toolsets":
+        if command == "/tools sets":
             return [f"[toolset] {line}" for line in service.inspect_toolsets()]
-        if command == "/bashes":
+        if command in {"/jobs", "/jobs bashes"}:
             return [f"[bash] {line}" for line in service.inspect_bashes()]
         if command == "/changes":
             return [f"[change] {line}" for line in service.inspect_file_changes()]
@@ -83,18 +65,21 @@ def build_command_handler(
             return [f"[memory] {line}" for line in service.forget_memory(query)]
         if command.startswith("/memory add "):
             return [f"[memory] {line}" for line in _handle_memory_add(service, command)]
-        if command == "/extensions":
+        if command == "/tools extensions":
             return [f"[extension] {line}" for line in service.inspect_extensions()]
-        if command == "/plugin":
+        if command == "/tools skills":
+            return [f"[skill] {line}" for line in service.inspect_skills()]
+        if command == "/tools plugins":
             return [f"[plugin] {line}" for line in service.inspect_plugin_commands()]
-        if command.startswith("/plugin "):
-            parts = command.split(maxsplit=3)
-            if len(parts) < 3:
-                return ["[plugin] usage: /plugin <plugin_id> <command_name> [json-args]"]
-            raw_args = parts[3] if len(parts) > 3 else ""
+        if command.startswith("/tools plugins "):
+            payload = command.removeprefix("/tools plugins ").strip()
+            plugin_parts = payload.split(maxsplit=2)
+            if len(plugin_parts) < 2:
+                return ["[plugin] usage: /tools plugins <plugin_id> <command_name> [json-args]"]
+            json_args = plugin_parts[2] if len(plugin_parts) > 2 else ""
             return [
                 f"[plugin] {line}"
-                for line in service.run_plugin_command(parts[1], parts[2], raw_args)
+                for line in service.run_plugin_command(plugin_parts[0], plugin_parts[1], json_args)
             ]
         if command == "/plan":
             mode_lines = service.set_collaboration_mode("plan")
@@ -108,37 +93,41 @@ def build_command_handler(
             if len(parts) == 1:
                 return [f"[mode] {line}" for line in service.inspect_mode()]
             return [f"[mode] {line}" for line in service.set_collaboration_mode(parts[1])]
-        if command.startswith("/subagents"):
-            parts = command.split(maxsplit=1)
-            child_session_id = parts[1] if len(parts) > 1 else None
+        if command.startswith("/jobs subagents"):
+            child_session_id = command.removeprefix("/jobs subagents").strip() or None
             return [f"[subagent] {line}" for line in service.inspect_subagents(child_session_id)]
-        if command == "/session":
+        if command in {"/session", "/session show"}:
             return [f"[session] {line}" for line in service.inspect_session()]
-        if command == "/sessions":
+        if command == "/session list":
             return [f"[session] {line}" for line in service.inspect_sessions()]
-        if command == "/session-maintenance":
+        if command == "/session maintenance":
             return [f"[session] {line}" for line in service.inspect_session_maintenance()]
-        if command == "/session-maintenance --apply-empty":
+        if command == "/session maintenance --apply-empty":
             return [
                 f"[session] {line}"
                 for line in service.apply_session_maintenance_empty_cleanup()
             ]
-        if command == "/session-maintenance --apply-orphans":
+        if command == "/session maintenance --apply-orphans":
             return [
                 f"[session] {line}"
                 for line in service.apply_session_maintenance_orphan_cleanup()
             ]
-        if command == "/session-maintenance --apply-vacuum":
+        if command == "/session maintenance --apply-vacuum":
             return [
                 f"[session] {line}"
                 for line in service.apply_session_maintenance_vacuum()
             ]
-        if command.startswith("/search"):
-            parts = command.split(maxsplit=1)
-            query = parts[1] if len(parts) > 1 else ""
+        if command.startswith("/session search"):
+            query = command.removeprefix("/session search").strip()
             return [f"[search] {line}" for line in service.search_sessions(query)]
         if command == "/status":
             return [f"[status] {line}" for line in service.inspect_status()]
+        if command == "/status stats":
+            return [f"[stats] {line}" for line in service.inspect_stats()]
+        if command == "/status context":
+            return [f"[context] {line}" for line in service.inspect_context()]
+        if command == "/status usage":
+            return [f"[usage] {line}" for line in service.inspect_usage()]
         if command == "/model" or command.startswith("/model "):
             try:
                 model, thinking_effort = _parse_model_command(command)
@@ -156,46 +145,79 @@ def build_command_handler(
             if len(parts) == 1:
                 return [f"[view] {line}" for line in service.inspect_view()]
             return [f"[view] {line}" for line in service.set_view_mode(parts[1])]
-        if command == "/stats":
-            return [f"[stats] {line}" for line in service.inspect_stats()]
-        if command == "/context":
-            return [f"[context] {line}" for line in service.inspect_context()]
-        if command == "/usage":
-            return [f"[usage] {line}" for line in service.inspect_usage()]
-        if command.startswith("/resume"):
-            parts = command.split()
-            session_id = parts[1] if len(parts) > 1 else None
+        if command.startswith("/session resume"):
+            session_id = command.removeprefix("/session resume").strip() or None
             return [f"[session] {line}" for line in service.resume_session(session_id)]
-        if command.startswith("/fork"):
+        if command.startswith("/session fork"):
             parts = command.split()
             source_session_id: str | None = None
             new_session_id: str | None = None
             fork_point: int | None = None
-            if len(parts) == 2:
-                new_session_id = parts[1]
-            elif len(parts) >= 3:
-                source_session_id = parts[1]
-                new_session_id = parts[2]
-                if len(parts) >= 4:
+            fork_args = parts[2:]
+            if len(fork_args) == 1:
+                new_session_id = fork_args[0]
+            elif len(fork_args) >= 2:
+                source_session_id = fork_args[0]
+                new_session_id = fork_args[1]
+                if len(fork_args) >= 3:
                     try:
-                        fork_point = int(parts[3])
+                        fork_point = int(fork_args[2])
                     except ValueError:
-                        return [f"[session] invalid fork point: {parts[3]}"]
+                        return [f"[session] invalid fork point: {fork_args[2]}"]
             return [
                 f"[session] {line}"
                 for line in service.fork_session(source_session_id, new_session_id, fork_point)
             ]
         if command == "/trace":
             return [f"[trace] {line}" for line in service.inspect_trace()]
-        if command == "/trace-jsonl":
+        if command == "/trace export":
             return [f"[trace-jsonl] {line}" for line in service.export_trace_jsonl() if line]
-        if command == "/logs":
+        if command == "/trace logs":
             return [f"[log] {line}" for line in service.inspect_logs()]
-        if command == "/undo":
+        if command == "/changes undo":
             return [f"[undo] {service.undo_last_file_change()}"]
         return [f"Unknown command: {command}"]
 
     return handle
+
+
+def canonical_slash_command(command: str) -> str:
+    normalized = command.strip()
+    exact_aliases = {
+        "/skill": "/skills",
+        "/usage": "/status usage",
+        "/context": "/status context",
+        "/stats": "/status stats",
+        "/sessions": "/session list",
+        "/session-maintenance": "/session maintenance",
+        "/session-maintenance --apply-empty": "/session maintenance --apply-empty",
+        "/session-maintenance --apply-orphans": "/session maintenance --apply-orphans",
+        "/session-maintenance --apply-vacuum": "/session maintenance --apply-vacuum",
+        "/permissions": "/tools permissions",
+        "/hooks": "/tools hooks",
+        "/toolsets": "/tools sets",
+        "/extensions": "/tools extensions",
+        "/plugin": "/tools plugins",
+        "/bashes": "/jobs bashes",
+        "/subagents": "/jobs subagents",
+        "/trace-jsonl": "/trace export",
+        "/logs": "/trace logs",
+        "/undo": "/changes undo",
+    }
+    if normalized in exact_aliases:
+        return exact_aliases[normalized]
+    prefix_aliases = (
+        ("/resume ", "/session resume "),
+        ("/fork ", "/session fork "),
+        ("/search ", "/session search "),
+        ("/session-maintenance ", "/session maintenance "),
+        ("/plugin ", "/tools plugins "),
+        ("/subagents ", "/jobs subagents "),
+    )
+    for old_prefix, new_prefix in prefix_aliases:
+        if normalized.startswith(old_prefix):
+            return new_prefix + normalized.removeprefix(old_prefix)
+    return normalized
 
 
 def _handle_memory_add(service: TurnService, command: str) -> Iterable[str]:

@@ -285,10 +285,10 @@ class MycliTuiApp(App[int]):
         if value == "/help":
             self._show_overlay(overlay_text(title="Help", lines=self.service_help_lines()))
             return
-        if value == "/context":
+        if value in {"/context", "/status context"}:
             self._show_overlay(overlay_text(title="Context", lines=self.service.inspect_context()))
             return
-        if value == "/usage":
+        if value in {"/usage", "/status usage"}:
             self._show_overlay(overlay_text(title="Usage", lines=self.service.inspect_usage()))
             return
         if value == "/status":
@@ -301,28 +301,28 @@ class MycliTuiApp(App[int]):
         return (
             "/help",
             "/status",
-            "/context",
-            "/usage",
+            "/status context",
+            "/status usage",
+            "/status stats",
             "/view",
             "/view default",
             "/view verbose",
             "/view focus",
-            "/resume <session>",
-            "/sessions",
+            "/session list",
+            "/session resume <session>",
             "/tools",
-            "/hooks",
-            "/plugin",
-            "/bashes",
+            "/tools hooks",
+            "/tools plugins",
+            "/jobs bashes",
             "/changes",
-            "/undo",
+            "/changes undo",
             "/plan",
-            "/subagents",
-            "/subagents <child_session_id>",
+            "/jobs subagents",
+            "/jobs subagents <child_session_id>",
             "/memory",
             "/trace",
-            "/logs",
-            "/fork [source] <new-session> [message-index]",
-            "/stats",
+            "/trace logs",
+            "/session fork [source] <new-session> [message-index]",
             "/clear",
             "/theme",
             "/mark <name>",

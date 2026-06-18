@@ -147,8 +147,12 @@ class FakeService(TurnService):
         del message, stream_sink
         return TurnResponse(assistant_message="")
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse:
-        del choice
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del choice, stream_sink
         return TurnResponse(assistant_message="")
 
     def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
@@ -595,29 +599,29 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
     assert response.result is not None
     values = [item["value"] for item in response.result["items"]]
     assert "/status" in values
-    assert "/stats" in values
+    assert "/status stats" in values
 
     maintenance_response = gateway.handle_request(
-        RpcRequest(id="req_2", method="completion.slash", params={"prefix": "/session-m"})
+        RpcRequest(id="req_2", method="completion.slash", params={"prefix": "/session m"})
     )
 
     assert maintenance_response.result is not None
     maintenance_items = maintenance_response.result["items"]
     assert maintenance_items == [
         {
-            "value": "/session-maintenance",
+            "value": "/session maintenance",
             "description": "Show session storage maintenance dry-run",
         },
         {
-            "value": "/session-maintenance --apply-empty",
+            "value": "/session maintenance --apply-empty",
             "description": "Delete empty session maintenance candidates",
         },
         {
-            "value": "/session-maintenance --apply-orphans",
+            "value": "/session maintenance --apply-orphans",
             "description": "Delete orphan session child rows",
         },
         {
-            "value": "/session-maintenance --apply-vacuum",
+            "value": "/session maintenance --apply-vacuum",
             "description": "Run explicit SQLite vacuum for session storage",
         },
     ]
@@ -998,9 +1002,15 @@ class FakeTurnService(FakeService):
             plan_steps=("completed: smoke",),
         )
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse:
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
         self.resolved_choices.append(choice)
         self.fake_session_service.pending_decision = None
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="text_delta", text=f"resolved-stream-{choice}"))
         if choice == "2":
             return TurnResponse(
                 assistant_message="Rejected Bash. Pending decision cleared.",
@@ -1218,8 +1228,12 @@ class FailingTurnService(FakeService):
         del message, stream_sink
         raise RuntimeError("model unavailable")
 
-    def resolve_pending_decision(self, choice: str) -> TurnResponse:
-        del choice
+    def resolve_pending_decision(
+        self,
+        choice: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del choice, stream_sink
         raise RuntimeError("approval resolution failed")
 
 
@@ -1992,16 +2006,13 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["1"]
-    assert [method for method, _params in events if method != "runtime.event"] == [
-        "turn.started",
-        "status.update",
-        "approval.respond",
-        "turn.completed",
-        "turn.status",
-        "message.complete",
-        "status.update",
-        "status.changed",
-    ]
+    methods = [method for method, _params in events if method != "runtime.event"]
+    assert methods[:3] == ["turn.started", "status.update", "approval.respond"]
+    assert "message.delta" in methods
+    assert "turn.completed" in methods
+    assert "turn.status" in methods
+    assert "status.changed" in methods
+    assert methods.index("approval.respond") < methods.index("message.delta")
     final_complete = next(params for method, params in events if method == "message.complete")
     assert final_complete == {
         "client_turn_id": "approval_req_1",
@@ -2072,6 +2083,178 @@ def test_gateway_approval_respond_accepts_stable_decision_id(tmp_path: Path) -> 
         "client_turn_id": "approval_req_1",
     }
     assert service.resolved_choices == ["1"]
+
+
+def test_gateway_approval_resume_emits_followup_approval_request(
+    tmp_path: Path,
+) -> None:
+    class FollowupApprovalService(FakeTurnService):
+        def resolve_pending_decision(
+            self,
+            choice: str,
+            stream_sink: StreamSink | None = None,
+        ) -> TurnResponse:
+            del stream_sink
+            self.resolved_choices.append(choice)
+            next_decision = PendingDecision(
+                tool_call=ToolCall(
+                    name="Bash",
+                    arguments={"command": "git status"},
+                    reason="inspect status",
+                    call_id="call_status_2",
+                ),
+                kind=DecisionKind.NEEDS_CHOICE,
+                reason="Shell command requires confirmation.",
+                preview="git status",
+                options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+            )
+            self.fake_session_service.pending_decision = next_decision
+            return TurnResponse(assistant_message="", pending_decision=next_decision)
+
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FollowupApprovalService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Bash",
+            arguments={"command": "lsof -i -P -n"},
+            reason="inspect ports",
+            call_id="call_lsof_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="Shell command requires confirmation.",
+        preview="lsof -i -P -n",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(service=service, emit=lambda method, params: events.append((method, params)))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="approval.respond",
+            params={"decision_id": "call_lsof_1", "choice": "approve_once"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "decision_id": "call_lsof_1",
+        "client_turn_id": "approval_req_1",
+    }
+    approval_requests = [
+        params for method, params in events if method == "approval.request"
+    ]
+    assert approval_requests == [
+        {
+            "client_turn_id": "approval_req_1",
+            "decision_id": "call_status_2",
+            "preview": "git status",
+            "reason": "Shell command requires confirmation.",
+            "tool_name": "Bash",
+            "options": [
+                {"choice": "approve_once", "label": "Allow once"},
+                {"choice": "reject", "label": "Reject"},
+            ],
+            "action": "Bash",
+            "cwd": str(Path.cwd()),
+            "risk": "needs_choice",
+            "risk_reason": "Shell command requires confirmation.",
+        }
+    ]
+
+
+def test_gateway_approval_resume_forwards_stream_events(tmp_path: Path) -> None:
+    class ToolLifecycleApprovalService(FakeTurnService):
+        def resolve_pending_decision(
+            self,
+            choice: str,
+            stream_sink: StreamSink | None = None,
+        ) -> TurnResponse:
+            self.resolved_choices.append(choice)
+            self.fake_session_service.pending_decision = None
+            if stream_sink is not None:
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_start",
+                        tool_name="Bash",
+                        metadata={
+                            "tool_id": "call_lsof_1",
+                            "call_id": "call_lsof_1",
+                            "name": "Bash",
+                            "context": "local",
+                        },
+                    )
+                )
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_complete",
+                        tool_name="Bash",
+                        metadata={
+                            "tool_id": "call_lsof_1",
+                            "call_id": "call_lsof_1",
+                            "name": "Bash",
+                            "duration_s": 0.01,
+                            "summary": "Command exited with 0",
+                            "summary_chars": 21,
+                            "summary_truncated": False,
+                            "success": True,
+                        },
+                    )
+                )
+                stream_sink(RuntimeStreamEvent(kind="text_delta", text=f"resolved-stream-{choice}"))
+            return TurnResponse(assistant_message=f"resolved {choice}")
+
+    events: list[tuple[str, dict[str, object]]] = []
+    service = ToolLifecycleApprovalService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Bash",
+            arguments={"command": "lsof -i -P -n"},
+            reason="inspect ports",
+            call_id="call_lsof_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="Shell command requires confirmation.",
+        preview="lsof -i -P -n",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(service=service, emit=lambda method, params: events.append((method, params)))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="approval.respond",
+            params={"decision_id": "call_lsof_1", "choice": "approve_once"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {
+        "accepted": True,
+        "decision_id": "call_lsof_1",
+        "client_turn_id": "approval_req_1",
+    }
+    assert ("approval.respond", {
+        "client_turn_id": "approval_req_1",
+        "decision_id": "call_lsof_1",
+        "choice": "approve_once",
+    }) in events
+    assert any(
+        method == "message.delta" and params.get("text") == "resolved-stream-1"
+        for method, params in events
+    )
+    assert any(
+        method == "tool.start"
+        and params.get("client_turn_id") == "approval_req_1"
+        and params.get("tool_id") == "call_lsof_1"
+        for method, params in events
+    )
+    assert any(
+        method == "tool.complete"
+        and params.get("client_turn_id") == "approval_req_1"
+        and params.get("tool_id") == "call_lsof_1"
+        for method, params in events
+    )
 
 
 def test_gateway_approval_respond_rejects_stale_decision_id(tmp_path: Path) -> None:

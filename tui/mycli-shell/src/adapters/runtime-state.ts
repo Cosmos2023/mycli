@@ -245,6 +245,8 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			turnRunning: true,
 			activeAssistantItemId: nextId("assistant"),
 			liveStatus: { state: "running", kind: "running", text: "Running" },
+			pendingApproval: null,
+			pendingClarification: null,
 		};
 	}
 	if (method === "message.delta") {
