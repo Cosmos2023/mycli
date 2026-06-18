@@ -571,6 +571,12 @@ npm test
 ./node_modules/.bin/tsc --noEmit --noUnusedLocals --noUnusedParameters
 ```
 
+## 致谢
+
+`mycli` 的设计和实现参考了多个优秀 agent 项目、产品和实验思路。特别感谢 hermes-agent、pi-agent、Codex、Claude Code 等项目带来的启发，包括 Responses/工具调用运行时、append-only 上下文组织、subagent/background task、hook 生命周期、终端交互体验、登录配置流程和 session/memory 管理等方向。
+
+这些致谢只表示工程和产品思路上的学习与借鉴，不表示上述项目或其维护者对 `mycli` 的背书或关联。
+
 ## 已知限制
 
 - OpenAI 主路径默认使用 `POST /responses`；不支持 Responses API 的 provider 需要配置 `protocol = "chat_completions"`。
