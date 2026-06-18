@@ -14,6 +14,7 @@ from mycli.infrastructure.providers.deepseek import (
     DeepSeekChatProviderAdapter,
 )
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
+from mycli.infrastructure.providers.openai import CODEX_PROFILE
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
 from mycli.infrastructure.providers.openai import OPENAI_PROFILE
 from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
@@ -37,11 +38,14 @@ def test_chat_adapter_for_provider_routes_named_providers() -> None:
 
 def test_profile_for_provider_uses_provider_module_profiles() -> None:
     assert profile_for_provider(ProviderId.OPENAI) is OPENAI_PROFILE
+    assert profile_for_provider(ProviderId.CODEX) is CODEX_PROFILE
     assert profile_for_provider(ProviderId.QWEN) is QWEN_PROFILE
     assert profile_for_provider(ProviderId.DEEPSEEK) is DEEPSEEK_PROFILE
     assert profile_for_provider(ProviderId.ANTHROPIC) is ANTHROPIC_PROFILE
 
     assert OPENAI_PROFILE.default_protocol is ProtocolId.RESPONSES
+    assert CODEX_PROFILE.default_protocol is ProtocolId.RESPONSES
+    assert CODEX_PROFILE.supports_chat_completions is False
     assert QWEN_PROFILE.default_base_url == (
         "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
@@ -55,6 +59,12 @@ def test_provider_profiles_declare_safe_cache_policy_capabilities() -> None:
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,
         provider_family="openai",
+        cache_strategy="prompt_cache_key",
+    )
+    assert CODEX_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+        provider_family="codex",
         cache_strategy="prompt_cache_key",
     )
     assert QWEN_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
@@ -145,6 +155,19 @@ def test_provider_quirk_profile_resolves_openai_responses() -> None:
     assert profile.protocol is ProtocolId.RESPONSES
     assert profile.prompt_cache_key_supported is True
     assert profile.cache_control_supported is False
+    assert profile.usage_cached_token_shape == "input_tokens_details.cached_tokens"
+
+
+def test_provider_quirk_profile_resolves_codex_responses() -> None:
+    profile = resolve_provider_quirk_profile(
+        provider=ProviderId.CODEX,
+        protocol=ProtocolId.RESPONSES,
+        base_url="https://codex-gateway.example.invalid/v1",
+    )
+
+    assert profile.provider_family == "codex"
+    assert profile.protocol is ProtocolId.RESPONSES
+    assert profile.prompt_cache_key_supported is True
     assert profile.usage_cached_token_shape == "input_tokens_details.cached_tokens"
 
 

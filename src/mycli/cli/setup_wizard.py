@@ -7,6 +7,7 @@ from pathlib import Path
 import tomllib
 
 from mycli.config.auth_store import AuthStore
+from mycli.config.settings import default_user_config_path
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
 
@@ -26,6 +27,7 @@ class SetupResult:
 
 _PROVIDER_CHOICES: tuple[ProviderId, ...] = (
     ProviderId.OPENAI,
+    ProviderId.CODEX,
     ProviderId.DEEPSEEK,
     ProviderId.QWEN,
     ProviderId.ANTHROPIC,
@@ -34,6 +36,7 @@ _PROVIDER_CHOICES: tuple[ProviderId, ...] = (
 
 _PROVIDER_DISPLAY_NAMES: dict[ProviderId, str] = {
     ProviderId.OPENAI: "OpenAI",
+    ProviderId.CODEX: "Codex Responses",
     ProviderId.DEEPSEEK: "DeepSeek",
     ProviderId.QWEN: "Qwen",
     ProviderId.ANTHROPIC: "Anthropic",
@@ -41,10 +44,6 @@ _PROVIDER_DISPLAY_NAMES: dict[ProviderId, str] = {
 }
 
 _BORDER = "────────────────────────────────────────"
-
-
-def default_user_config_path(home_dir: Path) -> Path:
-    return home_dir / ".config" / "mycli" / "config.toml"
 
 
 def run_setup_wizard(

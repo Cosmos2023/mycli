@@ -86,6 +86,52 @@ def test_responses_request_builder_adds_prompt_cache_key_to_request_body() -> No
     assert "prompt_cache_key" not in result.payload_body["input"][0]
 
 
+def test_responses_request_builder_adds_parallel_tool_calls_when_supported() -> None:
+    builder = ResponsesRequestBuilder(
+        capability_profile=ResponsesCapabilityProfile(supports_parallel_tool_calls=True)
+    )
+
+    result = builder.build(
+        model="gpt-test",
+        input_items=[
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "inspect"}],
+            },
+        ],
+        tools=[],
+        max_output_tokens=128,
+        reasoning_effort="medium",
+        stream=True,
+        parallel_tool_calls=True,
+    )
+
+    assert result.payload_body["parallel_tool_calls"] is True
+    assert '"parallel_tool_calls":true' in result.request_signature
+
+
+def test_responses_request_builder_omits_parallel_tool_calls_when_unsupported() -> None:
+    builder = ResponsesRequestBuilder(capability_profile=ResponsesCapabilityProfile())
+
+    result = builder.build(
+        model="gpt-test",
+        input_items=[
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "inspect"}],
+            },
+        ],
+        tools=[],
+        max_output_tokens=128,
+        reasoning_effort="medium",
+        stream=True,
+        parallel_tool_calls=True,
+    )
+
+    assert "parallel_tool_calls" not in result.payload_body
+    assert "parallel_tool_calls" not in result.request_signature
+
+
 def test_responses_request_builder_falls_back_to_full_create_when_signature_changes() -> None:
     builder = ResponsesRequestBuilder(
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True)

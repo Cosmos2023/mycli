@@ -9,6 +9,7 @@ from mycli.infrastructure.providers.chat import (
 from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
+from mycli.infrastructure.providers.openai import CODEX_PROFILE
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
 from mycli.infrastructure.providers.openai import OPENAI_PROFILE
 from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
@@ -36,6 +37,7 @@ __all__ = [
     "ANTHROPIC_PROFILE",
     "ChatProviderAdapter",
     "ChatProviderSettings",
+    "CODEX_PROFILE",
     "DEEPSEEK_PROFILE",
     "DeepSeekChatProviderAdapter",
     "DefaultChatProviderAdapter",

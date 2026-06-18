@@ -10,6 +10,7 @@
 - approval 使用选择器，不再只是把确认文本打在 transcript 里。
 - subagent 默认后台运行，完成后通过 `<task-notification>` 回到主对话。
 - 支持 Claude-style file memory，可按 workspace 保存长期记忆。
+- 支持 Codex-compatible command hooks，可在 tool、prompt、session 和 stop 生命周期中插入本地命令。
 
 ## 快速开始
 
@@ -43,11 +44,11 @@ cd ../..
 uv run mycli setup
 ```
 
-setup 采用和 pi-agent 类似的登录流程：先选择认证方式，再选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。模型配置默认写入用户级配置 `~/.config/mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显。
+setup 采用和 pi-agent 类似的登录流程：先选择认证方式，再选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。模型配置默认写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显。
 
 进入 TUI 后，也可以运行 `/login` 打开同样的认证方式选择、provider 选择和 `Login to <Provider>` API key 输入界面。
 
-也可以手动把项目配置写到当前 workspace 的 `.mycli/config.toml`：
+也可以手动把用户级模型配置写到 `~/.mycli/config.toml`：
 
 ```toml
 provider = "openai"
@@ -74,11 +75,12 @@ export MYCLI_BASE_URL="https://api.openai.com/v1"
 
 配置读取位置：
 
-- 用户级：`~/.config/mycli/config.toml`
-- 项目级：`<workspace>/.mycli/config.toml`
+- 用户级：`~/.mycli/config.toml`
+- 项目级覆盖：`<workspace>/.mycli/config.toml`
 - 用户凭证：`~/.mycli/auth.json`
+- 旧用户级 fallback：`~/.config/mycli/config.toml`
 
-项目级配置优先于用户级配置，命令行参数和环境变量优先级更高。API key 优先级是环境变量、项目/用户 config 中的旧式 `api_key`、再到 `~/.mycli/auth.json`；新配置推荐使用 setup 或环境变量，避免把密钥写进项目文件。
+读取优先级是命令行参数和环境变量最高，其次是 `~/.mycli/config.toml`，再到项目级 `.mycli/config.toml`，最后才读取旧的 `~/.config/mycli/config.toml`。API key 优先级是环境变量、`~/.mycli/auth.json`，然后才兼容读取 config 中旧式 `api_key`；新配置不要把密钥写进 `config.toml`。
 
 ### 启动
 
@@ -139,10 +141,18 @@ TUI 中的工具展示默认偏紧凑：
 | --- | --- |
 | `/help` | 查看命令列表 |
 | `/status` | 查看当前 session、模型、provider、context 状态 |
+| `/status usage` | 查看当前 session token/usage |
+| `/status context` | 查看 context window 诊断 |
+| `/status stats` | 查看 runtime 聚合统计 |
 | `/model <model> [--thinking-effort low\|medium\|high\|xhigh]` | 切换模型或 thinking effort |
 | `/view [default\|verbose\|focus]` | 切换 transcript 展示密度 |
 | `/tools` | 查看当前工具 |
-| `/permissions` | 查看 approval 和命令 allowance |
+| `/tools permissions` | 查看 approval 和命令 allowance |
+| `/tools sets` | 查看 toolset 状态 |
+| `/tools hooks` | 查看 hook 状态 |
+| `/tools extensions` | 查看 extension runtime |
+| `/tools plugins` | 查看或执行 plugin command |
+| `/tools skills` | 查看 skills |
 | `/plan` | 查看并进入 plan 协作模式 |
 | `/mode [default\|plan]` | 查看或切换协作模式 |
 | `/memory` | 查看 memory 摘要 |
@@ -150,14 +160,23 @@ TUI 中的工具展示默认偏紧凑：
 | `/memory search <query>` | 搜索 file memory |
 | `/memory add <type> <name> :: <content>` | 手动添加 file memory |
 | `/memory forget <filename-or-query>` | 删除匹配的 file memory |
-| `/subagents [child_session_id]` | 查看后台 subagent 或其 transcript |
+| `/jobs` | 查看后台 job |
+| `/jobs subagents [child_session_id]` | 查看后台 subagent 或其 transcript |
+| `/jobs bashes` | 查看后台 shell |
+| `/changes` | 查看文件变更 |
+| `/changes undo` | 撤销最近一次可恢复文件变更 |
 | `/trace` | 查看最近 runtime trace |
-| `/trace-jsonl` | 导出 trace JSONL |
-| `/logs` | 查看 workspace log |
-| `/sessions` | 列出当前 workspace 的 sessions |
-| `/resume <session>` | 恢复 session |
-| `/fork [source] <new-session> [message-index]` | 从 session fork |
+| `/trace export` | 导出 trace JSONL |
+| `/trace logs` | 查看 workspace log |
+| `/session` | 查看当前 session |
+| `/session list` | 列出当前 workspace 的 sessions |
+| `/session resume <session>` | 恢复 session |
+| `/session fork [source] <new-session> [message-index]` | 从 session fork |
+| `/session search <query>` | 搜索 saved sessions |
+| `/session maintenance [--apply-empty\|--apply-orphans\|--apply-vacuum]` | 检查或执行 session 存储维护 |
 | `/quit` | 退出 |
+
+旧入口仍兼容：`/usage`、`/context`、`/stats`、`/sessions`、`/resume`、`/fork`、`/search`、`/permissions`、`/hooks`、`/toolsets`、`/bashes`、`/subagents`、`/trace-jsonl`、`/logs`、`/undo` 会映射到上面的分组命令。
 
 ## 模型 Provider
 
@@ -166,6 +185,7 @@ TUI 中的工具展示默认偏紧凑：
 支持的 provider：
 
 - `openai`
+- `codex`
 - `qwen`
 - `deepseek`
 - `anthropic`
@@ -184,6 +204,18 @@ provider = "openai"
 protocol = "responses"
 model = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
+```
+
+### Codex-style Responses
+
+Use `codex` for OpenAI-compatible Responses gateways that support Codex/OpenAI
+Responses parameters such as `parallel_tool_calls`.
+
+```toml
+provider = "codex"
+protocol = "responses"
+model = "gpt-5.4"
+api_base_url = "https://your-codex-compatible-gateway.example/v1"
 ```
 
 ### Qwen
@@ -310,7 +342,12 @@ export MYCLI_MEMORY_ENABLED=false
 | Auth store | `~/.mycli/auth.json` |
 | File memory | `~/.mycli/projects/<workspace-key>/memory/` |
 | Workspace trace | `~/.mycli/traces/` |
+| User config | `~/.mycli/config.toml` |
 | Workspace config | `<workspace>/.mycli/config.toml` |
+| Hook config | `<workspace>/.mycli/hooks.json`、`~/.mycli/hooks.json` |
+| Hook allowlist | `~/.mycli/hook-allowlist.json` |
+| Plugins | `<workspace>/.mycli/plugins/`、`~/.mycli/plugins/` |
+| MCP config | `<workspace>/.mycli/mcp_servers.toml` |
 
 SQLite session store 会保存：
 
@@ -382,6 +419,114 @@ args = ["mcp-server-github"]
 env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 ```
 
+### Hooks
+
+`mycli` 支持一个 Codex-compatible command hook subset。主路径对齐 Codex 的五个事件：
+
+- `PreToolUse`
+- `PostToolUse`
+- `SessionStart`
+- `UserPromptSubmit`
+- `Stop`
+
+推荐使用 Codex grouped 配置，放在项目级 `<workspace>/.mycli/hooks.json` 或用户级 `~/.mycli/hooks.json`：
+
+```json
+{
+  "PostToolUse": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 .mycli/hooks/post_tool_reminder.py",
+          "timeoutSec": 2
+        }
+      ]
+    }
+  ]
+}
+```
+
+hook command 从 stdin 读取 JSON，并向 stdout 写 JSON。`PostToolUse` 追加上下文示例：
+
+```python
+import json
+
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": (
+            "The previous tool call has completed. Use its result above; "
+            "do not repeat the same tool call unless the result is missing, "
+            "stale, or insufficient for the current task."
+        )
+    }
+}))
+```
+
+阻断示例：
+
+```python
+import json
+import sys
+
+payload = json.load(sys.stdin)
+prompt = payload.get("prompt", "")
+
+if "rm -rf" in prompt:
+    print(json.dumps({
+        "decision": "block",
+        "reason": "Prompt contains a high-risk delete command."
+    }))
+else:
+    print("{}")
+```
+
+也可以用 exit code `2` 阻断，并把原因写到 stderr。
+
+matcher 规则：
+
+- `PreToolUse` / `PostToolUse` matcher 匹配 tool name。
+- `SessionStart` matcher 匹配 source，例如 `startup`。
+- `UserPromptSubmit` / `Stop` 忽略 matcher。
+- 空 matcher 或 `*` 匹配全部；其他字符串按正则匹配。
+
+配置文件 hook 是本地命令，默认需要 allowlist。先查看 identity：
+
+```bash
+uv run mycli hooks list
+```
+
+然后批准：
+
+```bash
+uv run mycli hooks approve repo:PostToolUse-0-0:post_tool_use
+```
+
+如果使用 mycli 旧 flat 格式，可以指定稳定 id：
+
+```json
+{
+  "hooks": [
+    {
+      "id": "post-tool-reminder",
+      "hook_point": "post_tool_use",
+      "command": ["python3", ".mycli/hooks/post_tool_reminder.py"],
+      "timeout_seconds": 2
+    }
+  ]
+}
+```
+
+对应 approve：
+
+```bash
+uv run mycli hooks approve repo:post-tool-reminder:post_tool_use
+```
+
+内置 `post_tool_context` 已默认注册，会在每次 tool 完成后生成防重复调用 reminder。这个 built-in hook 不走 allowlist；allowlist 只保护配置文件里的 command hook。
+
 ### Plugins
 
 插件和 hook 管理命令：
@@ -393,7 +538,19 @@ uv run mycli mcp list
 uv run mycli subagents list
 ```
 
-这些命令支持 `--json` 输出，方便脚本调用。
+这些命令支持 `--json` 输出，方便脚本调用。常用管理命令：
+
+```bash
+uv run mycli hooks inspect repo:post-tool-reminder:post_tool_use
+uv run mycli hooks approve repo:post-tool-reminder:post_tool_use
+uv run mycli hooks revoke repo:post-tool-reminder:post_tool_use
+
+uv run mycli plugins inspect <plugin_id>
+uv run mycli plugins run <plugin_id> <command_name> --json-args '{"key":"value"}'
+
+uv run mycli mcp inspect <server_id>
+uv run mycli subagents inspect <profile_id>
+```
 
 ## 开发命令
 

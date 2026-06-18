@@ -20,8 +20,24 @@ OPENAI_PROFILE = ProviderProfile(
 )
 
 
+CODEX_PROFILE = ProviderProfile(
+    provider=ProviderId.CODEX,
+    default_protocol=ProtocolId.RESPONSES,
+    supports_responses=True,
+    supports_chat_completions=False,
+    default_base_url="https://api.openai.com/v1",
+    default_model="gpt-5",
+    cache_policy_capability=ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+        provider_family="codex",
+        cache_strategy="prompt_cache_key",
+    ),
+)
+
+
 class OpenAIChatProviderAdapter(DefaultChatProviderAdapter):
     provider = ProviderId.OPENAI
 
 
-__all__ = ["OPENAI_PROFILE", "OpenAIChatProviderAdapter"]
+__all__ = ["CODEX_PROFILE", "OPENAI_PROFILE", "OpenAIChatProviderAdapter"]

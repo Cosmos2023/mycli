@@ -45,6 +45,7 @@ class OpenAIResponsesClient:
         self._sdk_client = _build_openai_sdk_client(api_key=api_key, base_url=base_url)
         self._thinking_enabled = True
         self._reasoning_effort: str | None = None
+        self._tool_choice: str | None = None
         self._capability_profile = capability_profile or ResponsesCapabilityProfile.for_base_url(
             base_url
         )
@@ -80,6 +81,9 @@ class OpenAIResponsesClient:
 
     def set_reasoning_effort(self, reasoning_effort: str | None) -> None:
         self._reasoning_effort = reasoning_effort
+
+    def set_tool_choice(self, tool_choice: str | None) -> None:
+        self._tool_choice = tool_choice
 
     def set_model(self, model: str) -> None:
         self._model = model
@@ -222,8 +226,10 @@ class OpenAIResponsesClient:
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
         prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
     ) -> dict[str, object]:
         normalized_tools = self._normalize_tool_definitions(tools or [])
+        effective_tool_choice = tool_choice if tool_choice is not None else self._tool_choice
         allow_continuation_retry = True
 
         while True:
@@ -237,7 +243,9 @@ class OpenAIResponsesClient:
                 thinking_enabled=self._thinking_enabled,
                 stream=False,
                 continuation_state=continuation_state,
+                parallel_tool_calls=True,
                 prompt_cache_key=prompt_cache_key,
+                tool_choice=effective_tool_choice,
             )
             payload_body = build_result.payload_body
             self._pending_request_signature = build_result.request_signature
@@ -343,11 +351,13 @@ class OpenAIResponsesClient:
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
         prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
     ) -> list[ModelEvent]:
         payload = self.create_response(
             input_items=input_items,
             tools=tools,
             prompt_cache_key=prompt_cache_key,
+            tool_choice=tool_choice,
         )
         events: list[ModelEvent] = []
         raw_output = payload.get("output", [])
@@ -370,6 +380,7 @@ class OpenAIResponsesClient:
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
         prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
     ) -> Iterator[dict[str, object]]:
         if self._stream_transport_disabled:
             yield from self._fallback_create_response_as_stream(
@@ -377,10 +388,12 @@ class OpenAIResponsesClient:
                 tools=tools,
                 reason="stream transport already disabled",
                 prompt_cache_key=prompt_cache_key,
+                tool_choice=tool_choice,
             )
             return
 
         normalized_tools = self._normalize_tool_definitions(tools or [])
+        effective_tool_choice = tool_choice if tool_choice is not None else self._tool_choice
         max_retries = max(0, self._capability_profile.stream_max_retries)
         attempt = 0
         allow_continuation_retry = True
@@ -396,7 +409,9 @@ class OpenAIResponsesClient:
                 thinking_enabled=self._thinking_enabled,
                 stream=True,
                 continuation_state=continuation_state,
+                parallel_tool_calls=True,
                 prompt_cache_key=prompt_cache_key,
+                tool_choice=effective_tool_choice,
             )
             payload_body = build_result.payload_body
             self._pending_request_signature = build_result.request_signature
@@ -522,6 +537,7 @@ class OpenAIResponsesClient:
                     tools=tools,
                     reason=error.failure_kind or "transport failure",
                     prompt_cache_key=prompt_cache_key,
+                    tool_choice=tool_choice,
                 )
                 return
 
@@ -544,6 +560,7 @@ class OpenAIResponsesClient:
         tools: list[dict[str, object]] | None,
         reason: str,
         prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
     ) -> Iterator[dict[str, object]]:
         self._logger.log_service_event(
             level=LogLevel.WARNING,
@@ -558,6 +575,7 @@ class OpenAIResponsesClient:
             input_items=input_items,
             tools=tools,
             prompt_cache_key=prompt_cache_key,
+            tool_choice=tool_choice,
         )
         yield from self._stream_helper.payload_to_synthetic_stream(payload)
 

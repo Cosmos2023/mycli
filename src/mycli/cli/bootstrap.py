@@ -17,6 +17,7 @@ from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.llms.clients.anthropic_messages import AnthropicMessagesClient
 from mycli.llms.clients.openai_chat import OpenAIChatClient
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
+from mycli.schemas.responses_protocol import ResponsesCapabilityProfile
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.services.filesystem import FileSystemRuntime
 from mycli.memory.memdir import ensure_memory_dir, memory_dir_for
@@ -103,6 +104,10 @@ def build_turn_service(
             base_url=config.api_base_url,
             model=config.model,
             max_output_tokens=config.max_output_tokens,
+            capability_profile=ResponsesCapabilityProfile.for_provider(
+                provider=config.provider,
+                base_url=config.api_base_url,
+            ),
             log_service=workspace_log_service,
         )
         model_adapter = cast(
@@ -114,7 +119,10 @@ def build_turn_service(
         )
     memory_dir = memory_dir_for(home_dir, workspace_root)
     ensure_memory_dir(memory_dir)
-    allowed_roots = (memory_dir,)
+    task_output_dir = MycliStorageLayout.from_home_dir(home_dir).task_output_dir(
+        config.session_id
+    )
+    allowed_roots = (memory_dir, task_output_dir)
     filesystem_runtime = FileSystemRuntime(
         workspace_root=workspace_root,
         allowed_roots=allowed_roots,

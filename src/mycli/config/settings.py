@@ -24,6 +24,14 @@ from mycli.infrastructure.providers import (
 _SUPPORTED_REASONING_EFFORTS: tuple[str, ...] = tuple(item.value for item in ReasoningEffort)
 
 
+def default_user_config_path(home: Path) -> Path:
+    return home / ".mycli" / "config.toml"
+
+
+def default_legacy_user_config_path(home: Path) -> Path:
+    return home / ".config" / "mycli" / "config.toml"
+
+
 def _read_toml(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
@@ -55,30 +63,49 @@ def _parse_optional_bool(value: object) -> bool | None:
 def _config_value(
     *,
     env: Mapping[str, str],
-    project_config: Mapping[str, object],
     user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
     env_key: str,
     config_key: str,
 ) -> object | None:
     if env_key in env:
         return env[env_key]
+    if config_key in user_config:
+        return user_config[config_key]
     if config_key in project_config:
         return project_config[config_key]
-    return user_config.get(config_key)
+    return legacy_user_config.get(config_key)
+
+
+def _config_value_no_env(
+    *,
+    user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
+    config_key: str,
+) -> object | None:
+    if config_key in user_config:
+        return user_config[config_key]
+    if config_key in project_config:
+        return project_config[config_key]
+    return legacy_user_config.get(config_key)
 
 
 def _provider_cache_policy_override(
     *,
     provider: ProviderId,
     env: Mapping[str, str],
-    project_config: Mapping[str, object],
     user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
 ) -> ProviderCachePolicyCapability | None:
     prompt_cache_key_enabled = _parse_optional_bool(
         _config_value(
             env=env,
-            project_config=project_config,
             user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
             env_key="MYCLI_PROMPT_CACHE_KEY_ENABLED",
             config_key="prompt_cache_key_enabled",
         )
@@ -86,8 +113,9 @@ def _provider_cache_policy_override(
     cache_control_enabled = _parse_optional_bool(
         _config_value(
             env=env,
-            project_config=project_config,
             user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
             env_key="MYCLI_CACHE_CONTROL_ENABLED",
             config_key="cache_control_enabled",
         )
@@ -183,13 +211,15 @@ def resolve_config(
     cwd: Path,
     home: Path,
 ) -> AgentConfig:
-    user_config = _read_toml(home / ".config" / "mycli" / "config.toml")
+    user_config = _read_toml(default_user_config_path(home))
     project_config = _read_toml(cwd / ".mycli" / "config.toml")
+    legacy_user_config = _read_toml(default_legacy_user_config_path(home))
 
     configured_api_base_url = (
         env.get("MYCLI_BASE_URL")
-        or project_config.get("api_base_url")
         or user_config.get("api_base_url")
+        or project_config.get("api_base_url")
+        or legacy_user_config.get("api_base_url")
     )
     api_base_url_for_inference = (
         str(configured_api_base_url).rstrip("/")
@@ -198,8 +228,9 @@ def resolve_config(
     )
     raw_provider = (
         env.get("MYCLI_PROVIDER")
-        or project_config.get("provider")
         or user_config.get("provider")
+        or project_config.get("provider")
+        or legacy_user_config.get("provider")
     )
     provider = (
         parse_provider(raw_provider)
@@ -214,116 +245,134 @@ def resolve_config(
     )
     protocol = parse_protocol(
         env.get("MYCLI_PROTOCOL")
-        or project_config.get("protocol")
         or user_config.get("protocol")
+        or project_config.get("protocol")
+        or legacy_user_config.get("protocol")
         or profile.default_protocol.value
     )
     validate_provider_protocol(provider=provider, protocol=protocol)
     model = str(
         cli_args.get("model")
         or env.get("MYCLI_MODEL")
-        or project_config.get("model")
         or user_config.get("model")
+        or project_config.get("model")
+        or legacy_user_config.get("model")
         or profile.default_model
         or "gpt-5"
     )
     api_key_value = (
         env.get("MYCLI_API_KEY")
-        or project_config.get("api_key")
-        or user_config.get("api_key")
         or AuthStore.from_home(home).get_api_key(provider.value)
+        or user_config.get("api_key")
+        or project_config.get("api_key")
+        or legacy_user_config.get("api_key")
     )
     api_key = str(api_key_value) if api_key_value else None
     session_id = str(cli_args["session"]) if cli_args.get("session") else _new_session_id()
     max_prompt_tokens_value = (
         env.get("MYCLI_MAX_PROMPT_TOKENS")
-        or project_config.get("max_prompt_tokens")
         or user_config.get("max_prompt_tokens")
+        or project_config.get("max_prompt_tokens")
+        or legacy_user_config.get("max_prompt_tokens")
         or 12000
     )
     max_output_tokens_value = (
         env.get("MYCLI_MAX_OUTPUT_TOKENS")
-        or project_config.get("max_output_tokens")
         or user_config.get("max_output_tokens")
+        or project_config.get("max_output_tokens")
+        or legacy_user_config.get("max_output_tokens")
         or 2048
     )
     fallback_model_value = (
         env.get("MYCLI_FALLBACK_MODEL")
-        or project_config.get("fallback_model")
         or user_config.get("fallback_model")
+        or project_config.get("fallback_model")
+        or legacy_user_config.get("fallback_model")
     )
     transport_retry_limit_value = (
         env.get("MYCLI_TRANSPORT_RETRY_LIMIT")
-        or project_config.get("transport_retry_limit")
         or user_config.get("transport_retry_limit")
+        or project_config.get("transport_retry_limit")
+        or legacy_user_config.get("transport_retry_limit")
         or 2
     )
     output_limit_escalation_max_tokens_value = (
         env.get("MYCLI_OUTPUT_LIMIT_ESCALATION_MAX_TOKENS")
-        or project_config.get("output_limit_escalation_max_tokens")
         or user_config.get("output_limit_escalation_max_tokens")
+        or project_config.get("output_limit_escalation_max_tokens")
+        or legacy_user_config.get("output_limit_escalation_max_tokens")
         or 65_536
     )
     output_recovery_retry_limit_value = (
         env.get("MYCLI_OUTPUT_RECOVERY_RETRY_LIMIT")
-        or project_config.get("output_recovery_retry_limit")
         or user_config.get("output_recovery_retry_limit")
+        or project_config.get("output_recovery_retry_limit")
+        or legacy_user_config.get("output_recovery_retry_limit")
         or 3
     )
     heartbeat_enabled_raw: object | None = env.get("MYCLI_HEARTBEAT_ENABLED")
     if heartbeat_enabled_raw is None:
-        heartbeat_enabled_raw = (
-            project_config["heartbeat_enabled"]
-            if "heartbeat_enabled" in project_config
-            else user_config.get("heartbeat_enabled")
+        heartbeat_enabled_raw = _config_value_no_env(
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            config_key="heartbeat_enabled",
         )
     heartbeat_enabled_value = _parse_optional_bool(heartbeat_enabled_raw)
     heartbeat_interval_seconds_value = (
         env.get("MYCLI_HEARTBEAT_INTERVAL_SECONDS")
-        or project_config.get("heartbeat_interval_seconds")
         or user_config.get("heartbeat_interval_seconds")
+        or project_config.get("heartbeat_interval_seconds")
+        or legacy_user_config.get("heartbeat_interval_seconds")
         or 30.0
     )
     view_mode_value = (
         env.get("MYCLI_VIEW_MODE")
-        or project_config.get("view_mode")
         or user_config.get("view_mode")
+        or project_config.get("view_mode")
+        or legacy_user_config.get("view_mode")
         or ViewMode.DEFAULT.value
     )
     collaboration_mode_value = (
         env.get("MYCLI_COLLABORATION_MODE")
-        or project_config.get("collaboration_mode")
         or user_config.get("collaboration_mode")
+        or project_config.get("collaboration_mode")
+        or legacy_user_config.get("collaboration_mode")
         or CollaborationMode.DEFAULT.value
     )
     statusline_enabled_raw: object | None = env.get("MYCLI_STATUSLINE_ENABLED")
     if statusline_enabled_raw is None:
-        statusline_enabled_raw = (
-            project_config["statusline_enabled"]
-            if "statusline_enabled" in project_config
-            else user_config.get("statusline_enabled")
+        statusline_enabled_raw = _config_value_no_env(
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            config_key="statusline_enabled",
         )
     statusline_enabled_value = _parse_optional_bool(statusline_enabled_raw)
     tui_startup_mark_value = (
         env.get("MYCLI_TUI_STARTUP_MARK")
-        or project_config.get("tui_startup_mark")
         or user_config.get("tui_startup_mark")
+        or project_config.get("tui_startup_mark")
+        or legacy_user_config.get("tui_startup_mark")
         or "default"
     )
     legacy_reasoning_effort = (
         env.get("MYCLI_REASONING_EFFORT")
-        or project_config.get("reasoning_effort")
         or user_config.get("reasoning_effort")
+        or project_config.get("reasoning_effort")
+        or legacy_user_config.get("reasoning_effort")
     )
     thinking_enabled_value = _parse_optional_bool(
         env.get("MYCLI_THINKING_ENABLED")
-        or project_config.get("thinking_enabled")
         or user_config.get("thinking_enabled")
+        or project_config.get("thinking_enabled")
+        or legacy_user_config.get("thinking_enabled")
     )
     thinking_effort_value = (
         env.get("MYCLI_THINKING_EFFORT")
-        or project_config.get("thinking_effort")
         or user_config.get("thinking_effort")
+        or project_config.get("thinking_effort")
+        or legacy_user_config.get("thinking_effort")
     )
     reasoning_effort = _validate_reasoning_effort(
         str(thinking_effort_value or legacy_reasoning_effort or ReasoningEffort.MEDIUM.value)
@@ -334,109 +383,155 @@ def resolve_config(
     thinking_effort = reasoning_effort if thinking_enabled else None
     memory_enabled_raw: object | None = env.get("MYCLI_MEMORY_ENABLED")
     if memory_enabled_raw is None:
-        memory_enabled_raw = (
-            project_config["memory_enabled"]
-            if "memory_enabled" in project_config
-            else user_config.get("memory_enabled")
+        memory_enabled_raw = _config_value_no_env(
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            config_key="memory_enabled",
         )
     memory_enabled_value = _parse_optional_bool(memory_enabled_raw)
     compression_threshold_tokens_value = (
         env.get("MYCLI_COMPRESSION_THRESHOLD_TOKENS")
-        or project_config.get("compression_threshold_tokens")
         or user_config.get("compression_threshold_tokens")
+        or project_config.get("compression_threshold_tokens")
+        or legacy_user_config.get("compression_threshold_tokens")
         or 8000
     )
     compaction_l4_trigger_ratio_value = (
         env.get("MYCLI_COMPACTION_L4_TRIGGER_RATIO")
-        or project_config.get("compaction_l4_trigger_ratio")
         or user_config.get("compaction_l4_trigger_ratio")
+        or project_config.get("compaction_l4_trigger_ratio")
+        or legacy_user_config.get("compaction_l4_trigger_ratio")
         or 0.9
     )
     compaction_l4_buffer_tokens_value = (
         env.get("MYCLI_COMPACTION_L4_BUFFER_TOKENS")
-        or project_config.get("compaction_l4_buffer_tokens")
         or user_config.get("compaction_l4_buffer_tokens")
+        or project_config.get("compaction_l4_buffer_tokens")
+        or legacy_user_config.get("compaction_l4_buffer_tokens")
         or 13_000
     )
     compaction_l4_min_savings_ratio = _parse_optional_float(
         env.get("MYCLI_COMPACTION_L4_MIN_SAVINGS_RATIO")
-        or project_config.get("compaction_l4_min_savings_ratio")
         or user_config.get("compaction_l4_min_savings_ratio")
+        or project_config.get("compaction_l4_min_savings_ratio")
+        or legacy_user_config.get("compaction_l4_min_savings_ratio")
     )
     compaction_l4_input_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_COMPACTION_L4_INPUT_COST_PER_1K")
-        or project_config.get("compaction_l4_input_cost_per_1k")
-        or user_config.get("compaction_l4_input_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_COMPACTION_L4_INPUT_COST_PER_1K",
+            config_key="compaction_l4_input_cost_per_1k",
+        ),
         default=0.0,
     )
     compaction_l4_output_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_COMPACTION_L4_OUTPUT_COST_PER_1K")
-        or project_config.get("compaction_l4_output_cost_per_1k")
-        or user_config.get("compaction_l4_output_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_COMPACTION_L4_OUTPUT_COST_PER_1K",
+            config_key="compaction_l4_output_cost_per_1k",
+        ),
         default=0.0,
     )
     compaction_l4_carry_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_COMPACTION_L4_CARRY_COST_PER_1K")
-        or project_config.get("compaction_l4_carry_cost_per_1k")
-        or user_config.get("compaction_l4_carry_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_COMPACTION_L4_CARRY_COST_PER_1K",
+            config_key="compaction_l4_carry_cost_per_1k",
+        ),
         default=0.0,
     )
     compaction_l4_expected_summary_tokens_value = (
         env.get("MYCLI_COMPACTION_L4_EXPECTED_SUMMARY_TOKENS")
-        or project_config.get("compaction_l4_expected_summary_tokens")
         or user_config.get("compaction_l4_expected_summary_tokens")
+        or project_config.get("compaction_l4_expected_summary_tokens")
+        or legacy_user_config.get("compaction_l4_expected_summary_tokens")
         or 500
     )
     compaction_l4_carry_turns_value = (
         env.get("MYCLI_COMPACTION_L4_CARRY_TURNS")
-        or project_config.get("compaction_l4_carry_turns")
         or user_config.get("compaction_l4_carry_turns")
+        or project_config.get("compaction_l4_carry_turns")
+        or legacy_user_config.get("compaction_l4_carry_turns")
         or 1
     )
     compaction_l4_summarizer_model_value = (
         env.get("MYCLI_COMPACTION_L4_SUMMARIZER_MODEL")
-        or project_config.get("compaction_l4_summarizer_model")
         or user_config.get("compaction_l4_summarizer_model")
+        or project_config.get("compaction_l4_summarizer_model")
+        or legacy_user_config.get("compaction_l4_summarizer_model")
     )
     compaction_trigger_ratios_by_model = _parse_float_map(
-        project_config.get("compaction_l4_trigger_ratios_by_model")
-        or user_config.get("compaction_l4_trigger_ratios_by_model")
+        user_config.get("compaction_l4_trigger_ratios_by_model")
+        or project_config.get("compaction_l4_trigger_ratios_by_model")
+        or legacy_user_config.get("compaction_l4_trigger_ratios_by_model")
     )
     usage_input_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_USAGE_INPUT_COST_PER_1K")
-        or project_config.get("usage_input_cost_per_1k")
-        or user_config.get("usage_input_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_USAGE_INPUT_COST_PER_1K",
+            config_key="usage_input_cost_per_1k",
+        ),
         default=0.0,
     )
     usage_output_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_USAGE_OUTPUT_COST_PER_1K")
-        or project_config.get("usage_output_cost_per_1k")
-        or user_config.get("usage_output_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_USAGE_OUTPUT_COST_PER_1K",
+            config_key="usage_output_cost_per_1k",
+        ),
         default=0.0,
     )
     usage_cache_read_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_USAGE_CACHE_READ_COST_PER_1K")
-        or project_config.get("usage_cache_read_cost_per_1k")
-        or user_config.get("usage_cache_read_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_USAGE_CACHE_READ_COST_PER_1K",
+            config_key="usage_cache_read_cost_per_1k",
+        ),
         default=0.0,
     )
     usage_cache_write_cost_per_1k = _parse_float_setting(
-        env.get("MYCLI_USAGE_CACHE_WRITE_COST_PER_1K")
-        or project_config.get("usage_cache_write_cost_per_1k")
-        or user_config.get("usage_cache_write_cost_per_1k"),
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_USAGE_CACHE_WRITE_COST_PER_1K",
+            config_key="usage_cache_write_cost_per_1k",
+        ),
         default=0.0,
     )
     recent_message_count_value = (
         env.get("MYCLI_RECENT_MESSAGE_COUNT")
-        or project_config.get("recent_message_count")
         or user_config.get("recent_message_count")
+        or project_config.get("recent_message_count")
+        or legacy_user_config.get("recent_message_count")
         or 6
     )
     cache_policy_capability = _provider_cache_policy_override(
         provider=provider,
         env=env,
-        project_config=project_config,
         user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
     )
     if cache_policy_capability is None:
         resolved_cache_policy_capability = resolve_provider_cache_policy_capability(

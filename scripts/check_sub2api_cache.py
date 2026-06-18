@@ -13,7 +13,7 @@ from typing import Any
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 
-DEFAULT_BASE_URL = "https://sub2api-xxy.zeabur.app"
+DEFAULT_BASE_URL = "https://codex-gateway.example.invalid"
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 

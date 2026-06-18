@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mycli.domain.providers import ProviderId
 from mycli.schemas.responses_protocol import (
     ResponsesCapabilityProfile,
     ResponsesCompletedEvent,
@@ -150,8 +151,24 @@ def test_responses_capability_profile_for_dashscope_supports_previous_response_i
     assert profile.requires_assistant_output_text is True
     assert profile.disallows_empty_function_call_output is True
     assert profile.supports_previous_response_id is True
+    assert profile.supports_parallel_tool_calls is False
     assert profile.stream_max_retries == 2
     assert profile.supports_stream_fallback_to_create is True
+
+
+def test_responses_capability_profile_for_base_url_stays_provider_agnostic() -> None:
+    profile = ResponsesCapabilityProfile.for_base_url("https://api.openai.com/v1")
+
+    assert profile.supports_parallel_tool_calls is False
+
+
+def test_responses_capability_profile_enables_parallel_tool_calls_for_codex_provider() -> None:
+    profile = ResponsesCapabilityProfile.for_provider(
+        provider=ProviderId.CODEX,
+        base_url="https://codex-gateway.example.invalid/v1",
+    )
+
+    assert profile.supports_parallel_tool_calls is True
 
 
 def test_responses_capability_profile_round_trips_retry_and_fallback_settings() -> None:

@@ -11,6 +11,7 @@ from mycli.domain.providers import (
 from mycli.domain.runtime.request_shape import ProviderCachePolicyCapability
 from mycli.infrastructure.providers.anthropic import ANTHROPIC_PROFILE
 from mycli.infrastructure.providers.deepseek import DEEPSEEK_PROFILE
+from mycli.infrastructure.providers.openai import CODEX_PROFILE
 from mycli.infrastructure.providers.openai import OPENAI_PROFILE
 from mycli.infrastructure.providers.qwen import QWEN_PROFILE
 
@@ -31,6 +32,7 @@ COMPATIBLE_PROFILE = ProviderProfile(
 
 _PROFILES: dict[ProviderId, ProviderProfile] = {
     ProviderId.OPENAI: OPENAI_PROFILE,
+    ProviderId.CODEX: CODEX_PROFILE,
     ProviderId.QWEN: QWEN_PROFILE,
     ProviderId.DEEPSEEK: DEEPSEEK_PROFILE,
     ProviderId.ANTHROPIC: ANTHROPIC_PROFILE,
@@ -42,6 +44,19 @@ _DEFAULT_RETRY_ERROR_SHAPE = "openai_compatible_error"
 _QUIRK_PROFILES: dict[tuple[ProviderId, ProtocolId], ProviderQuirkProfile] = {
     (ProviderId.OPENAI, ProtocolId.RESPONSES): ProviderQuirkProfile(
         provider_family="openai",
+        protocol=ProtocolId.RESPONSES,
+        cache_strategy="prompt_cache_key",
+        prompt_cache_key_supported=True,
+        cache_control_supported=False,
+        automatic_prefix_cache=False,
+        wire_hints_supported=True,
+        reasoning_content_replay="encrypted_reasoning_supported",
+        usage_cached_token_shape="input_tokens_details.cached_tokens",
+        streaming_event_shape="responses_events",
+        retry_error_shape="responses_error",
+    ),
+    (ProviderId.CODEX, ProtocolId.RESPONSES): ProviderQuirkProfile(
+        provider_family="codex",
         protocol=ProtocolId.RESPONSES,
         cache_strategy="prompt_cache_key",
         prompt_cache_key_supported=True,

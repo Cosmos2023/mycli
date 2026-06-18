@@ -9,8 +9,8 @@ from mycli.cli.setup_wizard import default_user_config_path, run_setup_wizard
 from mycli.domain.providers import ProviderId
 
 
-def test_default_user_config_path_uses_xdg_config_home_layout(tmp_path: Path) -> None:
-    assert default_user_config_path(tmp_path) == tmp_path / ".config" / "mycli" / "config.toml"
+def test_default_user_config_path_uses_mycli_home_layout(tmp_path: Path) -> None:
+    assert default_user_config_path(tmp_path) == tmp_path / ".mycli" / "config.toml"
 
 
 def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> None:
@@ -25,7 +25,7 @@ def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> No
         output_func=outputs.append,
     )
 
-    config_path = tmp_path / ".config" / "mycli" / "config.toml"
+    config_path = tmp_path / ".mycli" / "config.toml"
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert result.config_path == config_path
     assert result.provider is ProviderId.DEEPSEEK
@@ -51,7 +51,7 @@ def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> No
 
 
 def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: Path) -> None:
-    config_path = tmp_path / ".config" / "mycli" / "config.toml"
+    config_path = tmp_path / ".mycli" / "config.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
         "\n".join(
@@ -93,7 +93,7 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: P
 
 
 def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(tmp_path: Path) -> None:
-    inputs = iter(["bad-method", "1", "bad-provider", "5", "", "compatible-model"])
+    inputs = iter(["bad-method", "1", "bad-provider", "6", "", "compatible-model"])
     secrets = iter(["", "sk-compatible"])
     outputs: list[str] = []
 

@@ -8,6 +8,7 @@ from mycli.config.auth_store import AuthStore
 from mycli.domain.runtime import CollaborationMode, ProviderCachePolicyCapability, ViewMode
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.config.settings import resolve_config
+from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 
 
 def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
@@ -15,11 +16,10 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
     workspace.mkdir()
-    (home_dir / ".config").mkdir()
-    (home_dir / ".config" / "mycli").mkdir()
+    (home_dir / ".mycli").mkdir()
     (workspace / ".mycli").mkdir()
 
-    (home_dir / ".config" / "mycli" / "config.toml").write_text(
+    (home_dir / ".mycli" / "config.toml").write_text(
         'model = "user-model"\napi_key = "user-token"\nmax_prompt_tokens = 6000\n',
         encoding="utf-8",
     )
@@ -49,9 +49,99 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
     assert config.session_id == "cli-session"
     assert config.api_base_url == "https://example.invalid/v1"
     assert config.api_key == "test-token"
-    assert config.max_prompt_tokens == 5000
+    assert config.max_prompt_tokens == 6000
     assert config.compression_threshold_tokens == 3200
     assert config.max_output_tokens == 1500
+
+
+def test_resolve_config_prefers_home_mycli_config_over_workspace_config(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (home_dir / ".mycli").mkdir()
+    (workspace / ".mycli").mkdir()
+
+    (home_dir / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'model = "home-model"',
+                "max_prompt_tokens = 6100",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "openai"',
+                'protocol = "responses"',
+                'model = "workspace-model"',
+                "max_prompt_tokens = 5000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("deepseek", "sk-auth-store")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.DEEPSEEK
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert config.model == "home-model"
+    assert config.max_prompt_tokens == 6100
+    assert config.api_key == "sk-auth-store"
+
+
+def test_resolve_config_accepts_codex_responses_provider(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "codex"',
+                'api_base_url = "https://codex-gateway.example.invalid/v1"',
+                'model = "gpt-5.4"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("codex", "sk-codex")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.CODEX
+    assert config.protocol is ProtocolId.RESPONSES
+    assert config.model == "gpt-5.4"
+    assert config.api_base_url == "https://codex-gateway.example.invalid/v1"
+    assert config.api_key == "sk-codex"
+    assert config.cache_policy_capability is None
+    assert resolve_provider_cache_policy_capability(
+        provider=config.provider,
+        base_url=config.api_base_url,
+    ) == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=True,
+        cache_control_enabled=False,
+        provider_family="codex",
+        cache_strategy="prompt_cache_key",
+    )
 
 
 def test_resolve_config_generates_new_session_when_cli_session_is_omitted(
@@ -364,16 +454,15 @@ def test_config_service_rejects_unknown_view_mode(tmp_path: Path) -> None:
         )
 
 
-def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_path: Path) -> None:
+def test_resolve_config_reads_legacy_api_key_from_config_when_auth_store_missing(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
     workspace.mkdir()
-    (home_dir / ".config").mkdir()
-    (home_dir / ".config" / "mycli").mkdir()
+    (home_dir / ".mycli").mkdir()
     (workspace / ".mycli").mkdir()
 
-    (home_dir / ".config" / "mycli" / "config.toml").write_text(
+    (home_dir / ".mycli" / "config.toml").write_text(
         'api_key = "user-token"\n',
         encoding="utf-8",
     )
@@ -389,7 +478,7 @@ def test_resolve_config_reads_api_key_from_project_file_when_env_missing(tmp_pat
         home=home_dir,
     )
 
-    assert config.api_key == "project-token"
+    assert config.api_key == "user-token"
 
 
 def test_resolve_config_reads_api_key_from_auth_store_for_provider(tmp_path: Path) -> None:
@@ -397,8 +486,8 @@ def test_resolve_config_reads_api_key_from_auth_store_for_provider(tmp_path: Pat
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
     workspace.mkdir()
-    (home_dir / ".config" / "mycli").mkdir(parents=True)
-    (home_dir / ".config" / "mycli" / "config.toml").write_text(
+    (home_dir / ".mycli").mkdir(parents=True)
+    (home_dir / ".mycli" / "config.toml").write_text(
         "\n".join(
             [
                 'provider = "deepseek"',
@@ -421,11 +510,22 @@ def test_resolve_config_reads_api_key_from_auth_store_for_provider(tmp_path: Pat
     assert config.api_key == "sk-auth-store"
 
 
-def test_resolve_config_prefers_project_api_key_over_auth_store(tmp_path: Path) -> None:
+def test_resolve_config_prefers_auth_store_over_legacy_config_api_key(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
     workspace.mkdir()
+    (home_dir / ".mycli").mkdir()
+    (home_dir / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'api_key = "home-token"',
+            ]
+        ),
+        encoding="utf-8",
+    )
     (workspace / ".mycli").mkdir()
     (workspace / ".mycli" / "config.toml").write_text(
         "\n".join(
@@ -446,7 +546,40 @@ def test_resolve_config_prefers_project_api_key_over_auth_store(tmp_path: Path) 
         home=home_dir,
     )
 
-    assert config.api_key == "project-token"
+    assert config.api_key == "sk-auth-store"
+
+
+def test_resolve_config_falls_back_to_legacy_xdg_user_config(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    legacy_config_dir = home_dir / ".config" / "mycli"
+    legacy_config_dir.mkdir(parents=True)
+    (legacy_config_dir / "config.toml").write_text(
+        "\n".join(
+            [
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'model = "legacy-model"',
+                "max_prompt_tokens = 7300",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("deepseek", "sk-auth-store")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.DEEPSEEK
+    assert config.model == "legacy-model"
+    assert config.max_prompt_tokens == 7300
+    assert config.api_key == "sk-auth-store"
 
 
 def test_resolve_config_ignores_invalid_auth_store_json(tmp_path: Path) -> None:

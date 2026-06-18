@@ -39,6 +39,7 @@ class ResponsesRequestBuilder:
         continuation_state: ResponsesContinuationState | None = None,
         parallel_tool_calls: bool = False,
         prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
     ) -> ResponsesRequestBuildResult:
         effective_reasoning_effort = reasoning_effort if thinking_enabled else None
         normalized_input = tuple(self._normalize_input_items(input_items))
@@ -62,6 +63,8 @@ class ResponsesRequestBuilder:
             payload_body["stream"] = True
         if self._capability_profile.supports_parallel_tool_calls:
             payload_body["parallel_tool_calls"] = parallel_tool_calls
+        if tool_choice is not None:
+            payload_body["tool_choice"] = tool_choice
         if prompt_cache_key:
             payload_body["prompt_cache_key"] = prompt_cache_key
 

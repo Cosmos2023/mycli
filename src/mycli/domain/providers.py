@@ -7,6 +7,7 @@ from typing import Any
 
 class ProviderId(StrEnum):
     OPENAI = "openai"
+    CODEX = "codex"
     QWEN = "qwen"
     DEEPSEEK = "deepseek"
     ANTHROPIC = "anthropic"

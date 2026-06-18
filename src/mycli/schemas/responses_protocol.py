@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlparse
 
+from mycli.domain.providers import ProviderId
+
 
 MessageRole = Literal["system", "developer", "user", "assistant"]
 TextContentType = Literal["input_text", "output_text"]
@@ -262,7 +264,7 @@ class ResponsesCapabilityProfile:
     supports_reasoning: bool = True
     supports_reasoning_summaries: bool = True
     supports_parallel_tool_calls: bool = False
-    supports_previous_response_id: bool = True
+    supports_previous_response_id: bool = False
     requires_assistant_output_text: bool = True
     disallows_empty_function_call_output: bool = False
     stream_max_retries: int = 2
@@ -283,6 +285,31 @@ class ResponsesCapabilityProfile:
                 supports_stream_fallback_to_create=True,
             )
         return cls()
+
+    @classmethod
+    def for_provider(
+        cls,
+        *,
+        provider: ProviderId,
+        base_url: str,
+    ) -> "ResponsesCapabilityProfile":
+        profile = cls.for_base_url(base_url)
+        if provider in {ProviderId.OPENAI, ProviderId.CODEX}:
+            return cls(
+                supports_reasoning=profile.supports_reasoning,
+                supports_reasoning_summaries=profile.supports_reasoning_summaries,
+                supports_parallel_tool_calls=True,
+                supports_previous_response_id=profile.supports_previous_response_id,
+                requires_assistant_output_text=profile.requires_assistant_output_text,
+                disallows_empty_function_call_output=(
+                    profile.disallows_empty_function_call_output
+                ),
+                stream_max_retries=profile.stream_max_retries,
+                supports_stream_fallback_to_create=(
+                    profile.supports_stream_fallback_to_create
+                ),
+            )
+        return profile
 
     def to_dict(self) -> dict[str, object]:
         return {

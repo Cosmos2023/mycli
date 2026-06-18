@@ -207,6 +207,7 @@ def test_openai_responses_client_maps_output_payload_to_model_events(monkeypatch
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     events = client.create_events(
@@ -239,6 +240,7 @@ def test_openai_responses_client_uses_openai_sdk_transport(monkeypatch) -> None:
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     payload = client.create_response(
@@ -354,6 +356,7 @@ def test_openai_responses_client_uses_previous_response_id_when_continuation_mat
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
@@ -418,6 +421,7 @@ def test_openai_responses_client_includes_reasoning_effort_when_configured(monke
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_reasoning_effort("high")
 
@@ -427,6 +431,56 @@ def test_openai_responses_client_includes_reasoning_effort_when_configured(monke
     )
 
     assert sdk_client.responses_api.create_calls[-1]["reasoning"] == {"effort": "high"}
+
+
+def test_openai_responses_client_enables_parallel_tool_calls_when_supported(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_parallel_tool_calls=True),
+    )
+
+    client.create_response(
+        input_items=[{"role": "user", "content": "inspect the repo"}],
+        tools=[],
+    )
+
+    assert sdk_client.responses_api.create_calls[-1]["parallel_tool_calls"] is True
+
+
+def test_openai_responses_client_omits_parallel_tool_calls_when_unsupported(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: {"id": "resp_123", "output": []})
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_parallel_tool_calls=False),
+    )
+
+    client.create_response(
+        input_items=[{"role": "user", "content": "inspect the repo"}],
+        tools=[],
+    )
+
+    assert "parallel_tool_calls" not in sdk_client.responses_api.create_calls[-1]
 
 
 def test_openai_responses_client_omits_reasoning_payload_when_thinking_disabled(
@@ -443,6 +497,7 @@ def test_openai_responses_client_omits_reasoning_payload_when_thinking_disabled(
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_thinking_config(enabled=False, effort=None)
 
@@ -466,6 +521,7 @@ def test_openai_responses_client_serializes_update_plan_array_item_schema(monkey
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     client.create_response(
@@ -538,6 +594,7 @@ def test_openai_responses_client_serializes_run_shell_string_array_schema(monkey
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     client.create_response(
@@ -594,7 +651,7 @@ def test_openai_responses_client_logs_request_and_response_payloads(
     assert len(response_files) == 1
     request_payload = json.loads(request_files[0].read_text(encoding="utf-8"))
     assert request_payload["body"]["model"] == "gpt-test"
-    assert request_payload["continuation"]["decision"] == "missing_state"
+    assert request_payload["continuation"]["decision"] == "capability_disabled"
     assert request_payload["continuation"]["previous_response_id"] is None
     assert "Authorization" not in json.dumps(request_payload, ensure_ascii=False)
     events = [
@@ -623,6 +680,7 @@ def test_openai_responses_client_maps_unsupported_provider_error(monkeypatch) ->
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     with pytest.raises(
@@ -648,6 +706,7 @@ def test_openai_responses_client_maps_invalid_json_response_to_model_response_er
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     with pytest.raises(ModelResponseError, match="valid JSON"):
@@ -832,6 +891,7 @@ def test_openai_responses_client_surfaces_provider_name_in_http_error(monkeypatc
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     with pytest.raises(ModelResponseError) as exc:
@@ -854,6 +914,7 @@ def test_openai_responses_client_maps_transport_error_to_model_response_error(mo
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     with pytest.raises(ModelResponseError, match="Failed to reach model provider"):
@@ -1017,6 +1078,7 @@ def test_openai_responses_client_stream_retries_without_previous_response_id_whe
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
@@ -1099,6 +1161,7 @@ def test_openai_responses_client_maps_context_window_failures_to_structured_stop
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
     with pytest.raises(ModelResponseError) as exc:
@@ -1136,6 +1199,7 @@ def test_openai_responses_client_retries_without_previous_response_id_when_provi
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
@@ -1202,6 +1266,7 @@ def test_openai_responses_client_retries_without_previous_response_id_when_provi
         base_url="https://example.invalid/v1",
         model="gpt-test",
         max_output_tokens=2048,
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
