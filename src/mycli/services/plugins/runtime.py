@@ -207,10 +207,20 @@ def _plugin_hook_callback(callback: Callable[..., Any]) -> Callable[[HookContext
                 hook_action = HookAction.ERROR
             message = result.get("message", "")
             modified_args = result.get("modified_args")
+            additional_contexts = result.get("additional_contexts")
             return HookResult(
                 action=hook_action,
                 message=str(message) if message else "",
                 modified_args=dict(modified_args) if isinstance(modified_args, dict) else None,
+                additional_contexts=_plugin_additional_contexts(additional_contexts),
             )
         return HookResult(action=HookAction.ALLOW)
     return invoke
+
+
+def _plugin_additional_contexts(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,) if value.strip() else ()
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item.strip())

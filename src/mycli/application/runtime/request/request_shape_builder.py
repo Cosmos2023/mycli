@@ -24,6 +24,9 @@ from mycli.domain.runtime import (
 from mycli.application.runtime.request.message_projection import RequestMessageProjector
 from mycli.llms.adapters.base import ModelToolDefinition
 
+TOOL_RUNTIME_REMINDER_TAG = "tool_runtime_reminder"
+POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY = "post_tool_additional_contexts"
+
 
 class RequestShapeBuilder:
     def __init__(self) -> None:
@@ -239,7 +242,7 @@ class RequestShapeBuilder:
             contract,
             cache_classes={"dynamic"},
         )
-        ephemeral_context = self._render_context_by_cache_class(
+        ephemeral_context = self._render_non_reminder_context_by_cache_class(
             contract,
             cache_classes={"ephemeral"},
         )
@@ -259,6 +262,7 @@ class RequestShapeBuilder:
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
+        messages = self._with_chat_post_tool_context_messages(messages)
         if dynamic_context:
             messages.append(ProviderMessageShape(role="user", content=dynamic_context))
         if ephemeral_context:
@@ -285,10 +289,7 @@ class RequestShapeBuilder:
             contract,
             cache_classes={"dynamic"},
         )
-        ephemeral_context = self._render_responses_delta_context(
-            contract,
-            cache_classes={"ephemeral"},
-        )
+        ephemeral_context = self._render_responses_non_reminder_delta_context(contract)
         messages: list[ProviderMessageShape] = [
             ProviderMessageShape(role="system", content=contract.base_instructions),
         ]
@@ -300,7 +301,10 @@ class RequestShapeBuilder:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
         if static_context:
             messages.append(ProviderMessageShape(role="user", content=static_context))
-        for message in self._replay_messages(contract):
+        replay_before_current, replayed_current_user, replay_after_current = (
+            self._split_replayed_current_user_turn(contract)
+        )
+        for message in replay_before_current:
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
@@ -308,7 +312,14 @@ class RequestShapeBuilder:
             messages.append(ProviderMessageShape(role="user", content=dynamic_context))
         if ephemeral_context:
             messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
-        if contract.current_user_request and not self._replay_contains_current_user_request(
+        if replayed_current_user is not None:
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=replayed_current_user.content,
+                )
+            )
+        elif contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
             messages.append(
@@ -317,6 +328,11 @@ class RequestShapeBuilder:
                     content=contract.current_user_request,
                 )
             )
+        for message in replay_after_current:
+            provider_message = self._messages.provider_message_from_replay_message(message)
+            if provider_message is not None:
+                messages.append(provider_message)
+        messages = self._with_chat_post_tool_context_messages(messages)
         return tuple(messages)
 
     def _transcript_provider_messages(
@@ -329,15 +345,6 @@ class RequestShapeBuilder:
                 content=self._transcript_stable_system_content(contract),
             ),
         ]
-        for message in self._chat_completions_replay_messages(contract):
-            provider_message = self._messages.provider_message_from_replay_message(message)
-            if provider_message is not None:
-                provider_message = self._with_current_user_ephemeral_injection(
-                    provider_message,
-                    contract=contract,
-                    source_content=message.content,
-                )
-                messages.append(provider_message)
         dynamic_context = self._transcript_dynamic_context(contract)
         if dynamic_context:
             messages.append(
@@ -346,6 +353,23 @@ class RequestShapeBuilder:
                     content=dynamic_context,
                     metadata={
                         "cache_class": "dynamic",
+                        "source": "provider_transcript_projection",
+                    },
+                )
+            )
+        for message in self._chat_completions_replay_messages(contract):
+            provider_message = self._messages.provider_message_from_replay_message(message)
+            if provider_message is not None:
+                messages.append(provider_message)
+        messages = self._with_chat_post_tool_context_messages(messages)
+        ephemeral_context = self._transcript_ephemeral_context(contract)
+        if ephemeral_context:
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=ephemeral_context,
+                    metadata={
+                        "cache_class": "ephemeral",
                         "source": "provider_transcript_projection",
                     },
                 )
@@ -370,7 +394,7 @@ class RequestShapeBuilder:
             messages.append(
                 ProviderMessageShape(
                     role="user",
-                    content=self._current_user_api_content(contract),
+                    content=contract.current_user_request,
                 )
             )
         return tuple(messages)
@@ -395,7 +419,7 @@ class RequestShapeBuilder:
             contract,
             cache_classes={"dynamic"},
         )
-        ephemeral_context = self._render_context_by_cache_class(
+        ephemeral_context = self._render_non_reminder_context_by_cache_class(
             contract,
             cache_classes={"ephemeral"},
         )
@@ -429,6 +453,7 @@ class RequestShapeBuilder:
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        items = self._with_chat_post_tool_context_items(items)
         if dynamic_context:
             items.append(
                 ProviderRuntimeItemShape(
@@ -537,10 +562,7 @@ class RequestShapeBuilder:
             contract,
             cache_classes={"dynamic"},
         )
-        ephemeral_context = self._render_responses_delta_context(
-            contract,
-            cache_classes={"ephemeral"},
-        )
+        ephemeral_context = self._render_responses_non_reminder_delta_context(contract)
         items: list[ProviderRuntimeItemShape] = [
             ProviderRuntimeItemShape(
                 role="system",
@@ -566,7 +588,10 @@ class RequestShapeBuilder:
                     metadata={"cache_class": "static"},
                 )
             )
-        for message in self._replay_messages(contract):
+        replay_before_current, replayed_current_user, replay_after_current = (
+            self._split_replayed_current_user_turn(contract)
+        )
+        for message in replay_before_current:
             blocks = self._messages.runtime_blocks_from_message(message)
             if blocks:
                 items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
@@ -586,7 +611,16 @@ class RequestShapeBuilder:
                     metadata={"cache_class": "ephemeral"},
                 )
             )
-        if contract.current_user_request and not self._replay_contains_current_user_request(
+        if replayed_current_user is not None:
+            blocks = self._messages.runtime_blocks_from_message(replayed_current_user)
+            if blocks:
+                items.append(
+                    ProviderRuntimeItemShape(
+                        role="user",
+                        blocks=blocks,
+                    )
+                )
+        elif contract.current_user_request and not self._replay_contains_current_user_request(
             contract
         ):
             items.append(
@@ -596,6 +630,11 @@ class RequestShapeBuilder:
                     metadata={"cache_class": "ephemeral"},
                 )
             )
+        for message in replay_after_current:
+            blocks = self._messages.runtime_blocks_from_message(message)
+            if blocks:
+                items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        items = self._with_chat_post_tool_context_items(items)
         return tuple(items)
 
     def _transcript_provider_runtime_items(
@@ -613,15 +652,6 @@ class RequestShapeBuilder:
                 ),
             )
         ]
-        for message in self._chat_completions_replay_messages(contract):
-            blocks = self._messages.runtime_blocks_from_message(message)
-            if blocks:
-                blocks = self._with_current_user_ephemeral_runtime_blocks(
-                    message=message,
-                    blocks=blocks,
-                    contract=contract,
-                )
-                items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
         dynamic_context = self._transcript_dynamic_context(contract)
         if dynamic_context:
             items.append(
@@ -630,6 +660,23 @@ class RequestShapeBuilder:
                     blocks=(RuntimeBlock(type="text", text=dynamic_context),),
                     metadata={
                         "cache_class": "dynamic",
+                        "source": "provider_transcript_projection",
+                    },
+                )
+            )
+        for message in self._chat_completions_replay_messages(contract):
+            blocks = self._messages.runtime_blocks_from_message(message)
+            if blocks:
+                items.append(ProviderRuntimeItemShape(role=message.role, blocks=blocks))
+        items = self._with_chat_post_tool_context_items(items)
+        ephemeral_context = self._transcript_ephemeral_context(contract)
+        if ephemeral_context:
+            items.append(
+                ProviderRuntimeItemShape(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
+                    metadata={
+                        "cache_class": "ephemeral",
                         "source": "provider_transcript_projection",
                     },
                 )
@@ -662,7 +709,7 @@ class RequestShapeBuilder:
                     blocks=(
                         RuntimeBlock(
                             type="text",
-                            text=self._current_user_api_content(contract),
+                            text=contract.current_user_request,
                         ),
                     ),
                 )
@@ -757,6 +804,22 @@ class RequestShapeBuilder:
             for message in contract.conversation_messages
         )
 
+    def _split_replayed_current_user_turn(
+        self,
+        contract: InstructionContract,
+    ) -> tuple[tuple[Message, ...], Message | None, tuple[Message, ...]]:
+        messages = tuple(contract.conversation_messages)
+        if not messages:
+            return (), None, ()
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if (
+                message.role == "user"
+                and message.content == contract.current_user_request
+            ):
+                return messages[:index], message, messages[index + 1 :]
+        return messages, None, ()
+
     def _stable_system_for_shape(
         self,
         config: AgentConfig,
@@ -825,27 +888,170 @@ class RequestShapeBuilder:
             "plan",
         }
 
-    def _current_user_api_content(self, contract: InstructionContract) -> str:
-        return self._join_content(
-            (
-                contract.current_user_request,
-                self._current_turn_ephemeral_context(contract),
-            )
-        )
-
-    def _current_turn_ephemeral_context(self, contract: InstructionContract) -> str:
+    def _transcript_ephemeral_context(
+        self,
+        contract: InstructionContract,
+    ) -> str:
+        if self._post_tool_additional_context(contract):
+            return ""
         return self._join_content(
             self._contextual_section_content(section, contract)
             for section in self._provider_visible_contextual_sections(contract)
             if self._cache_class(section) == "ephemeral"
-            if self._chat_ephemeral_section_is_model_visible(section)
+            if str(section.kind) != "runtime_reminders"
+            if self._transcript_contextual_section_is_model_visible(section)
         )
 
-    def _chat_ephemeral_section_is_model_visible(
+    def _runtime_reminders_context(self, contract: InstructionContract) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) == "ephemeral"
+            if str(section.kind) == "runtime_reminders"
+        )
+
+    def _runtime_reminders_context_metadata(self) -> dict[str, object]:
+        return {
+            "ephemeral_context": {
+                "kind": "runtime_reminders",
+                "source": "provider_transcript_projection",
+            },
+            "cache_class": "ephemeral",
+        }
+
+    def _post_tool_additional_context(self, contract: InstructionContract) -> str:
+        return self._join_content(
+            context
+            for message in self._chat_completions_replay_messages(contract)
+            for context in self._post_tool_additional_contexts_from_message(message)
+        )
+
+    def _post_tool_context_metadata(self) -> dict[str, object]:
+        return {
+            "ephemeral_context": {
+                "kind": "post_tool_context",
+                "source": "post_tool_use_hook",
+            },
+            "cache_class": "ephemeral",
+        }
+
+    def _with_chat_post_tool_context_messages(
         self,
-        section: InstructionFragment,
-    ) -> bool:
-        return str(section.kind) == "runtime_reminders"
+        messages: list[ProviderMessageShape],
+    ) -> list[ProviderMessageShape]:
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if message.role != "tool":
+                continue
+            post_tool_context = self._post_tool_additional_contexts_from_provider_metadata(
+                message.metadata
+            )
+            if not post_tool_context:
+                continue
+            metadata = dict(message.metadata)
+            metadata["tool_runtime_reminder"] = True
+            messages[index] = ProviderMessageShape(
+                role=message.role,
+                content=self._append_tool_runtime_reminder(
+                    message.content,
+                    self._join_content(post_tool_context),
+                ),
+                metadata=metadata,
+            )
+            return messages
+        return messages
+
+    def _with_chat_post_tool_context_items(
+        self,
+        items: list[ProviderRuntimeItemShape],
+    ) -> list[ProviderRuntimeItemShape]:
+        for item_index in range(len(items) - 1, -1, -1):
+            item = items[item_index]
+            if item.role != "tool":
+                continue
+            for block_index in range(len(item.blocks) - 1, -1, -1):
+                block = item.blocks[block_index]
+                if block.type != "tool_result":
+                    continue
+                post_tool_context = self._post_tool_additional_contexts_from_provider_metadata(
+                    block.metadata
+                )
+                if not post_tool_context:
+                    continue
+                blocks = list(item.blocks)
+                blocks[block_index] = RuntimeBlock(
+                    type=block.type,
+                    text=self._append_tool_runtime_reminder(
+                        block.text or "",
+                        self._join_content(post_tool_context),
+                    ),
+                    tool_name=block.tool_name,
+                    tool_arguments=block.tool_arguments,
+                    call_id=block.call_id,
+                    provider_id=block.provider_id,
+                    source=block.source,
+                    metadata=block.metadata,
+                )
+                item_metadata = dict(item.metadata)
+                item_metadata["tool_runtime_reminder"] = True
+                items[item_index] = ProviderRuntimeItemShape(
+                    role=item.role,
+                    blocks=tuple(blocks),
+                    metadata=item_metadata,
+                )
+                return items
+        return items
+
+    def _post_tool_additional_contexts_from_message(
+        self,
+        message: Message,
+    ) -> tuple[str, ...]:
+        contexts = self._post_tool_additional_contexts_from_provider_metadata(
+            message.metadata
+        )
+        if contexts:
+            return contexts
+        for block in message.blocks:
+            contexts = self._post_tool_additional_contexts_from_provider_metadata(
+                block.metadata
+            )
+            if contexts:
+                return contexts
+        return ()
+
+    def _post_tool_additional_contexts_from_provider_metadata(
+        self,
+        metadata: dict[str, Any],
+    ) -> tuple[str, ...]:
+        value = metadata.get(POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY)
+        if isinstance(value, str):
+            return (value,) if value.strip() else ()
+        if isinstance(value, tuple):
+            return tuple(item for item in value if isinstance(item, str) and item.strip())
+        if isinstance(value, list):
+            return tuple(item for item in value if isinstance(item, str) and item.strip())
+        model_metadata = metadata.get("model_metadata")
+        if isinstance(model_metadata, dict):
+            nested = model_metadata.get(POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY)
+            if isinstance(nested, tuple):
+                return tuple(item for item in nested if isinstance(item, str) and item.strip())
+            if isinstance(nested, list):
+                return tuple(item for item in nested if isinstance(item, str) and item.strip())
+            if isinstance(nested, str) and nested.strip():
+                return (nested,)
+        return ()
+
+    def _append_tool_runtime_reminder(self, output: str, reminder: str) -> str:
+        reminder_block = "\n".join(
+            (
+                f"<{TOOL_RUNTIME_REMINDER_TAG}>",
+                reminder,
+                f"</{TOOL_RUNTIME_REMINDER_TAG}>",
+            )
+        )
+        if not output:
+            return reminder_block
+        return f"{output.rstrip()}\n\n{reminder_block}"
 
     def _transcript_compaction_rehydration_context(
         self,
@@ -855,56 +1061,6 @@ class RequestShapeBuilder:
             self._contextual_section_content(section, contract)
             for section in self._provider_visible_contextual_sections(contract)
             if str(section.kind) == "compaction_rehydration"
-        )
-
-    def _with_current_user_ephemeral_injection(
-        self,
-        provider_message: ProviderMessageShape,
-        *,
-        contract: InstructionContract,
-        source_content: str,
-    ) -> ProviderMessageShape:
-        if provider_message.role != "user":
-            return provider_message
-        if source_content != contract.current_user_request:
-            return provider_message
-        injected_content = self._current_user_api_content(contract)
-        if injected_content == provider_message.content:
-            return provider_message
-        metadata = dict(provider_message.metadata)
-        metadata["ephemeral_injection"] = {
-            "applied": True,
-            "source": "current_user_api_copy",
-        }
-        return ProviderMessageShape(
-            role=provider_message.role,
-            content=injected_content,
-            metadata=metadata,
-        )
-
-    def _with_current_user_ephemeral_runtime_blocks(
-        self,
-        *,
-        message: Message,
-        blocks: tuple[RuntimeBlock, ...],
-        contract: InstructionContract,
-    ) -> tuple[RuntimeBlock, ...]:
-        if message.role != "user" or message.content != contract.current_user_request:
-            return blocks
-        injected_content = self._current_user_api_content(contract)
-        if not injected_content:
-            return blocks
-        return (
-            RuntimeBlock(
-                type="text",
-                text=injected_content,
-                metadata={
-                    "ephemeral_injection": {
-                        "applied": True,
-                        "source": "current_user_api_copy",
-                    }
-                },
-            ),
         )
 
     def _render_context_by_cache_class(
@@ -917,6 +1073,19 @@ class RequestShapeBuilder:
             self._contextual_section_content(section, contract)
             for section in self._provider_visible_contextual_sections(contract)
             if self._cache_class(section) in cache_classes
+        )
+
+    def _render_non_reminder_context_by_cache_class(
+        self,
+        contract: InstructionContract,
+        *,
+        cache_classes: set[str],
+    ) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) in cache_classes
+            if str(section.kind) != "runtime_reminders"
         )
 
     def _developer_section_content(self, section: InstructionFragment) -> str:
@@ -940,6 +1109,18 @@ class RequestShapeBuilder:
             if self._responses_contextual_section_is_model_visible(section)
         )
 
+    def _render_responses_non_reminder_delta_context(
+        self,
+        contract: InstructionContract,
+    ) -> str:
+        return self._join_content(
+            self._contextual_section_content(section, contract)
+            for section in self._provider_visible_contextual_sections(contract)
+            if self._cache_class(section) == "ephemeral"
+            if str(section.kind) != "runtime_reminders"
+            if self._responses_contextual_section_is_model_visible(section)
+        )
+
     def _render_transcript_delta_context(
         self,
         contract: InstructionContract,
@@ -960,8 +1141,8 @@ class RequestShapeBuilder:
         return str(section.kind) in {
             "compaction_rehydration",
             "environment_context",
+            "hook_context",
             "memory",
-            "runtime_reminders",
             "skill_catalog",
             "workspace_instructions",
         }
@@ -1079,7 +1260,7 @@ class RequestShapeBuilder:
         section_kind = str(section.kind)
         if section_kind in {"tool_exposure", "workspace_instructions", "skill_catalog"}:
             return "static"
-        if section_kind in {"runtime_reminders", "user_request"}:
+        if section_kind in {"hook_context", "runtime_reminders", "user_request"}:
             return "ephemeral"
         return "dynamic"
 
@@ -1096,6 +1277,7 @@ class RequestShapeBuilder:
             "compaction_rehydration": 12,
             "memory": 13,
             "plan": 14,
+            "hook_context": 19,
             "runtime_reminders": 20,
             "user_request": 21,
         }

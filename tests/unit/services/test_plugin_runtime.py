@@ -29,6 +29,26 @@ def test_plugin_discovery_parses_manifest_and_enablement(tmp_path: Path) -> None
     assert candidate.manifest.provides_commands[0].name == "DemoCommand"
 
 
+def test_plugin_discovery_reads_home_mycli_config_before_legacy_user_config(
+    tmp_path: Path,
+) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_home_config(home, enabled=["demo"])
+    legacy_config_dir = home / ".config" / "mycli"
+    legacy_config_dir.mkdir(parents=True)
+    (legacy_config_dir / "config.toml").write_text(
+        '[plugins]\nenabled = ["legacy"]\n',
+        encoding="utf-8",
+    )
+    _write_plugin(workspace, "demo")
+    _write_plugin(workspace, "legacy")
+
+    discovery = discover_plugins(workspace_root=workspace, home_dir=home)
+
+    assert discovery.enablement.is_enabled("demo") is True
+    assert discovery.enablement.is_enabled("legacy") is False
+
+
 def test_plugin_discovery_reports_bad_manifest_and_duplicate(tmp_path: Path) -> None:
     workspace, home = _workspace_home(tmp_path)
     _write_config(workspace, enabled=["demo"])
@@ -101,6 +121,43 @@ def register(ctx):
     manifest_entry = next(item for item in registry.manifest()["tools"] if item["name"] == "DemoTool")
     assert manifest_entry["source"] == "plugin"
     assert manifest_entry["id"] == "plugin:demo:DemoTool"
+
+
+def test_plugin_runtime_hook_dict_can_return_additional_contexts(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body="""
+def register(ctx):
+    def post_tool(context):
+        return {
+            'action': 'allow',
+            'additional_contexts': ['Use this result; do not repeat the same call.'],
+        }
+    ctx.register_hook('post_tool_use', post_tool, name='plugin:demo:post_tool')
+""".strip(),
+    )
+    manager = HookManager()
+
+    state = load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=manager,
+        tool_registry=ToolRegistry(workspace_root=workspace),
+        env={},
+    )
+
+    assert state.loaded[0].status.value == "loaded"
+    result = manager.execute(
+        HookPoint.POST_TOOL_USE,
+        HookContext(hook_point=HookPoint.POST_TOOL_USE, tool_name="Read"),
+    )[0]
+    assert result.action is HookAction.ALLOW
+    assert result.additional_contexts == (
+        "Use this result; do not repeat the same call.",
+    )
 
 
 def test_plugin_runtime_registers_and_executes_command(tmp_path: Path) -> None:
@@ -250,6 +307,18 @@ def _workspace_home(tmp_path: Path) -> tuple[Path, Path]:
 def _write_config(workspace: Path, *, enabled: list[str], disabled: list[str] | None = None) -> None:
     disabled = disabled or []
     config_dir = workspace / ".mycli"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.joinpath("config.toml").write_text(
+        "[plugins]\n"
+        f"enabled = {json.dumps(enabled)}\n"
+        f"disabled = {json.dumps(disabled)}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_home_config(home: Path, *, enabled: list[str], disabled: list[str] | None = None) -> None:
+    disabled = disabled or []
+    config_dir = home / ".mycli"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_dir.joinpath("config.toml").write_text(
         "[plugins]\n"

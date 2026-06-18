@@ -15,6 +15,7 @@ class InstructionFragmentKind(StrEnum):
     PERSONALITY = "personality"
     PLAN = "plan"
     COMPACTION_REHYDRATION = "compaction_rehydration"
+    HOOK_CONTEXT = "hook_context"
     RUNTIME_REMINDERS = "runtime_reminders"
     TOOL_EXPOSURE = "tool_exposure"
     WORKSPACE_INSTRUCTIONS = "workspace_instructions"

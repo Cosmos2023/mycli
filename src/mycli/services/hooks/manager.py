@@ -92,6 +92,9 @@ class HookManager:
     def last_execution_summary(self) -> tuple[HookExecutionSummary, ...]:
         return self._last_execution_summary
 
+    def has_hooks(self, point: HookPoint) -> bool:
+        return bool(self._hooks.get(point))
+
     def snapshot(self) -> tuple[HookRegistrationSnapshot, ...]:
         return tuple(
             self._state[key]

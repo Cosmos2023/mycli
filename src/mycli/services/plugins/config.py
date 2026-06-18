@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
+from mycli.config.settings import (
+    default_legacy_user_config_path,
+    default_user_config_path,
+)
+
 
 @dataclass(slots=True, frozen=True)
 class PluginEnablement:
@@ -19,10 +24,15 @@ def load_plugin_enablement(*, workspace_root: Path, home_dir: Path) -> PluginEna
     enabled: set[str] = set()
     disabled: set[str] = set()
     issues: list[str] = []
-    for label, path in (
-        ("user", home_dir / ".config" / "mycli" / "config.toml"),
+    user_config_path = default_user_config_path(home_dir)
+    legacy_user_config_path = default_legacy_user_config_path(home_dir)
+    config_paths = [
+        ("user", user_config_path),
         ("repo", workspace_root / ".mycli" / "config.toml"),
-    ):
+    ]
+    if not user_config_path.exists():
+        config_paths.append(("legacy-user", legacy_user_config_path))
+    for label, path in config_paths:
         payload, issue = _read_toml(path)
         if issue:
             issues.append(f"{label}:{path.name}: {issue}")

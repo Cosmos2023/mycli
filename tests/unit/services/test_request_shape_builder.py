@@ -293,14 +293,13 @@ def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefi
         "<workspace-context>Use pytest.</workspace-context>",
         "previous request",
         "Memory: stable enough for this task",
-        "Runtime reminders: current turn only",
         "Current user request: current request",
     ]
     assert shape.provider_projection is not None
     assert shape.provider_projection.to_dict() == {
         "lane": "anthropic_messages",
-        "message_count": 6,
-        "runtime_item_count": 6,
+        "message_count": 5,
+        "runtime_item_count": 5,
         "cacheable_prefix_fragment_count": 3,
         "first_dynamic_fragment_index": 3,
         "first_ephemeral_fragment_index": 5,
@@ -646,12 +645,12 @@ def test_request_shape_builder_places_current_user_input_after_volatile_context(
     ]
     assert shape.fragments[2].kind is RequestFragmentKind.REPLAY
     assert shape.fragments[2].stability is FragmentStability.REPLAY
-    assert provider_roles == ["system", "developer", "user", "assistant", "user", "user"]
-    assert provider_contents[-2] == "volatile runtime context"
+    assert provider_roles == ["system", "developer", "user", "assistant", "user"]
+    assert "volatile runtime context" not in "\n".join(provider_contents)
     assert provider_contents[-1] == "Current user request: current task"
 
 
-def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_reminders_for_responses_payload(
+def test_request_shape_builder_omits_runtime_reminders_from_responses_payload(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -706,28 +705,153 @@ def test_request_shape_builder_omits_conversation_context_but_keeps_runtime_remi
         "user",
         "assistant",
         "user",
+    ]
+    assert [item.role for item in shape.provider_runtime_items] == [
+        "system",
+        "developer",
+        "user",
+        "assistant",
         "user",
     ]
-    assert shape.provider_runtime_items[-2].blocks == (
-        RuntimeBlock(type="text", text="Runtime reminders: use compact answers"),
-    )
     assert shape.provider_runtime_items[-1].blocks == (
         RuntimeBlock(type="text", text="new query"),
     )
-    assert shape.provider_messages[-2].content == "Runtime reminders: use compact answers"
     assert shape.provider_messages[-1].content == "new query"
     assert "Conversation summary:" not in provider_payload
     assert "[file_excerpt]" not in provider_payload
     assert "Current user request:" not in provider_payload
-    assert "Runtime reminders: use compact answers" in provider_payload
+    assert "Runtime reminders: use compact answers" not in provider_payload
     assert "Conversation summary:" not in runtime_payload
     assert "[file_excerpt]" not in runtime_payload
     assert "Current user request:" not in runtime_payload
-    assert "Runtime reminders: use compact answers" in runtime_payload
+    assert "Runtime reminders: use compact answers" not in runtime_payload
     assert any(
         fragment.id == "replay:conversation_context"
         and "Conversation summary:" in fragment.content
         for fragment in shape.fragments
+    )
+
+
+def test_request_shape_builder_appends_responses_post_tool_context_to_tool_result(
+    tmp_path: Path,
+) -> None:
+    tool_call = ToolCall(
+        name="Bash",
+        arguments={"command": "ls"},
+        reason="inspect files",
+        call_id="call_ls",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            protocol=ProtocolId.RESPONSES,
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(role="user", content="inspect files"),
+                Message(role="assistant", content="", tool_calls=(tool_call,)),
+                Message(
+                    role="tool",
+                    content="README.md",
+                    tool_call_id="call_ls",
+                    metadata={
+                        "post_tool_additional_contexts": (
+                            "Use the ls result; do not repeat ls.",
+                        )
+                    },
+                ),
+            ),
+            current_user_request="inspect files",
+        ),
+        tools=(_tool("Bash"),),
+    )
+
+    tool_item = next(item for item in shape.provider_runtime_items if item.role == "tool")
+    assert tool_item.blocks == (
+        RuntimeBlock(
+            type="tool_result",
+            text=(
+                "README.md\n\n"
+                "<tool_runtime_reminder>\n"
+                "Use the ls result; do not repeat ls.\n"
+                "</tool_runtime_reminder>"
+            ),
+            metadata={
+                "post_tool_additional_contexts": (
+                    "Use the ls result; do not repeat ls.",
+                )
+            },
+            call_id="call_ls",
+        ),
+    )
+    assert [item.role for item in shape.provider_runtime_items] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+
+def test_request_shape_builder_appends_anthropic_post_tool_context_to_tool_result(
+    tmp_path: Path,
+) -> None:
+    tool_call = ToolCall(
+        name="Bash",
+        arguments={"command": "ls"},
+        reason="inspect files",
+        call_id="call_ls",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="anthropic",
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+            model="claude-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(role="user", content="inspect files"),
+                Message(role="assistant", content="", tool_calls=(tool_call,)),
+                Message(
+                    role="tool",
+                    content="README.md",
+                    tool_call_id="call_ls",
+                    metadata={
+                        "post_tool_additional_contexts": (
+                            "Use the ls result; do not repeat ls.",
+                        )
+                    },
+                ),
+            ),
+            current_user_request="inspect files",
+        ),
+        tools=(_tool("Bash"),),
+    )
+
+    tool_item = next(item for item in shape.provider_runtime_items if item.role == "tool")
+    assert tool_item.blocks == (
+        RuntimeBlock(
+            type="tool_result",
+            text=(
+                "README.md\n\n"
+                "<tool_runtime_reminder>\n"
+                "Use the ls result; do not repeat ls.\n"
+                "</tool_runtime_reminder>"
+            ),
+            metadata={
+                "post_tool_additional_contexts": (
+                    "Use the ls result; do not repeat ls.",
+                )
+            },
+            call_id="call_ls",
+        ),
+    )
+    assert "do not repeat ls" not in "\n".join(
+        message.content
+        for message in shape.provider_messages
+        if message.role == "user"
     )
 
 
@@ -812,26 +936,26 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     assert [message.role for message in shape.provider_messages] == [
         "system",
         "user",
+        "user",
         "assistant",
         "tool",
-        "user",
         "user",
     ]
     assert "Stable system rules." in shape.provider_messages[0].content
     assert "Available skills:\n- code-review: Review code" in shape.provider_messages[0].content
     assert [message.content for message in shape.provider_messages[1:]] == [
+        "Workspace root: /tmp/demo",
         "inspect README",
         "I will read README.",
         "README contents",
-        "Workspace root: /tmp/demo",
-        "summarize the result\nRuntime reminders: use compact answers",
+        "summarize the result",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
         "user",
+        "user",
         "assistant",
         "tool",
-        "user",
         "user",
     ]
     assert all(message.role != "developer" for message in shape.provider_messages)
@@ -846,22 +970,22 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
         for block in item.blocks
     )
     assert "Current user request:" not in runtime_payload
-    assert runtime_payload.count("Runtime reminders:") == 1
+    assert runtime_payload.count("Runtime reminders:") == 0
     assert "Workspace root:" in runtime_payload
     assert "Available skills:" in runtime_payload
     provider_payload = "\n".join(message.content for message in shape.provider_messages)
-    assert provider_payload.count("Runtime reminders:") == 1
+    assert provider_payload.count("Runtime reminders:") == 0
     assert "Workspace root:" in provider_payload
     assert "Available skills:" in provider_payload
-    assistant_message = shape.provider_messages[2]
+    assistant_message = shape.provider_messages[3]
     assert assistant_message.metadata["tool_calls"] == (tool_call,)
     assert assistant_message.metadata["model_metadata"] == {
         "deepseek": {"reasoning_content": "Need the README before answering."}
     }
     legacy_messages = RequestShapePayloadFormatter().legacy_messages(shape)
-    assert legacy_messages[2].content == "I will read README."
-    assert legacy_messages[2].tool_calls == (tool_call,)
-    assert legacy_messages[2].metadata == {
+    assert legacy_messages[3].content == "I will read README."
+    assert legacy_messages[3].tool_calls == (tool_call,)
+    assert legacy_messages[3].metadata == {
         "deepseek": {"reasoning_content": "Need the README before answering."}
     }
 
@@ -924,8 +1048,8 @@ def test_request_shape_builder_puts_chat_static_context_in_system_prefix(
     assert [message.role for message in shape.provider_messages] == [
         "system",
         "user",
-        "assistant",
         "user",
+        "assistant",
         "user",
     ]
     assert "Stable system rules." in shape.provider_messages[0].content
@@ -936,15 +1060,14 @@ def test_request_shape_builder_puts_chat_static_context_in_system_prefix(
         shape.provider_messages[0].content
     )
     assert "Runtime reminders:" not in shape.provider_messages[0].content
-    assert shape.provider_messages[1].content == "inspect README"
-    assert shape.provider_messages[2].content == "I will inspect README."
-    assert shape.provider_messages[3].content == (
+    assert shape.provider_messages[1].content == (
         "<memory-context>Remember concise output.</memory-context>"
     )
-    assert shape.provider_messages[3].metadata["cache_class"] == "dynamic"
-    assert shape.provider_messages[-1].content == (
-        "summarize now\nRuntime reminders: current turn only"
-    )
+    assert shape.provider_messages[1].metadata["cache_class"] == "dynamic"
+    assert shape.provider_messages[2].content == "inspect README"
+    assert shape.provider_messages[3].content == "I will inspect README."
+    assert shape.provider_messages[-1].content == "summarize now"
+    assert "dynamic_context_injection" not in shape.provider_messages[-1].metadata
     assert "Available skills:" not in "\n".join(
         message.content for message in shape.provider_messages[1:]
     )
@@ -1016,8 +1139,8 @@ def test_request_shape_builder_uses_single_chat_system_snapshot_plus_transcript(
     assert [message.role for message in shape.provider_messages] == [
         "system",
         "user",
-        "assistant",
         "user",
+        "assistant",
         "user",
     ]
     system = shape.provider_messages[0].content
@@ -1029,23 +1152,24 @@ def test_request_shape_builder_uses_single_chat_system_snapshot_plus_transcript(
     assert "Plan: update the report." not in system
     assert "Runtime reminders: current turn only" not in system
     assert [message.content for message in shape.provider_messages[1:]] == [
+        "<memory-context>Remember concise output.</memory-context>\n"
+        "Plan: update the report.",
         "inspect README",
         "I will inspect README.",
-        "<memory-context>Remember concise output.</memory-context>\nPlan: update the report.",
-        "summarize now\nRuntime reminders: current turn only",
+        "summarize now",
     ]
-    assert shape.provider_messages[3].metadata["cache_class"] == "dynamic"
+    assert shape.provider_messages[1].metadata["cache_class"] == "dynamic"
     assert shape.provider_runtime_items[0].blocks == (
         RuntimeBlock(type="text", text=system),
     )
     assert [item.role for item in shape.provider_runtime_items] == [
         "system",
         "user",
+        "user",
         "assistant",
         "user",
-        "user",
     ]
-    assert shape.provider_runtime_items[3].metadata["cache_class"] == "dynamic"
+    assert shape.provider_runtime_items[1].metadata["cache_class"] == "dynamic"
 
 
 def test_request_shape_builder_keeps_chat_system_prefix_stable_for_dynamic_context_changes(
@@ -1134,14 +1258,14 @@ def test_request_shape_builder_keeps_chat_system_prefix_stable_for_dynamic_conte
     assert "Workspace root: /tmp/one" not in first.provider_messages[0].content
     assert "Remember one" not in first.provider_messages[0].content
     assert "Plan: one." not in first.provider_messages[0].content
-    assert first.provider_messages[3].content == "\n".join(
+    assert first.provider_messages[1].content == "\n".join(
         [
             "Workspace root: /tmp/one",
             "<memory-context>Remember one.</memory-context>",
             "Plan: one.",
         ]
     )
-    assert second.provider_messages[3].content == "\n".join(
+    assert second.provider_messages[1].content == "\n".join(
         [
             "Workspace root: /tmp/two",
             "<memory-context>Remember two.</memory-context>",
@@ -1213,7 +1337,7 @@ def test_request_shape_builder_keeps_chat_transcript_context_before_tool_followu
     )
 
 
-def test_request_shape_builder_injects_runtime_reminders_into_current_chat_user_copy_only(
+def test_request_shape_builder_appends_chat_post_tool_context_to_last_tool_output(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -1225,16 +1349,30 @@ def test_request_shape_builder_injects_runtime_reminders_into_current_chat_user_
         ),
         contract=InstructionContract(
             base_instructions="Stable system rules.",
-            contextual_user_sections=(
-                InstructionFragment(
-                    kind="runtime_reminders",
-                    title="Runtime reminders",
-                    content="Runtime reminders: use compact answers",
-                ),
-            ),
             conversation_messages=(
                 Message(role="user", content="review this"),
-                Message(role="assistant", content="loading skill"),
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=(
+                        ToolCall(
+                            name="Bash",
+                            arguments={"cmd": "ls"},
+                            reason="inspect files",
+                            call_id="call_ls",
+                        ),
+                    ),
+                ),
+                Message(
+                    role="tool",
+                    content="README.md\nsrc",
+                    tool_call_id="call_ls",
+                    metadata={
+                        "post_tool_additional_contexts": (
+                            "Use this directory listing; do not repeat ls.",
+                        )
+                    },
+                ),
             ),
             current_user_request="review this",
         ),
@@ -1246,35 +1384,48 @@ def test_request_shape_builder_injects_runtime_reminders_into_current_chat_user_
     ]
     payload = "\n".join(message.content for message in shape.provider_messages)
 
-    assert user_messages == ["review this\nRuntime reminders: use compact answers"]
-    assert shape.provider_messages[1].metadata["legacy_content"] == "review this"
-    assert shape.provider_messages[1].metadata["ephemeral_injection"] == {
-        "applied": True,
-        "source": "current_user_api_copy",
-    }
-    assert payload.count("Runtime reminders:") == 1
-    assert any(
-        fragment.id == "volatile:runtime_reminders"
-        and "Runtime reminders:" in fragment.content
-        for fragment in shape.fragments
-    )
+    assert user_messages == ["review this"]
+    tool_messages = [
+        message.content for message in shape.provider_messages if message.role == "tool"
+    ]
+    assert tool_messages == [
+        "README.md\nsrc\n\n"
+        "<tool_runtime_reminder>\n"
+        "Use this directory listing; do not repeat ls.\n"
+        "</tool_runtime_reminder>"
+    ]
+    assert payload.count("do not repeat ls") == 1
+    assert not any(fragment.id == "volatile:runtime_reminders" for fragment in shape.fragments)
     user_items = [item for item in shape.provider_runtime_items if item.role == "user"]
     assert len(user_items) == 1
     assert user_items[0].blocks == (
         RuntimeBlock(
             type="text",
-            text="review this\nRuntime reminders: use compact answers",
+            text="review this",
+        ),
+    )
+    tool_items = [item for item in shape.provider_runtime_items if item.role == "tool"]
+    assert len(tool_items) == 1
+    assert tool_items[0].blocks == (
+        RuntimeBlock(
+            type="tool_result",
+            text=(
+                "README.md\nsrc\n\n"
+                "<tool_runtime_reminder>\n"
+                "Use this directory listing; do not repeat ls.\n"
+                "</tool_runtime_reminder>"
+            ),
             metadata={
-                "ephemeral_injection": {
-                    "applied": True,
-                    "source": "current_user_api_copy",
-                }
+                "post_tool_additional_contexts": (
+                    "Use this directory listing; do not repeat ls.",
+                )
             },
+            call_id="call_ls",
         ),
     )
 
 
-def test_request_shape_builder_injects_chat_runtime_reminders_when_current_user_is_new(
+def test_request_shape_builder_does_not_inject_chat_runtime_reminders_without_tool_result(
     tmp_path: Path,
 ) -> None:
     shape = RequestShapeBuilder().build(
@@ -1306,15 +1457,12 @@ def test_request_shape_builder_injects_chat_runtime_reminders_when_current_user_
         message.content for message in shape.provider_messages if message.role == "user"
     ]
 
-    assert user_messages == [
-        "older request",
-        "continue\nRuntime reminders: answer from compacted context",
-    ]
+    assert user_messages == ["older request", "continue"]
     assert "Runtime reminders:" not in shape.provider_messages[1].content
     assert shape.provider_runtime_items[-1].blocks == (
         RuntimeBlock(
             type="text",
-            text="continue\nRuntime reminders: answer from compacted context",
+            text="continue",
         ),
     )
 
@@ -1569,14 +1717,16 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     assert fragments["replay:plan"].stability is FragmentStability.REPLAY
     assert fragments["volatile:runtime_reminders"].kind is RequestFragmentKind.VOLATILE
     assert fragments["volatile:runtime_reminders"].stability is FragmentStability.VOLATILE
-    assert shape.provider_messages[-3].content == "\n".join(
+    assert shape.provider_messages[-2].content == "\n".join(
         [
             "Workspace root: /tmp/demo",
             "Memory: prefers concise replies",
             "Current plan: inspect",
         ]
     )
-    assert shape.provider_messages[-2].content == "Runtime reminders: use compact answers"
+    assert "Runtime reminders: use compact answers" not in "\n".join(
+        message.content for message in shape.provider_messages
+    )
     assert shape.provider_messages[-1].content == "Current user request: inspect"
 
 
@@ -1629,6 +1779,99 @@ def test_request_shape_builder_keeps_runtime_environment_dynamic_before_user_tai
     assert fragments[-1].content == "Current user request: inspect runtime"
 
 
+def test_request_shape_builder_emits_chat_dynamic_context_before_tool_replay(
+    tmp_path: Path,
+) -> None:
+    tool_call = ToolCall(
+        name="Bash",
+        arguments={"command": "lsof -i"},
+        reason="inspect ports",
+        call_id="call_lsof",
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="\n".join(
+                        [
+                            "这是本轮相关的环境事实。",
+                            "Runtime environment:",
+                            f"- workspace_root: {tmp_path}",
+                            "- shell: restricted",
+                        ]
+                    ),
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="check ports"),
+                Message(role="assistant", content="", tool_calls=(tool_call,)),
+                Message(
+                    role="tool",
+                    content="LISTEN 127.0.0.1:4001",
+                    tool_call_id="call_lsof",
+                ),
+            ),
+            current_user_request="check ports",
+        ),
+        tools=(_tool("Bash"),),
+    )
+
+    assert [message.role for message in shape.provider_messages] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert shape.provider_messages[1].content == "\n".join(
+        [
+            "这是本轮相关的环境事实。",
+            "Runtime environment:",
+            f"- workspace_root: {tmp_path}",
+            "- shell: restricted",
+        ]
+    )
+    assert shape.provider_messages[1].metadata["cache_class"] == "dynamic"
+    assert shape.provider_messages[2].content == "check ports"
+    assert all(
+        "Runtime environment:" not in message.content
+        for message in shape.provider_messages[2:]
+    )
+    assert [item.role for item in shape.provider_runtime_items] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert shape.provider_runtime_items[1].blocks == (
+        RuntimeBlock(
+            type="text",
+            text="\n".join(
+                [
+                    "这是本轮相关的环境事实。",
+                    "Runtime environment:",
+                    f"- workspace_root: {tmp_path}",
+                    "- shell: restricted",
+                ]
+            ),
+        ),
+    )
+    assert shape.provider_runtime_items[1].metadata["cache_class"] == "dynamic"
+    assert shape.provider_runtime_items[2].blocks == (
+        RuntimeBlock(type="text", text="check ports"),
+    )
+
+
 def test_request_shape_builder_uses_replayed_current_user_request_without_duplicate_intent_message(
     tmp_path: Path,
 ) -> None:
@@ -1652,6 +1895,89 @@ def test_request_shape_builder_uses_replayed_current_user_request_without_duplic
     assert user_messages == ["current task"]
     assert "user: current task" in shape.fragments[2].content
     assert "assistant: I will inspect it." in shape.fragments[2].content
+
+
+def test_request_shape_builder_places_responses_dynamic_context_before_replayed_current_user(
+    tmp_path: Path,
+) -> None:
+    assistant_tool_call = Message(
+        role="assistant",
+        content="",
+        tool_calls=(
+            ToolCall(
+                name="LS",
+                arguments={"path": "."},
+                reason="inspect root",
+                call_id="call_ls_1",
+            ),
+        ),
+        blocks=(
+            RuntimeBlock(
+                type="tool_call",
+                tool_name="LS",
+                tool_arguments={"path": "."},
+                call_id="call_ls_1",
+            ),
+        ),
+    )
+    tool_result = Message(
+        role="tool",
+        content="README.md",
+        tool_call_id="call_ls_1",
+        blocks=(
+            RuntimeBlock(
+                type="tool_result",
+                text="README.md",
+                call_id="call_ls_1",
+            ),
+        ),
+    )
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(workspace_root=tmp_path, protocol=ProtocolId.RESPONSES),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="这是本轮相关的环境事实。\nRuntime environment:\n- shell: restricted",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="inspect repo"),
+                assistant_tool_call,
+                tool_result,
+            ),
+            current_user_request="inspect repo",
+        ),
+        tools=(_tool("LS"),),
+    )
+
+    item_signatures = [
+        (
+            item.role,
+            "".join(block.text or "" for block in item.blocks)
+            or ",".join(block.type for block in item.blocks),
+        )
+        for item in shape.provider_runtime_items
+    ]
+
+    environment_index = item_signatures.index(
+        (
+            "user",
+            "这是本轮相关的环境事实。\nRuntime environment:\n- shell: restricted",
+        )
+    )
+    assert item_signatures[environment_index:] == [
+        (
+            "user",
+            "这是本轮相关的环境事实。\nRuntime environment:\n- shell: restricted",
+        ),
+        ("user", "inspect repo"),
+        ("assistant", "tool_call"),
+        ("tool", "README.md"),
+    ]
 
 
 def test_request_shape_builder_preserves_structured_runtime_replay_blocks(

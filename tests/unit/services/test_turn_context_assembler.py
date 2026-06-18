@@ -116,6 +116,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         TurnContextSectionType.COMPACTION_REHYDRATION,
         TurnContextSectionType.MEMORY,
         TurnContextSectionType.PLAN,
+        TurnContextSectionType.HOOK_CONTEXT,
         TurnContextSectionType.RUNTIME_REMINDERS,
         TurnContextSectionType.SKILL_CATALOG,
         TurnContextSectionType.TOOL_EXPOSURE,
@@ -170,6 +171,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         "compaction_rehydration": "dynamic",
         "memory": "dynamic",
         "plan": "dynamic",
+        "hook_context": "ephemeral",
         "runtime_reminders": "ephemeral",
         "skill_catalog": "static",
         "tool_exposure": "static",
@@ -184,6 +186,7 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         "compaction_rehydration": "turn",
         "memory": "transcript",
         "plan": "transcript",
+        "hook_context": "turn",
         "runtime_reminders": "turn",
         "skill_catalog": "session",
         "tool_exposure": "session",
@@ -451,7 +454,7 @@ def test_turn_context_assembler_renders_added_tool_as_plain_tool() -> None:
     assert tool_section.cache_class is TurnContextCacheClass.STATIC
 
 
-def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is_sparse() -> None:
+def test_turn_context_assembler_does_not_mirror_history_when_legacy_context_is_sparse() -> None:
     assembler = TurnContextAssembler()
     turn_context = assembler.assemble(
         user_message="继续处理这个会话",
@@ -510,9 +513,8 @@ def test_turn_context_assembler_uses_baseline_and_history_when_legacy_context_is
     assert "<workspace-context>" in workspace_section.content
     assert "not the current user request" in workspace_section.content
     assert "Follow AGENTS.md" in workspace_section.content
-    assert conversation_section.enabled is True
-    assert "先检查仓库结构" in conversation_section.content
-    assert "我先看一下入口文件。" in conversation_section.content
+    assert conversation_section.enabled is False
+    assert conversation_section.content == ""
     assert "Timezone: Asia/Shanghai" in environment_section.content
 
 
@@ -568,7 +570,7 @@ def test_turn_context_assembler_rehydrates_replayable_memory_and_plan_from_basel
     assert plan_section.scope is CanonicalTimelineScope.TRANSCRIPT
 
 
-def test_turn_context_assembler_renders_conversation_as_stable_transcript() -> None:
+def test_turn_context_assembler_keeps_conversation_summary_without_transcript_mirror() -> None:
     turn_context = TurnContextAssembler().assemble(
         user_message="continue",
         context=ExecutionContext(
@@ -588,7 +590,10 @@ def test_turn_context_assembler_renders_conversation_as_stable_transcript() -> N
         section for section in turn_context.sections if section.type is TurnContextSectionType.CONVERSATION_CONTEXT
     )
 
-    assert "assistant: Tool read_file: README.md" in conversation_section.content
+    assert conversation_section.enabled is True
+    assert conversation_section.content == "Conversation summary: Derived from structured history."
+    assert "assistant: Tool read_file: README.md" not in conversation_section.content
+    assert "Recent conversation" not in conversation_section.content
     assert "Message(role=" not in conversation_section.content
     assert "RuntimeBlock(" not in conversation_section.content
 

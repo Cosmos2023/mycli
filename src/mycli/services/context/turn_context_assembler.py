@@ -13,6 +13,7 @@ from mycli.domain.runtime import (
     TurnContextCacheClass,
     TurnContextSection,
     TurnContextSectionType,
+    stable_hash,
 )
 
 
@@ -27,12 +28,16 @@ class TurnContextAssembler:
         workspace_content = self._workspace_instructions(context, workspace_instructions)
         memory_records = self._deduplicated_memory_records(context)
         memory_content = self._render_memory(context, memory_records)
+        hook_context_content = self._render_hook_context(context)
         runtime_reminders_content = self._render_runtime_reminders(context)
         compaction_rehydration_content = self._render_compaction_rehydration(context)
+        conversation_content = self._render_conversation_context(context)
         plan_content = self._render_plan(context)
         plan_enabled = bool(
             context.plan_state.items or self._baseline_fragment_content(context, "plan")
         )
+        environment_context_content = self._render_environment_context(context)
+        runtime_environment_content = self._render_runtime_environment_contract(context)
         sections = (
             TurnContextSection(
                 type=TurnContextSectionType.BASE_INSTRUCTIONS,
@@ -66,7 +71,7 @@ class TurnContextAssembler:
             TurnContextSection(
                 type=TurnContextSectionType.ENVIRONMENT_CONTEXT,
                 title="Environment context",
-                content=self._render_environment_context(context),
+                content=environment_context_content,
                 enabled=True,
                 source="runtime",
                 metadata={
@@ -74,6 +79,9 @@ class TurnContextAssembler:
                     "session_id": context.config.session_id,
                     "model": context.config.model,
                     "protocol": context.config.protocol,
+                    "runtime_environment_raw_hash": stable_hash(
+                        runtime_environment_content
+                    ),
                     **self._runtime_environment_metadata(context),
                 },
                 cache_class=TurnContextCacheClass.DYNAMIC,
@@ -82,12 +90,8 @@ class TurnContextAssembler:
             TurnContextSection(
                 type=TurnContextSectionType.CONVERSATION_CONTEXT,
                 title="Conversation context",
-                content=self._render_conversation_context(context),
-                enabled=bool(
-                    context.conversation_summary
-                    or context.conversation_messages
-                    or context.history_items
-                ),
+                content=conversation_content,
+                enabled=bool(conversation_content),
                 source="conversation",
                 cache_class=TurnContextCacheClass.DYNAMIC,
                 scope=CanonicalTimelineScope.TURN,
@@ -119,6 +123,16 @@ class TurnContextAssembler:
                 source="plan",
                 cache_class=TurnContextCacheClass.DYNAMIC,
                 scope=CanonicalTimelineScope.TRANSCRIPT,
+            ),
+            TurnContextSection(
+                type=TurnContextSectionType.HOOK_CONTEXT,
+                title="Hook context",
+                content=hook_context_content,
+                enabled=bool(hook_context_content),
+                source="hook",
+                metadata={"source": "user_prompt_submit"},
+                cache_class=TurnContextCacheClass.EPHEMERAL,
+                scope=CanonicalTimelineScope.TURN,
             ),
             TurnContextSection(
                 type=TurnContextSectionType.RUNTIME_REMINDERS,
@@ -217,10 +231,18 @@ class TurnContextAssembler:
         )
         lines: list[str] = []
         seen: set[str] = set()
+        skipping_runtime_environment = False
         for raw_line in content.splitlines():
             line = raw_line.strip()
             if not line or line in seen:
                 continue
+            if line == "Runtime environment:":
+                skipping_runtime_environment = True
+                continue
+            if skipping_runtime_environment:
+                if line.startswith("- "):
+                    continue
+                skipping_runtime_environment = False
             if line.startswith(dynamic_prefixes):
                 continue
             lines.append(line)
@@ -228,17 +250,10 @@ class TurnContextAssembler:
         return "\n".join(lines)
 
     def _render_conversation_context(self, context: ExecutionContext) -> str:
-        messages = context.conversation_messages or self._messages_from_history(context)
-        summary = context.conversation_summary or ("none" if not messages else "Derived from structured history.")
-        return (
-            f"Conversation summary: {summary}\n"
-            f"Recent conversation:\n{self._render_messages(messages)}"
-        )
-
-    def _render_messages(self, messages: tuple[Message, ...]) -> str:
-        if not messages:
-            return "none"
-        return "\n".join(f"{message.role}: {message.content}" for message in messages)
+        summary = context.conversation_summary
+        if not summary:
+            return ""
+        return f"Conversation summary: {summary}"
 
     def _messages_from_history(self, context: ExecutionContext) -> tuple[Message, ...]:
         messages: list[Message] = []
@@ -417,11 +432,19 @@ class TurnContextAssembler:
             item
             for item in context.runtime_reminders
             if item.strip() and not item.startswith("[Compaction rehydration]")
+            if not item.strip().startswith("[hook:")
         )
         if not reminders:
             return ""
         rendered = "\n".join(f"- {item}" for item in reminders)
         return "\n".join(("Runtime reminders:", rendered))
+
+    def _render_hook_context(self, context: ExecutionContext) -> str:
+        contexts = tuple(item.strip() for item in context.hook_contexts if item.strip())
+        if not contexts:
+            return ""
+        rendered = "\n".join(f"- {item}" for item in contexts)
+        return "\n".join(("Hook context:", rendered))
 
     def _render_compaction_rehydration(self, context: ExecutionContext) -> str:
         files = context.compaction_rehydration.files

@@ -7,6 +7,8 @@ from mycli.domain.conversation import Message
 from mycli.domain.runtime import ProviderMessageShape, RuntimeBlock
 from mycli.domain.tooling.calls import ToolCall
 
+POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY = "post_tool_additional_contexts"
+
 
 class RequestMessageProjector:
     def render_replay(self, messages: tuple[Message, ...]) -> str:
@@ -63,11 +65,13 @@ class RequestMessageProjector:
         if message.role == "tool":
             if not message.tool_call_id:
                 return ()
+            metadata = self._model_visible_message_metadata(message)
             return (
                 RuntimeBlock(
                     type="tool_result",
                     text=message.content,
                     call_id=message.tool_call_id,
+                    metadata=metadata,
                 ),
             )
         if message.content:
@@ -81,7 +85,7 @@ class RequestMessageProjector:
         content = self.message_content(message)
         tool_calls = self._tool_calls_from_message(message)
         tool_call_id = self._tool_call_id_from_message(message)
-        model_metadata = self._message_metadata_from_blocks(message)
+        model_metadata = self._model_visible_message_metadata(message)
         if not content and not tool_calls and not tool_call_id and not model_metadata:
             return None
         metadata: dict[str, Any] = {
@@ -143,6 +147,13 @@ class RequestMessageProjector:
                     metadata[key] = nested
                     continue
                 metadata[key] = value
+        return metadata
+
+    def _model_visible_message_metadata(self, message: Message) -> dict[str, object]:
+        metadata = self._message_metadata_from_blocks(message)
+        value = message.metadata.get(POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY)
+        if value:
+            metadata[POST_TOOL_ADDITIONAL_CONTEXTS_METADATA_KEY] = value
         return metadata
 
     def _join_content(self, values: object) -> str:

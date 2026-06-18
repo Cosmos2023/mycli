@@ -15,6 +15,7 @@ from mycli.services.hooks.config import (
     HookWorkingDirectory,
 )
 from mycli.services.hooks.types import HookAction, HookContext, HookResult
+from mycli.services.hooks.types import HookPoint
 
 MAX_HOOK_OUTPUT_CHARS = 2000
 MAX_HOOK_MESSAGE_CHARS = 200
@@ -67,7 +68,11 @@ class ConfiguredHookCallback:
     allowlist_status: Callable[[ConfiguredHookSpec], HookAllowlistStatus] | None = None
 
     def __call__(self, ctx: HookContext) -> HookResult:
-        if not self.spec.enabled or not self.spec.matches_tool(ctx.tool_name):
+        source = ctx.metadata.get("source")
+        if not self.spec.enabled or not self.spec.matches(
+            tool_name=ctx.tool_name,
+            source=str(source) if isinstance(source, str) else None,
+        ):
             return HookResult(action=HookAction.ALLOW)
         started_at = float(self.monotonic())
         allowlist_status = (
@@ -153,6 +158,22 @@ def _result_from_completed_process(
     exit_code: int,
     duration_ms: int,
 ) -> tuple[HookResult, ConfiguredHookRunSummary]:
+    if exit_code == 2 and spec.hook_point in _BLOCKING_EXIT_CODE_HOOK_POINTS:
+        message = _safe_message(stderr or stdout or "blocked by configured hook")
+        summary = ConfiguredHookRunSummary(
+            execution_id=execution_id,
+            hook_id=spec.hook_id,
+            hook_name=spec.name,
+            hook_point=spec.hook_point.value,
+            status="ok",
+            action=HookAction.DENY.value,
+            duration_ms=duration_ms,
+            exit_code=exit_code,
+            stdout_chars=len(stdout),
+            stderr_chars=len(stderr),
+            message=message,
+        )
+        return HookResult(action=HookAction.DENY, message=message), summary
     if exit_code != 0:
         summary = ConfiguredHookRunSummary(
             execution_id=execution_id,
@@ -168,9 +189,34 @@ def _result_from_completed_process(
             message=stderr or stdout or f"exit={exit_code}",
         )
         return HookResult(action=HookAction.ERROR, message="configured hook failed"), summary
+    stripped_stdout = stdout.strip()
     try:
-        payload = json.loads(stdout) if stdout.strip() else {}
+        payload = json.loads(stripped_stdout) if stripped_stdout else {}
     except json.JSONDecodeError:
+        if (
+            spec.hook_point in _PLAIN_TEXT_ADDITIONAL_CONTEXT_HOOK_POINTS
+            and not _looks_like_json(stripped_stdout)
+        ):
+            context = _safe_context(stripped_stdout)
+            summary = ConfiguredHookRunSummary(
+                execution_id=execution_id,
+                hook_id=spec.hook_id,
+                hook_name=spec.name,
+                hook_point=spec.hook_point.value,
+                status="ok",
+                action=HookAction.ALLOW.value,
+                duration_ms=duration_ms,
+                exit_code=exit_code,
+                stdout_chars=len(stdout),
+                stderr_chars=len(stderr),
+            )
+            return (
+                HookResult(
+                    action=HookAction.ALLOW,
+                    additional_contexts=(context,) if context else (),
+                ),
+                summary,
+            )
         summary = ConfiguredHookRunSummary(
             execution_id=execution_id,
             hook_id=spec.hook_id,
@@ -193,19 +239,47 @@ def _result_from_completed_process(
             stdout=stdout,
             stderr=stderr,
         )
-    raw_action = payload.get("action", HookAction.ALLOW.value)
-    try:
-        action = HookAction(str(raw_action))
-    except ValueError:
-        return _invalid_action_result(
-            spec=spec,
-            execution_id=execution_id,
-            duration_ms=duration_ms,
-            stdout=stdout,
-            stderr=stderr,
+    hook_specific = payload.get("hookSpecificOutput")
+    codex_permission_deny = (
+        isinstance(hook_specific, dict)
+        and hook_specific.get("permissionDecision") == "deny"
+    )
+    codex_block = (
+        payload.get("decision") == "block"
+        or payload.get("continue") is False
+        or codex_permission_deny
+    )
+    if codex_block:
+        action = HookAction.DENY
+    else:
+        raw_action = payload.get("action", HookAction.ALLOW.value)
+        try:
+            action = HookAction(str(raw_action))
+        except ValueError:
+            return _invalid_action_result(
+                spec=spec,
+                execution_id=execution_id,
+                duration_ms=duration_ms,
+                stdout=stdout,
+                stderr=stderr,
+            )
+    message = str(
+        payload.get("message")
+        or payload.get("reason")
+        or payload.get("stopReason")
+        or (
+            hook_specific.get("permissionDecisionReason")
+            if isinstance(hook_specific, dict)
+            else None
         )
-    message = str(payload.get("message") or "")
+        or ""
+    )
     modified_args = _modified_args(payload.get("modified_args")) if action is HookAction.MODIFY else None
+    additional_contexts = _additional_contexts(payload.get("additional_contexts"))
+    additional_contexts = (
+        *additional_contexts,
+        *_codex_additional_contexts(hook_specific, hook_point=spec.hook_point),
+    )
     summary = ConfiguredHookRunSummary(
         execution_id=execution_id,
         hook_id=spec.hook_id,
@@ -219,7 +293,15 @@ def _result_from_completed_process(
         stderr_chars=len(stderr),
         message=message,
     )
-    return HookResult(action=action, message=_safe_message(message), modified_args=modified_args), summary
+    return (
+        HookResult(
+            action=action,
+            message=_safe_message(message),
+            modified_args=modified_args,
+            additional_contexts=additional_contexts,
+        ),
+        summary,
+    )
 
 
 def _invalid_action_result(
@@ -259,14 +341,83 @@ def _modified_args(value: object) -> dict[str, Any] | None:
     return modified or None
 
 
+def _additional_contexts(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        normalized = _safe_context(value)
+        return (normalized,) if normalized else ()
+    if not isinstance(value, list):
+        return ()
+    contexts: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        normalized = _safe_context(item)
+        if normalized:
+            contexts.append(normalized)
+    return tuple(contexts)
+
+
+_BLOCKING_EXIT_CODE_HOOK_POINTS = frozenset(
+    {
+        HookPoint.PRE_TOOL_USE,
+        HookPoint.POST_TOOL_USE,
+        HookPoint.USER_PROMPT_SUBMIT,
+        HookPoint.STOP,
+    }
+)
+_PLAIN_TEXT_ADDITIONAL_CONTEXT_HOOK_POINTS = frozenset(
+    {
+        HookPoint.SESSION_START,
+        HookPoint.USER_PROMPT_SUBMIT,
+    }
+)
+
+
+def _codex_additional_contexts(value: object, *, hook_point: HookPoint) -> tuple[str, ...]:
+    if hook_point not in _ADDITIONAL_CONTEXT_HOOK_POINTS:
+        return ()
+    if not isinstance(value, dict):
+        return ()
+    return _additional_contexts(value.get("additionalContext"))
+
+
+_ADDITIONAL_CONTEXT_HOOK_POINTS = frozenset(
+    {
+        HookPoint.POST_TOOL_USE,
+        HookPoint.SESSION_START,
+        HookPoint.USER_PROMPT_SUBMIT,
+    }
+)
+
+
 def _hook_payload(ctx: HookContext) -> dict[str, object]:
     metadata_keys = sorted(str(key) for key in ctx.metadata)
-    return {
+    payload: dict[str, object] = {
+        "hook_event_name": _codex_event_name(ctx.hook_point),
         "hook_point": ctx.hook_point.value,
         "tool_name": ctx.tool_name,
         "session_id": ctx.session_id,
         "metadata_keys": metadata_keys,
     }
+    if ctx.tool_name is not None:
+        payload["tool_input"] = dict(ctx.tool_args or {})
+    prompt = ctx.metadata.get("prompt")
+    if isinstance(prompt, str):
+        payload["prompt"] = prompt
+    source = ctx.metadata.get("source")
+    if isinstance(source, str):
+        payload["source"] = source
+    return payload
+
+
+def _codex_event_name(hook_point: HookPoint) -> str:
+    return {
+        HookPoint.PRE_TOOL_USE: "PreToolUse",
+        HookPoint.POST_TOOL_USE: "PostToolUse",
+        HookPoint.SESSION_START: "SessionStart",
+        HookPoint.USER_PROMPT_SUBMIT: "UserPromptSubmit",
+        HookPoint.STOP: "Stop",
+    }.get(hook_point, hook_point.value)
 
 
 def _execution_id(spec: ConfiguredHookSpec, ctx: HookContext) -> str:
@@ -319,6 +470,19 @@ def _safe_message(message: str) -> str:
     if any(part in lowered for part in ("api_key", "apikey", "token", "secret", "password", "bearer ")):
         return "redacted"
     return normalized[:MAX_HOOK_MESSAGE_CHARS]
+
+
+def _safe_context(message: str) -> str:
+    normalized = message.strip()
+    lowered = normalized.lower()
+    if any(part in lowered for part in ("api_key", "apikey", "token", "secret", "password", "bearer ")):
+        return "redacted"
+    return normalized[:MAX_HOOK_OUTPUT_CHARS]
+
+
+def _looks_like_json(value: str) -> bool:
+    stripped = value.lstrip()
+    return stripped.startswith("{") or stripped.startswith("[")
 
 
 def _emit_trace(trace_sink: Any | None, ctx: HookContext, summary: ConfiguredHookRunSummary) -> None:

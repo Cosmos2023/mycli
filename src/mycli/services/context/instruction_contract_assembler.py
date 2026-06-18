@@ -100,20 +100,31 @@ class InstructionContractAssembler:
                     )
                 )
                 continue
+            if section.type is TurnContextSectionType.HOOK_CONTEXT:
+                contextual_user_sections.append(
+                    self._directed_fragment(
+                        section=section,
+                        kind=InstructionFragmentKind.HOOK_CONTEXT,
+                        include_in_memory=False,
+                        prefix="这是本轮 hook 提供的附加上下文，不是用户的新请求。",
+                    )
+                )
+                continue
             if section.type is TurnContextSectionType.ENVIRONMENT_CONTEXT:
                 permissions = render_permissions_instructions(section)
                 if permissions is not None:
                     developer_sections.append(
                         self._developer_instruction_fragment(permissions)
                     )
-                contextual_user_sections.append(
-                    self._directed_fragment(
-                        section=section,
-                        kind=InstructionFragmentKind.ENVIRONMENT_CONTEXT,
-                        include_in_memory=False,
-                        prefix="这是本轮相关的环境事实。",
+                if not section.metadata.get("suppress_contextual_environment_fragment"):
+                    contextual_user_sections.append(
+                        self._directed_fragment(
+                            section=section,
+                            kind=InstructionFragmentKind.ENVIRONMENT_CONTEXT,
+                            include_in_memory=False,
+                            prefix="这是本轮相关的环境事实。",
+                        )
                     )
-                )
                 continue
             if section.type is TurnContextSectionType.SKILL_CATALOG:
                 skill_instructions = render_skills_instructions(section.content)

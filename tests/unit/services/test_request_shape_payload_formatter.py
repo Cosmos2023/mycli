@@ -79,6 +79,52 @@ def test_request_shape_payload_formatter_preserves_legacy_tool_replay_metadata()
     assert messages[1].tool_call_id == "call_read_1"
 
 
+def test_request_shape_payload_formatter_preserves_model_visible_tool_runtime_reminder() -> None:
+    shape = RequestShape(
+        provider="deepseek",
+        protocol="chat_completions",
+        model="deepseek-v4-flash",
+        stable_system="stable",
+        provider_messages=(
+            ProviderMessageShape(
+                role="tool",
+                content=(
+                    "README.md\n\n"
+                    "<tool_runtime_reminder>\n"
+                    "Runtime reminders: do not repeat ls\n"
+                    "</tool_runtime_reminder>"
+                ),
+                metadata={"tool_call_id": "call_ls"},
+            ),
+        ),
+        provider_runtime_items=(
+            ProviderRuntimeItemShape(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text=(
+                            "README.md\n\n"
+                            "<tool_runtime_reminder>\n"
+                            "Runtime reminders: do not repeat ls\n"
+                            "</tool_runtime_reminder>"
+                        ),
+                        call_id="call_ls",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    messages = RequestShapePayloadFormatter().legacy_messages(shape)
+    items = RequestShapePayloadFormatter().runtime_items(shape)
+
+    assert messages[0].content.endswith("</tool_runtime_reminder>")
+    assert messages[0].tool_call_id == "call_ls"
+    assert items[0].blocks[0].text.endswith("</tool_runtime_reminder>")
+    assert items[0].blocks[0].call_id == "call_ls"
+
+
 def test_request_shape_payload_formatter_keeps_empty_assistant_tool_call_messages() -> None:
     tool_call = ToolCall(
         name="read_file",

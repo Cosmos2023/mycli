@@ -155,6 +155,54 @@ def test_instruction_contract_assembler_uses_configured_plan_collaboration_mode(
     assert "Not allowed actions:" in mode_fragment.content
 
 
+def test_instruction_contract_assembler_keeps_permissions_when_environment_contextual_fragment_is_suppressed() -> None:
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+        ),
+    )
+    turn_context = TurnContext(
+        user_message=turn_context.user_message,
+        sections=tuple(
+            section
+            if section.type is not TurnContextSectionType.ENVIRONMENT_CONTEXT
+            else TurnContextSection(
+                type=section.type,
+                title=section.title,
+                content=section.content,
+                enabled=section.enabled,
+                source=section.source,
+                metadata={
+                    **dict(section.metadata),
+                    "suppress_contextual_environment_fragment": True,
+                },
+                cache_class=section.cache_class,
+                durability=section.durability,
+                scope=section.scope,
+            )
+            for section in turn_context.sections
+        ),
+    )
+
+    contract = InstructionContractAssembler().assemble(
+        turn_context=turn_context,
+        base_instructions="You are mycli.",
+        conversation_messages=(),
+    )
+
+    permissions_fragment = next(
+        fragment
+        for fragment in contract.developer_sections
+        if fragment.kind == "permissions"
+    )
+    assert "Runtime permissions for this turn:" in permissions_fragment.content
+    assert not any(
+        fragment.kind == "environment_context"
+        for fragment in contract.contextual_user_sections
+    )
+
+
 def test_instruction_contract_assembler_excludes_api_only_sections_from_model_context() -> None:
     turn_context = TurnContext(
         user_message="continue",

@@ -8,6 +8,7 @@ from mycli.services.hooks.types import (
     HookPoint,
     HookResult,
 )
+from mycli.services.hooks.builtin import post_tool_context
 
 
 class TestHookManager:
@@ -131,3 +132,21 @@ class TestHookManager:
         snapshot = manager.snapshot()
         assert snapshot[0].error_count == 1
         assert "sk-secret" not in snapshot[0].safe_line()
+
+
+def test_post_tool_context_hook_adds_context_only_after_tool_result() -> None:
+    skipped = post_tool_context(
+        HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read")
+    )
+    assert skipped.additional_contexts == ()
+
+    result = post_tool_context(
+        HookContext(
+            hook_point=HookPoint.POST_TOOL_USE,
+            tool_name="Read",
+            metadata={"success": True},
+        )
+    )
+
+    assert result.action is HookAction.ALLOW
+    assert "do not repeat the same tool call" in result.additional_contexts[0]

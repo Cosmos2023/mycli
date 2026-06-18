@@ -1617,6 +1617,48 @@ def test_tool_execution_service_applies_post_tool_modify_and_deny(
     assert "Tool result denied by hook" in deny_conversation.messages[-1].content
 
 
+def test_tool_execution_service_records_post_tool_additional_context_metadata(
+    tmp_path: Path,
+) -> None:
+    hook_manager = HookManager()
+    hook_manager.register(
+        HookPoint.POST_TOOL_USE,
+        lambda ctx: HookResult(
+            action=HookAction.ALLOW,
+            additional_contexts=("Use this result; do not repeat the same call.",),
+        ),
+        name="post_context",
+    )
+    service, _ = _service(tmp_path, hook_manager=hook_manager)
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_1",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    tool_message = conversation.messages[-1]
+    assert tool_message.metadata["post_tool_additional_contexts"] == (
+        "Use this result; do not repeat the same call.",
+    )
+    assert tool_message.blocks[0].metadata["post_tool_additional_contexts"] == (
+        "Use this result; do not repeat the same call.",
+    )
+    assert "<tool_runtime_reminder>" not in tool_message.content
+
+
 def test_tool_execution_service_skips_non_allowlisted_configured_hook(
     tmp_path: Path,
 ) -> None:

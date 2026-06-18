@@ -718,6 +718,7 @@ class ToolExecutionService:
         )
         combined_hook_summaries = (*hook_summaries, *post_hook_execution.summaries)
         result = _apply_post_hook_results(result, post_hook_execution.results)
+        post_tool_contexts = _post_hook_additional_contexts(post_hook_execution.results)
         next_plan_state = self._apply_tool_effects(
             call=normalized_call,
             result_payload=result.raw_payload,
@@ -754,6 +755,7 @@ class ToolExecutionService:
             raw_payload=result.raw_payload,
             evidence=result.evidence,
             tool_call_id=normalized_call.call_id,
+            post_tool_contexts=post_tool_contexts,
         )
         self._record_skill_instruction_message(
             conversation,
@@ -1737,7 +1739,13 @@ class ToolExecutionService:
         raw_payload: dict[str, object],
         evidence: tuple[ToolEvidence, ...] = (),
         tool_call_id: str | None = None,
+        post_tool_contexts: tuple[str, ...] = (),
     ) -> None:
+        post_tool_context_metadata = (
+            {"post_tool_additional_contexts": post_tool_contexts}
+            if post_tool_contexts
+            else {}
+        )
         blocks: tuple[RuntimeBlock, ...] = ()
         if tool_call_id:
             blocks = (
@@ -1763,6 +1771,7 @@ class ToolExecutionService:
                                 success=success,
                             ).to_dict()
                         ),
+                        **post_tool_context_metadata,
                     },
                 ),
             )
@@ -1776,6 +1785,7 @@ class ToolExecutionService:
                     "tool_name": tool_name,
                     "append_only": True,
                     "l1_truncated": True,
+                    **post_tool_context_metadata,
                 },
             )
         )
@@ -2006,6 +2016,17 @@ def _apply_post_hook_results(
         elif action is HookAction.MODIFY and isinstance(modified_args, dict):
             updated = _with_post_hook_modifications(updated, modified_args)
     return updated
+
+
+def _post_hook_additional_contexts(
+    hook_results: tuple[HookResult, ...],
+) -> tuple[str, ...]:
+    contexts: list[str] = []
+    for hook_result in hook_results:
+        for context in hook_result.additional_contexts:
+            if context.strip():
+                contexts.append(context)
+    return tuple(contexts)
 
 
 def runtime_policy_denial_message(decision: ToolRuntimeDecision) -> str:

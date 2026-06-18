@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 import json
 from pathlib import Path
+import re
 
 from mycli.services.hooks.types import HookPoint
 
@@ -29,10 +30,16 @@ class HookEnvPolicy(StrEnum):
 @dataclass(slots=True, frozen=True)
 class HookMatcher:
     tool_name: str | None = None
+    pattern: str | None = None
 
-    def matches(self, *, tool_name: str | None) -> bool:
-        if self.tool_name is None:
+    def matches(self, *, hook_point: HookPoint, tool_name: str | None, source: str | None = None) -> bool:
+        if hook_point in {HookPoint.USER_PROMPT_SUBMIT, HookPoint.STOP}:
             return True
+        if self.tool_name is None:
+            target = source if hook_point is HookPoint.SESSION_START else tool_name
+            if self.pattern is None:
+                return True
+            return _pattern_matches(self.pattern, target)
         return tool_name == self.tool_name
 
 
@@ -54,7 +61,14 @@ class ConfiguredHookSpec:
         return f"configured:{self.source.value}:{self.hook_id}"
 
     def matches_tool(self, tool_name: str | None) -> bool:
-        return self.matcher.matches(tool_name=tool_name)
+        return self.matches(tool_name=tool_name)
+
+    def matches(self, *, tool_name: str | None = None, source: str | None = None) -> bool:
+        return self.matcher.matches(
+            hook_point=self.hook_point,
+            tool_name=tool_name,
+            source=source,
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -113,11 +127,17 @@ class HookConfigRegistry:
                 hooks=(),
                 issues=(HookConfigIssue(scope, path, "root must be a JSON object"),),
             )
-        raw_hooks = payload.get("hooks", [])
-        if not isinstance(raw_hooks, list):
+        raw_hooks = _raw_hook_entries(payload)
+        if raw_hooks is None:
             return HookConfigDiscovery(
                 hooks=(),
-                issues=(HookConfigIssue(scope, path, "hooks must be a list"),),
+                issues=(
+                    HookConfigIssue(
+                        scope,
+                        path,
+                        "hooks must be a list or Codex event groups",
+                    ),
+                ),
             )
 
         hooks: list[ConfiguredHookSpec] = []
@@ -135,6 +155,86 @@ class HookConfigRegistry:
             seen_ids.add(parsed.hook_id)
             hooks.append(parsed)
         return HookConfigDiscovery(hooks=tuple(hooks), issues=tuple(issues))
+
+
+_CODEX_HOOK_POINTS = {
+    "PreToolUse": HookPoint.PRE_TOOL_USE,
+    "PostToolUse": HookPoint.POST_TOOL_USE,
+    "SessionStart": HookPoint.SESSION_START,
+    "UserPromptSubmit": HookPoint.USER_PROMPT_SUBMIT,
+    "Stop": HookPoint.STOP,
+}
+
+
+def _raw_hook_entries(payload: dict[str, object]) -> list[object] | None:
+    raw_hooks = payload.get("hooks")
+    if isinstance(raw_hooks, list):
+        return raw_hooks
+    codex_entries: list[object] = []
+    for event_name, hook_point in _CODEX_HOOK_POINTS.items():
+        raw_group = payload.get(event_name)
+        if raw_group is None:
+            continue
+        if not isinstance(raw_group, list):
+            return None
+        for group_index, raw_entry in enumerate(raw_group):
+            if not isinstance(raw_entry, dict):
+                codex_entries.append(raw_entry)
+                continue
+            group_matcher = raw_entry.get("matcher")
+            raw_group_hooks = raw_entry.get("hooks")
+            if not isinstance(raw_group_hooks, list):
+                codex_entries.append(raw_entry)
+                continue
+            for hook_index, raw_hook in enumerate(raw_group_hooks):
+                if not isinstance(raw_hook, dict):
+                    codex_entries.append(raw_hook)
+                    continue
+                raw_hook_type = raw_hook.get("type", "command")
+                if raw_hook_type != "command":
+                    continue
+                codex_entries.append(
+                    _codex_hook_to_flat_hook(
+                        raw_hook,
+                        hook_point=hook_point,
+                        matcher=group_matcher,
+                        event_name=event_name,
+                        group_index=group_index,
+                        hook_index=hook_index,
+                    )
+                )
+    if codex_entries:
+        return codex_entries
+    if raw_hooks is None:
+        return []
+    return None
+
+
+def _codex_hook_to_flat_hook(
+    raw_hook: dict[str, object],
+    *,
+    hook_point: HookPoint,
+    matcher: object,
+    event_name: str,
+    group_index: int,
+    hook_index: int,
+) -> dict[str, object]:
+    timeout = raw_hook.get("timeout")
+    if timeout is None:
+        timeout = raw_hook.get("timeoutSec")
+    hook_id = raw_hook.get("id")
+    if not isinstance(hook_id, str) or not hook_id.strip():
+        hook_id = f"{event_name}-{group_index}-{hook_index}"
+    return {
+        "id": hook_id,
+        "hook_point": hook_point.value,
+        "command": raw_hook.get("command"),
+        "enabled": raw_hook.get("enabled", True),
+        "timeout_seconds": timeout,
+        "matcher": matcher,
+        "working_directory": raw_hook.get("working_directory", "workspace"),
+        "env_policy": raw_hook.get("env_policy", "minimal"),
+    }
 
 
 def _parse_hook(
@@ -211,6 +311,8 @@ def _required_string(value: object) -> str | None:
 
 
 def _parse_command(value: object) -> tuple[str, ...] | None:
+    if isinstance(value, str) and value.strip():
+        return ("sh", "-c", value.strip())
     if not isinstance(value, list) or not value:
         return None
     command = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
@@ -242,6 +344,15 @@ def _parse_enum[T: StrEnum](value: object, enum_type: type[T], *, default: T) ->
 def _parse_matcher(value: object) -> HookMatcher | None:
     if value is None:
         return HookMatcher()
+    if isinstance(value, str):
+        pattern = value.strip()
+        if not pattern or pattern == "*":
+            return HookMatcher()
+        try:
+            re.compile(pattern)
+        except re.error:
+            return None
+        return HookMatcher(pattern=pattern)
     if not isinstance(value, dict):
         return None
     tool_name = value.get("tool_name")
@@ -250,3 +361,12 @@ def _parse_matcher(value: object) -> HookMatcher | None:
     if isinstance(tool_name, str) and tool_name.strip():
         return HookMatcher(tool_name=tool_name.strip())
     return None
+
+
+def _pattern_matches(pattern: str, target: str | None) -> bool:
+    if target is None:
+        return False
+    try:
+        return re.search(pattern, target) is not None
+    except re.error:
+        return False
