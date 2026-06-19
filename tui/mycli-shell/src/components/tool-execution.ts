@@ -101,11 +101,11 @@ export class ToolExecutionComponent extends Container {
 		if (this.tool.status === "error") {
 			return this.tool.errorPreview ?? this.tool.outputPreview ?? "";
 		}
-		if (this.tool.contentPreview) {
-			return this.tool.contentPreview;
-		}
 		if (this.tool.diffPreview) {
 			return this.tool.diffPreview;
+		}
+		if (this.tool.contentPreview) {
+			return this.tool.contentPreview;
 		}
 		if (!this.tool.expanded && !this.tool.hiddenLineCount && singleLineText(this.tool.outputPreview)) {
 			return "";
@@ -117,7 +117,7 @@ export class ToolExecutionComponent extends Container {
 		if (this.tool.status === "error") {
 			return theme.fg("error", text);
 		}
-		if (this.tool.diffPreview && !this.tool.contentPreview) {
+		if (this.tool.diffPreview) {
 			return styleDiff(text);
 		}
 		return theme.fg("muted", text);

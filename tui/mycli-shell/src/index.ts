@@ -2,6 +2,9 @@ export type {
 	MycliShellBash,
 	MycliShellAuthProvider,
 	MycliShellCommand,
+	MycliShellCommandDiagnostic,
+	MycliShellDiagnosticMetric,
+	MycliShellDiagnosticSection,
 	MycliShellFooterData,
 	MycliShellMessage,
 	MycliShellModel,
@@ -18,6 +21,7 @@ export { MycliShellApp, renderMycliShell } from "./shell-app.ts";
 export { MycliShellRuntime, type MycliShellRuntimeOptions } from "./shell-runtime.ts";
 export { AssistantMessageComponent } from "./components/assistant-message.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
+export { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { FooterComponent } from "./components/footer.ts";
 export { LoginFlowComponent } from "./components/login-flow.ts";
@@ -28,6 +32,7 @@ export { ResourceSelectorComponent } from "./components/resource-selector.ts";
 export { SessionSelectorComponent } from "./components/session-selector.ts";
 export { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 export { SettingsSelectorComponent } from "./components/settings-selector.ts";
+export { SetupWizardComponent } from "./components/setup-wizard.ts";
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";
 export { UserMessageComponent } from "./components/user-message.ts";

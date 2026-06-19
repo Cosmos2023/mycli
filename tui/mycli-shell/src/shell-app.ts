@@ -6,6 +6,7 @@ import { theme } from "./theme/theme.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
+import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { PlanPanelComponent } from "./components/plan-panel.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
@@ -87,6 +88,8 @@ class TranscriptBlocksComponent extends Container {
 				this.addChild(new BashExecutionComponent(block.bash));
 			} else if (block.kind === "subagent") {
 				this.addChild(new SubagentExecutionComponent(block.subagent));
+			} else if (block.kind === "diagnostic") {
+				this.addChild(new CommandDiagnosticComponent(block.diagnostic));
 			} else if (block.kind === "agent_group") {
 				this.addChild(new SubagentGroupComponent(block.group));
 			} else if (block.kind === "tool_group") {

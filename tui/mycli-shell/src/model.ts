@@ -76,12 +76,34 @@ export type MycliShellSubagentProgress = {
 	status?: string;
 };
 
+export type MycliShellDiagnosticMetric = {
+	label: string;
+	value: string;
+	accent?: "success" | "warning" | "error" | "accent" | "muted";
+};
+
+export type MycliShellDiagnosticSection = {
+	title: string;
+	rows: MycliShellDiagnosticMetric[];
+};
+
+export type MycliShellCommandDiagnostic = {
+	id: string;
+	command: string;
+	title: string;
+	kind: "usage" | "context" | "generic";
+	metrics: MycliShellDiagnosticMetric[];
+	sections: MycliShellDiagnosticSection[];
+	rawLines?: string[];
+};
+
 export type MycliShellTranscriptBlock =
 	| { id: string; kind: "message"; message: MycliShellMessage }
 	| { id: string; kind: "plan"; plan: MycliShellPlan }
 	| { id: string; kind: "tool"; tool: MycliShellTool }
 	| { id: string; kind: "bash"; bash: MycliShellBash }
-	| { id: string; kind: "subagent"; subagent: MycliShellSubagent };
+	| { id: string; kind: "subagent"; subagent: MycliShellSubagent }
+	| { id: string; kind: "diagnostic"; diagnostic: MycliShellCommandDiagnostic };
 
 export type MycliShellFooterData = {
 	cwd: string;
@@ -208,6 +230,9 @@ export type MycliShellPendingApproval = {
 	options: MycliShellApprovalOption[];
 	risk?: string;
 	riskReason?: string;
+	contentPreview?: string;
+	contentLineCount?: number;
+	diffPreview?: string;
 };
 
 export type MycliShellState = {

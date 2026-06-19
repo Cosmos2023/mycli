@@ -303,6 +303,10 @@ test("runtime adapter projects approval requests into shell approval state", () 
 		child_session_id: "demo:sub:turn_1:abcd1234",
 		risk: "medium",
 		risk_reason: "External command execution",
+		content_preview: "line 1\nline 2",
+		content_line_count: 2,
+		content_truncated: false,
+		diff: "@@ -1 +1 @@\n-old\n+new",
 		options: [
 			{ choice: "approve_once", label: "Allow once" },
 			{ choice: "reject", label: "Reject" },
@@ -317,6 +321,9 @@ test("runtime adapter projects approval requests into shell approval state", () 
 	assert.equal(shell.pendingApproval?.workerName, "explore");
 	assert.equal(shell.pendingApproval?.childSessionId, "demo:sub:turn_1:abcd1234");
 	assert.equal(shell.pendingApproval?.riskReason, "External command execution");
+	assert.equal(shell.pendingApproval?.contentPreview, "line 1\nline 2");
+	assert.equal(shell.pendingApproval?.contentLineCount, 2);
+	assert.equal(shell.pendingApproval?.diffPreview, "@@ -1 +1 @@\n-old\n+new");
 	assert.deepEqual(shell.pendingApproval?.options, [
 		{ choice: "approve_once", label: "Allow once" },
 		{ choice: "reject", label: "Reject" },
@@ -503,6 +510,29 @@ test("runtime adapter projects live write content preview from lifecycle event",
 	assert.equal(tool?.name, "Write");
 	assert.equal(tool?.contentPreview, "line 1\nline 2");
 	assert.equal(tool?.contentLineCount, 2);
+});
+
+test("runtime adapter projects write_file content preview alias", () => {
+	let state = initialRuntimeState();
+	state = { ...state, workspace: "/repo" };
+	state = reduceRuntimeEvent(state, "tool.start", {
+		client_turn_id: "c1",
+		tool_id: "call-write-1",
+		call_id: "call-write-1",
+		name: "write_file",
+		args_preview: "file_path=docs/notes.md",
+		content_preview: "line 1\nline 2",
+		content_line_count: 2,
+		content_truncated: false,
+	});
+
+	const shell = projectRuntimeState(state);
+	const tool = shell.tools[0];
+
+	assert.equal(tool?.name, "write_file");
+	assert.equal(tool?.contentPreview, "line 1\nline 2");
+	assert.equal(tool?.contentLineCount, 2);
+	assert.equal(tool?.outputPreview, undefined);
 });
 
 test("runtime adapter projects mutation diff preview from raw payload", () => {
@@ -937,6 +967,53 @@ test("runtime adapter handles command results and session lists", () => {
 	assert.equal(shell.sessions?.[0]?.parentSessionId, "root");
 	assert.equal(shell.sessions?.[0]?.named, true);
 	assert.equal(shell.sessions?.[0]?.current, false);
+});
+
+test("runtime adapter projects usage and context commands as diagnostics", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateWithCommandResult(state, "/usage", {
+		lines: [
+			"[usage] session=session-a",
+			"[usage] turns=3",
+			"[usage] current_context_window input_tokens=42000 max_tokens=128000 usage_ratio=32.8% source=provider",
+			"[usage] cumulative_usage input_tokens=100000 output_tokens=8000 total_tokens=108000 cache_read_tokens=90000 cache_write_tokens=5000",
+			"[usage] estimated_cost=0.123",
+		],
+	});
+	state = runtimeStateWithCommandResult(state, "/context", {
+		lines: [
+			"[context] budget input_tokens=91000 max_tokens=128000 usage_ratio=71.1% source=estimate",
+			"[context] context_window fresh_tokens=12000 tool_result_tokens=30000 duplicate_tool_result_tokens=3000 evictable_tool_result_tokens=5000",
+			"[context] compaction l1=2 before_tokens=90000 after_tokens=45000 ratio=50.0% last_decision=compact source=l4",
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	const usage = shell.transcript?.[0];
+	const context = shell.transcript?.[1];
+
+	assert.equal(usage?.kind, "diagnostic");
+	assert.equal(usage?.kind === "diagnostic" ? usage.diagnostic.title : "", "Usage");
+	assert.equal(
+		usage?.kind === "diagnostic"
+			? usage.diagnostic.metrics.some((metric) => metric.label === "Estimated cost" && metric.value === "0.123")
+			: false,
+		true,
+	);
+	assert.equal(context?.kind, "diagnostic");
+	assert.equal(context?.kind === "diagnostic" ? context.diagnostic.title : "", "Context");
+	assert.equal(
+		context?.kind === "diagnostic"
+			? context.diagnostic.metrics.some((metric) => metric.label === "Used" && metric.value === "71.1%")
+			: false,
+		true,
+	);
+	assert.equal(
+		context?.kind === "diagnostic"
+			? context.diagnostic.sections.some((section) => section.title === "Context composition")
+			: false,
+		true,
+	);
 });
 
 test("runtime adapter projects session tree payload", () => {

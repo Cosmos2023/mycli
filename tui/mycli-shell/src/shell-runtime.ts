@@ -25,6 +25,7 @@ import { ApprovalSelectorComponent } from "./components/approval-selector.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
+import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
@@ -111,6 +112,7 @@ type ChatBlockComponent =
 	| { kind: "tool"; signature: string; component: ToolExecutionComponent }
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
 	| { kind: "subagent"; signature: string; component: SubagentExecutionComponent }
+	| { kind: "diagnostic"; signature: string; component: CommandDiagnosticComponent }
 	| { kind: "agent_group"; signature: string; component: SubagentGroupComponent }
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
@@ -949,6 +951,9 @@ export class MycliShellRuntime {
 		}
 		if (block.kind === "subagent") {
 			return { kind: "subagent", signature, component: new SubagentExecutionComponent(block.subagent) };
+		}
+		if (block.kind === "diagnostic") {
+			return { kind: "diagnostic", signature, component: new CommandDiagnosticComponent(block.diagnostic) };
 		}
 		if (block.kind === "agent_group") {
 			return { kind: "agent_group", signature, component: new SubagentGroupComponent(block.group) };

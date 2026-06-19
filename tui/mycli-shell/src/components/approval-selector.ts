@@ -40,6 +40,11 @@ export class ApprovalSelectorComponent extends Container {
 		if (this.approval.risk || this.approval.riskReason) {
 			this.addChild(new Text(theme.fg("warning", this.riskText()), 3, 0));
 		}
+		const changePreview = this.changePreviewText();
+		if (changePreview) {
+			this.addChild(new Spacer(1));
+			this.addChild(new Text(changePreview, 3, 0));
+		}
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
 		this.addChild(this.responseContainer);
@@ -172,4 +177,46 @@ export class ApprovalSelectorComponent extends Container {
 			.filter(Boolean)
 			.join(" · ");
 	}
+
+	private changePreviewText(): string {
+		if (this.approval.diffPreview) {
+			return styleDiff(this.limitPreview(this.approval.diffPreview));
+		}
+		if (this.approval.contentPreview) {
+			const suffix =
+				this.approval.contentLineCount !== undefined
+					? theme.fg("muted", `\n... ${this.approval.contentLineCount} total lines`)
+					: "";
+			return theme.fg("muted", this.limitPreview(this.approval.contentPreview)) + suffix;
+		}
+		return "";
+	}
+
+	private limitPreview(text: string): string {
+		const lines = text.replace(/\n+$/g, "").split("\n");
+		const visible = lines.slice(0, 12);
+		const hidden = lines.length - visible.length;
+		if (hidden <= 0) {
+			return visible.join("\n");
+		}
+		return `${visible.join("\n")}\n... ${hidden} more lines`;
+	}
+}
+
+function styleDiff(text: string): string {
+	return text
+		.split("\n")
+		.map((line) => {
+			if (line.startsWith("+") && !line.startsWith("+++")) {
+				return theme.fg("toolDiffAdded", line);
+			}
+			if (line.startsWith("-") && !line.startsWith("---")) {
+				return theme.fg("toolDiffRemoved", line);
+			}
+			if (line.startsWith("@@")) {
+				return theme.fg("accent", line);
+			}
+			return theme.fg("muted", line);
+		})
+		.join("\n");
 }

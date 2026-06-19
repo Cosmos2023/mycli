@@ -817,6 +817,66 @@ test("footer renders collaboration mode when space allows", () => {
 	assert.match(output, /mode plan/);
 });
 
+test("mycli shell renders command diagnostics as structured panels", () => {
+	const output = renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		pendingNotice: undefined,
+		transcript: [
+			{
+				id: "diag-usage",
+				kind: "diagnostic",
+				diagnostic: {
+					id: "diag-usage",
+					command: "/usage",
+					title: "Usage",
+					kind: "usage",
+					metrics: [
+						{ label: "Turns with usage", value: "3", accent: "accent" },
+						{ label: "Estimated cost", value: "0.123", accent: "success" },
+					],
+					sections: [
+						{
+							title: "Cumulative tokens",
+							rows: [
+								{ label: "Input tokens", value: "100000", accent: "muted" },
+								{ label: "Cache read tokens", value: "90000", accent: "success" },
+							],
+						},
+					],
+				},
+			},
+			{
+				id: "diag-context",
+				kind: "diagnostic",
+				diagnostic: {
+					id: "diag-context",
+					command: "/context",
+					title: "Context",
+					kind: "context",
+					metrics: [{ label: "Used", value: "71.1%", accent: "warning" }],
+					sections: [
+						{
+							title: "Context composition",
+							rows: [{ label: "Duplicate tool result tokens", value: "3000", accent: "warning" }],
+						},
+					],
+				},
+			},
+		],
+	}, 100);
+	const plain = stripAnsi(output.join("\n"));
+
+	assert.match(plain, /Usage \/usage/);
+	assert.match(plain, /Estimated cost: 0\.123/);
+	assert.match(plain, /Cumulative tokens/);
+	assert.match(plain, /Context \/context/);
+	assert.match(plain, /Context composition/);
+	assert.doesNotMatch(plain, /\[usage\] cumulative_usage/);
+});
+
 test("tool rendering stays collapsed until expanded and marks failure", () => {
 	const longOutput = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join("\n");
 	const collapsed = new ToolExecutionComponent({

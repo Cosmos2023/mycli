@@ -1,6 +1,9 @@
 import type {
 	MycliShellAuthProvider,
 	MycliShellBash,
+	MycliShellCommandDiagnostic,
+	MycliShellDiagnosticMetric,
+	MycliShellDiagnosticSection,
 	MycliShellMessage,
 	MycliShellModel,
 	MycliShellPendingApproval,
@@ -150,6 +153,11 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			const subagent = subagentFromTranscriptItem(item);
 			if (subagent) {
 				transcript.push({ id: item.id, kind: "subagent", subagent });
+			}
+		} else if (item.type === "command_diagnostic") {
+			const diagnostic = diagnosticFromTranscriptItem(item);
+			if (diagnostic) {
+				transcript.push({ id: item.id, kind: "diagnostic", diagnostic });
 			}
 		}
 	}
@@ -538,10 +546,20 @@ function shouldClearCompletedPlan(turnState: string | null, planSteps: MycliShel
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
 	const lines = Array.isArray(result.lines) ? result.lines.map((line) => String(line)) : [String(result.message ?? "Done")];
 	const collaborationMode = collaborationModeValue(result.collaboration_mode);
+	const diagnostic = commandDiagnosticFromLines(command, lines);
+	const item = diagnostic
+		? {
+				id: nextId("command"),
+				type: "command_diagnostic",
+				text: diagnostic.title,
+				folded: false,
+				metadata: { command, diagnostic },
+			}
+		: { id: nextId("command"), type: "command_output", text: lines.join("\n"), folded: false, metadata: { command } };
 	return {
 		...state,
 		collaborationMode: collaborationMode ?? state.collaborationMode,
-		transcript: [...state.transcript, { id: nextId("command"), type: "command_output", text: lines.join("\n"), folded: false, metadata: { command } }],
+		transcript: [...state.transcript, item],
 	};
 }
 
@@ -618,6 +636,260 @@ function pendingNotice(state: RuntimeShellState): string | undefined {
 	return undefined;
 }
 
+function diagnosticFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellCommandDiagnostic | null {
+	const metadata = recordValue(item.metadata);
+	const diagnostic = recordValue(metadata.diagnostic);
+	const command = stringValue(diagnostic.command) ?? stringValue(metadata.command);
+	const title = stringValue(diagnostic.title);
+	if (!command || !title) {
+		return null;
+	}
+	const kind = diagnosticKindValue(diagnostic.kind);
+	return {
+		id: item.id,
+		command,
+		title,
+		kind,
+		metrics: diagnosticMetricsFromUnknown(diagnostic.metrics),
+		sections: diagnosticSectionsFromUnknown(diagnostic.sections),
+		rawLines: stringArrayValue(diagnostic.rawLines ?? diagnostic.raw_lines),
+	};
+}
+
+function commandDiagnosticFromLines(command: string, lines: string[]): Omit<MycliShellCommandDiagnostic, "id"> | null {
+	const canonicalCommand = canonicalDiagnosticCommand(command);
+	if (canonicalCommand === "usage") {
+		return usageDiagnosticFromLines(command, lines);
+	}
+	if (canonicalCommand === "context") {
+		return contextDiagnosticFromLines(command, lines);
+	}
+	return null;
+}
+
+function canonicalDiagnosticCommand(command: string): "usage" | "context" | null {
+	const normalized = command.trim();
+	if (normalized === "/usage" || normalized === "/status usage") return "usage";
+	if (normalized === "/context" || normalized === "/status context") return "context";
+	return null;
+}
+
+function usageDiagnosticFromLines(command: string, lines: string[]): Omit<MycliShellCommandDiagnostic, "id"> {
+	const data = keyValueRows(lines);
+	const cumulative = data.find((row) => row.label === "cumulative_usage");
+	const currentContext = data.find((row) => row.label === "current_context_window");
+	const metrics: MycliShellDiagnosticMetric[] = [];
+	const session = data.find((row) => row.values.session)?.values.session;
+	const turns = data.find((row) => row.values.turns)?.values.turns;
+	const cost = data.find((row) => row.values.estimated_cost)?.values.estimated_cost;
+	if (session) metrics.push({ label: "Session", value: session, accent: "muted" });
+	if (turns) metrics.push({ label: "Turns with usage", value: turns, accent: "accent" });
+	if (cost) metrics.push({ label: "Estimated cost", value: cost, accent: "success" });
+	const sections: MycliShellDiagnosticSection[] = [];
+	if (currentContext) {
+		sections.push({
+			title: "Current context window",
+			rows: metricsFromValues(currentContext.values, ["input_tokens", "max_tokens", "usage_ratio", "source"]),
+		});
+	}
+	if (cumulative) {
+		sections.push({
+			title: "Cumulative tokens",
+			rows: metricsFromValues(cumulative.values, [
+				"input_tokens",
+				"output_tokens",
+				"total_tokens",
+				"cache_read_tokens",
+				"cache_write_tokens",
+			]),
+		});
+	}
+	return {
+		command,
+		title: "Usage",
+		kind: "usage",
+		metrics,
+		sections,
+		rawLines: lines,
+	};
+}
+
+function contextDiagnosticFromLines(command: string, lines: string[]): Omit<MycliShellCommandDiagnostic, "id"> {
+	const data = keyValueRows(lines);
+	const budget = data.find((row) => row.label === "budget");
+	const contextWindow = data.find((row) => row.label === "context_window");
+	const compaction = data.find((row) => row.label === "compaction");
+	const l4 = data.find((row) => row.label === "l4");
+	const metrics: MycliShellDiagnosticMetric[] = [];
+	if (budget) {
+		const ratio = budget.values.usage_ratio;
+		const tokens = budget.values.input_tokens ?? budget.values.total_tokens;
+		if (tokens && budget.values.max_tokens) {
+			metrics.push({ label: "Budget", value: `${tokens}/${budget.values.max_tokens}`, accent: accentForPercent(ratio) });
+		}
+		if (ratio) {
+			metrics.push({ label: "Used", value: ratio, accent: accentForPercent(ratio) });
+		}
+		if (budget.values.source) {
+			metrics.push({ label: "Source", value: budget.values.source, accent: "muted" });
+		}
+	}
+	const sections: MycliShellDiagnosticSection[] = [];
+	if (contextWindow) {
+		sections.push({
+			title: "Context composition",
+			rows: metricsFromValues(contextWindow.values, [
+				"fresh_tokens",
+				"tool_result_tokens",
+				"duplicate_tool_result_tokens",
+				"evictable_tool_result_tokens",
+			]),
+		});
+	}
+	if (compaction) {
+		sections.push({
+			title: "Compaction",
+			rows: metricsFromValues(compaction.values, [
+				"before_tokens",
+				"after_tokens",
+				"ratio",
+				"last_decision",
+				"source",
+			]),
+		});
+	}
+	if (l4) {
+		sections.push({ title: "L4 state", rows: metricsFromValues(l4.values, ["last_decision", "source"]) });
+	}
+	if (sections.length === 0 && lines.length > 0) {
+		sections.push({ title: "Details", rows: lines.map((line, index) => ({ label: `Line ${index + 1}`, value: stripCommandPrefix(line) })) });
+	}
+	return {
+		command,
+		title: "Context",
+		kind: "context",
+		metrics,
+		sections,
+		rawLines: lines,
+	};
+}
+
+function keyValueRows(lines: string[]): Array<{ label: string; values: Record<string, string> }> {
+	return lines.map((line) => {
+		const stripped = stripCommandPrefix(line);
+		const parts = stripped.split(/\s+/).filter(Boolean);
+		const [label = "result", ...pairs] = parts;
+		const values: Record<string, string> = {};
+		if (pairs.length === 0) {
+			const separator = label.indexOf("=");
+			if (separator > 0) {
+				return { label: label.slice(0, separator), values: { [label.slice(0, separator)]: label.slice(separator + 1) } };
+			}
+		}
+		if (pairs.length === 0 && stripped !== label) {
+			values.value = stripped.slice(label.length).trim();
+		}
+		for (const pair of pairs) {
+			const separator = pair.indexOf("=");
+			if (separator <= 0) {
+				continue;
+			}
+			values[pair.slice(0, separator)] = pair.slice(separator + 1);
+		}
+		return { label, values };
+	});
+}
+
+function stripCommandPrefix(line: string): string {
+	return line.replace(/^\[[^\]]+\]\s*/, "").trim();
+}
+
+function metricsFromValues(values: Record<string, string>, keys: string[]): MycliShellDiagnosticMetric[] {
+	return keys
+		.filter((key) => values[key] !== undefined)
+		.map((key) => ({
+			label: humanizeMetricKey(key),
+			value: values[key] ?? "",
+			accent: metricAccent(key, values[key] ?? ""),
+		}));
+}
+
+function humanizeMetricKey(key: string): string {
+	return key
+		.split("_")
+		.map((part) => (part ? `${part[0]!.toUpperCase()}${part.slice(1)}` : part))
+		.join(" ");
+}
+
+function metricAccent(key: string, value: string): MycliShellDiagnosticMetric["accent"] {
+	if (key.includes("duplicate") || key.includes("evictable")) return "warning";
+	if (key.includes("cache_read")) return "success";
+	if (key.includes("cache_write")) return "accent";
+	if (key.includes("ratio") || key.includes("usage")) return accentForPercent(value);
+	return "muted";
+}
+
+function accentForPercent(value: string | undefined): MycliShellDiagnosticMetric["accent"] {
+	const percent = percentValue(value);
+	if (percent === null) return "accent";
+	if (percent >= 90) return "error";
+	if (percent >= 70) return "warning";
+	return "success";
+}
+
+function percentValue(value: string | undefined): number | null {
+	if (!value) return null;
+	const match = /^([0-9]+(?:\.[0-9]+)?)%$/.exec(value.trim());
+	return match ? Number(match[1]) : null;
+}
+
+function diagnosticKindValue(value: unknown): MycliShellCommandDiagnostic["kind"] {
+	return value === "usage" || value === "context" ? value : "generic";
+}
+
+function diagnosticMetricsFromUnknown(value: unknown): MycliShellDiagnosticMetric[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(diagnosticMetricFromUnknown).filter((item): item is MycliShellDiagnosticMetric => item !== null);
+}
+
+function diagnosticMetricFromUnknown(value: unknown): MycliShellDiagnosticMetric | null {
+	const record = recordValue(value);
+	const label = stringValue(record.label);
+	const metricValue = stringValue(record.value);
+	if (!label || metricValue === null) return null;
+	const metric: MycliShellDiagnosticMetric = {
+		label,
+		value: metricValue,
+	};
+	const accent = diagnosticAccentValue(record.accent);
+	if (accent) {
+		metric.accent = accent;
+	}
+	return metric;
+}
+
+function diagnosticSectionsFromUnknown(value: unknown): MycliShellDiagnosticSection[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(diagnosticSectionFromUnknown).filter((item): item is MycliShellDiagnosticSection => item !== null);
+}
+
+function diagnosticSectionFromUnknown(value: unknown): MycliShellDiagnosticSection | null {
+	const record = recordValue(value);
+	const title = stringValue(record.title);
+	if (!title) return null;
+	return {
+		title,
+		rows: diagnosticMetricsFromUnknown(record.rows),
+	};
+}
+
+function diagnosticAccentValue(value: unknown): MycliShellDiagnosticMetric["accent"] | undefined {
+	if (value === "success" || value === "warning" || value === "error" || value === "accent" || value === "muted") {
+		return value;
+	}
+	return undefined;
+}
+
 function pendingApprovalFromRecord(value: Record<string, unknown> | null): MycliShellPendingApproval | undefined {
 	if (!value) {
 		return undefined;
@@ -644,6 +916,9 @@ function pendingApprovalFromRecord(value: Record<string, unknown> | null): Mycli
 		options: options.length > 0 ? options : defaultApprovalOptions(),
 		risk: stringValue(value.risk) ?? undefined,
 		riskReason: stringValue(value.risk_reason) ?? stringValue(value.riskReason) ?? undefined,
+		contentPreview: stringValue(value.content_preview) ?? stringValue(value.contentPreview) ?? undefined,
+		contentLineCount: numberValue(value.content_line_count) ?? numberValue(value.contentLineCount) ?? undefined,
+		diffPreview: diffPreviewForTool(value),
 	};
 }
 
@@ -840,7 +1115,7 @@ function hiddenLineCountForTool(metadata: Record<string, unknown>, contentPrevie
 }
 
 function isWriteTool(name: string): boolean {
-	return name.toLowerCase() === "write";
+	return name.toLowerCase() === "write" || name.toLowerCase() === "write_file";
 }
 
 function lineCount(text: string): number {
