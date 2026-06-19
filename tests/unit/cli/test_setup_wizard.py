@@ -5,18 +5,27 @@ import tomllib
 from pathlib import Path
 
 from mycli.config.auth_store import AuthStore
+import mycli.cli.setup_wizard as setup_wizard
 from mycli.cli.setup_wizard import default_user_config_path, run_setup_wizard
 from mycli.domain.providers import ProviderId
+from mycli.tools.ripgrep_prepare import RipgrepPrepareResult
 
 
 def test_default_user_config_path_uses_mycli_home_layout(tmp_path: Path) -> None:
     assert default_user_config_path(tmp_path) == tmp_path / ".mycli" / "config.toml"
 
 
-def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> None:
+def test_run_setup_wizard_writes_provider_profile_defaults(monkeypatch, tmp_path: Path) -> None:
     inputs = iter(["", "deepseek", "", "deepseek-v4-flash"])
     secret_prompts: list[str] = []
     outputs: list[str] = []
+    prepared_roots: list[Path] = []
+
+    def fake_prepare_user_ripgrep(*, dest_root: Path, **_kwargs: object) -> RipgrepPrepareResult:
+        prepared_roots.append(dest_root)
+        return RipgrepPrepareResult(path=dest_root / "macos-aarch64" / "rg", installed=True)
+
+    monkeypatch.setattr(setup_wizard, "prepare_user_ripgrep", fake_prepare_user_ripgrep)
 
     result = run_setup_wizard(
         home_dir=tmp_path,
@@ -48,9 +57,14 @@ def test_run_setup_wizard_writes_provider_profile_defaults(tmp_path: Path) -> No
     assert "Enter API key:" in outputs
     assert secret_prompts == ["API key: "]
     assert outputs.count("────────────────────────────────────────") >= 6
+    assert prepared_roots == [tmp_path / ".mycli" / "vendor" / "ripgrep"]
+    assert any("Prepared ripgrep" in line for line in outputs)
 
 
-def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: Path) -> None:
+def test_run_setup_wizard_preserves_existing_config_tables_and_lists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / ".mycli" / "config.toml"
     config_path.parent.mkdir(parents=True)
     config_path.write_text(
@@ -69,6 +83,11 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: P
         encoding="utf-8",
     )
     inputs = iter(["1", "1", "https://api.openai.com/v1/", 'gpt-"quoted"'])
+    monkeypatch.setattr(
+        setup_wizard,
+        "prepare_user_ripgrep",
+        lambda **_kwargs: RipgrepPrepareResult(path=tmp_path / "rg", installed=False),
+    )
 
     run_setup_wizard(
         home_dir=tmp_path,
@@ -92,10 +111,18 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(tmp_path: P
     }
 
 
-def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(tmp_path: Path) -> None:
+def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     inputs = iter(["bad-method", "1", "bad-provider", "6", "", "compatible-model"])
     secrets = iter(["", "sk-compatible"])
     outputs: list[str] = []
+    monkeypatch.setattr(
+        setup_wizard,
+        "prepare_user_ripgrep",
+        lambda **_kwargs: RipgrepPrepareResult(path=tmp_path / "rg", installed=False),
+    )
 
     result = run_setup_wizard(
         home_dir=tmp_path,
@@ -112,10 +139,18 @@ def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(tmp_path: 
     assert any("Unsupported provider" in line for line in outputs)
 
 
-def test_run_setup_wizard_marks_stored_api_key_provider_as_configured(tmp_path: Path) -> None:
+def test_run_setup_wizard_marks_stored_api_key_provider_as_configured(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     AuthStore.from_home(tmp_path).set_api_key("openai", "sk-existing")
     inputs = iter(["api key", "openai", "", "gpt-5"])
     outputs: list[str] = []
+    monkeypatch.setattr(
+        setup_wizard,
+        "prepare_user_ripgrep",
+        lambda **_kwargs: RipgrepPrepareResult(path=tmp_path / "rg", installed=False),
+    )
 
     run_setup_wizard(
         home_dir=tmp_path,

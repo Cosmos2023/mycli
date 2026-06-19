@@ -20,6 +20,7 @@ from mycli.cli.main import (
     render_activity_lines,
 )
 from mycli.config.auth_store import AuthStore
+from mycli.tools.ripgrep_prepare import RipgrepPrepareResult
 from mycli.cli.node_tui import NodeTuiProcessError
 from mycli.cli.rendering import (
     RenderOptions,
@@ -109,6 +110,10 @@ def test_setup_command_writes_user_config(monkeypatch, tmp_path: Path) -> None:
     outputs: list[str] = []
     scripted_inputs = iter(["1", "3", "", "deepseek-v4-flash"])
     monkeypatch.setattr("getpass.getpass", lambda _prompt: "sk-test")
+    monkeypatch.setattr(
+        "mycli.cli.setup_wizard.prepare_user_ripgrep",
+        lambda **_kwargs: RipgrepPrepareResult(path=tmp_path / "rg", installed=False),
+    )
 
     exit_code = main(
         argv=["setup"],

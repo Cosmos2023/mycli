@@ -10,6 +10,7 @@ from mycli.config.auth_store import AuthStore
 from mycli.config.settings import default_user_config_path
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
+from mycli.tools.ripgrep_prepare import RIPGREP_VERSION, prepare_user_ripgrep
 
 
 InputFunc = Callable[[str], str]
@@ -90,6 +91,7 @@ def run_setup_wizard(
     output_func("")
     output_func(f"Saved configuration to {config_path}")
     output_func(f"Saved API key to {auth_store.path}")
+    _prepare_ripgrep(home_dir=home_dir, output_func=output_func)
     output_func("Run `mycli doctor` if you want to verify the provider connection.")
     return SetupResult(
         config_path=config_path,
@@ -97,6 +99,20 @@ def run_setup_wizard(
         model=model,
         api_base_url=api_base_url,
     )
+
+
+def _prepare_ripgrep(*, home_dir: Path, output_func: OutputFunc) -> None:
+    try:
+        result = prepare_user_ripgrep(
+            dest_root=home_dir / ".mycli" / "vendor" / "ripgrep",
+        )
+    except Exception as exc:
+        output_func(f"Could not prepare ripgrep: {exc}")
+        return
+    if result.installed:
+        output_func(f"Prepared ripgrep {RIPGREP_VERSION}: {result.path}")
+    else:
+        output_func(f"Ripgrep already prepared: {result.path}")
 
 
 def _prompt_auth_method(

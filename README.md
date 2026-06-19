@@ -46,6 +46,18 @@ uv run mycli setup
 
 setup 采用和 pi-agent 类似的登录流程：先选择认证方式，再选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。模型配置默认写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显。
 
+setup 还会准备 mycli 自用的 `rg`，安装位置为：
+
+```text
+~/.mycli/vendor/ripgrep/<platform>/rg
+```
+
+也可以手动执行：
+
+```bash
+uv run python scripts/prepare_ripgrep.py
+```
+
 进入 TUI 后，也可以运行 `/login` 打开同样的认证方式选择、provider 选择和 `Login to <Provider>` API key 输入界面。
 
 也可以手动把用户级模型配置写到 `~/.mycli/config.toml`：
