@@ -161,6 +161,7 @@ def test_subagents_command_is_provider_free_and_renders_json(tmp_path: Path) -> 
     assert exit_code == 0
     assert payload["profile"]["profile_id"] == "analyst"
     assert payload["profile"]["allowed_tools"] == ["Read"]
+    assert payload["profile"]["source_path"].endswith(".mycli/subagents/analyst.toml")
 
 
 def test_subagents_command_reports_human_issues(tmp_path: Path) -> None:
@@ -183,6 +184,42 @@ def test_subagents_command_reports_human_issues(tmp_path: Path) -> None:
     assert exit_code == 1
     assert "subagent broken" in rendered
     assert "subagent_issue:" in rendered
+
+
+def test_subagents_command_renders_markdown_agent_path_and_description(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    profiles = workspace / ".mycli" / "agents"
+    profiles.mkdir(parents=True)
+    home.mkdir()
+    profiles.joinpath("planner.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: planner",
+                "description: Split work into safe implementation slices.",
+                "tools: Read, Grep",
+                "---",
+                "You plan work.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output: list[str] = []
+
+    exit_code = handle_subagents_command(
+        {"command": "subagents", "utility_args": ["inspect", "planner"], "json_output": False},
+        cwd=workspace,
+        home=home,
+        output_func=output.append,
+    )
+
+    rendered = "\n".join(output)
+    assert exit_code == 0
+    assert "subagent planner" in rendered
+    assert "path=" in rendered
+    assert ".mycli/agents/planner.md" in rendered
+    assert "description=Split work into safe implementation slices." in rendered
 
 
 def test_mcp_list_command_is_provider_free_and_redacts_failures(tmp_path: Path) -> None:
@@ -1623,6 +1660,21 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         def inspect_usage(self) -> tuple[str, ...]:
             return ("session=demo", "turns=1")
 
+        def inspect_subagent_profiles(self) -> tuple[str, ...]:
+            return ("mycli subagents list: subagents: 1 profiles, 1 enabled, 0 disabled", "subagent explore")
+
+        def inspect_subagent_profile(self, profile_id: str) -> tuple[str, ...]:
+            return (f"mycli subagents inspect: subagent profile: {profile_id}", f"subagent {profile_id}")
+
+        def inspect_subagents(self, child_session_id: str | None = None) -> tuple[str, ...]:
+            return (f"explore running {child_session_id or 'child-session'}",)
+
+        def cancel_background_subagents(self) -> tuple[str, ...]:
+            return ("cancelled child-session",)
+
+        def cancel_background_subagent(self, child_session_id: str) -> tuple[str, ...]:
+            return (f"cancelled {child_session_id}",)
+
         def inspect_status(self) -> tuple[str, ...]:
             return (
                 "session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no",
@@ -1688,6 +1740,23 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         "[toolset] file enabled=true sources=builtin tools=Read,Write conflicts=0",
     ]
     assert list(handler("/bashes")) == ["[bash] no background shells"]
+    assert list(handler("/tasks")) == ["[bash] no background shells"]
+    assert list(handler("/tasks bashes")) == ["[bash] no background shells"]
+    assert list(handler("/agents")) == [
+        "[agent] mycli subagents list: subagents: 1 profiles, 1 enabled, 0 disabled",
+        "[agent] subagent explore",
+    ]
+    assert list(handler("/agents inspect explore")) == [
+        "[agent] mycli subagents inspect: subagent profile: explore",
+        "[agent] subagent explore",
+    ]
+    assert list(handler("/tasks agents")) == ["[subagent] explore running child-session"]
+    assert list(handler("/tasks agents child-1")) == ["[subagent] explore running child-1"]
+    assert list(handler("/agents runs child-1")) == ["[subagent] explore running child-1"]
+    assert list(handler("/subagents child-1")) == ["[subagent] explore running child-1"]
+    assert list(handler("/tasks kill-agents")) == ["[subagent] cancelled child-session"]
+    assert list(handler("/tasks agents kill child-1")) == ["[subagent] cancelled child-1"]
+    assert list(handler("/agents kill")) == ["[subagent] cancelled child-session"]
     assert list(handler("/jobs")) == ["[bash] no background shells"]
     assert list(handler("/jobs bashes")) == ["[bash] no background shells"]
     assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]

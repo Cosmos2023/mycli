@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from mycli.domain.runtime import ShellBackendProfile
+from mycli.domain.runtime import RuntimeInterruptToken, ShellBackendProfile
 from mycli.domain.runtime.task_notifications import TaskNotification
 
 
@@ -18,6 +18,7 @@ class ShellBackendRequest:
     command_pattern: str | None = None
     output_file: Path | None = None
     notification_sink: Callable[[TaskNotification], None] | None = None
+    interrupt_token: RuntimeInterruptToken | None = None
 
 
 class ShellBackend(Protocol):
@@ -46,4 +47,5 @@ class LocalShellBackend:
             command_pattern=request.command_pattern,
             output_file=request.output_file,
             notification_sink=request.notification_sink,
+            interrupt_token=request.interrupt_token,
         )

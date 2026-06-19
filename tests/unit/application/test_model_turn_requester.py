@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from mycli.application.runtime.model.model_turn_requester import ModelTurnRequester
 import pytest
+import threading
 
-from mycli.domain.runtime import ModelTurnResult, RuntimeBlock
+from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeInterruptToken
 from mycli.llms.clients.openai_chat import ModelResponseError
 
 
@@ -45,6 +46,47 @@ class NonStreamingAdapter:
     def next_turn(self, *, items, tools):
         del items, tools
         return ModelTurnResult(items=(), done=True)
+
+
+class InterruptibleStreamingAdapter:
+    def __init__(self) -> None:
+        self.events_consumed = 0
+
+    def stream_turn(self, *, items, tools):
+        del items, tools
+        self.events_consumed += 1
+        yield {"type": "text_delta", "text": "before"}
+        self.events_consumed += 1
+        yield {"type": "text_delta", "text": "after"}
+
+
+class CloseAwareStreamingAdapter:
+    def __init__(self) -> None:
+        self.seen_token: RuntimeInterruptToken | None = None
+        self.used_interruptible_stream = False
+
+    def stream_turn(self, *, items, tools):  # pragma: no cover - should not be used
+        del items, tools
+        raise AssertionError("stream_turn should not be used when interruptible stream exists")
+
+    def stream_turn_with_interrupt(self, *, items, tools, interrupt_token):
+        del items, tools
+        self.seen_token = interrupt_token
+        self.used_interruptible_stream = True
+        yield {"type": "text_delta", "text": "hello"}
+        yield {"type": "completed", "response_id": "resp_1", "metadata": {}}
+
+
+class BlockingInterruptibleStreamingAdapter:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def stream_turn_with_interrupt(self, *, items, tools, interrupt_token):
+        del items, tools, interrupt_token
+        self.started.set()
+        self.release.wait(timeout=30)
+        yield {"type": "text_delta", "text": "late"}
 
 
 def _requester(adapter: object, diagnostics_sink=None) -> ModelTurnRequester:
@@ -149,3 +191,73 @@ def test_model_turn_requester_does_not_emit_stream_diagnostics_for_non_streaming
     assert result.done is True
     assert chunks == ()
     assert diagnostics == []
+
+
+def test_model_turn_requester_stops_stream_when_interrupt_token_is_requested() -> None:
+    adapter = InterruptibleStreamingAdapter()
+    token = RuntimeInterruptToken()
+    events = []
+
+    def sink(event):
+        events.append(event)
+        token.request()
+
+    with pytest.raises(KeyboardInterrupt):
+        _requester(adapter).request_model_turn(
+            runtime_items=[],
+            legacy_messages=[],
+            tools=[],
+            stream_sink=sink,
+            interrupt_token=token,
+        )
+
+    assert [event.text for event in events] == ["before"]
+    assert adapter.events_consumed <= 2
+
+
+def test_model_turn_requester_prefers_interruptible_stream_adapter() -> None:
+    adapter = CloseAwareStreamingAdapter()
+    token = RuntimeInterruptToken()
+
+    result, chunks = _requester(adapter).request_model_turn(
+        runtime_items=[],
+        legacy_messages=[],
+        tools=[],
+        interrupt_token=token,
+    )
+
+    assert result.response_id == "resp_1"
+    assert chunks == ("hello",)
+    assert adapter.used_interruptible_stream is True
+    assert adapter.seen_token is token
+
+
+def test_model_turn_requester_interrupts_before_first_stream_event() -> None:
+    adapter = BlockingInterruptibleStreamingAdapter()
+    token = RuntimeInterruptToken()
+    result_holder: dict[str, object] = {}
+
+    def request() -> None:
+        try:
+            _requester(adapter).request_model_turn(
+                runtime_items=[],
+                legacy_messages=[],
+                tools=[],
+                interrupt_token=token,
+            )
+        except BaseException as exc:  # noqa: BLE001 - assert exact type below.
+            result_holder["exception"] = exc
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    assert adapter.started.wait(timeout=1.0)
+    token.request()
+    thread.join(timeout=0.5)
+    try:
+        assert not thread.is_alive()
+    finally:
+        adapter.release.set()
+        thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    assert isinstance(result_holder.get("exception"), KeyboardInterrupt)

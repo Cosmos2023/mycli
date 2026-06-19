@@ -27,8 +27,10 @@ from mycli.domain.runtime import (
     PendingClarification,
     PendingDecision,
     PlanState,
+    RuntimeBlock,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
+    RuntimeInterruptToken,
     SessionCommandAllowance,
     StopReason,
     SuspendedTurn,
@@ -60,8 +62,10 @@ class TurnExecutor:
         self,
         user_message: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
+        _raise_if_interrupted(interrupt_token)
         runtime._restore_model()
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
         if decision is not None:
@@ -158,6 +162,7 @@ class TurnExecutor:
             streamed_chunks=[],
             stream_sink=stream_sink,
             initial_runtime_reminders=initial_hook_contexts,
+            interrupt_token=interrupt_token,
         )
 
     def _resume_interrupted_turn(self, suspended: SuspendedTurn) -> TurnResponse:
@@ -558,6 +563,7 @@ class TurnExecutor:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         last_tool_exposure_summary: dict[str, list[str]] | None = None,
         initial_runtime_reminders: tuple[str, ...] = (),
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         latest_context_baseline: ContextBaseline | None = None
@@ -570,6 +576,7 @@ class TurnExecutor:
         output_tokens_escalated = False
 
         while True:
+            _raise_if_interrupted(interrupt_token)
             self._drain_steering_messages(
                 conversation=conversation,
                 turn_id=turn_id,
@@ -934,6 +941,7 @@ class TurnExecutor:
             runtime_items = runtime._build_runtime_items(request_shape=request_shape)
             legacy_messages = runtime._build_messages(request_shape=request_shape)
             try:
+                _raise_if_interrupted(interrupt_token)
                 request_started_at = runtime._monotonic()
                 try:
                     turn_result, turn_streamed_chunks = runtime._request_model_turn(
@@ -941,6 +949,7 @@ class TurnExecutor:
                         legacy_messages=legacy_messages,
                         tools=tools,
                         stream_sink=stream_sink,
+                        interrupt_token=interrupt_token,
                     )
                 finally:
                     if output_tokens_escalated:
@@ -1176,6 +1185,7 @@ class TurnExecutor:
                 streamed_chunks=streamed_chunks,
                 turn_items=turn_items,
                 stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
             )
             if early_response is not None:
                 response, status, stop_reason = early_response
@@ -1792,6 +1802,7 @@ class TurnExecutor:
         activity_events.append(
             ActivityEvent(kind="model_error", message=interrupt_warning)
         )
+        repaired_tool_results = _repair_interrupted_tool_results(conversation)
         runtime._append_turn_item(
             turn_id=turn_id,
             turn_items=turn_items,
@@ -1801,6 +1812,22 @@ class TurnExecutor:
                 metadata={"recovery_kind": "interrupted_turn_saved"},
             ),
         )
+        for repaired in repaired_tool_results:
+            runtime._append_turn_item(
+                turn_id=turn_id,
+                turn_items=turn_items,
+                item=TurnItem(
+                    type=TurnItemType.TOOL_RESULT,
+                    text=repaired.content,
+                    call_id=repaired.tool_call_id,
+                    metadata={
+                        "success": False,
+                        "error_kind": "tool_interrupted",
+                        "synthetic": True,
+                        "recovery_kind": "interrupted_missing_tool_result",
+                    },
+                ),
+            )
         runtime._save_runtime_state(
             conversation=conversation,
             plan_state=current_plan_state,
@@ -2052,6 +2079,59 @@ def _clarification_resolution_payload(
     return payload
 
 
+INTERRUPTED_TOOL_RESULT_CONTENT = "Tool call interrupted by user before it completed."
+
+
+def _repair_interrupted_tool_results(conversation: Conversation) -> tuple[Message, ...]:
+    pending_tool_call_ids: list[str] = []
+    for message in conversation.messages:
+        if message.role == "assistant":
+            if pending_tool_call_ids:
+                break
+            pending_tool_call_ids = [
+                call.call_id
+                for call in message.tool_calls
+                if isinstance(call.call_id, str) and call.call_id
+            ]
+            continue
+        if message.role == "tool":
+            tool_call_id = message.tool_call_id
+            if isinstance(tool_call_id, str) and tool_call_id in pending_tool_call_ids:
+                pending_tool_call_ids.remove(tool_call_id)
+            continue
+        if pending_tool_call_ids:
+            break
+
+    repaired: list[Message] = []
+    for tool_call_id in pending_tool_call_ids:
+        message = Message(
+            role="tool",
+            content=INTERRUPTED_TOOL_RESULT_CONTENT,
+            tool_call_id=tool_call_id,
+            blocks=(
+                RuntimeBlock(
+                    type="tool_result",
+                    text=INTERRUPTED_TOOL_RESULT_CONTENT,
+                    call_id=tool_call_id,
+                    metadata={
+                        "success": False,
+                        "error_kind": "tool_interrupted",
+                        "synthetic": True,
+                    },
+                ),
+            ),
+            metadata={
+                "success": False,
+                "error_kind": "tool_interrupted",
+                "synthetic": True,
+                "append_only": True,
+            },
+        )
+        conversation.append(message)
+        repaired.append(message)
+    return tuple(repaired)
+
+
 def _record_turn_interrupted(
     *,
     runtime: AgentRuntime,
@@ -2153,3 +2233,8 @@ def _hook_additional_contexts(results: tuple[HookResult, ...]) -> tuple[str, ...
             for context in result.additional_contexts
         )
     return tuple(dict.fromkeys(context for context in contexts if context.strip()))
+
+
+def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
+    if interrupt_token is not None:
+        interrupt_token.raise_if_interrupted()

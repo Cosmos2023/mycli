@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -21,6 +23,7 @@ from mycli.domain.runtime import (
     InvokedSkillSnapshot,
     PlanState,
     RuntimeStreamEvent,
+    RuntimeInterruptToken,
     SandboxProfile,
     TurnItemType,
 )
@@ -265,6 +268,45 @@ class FakeInterruptMutationTool:
         return (str(arguments["path"]),)
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
+        raise KeyboardInterrupt
+
+
+class FakeSlowSafeTool:
+    spec = ToolSpec(
+        name="Read",
+        description="Slow safe read",
+        parameters=(ToolParameter("path", "string"),),
+    )
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.started.set()
+        self.release.wait(timeout=30)
+        return ToolResult(
+            success=True,
+            summary=f"Read {arguments['path']}",
+            raw_payload={"path": arguments["path"]},
+        )
+
+
+class FakeInterruptingSafeTool:
+    spec = ToolSpec(
+        name="Grep",
+        description="Interrupt safe grep",
+        parameters=(ToolParameter("pattern", "string"),),
+    )
+
+    def __init__(self, token: RuntimeInterruptToken) -> None:
+        self._token = token
+        self.started = threading.Event()
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        self.started.set()
+        self._token.request("test_interrupt")
         raise KeyboardInterrupt
 
 
@@ -1131,6 +1173,7 @@ def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
     assert runtime_enforcement["filesystem"] == "workspace_write"
     assert runtime_enforcement["shell"] == "restricted"
     assert runtime_enforcement["env_policy"] == "sanitized"
+    assert runtime_enforcement["shell_environment_policy"]["inherit"] == "core"
     assert runtime_enforcement["timeout_seconds"] <= 120
     assert runtime_enforcement["timeout_capped"] is True
     assert "command" not in runtime_enforcement
@@ -1156,6 +1199,58 @@ def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
     assert "stderr" not in tool_trace.payload["raw_payload_keys"]
     assert "python3 -c" not in str(tool_trace.payload)
     assert "print" not in str(tool_trace.payload)
+
+
+def test_tool_execution_service_injects_shell_interrupt_token_without_tracing_it(
+    tmp_path: Path,
+) -> None:
+    token = RuntimeInterruptToken(source="test")
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([BashTool(tmp_path)]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=BashTool(tmp_path).spec,
+            ),
+        )
+    )
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "python3 -c 'print(\"ok\")'"},
+            reason="probe",
+            call_id="call_shell_interrupt",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+        interrupt_token=token,
+    )
+
+    loaded = TraceService(home_dir=tmp_path / "home").load("demo")
+    tool_trace = next(event for event in loaded if event.kind == "tool_execution")
+    lifecycle = [
+        event for event in loaded if event.kind == "tool_runtime_lifecycle"
+    ]
+    assert "_runtime_interrupt_token" not in tool_trace.payload["argument_keys"]
+    assert "_runtime_interrupt_token" not in str(tool_trace.payload)
+    assert all(
+        "_runtime_interrupt_token" not in event.payload["argument_keys"]
+        for event in lifecycle
+    )
+    assert all("_runtime_interrupt_token" not in str(event.payload) for event in lifecycle)
 
 
 def test_tool_execution_service_runtime_policy_allows_contributed_tool(
@@ -2491,6 +2586,70 @@ def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) 
 
 def test_tool_execution_service_classifies_git_tools_as_parallel_safe() -> None:
     assert {"GitStatus", "GitDiff", "GitLog", "GitShow"}.issubset(CONCURRENCY_SAFE_TOOLS)
+
+
+def test_tool_execution_service_parallel_batch_interrupt_does_not_wait_for_slow_tools(
+    tmp_path: Path,
+) -> None:
+    token = RuntimeInterruptToken(source="test")
+    slow_tool = FakeSlowSafeTool()
+    interrupting_tool = FakeInterruptingSafeTool(token)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([slow_tool, interrupting_tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    started = time.monotonic()
+    try:
+        service.execute_tool_calls(
+            conversation=Conversation(session_id="demo"),
+            calls=[
+                ToolCall(
+                    name="Read",
+                    arguments={"path": "slow.txt"},
+                    reason="slow",
+                    call_id="call_slow_1",
+                ),
+                ToolCall(
+                    name="Grep",
+                    arguments={"pattern": "needle"},
+                    reason="interrupt",
+                    call_id="call_interrupt_safe_1",
+                ),
+            ],
+            tool_router=router,
+            tool_exposure=ToolExposure(
+                entries=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("Read"),
+                        source=ToolRouteSource.REGISTRY,
+                        spec=slow_tool.spec,
+                    ),
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("Grep"),
+                        source=ToolRouteSource.REGISTRY,
+                        spec=interrupting_tool.spec,
+                    ),
+                )
+            ),
+            plan_state=PlanState(),
+            turn_id="turn_1",
+            activity_events=[],
+            turn_items=[],
+            interrupt_token=token,
+        )
+    except KeyboardInterrupt:
+        elapsed = time.monotonic() - started
+    else:  # pragma: no cover - explicit failure path
+        slow_tool.release.set()
+        raise AssertionError("KeyboardInterrupt should be re-raised")
+    finally:
+        slow_tool.release.set()
+
+    assert interrupting_tool.started.is_set()
+    assert elapsed < 1.0
 
 
 def test_tool_execution_service_legacy_mutation_paths_include_patch(tmp_path: Path) -> None:

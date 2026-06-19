@@ -19,14 +19,15 @@ def handle_slash_command(command: str) -> str:
                 "/status [usage|context|stats]",
                 "/session [show|list|resume|fork|search|maintenance]",
                 "/tools [list|sets|permissions|hooks|extensions|plugins|skills]",
-                "/jobs [subagents|bashes]",
+                "/agents [list|inspect <profile_id>|runs [child_session_id]|kill]",
+                "/tasks [agents [child_session_id]|agents kill <child_session_id>|bashes|kill-agents]",
                 "/changes [undo]",
                 "/trace [export|logs]",
                 "/extensions",
                 "/model <model> [--thinking-effort low|medium|high|xhigh]",
                 "/view [default|verbose|focus]",
                 "/quit",
-                "Aliases: /skill, /usage, /context, /stats, /sessions, /resume, /fork, /search, /session-maintenance, /permissions, /hooks, /toolsets, /bashes, /subagents, /trace-jsonl, /logs, /undo",
+                "Aliases: /skill, /usage, /context, /stats, /sessions, /resume, /fork, /search, /session-maintenance, /permissions, /hooks, /toolsets, /jobs, /bashes, /subagents, /trace-jsonl, /logs, /undo",
             ]
         )
     if command == "/quit":
@@ -49,8 +50,10 @@ def build_command_handler(
             return [f"[hook] {line}" for line in service.inspect_hooks()]
         if command == "/tools sets":
             return [f"[toolset] {line}" for line in service.inspect_toolsets()]
-        if command in {"/jobs", "/jobs bashes"}:
+        if command in {"/tasks", "/tasks bashes"}:
             return [f"[bash] {line}" for line in service.inspect_bashes()]
+        if command in {"/tasks agents", "/agents runs"}:
+            return [f"[subagent] {line}" for line in service.inspect_subagents()]
         if command == "/changes":
             return [f"[change] {line}" for line in service.inspect_file_changes()]
         if command == "/memory" or command == "/memory list":
@@ -93,9 +96,22 @@ def build_command_handler(
             if len(parts) == 1:
                 return [f"[mode] {line}" for line in service.inspect_mode()]
             return [f"[mode] {line}" for line in service.set_collaboration_mode(parts[1])]
-        if command.startswith("/jobs subagents"):
-            child_session_id = command.removeprefix("/jobs subagents").strip() or None
+        if command in {"/tasks kill-agents", "/agents kill"}:
+            return [f"[subagent] {line}" for line in service.cancel_background_subagents()]
+        if command.startswith("/tasks agents kill "):
+            child_session_id = command.removeprefix("/tasks agents kill ").strip()
+            return [f"[subagent] {line}" for line in service.cancel_background_subagent(child_session_id)]
+        if command.startswith("/tasks agents"):
+            child_session_id = command.removeprefix("/tasks agents").strip() or None
             return [f"[subagent] {line}" for line in service.inspect_subagents(child_session_id)]
+        if command.startswith("/agents runs"):
+            child_session_id = command.removeprefix("/agents runs").strip() or None
+            return [f"[subagent] {line}" for line in service.inspect_subagents(child_session_id)]
+        if command in {"/agents", "/agents list"}:
+            return [f"[agent] {line}" for line in service.inspect_subagent_profiles()]
+        if command.startswith("/agents inspect "):
+            profile_id = command.removeprefix("/agents inspect ").strip()
+            return [f"[agent] {line}" for line in service.inspect_subagent_profile(profile_id)]
         if command in {"/session", "/session show"}:
             return [f"[session] {line}" for line in service.inspect_session()]
         if command == "/session list":
@@ -198,8 +214,12 @@ def canonical_slash_command(command: str) -> str:
         "/toolsets": "/tools sets",
         "/extensions": "/tools extensions",
         "/plugin": "/tools plugins",
-        "/bashes": "/jobs bashes",
-        "/subagents": "/jobs subagents",
+        "/jobs": "/tasks",
+        "/jobs bashes": "/tasks bashes",
+        "/jobs subagents": "/tasks agents",
+        "/jobs kill-subagents": "/tasks kill-agents",
+        "/bashes": "/tasks bashes",
+        "/subagents": "/tasks agents",
         "/trace-jsonl": "/trace export",
         "/logs": "/trace logs",
         "/undo": "/changes undo",
@@ -212,7 +232,8 @@ def canonical_slash_command(command: str) -> str:
         ("/search ", "/session search "),
         ("/session-maintenance ", "/session maintenance "),
         ("/plugin ", "/tools plugins "),
-        ("/subagents ", "/jobs subagents "),
+        ("/jobs subagents ", "/tasks agents "),
+        ("/subagents ", "/tasks agents "),
     )
     for old_prefix, new_prefix in prefix_aliases:
         if normalized.startswith(old_prefix):

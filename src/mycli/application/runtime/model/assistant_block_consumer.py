@@ -8,6 +8,7 @@ from mycli.domain.runtime import (
     ActivityEvent,
     DecisionKind,
     ModelTurnResult,
+    RuntimeInterruptToken,
     PendingDecision,
     PendingClarification,
     PlanState,
@@ -90,6 +91,7 @@ class AssistantBlockConsumer:
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[
         PlanState,
         bool,
@@ -99,7 +101,9 @@ class AssistantBlockConsumer:
         current_plan_state = plan_state
         turn_has_tool_call = False
         turn_text_chunks: list[str] = []
+        _raise_if_interrupted(interrupt_token)
         for item in turn_result.items:
+            _raise_if_interrupted(interrupt_token)
             if item.role != "assistant":
                 continue
             pending_text_chunks: list[str] = []
@@ -163,6 +167,7 @@ class AssistantBlockConsumer:
 
             def flush_pending_safe_tool_calls() -> None:
                 nonlocal current_plan_state
+                _raise_if_interrupted(interrupt_token)
                 if not pending_safe_tool_calls:
                     return
                 record_tool_call_group_once()
@@ -187,10 +192,12 @@ class AssistantBlockConsumer:
                     metadata=metadata,
                     record_assistant_call=False,
                     lifecycle_sink=stream_sink,
+                    interrupt_token=interrupt_token,
                 )
                 pending_safe_tool_calls.clear()
 
             for block in item.blocks:
+                _raise_if_interrupted(interrupt_token)
                 if block.type == "reasoning":
                     flush_pending_safe_tool_calls()
                     flush_pending_text(record_conversation=not tool_call_blocks)
@@ -336,6 +343,7 @@ class AssistantBlockConsumer:
                         record_assistant_call=False,
                         lifecycle_sink=stream_sink,
                         policy_approved=True,
+                        interrupt_token=interrupt_token,
                     )
                     continue
 
@@ -359,6 +367,7 @@ class AssistantBlockConsumer:
                         metadata=dict(block.metadata),
                         record_assistant_call=False,
                         lifecycle_sink=stream_sink,
+                        interrupt_token=interrupt_token,
                     )
                     continue
 
@@ -379,6 +388,7 @@ class AssistantBlockConsumer:
                             response_id=turn_result.response_id,
                             metadata=dict(block.metadata),
                             lifecycle_sink=stream_sink,
+                            interrupt_token=interrupt_token,
                         )
                     )
                     if pending_clarification is not None:
@@ -540,6 +550,7 @@ class AssistantBlockConsumer:
                     record_assistant_call=False,
                     lifecycle_sink=stream_sink,
                     policy_approved=policy_approved,
+                    interrupt_token=interrupt_token,
                 )
 
             flush_pending_safe_tool_calls()
@@ -764,3 +775,8 @@ class AssistantBlockConsumer:
         if not reasoning_content.strip():
             return None
         return reasoning_content
+
+
+def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
+    if interrupt_token is not None:
+        interrupt_token.raise_if_interrupted()

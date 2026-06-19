@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from mycli.application.runtime.recovery import (
@@ -15,10 +16,13 @@ from mycli.application.runtime.turn_executor import (
     LoopState,
     TurnExecutor,
     _apply_l4_recent_file_hints,
+    _repair_interrupted_tool_results,
 )
+from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     AgentConfig,
     ModelTurnResult,
+    PlanState,
     RuntimeBlock,
     RuntimeItem,
     RuntimeStreamEvent,
@@ -26,6 +30,7 @@ from mycli.domain.runtime import (
     TurnItemType,
     TurnStatus,
 )
+from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.context.compaction import ContextBudget
@@ -653,6 +658,7 @@ def test_turn_executor_saves_and_resumes_interrupted_turn(
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
+    runtime.rebind_session(replace(runtime._config, memory_enabled=False))
 
     interrupted = runtime.handle_user_turn("inspect interrupted path")
 
@@ -695,3 +701,138 @@ def test_turn_executor_saves_interrupted_turn_during_pre_request_compaction(
     assert suspended is not None
     assert suspended.pending_approval is None
     assert suspended.user_message == "inspect interrupted l4 path"
+
+
+def test_repair_interrupted_tool_results_appends_missing_tool_result() -> None:
+    conversation = Conversation(
+        session_id="demo",
+        messages=[
+            Message(role="user", content="inspect"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"file_path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_read_1",
+                    ),
+                ),
+            ),
+        ],
+    )
+
+    repaired = _repair_interrupted_tool_results(conversation)
+
+    assert len(repaired) == 1
+    assert repaired[0] is conversation.messages[-1]
+    assert repaired[0].role == "tool"
+    assert repaired[0].tool_call_id == "call_read_1"
+    assert repaired[0].metadata == {
+        "success": False,
+        "error_kind": "tool_interrupted",
+        "synthetic": True,
+        "append_only": True,
+    }
+    assert repaired[0].blocks == (
+        RuntimeBlock(
+            type="tool_result",
+            text="Tool call interrupted by user before it completed.",
+            call_id="call_read_1",
+            metadata={
+                "success": False,
+                "error_kind": "tool_interrupted",
+                "synthetic": True,
+            },
+        ),
+    )
+
+
+def test_repair_interrupted_tool_results_does_not_duplicate_existing_result() -> None:
+    conversation = Conversation(
+        session_id="demo",
+        messages=[
+            Message(role="user", content="inspect"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"file_path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_read_1",
+                    ),
+                ),
+            ),
+            Message(role="tool", content="contents", tool_call_id="call_read_1"),
+        ],
+    )
+
+    repaired = _repair_interrupted_tool_results(conversation)
+
+    assert repaired == ()
+    assert [message.role for message in conversation.messages] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+
+def test_turn_executor_interrupted_finalization_repairs_dangling_tool_call(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=InterruptOnceThenDoneAdapter(),
+    )
+    runtime.rebind_session(replace(runtime._config, memory_enabled=False))
+    executor = TurnExecutor(runtime)
+    conversation = Conversation(
+        session_id=runtime._config.session_id,
+        messages=[
+            Message(role="user", content="inspect"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"file_path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_read_1",
+                    ),
+                ),
+            ),
+        ],
+    )
+    turn_items = []
+
+    response = executor._finalize_interrupted_turn(
+        user_message="inspect",
+        conversation=conversation,
+        current_plan_state=PlanState(),
+        turn_id="turn_interrupted",
+        started_at=runtime._timestamp(),
+        turn_items=turn_items,
+        latest_context_baseline=None,
+        activity_events=[],
+        streamed_chunks=[],
+        progress_updates=[],
+    )
+
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.INTERRUPTED
+    suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
+    assert suspended is not None
+    assert suspended.conversation[-1].role == "tool"
+    assert suspended.conversation[-1].tool_call_id == "call_read_1"
+    assert suspended.conversation[-1].metadata["synthetic"] is True
+    assert any(
+        item.type is TurnItemType.TOOL_RESULT
+        and item.call_id == "call_read_1"
+        and item.metadata.get("recovery_kind") == "interrupted_missing_tool_result"
+        for item in response.turn.items
+    )

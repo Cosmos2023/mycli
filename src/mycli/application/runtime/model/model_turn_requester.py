@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from queue import Empty, Queue
+from threading import Thread
 from time import monotonic
 
-from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeStreamEvent
+from mycli.domain.runtime import (
+    ModelTurnResult,
+    RuntimeBlock,
+    RuntimeInterruptToken,
+    RuntimeItem,
+    RuntimeStreamEvent,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import ModelAdapter, ModelMessage, ModelToolDefinition
 from mycli.llms.clients.openai_chat import ModelResponseError
@@ -45,19 +53,32 @@ class ModelTurnRequester:
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
-        stream_turn = getattr(self._model_adapter, "stream_turn", None)
+        _raise_if_interrupted(interrupt_token)
+        stream_turn = (
+            getattr(self._model_adapter, "stream_turn_with_interrupt", None)
+            if interrupt_token is not None
+            else None
+        )
+        stream_turn_uses_interrupt = callable(stream_turn)
+        if not stream_turn_uses_interrupt:
+            stream_turn = getattr(self._model_adapter, "stream_turn", None)
         if callable(stream_turn):
             return self._request_streaming_turn(
                 stream_turn=stream_turn,
+                stream_turn_uses_interrupt=stream_turn_uses_interrupt,
                 runtime_items=runtime_items,
                 tools=tools,
                 stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
             )
 
         next_turn = getattr(self._model_adapter, "next_turn", None)
         if callable(next_turn):
+            _raise_if_interrupted(interrupt_token)
             turn_result = next_turn(items=runtime_items, tools=tools)
+            _raise_if_interrupted(interrupt_token)
             if isinstance(turn_result, ModelTurnResult):
                 return turn_result, ()
             raise ModelResponseError("Model adapter next_turn must return ModelTurnResult.")
@@ -66,15 +87,18 @@ class ModelTurnRequester:
             messages=legacy_messages,
             tools=tools,
         )
+        _raise_if_interrupted(interrupt_token)
         return self._legacy_action_to_turn_result(action), ()
 
     def _request_streaming_turn(
         self,
         *,
         stream_turn: object,
+        stream_turn_uses_interrupt: bool = False,
         runtime_items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        interrupt_token: RuntimeInterruptToken | None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         if not callable(stream_turn):
             raise ModelResponseError("Model adapter stream_turn must be callable.")
@@ -92,7 +116,21 @@ class ModelTurnRequester:
         text_bytes = 0
 
         try:
-            for event in stream_turn(items=runtime_items, tools=tools):
+            stream = (
+                stream_turn(
+                    items=runtime_items,
+                    tools=tools,
+                    interrupt_token=interrupt_token,
+                )
+                if stream_turn_uses_interrupt
+                else stream_turn(items=runtime_items, tools=tools)
+            )
+            for event in _interruptible_events(
+                stream,
+                interrupt_token=interrupt_token,
+                threaded=stream_turn_uses_interrupt,
+            ):
+                _raise_if_interrupted(interrupt_token)
                 now = monotonic()
                 if first_event_time is None:
                     first_event_time = now
@@ -317,3 +355,47 @@ class ModelTurnRequester:
             items=items,
             done=bool(getattr(action, "done", False)),
         )
+
+
+def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
+    if interrupt_token is not None:
+        interrupt_token.raise_if_interrupted()
+
+
+_QUEUE_DONE = object()
+
+
+def _interruptible_events(
+    stream: object,
+    *,
+    interrupt_token: RuntimeInterruptToken | None,
+    threaded: bool,
+) -> object:
+    if interrupt_token is None or not threaded:
+        yield from stream  # type: ignore[misc]
+        return
+
+    queue: Queue[object] = Queue()
+
+    def pump() -> None:
+        try:
+            for event in stream:  # type: ignore[misc]
+                queue.put(event)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by consumer thread.
+            queue.put(exc)
+        finally:
+            queue.put(_QUEUE_DONE)
+
+    worker = Thread(target=pump, name="mycli-model-stream", daemon=True)
+    worker.start()
+    while True:
+        _raise_if_interrupted(interrupt_token)
+        try:
+            item = queue.get(timeout=0.02)
+        except Empty:
+            continue
+        if item is _QUEUE_DONE:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield item

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import inspect
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -17,6 +18,7 @@ from mycli.domain.runtime import (
     HistoryItemType,
     ReasoningEffort,
     RuntimeTraceEvent,
+    RuntimeInterruptToken,
     RuntimeStreamEvent,
     TurnItemType,
     TurnResponse,
@@ -31,7 +33,12 @@ from mycli.services.observability import ObservabilityService
 from mycli.services.session_service import SessionService
 from mycli.services.extensions import ExtensionManifestService
 from mycli.services.skills import SkillRegistry
+from mycli.services.subagents.management import (
+    SubAgentManagementService,
+    render_subagent_management_response,
+)
 from mycli.services.tracing import TraceService
+from mycli.tools.registry import ToolRegistry
 
 
 def format_subagent_summaries(summaries: tuple[SubAgentRunSummary, ...]) -> str:
@@ -43,6 +50,35 @@ def format_subagent_summaries(summaries: tuple[SubAgentRunSummary, ...]) -> str:
             f"{summary.child_session_id} description={summary.description[:80]}"
         )
         for summary in summaries
+    )
+
+
+def _call_handle_user_turn(
+    handle_user_turn: Callable[..., object],
+    user_message: str,
+    *,
+    stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+    interrupt_token: RuntimeInterruptToken | None,
+) -> object:
+    kwargs: dict[str, object] = {}
+    if stream_sink is not None:
+        kwargs["stream_sink"] = stream_sink
+    if interrupt_token is not None and _callable_accepts_keyword(
+        handle_user_turn,
+        "interrupt_token",
+    ):
+        kwargs["interrupt_token"] = interrupt_token
+    return handle_user_turn(user_message, **kwargs)
+
+
+def _callable_accepts_keyword(callable_obj: Callable[..., object], keyword: str) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD or name == keyword
+        for name, parameter in signature.parameters.items()
     )
 
 
@@ -61,6 +97,7 @@ class TurnService:
             raise ValueError("runtime is required")
 
         self._runtime = runtime
+        self._home_dir = home_dir
         self._tool_registry = getattr(runtime, "_tool_registry", None)
         self._model_client = getattr(runtime, "_model_adapter", None)
         self._safety_policy = getattr(runtime, "_approval_service", None)
@@ -201,13 +238,20 @@ class TurnService:
         self,
         user_message: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         if runtime is None:
             raise RuntimeError("TurnService has no runtime.")
-        if stream_sink is None:
-            return cast(TurnResponse, runtime.handle_user_turn(user_message))
-        return cast(TurnResponse, runtime.handle_user_turn(user_message, stream_sink=stream_sink))
+        return cast(
+            TurnResponse,
+            _call_handle_user_turn(
+                runtime.handle_user_turn,
+                user_message,
+                stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
+            ),
+        )
 
     def resolve_pending_decision(
         self,
@@ -254,6 +298,31 @@ class TurnService:
             return ("No sub-agent runs in this session.",)
         return tuple(format_subagent_summaries(recent()).splitlines())
 
+    def cancel_background_subagents(self) -> tuple[str, ...]:
+        cancel = getattr(self._runtime, "cancel_background_subagents", None)
+        if not callable(cancel):
+            return ("Background sub-agent cancellation is not available.",)
+        return tuple(cancel())
+
+    def cancel_background_subagent(self, child_session_id: str) -> tuple[str, ...]:
+        child_session_id = child_session_id.strip()
+        if not child_session_id:
+            return ("usage: /tasks agents kill <child_session_id>",)
+        cancel = getattr(self._runtime, "cancel_background_subagent", None)
+        if not callable(cancel):
+            return ("Background sub-agent cancellation is not available.",)
+        return tuple(cancel(child_session_id))
+
+    def inspect_subagent_profiles(self) -> tuple[str, ...]:
+        service = self._subagent_management_service()
+        return render_subagent_management_response(service.list_profiles())
+
+    def inspect_subagent_profile(self, profile_id: str) -> tuple[str, ...]:
+        if not profile_id:
+            return ("usage: /agents inspect <profile_id>",)
+        service = self._subagent_management_service()
+        return render_subagent_management_response(service.inspect_profile(profile_id))
+
     def inspect_skills(self) -> tuple[str, ...]:
         lines: list[str] = []
         for name in self._skill_registry.list_names():
@@ -262,6 +331,13 @@ class TurnService:
                 continue
             lines.append(f"{metadata.name}: {metadata.description}")
         return tuple(lines or ("no skills available",))
+
+    def _subagent_management_service(self) -> SubAgentManagementService:
+        return SubAgentManagementService(
+            workspace_root=self._config.workspace_root,
+            home_dir=self._home_dir,
+            known_tools=tuple(ToolRegistry(workspace_root=self._config.workspace_root).list_names()),
+        )
 
     def inspect_tools(self) -> tuple[str, ...]:
         manifest = self.extension_manifest()
@@ -442,14 +518,25 @@ class TurnService:
         pending_decision = self._session_service.load_pending_decision(self._config.session_id)
         suspended = self._session_service.load_suspended_turn(self._config.session_id)
         allowances = self._session_service.load_command_allowances(self._config.session_id)
+        session_name = self._session_title_from_conversation(conversation) or self._config.session_id
         return (
-            f"session={self._config.session_id}",
+            f"session={session_name}",
             f"messages={len(conversation.messages)}",
             f"plan_items={len(plan_state.items)}",
             f"pending_decision={'yes' if pending_decision is not None else 'no'}",
             f"suspended_turn={'yes' if suspended is not None else 'no'}",
             f"allowances={len(allowances)}",
         )
+
+    def session_title(self) -> str | None:
+        conversation = self._session_service.load_conversation(self._config.session_id)
+        return self._session_title_from_conversation(conversation)
+
+    def _session_title_from_conversation(self, conversation: Conversation) -> str | None:
+        for message in conversation.messages:
+            if message.role == "user" and message.content.strip():
+                return self._preview(message.content, limit=80)
+        return None
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
         target_session_id = (session_id or self._config.session_id).strip() or self._config.session_id

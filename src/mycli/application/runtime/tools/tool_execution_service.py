@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
@@ -16,6 +16,7 @@ from mycli.domain.runtime import (
     PlanItem,
     PlanState,
     RuntimeBlock,
+    RuntimeInterruptToken,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
     ToolRuntimeDecision,
@@ -144,12 +145,15 @@ class ToolExecutionService:
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
         lifecycle_sink: ToolLifecycleSink | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlanState:
+        _raise_if_interrupted(interrupt_token)
         current_plan_state = plan_state
         pending_safe_calls: list[ToolCall] = []
 
         def flush_safe_calls() -> None:
             nonlocal current_plan_state
+            _raise_if_interrupted(interrupt_token)
             if not pending_safe_calls:
                 return
             outcomes = self._execute_parallel_batch(
@@ -163,6 +167,7 @@ class ToolExecutionService:
                 metadata=metadata,
                 record_assistant_call=record_assistant_call,
                 lifecycle_sink=lifecycle_sink,
+                interrupt_token=interrupt_token,
             )
             pending_safe_calls.clear()
             for outcome in outcomes:
@@ -172,6 +177,7 @@ class ToolExecutionService:
                 turn_items.extend(outcome.turn_items)
 
         for call in calls:
+            _raise_if_interrupted(interrupt_token)
             if call.name in CONCURRENCY_SAFE_TOOLS:
                 pending_safe_calls.append(call)
                 continue
@@ -190,6 +196,7 @@ class ToolExecutionService:
                 metadata=metadata,
                 record_assistant_call=record_assistant_call,
                 lifecycle_sink=lifecycle_sink,
+                interrupt_token=interrupt_token,
             )
         flush_safe_calls()
         return current_plan_state
@@ -211,7 +218,9 @@ class ToolExecutionService:
         record_assistant_call: bool = True,
         lifecycle_sink: ToolLifecycleSink | None = None,
         policy_approved: bool = False,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlanState:
+        _raise_if_interrupted(interrupt_token)
         normalized_call = self._normalize_tool_call(call)
         execution_started_at = self._monotonic()
         self._append_tool_runtime_lifecycle_trace(
@@ -337,6 +346,7 @@ class ToolExecutionService:
             provider_id=provider_id,
             lifecycle_sink=lifecycle_sink,
         )
+        _raise_if_interrupted(interrupt_token)
         if record_assistant_call:
             self._record_assistant_tool_call(
                 conversation,
@@ -345,7 +355,10 @@ class ToolExecutionService:
                 response_id=response_id,
                 metadata=metadata,
             )
-        execution_call = self._with_runtime_execution_options(normalized_call)
+        execution_call = self._with_runtime_execution_options(
+            normalized_call,
+            interrupt_token=interrupt_token,
+        )
         snapshot_ids = self._snapshot_before_file_mutation(
             call=normalized_call,
             tool_router=tool_router,
@@ -354,7 +367,9 @@ class ToolExecutionService:
             turn_metadata=turn_metadata,
         )
         try:
+            _raise_if_interrupted(interrupt_token)
             result = tool_router.execute(execution_call, exposure=tool_exposure)
+            _raise_if_interrupted(interrupt_token)
         except KeyboardInterrupt:
             interrupted_result = self._interrupted_tool_result(normalized_call)
             self._finalize_file_history_snapshots(
@@ -444,7 +459,9 @@ class ToolExecutionService:
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
         lifecycle_sink: ToolLifecycleSink | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[PlanState, PendingClarification | None]:
+        _raise_if_interrupted(interrupt_token)
         normalized_call = self._normalize_tool_call(call)
         execution_started_at = self._monotonic()
         self._append_tool_runtime_lifecycle_trace(
@@ -485,7 +502,28 @@ class ToolExecutionService:
             ),
         )
         try:
+            _raise_if_interrupted(interrupt_token)
             result = tool_router.execute(normalized_call, exposure=tool_exposure)
+            _raise_if_interrupted(interrupt_token)
+        except KeyboardInterrupt:
+            interrupted_result = self._interrupted_tool_result(normalized_call)
+            self._record_tool_outcome(
+                conversation=conversation,
+                normalized_call=normalized_call,
+                result=interrupted_result,
+                plan_state=plan_state,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                response_id=response_id,
+                record_assistant_call=False,
+                execution_started_at=execution_started_at,
+                effect_profile=effect_profile,
+                lifecycle_sink=lifecycle_sink,
+            )
+            raise
         except ValueError as exc:
             result = ToolResult(
                 success=False,
@@ -587,7 +625,9 @@ class ToolExecutionService:
         metadata: dict[str, object] | None,
         record_assistant_call: bool,
         lifecycle_sink: ToolLifecycleSink | None,
+        interrupt_token: RuntimeInterruptToken | None,
     ) -> tuple[_ParallelToolOutcome, ...]:
+        _raise_if_interrupted(interrupt_token)
         if len(calls) == 1:
             return (
                 self._execute_tool_call_isolated(
@@ -601,26 +641,48 @@ class ToolExecutionService:
                     metadata=metadata,
                     record_assistant_call=record_assistant_call,
                     lifecycle_sink=lifecycle_sink,
+                    interrupt_token=interrupt_token,
                 ),
             )
-        with ThreadPoolExecutor(max_workers=len(calls)) as executor:
-            futures = [
-                executor.submit(
-                    self._execute_tool_call_isolated,
-                    call=call,
-                    tool_router=tool_router,
-                    tool_exposure=tool_exposure,
-                    plan_state=plan_state,
-                    turn_id=turn_id,
-                    provider_id=provider_id,
-                    response_id=response_id,
-                    metadata=metadata,
-                    record_assistant_call=record_assistant_call,
-                    lifecycle_sink=lifecycle_sink,
+        executor = ThreadPoolExecutor(max_workers=len(calls))
+        futures: list[Future[_ParallelToolOutcome]] = [
+            executor.submit(
+                self._execute_tool_call_isolated,
+                call=call,
+                tool_router=tool_router,
+                tool_exposure=tool_exposure,
+                plan_state=plan_state,
+                turn_id=turn_id,
+                provider_id=provider_id,
+                response_id=response_id,
+                metadata=metadata,
+                record_assistant_call=record_assistant_call,
+                lifecycle_sink=lifecycle_sink,
+                interrupt_token=interrupt_token,
+            )
+            for call in calls
+        ]
+        pending = set(futures)
+        try:
+            while pending:
+                _raise_if_interrupted(interrupt_token)
+                done, pending = wait(
+                    pending,
+                    timeout=0.05,
+                    return_when=FIRST_COMPLETED,
                 )
-                for call in calls
-            ]
-        return tuple(future.result() for future in futures)
+                for future in done:
+                    exc = future.exception()
+                    if exc is not None:
+                        raise exc
+            _raise_if_interrupted(interrupt_token)
+            return tuple(future.result() for future in futures)
+        except BaseException:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            if not pending:
+                executor.shutdown(wait=True)
 
     def _execute_tool_call_isolated(
         self,
@@ -636,7 +698,9 @@ class ToolExecutionService:
         record_assistant_call: bool,
         lifecycle_sink: ToolLifecycleSink | None,
         policy_approved: bool = False,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> _ParallelToolOutcome:
+        _raise_if_interrupted(interrupt_token)
         isolated_conversation = Conversation(session_id=self._session_id)
         isolated_activity_events: list[ActivityEvent] = []
         isolated_turn_items: list[TurnItem] = []
@@ -655,6 +719,7 @@ class ToolExecutionService:
             record_assistant_call=record_assistant_call,
             lifecycle_sink=lifecycle_sink,
             policy_approved=policy_approved,
+            interrupt_token=interrupt_token,
         )
         return _ParallelToolOutcome(
             plan_state=next_plan_state,
@@ -872,15 +937,22 @@ class ToolExecutionService:
         )
         return decision
 
-    def _with_runtime_execution_options(self, call: ToolCall) -> ToolCall:
-        if self._policy_gate is None or call.name not in SHELL_TOOL_NAMES:
+    def _with_runtime_execution_options(
+        self,
+        call: ToolCall,
+        *,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> ToolCall:
+        if call.name not in SHELL_TOOL_NAMES:
             return call
+        arguments = dict(call.arguments)
+        if self._policy_gate is not None:
+            arguments["_runtime_shell_options"] = self._policy_gate.shell_execution_options()
+        if interrupt_token is not None:
+            arguments["_runtime_interrupt_token"] = interrupt_token
         return ToolCall(
             name=call.name,
-            arguments={
-                **call.arguments,
-                "_runtime_shell_options": self._policy_gate.shell_execution_options(),
-            },
+            arguments=arguments,
             reason=call.reason,
             call_id=call.call_id,
         )
@@ -1139,7 +1211,9 @@ class ToolExecutionService:
         error_kind: object = None,
         result: ToolResult | None = None,
     ) -> None:
-        argument_keys = tuple(sorted(str(key) for key in call.arguments))
+        argument_keys = tuple(
+            sorted(str(key) for key in _visible_tool_arguments(call.arguments))
+        )
         payload: dict[str, object] = {
             "tool_name": call.name,
             "tool_id": self._tool_lifecycle_id(call),
@@ -1490,6 +1564,7 @@ class ToolExecutionService:
             "filesystem",
             "network",
             "shell",
+            "shell_environment_policy",
             "env_policy",
             "env_keys",
             "timeout_seconds",
@@ -2047,6 +2122,11 @@ def runtime_policy_denial_message(decision: ToolRuntimeDecision) -> str:
     if details:
         parts.append(f"({', '.join(details)})")
     return " ".join(parts) + "."
+
+
+def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
+    if interrupt_token is not None:
+        interrupt_token.raise_if_interrupted()
 
 
 def _render_plan_steps(plan_state: PlanState) -> list[str]:

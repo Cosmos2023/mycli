@@ -873,6 +873,28 @@ def test_turn_service_includes_recent_conversation_in_prompt(tmp_path: Path) -> 
     assert "first answer" in model.prompts[0]
 
 
+def test_turn_service_inspect_session_uses_conversation_title(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    service = make_turn_service(
+        tmp_path=workspace,
+        model=FakeModel(),
+        tool_registry=FakeToolRegistry(),
+        config=AgentConfig(workspace_root=workspace, session_id="demo"),
+        home_dir=home_dir,
+    )
+    conversation = Conversation(session_id="demo")
+    conversation.append(Message(role="user", content="Fix the TUI session title rendering"))
+    conversation.append(Message(role="assistant", content="Done"))
+    service._session_service.save_conversation(conversation)
+
+    assert service.session_title() == "Fix the TUI session title rendering"
+    assert service.inspect_session()[0] == "session=Fix the TUI session title rendering"
+
+
 def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

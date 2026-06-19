@@ -27,6 +27,7 @@ from mycli.domain.runtime import (
     PlanState,
     RuntimeBlock,
     RuntimeItem,
+    RuntimeInterruptToken,
     RuntimeRole,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
@@ -381,6 +382,7 @@ class AgentRuntime:
             workspace_root=config.workspace_root,
             execpolicy_rules=self._execpolicy_rules,
             collaboration_mode=config.collaboration_mode,
+            shell_environment_policy=config.shell_environment_policy,
         )
         self._planning_effects = RuntimePlanningEffects(
             session_id=config.session_id,
@@ -871,6 +873,24 @@ class AgentRuntime:
     def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
         return self._sub_agent_service.recent_runs()
 
+    def cancel_background_subagents(self) -> tuple[str, ...]:
+        jobs = self._sub_agent_service.cancel_background_jobs()
+        if not jobs:
+            return ("No background sub-agents running.",)
+        return tuple(
+            f"cancelled {job.job_id} owner_turn={job.owner_turn_id or 'unknown'}"
+            for job in jobs
+        )
+
+    def cancel_background_subagent(self, child_session_id: str) -> tuple[str, ...]:
+        jobs = self._sub_agent_service.cancel_background_job(child_session_id)
+        if not jobs:
+            return (f"No running background sub-agent found: {child_session_id}",)
+        return tuple(
+            f"cancelled {job.job_id} owner_turn={job.owner_turn_id or 'unknown'}"
+            for job in jobs
+        )
+
     def inspect_subagent_transcript(self, child_session_id: str) -> tuple[str, ...]:
         return self._sub_agent_service.inspect_transcript(child_session_id)
 
@@ -1055,6 +1075,7 @@ class AgentRuntime:
         record_assistant_call: bool = True,
         lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         policy_approved: bool = False,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_call(
             conversation=conversation,
@@ -1071,6 +1092,7 @@ class AgentRuntime:
             record_assistant_call=record_assistant_call,
             lifecycle_sink=lifecycle_sink,
             policy_approved=policy_approved,
+            interrupt_token=interrupt_token,
         )
 
     def _execute_tool_call_for_clarification(
@@ -1088,6 +1110,7 @@ class AgentRuntime:
         response_id: str | None = None,
         metadata: dict[str, object] | None = None,
         lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[PlanState, PendingClarification | None]:
         return self._tool_execution_service.execute_tool_call_for_clarification(
             conversation=conversation,
@@ -1102,6 +1125,7 @@ class AgentRuntime:
             response_id=response_id,
             metadata=metadata,
             lifecycle_sink=lifecycle_sink,
+            interrupt_token=interrupt_token,
         )
 
     def _record_clarification_response_tool_result(
@@ -1133,6 +1157,7 @@ class AgentRuntime:
         metadata: dict[str, object] | None = None,
         record_assistant_call: bool = True,
         lifecycle_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlanState:
         return self._tool_execution_service.execute_tool_calls(
             conversation=conversation,
@@ -1148,6 +1173,7 @@ class AgentRuntime:
             metadata=metadata,
             record_assistant_call=record_assistant_call,
             lifecycle_sink=lifecycle_sink,
+            interrupt_token=interrupt_token,
         )
 
     def _render_model_tools(
@@ -1677,12 +1703,14 @@ class AgentRuntime:
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         return self._model_turn_requester.request_model_turn(
             runtime_items=runtime_items,
             legacy_messages=legacy_messages,
             tools=tools,
             stream_sink=stream_sink,
+            interrupt_token=interrupt_token,
         )
 
     def _record_model_stream_diagnostics(self, diagnostics: ModelStreamDiagnostics) -> None:
@@ -1737,6 +1765,7 @@ class AgentRuntime:
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[
         PlanState,
         bool,
@@ -1756,6 +1785,7 @@ class AgentRuntime:
             streamed_chunks=streamed_chunks,
             turn_items=turn_items,
             stream_sink=stream_sink,
+            interrupt_token=interrupt_token,
         )
 
     def _append_turn_item(
@@ -1944,6 +1974,7 @@ class AgentRuntime:
             workspace_root=config.workspace_root,
             execpolicy_rules=self._execpolicy_rules,
             collaboration_mode=config.collaboration_mode,
+            shell_environment_policy=config.shell_environment_policy,
         )
         self._request_pipeline.set_config(config)
         self._runtime_error_logger.set_config(config)
@@ -1965,11 +1996,16 @@ class AgentRuntime:
         self,
         user_message: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
         self._sub_agent_service.set_stream_sink(stream_sink)
-        return TurnExecutor(self).execute_user_turn(user_message, stream_sink=stream_sink)
+        return TurnExecutor(self).execute_user_turn(
+            user_message,
+            stream_sink=stream_sink,
+            interrupt_token=interrupt_token,
+        )
 
     def resolve_pending_approval(
         self,

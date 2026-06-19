@@ -20,7 +20,8 @@ def test_help_lists_approval_and_memory_controls() -> None:
     assert "/undo" in output
     assert "/session [show|list|resume|fork|search|maintenance]" in output
     assert "/status [usage|context|stats]" in output
-    assert "/jobs [subagents|bashes]" in output
+    assert "/agents [list|inspect <profile_id>|runs [child_session_id]|kill]" in output
+    assert "/tasks [agents [child_session_id]|agents kill <child_session_id>|bashes|kill-agents]" in output
     assert "/trace [export|logs]" in output
     assert "Aliases:" in output
     assert "/resume" in output
