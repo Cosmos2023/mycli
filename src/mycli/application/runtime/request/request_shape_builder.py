@@ -138,6 +138,7 @@ class RequestShapeBuilder:
             protocol=str(config.protocol),
             model=config.model,
             stable_system=stable_system,
+            wire_instructions=stable_system if self._uses_responses_delta_input(config) else None,
             tool_schema_hash=stable_hash(tool_schema),
             tool_order_hash=stable_hash(tool_order),
             fragments=fragments,
@@ -290,9 +291,7 @@ class RequestShapeBuilder:
             cache_classes={"dynamic"},
         )
         ephemeral_context = self._render_responses_non_reminder_delta_context(contract)
-        messages: list[ProviderMessageShape] = [
-            ProviderMessageShape(role="system", content=contract.base_instructions),
-        ]
+        messages: list[ProviderMessageShape] = []
         developer_content = self._join_content(
             self._developer_section_content(section)
             for section in contract.developer_sections
@@ -563,12 +562,7 @@ class RequestShapeBuilder:
             cache_classes={"dynamic"},
         )
         ephemeral_context = self._render_responses_non_reminder_delta_context(contract)
-        items: list[ProviderRuntimeItemShape] = [
-            ProviderRuntimeItemShape(
-                role="system",
-                blocks=(RuntimeBlock(type="text", text=contract.base_instructions),),
-            )
-        ]
+        items: list[ProviderRuntimeItemShape] = []
         developer_content = self._join_content(
             self._developer_section_content(section)
             for section in contract.developer_sections

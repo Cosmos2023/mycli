@@ -341,6 +341,7 @@ class RequestShape:
     protocol: str
     model: str
     stable_system: str
+    wire_instructions: str | None = None
     tool_schema_hash: str | None = None
     tool_order_hash: str | None = None
     fragments: tuple[RequestFragment, ...] = ()
@@ -360,6 +361,10 @@ class RequestShape:
     @property
     def system_hash(self) -> str:
         return stable_hash(self.stable_system)
+
+    @property
+    def wire_instructions_hash(self) -> str | None:
+        return stable_hash(self.wire_instructions) if self.wire_instructions else None
 
     @property
     def replay_hash(self) -> str:
@@ -464,6 +469,7 @@ class RequestShape:
             "protocol": self.protocol,
             "model": self.model,
             "system_hash": self.system_hash,
+            "wire_instructions_hash": self.wire_instructions_hash,
             "tool_schema_hash": self.tool_schema_hash,
             "tool_order_hash": self.tool_order_hash,
             "replay_hash": self.replay_hash,

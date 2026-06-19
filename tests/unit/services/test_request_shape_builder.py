@@ -148,6 +148,74 @@ def test_request_shape_builder_preserves_context_section_metadata(
     assert fragment.metadata["instruction_fragment_kind"] == "memory"
 
 
+def test_request_shape_builder_maps_base_prompt_to_responses_instructions(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="openai",
+            protocol="responses",
+            model="gpt-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            current_user_request="inspect",
+        ),
+        tools=(),
+    )
+    items = RequestShapePayloadFormatter().runtime_items(shape)
+
+    assert shape.wire_instructions == "Stable system rules."
+    assert items[0].metadata["wire_instructions"] == "Stable system rules."
+    assert not any(item.role == "system" and item.blocks for item in items)
+    assert shape.provider_messages[0].role == "user"
+
+
+def test_request_shape_builder_keeps_chat_completions_prompt_as_system_message(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="openai",
+            protocol="chat_completions",
+            model="gpt-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            current_user_request="inspect",
+        ),
+        tools=(),
+    )
+
+    assert shape.wire_instructions is None
+    assert shape.provider_messages[0].role == "system"
+    assert shape.provider_messages[0].content == "Stable system rules."
+
+
+def test_request_shape_builder_keeps_anthropic_prompt_as_system_runtime_item(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="anthropic",
+            protocol="anthropic_messages",
+            model="claude-test",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            current_user_request="inspect",
+        ),
+        tools=(),
+    )
+
+    assert shape.wire_instructions is None
+    assert shape.provider_runtime_items[0].role == "system"
+    assert shape.provider_runtime_items[0].blocks[0].text == "Stable system rules."
+
+
 def test_request_shape_builder_preserves_canonical_persistence_metadata(
     tmp_path: Path,
 ) -> None:
@@ -700,19 +768,18 @@ def test_request_shape_builder_omits_runtime_reminders_from_responses_payload(
     )
 
     assert [message.role for message in shape.provider_messages] == [
-        "system",
         "developer",
         "user",
         "assistant",
         "user",
     ]
     assert [item.role for item in shape.provider_runtime_items] == [
-        "system",
         "developer",
         "user",
         "assistant",
         "user",
     ]
+    assert shape.wire_instructions == "Stable system rules."
     assert shape.provider_runtime_items[-1].blocks == (
         RuntimeBlock(type="text", text="new query"),
     )
@@ -785,12 +852,8 @@ def test_request_shape_builder_appends_responses_post_tool_context_to_tool_resul
             call_id="call_ls",
         ),
     )
-    assert [item.role for item in shape.provider_runtime_items] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-    ]
+    assert shape.wire_instructions == "Stable system rules."
+    assert [item.role for item in shape.provider_runtime_items] == ["user", "assistant", "tool"]
 
 
 def test_request_shape_builder_appends_anthropic_post_tool_context_to_tool_result(
@@ -1657,15 +1720,16 @@ def test_request_shape_builder_keeps_current_user_query_in_replay_for_tool_loop_
     )
 
     assert [message.content for message in first.provider_messages] == [
-        "Stable system rules.",
         "inspect repo",
     ]
     assert [message.content for message in second.provider_messages[:2]] == [
-        "Stable system rules.",
         "inspect repo",
+        "I will inspect README.",
     ]
-    assert first.provider_messages[1].role == "user"
-    assert second.provider_messages[1].role == "user"
+    assert first.wire_instructions == "Stable system rules."
+    assert second.wire_instructions == "Stable system rules."
+    assert first.provider_messages[0].role == "user"
+    assert second.provider_messages[0].role == "user"
     assert "user: inspect repo" in first.fragments[2].content
 
 

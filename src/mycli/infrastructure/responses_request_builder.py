@@ -32,6 +32,7 @@ class ResponsesRequestBuilder:
         model: str,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        instructions: str | None = None,
         max_output_tokens: int,
         reasoning_effort: str | None,
         thinking_enabled: bool = True,
@@ -57,6 +58,8 @@ class ResponsesRequestBuilder:
             "tools": tools,
             "max_output_tokens": max_output_tokens,
         }
+        if instructions:
+            payload_body["instructions"] = instructions
         if effective_reasoning_effort and self._capability_profile.supports_reasoning:
             payload_body["reasoning"] = {"effort": effective_reasoning_effort}
         if stream:

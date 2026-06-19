@@ -86,6 +86,30 @@ def test_responses_request_builder_adds_prompt_cache_key_to_request_body() -> No
     assert "prompt_cache_key" not in result.payload_body["input"][0]
 
 
+def test_responses_request_builder_adds_instructions_to_request_body() -> None:
+    builder = ResponsesRequestBuilder(
+        capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True)
+    )
+
+    result = builder.build(
+        model="gpt-test",
+        input_items=[
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "inspect"}],
+            },
+        ],
+        tools=[],
+        instructions="You are mycli.",
+        max_output_tokens=128,
+        reasoning_effort="medium",
+        stream=True,
+    )
+
+    assert result.payload_body["instructions"] == "You are mycli."
+    assert "instructions" not in result.payload_body["input"][0]
+
+
 def test_responses_request_builder_adds_parallel_tool_calls_when_supported() -> None:
     builder = ResponsesRequestBuilder(
         capability_profile=ResponsesCapabilityProfile(supports_parallel_tool_calls=True)

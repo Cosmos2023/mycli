@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ import httpx
 import pytest
 
 from mycli.domain.logging import ModelLogContext
-from mycli.domain.runtime import ReasoningEffort, StopReason
+from mycli.domain.runtime import ReasoningEffort, RuntimeInterruptToken, StopReason
 from mycli.llms.clients.anthropic_messages import (
     AnthropicMessagesClient,
     _build_anthropic_sdk_client,
@@ -88,11 +89,41 @@ class FakeAnthropicSdkClient:
         error: Exception | None = None,
     ) -> None:
         self.messages = FakeMessagesResource(payload, error)
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeAnthropicStreamingSdkClient:
     def __init__(self) -> None:
         self.messages = FakeMessagesStreamResource()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class BlockingMessagesStreamResource(FakeMessagesResource):
+    def __init__(self) -> None:
+        super().__init__({"id": "unused", "content": []})
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def stream(self, **kwargs: object):
+        self.kwargs = dict(kwargs)
+        self.started.set()
+        self.release.wait(timeout=30)
+        return iter([])
+
+
+class BlockingAnthropicStreamingSdkClient:
+    def __init__(self) -> None:
+        self.messages = BlockingMessagesStreamResource()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _build_log_service(tmp_path: Path) -> WorkspaceLogService:
@@ -184,6 +215,41 @@ def test_anthropic_client_stream_message_normalizes_events(tmp_path: Path) -> No
     assert events[2]["block"].tool_name == "Read"
     assert events[3]["response_id"] == "msg_stream_1"
     assert events[3]["metadata"] == {"usage": {"input_tokens": 9, "output_tokens": 2}}
+
+
+def test_anthropic_client_closes_sdk_client_when_interrupted_before_stream_exists(
+    tmp_path: Path,
+) -> None:
+    token = RuntimeInterruptToken()
+    sdk_client = BlockingAnthropicStreamingSdkClient()
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        max_output_tokens=4096,
+        log_service=_build_log_service(tmp_path),
+        sdk_client=sdk_client,
+    )
+
+    def consume() -> None:
+        list(
+            client.stream_message_with_interrupt(
+                system=None,
+                messages=[{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
+                tools=[],
+                interrupt_token=token,
+            )
+        )
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    assert sdk_client.messages.started.wait(timeout=1.0)
+    token.request("test_interrupt")
+    try:
+        assert sdk_client.closed is True
+    finally:
+        sdk_client.messages.release.set()
+        thread.join(timeout=3.0)
 
 
 def test_anthropic_client_disables_thinking_explicitly(tmp_path: Path) -> None:

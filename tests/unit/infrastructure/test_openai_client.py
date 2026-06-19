@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from openai import APIConnectionError, BadRequestError
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
-from mycli.domain.runtime import StopReason
+from mycli.domain.runtime import RuntimeInterruptToken, StopReason
 from mycli.llms.clients.openai_chat import (
     DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
     ModelResponseError,
@@ -53,6 +54,40 @@ class _FakeStreamingChatCompletionsApi:
         return [_FakeSdkPayload(chunk) for chunk in self._chunks]
 
 
+class _CloseAwareStream:
+    def __init__(self, chunks: list[dict[str, object]], token: RuntimeInterruptToken) -> None:
+        self._chunks = chunks
+        self._token = token
+        self.closed = False
+
+    def __iter__(self):
+        for index, chunk in enumerate(self._chunks):
+            if index == 1:
+                self._token.request("test_interrupt")
+            yield _FakeSdkPayload(chunk)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _CloseAwareStreamingChatCompletionsApi:
+    def __init__(
+        self,
+        *,
+        chunks: list[dict[str, object]],
+        token: RuntimeInterruptToken,
+    ) -> None:
+        self._chunks = chunks
+        self._token = token
+        self.calls: list[dict[str, object]] = []
+        self.stream: _CloseAwareStream | None = None
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        self.stream = _CloseAwareStream(self._chunks, self._token)
+        return self.stream
+
+
 class _FakeOpenAISdkClient:
     def __init__(
         self,
@@ -69,6 +104,10 @@ class _FakeOpenAISdkClient:
             (),
             {"completions": self.chat_completions},
         )()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _FakeStreamingOpenAISdkClient:
@@ -79,6 +118,55 @@ class _FakeStreamingOpenAISdkClient:
             (),
             {"completions": self.chat_completions},
         )()
+
+
+class _CloseAwareStreamingOpenAISdkClient:
+    def __init__(
+        self,
+        *,
+        chunks: list[dict[str, object]],
+        token: RuntimeInterruptToken,
+    ) -> None:
+        self.chat_completions = _CloseAwareStreamingChatCompletionsApi(
+            chunks=chunks,
+            token=token,
+        )
+        self.chat = type(
+            "_FakeChatApi",
+            (),
+            {"completions": self.chat_completions},
+        )()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _BlockingStreamingChatCompletionsApi:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        self.started.set()
+        self.release.wait(timeout=30)
+        return []
+
+
+class _BlockingOpenAISdkClient:
+    def __init__(self) -> None:
+        self.chat_completions = _BlockingStreamingChatCompletionsApi()
+        self.chat = type(
+            "_FakeChatApi",
+            (),
+            {"completions": self.chat_completions},
+        )()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _FakeSdkPayload:
@@ -393,6 +481,90 @@ def test_openai_chat_client_stream_events_normalizes_chat_chunks(monkeypatch) ->
     assert sdk_client.chat_completions.calls[-1]["stream_options"] == {
         "include_usage": True
     }
+
+
+def test_openai_chat_client_closes_stream_when_interrupt_token_is_requested(
+    monkeypatch,
+) -> None:
+    token = RuntimeInterruptToken()
+    sdk_client = _CloseAwareStreamingOpenAISdkClient(
+        chunks=[
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"content": "before"}}]},
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"content": "after"}}]},
+        ],
+        token=token,
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    events = list(
+        client.stream_events(
+            input_items=[{"role": "user", "content": "inspect"}],
+            tools=[],
+            interrupt_token=token,
+        )
+    )
+
+    assert [event.text for event in events] == ["before"]
+    assert sdk_client.chat_completions.stream is not None
+    assert sdk_client.chat_completions.stream.closed is True
+
+
+def test_openai_chat_client_closes_sdk_client_when_interrupted_before_stream_exists(
+    monkeypatch,
+) -> None:
+    token = RuntimeInterruptToken()
+    sdk_clients: list[_BlockingOpenAISdkClient] = []
+
+    def fake_build(**_: object) -> _BlockingOpenAISdkClient:
+        sdk_client = _BlockingOpenAISdkClient()
+        sdk_clients.append(sdk_client)
+        return sdk_client
+
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        fake_build,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+    first_client = sdk_clients[0]
+    result_holder: dict[str, object] = {}
+
+    def consume() -> None:
+        try:
+            result_holder["events"] = list(
+                client.stream_events_with_interrupt(
+                    input_items=[{"role": "user", "content": "inspect"}],
+                    tools=[],
+                    interrupt_token=token,
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below.
+            result_holder["exception"] = exc
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    assert first_client.chat_completions.started.wait(timeout=1.0)
+    token.request("test_interrupt")
+    try:
+        assert first_client.closed is True
+        assert len(sdk_clients) == 2
+        assert sdk_clients[-1] is not first_client
+    finally:
+        first_client.chat_completions.release.set()
+        thread.join(timeout=3.0)
 
 
 def test_openai_chat_client_uses_provider_adapter_for_request_body(

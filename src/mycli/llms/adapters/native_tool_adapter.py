@@ -8,6 +8,7 @@ from typing import Protocol, cast
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
+from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import (
     ModelAction,
@@ -126,11 +127,33 @@ class NativeToolModelAdapter:
         items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
     ) -> Iterator[dict[str, object]]:
+        yield from self._stream_turn(items=items, tools=tools)
+
+    def stream_turn_with_interrupt(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken,
+    ) -> Iterator[dict[str, object]]:
+        yield from self._stream_turn(
+            items=items,
+            tools=tools,
+            interrupt_token=interrupt_token,
+        )
+
+    def _stream_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> Iterator[dict[str, object]]:
         serialized_messages = self._serialize_messages(
             self._messages_from_runtime_items(items)
         )
         serialized_tools = self._serialize_tools(tools)
-        stream_events = getattr(self._client, "stream_events", None)
+        stream_events = self._stream_events_callable(interrupt_token)
         if not callable(stream_events):
             raise ModelResponseError("Native tool client does not support stream_events.")
         for event in stream_events(input_items=serialized_messages, tools=serialized_tools):
@@ -160,6 +183,23 @@ class NativeToolModelAdapter:
                     "response_id": event.response_id,
                     "metadata": {"usage": event.usage} if event.usage is not None else {},
                 }
+
+    def _stream_events_callable(
+        self,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> object:
+        if interrupt_token is not None:
+            stream_events_with_interrupt = getattr(
+                self._client,
+                "stream_events_with_interrupt",
+                None,
+            )
+            if callable(stream_events_with_interrupt):
+                return lambda **kwargs: stream_events_with_interrupt(
+                    **kwargs,
+                    interrupt_token=interrupt_token,
+                )
+        return getattr(self._client, "stream_events", None)
 
     def _model_action_from_payload(self, payload: dict[str, object]) -> ModelAction:
         tool_call = None

@@ -13,8 +13,8 @@ from anthropic import (
 )
 
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
-from mycli.domain.runtime import RuntimeBlock, StopReason
-from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.domain.runtime import RuntimeBlock, RuntimeInterruptToken, StopReason
+from mycli.llms.clients.openai_chat import ModelResponseError, _close_stream
 from mycli.llms.clients.responses_errors import FailureClassification, classify_provider_failure
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.utils.workspace_logger import WorkspaceLogService
@@ -101,6 +101,7 @@ class AnthropicMessagesClient:
         self._log_context_provider = log_context_provider
         self._thinking_enabled = True
         self._thinking_effort: str | None = None
+        self._owns_sdk_client = sdk_client is None
         self._sdk_client = sdk_client or _build_anthropic_sdk_client(
             api_key=api_key,
             base_url=base_url,
@@ -192,6 +193,36 @@ class AnthropicMessagesClient:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> Iterator[dict[str, object]]:
+        yield from self._stream_message(
+            system=system,
+            messages=messages,
+            tools=tools,
+            interrupt_token=None,
+        )
+
+    def stream_message_with_interrupt(
+        self,
+        *,
+        system: str | list[dict[str, object]] | None,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        interrupt_token: RuntimeInterruptToken,
+    ) -> Iterator[dict[str, object]]:
+        yield from self._stream_message(
+            system=system,
+            messages=messages,
+            tools=tools,
+            interrupt_token=interrupt_token,
+        )
+
+    def _stream_message(
+        self,
+        *,
+        system: str | list[dict[str, object]] | None,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> Iterator[dict[str, object]]:
         payload_body = self._message_payload_body(
             system=system,
             messages=messages,
@@ -199,8 +230,20 @@ class AnthropicMessagesClient:
         )
         request_path = self._log_request(payload_body)
         try:
+            if interrupt_token is not None:
+                interrupt_token.add_callback(self._reset_sdk_client)
             stream = cast(Any, self._sdk_client).messages.stream(**payload_body)
-            yield from self._events_from_message_stream(stream)
+            if interrupt_token is not None:
+                interrupt_token.add_callback(
+                    lambda: self._close_stream_and_reset_client(stream)
+                )
+                if interrupt_token.interrupted:
+                    _close_stream(stream)
+                    return
+            yield from self._events_from_message_stream(
+                stream,
+                interrupt_token=interrupt_token,
+            )
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
         except (APIConnectionError, APITimeoutError) as exc:
@@ -244,6 +287,19 @@ class AnthropicMessagesClient:
             request_path=request_path,
         )
 
+    def _reset_sdk_client(self) -> None:
+        _close_stream(self._sdk_client)
+        if self._owns_sdk_client:
+            self._sdk_client = _build_anthropic_sdk_client(
+                api_key=self._api_key,
+                base_url=self._base_url,
+            )
+
+    def _close_stream_and_reset_client(self, stream: object | None = None) -> None:
+        if stream is not None:
+            _close_stream(stream)
+        self._reset_sdk_client()
+
     def _message_payload_body(
         self,
         *,
@@ -268,11 +324,16 @@ class AnthropicMessagesClient:
     def _events_from_message_stream(
         self,
         stream: object,
+        *,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> Iterator[dict[str, object]]:
         input_json_by_index: dict[int, str] = {}
         response_id: str | None = None
         usage: dict[str, object] | None = None
         for event in self._iter_stream_payloads(stream):
+            if interrupt_token is not None and interrupt_token.interrupted:
+                _close_stream(stream)
+                return
             payload = _payload_to_dict(event)
             event_type = payload.get("type")
             if event_type == "content_block_delta":

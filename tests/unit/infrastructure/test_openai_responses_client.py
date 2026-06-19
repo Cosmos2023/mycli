@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import httpx
 import pytest
 from openai import APIConnectionError, BadRequestError, NotFoundError
 
-from mycli.domain.runtime import StopReason
+from mycli.domain.runtime import RuntimeInterruptToken, StopReason
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
 from mycli.llms.clients.openai_chat import ModelResponseError
@@ -63,6 +64,23 @@ class _FakeSdkStream:
         self.closed = True
 
 
+class _InterruptingFakeSdkStream(_FakeSdkStream):
+    def __init__(
+        self,
+        events,
+        *,
+        token: RuntimeInterruptToken,
+    ) -> None:
+        super().__init__(events)
+        self._token = token
+
+    def __iter__(self):
+        for index, event in enumerate(self._events):
+            if index == 1:
+                self._token.request("test_interrupt")
+            yield event
+
+
 class _FakeOpenAISdkClient:
     def __init__(self, *, handler=None) -> None:
         self.responses_api = _FakeResponsesApi(handler=handler)
@@ -71,6 +89,37 @@ class _FakeOpenAISdkClient:
             (),
             {"create": self.responses_api.create},
         )()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _BlockingResponsesApi:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.create_calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> list[object]:
+        self.create_calls.append(dict(kwargs))
+        self.started.set()
+        self.release.wait(timeout=30)
+        return []
+
+
+class _BlockingResponsesSdkClient:
+    def __init__(self) -> None:
+        self.responses_api = _BlockingResponsesApi()
+        self.responses = type(
+            "_FakeResponsesNamespace",
+            (),
+            {"create": self.responses_api.create},
+        )()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _status_error(*, status_code: int, body: dict[str, object], url: str = "https://example.invalid/v1/responses"):
@@ -173,6 +222,33 @@ def test_openai_responses_client_posts_request_and_preserves_id_and_output(monke
             "arguments": "{\"path\":\".\"}",
             "call_id": "call_001",
         }
+    ]
+
+
+def test_openai_responses_client_sends_instructions_as_top_level_payload(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient()
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    client.create_response(
+        input_items=[{"role": "user", "content": "inspect the repo"}],
+        tools=[],
+        instructions="You are mycli.",
+    )
+
+    assert sdk_client.responses_api.create_calls[-1]["instructions"] == "You are mycli."
+    assert sdk_client.responses_api.create_calls[-1]["input"] == [
+        {"role": "user", "content": "inspect the repo"}
     ]
 
 
@@ -841,6 +917,105 @@ def test_openai_responses_client_streams_provider_events(
     assert events[-1]["type"] == "response.completed"
     app_log = (tmp_path / "log" / "agent.log").read_text(encoding="utf-8")
     assert "model_stream_started" in app_log
+
+
+def test_openai_responses_client_closes_stream_when_interrupt_token_is_requested(
+    monkeypatch,
+) -> None:
+    token = RuntimeInterruptToken()
+    stream = _InterruptingFakeSdkStream(
+        [
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "before",
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "after",
+            },
+        ],
+        token=token,
+    )
+    sdk_client = _FakeOpenAISdkClient(handler=lambda kwargs: stream)
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    events = list(
+        client.stream_response_with_interrupt(
+            input_items=[{"role": "user", "content": "inspect"}],
+            tools=[],
+            interrupt_token=token,
+        )
+    )
+
+    assert [event["delta"] for event in events] == ["before"]
+    assert stream.closed is True
+
+
+def test_openai_responses_client_closes_sdk_client_when_interrupted_before_stream_exists(
+    monkeypatch,
+) -> None:
+    token = RuntimeInterruptToken()
+    sdk_clients: list[_BlockingResponsesSdkClient] = []
+
+    def fake_build(**_: object) -> _BlockingResponsesSdkClient:
+        sdk_client = _BlockingResponsesSdkClient()
+        sdk_clients.append(sdk_client)
+        return sdk_client
+
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        fake_build,
+    )
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+    first_client = sdk_clients[0]
+    result_holder: dict[str, object] = {}
+
+    def consume() -> None:
+        try:
+            result_holder["events"] = list(
+                client.stream_response_with_interrupt(
+                    input_items=[{"role": "user", "content": "inspect"}],
+                    tools=[],
+                    interrupt_token=token,
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below.
+            result_holder["exception"] = exc
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    assert first_client.responses_api.started.wait(timeout=1.0)
+    token.request("test_interrupt")
+    try:
+        assert first_client.closed is True
+        assert len(sdk_clients) == 2
+        assert sdk_clients[-1] is not first_client
+    finally:
+        first_client.responses_api.release.set()
+        thread.join(timeout=3.0)
+    assert not thread.is_alive()
+    exception = result_holder.get("exception")
+    assert exception is None or isinstance(exception, ModelResponseError)
 
 
 def test_openai_responses_client_logs_stream_parse_errors(

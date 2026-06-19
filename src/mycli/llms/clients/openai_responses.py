@@ -7,11 +7,12 @@ from openai import APIConnectionError, APIResponseValidationError, APIStatusErro
 
 from mycli.domain.logging import LogLevel, ModelLogContext
 from mycli.domain.model_events import ModelEvent, ModelEventType
-from mycli.domain.runtime import StopReason
+from mycli.domain.runtime import RuntimeInterruptToken, StopReason
 from mycli.infrastructure.responses_request_builder import ResponsesRequestBuilder
 from mycli.llms.clients.openai_chat import (
     ModelResponseError,
     _build_openai_sdk_client,
+    _close_stream,
     _sdk_payload_to_dict,
 )
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
@@ -225,6 +226,7 @@ class OpenAIResponsesClient:
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
+        instructions: str | None = None,
         prompt_cache_key: str | None = None,
         tool_choice: str | None = None,
     ) -> dict[str, object]:
@@ -238,6 +240,7 @@ class OpenAIResponsesClient:
                 model=self._model,
                 input_items=input_items,
                 tools=normalized_tools,
+                instructions=instructions,
                 max_output_tokens=self._max_output_tokens,
                 reasoning_effort=self._reasoning_effort,
                 thinking_enabled=self._thinking_enabled,
@@ -350,12 +353,14 @@ class OpenAIResponsesClient:
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
+        instructions: str | None = None,
         prompt_cache_key: str | None = None,
         tool_choice: str | None = None,
     ) -> list[ModelEvent]:
         payload = self.create_response(
             input_items=input_items,
             tools=tools,
+            instructions=instructions,
             prompt_cache_key=prompt_cache_key,
             tool_choice=tool_choice,
         )
@@ -379,13 +384,53 @@ class OpenAIResponsesClient:
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
+        instructions: str | None = None,
         prompt_cache_key: str | None = None,
         tool_choice: str | None = None,
+    ) -> Iterator[dict[str, object]]:
+        yield from self._stream_response(
+            input_items=input_items,
+            tools=tools,
+            instructions=instructions,
+            prompt_cache_key=prompt_cache_key,
+            tool_choice=tool_choice,
+            interrupt_token=None,
+        )
+
+    def stream_response_with_interrupt(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+        instructions: str | None = None,
+        prompt_cache_key: str | None = None,
+        tool_choice: str | None = None,
+        interrupt_token: RuntimeInterruptToken,
+    ) -> Iterator[dict[str, object]]:
+        yield from self._stream_response(
+            input_items=input_items,
+            tools=tools,
+            instructions=instructions,
+            prompt_cache_key=prompt_cache_key,
+            tool_choice=tool_choice,
+            interrupt_token=interrupt_token,
+        )
+
+    def _stream_response(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None,
+        instructions: str | None,
+        prompt_cache_key: str | None,
+        tool_choice: str | None,
+        interrupt_token: RuntimeInterruptToken | None,
     ) -> Iterator[dict[str, object]]:
         if self._stream_transport_disabled:
             yield from self._fallback_create_response_as_stream(
                 input_items=input_items,
                 tools=tools,
+                instructions=instructions,
                 reason="stream transport already disabled",
                 prompt_cache_key=prompt_cache_key,
                 tool_choice=tool_choice,
@@ -404,6 +449,7 @@ class OpenAIResponsesClient:
                 model=self._model,
                 input_items=input_items,
                 tools=normalized_tools,
+                instructions=instructions,
                 max_output_tokens=self._max_output_tokens,
                 reasoning_effort=self._reasoning_effort,
                 thinking_enabled=self._thinking_enabled,
@@ -440,9 +486,21 @@ class OpenAIResponsesClient:
 
             try:
                 terminated = False
+                if interrupt_token is not None:
+                    interrupt_token.add_callback(self._reset_sdk_client)
                 stream_response = cast(Any, self._sdk_client.responses.create)(**payload_body)
+                if interrupt_token is not None:
+                    interrupt_token.add_callback(
+                        lambda: self._close_stream_and_reset_client(stream_response)
+                    )
+                    if interrupt_token.interrupted:
+                        _close_stream(stream_response)
+                        return
                 try:
                     for raw_event in stream_response:
+                        if interrupt_token is not None and interrupt_token.interrupted:
+                            _close_stream(stream_response)
+                            return
                         for event in self._stream_helper.iter_stream_events(
                             raw_event=raw_event,
                             request_path=request_path,
@@ -466,6 +524,8 @@ class OpenAIResponsesClient:
                                     request_path=request_path,
                                 )
                             yield event
+                    if interrupt_token is not None and interrupt_token.interrupted:
+                        return
                     if not terminated:
                         raise self._stream_helper.build_stream_disconnect_error(request_path=request_path)
                 finally:
@@ -517,6 +577,9 @@ class OpenAIResponsesClient:
                 continue
 
             if error.is_retryable and self._capability_profile.supports_stream_fallback_to_create:
+                if interrupt_token is not None and interrupt_token.interrupted:
+                    self.record_response_failure(str(error))
+                    raise error
                 self._stream_transport_disabled = True
                 self._logger.log_service_event(
                     level=LogLevel.WARNING,
@@ -535,6 +598,7 @@ class OpenAIResponsesClient:
                 yield from self._fallback_create_response_as_stream(
                     input_items=input_items,
                     tools=tools,
+                    instructions=instructions,
                     reason=error.failure_kind or "transport failure",
                     prompt_cache_key=prompt_cache_key,
                     tool_choice=tool_choice,
@@ -553,11 +617,24 @@ class OpenAIResponsesClient:
             self.record_response_failure(str(error))
             raise error
 
+    def _reset_sdk_client(self) -> None:
+        _close_stream(self._sdk_client)
+        self._sdk_client = _build_openai_sdk_client(
+            api_key=self._api_key,
+            base_url=self._base_url,
+        )
+
+    def _close_stream_and_reset_client(self, stream: object | None = None) -> None:
+        if stream is not None:
+            _close_stream(stream)
+        self._reset_sdk_client()
+
     def _fallback_create_response_as_stream(
         self,
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None,
+        instructions: str | None = None,
         reason: str,
         prompt_cache_key: str | None = None,
         tool_choice: str | None = None,
@@ -574,6 +651,7 @@ class OpenAIResponsesClient:
         payload = self.create_response(
             input_items=input_items,
             tools=tools,
+            instructions=instructions,
             prompt_cache_key=prompt_cache_key,
             tool_choice=tool_choice,
         )

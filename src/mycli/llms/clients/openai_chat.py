@@ -12,7 +12,7 @@ from openai import APIConnectionError, APIResponseValidationError, APIStatusErro
 
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
-from mycli.domain.runtime import ModelDecision
+from mycli.domain.runtime import ModelDecision, RuntimeInterruptToken
 from mycli.domain.tooling.calls import ToolCall
 from mycli.infrastructure.providers.chat import (
     ChatProviderAdapter,
@@ -540,6 +540,33 @@ class OpenAIChatClient:
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> Iterator[ModelEvent]:
+        yield from self._stream_events(
+            input_items=input_items,
+            tools=tools,
+            interrupt_token=interrupt_token,
+        )
+
+    def stream_events_with_interrupt(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+        interrupt_token: RuntimeInterruptToken,
+    ) -> Iterator[ModelEvent]:
+        yield from self._stream_events(
+            input_items=input_items,
+            tools=tools,
+            interrupt_token=interrupt_token,
+        )
+
+    def _stream_events(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        tools: list[dict[str, object]] | None,
+        interrupt_token: RuntimeInterruptToken | None,
     ) -> Iterator[ModelEvent]:
         payload_body, tool_name_aliases = self._chat_payload_body_with_tool_aliases(
             input_items,
@@ -552,10 +579,17 @@ class OpenAIChatClient:
             payload_body=payload_body,
         )
         try:
+            if interrupt_token is not None:
+                interrupt_token.add_callback(self._close_stream_and_reset_client)
             stream = cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
+            if interrupt_token is not None:
+                interrupt_token.add_callback(
+                    lambda: self._close_stream_and_reset_client(stream)
+                )
             yield from self._events_from_chat_stream(
                 stream,
                 tool_name_aliases=tool_name_aliases,
+                interrupt_token=interrupt_token,
             )
         except APIStatusError as exc:
             raise self._status_error(exc=exc, request_path=request_path) from exc
@@ -603,6 +637,7 @@ class OpenAIChatClient:
         stream: object,
         *,
         tool_name_aliases: _ToolNameAliases | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> Iterator[ModelEvent]:
         aliases = tool_name_aliases or _ToolNameAliases.from_tools(None)
         response_id: str | None = None
@@ -611,6 +646,9 @@ class OpenAIChatClient:
         emitted_tool_calls = False
 
         for raw_chunk in cast(Iterable[object], stream):
+            if interrupt_token is not None and interrupt_token.interrupted:
+                _close_stream(stream)
+                return
             chunk = _sdk_payload_to_dict(raw_chunk)
             raw_id = chunk.get("id")
             if isinstance(raw_id, str) and raw_id:
@@ -944,3 +982,25 @@ class OpenAIChatClient:
         if self._log_service is None:
             return "log/errors.log"
         return self._log_service.error_log_display_path()
+
+    def _reset_sdk_client(self) -> None:
+        _close_stream(self._sdk_client)
+        self._sdk_client = _build_openai_sdk_client(
+            api_key=self._api_key,
+            base_url=self._base_url,
+        )
+
+    def _close_stream_and_reset_client(self, stream: object | None = None) -> None:
+        if stream is not None:
+            _close_stream(stream)
+        self._reset_sdk_client()
+
+
+def _close_stream(stream: object) -> None:
+    closer = getattr(stream, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception:
+        return

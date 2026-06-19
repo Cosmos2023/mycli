@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 from mycli.domain.logging import ModelLogContext
+from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.domain.runtime.blocks import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
 from mycli.domain.tooling.calls import ToolCall
 from mycli.utils.provider_replay import deterministic_provider_id
@@ -110,8 +111,30 @@ class AnthropicMessagesModelAdapter:
         items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
     ) -> Iterator[dict[str, object]]:
+        yield from self._stream_turn(items=items, tools=tools)
+
+    def stream_turn_with_interrupt(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken,
+    ) -> Iterator[dict[str, object]]:
+        yield from self._stream_turn(
+            items=items,
+            tools=tools,
+            interrupt_token=interrupt_token,
+        )
+
+    def _stream_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> Iterator[dict[str, object]]:
         system, messages = self._serialize_items(items)
-        stream_message = getattr(self._client, "stream_message", None)
+        stream_message = self._stream_message_callable(interrupt_token)
         if not callable(stream_message):
             raise AttributeError("client does not support streaming")
         yield from stream_message(
@@ -119,6 +142,23 @@ class AnthropicMessagesModelAdapter:
             messages=messages,
             tools=self._serialize_tools(tools),
         )
+
+    def _stream_message_callable(
+        self,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> object:
+        if interrupt_token is not None:
+            stream_message_with_interrupt = getattr(
+                self._client,
+                "stream_message_with_interrupt",
+                None,
+            )
+            if callable(stream_message_with_interrupt):
+                return lambda **kwargs: stream_message_with_interrupt(
+                    **kwargs,
+                    interrupt_token=interrupt_token,
+                )
+        return getattr(self._client, "stream_message", None)
 
     def _serialize_items(
         self,

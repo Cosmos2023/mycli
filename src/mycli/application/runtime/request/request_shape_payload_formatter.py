@@ -20,7 +20,7 @@ class RequestShapePayloadFormatter:
         ]
 
     def runtime_items(self, shape: RequestShape) -> list[RuntimeItem]:
-        return [
+        items = [
             RuntimeItem(
                 role=item.role,
                 blocks=item.blocks,
@@ -29,6 +29,16 @@ class RequestShapePayloadFormatter:
             for item in shape.provider_runtime_items
             if item.blocks
         ]
+        if shape.wire_instructions:
+            items.insert(
+                0,
+                RuntimeItem(
+                    role="system",
+                    blocks=(),
+                    metadata={"wire_instructions": shape.wire_instructions},
+                ),
+            )
+        return items
 
     def _legacy_content(self, content: str, metadata: dict[str, object]) -> str:
         legacy_content = metadata.get("legacy_content")

@@ -60,16 +60,19 @@ class FakeResponsesClient:
         self.captured_tools: list[dict[str, object]] = []
         self.captured_reasoning_effort: str | None = None
         self.captured_prompt_cache_key: str | None = None
+        self.captured_instructions: str | None = None
 
     def create_response(
         self,
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        instructions: str | None = None,
         prompt_cache_key: str | None = None,
     ) -> dict[str, object]:
         self.captured_input_items = input_items
         self.captured_tools = tools
+        self.captured_instructions = instructions
         self.captured_prompt_cache_key = prompt_cache_key
         return self._payload
 
@@ -96,9 +99,11 @@ class FakeStreamingResponsesClient(FakeResponsesClient):
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        instructions: str | None = None,
     ):
         self.captured_input_items = input_items
         self.captured_tools = tools
+        self.captured_instructions = instructions
         yield from self._events
 
 
@@ -328,6 +333,34 @@ def test_responses_adapter_passes_prompt_cache_key_to_client() -> None:
     )
 
     assert client.captured_prompt_cache_key == "mycli:openai:responses:stable"
+
+
+def test_responses_adapter_passes_system_item_metadata_as_instructions() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="system",
+                blocks=(),
+                metadata={"wire_instructions": "You are mycli."},
+            ),
+            RuntimeItem(
+                role="user",
+                blocks=(RuntimeBlock(type="text", text="inspect"),),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_instructions == "You are mycli."
+    assert client.captured_input_items == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "inspect"}],
+        }
+    ]
 
 
 def test_responses_adapter_replays_same_issuer_reasoning_and_message_items() -> None:

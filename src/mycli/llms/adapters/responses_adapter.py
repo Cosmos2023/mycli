@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from typing import Protocol, cast
 
 from mycli.domain.logging import LogLevel, ModelLogContext
-from mycli.domain.runtime import StopReason
+from mycli.domain.runtime import RuntimeInterruptToken, StopReason
 from mycli.domain.runtime.blocks import ModelTurnResult, RuntimeBlock, RuntimeItem
 from mycli.llms.adapters.base import ModelToolDefinition
 from mycli.llms.adapters.responses_output_parser import ResponsesOutputParser
@@ -42,6 +42,7 @@ class ResponsesClient(Protocol):
         *,
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
+        instructions: str | None = None,
         prompt_cache_key: str | None = None,
         tool_choice: str | None = None,
     ) -> dict[str, object]:
@@ -139,6 +140,7 @@ class ResponsesModelAdapter:
     ) -> ModelTurnResult:
         input_items = self._serializer.serialize_items(items)
         serialized_tools = self._serializer.serialize_tools(tools)
+        instructions = self._wire_instructions_from_items(items)
         prompt_cache_key = self._prompt_cache_key_from_items(items)
         create_events = getattr(self._client, "create_events", None)
         if callable(create_events):
@@ -146,6 +148,8 @@ class ResponsesModelAdapter:
                 "input_items": input_items,
                 "tools": serialized_tools,
             }
+            if instructions and self._callable_accepts_instructions(create_events):
+                event_kwargs["instructions"] = instructions
             if prompt_cache_key and self._callable_accepts_prompt_cache_key(create_events):
                 event_kwargs["prompt_cache_key"] = prompt_cache_key
             if self._tool_choice is not None and self._callable_accepts_tool_choice(
@@ -167,6 +171,10 @@ class ResponsesModelAdapter:
                     "input_items": input_items,
                     "tools": serialized_tools,
                 }
+            if instructions and self._callable_accepts_instructions(
+                self._client.create_response
+            ):
+                create_kwargs["instructions"] = instructions
             if self._tool_choice is not None and self._callable_accepts_tool_choice(
                 self._client.create_response
             ):
@@ -182,7 +190,29 @@ class ResponsesModelAdapter:
         items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
     ) -> Iterator[dict[str, object]]:
-        stream_response = getattr(self._client, "stream_response", None)
+        yield from self._stream_turn(items=items, tools=tools)
+
+    def stream_turn_with_interrupt(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken,
+    ) -> Iterator[dict[str, object]]:
+        yield from self._stream_turn(
+            items=items,
+            tools=tools,
+            interrupt_token=interrupt_token,
+        )
+
+    def _stream_turn(
+        self,
+        *,
+        items: list[RuntimeItem],
+        tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> Iterator[dict[str, object]]:
+        stream_response = self._stream_response_callable(interrupt_token)
         if not callable(stream_response):
             raise ModelResponseError("Responses client does not support stream_response.")
         function_call_states: dict[str, StreamFunctionCallState] = {}
@@ -193,6 +223,9 @@ class ResponsesModelAdapter:
             "input_items": self._serializer.serialize_items(items),
             "tools": self._serializer.serialize_tools(tools),
         }
+        instructions = self._wire_instructions_from_items(items)
+        if instructions and self._callable_accepts_instructions(stream_response):
+            stream_kwargs["instructions"] = instructions
         prompt_cache_key = self._prompt_cache_key_from_items(items)
         if prompt_cache_key and self._callable_accepts_prompt_cache_key(stream_response):
             stream_kwargs["prompt_cache_key"] = prompt_cache_key
@@ -316,6 +349,23 @@ class ResponsesModelAdapter:
 
         if completed_response_id is None:
             self._record_client_failure("Responses stream ended without completion.")
+
+    def _stream_response_callable(
+        self,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> object:
+        if interrupt_token is not None:
+            stream_response_with_interrupt = getattr(
+                self._client,
+                "stream_response_with_interrupt",
+                None,
+            )
+            if callable(stream_response_with_interrupt):
+                return lambda **kwargs: stream_response_with_interrupt(
+                    **kwargs,
+                    interrupt_token=interrupt_token,
+                )
+        return getattr(self._client, "stream_response", None)
 
     def _function_call_output_payload_for_block(
         self,
@@ -472,6 +522,25 @@ class ResponsesModelAdapter:
             if isinstance(value, str) and value:
                 return value
         return None
+
+    def _wire_instructions_from_items(self, items: list[RuntimeItem]) -> str | None:
+        for item in items:
+            value = item.metadata.get("wire_instructions")
+            if isinstance(value, str) and value.strip():
+                return value
+        return None
+
+    def _callable_accepts_instructions(self, func: Callable[..., object]) -> bool:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return False
+        for parameter in signature.parameters.values():
+            if parameter.kind is parameter.VAR_KEYWORD:
+                return True
+            if parameter.name == "instructions":
+                return True
+        return False
 
     def _callable_accepts_prompt_cache_key(self, func: Callable[..., object]) -> bool:
         try:
