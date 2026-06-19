@@ -390,6 +390,19 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	/**
+	 * Undo the most recent matching history entry after a submit is interrupted.
+	 * This keeps restored text in the editor without duplicating it on Up.
+	 */
+	removeLastFromHistory(text: string): void {
+		const trimmed = text.trim();
+		if (!trimmed || this.history[0] !== trimmed) {
+			return;
+		}
+		this.history.shift();
+		this.historyIndex = -1;
+	}
+
 	private isEditorEmpty(): boolean {
 		return this.state.lines.length === 1 && this.state.lines[0] === "";
 	}

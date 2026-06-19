@@ -13,6 +13,7 @@ from mycli.cli.node_tui.gateway import (
     supported_rpc_methods,
 )
 from mycli.cli.node_tui.protocol import RpcRequest
+from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     CollaborationMode,
     DecisionAction,
@@ -21,6 +22,7 @@ from mycli.domain.runtime import (
     PendingDecision,
     PendingClarification,
     RuntimeStreamEvent,
+    RuntimeInterruptToken,
     StopReason,
     SuspendedTurn,
     TurnResponse,
@@ -45,6 +47,27 @@ class FakeSessionService:
         self.history_items: tuple[HistoryItem, ...] = ()
         self.pending_decision: object | None = None
         self.suspended_turn: object | None = None
+        self.include_child_session = False
+        self.conversations: dict[str, Conversation] = {
+            "demo": Conversation(
+                session_id="demo",
+                messages=[
+                    Message(role="user", content="Read pyproject.toml"),
+                    Message(role="assistant", content="The project is mycli."),
+                    Message(role="tool", content="tool output", tool_call_id="call_1"),
+                    Message(role="user", content="Update the TUI"),
+                ],
+            ),
+            "child": Conversation(
+                session_id="child",
+                parent_id="demo",
+                fork_point=2,
+                messages=[
+                    Message(role="user", content="Read pyproject.toml"),
+                    Message(role="assistant", content="Alternative branch"),
+                ],
+            ),
+        }
 
     def load_pending_decision(self, _session_id: str) -> object | None:
         return self.pending_decision
@@ -55,17 +78,36 @@ class FakeSessionService:
     def load_history_items(self, _session_id: str) -> tuple[HistoryItem, ...]:
         return self.history_items
 
+    def load_conversation(self, session_id: str) -> Conversation:
+        return self.conversations.get(session_id, Conversation(session_id=session_id))
+
     def list_sessions(self, limit: int = 20) -> tuple[SimpleNamespace, ...]:
-        del limit
-        return (
+        sessions = [
             SimpleNamespace(
                 session_id="demo",
+                workspace_root=Path("/workspace"),
+                created_at="2026-05-26T01:33:04Z",
+                updated_at="2026-05-27T01:33:04Z",
                 last_active_at="2026-05-27T01:33:04Z",
                 message_count=4,
                 status="active",
                 summary_count=0,
             ),
-        )
+        ]
+        if self.include_child_session:
+            sessions.append(
+                SimpleNamespace(
+                    session_id="child",
+                    workspace_root=Path("/workspace"),
+                    created_at="2026-05-27T02:00:00Z",
+                    updated_at="2026-05-27T02:10:00Z",
+                    last_active_at="2026-05-27T02:10:00Z",
+                    message_count=2,
+                    status="active",
+                    summary_count=0,
+                )
+            )
+        return tuple(sessions[:limit])
 
 
 class FakeService(TurnService):
@@ -82,6 +124,8 @@ class FakeService(TurnService):
             protocol=SimpleNamespace(value="chat_completions"),
             max_prompt_tokens=100000,
             tui_startup_mark="default",
+            statusline_enabled=True,
+            view_mode=SimpleNamespace(value="default"),
         )
         self.fake_session_service = FakeSessionService()
         self._session_service = self.fake_session_service
@@ -95,6 +139,10 @@ class FakeService(TurnService):
     def inspect_status(self) -> tuple[str, ...]:
         return ("session=demo context=unknown",)
 
+    def inspect_session(self) -> tuple[str, ...]:
+        session_name = getattr(self._config, "session_title", None) or self._config.session_id
+        return (f"session={session_name}", "messages=3")
+
     def inspect_permissions(self) -> tuple[str, ...]:
         return (
             "session_allowances=1",
@@ -103,7 +151,26 @@ class FakeService(TurnService):
             "execpolicy source=project decision=allow pattern_length=2",
         )
 
+    def inspect_hooks(self) -> tuple[str, ...]:
+        return ("configured:repo:post-tool hook_point=post_tool_use enabled=true",)
+
+    def inspect_skills(self) -> tuple[str, ...]:
+        return ("code-review: Review code for bugs",)
+
+    def cancel_background_subagents(self) -> tuple[str, ...]:
+        return ("cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1",)
+
+    def cancel_background_subagent(self, child_session_id: str) -> tuple[str, ...]:
+        return (f"cancelled subagent:{child_session_id} owner_turn=turn_1",)
+
+    def inspect_extensions(self) -> tuple[str, ...]:
+        return ("agent=mycli schema=1 rpc_methods=2 event_streams=3",)
+
+    def inspect_plugin_commands(self) -> tuple[str, ...]:
+        return ("demo.inspect plugin=demo name=inspect kind=command",)
+
     def set_view_mode(self, mode: str) -> tuple[str, ...]:
+        self._config.view_mode = SimpleNamespace(value=mode)
         return (f"mode={mode}",)
 
     def inspect_mode(self) -> tuple[str, ...]:
@@ -417,6 +484,56 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
     assert any("/status" in line for line in help_response.result["lines"])
 
 
+def test_gateway_command_run_can_cancel_background_subagents(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="command.run",
+            params={"command": "/tasks kill-agents"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["lines"] == [
+        "[subagent] cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1"
+    ]
+
+
+def test_gateway_command_run_can_cancel_one_background_subagent(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="command.run",
+            params={"command": "/tasks agents kill demo:sub:turn_1:abcd"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["lines"] == [
+        "[subagent] cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1"
+    ]
+
+
+def test_gateway_command_run_session_displays_title_not_raw_session_id(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    service._config.session_title = "Boss reply follow-up"
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(id="req_1", method="command.run", params={"command": "/session"})
+    )
+
+    assert response.result is not None
+    assert response.result["lines"][:2] == [
+        "[session] session=Boss reply follow-up",
+        "[session] messages=3",
+    ]
+
+
 def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) -> None:
     gateway = NodeTuiGateway(service=FakeService(tmp_path))
 
@@ -455,6 +572,108 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
         "[permission] execpolicy_rules=1",
         "[permission] execpolicy source=project decision=allow pattern_length=2",
     ]
+
+
+def test_gateway_settings_load_and_save_persist_tui_settings(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    service = FakeService(tmp_path)
+    service._home_dir = home
+    gateway = NodeTuiGateway(service=service)
+
+    load_response = gateway.handle_request(RpcRequest(id="req_1", method="settings.load", params={}))
+    save_response = gateway.handle_request(
+        RpcRequest(
+            id="req_2",
+            method="settings.save",
+            params={
+                "settings": {
+                    "statusbarMode": "compact",
+                    "viewMode": "focus",
+                    "theme": "light",
+                    "hideThinking": False,
+                    "toolDetailsDefault": "expanded",
+                    "hardwareCursor": True,
+                    "clearOnShrink": False,
+                    "terminalProgress": False,
+                    "subagentDensity": "detailed",
+                }
+            },
+        )
+    )
+
+    assert load_response.result is not None
+    assert load_response.result["settings"]["statusbar_mode"] == "full"
+    assert save_response.result is not None
+    assert save_response.result["settings"] == {
+        "statusbar_mode": "compact",
+        "view_mode": "focus",
+        "theme": "light",
+        "hide_thinking": False,
+        "tool_details_default": "expanded",
+        "hardware_cursor": True,
+        "clear_on_shrink": False,
+        "terminal_progress": False,
+        "subagent_density": "detailed",
+    }
+    assert (home / ".mycli" / "config.toml").read_text(encoding="utf-8") == "\n".join(
+        [
+            'view_mode = "focus"',
+            "statusline_enabled = true",
+            'tui_statusbar_mode = "compact"',
+            'tui_theme = "light"',
+            "tui_hide_thinking = false",
+            "tui_clear_on_shrink = false",
+            "tui_hardware_cursor = true",
+            'tui_subagent_density = "detailed"',
+            "tui_terminal_progress = false",
+            'tui_tool_details_default = "expanded"',
+            "",
+        ]
+    )
+    assert service._config.view_mode.value == "focus"
+
+
+def test_gateway_settings_save_rejects_invalid_values(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    service._home_dir = tmp_path / "home"
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="settings.save",
+            params={"settings": {"statusbarMode": "cinema"}},
+        )
+    )
+
+    assert response.error is not None
+    assert response.error["code"] == "invalid_params"
+    assert "Unsupported statusbar_mode" in response.error["message"]
+
+
+def test_gateway_resource_list_projects_runtime_resources(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(RpcRequest(id="req_1", method="resource.list", params={}))
+
+    assert response.result is not None
+    resources = response.result["resources"]
+    assert isinstance(resources, list)
+    assert {resource["type"] for resource in resources} >= {"hook", "plugin", "skill", "prompt", "theme"}
+    assert any(
+        resource["type"] == "hook"
+        and resource["name"] == "configured:repo:post-tool"
+        and resource["command"] == "/tools hooks"
+        and resource["enabled"] is True
+        for resource in resources
+    )
+    assert any(
+        resource["type"] == "plugin"
+        and resource["name"] == "demo.inspect"
+        and resource["command"] == "/tools plugins"
+        for resource in resources
+    )
 
 
 def test_gateway_command_run_updates_model_and_thinking_effort(tmp_path: Path) -> None:
@@ -526,6 +745,16 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
             text="The project is mycli.",
             metadata={"created_at": "2026-05-27T08:00:01Z"},
         ),
+        HistoryItem(
+            id="hist_tool",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.TOOL_CALL,
+            text="/Users/cosmos/.mycli/sessions/demo/session.json",
+            tool_name="Read",
+            call_id="call_read_1",
+            metadata={"created_at": "2026-05-27T08:00:02Z"},
+        ),
     )
     gateway = NodeTuiGateway(service=service)
 
@@ -555,6 +784,14 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
                 "created_at": "2026-05-27T08:00:01Z",
                 "folded": False,
                 "metadata": {},
+            },
+            {
+                "id": "hist_tool",
+                "type": "tool_summary",
+                "text": "/Users/cosmos/.mycli/sessions/demo/session.json",
+                "created_at": "2026-05-27T08:00:02Z",
+                "folded": False,
+                "metadata": {"tool_name": "Read", "call_id": "call_read_1"},
             },
         ],
         "next_before": None,
@@ -657,8 +894,13 @@ def test_gateway_session_list_and_resume(tmp_path: Path) -> None:
         "sessions": [
             {
                 "id": "demo",
+                "created": "2026-05-26T01:33:04Z",
+                "updated": "2026-05-27T01:33:04Z",
                 "last_active": "2026-05-27T01:33:04Z",
+                "modified": "2026-05-27T01:33:04Z",
                 "message_count": 4,
+                "cwd": "/workspace",
+                "workspace": "/workspace",
                 "current": True,
             }
         ]
@@ -666,6 +908,57 @@ def test_gateway_session_list_and_resume(tmp_path: Path) -> None:
     assert resumed.result == {
         "session_id": "demo",
         "lines": ["[session] resumed demo", "[session] messages=4"],
+    }
+
+
+def test_gateway_session_tree_projects_branch_and_message_nodes(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.include_child_session = True
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(RpcRequest(id="req_1", method="session.tree", params={}))
+
+    assert response.result is not None
+    assert response.result["session_id"] == "demo"
+    assert response.result["active_path"] == ["demo"]
+    node_by_id = {node["id"]: node for node in response.result["nodes"]}
+    assert node_by_id["session:demo"] == {
+        "id": "session:demo",
+        "kind": "session",
+        "session_id": "demo",
+        "parent_id": None,
+        "depth": 0,
+        "role": "session",
+        "summary": "demo",
+        "timestamp": "2026-05-27T01:33:04Z",
+        "label": "",
+        "message_index": None,
+        "tool_name": "",
+        "active": True,
+        "on_active_path": True,
+        "message_count": 4,
+        "preview": "Read pyproject.toml\nThe project is mycli.\ntool output",
+    }
+    assert node_by_id["session:child"]["parent_id"] == "session:demo"
+    assert node_by_id["session:child"]["depth"] == 1
+    assert node_by_id["session:child"]["on_active_path"] is False
+    assert node_by_id["session:demo:message:0"] == {
+        "id": "session:demo:message:0",
+        "kind": "message",
+        "session_id": "demo",
+        "parent_id": "session:demo",
+        "depth": 1,
+        "role": "user",
+        "summary": "Read pyproject.toml",
+        "timestamp": "",
+        "label": "",
+        "message_index": 0,
+        "anchor_id": "",
+        "tool_name": "",
+        "active": False,
+        "on_active_path": True,
+        "message_count": None,
+        "preview": "Read pyproject.toml",
     }
 
 
@@ -1057,6 +1350,7 @@ class BlockingTurnService(FakeTurnService):
     def __init__(self, workspace_root: Path) -> None:
         super().__init__(workspace_root)
         self.started = Event()
+        self.first_streamed = Event()
         self.release = Event()
 
     def handle_user_turn(
@@ -1081,8 +1375,72 @@ class BlockingLateCompletionTurnService(BlockingTurnService):
         self.started.set()
         if stream_sink is not None:
             stream_sink(RuntimeStreamEvent(kind="text_delta", text="late draft"))
+        self.first_streamed.set()
         if not self.release.wait(timeout=2.0):
             raise AssertionError("blocking fake turn was not released")
+        return TurnResponse(assistant_message="late normal answer")
+
+
+class InterruptibleStreamTurnService(FakeTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.started = Event()
+        self.first_streamed = Event()
+        self.release = Event()
+        self.interrupted = False
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del message
+        self.started.set()
+        if stream_sink is not None:
+            stream_sink(RuntimeStreamEvent(kind="reasoning", text="first chunk"))
+        self.first_streamed.set()
+        if not self.release.wait(timeout=2.0):
+            raise AssertionError("interruptible fake turn was not released")
+        if stream_sink is not None:
+            try:
+                stream_sink(RuntimeStreamEvent(kind="reasoning", text="after interrupt"))
+            except KeyboardInterrupt:
+                self.interrupted = True
+                return TurnResponse(
+                    assistant_message="Interrupt requested",
+                    turn=TurnRecord(
+                        thread_id="demo",
+                        turn_id="turn_interrupted",
+                        status=TurnStatus.INTERRUPTED,
+                        started_at="2026-05-31T00:00:00Z",
+                        completed_at="2026-05-31T00:00:01Z",
+                        stop_reason=StopReason.INTERRUPTED,
+                        user_message="hello",
+                    ),
+                )
+        return TurnResponse(assistant_message="late normal answer")
+
+
+class TokenAwareBlockingTurnService(FakeTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.started = Event()
+        self.release = Event()
+        self.seen_token: RuntimeInterruptToken | None = None
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        self.seen_token = interrupt_token
+        self.started.set()
+        if not self.release.wait(timeout=2.0):
+            raise AssertionError("token-aware fake turn was not released")
+        if interrupt_token is not None:
+            interrupt_token.raise_if_interrupted()
         return TurnResponse(assistant_message="late normal answer")
 
 
@@ -1863,6 +2221,7 @@ def test_gateway_turn_interrupt_suppresses_late_normal_completion(tmp_path: Path
         )
     )
     assert service.started.wait(timeout=2.0)
+    assert service.first_streamed.wait(timeout=2.0)
     interrupted = gateway.handle_request(RpcRequest(id="req_2", method="turn.interrupt", params={}))
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
@@ -1903,6 +2262,81 @@ def test_gateway_turn_interrupt_suppresses_late_normal_completion(tmp_path: Path
         "reason": "interrupt_requested",
         "suppressed_state": "completed",
     } in [params for method, params in events if method == "turn.completion_suppressed"]
+
+
+def test_gateway_turn_interrupt_raises_on_later_stream_events(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = InterruptibleStreamTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    accepted = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    assert service.started.wait(timeout=2.0)
+    assert service.first_streamed.wait(timeout=2.0)
+    interrupted = gateway.handle_request(RpcRequest(id="req_2", method="turn.interrupt", params={}))
+    service.release.set()
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert accepted.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert interrupted.result == {"interrupted": True}
+    assert service.interrupted is True
+    assert not any(
+        method == "message.delta" and params.get("text") == "after interrupt"
+        for method, params in events
+    )
+    assert {
+        "client_turn_id": "client_1",
+        "state": "interrupted",
+        "kind": "interrupted",
+        "text": "Interrupted",
+        "terminal": True,
+        "message": "Interrupt requested",
+    } in [params for method, params in events if method == "turn.status"]
+
+
+def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = TokenAwareBlockingTurnService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    accepted = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={"message": "hello", "client_turn_id": "client_1"},
+        )
+    )
+    assert service.started.wait(timeout=2.0)
+    assert service.seen_token is not None
+    interrupted = gateway.handle_request(RpcRequest(id="req_2", method="turn.interrupt", params={}))
+    service.release.set()
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert accepted.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert interrupted.result == {"interrupted": True}
+    assert service.seen_token.interrupted is True
+    assert service.seen_token.reason == "interrupt"
+    assert {
+        "client_turn_id": "client_1",
+        "turn_state": "interrupted",
+        "assistant_message": "Interrupt requested",
+        "activity_events": [],
+        "progress_updates": [],
+        "plan_steps": [],
+        "pending_decision": False,
+        "usage": {},
+    } in [params for method, params in events if method == "turn.completed"]
 
 
 def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_compatible(

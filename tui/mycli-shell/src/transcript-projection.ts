@@ -42,6 +42,10 @@ export function projectTranscriptBlocks(blocks: MycliShellTranscriptBlock[]): Pr
 	};
 
 	for (const block of blocks) {
+		if (isResolvedSubagentBlock(block)) {
+			flushPending();
+			continue;
+		}
 		if (isContextBlock(block)) {
 			pending.push(block);
 			continue;
@@ -51,6 +55,13 @@ export function projectTranscriptBlocks(blocks: MycliShellTranscriptBlock[]): Pr
 	}
 	flushPending();
 	return groupSubagents(projected);
+}
+
+function isResolvedSubagentBlock(block: MycliShellTranscriptBlock): boolean {
+	if (block.kind !== "subagent") {
+		return false;
+	}
+	return isResolvedSubagent(block.subagent);
 }
 
 function createGroup(blocks: MycliShellTranscriptBlock[]): ProjectedTranscriptBlock {
@@ -150,4 +161,9 @@ function createSubagentGroup(agents: MycliShellSubagent[]): ProjectedTranscriptB
 
 function subagentGroupKey(agent: MycliShellSubagent): string {
 	return agent.parentTurnId || agent.id;
+}
+
+function isResolvedSubagent(agent: MycliShellSubagent): boolean {
+	const normalized = agent.status.toLowerCase();
+	return !["running", "pending", "queued"].includes(normalized);
 }

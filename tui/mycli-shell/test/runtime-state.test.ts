@@ -9,6 +9,10 @@ import {
 	runtimeStateWithCommandResult,
 	runtimeStateWithUserMessage,
 	sessionsFromResult,
+	sessionTreeFromResult,
+	settingsFromResult,
+	runtimeStateWithSettings,
+	resourcesFromResult,
 	type RuntimeShellState,
 } from "../src/adapters/runtime-state.ts";
 
@@ -48,6 +52,142 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.tools[0]?.args, "word.txt");
 	assert.equal(shell.tools[0]?.status, "success");
 	assert.equal(shell.tools[0]?.durationMs, 1200);
+});
+
+test("runtime adapter projects runtime-backed visual settings", () => {
+	let state = initialRuntimeState();
+	const settings = settingsFromResult({
+		settings: {
+			statusbar_mode: "compact",
+			view_mode: "focus",
+			theme: "light",
+			hide_thinking: false,
+			tool_details_default: "expanded",
+			hardware_cursor: true,
+			clear_on_shrink: false,
+			terminal_progress: false,
+			subagent_density: "detailed",
+		},
+	});
+	state = runtimeStateWithSettings(state, settings);
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.settings, {
+		statusbarMode: "compact",
+		viewMode: "focus",
+		theme: "light",
+		hideThinking: false,
+		toolDetailsDefault: "expanded",
+		hardwareCursor: true,
+		clearOnShrink: false,
+		terminalProgress: false,
+		subagentDensity: "detailed",
+	});
+});
+
+test("runtime adapter applies tool detail default setting", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateWithSettings(state, { toolDetailsDefault: "expanded" });
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "t1",
+				type: "tool_summary",
+				text: "Read pyproject.toml\nline 2",
+				metadata: { tool_name: "Read", path: "pyproject.toml", success: true },
+			},
+			{
+				id: "b1",
+				type: "tool_summary",
+				text: "pytest -q\n1 passed",
+				metadata: { tool_name: "Bash", command: "pytest -q", success: true },
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.tools[0]?.expanded, true);
+	assert.equal(shell.bash[0]?.expanded, true);
+});
+
+test("runtime adapter keeps bash python source out of output preview", () => {
+	let state = initialRuntimeState();
+	const command = [
+		"python <<'PY'",
+		"from pathlib import Path",
+		"for path in Path('.').glob('*.py'):",
+		"    print(path)",
+		"PY",
+	].join("\n");
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "b1",
+				type: "tool_summary",
+				text: `Bash ${command}`,
+				folded: true,
+				metadata: { tool_name: "Bash", command, success: true },
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.bash[0]?.command, "python <<'PY' ... (5 lines)");
+	assert.equal(shell.bash[0]?.outputPreview, undefined);
+});
+
+test("runtime adapter projects run shell aliases into bash blocks", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "b1",
+				type: "tool_summary",
+				text: "run_shell pytest -q",
+				folded: true,
+				metadata: { tool_name: "run_shell", command: "pytest -q", success: true },
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.bash[0]?.command, "pytest -q");
+	assert.equal(shell.tools.length, 0);
+});
+
+test("runtime adapter projects runtime resources", () => {
+	const resources = resourcesFromResult({
+		resources: [
+			{
+				id: "hook:1",
+				type: "hook",
+				name: "configured:repo:post-tool",
+				source: "repo",
+				enabled: true,
+				status: "enabled",
+				detail: "configured hook",
+				command: "/tools hooks",
+			},
+			{ id: "bad", type: "unknown", name: "ignored" },
+		],
+	});
+
+	assert.deepEqual(resources, [
+		{
+			id: "hook:1",
+			type: "hook",
+			name: "configured:repo:post-tool",
+			source: "repo",
+			enabled: true,
+			status: "enabled",
+			detail: "configured hook",
+			command: "/tools hooks",
+		},
+	]);
 });
 
 test("runtime adapter preserves interleaved transcript block order", () => {
@@ -715,6 +855,36 @@ test("runtime adapter syncs backend message queues", () => {
 	assert.equal(shell.footer.liveState, "Idle");
 });
 
+test("runtime adapter hides internal task notifications from visible queues and transcript", () => {
+	let state = initialRuntimeState();
+	const notification = [
+		"<task-notification>",
+		"<task-id>child-session</task-id>",
+		"<task-type>local_agent</task-type>",
+		"<status>completed</status>",
+		"<summary>Agent completed</summary>",
+		"</task-notification>",
+	].join("\n");
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{ id: "q1", type: "user", text: notification, folded: false, metadata: { queued: true, queue_kind: "steering" } },
+			{ id: "u1", type: "user", text: "visible prompt", folded: false, metadata: {} },
+		],
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		steering: [notification],
+		follow_up: ["visible follow-up"],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.messages.map((message) => message.text), ["visible prompt"]);
+	assert.deepEqual(shell.transcript?.map((block) => (block.kind === "message" ? block.message.text : "")), ["visible prompt"]);
+	assert.equal(shell.footer.queueCount, 1);
+	assert.equal(shell.footer.steeringQueueCount, 0);
+	assert.equal(shell.footer.followUpQueueCount, 1);
+});
+
 test("runtime adapter projects thinking effort into footer and current model", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "status.changed", {
@@ -735,11 +905,82 @@ test("runtime adapter projects thinking effort into footer and current model", (
 test("runtime adapter handles command results and session lists", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithCommandResult(state, "/status", { lines: ["ok"] });
-	const shell = projectRuntimeState(state, sessionsFromResult({ sessions: [{ id: "s1", title: "One", cwd: "/repo" }] }));
+	const shell = projectRuntimeState(
+		state,
+		sessionsFromResult({
+			sessions: [
+				{
+					id: "s1",
+					title: "One",
+					cwd: "/repo",
+					created_at: "2026-06-17T01:00:00Z",
+					last_active: "2026-06-18T01:00:00Z",
+					message_count: 7,
+					first_message: "Fix the TUI",
+					all_messages_text: "Fix the TUI session picker",
+					parent_session_id: "root",
+					named: true,
+					current: false,
+				},
+			],
+		}),
+	);
 
 	assert.equal(shell.messages.some((message) => message.text === "ok"), true);
 	assert.equal(shell.sessions?.[0]?.id, "s1");
 	assert.equal(shell.sessions?.[0]?.title, "One");
+	assert.equal(shell.sessions?.[0]?.created, "2026-06-17T01:00:00Z");
+	assert.equal(shell.sessions?.[0]?.lastActive, "2026-06-18T01:00:00Z");
+	assert.equal(shell.sessions?.[0]?.messageCount, 7);
+	assert.equal(shell.sessions?.[0]?.firstMessage, "Fix the TUI");
+	assert.equal(shell.sessions?.[0]?.allMessagesText, "Fix the TUI session picker");
+	assert.equal(shell.sessions?.[0]?.parentSessionId, "root");
+	assert.equal(shell.sessions?.[0]?.named, true);
+	assert.equal(shell.sessions?.[0]?.current, false);
+});
+
+test("runtime adapter projects session tree payload", () => {
+	const tree = sessionTreeFromResult({
+		session_id: "demo",
+		active_path: ["demo"],
+		nodes: [
+			{
+				id: "session:demo",
+				kind: "session",
+				session_id: "demo",
+				parent_id: null,
+				depth: 0,
+				role: "session",
+				summary: "Session A",
+				timestamp: "2026-05-27T01:33:04Z",
+				message_count: 4,
+				active: true,
+				on_active_path: true,
+				preview: "Read pyproject.toml",
+			},
+			{
+				id: "session:demo:message:0",
+				kind: "message",
+				session_id: "demo",
+				parent_id: "session:demo",
+				depth: 1,
+				role: "user",
+				summary: "Read pyproject.toml",
+				message_index: 0,
+				anchor_id: "hist_user",
+				on_active_path: true,
+				preview: "Read pyproject.toml",
+			},
+		],
+	});
+
+	assert.equal(tree.sessionId, "demo");
+	assert.deepEqual(tree.activePath, ["demo"]);
+	assert.equal(tree.nodes[0]?.id, "session:demo");
+	assert.equal(tree.nodes[0]?.active, true);
+	assert.equal(tree.nodes[1]?.messageIndex, 0);
+	assert.equal(tree.nodes[1]?.parentId, "session:demo");
+	assert.equal(tree.nodes[1]?.anchorId, "hist_user");
 });
 
 test("runtime adapter applies collaboration mode returned by command results", () => {

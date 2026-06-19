@@ -8,13 +8,17 @@ import {
 	runtimeStateFromTranscript,
 	runtimeStateWithCommandResult,
 	runtimeStateWithMessageQueues,
+	runtimeStateWithSettings,
 	runtimeStateWithUserMessage,
+	resourcesFromResult,
 	sessionsFromResult,
+	sessionTreeFromResult,
+	settingsFromResult,
 	type RuntimeShellState,
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
 import { NativeChatRuntime } from "./native-chat-runtime.ts";
-import type { MycliShellSession, MycliShellState } from "./model.ts";
+import type { MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
@@ -119,8 +123,18 @@ async function bootstrap(): Promise<void> {
 		before: null,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
+	await loadSettings();
 	await loadSessions();
 	bootstrapped = true;
+}
+
+async function loadSettings(): Promise<void> {
+	try {
+		const result = await send("settings.load", {}, { recordErrors: false });
+		setRuntimeState(runtimeStateWithSettings(runtimeState, settingsFromResult(result)));
+	} catch {
+		// Keep built-in defaults when the gateway does not support persistent settings.
+	}
 }
 
 async function loadSessions(): Promise<void> {
@@ -225,6 +239,10 @@ function queuedTurns(): string[] {
 	return [...queuedSteeringTurns, ...queuedFollowUpTurns];
 }
 
+function visibleQueuedTurns(): string[] {
+	return queuedTurns().filter((message) => !isInternalTaskNotification(message));
+}
+
 function nextQueuedTurn(): { kind: "steer" | "followUp"; message: string } | null {
 	const steering = queuedSteeringTurns[0];
 	if (steering !== undefined) {
@@ -238,7 +256,7 @@ function nextQueuedTurn(): { kind: "steer" | "followUp"; message: string } | nul
 }
 
 function clearQueuedTurns(): string[] {
-	const allQueued = queuedTurns();
+	const allQueued = visibleQueuedTurns();
 	queuedSteeringTurns.length = 0;
 	queuedFollowUpTurns.length = 0;
 	syncQueuedInputs();
@@ -263,11 +281,12 @@ async function dequeueQueuedInput(): Promise<string | null> {
 	try {
 		const result = await send("turn.queue.clear", {}, { recordErrors: false });
 		const restored = [...stringArrayValue(result.steering), ...stringArrayValue(result.follow_up)];
+		const visibleRestored = restored.filter((message) => !isInternalTaskNotification(message));
 		queuedSteeringTurns.length = 0;
 		queuedFollowUpTurns.length = 0;
 		syncQueuedInputs();
-		if (restored.length > 0) {
-			return restored.join("\n\n");
+		if (visibleRestored.length > 0) {
+			return visibleRestored.join("\n\n");
 		}
 	} catch {
 		// Fall back to local queue below.
@@ -348,6 +367,11 @@ function stringArrayValue(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
+function isInternalTaskNotification(text: string): boolean {
+	const trimmed = text.trimStart();
+	return trimmed.startsWith("<task-notification>") || trimmed.startsWith("<task-notification ");
+}
+
 async function runCommand(command: string): Promise<void> {
 	const result = await send("command.run", { command });
 	setRuntimeState(runtimeStateWithCommandResult(runtimeState, command, result));
@@ -370,6 +394,26 @@ async function selectSession(sessionId: string): Promise<void> {
 		before: null,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
+}
+
+async function loadSessionTree() {
+	const result = await send("session.tree", {});
+	return sessionTreeFromResult(result);
+}
+
+async function loadResources() {
+	const result = await send("resource.list", {});
+	const resources = resourcesFromResult(result);
+	runtimeState = { ...runtimeState, resources };
+	refreshRuntime();
+	return resources;
+}
+
+async function saveSettings(settings: MycliShellVisualSettings): Promise<MycliShellVisualSettings> {
+	const result = await send("settings.save", { settings });
+	const savedSettings = settingsFromResult(result);
+	setRuntimeState(runtimeStateWithSettings(runtimeState, savedSettings));
+	return savedSettings;
 }
 
 async function shutdown(exitCode = 0): Promise<void> {
@@ -441,6 +485,9 @@ async function main(): Promise<void> {
 			await runCommand(`/model ${model.id}${thinking}`);
 		},
 		onSessionSelect: selectSession,
+		onSessionTreeLoad: loadSessionTree,
+		onSettingsChange: saveSettings,
+		onResourceLoad: loadResources,
 		commands: [
 			{
 				id: "status",

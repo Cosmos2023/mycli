@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import inspect
 from pathlib import Path
 from threading import Lock, Thread
 import time
@@ -9,6 +10,8 @@ from typing import Any, Protocol, cast
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
 from mycli.config.auth_store import AuthStore
+from mycli.config.settings import default_user_config_path
+from mycli.config.tui_settings import load_tui_settings, save_tui_settings
 from mycli.cli.node_tui.protocol import (
     JsonRpcError,
     RpcRequest,
@@ -26,8 +29,11 @@ from mycli.domain.runtime import (
     DecisionAction,
     PendingDecision,
     RuntimeEventEnvelope,
+    RuntimeInterruptToken,
     RuntimeStreamEvent,
+    StopReason,
     SuspendedTurn,
+    TurnRecord,
     TurnResponse,
     TurnStatus,
 )
@@ -36,6 +42,7 @@ from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_RPC_METHODS,
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
+from mycli.domain.conversation import Conversation, Message
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
 
@@ -101,6 +108,7 @@ class NodeTuiServiceLike(Protocol):
         self,
         message: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse: ...
 
     def resolve_pending_decision(
@@ -114,6 +122,12 @@ class NodeTuiServiceLike(Protocol):
     def current_context_window_metrics(self) -> dict[str, object]: ...
 
     def extension_manifest(self) -> dict[str, object]: ...
+
+    def inspect_hooks(self) -> tuple[str, ...]: ...
+
+    def inspect_skills(self) -> tuple[str, ...]: ...
+
+    def inspect_extensions(self) -> tuple[str, ...]: ...
 
     def export_trace_jsonl(self, tail: int = 50) -> tuple[str, ...]: ...
 
@@ -191,6 +205,7 @@ class NodeTuiGateway:
         self._turn_thread: Thread | None = None
         self._turn_running = False
         self._current_client_turn_id: str | None = None
+        self._current_interrupt_token: RuntimeInterruptToken | None = None
         self._interrupt_requested = False
         self._event_sequence = 0
         self._fallback_trust_state = "unknown"
@@ -229,6 +244,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._status_payload())
             if request.method == "extension.manifest":
                 return result_response(request.id, self.service.extension_manifest())
+            if request.method == "resource.list":
+                return result_response(request.id, self._handle_resource_list())
             if request.method == "trace.export":
                 return result_response(request.id, self._handle_trace_export(request.params))
             if request.method == "workspace.trust.status":
@@ -239,6 +256,12 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_session_list())
             if request.method == "session.resume":
                 return result_response(request.id, self._handle_session_resume(request.params))
+            if request.method == "session.tree":
+                return result_response(request.id, self._handle_session_tree(request.params))
+            if request.method == "settings.load":
+                return result_response(request.id, self._handle_settings_load())
+            if request.method == "settings.save":
+                return result_response(request.id, self._handle_settings_save(request.params))
             if request.method == "shutdown":
                 return result_response(request.id, {"ok": True})
             return self._gateway_error_response(
@@ -350,6 +373,48 @@ class NodeTuiGateway:
             providers.append(payload)
         return providers
 
+    def _handle_settings_load(self) -> dict[str, object]:
+        settings = load_tui_settings(self._home_dir(), runtime_config=self.service._config)
+        return {
+            "settings": settings.to_payload(),
+            "source": "user_config",
+            "path": str(default_user_config_path(self._home_dir())),
+        }
+
+    def _handle_settings_save(self, params: dict[str, object]) -> dict[str, object]:
+        raw_settings = params.get("settings")
+        if not isinstance(raw_settings, dict):
+            raise ValueError("settings is required.")
+        settings = save_tui_settings(
+            self._home_dir(),
+            raw_settings,
+            runtime_config=self.service._config,
+        )
+        setter = getattr(self.service, "set_view_mode", None)
+        if callable(setter):
+            setter(settings.view_mode)
+        return {
+            "ok": True,
+            "settings": settings.to_payload(),
+            "source": "user_config",
+            "path": str(default_user_config_path(self._home_dir())),
+            "message": "Saved TUI settings.",
+        }
+
+    def _handle_resource_list(self) -> dict[str, object]:
+        resources: list[dict[str, object]] = []
+        resources.extend(_resources_from_lines("hook", "/tools hooks", self.service.inspect_hooks()))
+        resources.extend(_resources_from_lines("plugin", "/tools plugins", self._plugin_lines()))
+        resources.extend(_resources_from_lines("skill", "/tools skills", self.service.inspect_skills()))
+        resources.extend(_static_resources())
+        return {"resources": resources}
+
+    def _plugin_lines(self) -> tuple[str, ...]:
+        inspect = getattr(self.service, "inspect_plugin_commands", None)
+        if callable(inspect):
+            return tuple(inspect())
+        return tuple(self.service.inspect_extensions())
+
     def _home_dir(self) -> Path:
         runtime = getattr(cast(object, self.service), "_runtime", None)
         runtime_home = getattr(runtime, "_home_dir", None)
@@ -408,6 +473,7 @@ class NodeTuiGateway:
                 )
             self._turn_running = True
             self._current_client_turn_id = client_turn_id
+            self._current_interrupt_token = RuntimeInterruptToken(source="node_tui_gateway")
             self._interrupt_requested = False
             self._turn_thread = Thread(
                 target=self._run_turn_worker,
@@ -464,6 +530,8 @@ class NodeTuiGateway:
             client_turn_id = self._current_client_turn_id
             if running:
                 self._interrupt_requested = True
+                if self._current_interrupt_token is not None:
+                    self._current_interrupt_token.request("interrupt")
         if running:
             self._record_turn_interrupt_request(client_turn_id=client_turn_id)
         if running and self._emit is not None:
@@ -535,7 +603,29 @@ class NodeTuiGateway:
         try:
             response = self.service.handle_user_turn(
                 message,
-                stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
+                **_handle_user_turn_kwargs(
+                    handle_user_turn=self.service.handle_user_turn,
+                    stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
+                    interrupt_token=self._current_interrupt_token,
+                ),
+            )
+        except KeyboardInterrupt:
+            self._emit_interrupted_turn_completed(client_turn_id=client_turn_id, message=message)
+            self._emit_event(
+                "turn.interrupted",
+                {"requested": True, "client_turn_id": client_turn_id},
+            )
+            self._emit_turn_status(
+                client_turn_id=client_turn_id,
+                state="interrupted",
+                message="Interrupt requested",
+            )
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="interrupted",
+                kind="interrupted",
+                text="Interrupted",
+                message="Interrupt requested",
             )
         except Exception as exc:
             self._emit_event(
@@ -599,6 +689,7 @@ class NodeTuiGateway:
             with self._turn_lock:
                 self._turn_running = False
                 self._current_client_turn_id = None
+                self._current_interrupt_token = None
             self._emit_event("status.changed", self._status_payload())
 
     def _should_suppress_late_completion(
@@ -630,6 +721,7 @@ class NodeTuiGateway:
         )
 
     def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:
+        self._raise_if_interrupted(client_turn_id)
         if event.kind in {"tool_start", "tool_progress", "tool_complete", "tool_failed"}:
             method = {
                 "tool_start": "tool.start",
@@ -641,6 +733,7 @@ class NodeTuiGateway:
                 method,
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
+            self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "clarify_request":
             self._emit_event(
@@ -657,6 +750,7 @@ class NodeTuiGateway:
                 kind="waiting_clarification",
                 text=_status_text_for_state("waiting_clarification"),
             )
+            self._raise_if_interrupted(client_turn_id)
             return
         if event.kind in {"compaction_started", "compaction_completed"}:
             method = {
@@ -667,12 +761,14 @@ class NodeTuiGateway:
                 method,
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
+            self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "subagent_update":
             self._emit_event(
                 "subagent.updated",
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
+            self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "queue_updated":
             self._emit_event(
@@ -682,12 +778,14 @@ class NodeTuiGateway:
                     "follow_up": _string_list(event.metadata.get("follow_up")),
                 },
             )
+            self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "plan_updated":
             self._emit_event(
                 "plan.updated",
                 {"client_turn_id": client_turn_id, **event.metadata},
             )
+            self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "reasoning":
             payload: dict[str, object] = {"client_turn_id": client_turn_id, "text": event.text}
@@ -713,6 +811,35 @@ class NodeTuiGateway:
                 "tool_name": event.tool_name,
                 "metadata": event.metadata,
             },
+        )
+        self._raise_if_interrupted(client_turn_id)
+
+    def _raise_if_interrupted(self, client_turn_id: str) -> None:
+        with self._turn_lock:
+            interrupted = (
+                self._interrupt_requested
+                and self._turn_running
+                and self._current_client_turn_id == client_turn_id
+            )
+        if interrupted:
+            raise KeyboardInterrupt()
+
+    def _emit_interrupted_turn_completed(self, *, client_turn_id: str, message: str) -> None:
+        response = TurnResponse(
+            assistant_message="Interrupt requested",
+            turn=TurnRecord(
+                thread_id=self.service._config.session_id,
+                turn_id=client_turn_id,
+                status=TurnStatus.INTERRUPTED,
+                started_at="",
+                completed_at="",
+                stop_reason=StopReason.INTERRUPTED,
+                user_message=message,
+            ),
+        )
+        self._emit_event(
+            "turn.completed",
+            self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
         )
 
     def _turn_completed_payload(
@@ -1171,7 +1298,12 @@ class NodeTuiGateway:
             "sessions": [
                 {
                     "id": overview.session_id,
+                    "cwd": str(getattr(overview, "workspace_root", "")),
+                    "workspace": str(getattr(overview, "workspace_root", "")),
+                    "created": getattr(overview, "created_at", ""),
+                    "updated": getattr(overview, "updated_at", ""),
                     "last_active": overview.last_active_at,
+                    "modified": overview.last_active_at,
                     "message_count": overview.message_count,
                     "current": overview.session_id == self.service._config.session_id,
                 }
@@ -1189,6 +1321,75 @@ class NodeTuiGateway:
             self._emit_event("status.changed", self._status_payload())
             self._emit_resume_pending_state()
         return {"session_id": self.service._config.session_id, "lines": lines}
+
+    def _handle_session_tree(self, params: dict[str, object]) -> dict[str, object]:
+        limit = _positive_int(params.get("limit"), default=100)
+        overviews = self.service._session_service.list_sessions(limit=limit)
+        overview_by_id = {overview.session_id: overview for overview in overviews}
+        conversations: dict[str, Conversation] = {}
+        for overview in overviews:
+            try:
+                conversations[overview.session_id] = self.service._session_service.load_conversation(
+                    overview.session_id
+                )
+            except (FileNotFoundError, ValueError, KeyError):
+                conversations[overview.session_id] = Conversation(session_id=overview.session_id)
+
+        active_session_id = self.service._config.session_id
+        active_path = _conversation_active_path(conversations, active_session_id)
+        active_path_set = set(active_path)
+        children_by_parent: dict[str | None, list[Conversation]] = {}
+        for conversation in conversations.values():
+            parent_id = conversation.parent_id if conversation.parent_id in conversations else None
+            children_by_parent.setdefault(parent_id, []).append(conversation)
+
+        def sort_key(conversation: Conversation) -> tuple[str, str]:
+            overview = overview_by_id.get(conversation.session_id)
+            timestamp = overview.last_active_at if overview is not None else ""
+            return (timestamp, conversation.session_id)
+
+        nodes: list[dict[str, object]] = []
+
+        def append_session(conversation: Conversation, depth: int) -> None:
+            session_node_id = _session_tree_session_node_id(conversation.session_id)
+            parent_node_id = (
+                _session_tree_session_node_id(conversation.parent_id)
+                if conversation.parent_id in conversations
+                else None
+            )
+            overview = overview_by_id.get(conversation.session_id)
+            nodes.append(
+                {
+                    "id": session_node_id,
+                    "kind": "session",
+                    "session_id": conversation.session_id,
+                    "parent_id": parent_node_id,
+                    "depth": depth,
+                    "role": "session",
+                    "summary": conversation.session_id,
+                    "timestamp": overview.last_active_at if overview is not None else "",
+                    "label": "",
+                    "message_index": None,
+                    "tool_name": "",
+                    "active": conversation.session_id == active_session_id,
+                    "on_active_path": conversation.session_id in active_path_set,
+                    "message_count": len(conversation.messages),
+                    "preview": _conversation_preview(conversation),
+                }
+            )
+            for index, message in enumerate(conversation.messages):
+                nodes.append(_conversation_message_tree_node(conversation, message, index, depth + 1))
+            for child in sorted(children_by_parent.get(conversation.session_id, []), key=sort_key, reverse=True):
+                append_session(child, depth + 1)
+
+        for root in sorted(children_by_parent.get(None, []), key=sort_key, reverse=True):
+            append_session(root, 0)
+
+        return {
+            "session_id": active_session_id,
+            "active_path": active_path,
+            "nodes": nodes,
+        }
 
     def _handle_trace_export(self, params: dict[str, object]) -> dict[str, object]:
         tail = _positive_int(params.get("tail"), default=50)
@@ -1327,6 +1528,34 @@ def _required_str(params: dict[str, object], key: str) -> str:
     return value
 
 
+def _handle_user_turn_kwargs(
+    *,
+    handle_user_turn: Callable[..., object],
+    stream_sink: Callable[[RuntimeStreamEvent], None],
+    interrupt_token: RuntimeInterruptToken | None,
+) -> dict[str, object]:
+    # The gateway is used directly in tests with small fake services. Keep the
+    # new cancellation channel optional so old service fakes remain valid.
+    kwargs: dict[str, object] = {"stream_sink": stream_sink}
+    if interrupt_token is not None and _callable_accepts_keyword(
+        handle_user_turn,
+        "interrupt_token",
+    ):
+        kwargs["interrupt_token"] = interrupt_token
+    return kwargs
+
+
+def _callable_accepts_keyword(callable_obj: Callable[..., object], keyword: str) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD or name == keyword
+        for name, parameter in signature.parameters.items()
+    )
+
+
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -1385,6 +1614,92 @@ def _collaboration_mode_from_command(command: str) -> str | None:
     if len(parts) == 2 and parts[0] == "/mode" and parts[1] in {"default", "plan"}:
         return parts[1]
     return None
+
+
+def _resources_from_lines(
+    resource_type: str,
+    command: str,
+    lines: tuple[str, ...],
+) -> list[dict[str, object]]:
+    resources: list[dict[str, object]] = []
+    for index, line in enumerate(lines):
+        detail = _bounded_text(line, max_chars=300)
+        name = _resource_name_from_line(line, fallback=f"{resource_type}-{index + 1}")
+        resources.append(
+            {
+                "id": f"{resource_type}:{index}:{name}",
+                "type": resource_type,
+                "name": name,
+                "source": _resource_source_from_line(line),
+                "enabled": _resource_enabled_from_line(line),
+                "status": _resource_status_from_line(line),
+                "detail": detail,
+                "command": command,
+            }
+        )
+    return resources
+
+
+def _resource_name_from_line(line: str, *, fallback: str) -> str:
+    stripped = line.strip()
+    if not stripped:
+        return fallback
+    head = stripped.split(maxsplit=1)[0]
+    if ":" in head and not head.startswith("/"):
+        return head.rstrip(":")
+    if "=" in head:
+        return head.split("=", 1)[0]
+    return head[:80]
+
+
+def _resource_source_from_line(line: str) -> str:
+    for source in ("user", "repo", "builtin", "package", "runtime"):
+        if f"source={source}" in line or line.startswith(f"{source}:"):
+            return source
+    return "runtime"
+
+
+def _resource_enabled_from_line(line: str) -> bool | None:
+    lowered = line.lower()
+    if "enabled=false" in lowered or " disabled" in lowered or "allowlist=missing" in lowered:
+        return False
+    if "enabled=true" in lowered or " loaded" in lowered or "approved" in lowered:
+        return True
+    return None
+
+
+def _resource_status_from_line(line: str) -> str:
+    lowered = line.lower()
+    if "issue" in lowered or "error" in lowered or "failed" in lowered:
+        return "issue"
+    if "disabled" in lowered:
+        return "disabled"
+    if "enabled" in lowered or "loaded" in lowered or "approved" in lowered:
+        return "enabled"
+    return "available"
+
+
+def _static_resources() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "prompt:system",
+            "type": "prompt",
+            "name": "system prompts",
+            "source": "builtin",
+            "status": "available",
+            "detail": "Prompt resources are owned by Python runtime builders.",
+            "command": "/help",
+        },
+        {
+            "id": "theme:current",
+            "type": "theme",
+            "name": "current theme",
+            "source": "runtime",
+            "status": "available",
+            "detail": "Theme selection is controlled through /settings.",
+            "command": "/settings",
+        },
+    ]
 
 
 def _approval_request_payload(
@@ -1545,6 +1860,10 @@ def _project_history_item(item: HistoryItem) -> dict[str, object]:
         HistoryItemType.COMPACTION: "system_notice",
     }.get(item.type, "system_notice")
     metadata = dict(item.metadata)
+    if item.tool_name and not metadata.get("tool_name"):
+        metadata["tool_name"] = item.tool_name
+    if item.call_id and not metadata.get("call_id"):
+        metadata["call_id"] = item.call_id
     created_at = str(metadata.pop("created_at", "") or "")
     return {
         "id": item.id,
@@ -1554,6 +1873,79 @@ def _project_history_item(item: HistoryItem) -> dict[str, object]:
         "folded": item_type == "tool_detail",
         "metadata": metadata,
     }
+
+
+def _conversation_active_path(
+    conversations: dict[str, Conversation],
+    active_session_id: str,
+) -> list[str]:
+    if active_session_id not in conversations:
+        return [active_session_id]
+    path: list[str] = []
+    seen: set[str] = set()
+    current: str | None = active_session_id
+    while current is not None and current in conversations and current not in seen:
+        seen.add(current)
+        path.append(current)
+        current = conversations[current].parent_id
+    return list(reversed(path))
+
+
+def _session_tree_session_node_id(session_id: str) -> str:
+    return f"session:{session_id}"
+
+
+def _conversation_message_tree_node(
+    conversation: Conversation,
+    message: Message,
+    index: int,
+    depth: int,
+) -> dict[str, object]:
+    tool_name = ""
+    if message.tool_calls:
+        tool_name = message.tool_calls[0].name
+    elif message.metadata.get("tool_name"):
+        tool_name = str(message.metadata.get("tool_name"))
+    summary = _message_summary(message)
+    return {
+        "id": f"{_session_tree_session_node_id(conversation.session_id)}:message:{index}",
+        "kind": "message",
+        "session_id": conversation.session_id,
+        "parent_id": _session_tree_session_node_id(conversation.session_id),
+        "depth": depth,
+        "role": message.role,
+        "summary": summary,
+        "timestamp": str(message.metadata.get("created_at") or message.metadata.get("timestamp") or ""),
+        "label": str(message.metadata.get("label") or ""),
+        "message_index": index,
+        "anchor_id": str(message.metadata.get("history_id") or ""),
+        "tool_name": tool_name,
+        "active": False,
+        "on_active_path": True,
+        "message_count": None,
+        "preview": _bounded_text(message.content, max_chars=320),
+    }
+
+
+def _conversation_preview(conversation: Conversation) -> str:
+    lines = [
+        _bounded_text(message.content, max_chars=120)
+        for message in conversation.messages[:3]
+        if message.content.strip()
+    ]
+    return "\n".join(lines)
+
+
+def _message_summary(message: Message) -> str:
+    if message.tool_calls:
+        names = ", ".join(call.name for call in message.tool_calls[:3])
+        return f"tool call: {names}"
+    if message.role == "tool" and message.tool_call_id:
+        return f"tool result: {message.tool_call_id}"
+    text = message.content.strip().replace("\n", " ")
+    if text:
+        return _bounded_text(text, max_chars=120)
+    return message.role
 
 
 def _slash_description(command: str) -> str:

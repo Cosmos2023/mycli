@@ -7,6 +7,9 @@ export type {
 	MycliShellModel,
 	MycliShellState,
 	MycliShellSession,
+	MycliShellSessionTree,
+	MycliShellSessionTreeNode,
+	MycliShellResource,
 	MycliShellVisualSettings,
 	MycliShellTool,
 	MycliShellToolStatus,
@@ -21,7 +24,9 @@ export { LoginFlowComponent } from "./components/login-flow.ts";
 export { ModelSelectorComponent } from "./components/model-selector.ts";
 export { PlanPanelComponent } from "./components/plan-panel.ts";
 export { ProposedPlanComponent } from "./components/proposed-plan.ts";
+export { ResourceSelectorComponent } from "./components/resource-selector.ts";
 export { SessionSelectorComponent } from "./components/session-selector.ts";
+export { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 export { SettingsSelectorComponent } from "./components/settings-selector.ts";
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";

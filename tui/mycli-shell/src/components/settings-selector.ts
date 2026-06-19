@@ -59,6 +59,11 @@ export class SettingsSelectorComponent extends Container {
 			viewMode: "default",
 			theme: "dark",
 			hideThinking: true,
+			toolDetailsDefault: "collapsed",
+			hardwareCursor: false,
+			clearOnShrink: true,
+			terminalProgress: true,
+			subagentDensity: "normal",
 			...settings,
 		};
 		this.callbacks = callbacks;
@@ -66,7 +71,7 @@ export class SettingsSelectorComponent extends Container {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("accent", theme.bold("Settings")), 0, 0));
-		this.addChild(new Text(theme.fg("muted", "Local visual settings. Runtime-backed settings stay owned by mycli."), 0, 0));
+		this.addChild(new Text(theme.fg("muted", "Runtime-backed TUI settings. Changes are saved by mycli."), 0, 0));
 		this.addChild(new Spacer(1));
 
 		const items: SettingItem[] = [
@@ -106,6 +111,43 @@ export class SettingsSelectorComponent extends Container {
 				currentValue: this.settings.hideThinking ? "true" : "false",
 				values: ["true", "false"],
 			},
+			{
+				id: "tool-details-default",
+				label: "Tool details",
+				description: "Default expansion state for completed tool and bash details",
+				currentValue: this.settings.toolDetailsDefault ?? "collapsed",
+				submenu: (currentValue, done) =>
+					this.submenu("Tool details", "Default expansion state for completed tool and bash details", ["collapsed", "expanded"], currentValue, done),
+			},
+			{
+				id: "hardware-cursor",
+				label: "Hardware cursor",
+				description: "Prefer terminal cursor behavior when supported by the frontend",
+				currentValue: this.settings.hardwareCursor ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "clear-on-shrink",
+				label: "Clear on shrink",
+				description: "Clear stale cells when the terminal shrinks",
+				currentValue: this.settings.clearOnShrink ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "terminal-progress",
+				label: "Progress",
+				description: "Show compact terminal progress while a turn is running",
+				currentValue: this.settings.terminalProgress ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "subagent-density",
+				label: "Subagents",
+				description: "Controls density for sub-agent task summaries",
+				currentValue: this.settings.subagentDensity ?? "normal",
+				submenu: (currentValue, done) =>
+					this.submenu("Subagents", "Controls density for sub-agent task summaries", ["compact", "normal", "detailed"], currentValue, done),
+			},
 		];
 
 		this.settingsList = new SettingsList(
@@ -114,7 +156,7 @@ export class SettingsSelectorComponent extends Container {
 			getSettingsListTheme(),
 			(id, newValue) => this.handleChange(id, newValue),
 			callbacks.onCancel,
-			{ enableSearch: false },
+			{ enableSearch: true },
 		);
 		this.addChild(this.settingsList);
 		this.addChild(new Spacer(1));
@@ -149,6 +191,21 @@ export class SettingsSelectorComponent extends Container {
 				break;
 			case "hide-thinking":
 				this.settings = { ...this.settings, hideThinking: newValue === "true" };
+				break;
+			case "tool-details-default":
+				this.settings = { ...this.settings, toolDetailsDefault: newValue as MycliShellVisualSettings["toolDetailsDefault"] };
+				break;
+			case "hardware-cursor":
+				this.settings = { ...this.settings, hardwareCursor: newValue === "true" };
+				break;
+			case "clear-on-shrink":
+				this.settings = { ...this.settings, clearOnShrink: newValue === "true" };
+				break;
+			case "terminal-progress":
+				this.settings = { ...this.settings, terminalProgress: newValue === "true" };
+				break;
+			case "subagent-density":
+				this.settings = { ...this.settings, subagentDensity: newValue as MycliShellVisualSettings["subagentDensity"] };
 				break;
 		}
 		this.callbacks.onChange({ ...this.settings });

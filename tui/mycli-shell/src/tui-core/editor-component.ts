@@ -39,6 +39,9 @@ export interface EditorComponent extends Component {
 	/** Add text to history for up/down navigation */
 	addToHistory?(text: string): void;
 
+	/** Remove the most recent matching history item after an interrupted submit */
+	removeLastFromHistory?(text: string): void;
+
 	// =========================================================================
 	// Advanced text manipulation (optional)
 	// =========================================================================

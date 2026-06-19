@@ -6,6 +6,7 @@ import type { Terminal } from "../src/tui-core/terminal.ts";
 import { visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
 import { BashExecutionComponent, FooterComponent, MycliShellRuntime, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
+import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
@@ -75,12 +76,71 @@ function sampleState(): MycliShellState {
 			hideThinking: true,
 		},
 		sessions: [
-			{ id: "session-a", title: "Session A", cwd: "~/Desktop/mycli", modified: "now" },
-			{ id: "session-b", title: "Session B", cwd: "~/Desktop/other", modified: "1h" },
+			{
+				id: "session-a",
+				title: "Session A",
+				cwd: "~/Desktop/mycli",
+				modified: "2026-06-18T10:00:00Z",
+				firstMessage: "Fix session selector",
+				allMessagesText: "Fix session selector in mycli shell",
+				messageCount: 3,
+				named: true,
+			},
+			{
+				id: "session-b",
+				title: "Session B",
+				cwd: "~/Desktop/other",
+				modified: "2026-06-18T09:00:00Z",
+				firstMessage: "Investigate cache hits",
+				allMessagesText: "Investigate cache hits with response API",
+				messageCount: 4,
+			},
+		],
+		resources: [
+			{
+				id: "hook:1",
+				type: "hook",
+				name: "configured:repo:post-tool",
+				source: "repo",
+				enabled: true,
+				status: "enabled",
+				detail: "configured hook",
+				command: "/tools hooks",
+			},
 		],
 		pendingNotice: "Waiting for approval",
 	};
 }
+
+test("session selector search supports phrase regex scope sort and named filters", () => {
+	const sessions = sampleState().sessions ?? [];
+
+	assert.deepEqual(parseSessionSearchQuery('Session "cache hits"').tokens, [
+		{ kind: "fuzzy", value: "Session" },
+		{ kind: "phrase", value: "cache hits" },
+	]);
+	assert.equal(parseSessionSearchQuery("re:[").error !== undefined, true);
+	assert.deepEqual(
+		filterSessions(sessions, {
+			query: '"cache hits"',
+			scope: "all",
+			sortMode: "relevance",
+			nameFilter: "all",
+			currentWorkspace: "~/Desktop/mycli",
+		}).map((session) => session.id),
+		["session-b"],
+	);
+	assert.deepEqual(
+		filterSessions(sessions, {
+			query: "",
+			scope: "current",
+			sortMode: "recent",
+			nameFilter: "named",
+			currentWorkspace: "~/Desktop/mycli",
+		}).map((session) => session.id),
+		["session-a"],
+	);
+});
 
 function subagentPanelState(): MycliShellState {
 	return {
@@ -186,7 +246,7 @@ class ClosableTerminal extends TestTerminal {
 	}
 }
 
-test("mycli shell renders copied reference shell surfaces", () => {
+test("mycli shell renders promoted shell surfaces", () => {
 	const output = stripAnsi(renderMycliShell(sampleState(), 100).join("\n"));
 
 	assert.match(output, /mycli/);
@@ -203,7 +263,33 @@ test("mycli shell renders copied reference shell surfaces", () => {
 	assert.match(output, /deepseek-v4-flash/);
 });
 
-test("mycli shell renders subagent transcript blocks compactly", () => {
+test("mycli shell collapses long assistant python code blocks", () => {
+	const pythonLines = Array.from({ length: 16 }, (_, index) => `print("line_${String(index + 1).padStart(2, "0")}")`);
+	const output = stripAnsi(
+		renderMycliShell(
+			{
+				...sampleState(),
+				messages: [
+					{
+						id: "a-code",
+						role: "assistant",
+						text: ["Run this:", "```python", ...pythonLines, "```"].join("\n"),
+					},
+				],
+				tools: [],
+				bash: [],
+				pendingNotice: undefined,
+			},
+			100,
+		).join("\n"),
+	);
+
+	assert.match(output, /print\("line_01"\)/);
+	assert.doesNotMatch(output, /print\("line_16"\)/);
+	assert.match(output, /\.\.\. 8 more lines/);
+});
+
+test("mycli shell hides resolved subagent transcript blocks", () => {
 	const output = stripAnsi(
 		renderMycliShell(
 			{
@@ -228,14 +314,14 @@ test("mycli shell renders subagent transcript blocks compactly", () => {
 		).join("\n"),
 	);
 
-	assert.match(output, /Agent finished/);
-	assert.match(output, /└─ explore · 3 tool uses/);
-	assert.match(output, /⎿ Done/);
+	assert.doesNotMatch(output, /Agent finished/);
+	assert.doesNotMatch(output, /explore · 3 tool uses/);
+	assert.doesNotMatch(output, /Done/);
 	assert.doesNotMatch(output, /child-session-1/);
 	assert.doesNotMatch(output, /Mapped Claude Code worker badge behavior/);
 });
 
-test("mycli shell groups same-turn subagents like Claude Code agent progress", () => {
+test("mycli shell renders only running same-turn subagents in main progress", () => {
 	const output = stripAnsi(
 		renderMycliShell(
 			subagentPanelState(),
@@ -243,16 +329,16 @@ test("mycli shell groups same-turn subagents like Claude Code agent progress", (
 		).join("\n"),
 	);
 
-	assert.match(output, /Running 2 agents/);
-	assert.match(output, /├─ explore \(Inspect auth bug\) · 2 tool uses/);
-	assert.match(output, /│  ⎿ Read path=src\/auth\/session\.py/);
-	assert.match(output, /│  ⎿ Found token refresh logic/);
-	assert.match(output, /└─ review \(Research tests\) · 1 tool use/);
-	assert.match(output, /   ⎿ Done/);
-	assert.match(output, /agents @explore @review · 1 running · shift\+↓ manage/);
+	assert.match(output, /Running agent/);
+	assert.match(output, /└─ explore \(Inspect auth bug\) · 2 tool uses/);
+	assert.match(output, /⎿ Read path=src\/auth\/session\.py/);
+	assert.match(output, /⎿ Found token refresh logic/);
+	assert.doesNotMatch(output, /review \(Research tests\)/);
+	assert.doesNotMatch(output, /⎿ Done/);
+	assert.match(output, /◇ 1 local agent · \/tasks view/);
 });
 
-test("mycli shell runtime expands Claude Code-like subagent task panel", async () => {
+test("mycli shell opens Claude Code-like background subagent dialog from tasks", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
 		initialState: subagentPanelState(),
@@ -262,46 +348,24 @@ test("mycli shell runtime expands Claude Code-like subagent task panel", async (
 	runtime.start();
 	await setTimeout(25);
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /agents @explore @review · 1 running · shift\+↓ manage/);
-	assert.doesNotMatch(output, /agents · ↑↓ select/);
+	assert.match(output, /◇ 1 local agent · \/tasks view/);
+	assert.doesNotMatch(output, /Background tasks/);
 
-	terminal.input?.("\x1b[b");
+	runtime.editor.setText("/tasks");
+	await runtime.editor.onSubmit?.("/tasks");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /agents · ↑↓ select · enter view · x clear · esc close/);
-	assert.match(output, /● main/);
-	assert.match(output, /○ explore: Inspect auth bug ▶ · 12s · ↓ 18,232 tokens · 2 tools/);
-	assert.match(output, /○ review: Research tests ⏸ · 31s · ↓ 9,120 tokens · 1 tools/);
-
-	terminal.input?.("\x1b[B");
-	await setTimeout(25);
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /⎿ Found token refresh logic/);
-
-	terminal.input?.("\r");
-	await setTimeout(25);
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /view @explore/);
+	assert.match(output, /explore › Inspect auth bug/);
+	assert.match(output, /← go back · Esc\/Enter\/Space close/);
+	assert.match(output, /Result/);
 
 	terminal.input?.("\x1b");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /agents @explore @review · 1 running · shift\+↓ manage/);
-
-	terminal.input?.("\x1b[b");
-	await setTimeout(25);
-	terminal.input?.("\x1b[B");
-	await setTimeout(25);
-	terminal.input?.("\x1b[B");
-	await setTimeout(25);
-	terminal.input?.("x");
-	await setTimeout(25);
-	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.doesNotMatch(output, /review: Research tests/);
-	assert.match(output, /explore: Inspect auth bug/);
+	assert.doesNotMatch(output, /explore › Inspect auth bug/);
 });
 
-test("mycli shell renders completed background subagent notification like Claude Code", () => {
+test("mycli shell keeps completed background subagents out of the main transcript", () => {
 	const output = stripAnsi(
 		renderMycliShell(
 			{
@@ -329,8 +393,123 @@ test("mycli shell renders completed background subagent notification like Claude
 		).join("\n"),
 	);
 
-	assert.match(output, /Agent "Inspect repo" completed/);
-	assert.doesNotMatch(output, /Subagent explore/);
+	assert.doesNotMatch(output, /Agent "Inspect repo" completed/);
+	assert.doesNotMatch(output, /Agent finished/);
+	assert.doesNotMatch(output, /◇ 1 agent done/);
+	assert.doesNotMatch(output, /\/tasks view/);
+});
+
+test("mycli shell keeps resolved subagents out of the main transcript even without mode", () => {
+	const output = stripAnsi(
+		renderMycliShell(
+			{
+				...sampleState(),
+				transcript: [
+					{
+						id: "subagent-failed",
+						kind: "subagent",
+						subagent: {
+							id: "subagent-failed",
+							role: "review",
+							description: "Review repo",
+							status: "failed",
+							childSessionId: "child-session-failed",
+							parentTurnId: "turn-2",
+							summary: "Agent failed loudly",
+						},
+					},
+				],
+				pendingNotice: undefined,
+			},
+			100,
+		).join("\n"),
+	);
+
+	assert.doesNotMatch(output, /Agent failed loudly/);
+	assert.doesNotMatch(output, /review/);
+	assert.doesNotMatch(output, /\/tasks view/);
+});
+
+test("mycli shell completed background subagent is not an active tasks entry", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			transcript: [
+				{
+					id: "subagent-bg",
+					kind: "subagent",
+					subagent: {
+						id: "subagent-bg",
+						role: "explore",
+						description: "Inspect repo",
+						status: "completed",
+						mode: "background",
+						childSessionId: "child-session-bg",
+						parentTurnId: "turn-2",
+						toolCalls: 4,
+						summary: "Agent completed",
+					},
+				},
+			],
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("/tasks");
+	await runtime.editor.onSubmit?.("/tasks");
+	await setTimeout(25);
+
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /No background agents currently running/);
+	assert.doesNotMatch(output, /explore › Inspect repo/);
+	assert.doesNotMatch(output, /Agent completed/);
+});
+
+test("mycli shell x stops the selected running background subagent", async () => {
+	const terminal = new TestTerminal();
+	const commands: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			transcript: [
+				{
+					id: "subagent-bg",
+					kind: "subagent",
+					subagent: {
+						id: "subagent-bg",
+						role: "explore",
+						description: "Inspect repo",
+						status: "running",
+						mode: "background",
+						childSessionId: "child-session-bg",
+						parentTurnId: "turn-2",
+						summary: "Reading repository",
+					},
+				},
+			],
+			pendingNotice: undefined,
+		},
+		terminal,
+		onCommandSubmit: (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("/tasks");
+	await runtime.editor.onSubmit?.("/tasks");
+	await setTimeout(25);
+	terminal.input?.("x");
+	await setTimeout(25);
+
+	assert.deepEqual(commands, ["/tasks agents kill child-session-bg"]);
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Stopping @explore \(child-session-bg\)\./);
 });
 
 test("mycli shell renders active plan panel above the composer", () => {
@@ -589,7 +768,7 @@ test("mycli shell rendered lines stay width safe", () => {
 	}
 });
 
-test("footer keeps copied compact shape width safe", () => {
+test("footer keeps compact shape width safe", () => {
 	const footer = new FooterComponent({
 		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
 		gitBranch: "feature/a-very-long-branch-name-that-must-not-break-layout",
@@ -782,7 +961,7 @@ test("trust selector owns keyboard selection", () => {
 	assert.equal(cancelled, true);
 });
 
-test("mycli shell runtime assembles copied reference mounted containers", () => {
+test("mycli shell runtime assembles mounted containers", () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal });
 
@@ -1396,11 +1575,16 @@ test("mycli shell model selector opens from app model keybinding", async () => {
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
 });
 
-test("mycli shell settings selector updates local visual settings", async () => {
+test("mycli shell settings selector persists visual settings through runtime callback", async () => {
 	const terminal = new TestTerminal();
+	const savedSettings: MycliShellState["settings"][] = [];
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
+		onSettingsChange: async (settings) => {
+			savedSettings.push(settings);
+			return { ...settings, statusbarMode: "compact" };
+		},
 	});
 
 	runtime.start();
@@ -1416,7 +1600,9 @@ test("mycli shell settings selector updates local visual settings", async () => 
 	terminal.input?.("\x1b[B");
 	terminal.input?.(" ");
 	await setTimeout(25);
+	assert.equal(savedSettings.at(-1)?.hideThinking, false);
 	assert.equal(runtime.getState().settings?.hideThinking, false);
+	assert.equal(runtime.getState().settings?.statusbarMode, "compact");
 });
 
 test("mycli shell session selector handles empty state and selection", async () => {
@@ -1445,11 +1631,165 @@ test("mycli shell session selector handles empty state and selection", async () 
 	runtime.editor.setText("/session");
 	await runtime.editor.onSubmit?.("/session");
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Session A/);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Scope: current/);
+	terminal.input?.("cache");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /No matching sessions/);
+	terminal.input?.("\t");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Session B/);
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\r");
 	await setTimeout(25);
 	assert.equal(selected, "session-b");
 	assert.equal(runtime.getState().footer.sessionName, "session-b");
+});
+
+test("mycli shell resource selector loads resources and opens runtime inspect command", async () => {
+	const terminal = new TestTerminal();
+	const commands: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onResourceLoad: async () => sampleState().resources ?? [],
+		onCommandSubmit: async (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("/resources");
+	await runtime.editor.onSubmit?.("/resources");
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Resources/);
+	assert.match(output, /configured:repo:post-tool/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.deepEqual(commands, ["/tools hooks"]);
+});
+
+test("mycli shell session tree selector filters folds and selects nodes", async () => {
+	const terminal = new TestTerminal();
+	let selected = "";
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSessionTreeLoad: async () => ({
+			sessionId: "session-a",
+			activePath: ["session-a"],
+			nodes: [
+				{
+					id: "session:session-a",
+					kind: "session",
+					sessionId: "session-a",
+					depth: 0,
+					role: "session",
+					summary: "Session A",
+					messageCount: 2,
+					active: true,
+					onActivePath: true,
+					preview: "Inspect package.json\nDone",
+				},
+				{
+					id: "session:session-a:message:0",
+					kind: "message",
+					sessionId: "session-a",
+					parentId: "session:session-a",
+					depth: 1,
+					role: "user",
+					summary: "Inspect package.json",
+					messageIndex: 0,
+					onActivePath: true,
+					preview: "Inspect package.json",
+				},
+				{
+					id: "session:session-a:message:1",
+					kind: "message",
+					sessionId: "session-a",
+					parentId: "session:session-a",
+					depth: 1,
+					role: "assistant",
+					summary: "Done",
+					messageIndex: 1,
+					onActivePath: true,
+					preview: "Done",
+				},
+			],
+		}),
+		onSessionTreeSelect: (node) => {
+			selected = node.id;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("/session tree");
+	await runtime.editor.onSubmit?.("/session tree");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Conversation Tree/);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Session A/);
+
+	terminal.input?.("package");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Inspect package\.json/);
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /Done/);
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.equal(selected, "session:session-a");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Selected Session A/);
+});
+
+test("mycli shell session tree selection jumps to matching transcript anchor", async () => {
+	const terminal = new TestTerminal();
+	terminal.rows = 12;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 20 }, (_, index) => ({
+				id: `m${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				text: `message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+		},
+		terminal,
+		onSessionTreeLoad: async () => ({
+			sessionId: "session-a",
+			activePath: ["session-a"],
+			nodes: [
+				{
+					id: "session:session-a:message:2",
+					kind: "message",
+					sessionId: "session-a",
+					depth: 1,
+					role: "user",
+					summary: "message 2",
+					messageIndex: 2,
+					anchorId: "m2",
+					preview: "message 2",
+				},
+			],
+		}),
+	});
+	runtime.start();
+	await setTimeout(25);
+	assert.match(stripAnsi(terminal.output), /message 19/);
+
+	runtime.editor.setText("/session tree");
+	await runtime.editor.onSubmit?.("/session tree");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.ok(runtime.getTranscriptScrollOffset() > 0);
+	assert.equal(
+		runtime.getState().transcript?.some((block) => block.kind === "message" && block.message.text === "Jumped to message 2"),
+		true,
+	);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /message 2/);
 });
 
 test("mycli shell runtime submits messages and local slash commands", async () => {
@@ -1552,6 +1892,61 @@ test("mycli shell runtime restores queued messages with alt up", async () => {
 	assert.equal(runtime.editor.getText(), "queued follow-up\n\ndraft");
 });
 
+test("mycli shell runtime interrupts running turns with ctrl c and restores submitted input", async () => {
+	let interrupted = 0;
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: () => undefined,
+		onInterrupt: () => {
+			interrupted += 1;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await runtime.editor.onSubmit?.("draft before send");
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Running" },
+	});
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.equal(interrupted, 1);
+	assert.equal(runtime.editor.getText(), "draft before send");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupted/);
+});
+
+test("mycli shell runtime removes restored interrupted submit from prompt history", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: () => undefined,
+		onInterrupt: () => undefined,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await runtime.editor.onSubmit?.("older prompt");
+	await runtime.editor.onSubmit?.("interrupted prompt");
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Running" },
+	});
+	terminal.input?.("\x03");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "interrupted prompt");
+	runtime.editor.setText("");
+	runtime.editor.handleInput("\x1b[A");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "older prompt");
+});
+
 test("mycli shell runtime interrupts running turns with escape", async () => {
 	let interrupted = 0;
 	const terminal = new TestTerminal();
@@ -1573,36 +1968,6 @@ test("mycli shell runtime interrupts running turns with escape", async () => {
 
 	assert.equal(interrupted, 1);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupted/);
-});
-
-test("mycli shell runtime does not interrupt running turns with ctrl c", async () => {
-	let interrupted = 0;
-	const terminal = new TestTerminal();
-	const runtime = new MycliShellRuntime({
-		initialState: {
-			...sampleState(),
-			footer: { ...sampleState().footer, liveState: "Running" },
-		},
-		terminal,
-		onInterrupt: () => {
-			interrupted += 1;
-		},
-	});
-
-	runtime.start();
-	await setTimeout(25);
-	runtime.editor.setText("draft");
-	terminal.input?.("\x03");
-	await setTimeout(25);
-
-	assert.equal(interrupted, 0);
-	assert.equal(runtime.editor.getText(), "");
-
-	terminal.input?.("\x03");
-	await setTimeout(25);
-
-	assert.equal(interrupted, 0);
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Press Ctrl\+C again to exit/);
 });
 
 test("mycli shell runtime clears editor then exits on repeated ctrl c while idle", async () => {
@@ -1653,11 +2018,11 @@ test("mycli shell forwards backend slash commands instead of chatting them", asy
 	});
 
 	await runtime.editor.onSubmit?.("/changes");
-	await runtime.editor.onSubmit?.("/jobs subagents child-session");
+	await runtime.editor.onSubmit?.("/tasks agents child-session");
 	await runtime.editor.onSubmit?.("/trace export");
 
 	assert.deepEqual(submitted, []);
-	assert.deepEqual(commands, ["/changes", "/jobs subagents child-session", "/trace export"]);
+	assert.deepEqual(commands, ["/changes", "/tasks agents child-session", "/trace export"]);
 });
 
 test("mycli shell cycles collaboration mode with shift tab", async () => {
@@ -1707,7 +2072,7 @@ test("mycli shell command palette includes backend-supported commands", async ()
 		assert.match(stripAnsi(runtime.ui.render(100).join("\n")), pattern);
 	};
 
-	await assertCommandVisible(/\/jobs subagents/);
+	await assertCommandVisible(/\/tasks agents/);
 	await assertCommandVisible(/\/changes/);
 	await assertCommandVisible(/\/trace/);
 	await assertCommandVisible(/\/session maintenance/);
@@ -2062,8 +2427,6 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 			"src",
 			"test",
 			"-n",
-			"--glob",
-			"!imported-ui/**",
 		],
 		{ cwd: new URL("..", import.meta.url), encoding: "utf8" },
 	);

@@ -10,7 +10,7 @@ import { FooterComponent } from "./components/footer.ts";
 import { PlanPanelComponent } from "./components/plan-panel.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { SubagentExecutionComponent, SubagentGroupComponent } from "./components/subagent-execution.ts";
-import { SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
+import { isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
@@ -39,7 +39,7 @@ export class MycliShellApp extends Container {
 		this.addChild(new Text(this.composerHint(), 1, 0));
 		const agents = this.subagents();
 		if (agents.length > 0) {
-			this.addChild(new SubagentTaskPanelComponent({ agents, mode: "compact", selectedIndex: 0 }));
+			this.addChild(new SubagentTaskPanelComponent({ agents }));
 		}
 		this.addChild(new FooterComponent(this.state.footer));
 	}
@@ -65,7 +65,7 @@ export class MycliShellApp extends Container {
 	}
 
 	private subagents() {
-		return this.transcriptBlocks().filter((block) => block.kind === "subagent").map((block) => block.subagent);
+		return this.transcriptBlocks().filter((block) => block.kind === "subagent").map((block) => block.subagent).filter((agent) => !isResolvedSubagent(agent));
 	}
 }
 

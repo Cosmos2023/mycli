@@ -17,6 +17,22 @@ export type ThemeColor =
 	| "customMessageLabel"
 	| "toolTitle"
 	| "toolOutput"
+	| "selectorTitle"
+	| "selectorMatch"
+	| "selectorMeta"
+	| "resourceHook"
+	| "resourcePlugin"
+	| "resourceSkill"
+	| "resourcePrompt"
+	| "resourceTheme"
+	| "resourceEnabled"
+	| "resourceDisabled"
+	| "resourceIssue"
+	| "sessionActive"
+	| "sessionBranch"
+	| "subagentRunning"
+	| "subagentCompleted"
+	| "subagentFailed"
 	| "mdHeading"
 	| "mdLink"
 	| "mdLinkUrl"
@@ -100,6 +116,22 @@ const DARK_COLORS: Record<ThemeColor | ThemeBg, ColorValue> = {
 	toolErrorBg: "toolErrorBg",
 	toolTitle: "text",
 	toolOutput: "gray",
+	selectorTitle: "accent",
+	selectorMatch: "cyan",
+	selectorMeta: "gray",
+	resourceHook: "#f0c674",
+	resourcePlugin: "#b294bb",
+	resourceSkill: "#81a2be",
+	resourcePrompt: "#8abeb7",
+	resourceTheme: "#de935f",
+	resourceEnabled: "green",
+	resourceDisabled: "darkGray",
+	resourceIssue: "red",
+	sessionActive: "green",
+	sessionBranch: "cyan",
+	subagentRunning: "yellow",
+	subagentCompleted: "green",
+	subagentFailed: "red",
 	mdHeading: "#f0c674",
 	mdLink: "#81a2be",
 	mdLinkUrl: "dimGray",
@@ -172,6 +204,22 @@ const LIGHT_COLORS: Record<ThemeColor | ThemeBg, ColorValue> = {
 	toolErrorBg: "toolErrorBg",
 	toolTitle: "text",
 	toolOutput: "mediumGray",
+	selectorTitle: "teal",
+	selectorMatch: "blue",
+	selectorMeta: "mediumGray",
+	resourceHook: "yellow",
+	resourcePlugin: "#7e57c2",
+	resourceSkill: "blue",
+	resourcePrompt: "teal",
+	resourceTheme: "#a86822",
+	resourceEnabled: "green",
+	resourceDisabled: "lightGray",
+	resourceIssue: "red",
+	sessionActive: "green",
+	sessionBranch: "blue",
+	subagentRunning: "yellow",
+	subagentCompleted: "green",
+	subagentFailed: "red",
 	mdHeading: "yellow",
 	mdLink: "blue",
 	mdLinkUrl: "dimGray",

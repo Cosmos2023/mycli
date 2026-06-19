@@ -45,11 +45,11 @@ export class SubagentExecutionComponent extends Container {
 		return `${theme.fg(color, theme.bold("⏺"))} ${theme.fg(color, theme.bold(label))}`;
 	}
 
-	private statusColor(): "accent" | "success" | "error" | "warning" {
+	private statusColor(): "subagentRunning" | "subagentCompleted" | "subagentFailed" | "accent" {
 		const normalized = this.subagent.status.toLowerCase();
-		if (normalized === "running") return "warning";
-		if (normalized === "failed" || normalized === "error") return "error";
-		if (normalized === "completed" || normalized === "success") return "success";
+		if (normalized === "running") return "subagentRunning";
+		if (normalized === "failed" || normalized === "error") return "subagentFailed";
+		if (normalized === "completed" || normalized === "success") return "subagentCompleted";
 		return "accent";
 	}
 }
@@ -86,7 +86,7 @@ export class SubagentGroupComponent extends Container {
 		const running = this.group.agents.some((agent) => !isResolved(agent));
 		const failed = this.group.agents.some((agent) => isFailed(agent));
 		const allAsync = this.group.agents.every((agent) => agent.mode === "background");
-		const color = failed ? "error" : running ? "warning" : "success";
+		const color = failed ? "subagentFailed" : running ? "subagentRunning" : "subagentCompleted";
 		const label = running
 			? `Running ${count} agents...`
 			: allAsync
@@ -100,7 +100,7 @@ function agentLine(agent: MycliShellSubagent, isLast: boolean): string {
 	const marker = isLast ? "└─" : "├─";
 	const description = agent.description ? ` (${agent.description})` : "";
 	const stats = agentStats(agent);
-	const color = isFailed(agent) ? "error" : isResolved(agent) ? "muted" : "warning";
+	const color = isFailed(agent) ? "subagentFailed" : isResolved(agent) ? "muted" : "subagentRunning";
 	return theme.fg(color, `${marker} ${agent.role}${description}${stats ? ` · ${stats}` : ""}`);
 }
 
@@ -115,7 +115,7 @@ function agentProgressLines(agent: MycliShellSubagent, isLast: boolean): string[
 function agentStatusLine(agent: MycliShellSubagent, isLast: boolean, overrideText: string | undefined): string {
 	const prefix = isLast ? "   ⎿ " : "│  ⎿ ";
 	const text = overrideText ?? agent.error ?? (!isResolved(agent) ? agent.summary : undefined) ?? (isResolved(agent) ? "Done" : "Initializing...");
-	const color = isFailed(agent) ? "error" : "muted";
+	const color = isFailed(agent) ? "subagentFailed" : "muted";
 	return theme.fg(color, `${prefix}${shortPreview(text, 100) ?? ""}`);
 }
 
@@ -134,7 +134,7 @@ function agentStats(agent: MycliShellSubagent): string {
 }
 
 function notificationText(agent: MycliShellSubagent): string {
-	const color = isFailed(agent) ? "error" : agent.status === "cancelled" ? "warning" : "success";
+	const color = isFailed(agent) ? "subagentFailed" : agent.status === "cancelled" ? "subagentRunning" : "subagentCompleted";
 	const summary = agent.summary || `Agent "${agent.description ?? agent.role}" ${isFailed(agent) ? "failed" : "completed"}`;
 	return `${theme.fg(color, "●")} ${summary}`;
 }

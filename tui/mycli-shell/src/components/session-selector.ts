@@ -1,19 +1,17 @@
-import { Container, getKeybindings, Input, Spacer, Text, type TUI, truncateToWidth } from "../tui-core/index.ts";
+import { Container, getKeybindings, Input, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "../tui-core/index.ts";
 import type { MycliShellSession } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { filterSessions, sessionDisplayTitle, type SessionNameFilter, type SessionScope, type SessionSortMode } from "./session-selector-search.ts";
 
 export type SessionSelectorOptions = {
 	tui: TUI;
 	sessions: MycliShellSession[];
+	currentWorkspace?: string;
 	onSelect: (session: MycliShellSession) => void;
 	onCancel: () => void;
 };
-
-function sessionLabel(session: MycliShellSession): string {
-	return session.title || session.id;
-}
 
 export class SessionSelectorComponent extends Container {
 	private readonly searchInput = new Input();
@@ -21,6 +19,11 @@ export class SessionSelectorComponent extends Container {
 	private readonly sessions: MycliShellSession[];
 	private filteredSessions: MycliShellSession[];
 	private selectedIndex = 0;
+	private scope: SessionScope = "current";
+	private sortMode: SessionSortMode = "recent";
+	private nameFilter: SessionNameFilter = "all";
+	private showPath = true;
+	private readonly currentWorkspace?: string;
 	private readonly onSelectCallback: (session: MycliShellSession) => void;
 	private readonly onCancelCallback: () => void;
 	private readonly tui: TUI;
@@ -29,14 +32,20 @@ export class SessionSelectorComponent extends Container {
 		super();
 		this.tui = options.tui;
 		this.sessions = [...options.sessions];
-		this.filteredSessions = this.sessions;
+		this.currentWorkspace = options.currentWorkspace;
+		if (!this.currentWorkspace) {
+			this.scope = "all";
+		}
+		this.filteredSessions = this.applyFilters("");
 		this.onSelectCallback = options.onSelect;
 		this.onCancelCallback = options.onCancel;
 
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.bold("Resume Session"), 0, 0));
-		this.addChild(new Text(keyHint("tui.input.tab", "scope") + theme.fg("muted", " · type to search"), 0, 0));
+		this.addChild({
+			render: (width) => this.headerLines(width),
+			invalidate: () => {},
+		});
 		this.addChild(new Spacer(1));
 		this.addChild(this.searchInput);
 		this.addChild(new Spacer(1));
@@ -48,6 +57,12 @@ export class SessionSelectorComponent extends Container {
 
 	handleInput(data: string): void {
 		const kb = getKeybindings();
+		if (kb.matches(data, "tui.input.tab")) {
+			this.scope = this.scope === "current" ? "all" : "current";
+			this.filter(this.searchInput.getValue());
+			this.tui.requestRender();
+			return;
+		}
 		if (kb.matches(data, "tui.select.up")) {
 			if (this.filteredSessions.length === 0) return;
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredSessions.length - 1 : this.selectedIndex - 1;
@@ -75,12 +90,42 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	private filter(query: string): void {
-		const normalized = query.trim().toLowerCase();
-		this.filteredSessions = normalized
-			? this.sessions.filter((session) => `${session.id} ${session.title ?? ""} ${session.cwd ?? ""}`.toLowerCase().includes(normalized))
-			: this.sessions;
+		this.filteredSessions = this.applyFilters(query);
 		this.selectedIndex = 0;
 		this.updateList();
+	}
+
+	private applyFilters(query: string): MycliShellSession[] {
+		return filterSessions(this.sessions, {
+			query,
+			scope: this.scope,
+			sortMode: this.sortMode,
+			nameFilter: this.nameFilter,
+			currentWorkspace: this.currentWorkspace,
+		});
+	}
+
+	private headerLines(width: number): string[] {
+		const title = theme.bold("Resume Session");
+		const scope = `${theme.fg("muted", "Scope: ")}${theme.fg("accent", this.scope)}`;
+		const sort = `${theme.fg("muted", "Sort: ")}${theme.fg("accent", this.sortMode)}`;
+		const name = `${theme.fg("muted", "Name: ")}${theme.fg("accent", this.nameFilter)}`;
+		const right = `${scope}  ${name}  ${sort}`;
+		const titleWidth = visibleWidth(title);
+		const rightWidth = visibleWidth(right);
+		const gap = Math.max(1, width - titleWidth - rightWidth);
+		const first = truncateToWidth(`${title}${" ".repeat(gap)}${right}`, width, "");
+		const pathState = this.showPath ? "on" : "off";
+		const second = truncateToWidth(
+			[
+				keyHint("tui.input.tab", "scope"),
+				theme.fg("muted", 'type to search · re:<pattern> regex · "phrase" exact'),
+				theme.fg("muted", `path ${pathState}`),
+			].join(theme.fg("muted", " · ")),
+			width,
+			"...",
+		);
+		return [first, second];
 	}
 
 	private updateList(): void {
@@ -91,7 +136,8 @@ export class SessionSelectorComponent extends Container {
 			return;
 		}
 		if (this.filteredSessions.length === 0) {
-			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching sessions"), 0, 0));
+			const scopeHint = this.scope === "current" ? " Press Tab to search all sessions." : "";
+			this.listContainer.addChild(new Text(theme.fg("muted", `  No matching sessions.${scopeHint}`), 0, 0));
 			return;
 		}
 
@@ -103,10 +149,17 @@ export class SessionSelectorComponent extends Container {
 			if (!session) continue;
 			const selected = index === this.selectedIndex;
 			const prefix = selected ? theme.fg("accent", "→ ") : "  ";
-			const title = selected ? theme.fg("accent", sessionLabel(session)) : sessionLabel(session);
-			const meta = [session.cwd, session.modified].filter(Boolean).join(" · ");
+			const titleText = sessionDisplayTitle(session);
+			const title = selected ? theme.fg("accent", titleText) : titleText;
+			const count = session.messageCount === undefined ? undefined : `${session.messageCount} msg`;
+			const id = session.title || session.firstMessage ? session.id : undefined;
+			const path = this.showPath ? (session.cwd ?? session.workspace) : undefined;
+			const meta = [id, path, session.modified ?? session.lastActive, count].filter(Boolean).join(" · ");
 			const line = meta ? `${prefix}${title} ${theme.fg("muted", truncateToWidth(meta, 60, "..."))}` : `${prefix}${title}`;
 			this.listContainer.addChild(new Text(line, 0, 0));
+		}
+		if (this.filteredSessions.length > maxVisible) {
+			this.listContainer.addChild(new Text(theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredSessions.length})`), 0, 0));
 		}
 	}
 }

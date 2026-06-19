@@ -73,6 +73,8 @@ export interface MarkdownTheme {
 export interface MarkdownOptions {
 	/** Preserve source ordered-list markers instead of normalizing them from the list start. */
 	preserveOrderedListMarkers?: boolean;
+	/** Maximum rendered lines for fenced code blocks. Undefined renders full code blocks. */
+	codeBlockPreviewLines?: number;
 }
 
 interface InlineStyleContext {
@@ -349,18 +351,21 @@ export class Markdown implements Component {
 
 			case "code": {
 				const indent = this.theme.codeBlockIndent ?? "  ";
+				const codeLines = token.text.split("\n");
+				const previewLines = this.codeBlockPreviewLineCount(codeLines.length);
 				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
 				if (this.theme.highlightCode) {
 					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
-					for (const hlLine of highlightedLines) {
+					for (const hlLine of highlightedLines.slice(0, previewLines ?? highlightedLines.length)) {
 						lines.push(`${indent}${hlLine}`);
 					}
 				} else {
-					// Split code by newlines and style each line
-					const codeLines = token.text.split("\n");
-					for (const codeLine of codeLines) {
+					for (const codeLine of codeLines.slice(0, previewLines ?? codeLines.length)) {
 						lines.push(`${indent}${this.theme.codeBlock(codeLine)}`);
 					}
+				}
+				if (previewLines !== undefined && codeLines.length > previewLines) {
+					lines.push(`${indent}${this.theme.codeBlockBorder(`... ${codeLines.length - previewLines} more lines`)}`);
 				}
 				lines.push(this.theme.codeBlockBorder("```"));
 				if (nextTokenType && nextTokenType !== "space") {
@@ -459,6 +464,14 @@ export class Markdown implements Component {
 		}
 
 		return lines;
+	}
+
+	private codeBlockPreviewLineCount(totalLines: number): number | undefined {
+		const configured = this.options.codeBlockPreviewLines;
+		if (configured === undefined || configured <= 0 || totalLines <= configured) {
+			return undefined;
+		}
+		return configured;
 	}
 
 	private renderInlineTokens(tokens: Token[], styleContext?: InlineStyleContext): string {

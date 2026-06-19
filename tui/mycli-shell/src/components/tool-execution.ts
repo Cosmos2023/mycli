@@ -4,23 +4,13 @@ import { Container } from "../tui-core/tui.ts";
 import type { MycliShellTool } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
-import { canonicalToolName, shortPreview } from "./tool-display.ts";
+import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "./tool-presentation.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
-
-const PREVIEW_LINES = 12;
-const WRITE_PREVIEW_LINES = 10;
 
 function formatDuration(ms: number | undefined): string | undefined {
 	if (ms === undefined) return undefined;
 	if (ms < 1000) return `${Math.round(ms)}ms`;
 	return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
-}
-
-function firstMeaningfulLine(text: string | undefined): string | undefined {
-	return text
-		?.split("\n")
-		.map((line) => line.trim())
-		.find((line) => line.length > 0);
 }
 
 function singleLineText(text: string | undefined): boolean {
@@ -57,10 +47,10 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private headerText(): string {
-		const nameColor = this.tool.status === "error" ? "error" : this.tool.mutating ? "warning" : "accent";
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
 		const duration = formatDuration(this.tool.durationMs);
 		const suffix = duration ? theme.fg("dim", ` ${duration}`) : "";
-		return `${theme.fg(nameColor, theme.bold("⏺"))} ${theme.fg(nameColor, theme.bold(canonicalToolName(this.tool.name)))}${suffix}`;
+		return `${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(presentation.label))}${suffix}`;
 	}
 
 	private resultText(): string {
@@ -69,31 +59,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private resultSummary(): string {
-		const target = shortPreview(this.tool.args);
-		if (this.tool.status === "running") {
-			return target ? `${target} · Running...` : "Running...";
-		}
-		if (this.tool.status === "cancelled") {
-			return target ? `${target} · Cancelled` : "Cancelled";
-		}
-		if (this.tool.status === "error") {
-			const failure = firstMeaningfulLine(this.tool.errorPreview ?? this.tool.outputPreview) ?? "Failed";
-			return target ? `${target} · ${failure}` : failure;
-		}
-		if (this.tool.contentPreview) {
-			const lineCount = this.tool.contentLineCount;
-			const summary = lineCount !== undefined ? `Wrote ${lineCount} ${lineCount === 1 ? "line" : "lines"}` : "Wrote file";
-			return target ? `${target} · ${summary}` : summary;
-		}
-		if (this.tool.diffPreview) {
-			const summary = target ? `Updated ${target}` : "Updated file";
-			return summary;
-		}
-		const summary = firstMeaningfulLine(this.tool.outputPreview) ?? this.statusLabel();
-		if (target && summary !== target) {
-			return `${target} · ${summary}`;
-		}
-		return summary;
+		return conciseToolResult(this.tool);
 	}
 
 	private detailsComponent(): Text | { render: (width: number) => string[]; invalidate: () => void } | undefined {
@@ -158,12 +124,14 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private previewLineLimit(): number {
-		return this.tool.contentPreview ? WRITE_PREVIEW_LINES : PREVIEW_LINES;
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+		return this.tool.contentPreview ? presentation.writePreviewLines : presentation.previewLines;
 	}
 
 	private hiddenLineCount(): number {
 		if (this.tool.contentPreview && this.tool.contentLineCount !== undefined) {
-			return Math.max(0, this.tool.contentLineCount - WRITE_PREVIEW_LINES);
+			const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+			return Math.max(0, this.tool.contentLineCount - presentation.writePreviewLines);
 		}
 		return this.tool.hiddenLineCount ?? 0;
 	}
@@ -181,12 +149,13 @@ export class ToolExecutionComponent extends Container {
 			return truncateToVisualLines(styled, this.previewLineLimit(), width, 5);
 		}
 		const visualLines = new Text(styled, 5, 0).render(width);
-		if (visualLines.length <= WRITE_PREVIEW_LINES) {
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+		if (visualLines.length <= presentation.writePreviewLines) {
 			return { visualLines, skippedCount: 0 };
 		}
 		return {
-			visualLines: visualLines.slice(0, WRITE_PREVIEW_LINES),
-			skippedCount: visualLines.length - WRITE_PREVIEW_LINES,
+			visualLines: visualLines.slice(0, presentation.writePreviewLines),
+			skippedCount: visualLines.length - presentation.writePreviewLines,
 		};
 	}
 
@@ -202,18 +171,6 @@ export class ToolExecutionComponent extends Container {
 		);
 	}
 
-	private statusLabel(): string {
-		switch (this.tool.status) {
-			case "running":
-				return "running";
-			case "success":
-				return this.tool.mutating ? "changed" : "done";
-			case "error":
-				return "failed";
-			case "cancelled":
-				return "cancelled";
-		}
-	}
 }
 
 function styleDiff(text: string): string {

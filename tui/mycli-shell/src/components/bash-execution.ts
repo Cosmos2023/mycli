@@ -4,10 +4,9 @@ import { Container } from "../tui-core/tui.ts";
 import type { MycliShellBash } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { presentationForBash } from "./tool-presentation.ts";
 import { sanitizeInline, shortPreview } from "./tool-display.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
-
-const PREVIEW_LINES = 12;
 
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;
@@ -25,8 +24,9 @@ export class BashExecutionComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
+		const presentation = presentationForBash();
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(`${theme.fg("bashMode", theme.bold("⏺"))} ${theme.fg("bashMode", theme.bold("Bash"))}`, 1, 0));
+		this.addChild(new Text(`${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(presentation.label))}`, 1, 0));
 		this.addChild(new Text(this.resultLine(), 3, 0));
 		if (this.bash.outputPreview) {
 			this.addChild(this.outputComponent());
@@ -45,7 +45,12 @@ export class BashExecutionComponent extends Container {
 		return {
 			render: (width: number) => {
 				if (cachedWidth !== width || !cachedLines) {
-					const result = truncateToVisualLines(theme.fg("muted", this.bash.outputPreview ?? ""), PREVIEW_LINES, width, 5);
+					const result = truncateToVisualLines(
+						theme.fg("muted", this.bash.outputPreview ?? ""),
+						presentationForBash().terminalPreviewLines,
+						width,
+						5,
+					);
 					cachedLines = result.visualLines;
 					const hiddenCount = Math.max(this.bash.hiddenLineCount ?? 0, result.skippedCount);
 					if (hiddenCount > 0) {

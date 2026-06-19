@@ -129,13 +129,67 @@ export type MycliShellVisualSettings = {
 	viewMode?: "default" | "verbose" | "focus";
 	theme?: string;
 	hideThinking?: boolean;
+	toolDetailsDefault?: "collapsed" | "expanded";
+	hardwareCursor?: boolean;
+	clearOnShrink?: boolean;
+	terminalProgress?: boolean;
+	subagentDensity?: "compact" | "normal" | "detailed";
 };
 
 export type MycliShellSession = {
 	id: string;
 	title?: string;
 	cwd?: string;
+	workspace?: string;
 	modified?: string;
+	created?: string;
+	updated?: string;
+	lastActive?: string;
+	messageCount?: number;
+	firstMessage?: string;
+	allMessagesText?: string;
+	parentSessionId?: string;
+	parentSessionPath?: string;
+	named?: boolean;
+	current?: boolean;
+};
+
+export type MycliShellSessionTreeNodeKind = "session" | "message";
+
+export type MycliShellSessionTreeNode = {
+	id: string;
+	kind: MycliShellSessionTreeNodeKind;
+	sessionId: string;
+	parentId?: string;
+	depth: number;
+	role: string;
+	summary: string;
+	timestamp?: string;
+	label?: string;
+	messageIndex?: number;
+	anchorId?: string;
+	toolName?: string;
+	active?: boolean;
+	onActivePath?: boolean;
+	messageCount?: number;
+	preview?: string;
+};
+
+export type MycliShellSessionTree = {
+	sessionId: string;
+	activePath: string[];
+	nodes: MycliShellSessionTreeNode[];
+};
+
+export type MycliShellResource = {
+	id: string;
+	type: "hook" | "plugin" | "skill" | "prompt" | "theme";
+	name: string;
+	source?: "user" | "repo" | "builtin" | "package" | "runtime" | "unknown";
+	enabled?: boolean;
+	status?: string;
+	detail?: string;
+	command?: string;
 };
 
 export type MycliShellApprovalOption = {
@@ -171,6 +225,7 @@ export type MycliShellState = {
 	currentModel?: MycliShellModel;
 	settings?: MycliShellVisualSettings;
 	sessions?: MycliShellSession[];
+	resources?: MycliShellResource[];
 };
 
 export type MycliShellCommand = {

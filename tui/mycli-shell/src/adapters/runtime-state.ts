@@ -4,13 +4,17 @@ import type {
 	MycliShellMessage,
 	MycliShellModel,
 	MycliShellPendingApproval,
+	MycliShellResource,
 	MycliShellPlanStep,
 	MycliShellSession,
+	MycliShellSessionTree,
+	MycliShellSessionTreeNode,
 	MycliShellState,
 	MycliShellSubagent,
 	MycliShellTranscriptBlock,
 	MycliShellTool,
 	MycliShellToolStatus,
+	MycliShellVisualSettings,
 } from "../model.ts";
 
 export type RuntimeTranscriptItem = {
@@ -41,10 +45,12 @@ export type RuntimeShellState = {
 	liveReasoning: { text: string; kind: string } | null;
 	viewMode: "default" | "verbose" | "focus";
 	statusbarMode: "off" | "compact" | "full";
+	settings: MycliShellVisualSettings;
 	pendingApproval: Record<string, unknown> | null;
 	pendingClarification: Record<string, unknown> | null;
 	activePlan: MycliShellPlanStep[];
 	authProviders: MycliShellAuthProvider[];
+	resources: MycliShellResource[];
 };
 
 export function initialRuntimeState(): RuntimeShellState {
@@ -68,10 +74,12 @@ export function initialRuntimeState(): RuntimeShellState {
 		liveReasoning: null,
 		viewMode: "default",
 		statusbarMode: "full",
+		settings: defaultVisualSettings(),
 		pendingApproval: null,
 		pendingClarification: null,
 		activePlan: [],
 		authProviders: [],
+		resources: [],
 	};
 }
 
@@ -82,6 +90,9 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 	const transcript: MycliShellTranscriptBlock[] = [];
 
 	for (const item of state.transcript) {
+		if (isInternalTaskNotification(item.text)) {
+			continue;
+		}
 		if (item.type === "user") {
 			const message: MycliShellMessage = { id: item.id, role: "user", text: item.text };
 			messages.push(message);
@@ -119,8 +130,8 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 				},
 			});
 		} else if (item.type === "tool_summary" || item.type === "tool_detail") {
-			const tool = toolFromTranscriptItem(item, state.workspace, state.viewMode);
-			if (tool.name.toLowerCase() === "bash" || tool.name.toLowerCase() === "shell") {
+			const tool = toolFromTranscriptItem(item, state.workspace, state.viewMode, state.settings.toolDetailsDefault);
+			if (isShellTool(tool.name)) {
 				const bashItem: MycliShellBash = {
 					id: tool.id,
 					command: tool.args || tool.outputPreview || tool.name,
@@ -171,12 +182,33 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		authProviders: state.authProviders,
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
 		settings: {
+			...state.settings,
 			viewMode: state.viewMode,
 			statusbarMode: state.statusbarMode,
-			hideThinking: true,
 		},
 		sessions,
+		resources: state.resources,
 	};
+}
+
+export function runtimeStateWithSettings(state: RuntimeShellState, settings: MycliShellVisualSettings): RuntimeShellState {
+	const nextSettings = normalizeVisualSettings(settings, state.settings);
+	return {
+		...state,
+		settings: nextSettings,
+		viewMode: nextSettings.viewMode ?? state.viewMode,
+		statusbarMode: nextSettings.statusbarMode ?? state.statusbarMode,
+	};
+}
+
+export function settingsFromResult(payload: Record<string, unknown>): MycliShellVisualSettings {
+	const settings = recordValue(payload.settings);
+	return normalizeVisualSettings(Object.keys(settings).length > 0 ? settings : payload);
+}
+
+export function resourcesFromResult(payload: Record<string, unknown>): MycliShellResource[] {
+	const resources = Array.isArray(payload.resources) ? payload.resources : [];
+	return resources.map(resourceFromUnknown).filter((resource): resource is MycliShellResource => resource !== null);
 }
 
 function footerLiveState(state: RuntimeShellState): string {
@@ -415,15 +447,17 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		const turnRunning = booleanValue(params.turn_running);
 		const queuedSteering = stringArrayValue(params.queued_steering);
 		const queuedFollowUp = stringArrayValue(params.queued_follow_up);
+		const visibleSteering = visibleQueuedMessages(queuedSteering);
+		const visibleFollowUp = visibleQueuedMessages(queuedFollowUp);
 		return {
 			...state,
 			status: params,
 			turnRunning: turnRunning ?? state.turnRunning,
 			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
 			liveReasoning: turnRunning === false ? null : state.liveReasoning,
-			queuedSteeringInputs: queuedSteering,
-			queuedFollowUpInputs: queuedFollowUp,
-			queuedInputs: [...queuedSteering, ...queuedFollowUp],
+			queuedSteeringInputs: visibleSteering,
+			queuedFollowUpInputs: visibleFollowUp,
+			queuedInputs: [...visibleSteering, ...visibleFollowUp],
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			model: stringValue(params.model) ?? state.model,
 			collaborationMode: collaborationModeValue(params.collaboration_mode) ?? state.collaborationMode,
@@ -459,9 +493,10 @@ export function runtimeStateWithUserMessage(state: RuntimeShellState, message: s
 }
 
 export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInputs: string[]): RuntimeShellState {
+	const visibleQueuedInputs = visibleQueuedMessages(queuedInputs);
 	return {
 		...state,
-		queuedInputs: [...queuedInputs],
+		queuedInputs: visibleQueuedInputs,
 	};
 }
 
@@ -469,17 +504,28 @@ export function runtimeStateWithMessageQueues(
 	state: RuntimeShellState,
 	queues: { steering: string[]; followUp: string[] },
 ): RuntimeShellState {
+	const steering = visibleQueuedMessages(queues.steering);
+	const followUp = visibleQueuedMessages(queues.followUp);
 	return {
 		...state,
-		queuedSteeringInputs: [...queues.steering],
-		queuedFollowUpInputs: [...queues.followUp],
-		queuedInputs: [...queues.steering, ...queues.followUp],
+		queuedSteeringInputs: steering,
+		queuedFollowUpInputs: followUp,
+		queuedInputs: [...steering, ...followUp],
 	};
 }
 
 function queuedInputCount(state: RuntimeShellState): number {
 	const splitQueueCount = state.queuedSteeringInputs.length + state.queuedFollowUpInputs.length;
 	return splitQueueCount > 0 ? splitQueueCount : state.queuedInputs.length;
+}
+
+function visibleQueuedMessages(messages: string[]): string[] {
+	return messages.filter((message) => !isInternalTaskNotification(message));
+}
+
+function isInternalTaskNotification(text: string): boolean {
+	const trimmed = text.trimStart();
+	return trimmed.startsWith("<task-notification>") || trimmed.startsWith("<task-notification ");
 }
 
 function shouldClearCompletedPlan(turnState: string | null, planSteps: MycliShellPlanStep[] | undefined): boolean {
@@ -504,6 +550,15 @@ export function sessionsFromResult(result: Record<string, unknown>): MycliShellS
 	return raw.map(sessionFromUnknown).filter((session): session is MycliShellSession => session !== null);
 }
 
+export function sessionTreeFromResult(result: Record<string, unknown>): MycliShellSessionTree {
+	const rawNodes = Array.isArray(result.nodes) ? result.nodes : [];
+	return {
+		sessionId: stringValue(result.session_id) ?? stringValue(result.sessionId) ?? "",
+		activePath: stringArrayValue(result.active_path ?? result.activePath),
+		nodes: rawNodes.map(sessionTreeNodeFromUnknown).filter((node): node is MycliShellSessionTreeNode => node !== null),
+	};
+}
+
 function sessionFromUnknown(value: unknown): MycliShellSession | null {
 	const record = recordValue(value);
 	const id = stringValue(record.id) ?? stringValue(record.session_id) ?? stringValue(record.path);
@@ -512,7 +567,44 @@ function sessionFromUnknown(value: unknown): MycliShellSession | null {
 		id,
 		title: stringValue(record.title) ?? stringValue(record.name) ?? undefined,
 		cwd: stringValue(record.cwd) ?? stringValue(record.workspace) ?? undefined,
-		modified: stringValue(record.modified) ?? stringValue(record.updated_at) ?? undefined,
+		workspace: stringValue(record.workspace) ?? stringValue(record.workspace_root) ?? undefined,
+		modified: stringValue(record.modified) ?? stringValue(record.last_active) ?? stringValue(record.updated_at) ?? undefined,
+		created: stringValue(record.created) ?? stringValue(record.created_at) ?? undefined,
+		updated: stringValue(record.updated) ?? stringValue(record.updated_at) ?? undefined,
+		lastActive: stringValue(record.last_active) ?? stringValue(record.lastActive) ?? undefined,
+		messageCount: numberValue(record.message_count) ?? numberValue(record.messageCount) ?? undefined,
+		firstMessage: stringValue(record.first_message) ?? stringValue(record.firstMessage) ?? undefined,
+		allMessagesText: stringValue(record.all_messages_text) ?? stringValue(record.allMessagesText) ?? undefined,
+		parentSessionId: stringValue(record.parent_session_id) ?? stringValue(record.parentSessionId) ?? undefined,
+		parentSessionPath: stringValue(record.parent_session_path) ?? stringValue(record.parentSessionPath) ?? undefined,
+		named: booleanValue(record.named) ?? undefined,
+		current: booleanValue(record.current) ?? undefined,
+	};
+}
+
+function sessionTreeNodeFromUnknown(value: unknown): MycliShellSessionTreeNode | null {
+	const record = recordValue(value);
+	const id = stringValue(record.id);
+	const kind = stringValue(record.kind);
+	const sessionId = stringValue(record.session_id) ?? stringValue(record.sessionId);
+	if (!id || !sessionId || (kind !== "session" && kind !== "message")) return null;
+	return {
+		id,
+		kind,
+		sessionId,
+		parentId: stringValue(record.parent_id) ?? stringValue(record.parentId) ?? undefined,
+		depth: numberValue(record.depth) ?? 0,
+		role: stringValue(record.role) ?? kind,
+		summary: stringValue(record.summary) ?? "",
+		timestamp: stringValue(record.timestamp) ?? undefined,
+		label: stringValue(record.label) ?? undefined,
+		messageIndex: numberValue(record.message_index) ?? numberValue(record.messageIndex) ?? undefined,
+		anchorId: stringValue(record.anchor_id) ?? stringValue(record.anchorId) ?? undefined,
+		toolName: stringValue(record.tool_name) ?? stringValue(record.toolName) ?? undefined,
+		active: booleanValue(record.active) ?? undefined,
+		onActivePath: booleanValue(record.on_active_path) ?? booleanValue(record.onActivePath) ?? undefined,
+		messageCount: numberValue(record.message_count) ?? numberValue(record.messageCount) ?? undefined,
+		preview: stringValue(record.preview) ?? undefined,
 	};
 }
 
@@ -581,7 +673,12 @@ function defaultApprovalOptions(): MycliShellPendingApproval["options"] {
 	];
 }
 
-function toolFromTranscriptItem(item: RuntimeTranscriptItem, workspace: string, viewMode: RuntimeShellState["viewMode"]): MycliShellTool {
+function toolFromTranscriptItem(
+	item: RuntimeTranscriptItem,
+	workspace: string,
+	viewMode: RuntimeShellState["viewMode"],
+	toolDetailsDefault: MycliShellVisualSettings["toolDetailsDefault"] = "collapsed",
+): MycliShellTool {
 	const metadata = recordValue(item.metadata);
 	const status = toolStatus(metadata);
 	const name = stringValue(metadata.tool_name) ?? stringValue(metadata.name) ?? item.text.split(/\s+/, 1)[0] ?? "Tool";
@@ -606,7 +703,7 @@ function toolFromTranscriptItem(item: RuntimeTranscriptItem, workspace: string, 
 	return {
 		id: item.id,
 		name,
-		args: compactTarget(target, workspace) ?? undefined,
+		args: compactTarget(commandTargetPreview(name, target), workspace) ?? undefined,
 		status,
 		durationMs: durationMs(metadata),
 		mutating: mutatingTool(name, metadata),
@@ -617,7 +714,7 @@ function toolFromTranscriptItem(item: RuntimeTranscriptItem, workspace: string, 
 		outputPreview,
 		errorPreview,
 		hiddenLineCount: hiddenLineCountForTool(metadata, contentPreview),
-		expanded: item.folded === false,
+		expanded: item.folded === false || (item.folded === undefined && toolDetailsDefault === "expanded"),
 	};
 }
 
@@ -725,6 +822,9 @@ function outputPreviewForTool(
 	if (status === "success" && (contentPreview || diffPreview) && mutatingTool(name, metadata)) {
 		return undefined;
 	}
+	if (isShellTool(name)) {
+		return stringValue(metadata.summary) ?? stringValue(metadata.output_preview) ?? stringValue(metadata.stdout) ?? stringValue(metadata.stderr) ?? undefined;
+	}
 	return stringValue(metadata.summary) ?? (status === "success" ? itemText : undefined);
 }
 
@@ -779,6 +879,26 @@ function durationMs(metadata: Record<string, unknown>): number | undefined {
 function mutatingTool(name: string, metadata: Record<string, unknown>): boolean {
 	const lower = name.toLowerCase();
 	return lower.includes("edit") || lower.includes("write") || lower.includes("patch") || Array.isArray(metadata.file_changes);
+}
+
+function isShellTool(name: string): boolean {
+	const lower = name.toLowerCase();
+	return lower === "bash" || lower === "shell" || lower === "run_shell";
+}
+
+function commandTargetPreview(name: string, target: string | null): string | null {
+	if (!target || !isShellTool(name)) {
+		return target;
+	}
+	const lines = target
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	if (lines.length <= 1) {
+		return target;
+	}
+	const firstLine = lines[0] ?? "command";
+	return `${firstLine} ... (${lines.length} lines)`;
 }
 
 function planStatus(metadata: unknown): "proposed" | "accepted" | "stale" {
@@ -1174,6 +1294,24 @@ function authProviderFromUnknown(value: unknown): MycliShellAuthProvider | null 
 	};
 }
 
+function resourceFromUnknown(value: unknown): MycliShellResource | null {
+	const record = recordValue(value);
+	const id = stringValue(record.id);
+	const type = resourceTypeValue(record.type);
+	const name = stringValue(record.name);
+	if (!id || !type || !name) return null;
+	return {
+		id,
+		type,
+		name,
+		source: resourceSourceValue(record.source) ?? undefined,
+		enabled: booleanValue(record.enabled) ?? undefined,
+		status: stringValue(record.status) ?? undefined,
+		detail: stringValue(record.detail) ?? undefined,
+		command: stringValue(record.command) ?? undefined,
+	};
+}
+
 function currentModel(provider: string, model: string, thinkingLevel?: string): MycliShellModel {
 	return { provider, id: model || "no-model", ...(thinkingLevel ? { thinkingLevel } : {}) };
 }
@@ -1217,6 +1355,65 @@ function stringValue(value: unknown): string | null {
 
 function booleanValue(value: unknown): boolean | null {
 	return typeof value === "boolean" ? value : null;
+}
+
+function defaultVisualSettings(): Required<MycliShellVisualSettings> {
+	return {
+		statusbarMode: "full",
+		viewMode: "default",
+		theme: "dark",
+		hideThinking: true,
+		toolDetailsDefault: "collapsed",
+		hardwareCursor: false,
+		clearOnShrink: true,
+		terminalProgress: true,
+		subagentDensity: "normal",
+	};
+}
+
+function normalizeVisualSettings(
+	settings: MycliShellVisualSettings,
+	fallback: MycliShellVisualSettings = defaultVisualSettings(),
+): MycliShellVisualSettings {
+	const raw = settings as Record<string, unknown>;
+	return {
+		statusbarMode: statusbarModeValue(raw.statusbarMode ?? raw.statusbar_mode) ?? fallback.statusbarMode ?? "full",
+		viewMode: viewModeValue(raw.viewMode ?? raw.view_mode) ?? fallback.viewMode ?? "default",
+		theme: stringValue(raw.theme) ?? fallback.theme ?? "dark",
+		hideThinking: booleanValue(raw.hideThinking ?? raw.hide_thinking) ?? fallback.hideThinking ?? true,
+		toolDetailsDefault:
+			toolDetailsDefaultValue(raw.toolDetailsDefault ?? raw.tool_details_default) ?? fallback.toolDetailsDefault ?? "collapsed",
+		hardwareCursor: booleanValue(raw.hardwareCursor ?? raw.hardware_cursor) ?? fallback.hardwareCursor ?? false,
+		clearOnShrink: booleanValue(raw.clearOnShrink ?? raw.clear_on_shrink) ?? fallback.clearOnShrink ?? true,
+		terminalProgress: booleanValue(raw.terminalProgress ?? raw.terminal_progress) ?? fallback.terminalProgress ?? true,
+		subagentDensity: subagentDensityValue(raw.subagentDensity ?? raw.subagent_density) ?? fallback.subagentDensity ?? "normal",
+	};
+}
+
+function statusbarModeValue(value: unknown): MycliShellVisualSettings["statusbarMode"] | null {
+	return value === "off" || value === "compact" || value === "full" ? value : null;
+}
+
+function viewModeValue(value: unknown): MycliShellVisualSettings["viewMode"] | null {
+	return value === "default" || value === "verbose" || value === "focus" ? value : null;
+}
+
+function toolDetailsDefaultValue(value: unknown): MycliShellVisualSettings["toolDetailsDefault"] | null {
+	return value === "collapsed" || value === "expanded" ? value : null;
+}
+
+function subagentDensityValue(value: unknown): MycliShellVisualSettings["subagentDensity"] | null {
+	return value === "compact" || value === "normal" || value === "detailed" ? value : null;
+}
+
+function resourceTypeValue(value: unknown): MycliShellResource["type"] | null {
+	return value === "hook" || value === "plugin" || value === "skill" || value === "prompt" || value === "theme" ? value : null;
+}
+
+function resourceSourceValue(value: unknown): MycliShellResource["source"] | null {
+	return value === "user" || value === "repo" || value === "builtin" || value === "package" || value === "runtime" || value === "unknown"
+		? value
+		: null;
 }
 
 function collaborationModeValue(value: unknown): RuntimeShellState["collaborationMode"] | null {

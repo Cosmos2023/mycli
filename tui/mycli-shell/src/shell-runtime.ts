@@ -13,9 +13,13 @@ import type {
 	MycliShellMessage,
 	MycliShellModel,
 	MycliShellPendingApproval,
+	MycliShellResource,
+	MycliShellSessionTree,
+	MycliShellSessionTreeNode,
 	MycliShellState,
 	MycliShellSubagent,
 	MycliShellTranscriptBlock,
+	MycliShellVisualSettings,
 } from "./model.ts";
 import { ApprovalSelectorComponent } from "./components/approval-selector.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
@@ -28,10 +32,12 @@ import { LoginFlowComponent } from "./components/login-flow.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { PlanPanelComponent } from "./components/plan-panel.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
+import { ResourceSelectorComponent } from "./components/resource-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
+import { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SubagentExecutionComponent, SubagentGroupComponent } from "./components/subagent-execution.ts";
-import { SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
+import { BackgroundSubagentDialogComponent, isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -53,6 +59,10 @@ export type MycliShellRuntimeOptions = {
 	onModelSelect?: (model: MycliShellModel) => void | Promise<void>;
 	onApiKeyLogin?: (providerId: string, apiKey: string) => void | { message?: string } | Promise<void | { message?: string }>;
 	onSessionSelect?: (sessionId: string) => void | Promise<void>;
+	onSessionTreeLoad?: () => MycliShellSessionTree | Promise<MycliShellSessionTree>;
+	onSessionTreeSelect?: (node: MycliShellSessionTreeNode) => void | Promise<void>;
+	onSettingsChange?: (settings: MycliShellVisualSettings) => MycliShellVisualSettings | Promise<MycliShellVisualSettings>;
+	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
 	onApprovalRespond?: (decisionId: string, choice: string) => void | Promise<void>;
 	commands?: MycliShellCommand[];
 	now?: () => number;
@@ -68,9 +78,15 @@ const BACKEND_COMMANDS: MycliShellCommand[] = [
 	{ id: "session-fork", label: "/session fork", description: "Fork a saved session", run: () => undefined },
 	{ id: "plan", label: "/plan", description: "Enter Plan mode and inspect active plan", run: () => undefined },
 	{ id: "mode", label: "/mode", description: "Inspect or switch collaboration mode", run: () => undefined },
-	{ id: "jobs", label: "/jobs", description: "Inspect background jobs", run: () => undefined },
-	{ id: "jobs-subagents", label: "/jobs subagents", description: "Inspect sub-agent runs", run: () => undefined },
-	{ id: "jobs-bashes", label: "/jobs bashes", description: "Inspect background shells", run: () => undefined },
+	{ id: "agents", label: "/agents", description: "Manage agent profiles", run: () => undefined },
+	{ id: "agents-list", label: "/agents list", description: "List agent profiles", run: () => undefined },
+	{ id: "agents-runs", label: "/agents runs", description: "Inspect agent runs", run: () => undefined },
+	{ id: "agents-kill", label: "/agents kill", description: "Stop background agents", run: () => undefined },
+	{ id: "tasks", label: "/tasks", description: "Inspect background tasks", run: () => undefined },
+	{ id: "tasks-agents", label: "/tasks agents", description: "Inspect background agents", run: () => undefined },
+	{ id: "tasks-bashes", label: "/tasks bashes", description: "Inspect background shells", run: () => undefined },
+	{ id: "tasks-agents-kill", label: "/tasks agents kill", description: "Stop a background agent", run: () => undefined },
+	{ id: "tasks-kill-agents", label: "/tasks kill-agents", description: "Stop background agents", run: () => undefined },
 	{ id: "tools", label: "/tools", description: "Inspect backend tools", run: () => undefined },
 	{ id: "tools-permissions", label: "/tools permissions", description: "Inspect approvals and command allowances", run: () => undefined },
 	{ id: "tools-sets", label: "/tools sets", description: "Inspect backend toolsets", run: () => undefined },
@@ -79,6 +95,7 @@ const BACKEND_COMMANDS: MycliShellCommand[] = [
 	{ id: "tools-plugins", label: "/tools plugins", description: "Inspect or run plugin commands", run: () => undefined },
 	{ id: "tools-skills", label: "/tools skills", description: "Inspect available skills", run: () => undefined },
 	{ id: "skills", label: "/skills", description: "Inspect available skills", run: () => undefined },
+	{ id: "resources", label: "/resources", description: "Browse runtime resources", run: () => undefined },
 	{ id: "memory", label: "/memory", description: "Inspect session memory", run: () => undefined },
 	{ id: "changes", label: "/changes", description: "Inspect file changes", run: () => undefined },
 	{ id: "changes-undo", label: "/changes undo", description: "Undo last recoverable file change", run: () => undefined },
@@ -170,6 +187,14 @@ class TranscriptViewportComponent implements Component {
 		this.scrollOffset = 0;
 	}
 
+	scrollToLine(lineIndex: number, width: number): void {
+		const lines = this.content.render(width);
+		const height = Math.max(1, this.heightForWidth(width));
+		this.lastLineCount = lines.length;
+		const target = Math.max(0, Math.min(lineIndex, Math.max(0, lines.length - 1)));
+		this.scrollOffset = Math.max(0, lines.length - height - target);
+	}
+
 	renderFullNext(): void {
 		this.renderFullOnce = true;
 	}
@@ -223,9 +248,7 @@ export class MycliShellRuntime {
 	private approvalSurfaceDecisionId: string | null = null;
 	private readonly now: () => number;
 	private lastCtrlCAtMs: number | null = null;
-	private subagentPanelExpanded = false;
-	private subagentPanelIndex = 0;
-	private viewingSubagentId: string | null = null;
+	private lastSubmittedInput: string | null = null;
 	private dismissedSubagentIds = new Set<string>();
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
@@ -308,6 +331,16 @@ export class MycliShellRuntime {
 		return this.transcriptViewport.getScrollOffset();
 	}
 
+	jumpToTranscriptBlock(blockId: string): boolean {
+		const lineIndex = this.lineIndexForTranscriptBlock(blockId);
+		if (lineIndex === null) {
+			return false;
+		}
+		this.transcriptViewport.scrollToLine(lineIndex, this.ui.terminal.columns);
+		this.ui.requestRender();
+		return true;
+	}
+
 	restoreQueuedText(text: string): void {
 		this.restoreQueuedTextToEditor(text);
 	}
@@ -329,9 +362,6 @@ export class MycliShellRuntime {
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
 		if (this.ui.hasOverlay() || this.selectorActive) {
 			return undefined;
-		}
-		if (this.handleSubagentPanelInput(data)) {
-			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			void this.handleCtrlC();
@@ -370,84 +400,6 @@ export class MycliShellRuntime {
 			}
 		}
 		return undefined;
-	}
-
-	private handleSubagentPanelInput(data: string): boolean {
-		const agents = this.visibleSubagents();
-		if (agents.length === 0) {
-			this.subagentPanelExpanded = false;
-			this.subagentPanelIndex = 0;
-			this.viewingSubagentId = null;
-			return false;
-		}
-		if (matchesKey(data, "shift+down")) {
-			if (this.editor.getText().length > 0) {
-				return false;
-			}
-			this.subagentPanelExpanded = true;
-			this.clampSubagentPanelIndex(agents);
-			this.rebuildSubagentTasks();
-			this.ui.requestRender();
-			return true;
-		}
-		if (!this.subagentPanelExpanded) {
-			if (matchesKey(data, "escape") && this.viewingSubagentId !== null && this.editor.getText().length === 0) {
-				this.viewingSubagentId = null;
-				this.rebuildSubagentTasks();
-				this.ui.requestRender();
-				return true;
-			}
-			return false;
-		}
-		if (this.editor.getText().length > 0) {
-			return false;
-		}
-		if (matchesKey(data, "escape")) {
-			if (this.viewingSubagentId !== null) {
-				this.viewingSubagentId = null;
-			} else {
-				this.subagentPanelExpanded = false;
-				this.subagentPanelIndex = 0;
-			}
-			this.rebuildSubagentTasks();
-			this.ui.requestRender();
-			return true;
-		}
-		if (matchesKey(data, "up")) {
-			this.subagentPanelIndex = Math.max(0, this.subagentPanelIndex - 1);
-			this.rebuildSubagentTasks();
-			this.ui.requestRender();
-			return true;
-		}
-		if (matchesKey(data, "down")) {
-			this.subagentPanelIndex = Math.min(agents.length, this.subagentPanelIndex + 1);
-			this.rebuildSubagentTasks();
-			this.ui.requestRender();
-			return true;
-		}
-		if (matchesKey(data, "enter")) {
-			this.viewingSubagentId = this.subagentPanelIndex === 0 ? null : (agents[this.subagentPanelIndex - 1]?.id ?? null);
-			this.subagentPanelExpanded = false;
-			this.rebuildSubagentTasks();
-			this.ui.requestRender();
-			return true;
-		}
-		if (data === "x" || data === "X") {
-			const selected = agents[this.subagentPanelIndex - 1];
-			if (selected && this.isResolvedSubagent(selected)) {
-				this.dismissedSubagentIds.add(selected.id);
-				if (this.viewingSubagentId === selected.id) {
-					this.viewingSubagentId = null;
-				}
-				const nextAgents = this.visibleSubagents();
-				this.clampSubagentPanelIndex(nextAgents);
-				this.subagentPanelExpanded = nextAgents.length > 0 && this.subagentPanelExpanded;
-				this.rebuildSubagentTasks();
-				this.ui.requestRender();
-				return true;
-			}
-		}
-		return false;
 	}
 
 	private scrollTranscript(deltaLines: number): void {
@@ -581,7 +533,7 @@ export class MycliShellRuntime {
 		this.showSelector((done) => {
 			const selector = new SettingsSelectorComponent(this.state.settings, {
 				onChange: (settings) => {
-					this.setState({ ...this.state, settings });
+					void this.applySettingsChange(settings);
 				},
 				onCancel: () => done(),
 			});
@@ -594,11 +546,80 @@ export class MycliShellRuntime {
 			const selector = new SessionSelectorComponent({
 				tui: this.ui,
 				sessions: this.state.sessions ?? [],
+				currentWorkspace: this.state.footer.cwd,
 				onSelect: (session) => {
 					done();
 					void this.selectSession(session.id);
 				},
 				onCancel: () => done(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	async showSessionTreeSelector(): Promise<void> {
+		if (!this.options.onSessionTreeLoad) {
+			this.addSystemNotice("Session tree is not available in this runtime.");
+			return;
+		}
+		const tree = await this.options.onSessionTreeLoad();
+		this.showSelector((done) => {
+			const selector = new SessionTreeSelectorComponent({
+				tui: this.ui,
+				tree,
+				onSelect: (node) => {
+					done();
+					const jumpTarget = this.sessionTreeJumpTarget(node);
+					const jumped = jumpTarget !== null;
+					this.addSystemNotice(`${jumped ? "Jumped to" : "Selected"} ${node.summary}`);
+					if (jumpTarget !== null) {
+						this.jumpToTranscriptBlock(jumpTarget);
+					}
+					void this.options.onSessionTreeSelect?.(node);
+				},
+				onCancel: () => done(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	async showResourceSelector(): Promise<void> {
+		const resources = this.options.onResourceLoad ? await this.options.onResourceLoad() : (this.state.resources ?? []);
+		this.showSelector((done) => {
+			const selector = new ResourceSelectorComponent({
+				tui: this.ui,
+				resources,
+				onSelect: (resource) => {
+					done();
+					void this.inspectResource(resource);
+				},
+				onCancel: () => done(),
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	showBackgroundSubagents(initialDetailSubagentId?: string): void {
+		const agents = this.visibleSubagents();
+		this.showSelector((done) => {
+			const selector = new BackgroundSubagentDialogComponent({
+				tui: this.ui,
+				agents,
+				initialDetailSubagentId,
+				onBack: () => done(),
+				onClear: (agent) => {
+					this.dismissedSubagentIds.add(agent.id);
+					this.rebuildSubagentTasks();
+				},
+				onStop: (agent) => {
+					const childSessionId = agent.childSessionId ?? agent.id;
+					this.addSystemNotice(`Stopping @${agent.role} (${childSessionId}).`);
+					void this.submitCommand(`/tasks agents kill ${childSessionId}`);
+				},
+				onForeground: (agent) => {
+					this.addSystemNotice(`Viewing @${agent.role}.`);
+					done();
+				},
 			});
 			return { component: selector, focus: selector };
 		});
@@ -727,9 +748,6 @@ export class MycliShellRuntime {
 		return JSON.stringify({
 			transcript: state.transcript?.filter((block) => block.kind === "subagent") ?? [],
 			dismissed: [...this.dismissedSubagentIds].sort(),
-			expanded: this.subagentPanelExpanded,
-			index: this.subagentPanelIndex,
-			viewing: this.viewingSubagentId,
 		});
 	}
 
@@ -826,6 +844,39 @@ export class MycliShellRuntime {
 		}
 		this.chatBlocks = nextBlocks;
 		this.chatContainer.children = children;
+	}
+
+	private sessionTreeJumpTarget(node: MycliShellSessionTreeNode): string | null {
+		if (node.anchorId && this.hasTranscriptBlock(node.anchorId)) {
+			return node.anchorId;
+		}
+		if (node.messageIndex !== undefined) {
+			const block = this.messageTranscriptBlockAt(node.messageIndex);
+			return block?.id ?? null;
+		}
+		return null;
+	}
+
+	private hasTranscriptBlock(blockId: string): boolean {
+		return this.chatBlocks.has(blockId);
+	}
+
+	private messageTranscriptBlockAt(index: number): MycliShellTranscriptBlock | null {
+		const transcript = this.state.transcript?.length ? this.state.transcript : this.legacyTranscriptBlocks();
+		const messages = transcript.filter((block) => block.kind === "message");
+		return messages[index] ?? null;
+	}
+
+	private lineIndexForTranscriptBlock(blockId: string): number | null {
+		let lineIndex = 0;
+		for (const child of this.chatContainer.children) {
+			const matched = this.chatBlocks.get(blockId);
+			if (matched?.component === child) {
+				return lineIndex;
+			}
+			lineIndex += child.render(this.ui.terminal.columns).length;
+		}
+		return null;
 	}
 
 	private createTurnStatusComponent(): Component | null {
@@ -958,18 +1009,12 @@ export class MycliShellRuntime {
 		this.subagentTaskContainer.clear();
 		const agents = this.visibleSubagents();
 		if (agents.length === 0) {
-			this.subagentPanelExpanded = false;
-			this.subagentPanelIndex = 0;
-			this.viewingSubagentId = null;
 			return;
 		}
-		this.clampSubagentPanelIndex(agents);
 		this.subagentTaskContainer.addChild(
 			new SubagentTaskPanelComponent({
 				agents,
-				mode: this.subagentPanelExpanded ? "expanded" : "compact",
-				selectedIndex: this.subagentPanelIndex,
-				viewingSubagentId: this.viewingSubagentId,
+				onOpen: () => this.showBackgroundSubagents(),
 			}),
 		);
 	}
@@ -981,24 +1026,15 @@ export class MycliShellRuntime {
 			if (block.kind !== "subagent") {
 				continue;
 			}
+			if (isResolvedSubagent(block.subagent)) {
+				continue;
+			}
 			if (this.dismissedSubagentIds.has(block.subagent.id)) {
 				continue;
 			}
 			seen.set(block.subagent.id, block.subagent);
 		}
 		return [...seen.values()];
-	}
-
-	private clampSubagentPanelIndex(agents: MycliShellSubagent[]): void {
-		this.subagentPanelIndex = Math.min(Math.max(0, this.subagentPanelIndex), agents.length);
-		if (this.viewingSubagentId && !agents.some((agent) => agent.id === this.viewingSubagentId)) {
-			this.viewingSubagentId = null;
-		}
-	}
-
-	private isResolvedSubagent(agent: MycliShellSubagent): boolean {
-		const normalized = agent.status.toLowerCase();
-		return !["running", "pending", "queued"].includes(normalized);
 	}
 
 	private updateStatusTiming(previousState: MycliShellState, nextState: MycliShellState): void {
@@ -1035,7 +1071,7 @@ export class MycliShellRuntime {
 		this.footerContainer.clear();
 		this.footerContainer.addChild(new Spacer(1));
 		const sendHint = this.isTurnRunning() ? rawKeyHint("enter", "steer") : rawKeyHint("enter", "send");
-		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("option+enter", "follow-up")}  ${rawKeyHint("esc", "interrupt")}  ${rawKeyHint("option+up", "dequeue")}`, 1, 0));
+		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("option+enter", "follow-up")}  ${rawKeyHint("ctrl+c", "interrupt")}  ${rawKeyHint("option+up", "dequeue")}`, 1, 0));
 		this.footerContainer.addChild(new FooterComponent(this.state.footer));
 	}
 
@@ -1056,6 +1092,24 @@ export class MycliShellRuntime {
 		}
 		if (input.startsWith("/")) {
 			const commandId = input.slice(1).split(/\s+/, 1)[0] ?? "";
+			if (commandId === "settings") {
+				this.editor.addToHistory(input);
+				this.editor.setText("");
+				this.showSettingsSelector();
+				return;
+			}
+			if (commandId === "resources") {
+				this.editor.addToHistory(input);
+				this.editor.setText("");
+				await this.showResourceSelector();
+				return;
+			}
+			if (commandId === "tasks" && input.trim() === "/tasks") {
+				this.editor.addToHistory(input);
+				this.editor.setText("");
+				this.showBackgroundSubagents();
+				return;
+			}
 			const exactCommand = this.commands().find((candidate) => candidate.label === input);
 			if (exactCommand) {
 				this.editor.addToHistory(input);
@@ -1063,10 +1117,10 @@ export class MycliShellRuntime {
 				await exactCommand.run();
 				return;
 			}
-			if (commandId === "settings") {
+			if (input.trim() === "/session tree") {
 				this.editor.addToHistory(input);
 				this.editor.setText("");
-				this.showSettingsSelector();
+				await this.showSessionTreeSelector();
 				return;
 			}
 			if (commandId === "session" || commandId === "resume") {
@@ -1122,6 +1176,8 @@ export class MycliShellRuntime {
 		}
 		this.editor.addToHistory(input);
 		this.editor.setText("");
+		this.lastSubmittedInput = input;
+		this.lastCtrlCAtMs = null;
 		await this.options.onSubmit?.(input);
 	}
 
@@ -1154,6 +1210,7 @@ export class MycliShellRuntime {
 		}
 		if (this.isTurnRunning()) {
 			await this.options.onInterrupt?.();
+			this.restoreLastSubmittedInput();
 			this.addSystemNotice("Interrupted.");
 			return;
 		}
@@ -1165,6 +1222,11 @@ export class MycliShellRuntime {
 	}
 
 	private async handleCtrlC(): Promise<void> {
+		if (this.isTurnRunning()) {
+			await this.handleInterrupt();
+			this.lastCtrlCAtMs = null;
+			return;
+		}
 		if (this.editor.getText().length > 0) {
 			this.editor.setText("");
 			this.lastCtrlCAtMs = null;
@@ -1182,6 +1244,16 @@ export class MycliShellRuntime {
 	private restoreQueuedTextToEditor(queued: string): void {
 		const current = this.editor.getText().trim();
 		this.editor.setText([queued, current].filter((text) => text.trim()).join("\n\n"));
+	}
+
+	private restoreLastSubmittedInput(): void {
+		const submitted = this.lastSubmittedInput?.trim();
+		if (!submitted) {
+			return;
+		}
+		this.editor.removeLastFromHistory?.(submitted);
+		this.restoreQueuedTextToEditor(submitted);
+		this.lastSubmittedInput = null;
 	}
 
 	private isTurnRunning(): boolean {
@@ -1205,6 +1277,12 @@ export class MycliShellRuntime {
 				run: () => this.showSessionSelector(),
 			},
 			{
+				id: "session-tree",
+				label: "/session tree",
+				description: "Inspect conversation tree",
+				run: () => void this.showSessionTreeSelector(),
+			},
+			{
 				id: "model",
 				label: "/model",
 				description: "Select model",
@@ -1221,6 +1299,12 @@ export class MycliShellRuntime {
 				label: "/trust",
 				description: "Review workspace trust",
 				run: () => this.showTrustGate(),
+			},
+			{
+				id: "tasks",
+				label: "/tasks",
+				description: "Open background tasks",
+				run: () => this.showBackgroundSubagents(),
 			},
 			{
 				id: "tools",
@@ -1310,6 +1394,7 @@ export class MycliShellRuntime {
 			"resume",
 			"model",
 			"trust",
+			"jobs",
 			"tools",
 			"details",
 			"view",
@@ -1443,16 +1528,46 @@ export class MycliShellRuntime {
 	private addSystemNotice(text: string): void {
 		const id = `notice_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 		const message: MycliShellMessage = { id, role: "system", text };
+		const transcript = this.state.transcript ?? this.legacyTranscriptBlocks();
 		this.setState({
 			...this.state,
 			messages: [...this.state.messages, message],
-			transcript: [...(this.state.transcript ?? []), { id, kind: "message", message }],
+			transcript: [...transcript, { id, kind: "message", message }],
 			pendingNotice: undefined,
 		});
 	}
 
 	private patchFooter(footerPatch: Partial<MycliShellState["footer"]>): void {
 		this.setState({ ...this.state, footer: { ...this.state.footer, ...footerPatch } });
+	}
+
+	private async applySettingsChange(settings: MycliShellVisualSettings): Promise<void> {
+		const previousSettings = this.state.settings;
+		const optimisticState = this.applyToolVisibility({ ...this.state, settings });
+		this.setState({
+			...optimisticState,
+			footer: {
+				...optimisticState.footer,
+				liveState: "Settings",
+			},
+		});
+		try {
+			const savedSettings = await this.options.onSettingsChange?.(settings);
+			if (savedSettings) {
+				const savedState = this.applyToolVisibility({ ...this.state, settings: savedSettings });
+				this.setState({
+					...savedState,
+					footer: {
+						...savedState.footer,
+						liveState: "Settings saved",
+					},
+				});
+			}
+		} catch (error) {
+			const restoredState = this.applyToolVisibility({ ...this.state, settings: previousSettings });
+			this.setState(restoredState);
+			this.addSystemNotice(`Failed to save settings: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	private authProviders(): MycliShellAuthProvider[] {
@@ -1524,6 +1639,30 @@ export class MycliShellRuntime {
 			},
 		});
 		await this.options.onSessionSelect?.(sessionId);
+	}
+
+	private async inspectResource(resource: MycliShellResource): Promise<void> {
+		const command = resource.command ?? resourceInspectCommand(resource.type);
+		if (!command) {
+			this.addSystemNotice(`No runtime inspect command for ${resource.type} ${resource.name}.`);
+			return;
+		}
+		await this.options.onCommandSubmit?.(command);
+	}
+}
+
+function resourceInspectCommand(type: MycliShellResource["type"]): string | null {
+	switch (type) {
+		case "hook":
+			return "/tools hooks";
+		case "plugin":
+			return "/tools plugins";
+		case "skill":
+			return "/tools skills";
+		case "prompt":
+			return "/help";
+		case "theme":
+			return "/settings";
 	}
 }
 
