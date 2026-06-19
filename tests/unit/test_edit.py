@@ -102,7 +102,9 @@ def test_edit_tool_allows_edit_after_read_snapshot(tmp_path):
     f = tmp_path / "test.py"
     f.write_text("value = 1\n", encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "test.py"})
+    ReadTool(tmp_path, snapshot_store=store).execute(
+        {"file_path": "test.py", "offset": 1, "limit": 200}
+    )
     tool = EditTool(tmp_path, snapshot_store=store)
 
     result = tool.execute(
@@ -117,7 +119,9 @@ def test_edit_tool_rejects_file_changed_since_read(tmp_path):
     f = tmp_path / "test.py"
     f.write_text("value = 1\n", encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "test.py"})
+    ReadTool(tmp_path, snapshot_store=store).execute(
+        {"file_path": "test.py", "offset": 1, "limit": 200}
+    )
     f.write_text("value = 3\n", encoding="utf-8")
     tool = EditTool(tmp_path, snapshot_store=store)
 
@@ -142,7 +146,9 @@ def test_edit_tool_rejects_secret_like_new_content(tmp_path):
     f = tmp_path / "test.py"
     f.write_text("TOKEN = ''\n", encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "test.py"})
+    ReadTool(tmp_path, snapshot_store=store).execute(
+        {"file_path": "test.py", "offset": 1, "limit": 200}
+    )
     tool = EditTool(tmp_path, snapshot_store=store)
 
     result = tool.execute(
@@ -162,7 +168,9 @@ def test_edit_tool_rejects_oversized_file(monkeypatch, tmp_path):
     f = tmp_path / "large.txt"
     f.write_text("x" * 10, encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(tmp_path, snapshot_store=store).execute({"file_path": "large.txt"})
+    ReadTool(tmp_path, snapshot_store=store).execute(
+        {"file_path": "large.txt", "offset": 1, "limit": 200}
+    )
     monkeypatch.setattr("mycli.tools.edit.MAX_EDIT_FILE_BYTES", 5)
     tool = EditTool(tmp_path, snapshot_store=store)
 

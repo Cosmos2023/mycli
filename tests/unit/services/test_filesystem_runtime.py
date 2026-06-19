@@ -135,7 +135,7 @@ def test_read_and_edit_tools_share_filesystem_runtime_snapshot(tmp_path: Path) -
     runtime = FileSystemRuntime(workspace_root=workspace)
 
     read_result = ReadTool(workspace, filesystem_runtime=runtime).execute(
-        {"file_path": "notes.txt"}
+        {"file_path": "notes.txt", "offset": 1, "limit": 200}
     )
     edit_result = EditTool(workspace, filesystem_runtime=runtime).execute(
         {

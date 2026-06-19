@@ -68,12 +68,14 @@ HANDLER_MAP = {
 }
 
 LAZY_IMPORTS: dict[str, ModuleType] = {}
+DEFAULT_READ_LIMIT = 200
+MAX_READ_LIMIT = 500
 
 
 def read_file(
     file_path: str,
     offset: int = 1,
-    limit: int = 2000,
+    limit: int = DEFAULT_READ_LIMIT,
     pages: str | None = None,
 ) -> dict[str, Any]:
     path = Path(file_path)
@@ -84,7 +86,9 @@ def read_file(
 
     ext = path.suffix.lower()
     if ext in TEXT_EXTENSIONS or ext == "":
-        return _read_text(file_path, offset=offset, limit=limit)
+        effective_limit = _bounded_limit(limit)
+        payload = _read_text(file_path, offset=offset, limit=effective_limit)
+        return _with_limit_metadata(payload, requested_limit=limit, effective_limit=effective_limit)
 
     handler_mod = _get_handler(ext)
     if handler_mod is not None:
@@ -92,7 +96,9 @@ def read_file(
             handler = cast(
                 Callable[..., dict[str, Any]], getattr(handler_mod, "read_file")
             )
-            return handler(file_path, offset=offset, limit=limit, pages=pages)
+            effective_limit = _bounded_limit(limit)
+            payload = handler(file_path, offset=offset, limit=effective_limit, pages=pages)
+            return _with_limit_metadata(payload, requested_limit=limit, effective_limit=effective_limit)
         except ImportError:
             return {
                 "error": (
@@ -110,7 +116,9 @@ def read_file(
         }
 
     try:
-        return _read_text(file_path, offset=offset, limit=limit)
+        effective_limit = _bounded_limit(limit)
+        payload = _read_text(file_path, offset=offset, limit=effective_limit)
+        return _with_limit_metadata(payload, requested_limit=limit, effective_limit=effective_limit)
     except UnicodeDecodeError:
         return {
             "error": (
@@ -148,15 +156,38 @@ def _read_text(file_path: str, offset: int, limit: int) -> dict[str, Any]:
     return read_text(file_path, offset=offset, limit=limit)
 
 
+def _bounded_limit(limit: int) -> int:
+    return min(max(0, limit), MAX_READ_LIMIT)
+
+
+def _with_limit_metadata(
+    payload: dict[str, Any],
+    *,
+    requested_limit: int,
+    effective_limit: int,
+) -> dict[str, Any]:
+    if "error" in payload:
+        return payload
+    payload["requested_limit"] = requested_limit
+    payload["effective_limit"] = effective_limit
+    payload["limit_clamped"] = requested_limit != effective_limit
+    return payload
+
+
 class ReadTool:
     name = "Read"
     spec = ToolSpec(
         name="Read",
-        description="Read a file from the workspace. Supports text, CSV/TSV, and optional structured handlers. Use offset/limit for specific line ranges.",
+        description=(
+            "Read a file from the workspace. Supports text, CSV/TSV, and optional "
+            "structured handlers. Always provide offset and limit to read a bounded "
+            "line range; use offset=1 and a small limit for the first section, then "
+            "continue with the next offset when output is truncated."
+        ),
         parameters=(
             ToolParameter(name="file_path", type="string", required=True),
-            ToolParameter(name="offset", type="integer", required=False),
-            ToolParameter(name="limit", type="integer", required=False),
+            ToolParameter(name="offset", type="integer", required=True),
+            ToolParameter(name="limit", type="integer", required=True),
             ToolParameter(name="pages", type="string", required=False),
         ),
         risk_level="low",
@@ -185,12 +216,19 @@ class ReadTool:
             if not raw_path:
                 raise ValueError("Read requires file_path.")
             target = self._filesystem.resolve_path(raw_path)
-            offset = int(arguments.get("offset", arguments.get("start_line", 1)))
+            if "offset" in arguments:
+                offset = int(arguments["offset"])
+            elif "start_line" in arguments:
+                offset = int(arguments["start_line"])
+            else:
+                raise ValueError("Read requires offset and limit for bounded reads.")
             if "end_line" in arguments and "limit" not in arguments:
                 end_line = int(arguments["end_line"])
                 limit = max(0, end_line - offset + 1)
+            elif "limit" not in arguments:
+                raise ValueError("Read requires offset and limit for bounded reads.")
             else:
-                limit = int(arguments.get("limit", 2000))
+                limit = int(arguments["limit"])
             payload = read_file(
                 str(target),
                 offset=offset,

@@ -57,7 +57,9 @@ def test_write_tool_rejects_stale_expected_sha256(tmp_path: Path) -> None:
     root.mkdir()
     target = root / "notes.txt"
     target.write_text("old\n", encoding="utf-8")
-    snapshot = ReadTool(root).execute({"file_path": "notes.txt"}).raw_payload["snapshot"]
+    snapshot = ReadTool(root).execute(
+        {"file_path": "notes.txt", "offset": 1, "limit": 200}
+    ).raw_payload["snapshot"]
     target.write_text("changed\n", encoding="utf-8")
 
     result = WriteTool(root).execute(
@@ -79,7 +81,9 @@ def test_patch_tool_applies_exact_replacement_after_read_snapshot(tmp_path: Path
     target = root / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(root, snapshot_store=store).execute({"file_path": "app.py"})
+    ReadTool(root, snapshot_store=store).execute(
+        {"file_path": "app.py", "offset": 1, "limit": 200}
+    )
 
     result = PatchTool(root, snapshot_store=store).execute(
         {"file_path": "app.py", "old_string": "value = 1", "new_string": "value = 2"}
@@ -98,7 +102,9 @@ def test_patch_tool_reports_repeated_matches_with_actionable_error(tmp_path: Pat
     root.mkdir()
     (root / "app.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(root, snapshot_store=store).execute({"file_path": "app.py"})
+    ReadTool(root, snapshot_store=store).execute(
+        {"file_path": "app.py", "offset": 1, "limit": 200}
+    )
 
     result = PatchTool(root, snapshot_store=store).execute(
         {"file_path": "app.py", "old_string": "x = 1", "new_string": "x = 2"}
@@ -115,7 +121,9 @@ def test_patch_tool_rejects_stale_read_snapshot(tmp_path: Path) -> None:
     target = root / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")
     store = FileSnapshotStore()
-    ReadTool(root, snapshot_store=store).execute({"file_path": "app.py"})
+    ReadTool(root, snapshot_store=store).execute(
+        {"file_path": "app.py", "offset": 1, "limit": 200}
+    )
     target.write_text("value = 3\n", encoding="utf-8")
 
     result = PatchTool(root, snapshot_store=store).execute(

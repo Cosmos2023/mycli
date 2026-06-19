@@ -42,7 +42,13 @@ def test_read_only_tools_return_grounded_results(tmp_path: Path) -> None:
     search_tool = GrepTool(root)
 
     listed = list_tool.run(ToolCall(name="LS", arguments={"path": "."}, reason="inspect"))
-    loaded = read_tool.run(ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect"))
+    loaded = read_tool.run(
+        ToolCall(
+            name="Read",
+            arguments={"path": "README.md", "offset": 1, "limit": 200},
+            reason="inspect",
+        )
+    )
     searched = search_tool.run(ToolCall(name="Grep", arguments={"query": "hello"}, reason="inspect"))
 
     assert listed.success is True
@@ -98,7 +104,11 @@ def test_read_file_exposes_file_excerpt_evidence(tmp_path: Path) -> None:
 
     tool = ReadTool(root)
     result = tool.run(
-        ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect")
+        ToolCall(
+            name="Read",
+            arguments={"path": "README.md", "offset": 1, "limit": 200},
+            reason="inspect",
+        )
     )
 
     assert result.success is True
@@ -113,6 +123,60 @@ def test_read_file_exposes_file_excerpt_evidence(tmp_path: Path) -> None:
     assert "second line" in evidence.snippet
 
 
+def test_read_file_requires_explicit_offset_and_limit(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("hello world\n", encoding="utf-8")
+
+    result = ReadTool(root).execute({"file_path": "README.md"})
+
+    assert result.success is False
+    assert result.error is not None
+    assert "offset" in result.error
+    assert "limit" in result.error
+
+
+def test_read_file_uses_explicit_bounded_excerpt(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "large.txt").write_text(
+        "\n".join(f"line {index}" for index in range(1, 251)) + "\n",
+        encoding="utf-8",
+    )
+
+    result = ReadTool(root).execute({"file_path": "large.txt", "offset": 1, "limit": 200})
+
+    assert result.success is True
+    assert "line 1" in result.raw_payload["content"]
+    assert "line 200" in result.raw_payload["content"]
+    assert "line 201" not in result.raw_payload["content"]
+    assert result.raw_payload["shown_lines"] == 200
+    assert result.raw_payload["requested_limit"] == 200
+    assert result.raw_payload["effective_limit"] == 200
+    assert result.raw_payload["truncated"] is True
+    assert result.evidence[0].line_end == 200
+
+
+def test_read_file_clamps_large_explicit_limit(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "large.txt").write_text(
+        "\n".join(f"line {index}" for index in range(1, 701)) + "\n",
+        encoding="utf-8",
+    )
+
+    result = ReadTool(root).execute({"file_path": "large.txt", "offset": 1, "limit": 2000})
+
+    assert result.success is True
+    assert "line 500" in result.raw_payload["content"]
+    assert "line 501" not in result.raw_payload["content"]
+    assert result.raw_payload["shown_lines"] == 500
+    assert result.raw_payload["requested_limit"] == 2000
+    assert result.raw_payload["effective_limit"] == 500
+    assert result.raw_payload["limit_clamped"] is True
+    assert result.raw_payload["truncated"] is True
+
+
 def test_read_csv_exposes_model_visible_table_content(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -124,7 +188,7 @@ def test_read_csv_exposes_model_visible_table_content(tmp_path: Path) -> None:
     )
 
     tool = ReadTool(root)
-    result = tool.execute({"file_path": "weekly_sales.csv"})
+    result = tool.execute({"file_path": "weekly_sales.csv", "offset": 1, "limit": 200})
     rendered = ToolResultFormatter().format("Read", result)
 
     assert result.success is True
@@ -166,7 +230,7 @@ def test_read_csv_numeric_profile_is_model_visible(tmp_path: Path) -> None:
     )
 
     tool = ReadTool(root)
-    result = tool.execute({"file_path": "weekly_sales.csv"})
+    result = tool.execute({"file_path": "weekly_sales.csv", "offset": 1, "limit": 200})
     rendered = ToolResultFormatter().format("Read", result)
 
     assert result.success is True
@@ -182,8 +246,8 @@ def test_repeated_unchanged_read_returns_dedup_hint(tmp_path: Path) -> None:
     (root / "README.md").write_text("hello world\n", encoding="utf-8")
 
     tool = ReadTool(root)
-    first = tool.execute({"file_path": "README.md"})
-    second = tool.execute({"file_path": "README.md"})
+    first = tool.execute({"file_path": "README.md", "offset": 1, "limit": 200})
+    second = tool.execute({"file_path": "README.md", "offset": 1, "limit": 200})
     rendered = ToolResultFormatter().format("Read", second)
 
     assert first.success is True
@@ -200,7 +264,11 @@ def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:
 
     tool = ReadTool(root)
     result = tool.run(
-        ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect")
+        ToolCall(
+            name="Read",
+            arguments={"path": "README.md", "offset": 1, "limit": 200},
+            reason="inspect",
+        )
     )
 
     snapshot = result.raw_payload["snapshot"]
@@ -217,7 +285,7 @@ def test_default_tools_share_read_snapshot_with_edit(tmp_path: Path) -> None:
     target.write_text("hello world\n", encoding="utf-8")
     tools = {tool.name: tool for tool in default_tools(root)}
 
-    read = tools["Read"].execute({"file_path": "README.md"})
+    read = tools["Read"].execute({"file_path": "README.md", "offset": 1, "limit": 200})
     edited = tools["Edit"].execute(
         {
             "file_path": "README.md",
@@ -243,7 +311,11 @@ def test_read_file_uses_read_payload_for_snapshot_metadata(monkeypatch, tmp_path
 
     tool = ReadTool(root)
     result = tool.run(
-        ToolCall(name="Read", arguments={"path": "README.md"}, reason="inspect")
+        ToolCall(
+            name="Read",
+            arguments={"path": "README.md", "offset": 1, "limit": 200},
+            reason="inspect",
+        )
     )
 
     assert result.success is True
@@ -256,7 +328,11 @@ def test_read_file_returns_structured_failure_for_missing_file(tmp_path: Path) -
 
     tool = ReadTool(root)
     result = tool.run(
-        ToolCall(name="Read", arguments={"path": "missing.py"}, reason="inspect")
+        ToolCall(
+            name="Read",
+            arguments={"path": "missing.py", "offset": 1, "limit": 200},
+            reason="inspect",
+        )
     )
 
     assert result.success is False

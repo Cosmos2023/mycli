@@ -8,7 +8,7 @@ from pathlib import Path
 from mycli.services.context.token_counter import TokenCounter
 
 MAX_LINE_CHARS = 2000
-DEFAULT_LIMIT = 2000
+DEFAULT_LIMIT = 200
 MAX_READ_TOKENS = 25_000
 _TOKEN_COUNTER = TokenCounter()
 
@@ -60,7 +60,12 @@ def read_text(file_path: str, offset: int = 1, limit: int = DEFAULT_LIMIT) -> di
     if output:
         output += "\n"
     if line_truncated:
-        output += f"... (output truncated, showing {min(limit, original_total_lines)} of {original_total_lines} lines)\n"
+        next_offset = start + len(shown) + 1
+        output += (
+            f"... (output truncated, showing {min(limit, original_total_lines)} "
+            f"of {original_total_lines} lines; use offset={next_offset} "
+            "with limit to continue)\n"
+        )
 
     return {
         "content": output,

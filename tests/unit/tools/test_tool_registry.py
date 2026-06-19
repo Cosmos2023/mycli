@@ -92,6 +92,9 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     assert read["effects"] == {"filesystem": "read", "network": False, "process": False}
     assert read["availability"] == {"status": "available"}
     assert read["parameters"][0]["name"] == "file_path"
+    read_parameters = {parameter["name"]: parameter for parameter in read["parameters"]}
+    assert read_parameters["offset"]["required"] is True
+    assert read_parameters["limit"]["required"] is True
     patch = next(tool for tool in tools if tool["name"] == "Patch")
     assert patch["toolset"] == "file"
     assert patch["risk_level"] == "medium"

@@ -761,7 +761,7 @@ class OverviewReasoningEffortAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"path": "README.md"},
+                                tool_arguments={"path": "README.md", "offset": 1, "limit": 200},
                                 call_id="call_readme_1",
                             ),
                         ),
@@ -821,7 +821,7 @@ class SearchReadEditThenDoneAdapter:
                     "tool_call": ToolCall(
                         call_id="call_read_1",
                         name="Read",
-                        arguments={"path": "notes.txt"},
+                        arguments={"path": "notes.txt", "offset": 1, "limit": 200},
                         reason="inspect full file content",
                     ),
                     "done": False,
@@ -1001,13 +1001,13 @@ class MultiToolThenDoneAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"path": "README.md"},
+                                tool_arguments={"path": "README.md", "offset": 1, "limit": 200},
                                 call_id="call_read_readme",
                             ),
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"file_path": "pyproject.toml"},
+                                tool_arguments={"file_path": "pyproject.toml", "offset": 1, "limit": 200},
                                 call_id="call_read_pyproject",
                             ),
                         ),
@@ -1165,7 +1165,7 @@ class ReasoningToolThenDoneAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"file_path": "pyproject.toml"},
+                                tool_arguments={"file_path": "pyproject.toml", "offset": 1, "limit": 200},
                                 call_id="call_read_1",
                             ),
                         ),
@@ -1201,7 +1201,7 @@ class HighUsageToolThenDoneAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"file_path": "pyproject.toml"},
+                                tool_arguments={"file_path": "pyproject.toml", "offset": 1, "limit": 200},
                                 call_id=f"call_high_usage_{self.calls}",
                             ),
                         ),
@@ -1312,7 +1312,7 @@ class StreamReasoningToolThenDoneAdapter:
                 "block": RuntimeBlock(
                     type="tool_call",
                     tool_name="Read",
-                    tool_arguments={"file_path": "pyproject.toml"},
+                    tool_arguments={"file_path": "pyproject.toml", "offset": 1, "limit": 200},
                     call_id="call_stream_read_1",
                 ),
             }
@@ -4129,7 +4129,7 @@ class RepeatMissingReadAdapter:
                         RuntimeBlock(
                             type="tool_call",
                             tool_name="Read",
-                            tool_arguments={"path": "missing.py"},
+                            tool_arguments={"path": "missing.py", "offset": 1, "limit": 200},
                             call_id="call_repeat_read",
                         ),
                     ),
@@ -4181,7 +4181,7 @@ class OverviewForceAnswerAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"file_path": "pyproject.toml"},
+                                tool_arguments={"file_path": "pyproject.toml", "offset": 1, "limit": 200},
                                 call_id="call_read_pyproject",
                             ),
                         ),
@@ -4260,7 +4260,11 @@ class ImplementationAuditForceAnswerAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"path": "src/mycli/services/context/turn_context_assembler.py"},
+                                tool_arguments={
+                                    "path": "src/mycli/services/context/turn_context_assembler.py",
+                                    "offset": 1,
+                                    "limit": 200,
+                                },
                                 call_id="call_read_turn_context_assembler",
                             ),
                         ),
@@ -4314,7 +4318,11 @@ class ForceAnswerRequestShapeAdapter:
                             RuntimeBlock(
                                 type="tool_call",
                                 tool_name="Read",
-                                tool_arguments={"path": f"evidence_{self.calls}.txt"},
+                                tool_arguments={
+                                    "path": f"evidence_{self.calls}.txt",
+                                    "offset": 1,
+                                    "limit": 200,
+                                },
                                 call_id=f"call_read_evidence_{self.calls}",
                             ),
                         ),
