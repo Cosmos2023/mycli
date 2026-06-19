@@ -25,12 +25,16 @@ def test_slash_command_candidates_include_required_and_tui_only_commands() -> No
     assert "/tools" in candidates
     assert "/tools hooks" in candidates
     assert "/tools sets" in candidates
-    assert "/jobs bashes" in candidates
+    assert "/agents" in candidates
+    assert "/agents list" in candidates
+    assert "/agents runs" in candidates
+    assert "/agents kill" in candidates
+    assert "/tasks bashes" in candidates
     assert "/changes" in candidates
     assert "/changes undo" in candidates
     assert "/plan" in candidates
     assert "/tools extensions" in candidates
-    assert "/jobs subagents" in candidates
+    assert "/tasks agents" in candidates
     assert "/memory" in candidates
     assert "/trace" in candidates
     assert "/trace export" in candidates

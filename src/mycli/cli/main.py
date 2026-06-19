@@ -59,8 +59,8 @@ from mycli.services.plugins import (
 )
 from mycli.services.subagents import (
     SubAgentManagementResponse,
-    SubAgentManagementRow,
     SubAgentManagementService,
+    render_subagent_management_response,
 )
 from mycli.tools.registry import ToolRegistry
 
@@ -337,32 +337,6 @@ def _dispatch_subagents_command(
         action=action,
         message="usage: mycli subagents list|inspect [profile_id] [--json]",
     )
-
-
-def render_subagent_management_response(response: SubAgentManagementResponse) -> tuple[str, ...]:
-    lines = [f"mycli subagents {response.action}: {response.message}"]
-    rows = response.profiles or ((response.profile,) if response.profile is not None else ())
-    for row in rows:
-        if row is not None:
-            lines.extend(_render_subagent_row(row))
-    for issue in response.issues:
-        lines.append(f"subagent_issue: {issue}")
-    return tuple(lines)
-
-
-def _render_subagent_row(row: SubAgentManagementRow) -> tuple[str, ...]:
-    allowed = ",".join(row.allowed_tools) if row.allowed_tools else "none"
-    denied = ",".join(row.denied_tools) if row.denied_tools else "none"
-    high_risk = ",".join(row.high_risk_tools) if row.high_risk_tools else "none"
-    lines = [
-        f"subagent {row.profile_id}",
-        f"  source={row.source} enabled={str(row.enabled).lower()} status={row.status}",
-        f"  allowed_tools={allowed}",
-        f"  denied_tools={denied}",
-        f"  high_risk_tools={high_risk} model={row.model or 'inherit'}",
-    ]
-    lines.extend(f"  issue={issue}" for issue in row.issues)
-    return tuple(lines)
 
 
 def _dispatch_mcp_command(

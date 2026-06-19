@@ -68,6 +68,13 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
     assert registration.descriptor.route_name == "subagent_explore"
     assert registration.descriptor.display_name == "subagent_explore"
     assert registration.descriptor.spec.name == "subagent_explore"
+    assert "self-contained" in registration.descriptor.spec.description
+    assert "background" in registration.descriptor.spec.description
+    description_param = next(
+        param for param in registration.descriptor.spec.parameters if param.name == "description"
+    )
+    assert "Self-contained child task prompt" in description_param.description
+    assert "expected final report format" in description_param.description
 
     router = orchestrator.build_tool_router(planned)
     result = router.execute(

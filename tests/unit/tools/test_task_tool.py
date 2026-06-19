@@ -79,6 +79,21 @@ def test_task_tool_delegates_to_bound_service() -> None:
         ]
 
 
+def test_task_tool_schema_guides_parallel_background_delegation() -> None:
+    spec = TaskTool.spec
+
+    description_param = next(param for param in spec.parameters if param.name == "description")
+    agent_type_param = next(param for param in spec.parameters if param.name == "agent_type")
+
+    assert "parallel" in spec.description
+    assert "multiple Task calls in the same assistant turn" in spec.description
+    assert "do not poll" in spec.description
+    assert "Self-contained child task prompt" in description_param.description
+    assert "expected final report format" in description_param.description
+    assert "/agents" in agent_type_param.description
+    assert "custom profiles" in agent_type_param.description
+
+
 def test_unbound_task_tool_returns_unavailable_result() -> None:
     result = TaskTool().execute(
         {

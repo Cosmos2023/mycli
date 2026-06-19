@@ -46,6 +46,25 @@ class HoldingBackgroundExecutor:
         return PendingFuture()
 
 
+class DeferredBackgroundExecutor:
+    def __init__(self) -> None:
+        self.submitted: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def submit(self, fn, *args, **kwargs):
+        self.submitted.append((fn, args, kwargs))
+
+        class PendingFuture:
+            def result(self, timeout=None):
+                del timeout
+                raise TimeoutError("still running")
+
+        return PendingFuture()
+
+    def run_next(self) -> None:
+        fn, args, kwargs = self.submitted.pop(0)
+        fn(*args, **kwargs)
+
+
 class ExplodingLoop:
     def __init__(self, exc: Exception) -> None:
         self.exc = exc
@@ -781,3 +800,145 @@ def test_shutdown_marks_unfinished_background_runs_failed() -> None:
     assert summary.child_session_id == started.child_session_id
     assert summary.status == "failed"
     assert summary.error == "Background sub-agent shutdown timeout."
+
+
+def test_cancel_background_jobs_marks_running_subagents_cancelled() -> None:
+    notifications: list[str] = []
+    session_service = FakeHistorySessionService()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=HoldingBackgroundExecutor(),
+        session_service=session_service,
+        notification_sink=lambda message: (notifications.append(message) or (message,), ()),
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    cancelled = service.cancel_background_jobs()
+
+    assert [job.job_id for job in cancelled] == [f"subagent:{started.child_session_id}"]
+    assert cancelled[0].state == "cancelled"
+    assert service.background_jobs()[0].state == "cancelled"
+    assert service.recent_runs()[0].status == "cancelled"
+    output = service.read_output(started.child_session_id)
+    assert output.status == "cancelled"
+    assert "cancelled by user" in output.report
+    assert session_service.subagent_snapshots[-1]["status"] == "cancelled"
+    assert notifications
+    assert "<status>cancelled</status>" in notifications[-1]
+
+
+def test_cancel_background_job_only_stops_selected_subagent() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=HoldingBackgroundExecutor(),
+    )
+    first = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    second = service.run_task(
+        description="Review tests",
+        agent_type="review",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    cancelled = service.cancel_background_job(first.child_session_id)
+
+    jobs = {job.job_id: job for job in service.background_jobs()}
+    assert [job.job_id for job in cancelled] == [f"subagent:{first.child_session_id}"]
+    assert jobs[f"subagent:{first.child_session_id}"].state == "cancelled"
+    assert jobs[f"subagent:{second.child_session_id}"].state == "running"
+    assert service.read_output(first.child_session_id).status == "cancelled"
+    assert service.read_output(second.child_session_id).status == "running"
+
+
+def test_late_background_completion_does_not_override_cancelled_subagent() -> None:
+    executor = DeferredBackgroundExecutor()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="late done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=executor,
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    service.cancel_background_jobs()
+
+    executor.run_next()
+
+    summary = service.recent_runs()[0]
+    assert summary.child_session_id == started.child_session_id
+    assert summary.status == "cancelled"
+    assert service.read_output(started.child_session_id).status == "cancelled"
+
+
+def test_late_background_completion_does_not_override_single_cancelled_subagent() -> None:
+    executor = DeferredBackgroundExecutor()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="late done",
+                child_session_id="ignored",
+                tool_calls=1,
+            )
+        ),
+        background_executor=executor,
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    service.cancel_background_job(started.child_session_id)
+
+    executor.run_next()
+
+    summary = service.recent_runs()[0]
+    assert summary.child_session_id == started.child_session_id
+    assert summary.status == "cancelled"
+    assert service.read_output(started.child_session_id).status == "cancelled"

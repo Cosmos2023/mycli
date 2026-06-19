@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,7 @@ class SubAgentProfileRecord:
     path: Path | None
     enabled: bool
     description: str = ""
+    source_path: str = ""
     issues: tuple[SubAgentProfileIssue, ...] = ()
 
     @property
@@ -103,7 +105,9 @@ class SubAgentProfileRegistry:
         issues: list[SubAgentProfileIssue] = []
         for source, root in (
             ("user", self._home_dir / ".mycli" / "subagents"),
+            ("user", self._home_dir / ".mycli" / "agents"),
             ("repo", self._workspace_root / ".mycli" / "subagents"),
+            ("repo", self._workspace_root / ".mycli" / "agents"),
         ):
             for path in _profile_files(root):
                 record = _parse_profile_file(path, source=source)
@@ -124,42 +128,118 @@ class SubAgentProfileRegistry:
 def _profile_files(root: Path) -> tuple[Path, ...]:
     if not root.exists() or not root.is_dir():
         return ()
-    return tuple(sorted(path for path in root.glob("*.toml") if path.is_file()))
+    return tuple(sorted(path for path in root.iterdir() if path.is_file() and path.suffix in {".toml", ".md"}))
 
 
 def _parse_profile_file(path: Path, *, source: str) -> SubAgentProfileRecord:
+    if path.suffix == ".md":
+        return _parse_markdown_profile_file(path, source=source)
+    if path.suffix == ".toml":
+        return _parse_toml_profile_file(path, source=source)
+    issue = SubAgentProfileIssue(path.stem, source, path, f"unsupported profile file type: {path.suffix}")
+    return SubAgentProfileRecord(path.stem, None, source, path, False, source_path=str(path), issues=(issue,))
+
+
+def _parse_toml_profile_file(path: Path, *, source: str) -> SubAgentProfileRecord:
     profile_id = path.stem
     try:
         with path.open("rb") as handle:
             payload = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         issue = SubAgentProfileIssue(profile_id, source, path, f"not parseable: {exc.__class__.__name__}")
-        return SubAgentProfileRecord(profile_id, None, source, path, False, issues=(issue,))
+        return SubAgentProfileRecord(profile_id, None, source, path, False, source_path=str(path), issues=(issue,))
     if not isinstance(payload, dict):
         issue = SubAgentProfileIssue(profile_id, source, path, "root must be a TOML table")
-        return SubAgentProfileRecord(profile_id, None, source, path, False, issues=(issue,))
+        return SubAgentProfileRecord(profile_id, None, source, path, False, source_path=str(path), issues=(issue,))
+    return _profile_record_from_payload(
+        payload,
+        path=path,
+        source=source,
+        fallback_profile_id=profile_id,
+        system_prompt_keys=("system_prompt", "instruction"),
+        allowed_tool_keys=("allowed_tools",),
+        denied_tool_keys=("denied_tools",),
+        budget_payload=payload.get("budget"),
+    )
+
+
+def _parse_markdown_profile_file(path: Path, *, source: str) -> SubAgentProfileRecord:
+    profile_id = path.stem
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        issue = SubAgentProfileIssue(profile_id, source, path, f"not readable: {exc.__class__.__name__}")
+        return SubAgentProfileRecord(profile_id, None, source, path, False, source_path=str(path), issues=(issue,))
+    frontmatter, body, parse_issues = _parse_markdown_frontmatter(raw)
+    if parse_issues:
+        issues = tuple(SubAgentProfileIssue(profile_id, source, path, issue) for issue in parse_issues)
+        return SubAgentProfileRecord(profile_id, None, source, path, False, source_path=str(path), issues=issues)
+    payload = dict(frontmatter)
+    payload["system_prompt"] = body.strip()
+    return _profile_record_from_payload(
+        payload,
+        path=path,
+        source=source,
+        fallback_profile_id=profile_id,
+        system_prompt_keys=("system_prompt",),
+        allowed_tool_keys=("tools", "allowed_tools", "allowedTools"),
+        denied_tool_keys=("disallowedTools", "denied_tools", "deniedTools"),
+        budget_payload=_markdown_budget_payload(payload),
+        require_name=True,
+        require_description=True,
+    )
+
+
+def _profile_record_from_payload(
+    payload: dict[str, object],
+    *,
+    path: Path,
+    source: str,
+    fallback_profile_id: str,
+    system_prompt_keys: tuple[str, ...],
+    allowed_tool_keys: tuple[str, ...],
+    denied_tool_keys: tuple[str, ...],
+    budget_payload: object,
+    require_name: bool = False,
+    require_description: bool = False,
+) -> SubAgentProfileRecord:
+    profile_id = fallback_profile_id
     raw_id = payload.get("id") or payload.get("name") or profile_id
+    if require_name and not (payload.get("id") or payload.get("name")):
+        issue = SubAgentProfileIssue(profile_id, source, path, "name is required")
+        return SubAgentProfileRecord(profile_id, None, source, path, False, source_path=str(path), issues=(issue,))
     if not isinstance(raw_id, str) or not raw_id.strip():
         issue = SubAgentProfileIssue(profile_id, source, path, "id/name must be a non-empty string")
-        return SubAgentProfileRecord(profile_id, None, source, path, False, issues=(issue,))
+        return SubAgentProfileRecord(profile_id, None, source, path, False, source_path=str(path), issues=(issue,))
     profile_id = raw_id.strip()
     enabled = _optional_bool(payload.get("enabled"), default=True)
     description = _optional_string(payload.get("description"))
-    system_prompt = _optional_string(payload.get("system_prompt")) or _optional_string(payload.get("instruction"))
-    allowed_tools = _string_tuple(payload.get("allowed_tools")) or DEFAULT_SAFE_TOOLS
-    denied_tools = _string_tuple(payload.get("denied_tools"))
+    system_prompt = _first_optional_string(payload, system_prompt_keys)
+    allowed_tools = _first_string_tuple(payload, allowed_tool_keys) or DEFAULT_SAFE_TOOLS
+    denied_tools = _first_string_tuple(payload, denied_tool_keys)
     issues: list[SubAgentProfileIssue] = []
     if enabled is None:
         enabled = False
         issues.append(SubAgentProfileIssue(profile_id, source, path, "enabled must be boolean"))
+    if require_description and not description:
+        issues.append(SubAgentProfileIssue(profile_id, source, path, "description is required"))
     if not system_prompt:
         issues.append(SubAgentProfileIssue(profile_id, source, path, "instruction or system_prompt is required"))
     if not allowed_tools:
         issues.append(SubAgentProfileIssue(profile_id, source, path, "allowed_tools must include at least one tool"))
-    budget, budget_issues = _parse_budget(payload.get("budget"), profile_id=profile_id, source=source, path=path)
+    budget, budget_issues = _parse_budget(budget_payload, profile_id=profile_id, source=source, path=path)
     issues.extend(budget_issues)
     if issues:
-        return SubAgentProfileRecord(profile_id, None, source, path, False, description=description, issues=tuple(issues))
+        return SubAgentProfileRecord(
+            profile_id,
+            None,
+            source,
+            path,
+            False,
+            description=description,
+            source_path=str(path),
+            issues=tuple(issues),
+        )
     assert enabled is not None
     assert system_prompt is not None
     profile = SubAgentProfile(
@@ -177,6 +257,7 @@ def _parse_profile_file(path: Path, *, source: str) -> SubAgentProfileRecord:
         path=path,
         enabled=enabled,
         description=description,
+        source_path=str(path),
     )
 
 
@@ -220,12 +301,98 @@ def _optional_string(value: object) -> str:
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+    if isinstance(value, str):
+        return tuple(
+            dict.fromkeys(
+                item.strip().strip("\"'")
+                for item in value.split(",")
+                if item.strip().strip("\"'")
+            )
+        )
+    if isinstance(value, list):
+        return tuple(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+    if isinstance(value, tuple):
+        return tuple(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+    return ()
 
 
 def _optional_bool(value: object, *, default: bool) -> bool | None:
     if value is None:
         return default
     return value if isinstance(value, bool) else None
+
+
+def _first_optional_string(payload: dict[str, object], keys: Iterable[str]) -> str:
+    for key in keys:
+        value = _optional_string(payload.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _first_string_tuple(payload: dict[str, object], keys: Iterable[str]) -> tuple[str, ...]:
+    for key in keys:
+        value = _string_tuple(payload.get(key))
+        if value:
+            return value
+    return ()
+
+
+def _parse_markdown_frontmatter(raw: str) -> tuple[dict[str, object], str, tuple[str, ...]]:
+    lines = raw.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, raw, ("frontmatter is required",)
+    end_index = next((index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"), None)
+    if end_index is None:
+        return {}, raw, ("frontmatter closing marker is required",)
+    issues: list[str] = []
+    payload: dict[str, object] = {}
+    for line in lines[1:end_index]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            issues.append(f"frontmatter line is not key/value: {stripped[:48]}")
+            continue
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        if not key:
+            issues.append("frontmatter key cannot be blank")
+            continue
+        payload[key] = _parse_frontmatter_value(raw_value.strip())
+    body = "\n".join(lines[end_index + 1 :])
+    return payload, body, tuple(issues)
+
+
+def _parse_frontmatter_value(value: str) -> object:
+    if not value:
+        return ""
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if value.isdecimal():
+        return int(value)
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [item.strip().strip("\"'") for item in inner.split(",") if item.strip().strip("\"'")]
+    return value.strip().strip("\"'")
+
+
+def _markdown_budget_payload(payload: dict[str, object]) -> dict[str, object]:
+    budget_keys = {
+        "maxTurns": "max_turns",
+        "max_turns": "max_turns",
+        "maxToolCalls": "max_tool_calls",
+        "max_tool_calls": "max_tool_calls",
+        "noProgressTurnLimit": "no_progress_turn_limit",
+        "no_progress_turn_limit": "no_progress_turn_limit",
+        "reportCharLimit": "report_char_limit",
+        "report_char_limit": "report_char_limit",
+        "maxConcurrentBackgroundTasks": "max_concurrent_background_tasks",
+        "max_concurrent_background_tasks": "max_concurrent_background_tasks",
+    }
+    return {target: payload[source] for source, target in budget_keys.items() if source in payload}

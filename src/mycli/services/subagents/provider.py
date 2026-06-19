@@ -114,19 +114,31 @@ class SubAgentToolContributionProvider:
         route_name = provider_safe_tool_name("subagent", profile.name)
         spec = ToolSpec(
             name=route_name,
-            description=f"Run the {profile.name} sub-agent profile for a bounded delegated task.",
+            description=(
+                f"Run the {profile.name} sub-agent profile for a bounded, self-contained "
+                "delegated task. Use it for independent work that can proceed in "
+                "background while the main agent continues; completion is delivered as "
+                "an automatic notification."
+            ),
             parameters=(
                 ToolParameter(
                     name="description",
                     type="string",
                     required=True,
-                    description="Specific child task to delegate.",
+                    description=(
+                        "Self-contained child task prompt. Include the goal, relevant "
+                        "files or facts already learned, constraints, exact questions to "
+                        "answer, and expected final report format."
+                    ),
                 ),
                 ToolParameter(
                     name="allowed_tools",
                     type="array",
                     required=False,
-                    description="Candidate tool names the parent allows the child to use.",
+                    description=(
+                        "Candidate tool names the parent allows the child to use. Omit to "
+                        "use the profile defaults; otherwise keep the list minimal."
+                    ),
                     items_schema={"type": "string"},
                 ),
                 ToolParameter(

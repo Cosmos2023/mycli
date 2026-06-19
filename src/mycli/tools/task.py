@@ -41,15 +41,41 @@ def _task_summary(agent_type: str, status: str) -> str:
 class TaskTool(SchemaTool):
     spec = ToolSpec(
         name="Task",
-        description="Run a bounded child sub-agent for a specific task.",
+        description=(
+            "Delegate a bounded, self-contained task to a child sub-agent. Use this for "
+            "independent investigation, review, or implementation slices that can run in "
+            "parallel while the main agent continues. If several independent subtasks are "
+            "needed, issue multiple Task calls in the same assistant turn. Background task "
+            "completion is delivered automatically as a notification; do not poll for it."
+        ),
         parameters=(
-            ToolParameter("description", "string", True, "Specific child task."),
-            ToolParameter("agent_type", "string", True, "One of: explore, review, executor."),
+            ToolParameter(
+                "description",
+                "string",
+                True,
+                (
+                    "Self-contained child task prompt. Include the goal, why it matters, "
+                    "relevant files or facts already learned, constraints, exact questions "
+                    "to answer, and the expected final report format."
+                ),
+            ),
+            ToolParameter(
+                "agent_type",
+                "string",
+                True,
+                (
+                    "Sub-agent profile id from /agents. Built-in examples include "
+                    "explore, review, and executor; custom profiles can be defined locally."
+                ),
+            ),
             ToolParameter(
                 "allowed_tools",
                 "array",
                 True,
-                "Candidate tool names the parent allows the child to use.",
+                (
+                    "Candidate tool names the parent allows the child to use. Keep this "
+                    "minimal and aligned with the delegated task."
+                ),
                 items_schema={"type": "string"},
             ),
             ToolParameter(
@@ -57,9 +83,9 @@ class TaskTool(SchemaTool):
                 "string",
                 False,
                 (
-                    "Task execution mode. Model-facing task calls run in background; "
-                    "the parent is notified automatically on completion and should "
-                    "not poll SubagentOutput unless the user explicitly asks."
+                    "Task execution mode. Model-facing task calls run in background; the "
+                    "parent is notified automatically on completion and should not poll "
+                    "SubagentOutput unless the user explicitly asks to inspect a task."
                 ),
             ),
         ),

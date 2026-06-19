@@ -70,6 +70,71 @@ def test_subagent_profile_registry_reports_malformed_profile(tmp_path: Path) -> 
     assert "instruction or system_prompt is required" in discovery.issues[0].safe_line()
 
 
+def test_subagent_profile_registry_loads_claude_style_markdown_agent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    profiles = workspace / ".mycli" / "agents"
+    profiles.mkdir(parents=True)
+    profiles.joinpath("security-reviewer.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: security-reviewer",
+                "description: Review security-sensitive changes.",
+                "tools: Read, Grep, Glob, LS",
+                "disallowedTools: Bash, Write",
+                "model: gpt-5.4-mini",
+                "maxTurns: 5",
+                "---",
+                "You are a security review sub-agent.",
+                "Focus on concrete vulnerabilities and missing tests.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    discovery = SubAgentProfileRegistry(workspace_root=workspace, home_dir=home).discover()
+
+    record = next(record for record in discovery.records if record.profile_id == "security-reviewer")
+    assert record.status == "enabled"
+    assert record.description == "Review security-sensitive changes."
+    assert record.source_path.endswith(".mycli/agents/security-reviewer.md")
+    assert record.profile is not None
+    assert record.profile.system_prompt == (
+        "You are a security review sub-agent.\n"
+        "Focus on concrete vulnerabilities and missing tests."
+    )
+    assert record.profile.default_tools == ("Read", "Grep", "Glob", "LS")
+    assert record.profile.denied_tools == ("Bash", "Write")
+    assert record.profile.model == "gpt-5.4-mini"
+    assert record.profile.budget.max_turns == 5
+
+
+def test_subagent_profile_registry_reports_malformed_markdown_agent(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    profiles = workspace / ".mycli" / "agents"
+    profiles.mkdir(parents=True)
+    profiles.joinpath("broken.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: broken",
+                "tools: Read",
+                "---",
+                "Do work.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    discovery = SubAgentProfileRegistry(workspace_root=workspace, home_dir=home).discover()
+
+    broken = next(record for record in discovery.records if record.profile_id == "broken")
+    assert broken.status == "failed"
+    assert "description is required" in discovery.issues[0].safe_line()
+
+
 def test_subagent_diagnostics_reports_unknown_and_high_risk_tools(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
@@ -118,3 +183,4 @@ def test_subagent_management_service_lists_and_inspects_profiles(tmp_path: Path)
     assert listed.ok is True
     assert inspected.ok is True
     assert inspected.profile.profile_id == "analyst"
+    assert inspected.profile.source_path.endswith(".mycli/subagents/analyst.toml")

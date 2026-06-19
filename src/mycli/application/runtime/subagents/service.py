@@ -72,6 +72,7 @@ class _BackgroundRun:
     started_at: str
     future: SupportsFuture
     tool_calls: int = 0
+    cancelled: bool = False
 
 
 class SubAgentService:
@@ -152,6 +153,7 @@ class SubAgentService:
         child_session_id: str,
         *,
         persist_snapshot: bool = True,
+        record_result: bool = True,
     ) -> SubAgentResult:
         profile = self._profile_lookup(invocation.agent_type)
         if profile is None:
@@ -169,12 +171,13 @@ class SubAgentService:
                 tool_calls=0,
                 error=f"Unknown sub-agent profile: {invocation.agent_type}",
             )
-            self._record(
-                invocation,
-                result,
-                snapshot_report=f"Unknown sub-agent profile: {invocation.agent_type}",
-                persist_snapshot=persist_snapshot,
-            )
+            if record_result:
+                self._record(
+                    invocation,
+                    result,
+                    snapshot_report=f"Unknown sub-agent profile: {invocation.agent_type}",
+                    persist_snapshot=persist_snapshot,
+                )
             return result
         tool_names = resolve_child_tool_scope(
             parent_tools=self._parent_tool_names(),
@@ -210,12 +213,13 @@ class SubAgentService:
             error=loop_result.error,
             context_diagnostics=context_diagnostics,
         )
-        self._record(
-            invocation,
-            result,
-            snapshot_report=loop_result.report,
-            persist_snapshot=persist_snapshot,
-        )
+        if record_result:
+            self._record(
+                invocation,
+                result,
+                snapshot_report=loop_result.report,
+                persist_snapshot=persist_snapshot,
+            )
         return result
 
     def recent_runs(self) -> tuple[SubAgentRunSummary, ...]:
@@ -246,6 +250,119 @@ class SubAgentService:
                 )
             )
         return tuple(jobs)
+
+    def cancel_background_jobs(self) -> tuple[BackgroundJobSummary, ...]:
+        cancelled: list[BackgroundJobSummary] = []
+        with self._run_state_lock:
+            runs = tuple(self._running_background.items())
+            for child_session_id, run in runs:
+                run.cancelled = True
+                result = self._cancelled_background_result(
+                    run.invocation,
+                    child_session_id,
+                    tool_calls=run.tool_calls,
+                )
+                completed_at = self._timestamp()
+                self._running_background.pop(child_session_id, None)
+                self._replace_record_unlocked(
+                    run.invocation,
+                    result,
+                    started_at=run.started_at,
+                    completed_at=completed_at,
+                )
+                cancelled.append(
+                    BackgroundJobSummary(
+                        job_id=f"subagent:{child_session_id}",
+                        owner="subagent",
+                        state="cancelled",
+                        owner_turn_id=run.invocation.parent_turn_id,
+                        started_at=run.started_at,
+                        last_event_at=completed_at,
+                        completed_at=completed_at,
+                        terminal_summary="cancelled",
+                    )
+                )
+        for summary in cancelled:
+            child_session_id = summary.job_id.removeprefix("subagent:")
+            run = next(
+                (
+                    running
+                    for running_id, running in runs
+                    if running_id == child_session_id
+                ),
+                None,
+            )
+            if run is None:
+                continue
+            result = self._cancelled_background_result(
+                run.invocation,
+                child_session_id,
+                tool_calls=run.tool_calls,
+            )
+            self._write_subagent_snapshot(
+                run.invocation,
+                result,
+                started_at=run.started_at,
+                completed_at=summary.completed_at,
+                snapshot_report="Background sub-agent cancelled by user.",
+            )
+            self._write_task_output(result)
+            if summary.completed_at is not None:
+                self._emit_completion_notification(
+                    run.invocation,
+                    result,
+                    completed_at=summary.completed_at,
+                )
+        return tuple(cancelled)
+
+    def cancel_background_job(self, child_session_id: str) -> tuple[BackgroundJobSummary, ...]:
+        child_session_id = child_session_id.strip()
+        if child_session_id.startswith("subagent:"):
+            child_session_id = child_session_id.removeprefix("subagent:")
+        if not child_session_id:
+            return ()
+        with self._run_state_lock:
+            run = self._running_background.get(child_session_id)
+            if run is None:
+                return ()
+            run.cancelled = True
+            result = self._cancelled_background_result(
+                run.invocation,
+                child_session_id,
+                tool_calls=run.tool_calls,
+            )
+            completed_at = self._timestamp()
+            self._running_background.pop(child_session_id, None)
+            self._replace_record_unlocked(
+                run.invocation,
+                result,
+                started_at=run.started_at,
+                completed_at=completed_at,
+            )
+            summary = BackgroundJobSummary(
+                job_id=f"subagent:{child_session_id}",
+                owner="subagent",
+                state="cancelled",
+                owner_turn_id=run.invocation.parent_turn_id,
+                started_at=run.started_at,
+                last_event_at=completed_at,
+                completed_at=completed_at,
+                terminal_summary="cancelled",
+            )
+        self._write_subagent_snapshot(
+            run.invocation,
+            result,
+            started_at=run.started_at,
+            completed_at=completed_at,
+            snapshot_report="Background sub-agent cancelled by user.",
+        )
+        self._write_task_output(result)
+        self._emit_completion_notification(
+            run.invocation,
+            result,
+            completed_at=completed_at,
+        )
+        return (summary,)
 
     def inspect_transcript(self, child_session_id: str) -> tuple[str, ...]:
         if self._session_service is None:
@@ -346,7 +463,7 @@ class SubAgentService:
                 status="running",
                 tool_calls=0,
                 child_session_id=child_session_id,
-                body="Sub-agent started in background. Use /subagents to inspect it.",
+                body="Sub-agent started in background. Use /tasks agents to inspect it.",
                 limit=8000,
                 mode=invocation.mode,
             ),
@@ -361,6 +478,7 @@ class SubAgentService:
                     invocation,
                     child_session_id,
                     persist_snapshot=False,
+                    record_result=False,
                 )
             except Exception as exc:
                 final_result = SubAgentResult(
@@ -377,6 +495,15 @@ class SubAgentService:
                     tool_calls=0,
                     error=str(exc),
                 )
+            with self._run_state_lock:
+                run = self._running_background.get(child_session_id)
+                if run is not None and run.cancelled:
+                    return
+                if run is None and self._has_terminal_record_unlocked(
+                    child_session_id,
+                    terminal_statuses={"cancelled"},
+                ):
+                    return
             self._mark_background_finished(invocation, final_result, started_at)
 
         future = self._background_executor.submit(run_child)
@@ -523,6 +650,42 @@ class SubAgentService:
         return any(
             summary.child_session_id == child_session_id and summary.status != "running"
             for summary in self._recent_runs
+        )
+
+    def _has_terminal_record_unlocked(
+        self,
+        child_session_id: str,
+        *,
+        terminal_statuses: set[str],
+    ) -> bool:
+        return any(
+            summary.child_session_id == child_session_id
+            and summary.status in terminal_statuses
+            for summary in self._recent_runs
+        )
+
+    def _cancelled_background_result(
+        self,
+        invocation: SubAgentInvocation,
+        child_session_id: str,
+        *,
+        tool_calls: int,
+    ) -> SubAgentResult:
+        body = "Background sub-agent cancelled by user."
+        return SubAgentResult(
+            status="cancelled",
+            report=self._xml_report(
+                agent=invocation.agent_type,
+                status="cancelled",
+                tool_calls=tool_calls,
+                child_session_id=child_session_id,
+                body=body,
+                limit=8000,
+                mode=invocation.mode,
+            ),
+            child_session_id=child_session_id,
+            tool_calls=tool_calls,
+            error=body,
         )
 
     def _write_subagent_snapshot(
@@ -873,6 +1036,8 @@ __all__ = ["SubAgentService"]
 def _background_job_state(status: str) -> BackgroundJobState:
     if status == "running":
         return "running"
+    if status == "cancelled":
+        return "cancelled"
     if status == "completed":
         return "completed"
     if status == "failed":
