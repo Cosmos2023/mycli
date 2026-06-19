@@ -8,6 +8,7 @@ from mycli.domain.runtime import (
     ExecPolicyRuleSet,
     ExecutionPolicy,
     SandboxProfile,
+    ShellEnvironmentPolicy,
     ShellExecutionOptions,
     ToolRuntimeDecision,
     ToolRuntimeEffect,
@@ -31,11 +32,13 @@ class RuntimePolicyGate:
         workspace_root: Path | None = None,
         execpolicy_rules: ExecPolicyRuleSet | None = None,
         collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
+        shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._approval_service = approval_service
         self._workspace_root = workspace_root
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
         self._collaboration_mode = collaboration_mode
+        self._shell_environment_policy = shell_environment_policy
 
     def default_policy(self) -> ExecutionPolicy:
         root = self._workspace_root or Path.cwd()
@@ -47,11 +50,13 @@ class RuntimePolicyGate:
         workspace_root: Path,
         execpolicy_rules: ExecPolicyRuleSet,
         collaboration_mode: CollaborationMode | None = None,
+        shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._execpolicy_rules = execpolicy_rules
         if collaboration_mode is not None:
             self._collaboration_mode = collaboration_mode
+        self._shell_environment_policy = shell_environment_policy
 
     def decide(
         self,
@@ -143,7 +148,10 @@ class RuntimePolicyGate:
         self,
         policy: ExecutionPolicy | None = None,
     ) -> ShellExecutionOptions:
-        return ShellExecutionOptions.from_policy(policy or self.default_policy())
+        return ShellExecutionOptions.from_policy(
+            policy or self.default_policy(),
+            shell_environment_policy=self._shell_environment_policy,
+        )
 
     def _execpolicy_decision(
         self,
