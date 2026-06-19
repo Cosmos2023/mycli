@@ -5,13 +5,13 @@ import inspect
 from pathlib import Path
 from threading import Lock, Thread
 import time
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypedDict, cast
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
 from mycli.config.auth_store import AuthStore
 from mycli.config.settings import default_user_config_path
-from mycli.config.tui_settings import load_tui_settings, save_tui_settings
+from mycli.config.shell_settings import load_shell_settings, save_shell_settings
 from mycli.cli.node_tui.protocol import (
     JsonRpcError,
     RpcRequest,
@@ -23,8 +23,8 @@ from mycli.cli.node_tui.protocol import (
     result_response,
 )
 from mycli.cli.repl import canonical_slash_command, build_command_handler, handle_slash_command
-from mycli.cli.tui.completion import slash_command_candidates
-from mycli.cli.tui.marks import startup_mark
+from mycli.cli.slash_commands import slash_command_candidates
+from mycli.cli.startup_marks import startup_mark
 from mycli.domain.runtime import (
     DecisionAction,
     PendingDecision,
@@ -142,6 +142,11 @@ class NodeTuiServiceLike(Protocol):
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
 
     def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+
+
+class _HandleUserTurnKwargs(TypedDict, total=False):
+    stream_sink: Callable[[RuntimeStreamEvent], None]
+    interrupt_token: RuntimeInterruptToken
 
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
@@ -374,7 +379,7 @@ class NodeTuiGateway:
         return providers
 
     def _handle_settings_load(self) -> dict[str, object]:
-        settings = load_tui_settings(self._home_dir(), runtime_config=self.service._config)
+        settings = load_shell_settings(self._home_dir(), runtime_config=self.service._config)
         return {
             "settings": settings.to_payload(),
             "source": "user_config",
@@ -385,7 +390,7 @@ class NodeTuiGateway:
         raw_settings = params.get("settings")
         if not isinstance(raw_settings, dict):
             raise ValueError("settings is required.")
-        settings = save_tui_settings(
+        settings = save_shell_settings(
             self._home_dir(),
             raw_settings,
             runtime_config=self.service._config,
@@ -1533,10 +1538,10 @@ def _handle_user_turn_kwargs(
     handle_user_turn: Callable[..., object],
     stream_sink: Callable[[RuntimeStreamEvent], None],
     interrupt_token: RuntimeInterruptToken | None,
-) -> dict[str, object]:
+) -> _HandleUserTurnKwargs:
     # The gateway is used directly in tests with small fake services. Keep the
     # new cancellation channel optional so old service fakes remain valid.
-    kwargs: dict[str, object] = {"stream_sink": stream_sink}
+    kwargs: _HandleUserTurnKwargs = {"stream_sink": stream_sink}
     if interrupt_token is not None and _callable_accepts_keyword(
         handle_user_turn,
         "interrupt_token",
@@ -1728,7 +1733,21 @@ def _approval_request_payload(
     else:
         payload["risk"] = decision.kind.value
         payload["risk_reason"] = decision.reason
+    payload.update(_approval_preview_payload(decision.metadata))
     return payload
+
+
+def _approval_preview_payload(metadata: dict[str, object]) -> dict[str, object]:
+    allowed_keys = {
+        "content_preview",
+        "content_line_count",
+        "content_chars",
+        "content_truncated",
+        "diff",
+        "diff_chars",
+        "diff_truncated",
+    }
+    return {key: value for key, value in metadata.items() if key in allowed_keys}
 
 
 def _decision_id_for_pending_decision(decision: PendingDecision) -> str:

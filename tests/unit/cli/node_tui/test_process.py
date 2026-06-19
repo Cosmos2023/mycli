@@ -9,6 +9,7 @@ from mycli.cli.node_tui.process import (
     NodeTuiProcess,
     NodeTuiProcessError,
     build_node_command,
+    build_node_setup_command,
     node_tui_child_env,
     check_node_version,
     resolve_node_entrypoint,
@@ -102,6 +103,18 @@ def test_build_node_command_defaults_to_mycli_shell_gateway(tmp_path: Path) -> N
     shell_entrypoint.write_text("export {}", encoding="utf-8")
 
     assert build_node_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(shell_entrypoint)]
+
+
+def test_build_node_setup_command_runs_setup_tui_entrypoint(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    setup_entrypoint = node_root / "src" / "setup.ts"
+    tsx_bin.parent.mkdir(parents=True)
+    setup_entrypoint.parent.mkdir(parents=True)
+    tsx_bin.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    setup_entrypoint.write_text("export {}", encoding="utf-8")
+
+    assert build_node_setup_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(setup_entrypoint)]
 
 
 def test_build_node_command_maps_legacy_ink_backend_to_mycli_shell(tmp_path: Path) -> None:

@@ -211,6 +211,13 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "cwd": _STRING,
                 "risk": _STRING,
                 "risk_reason": _STRING,
+                "content_preview": _STRING,
+                "content_line_count": _INTEGER,
+                "content_chars": _INTEGER,
+                "content_truncated": _BOOLEAN,
+                "diff": _STRING,
+                "diff_chars": _INTEGER,
+                "diff_truncated": _BOOLEAN,
             }
         ),
     ),

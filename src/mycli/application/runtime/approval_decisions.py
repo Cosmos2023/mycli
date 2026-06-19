@@ -26,6 +26,7 @@ class RuntimeApprovalDecisions:
             preview=approval.preview,
             options=tuple(options),
             command_pattern=approval.command_pattern,
+            metadata=dict(approval.metadata),
         )
 
     def format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:

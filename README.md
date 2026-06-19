@@ -44,7 +44,7 @@ cd ../..
 uv run mycli setup
 ```
 
-setup 采用和 pi-agent 类似的登录流程：先选择认证方式，再选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。模型配置默认写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显。
+setup 默认采用 TypeScript TUI，交互风格参考 pi-agent：先选择认证方式，再通过 provider 列表选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。完成前会展示配置摘要。模型配置默认写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显；如果 Node TUI 不可用，会自动回退到纯文本 setup。
 
 setup 还会准备 mycli 自用的 `rg`，安装位置为：
 
@@ -114,9 +114,6 @@ uv run mycli --plain
 
 # 显式启动 Node TUI
 uv run mycli --node-tui
-
-# 使用旧 Textual TUI
-MYCLI_TUI_BACKEND=textual uv run mycli
 ```
 
 ## TUI 交互

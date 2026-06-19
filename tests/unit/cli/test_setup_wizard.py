@@ -11,6 +11,12 @@ from mycli.domain.providers import ProviderId
 from mycli.tools.ripgrep_prepare import RipgrepPrepareResult
 
 
+def test_setup_wizard_repo_root_points_at_current_worktree() -> None:
+    repo_root = Path(setup_wizard.__file__).resolve().parents[3]
+
+    assert (repo_root / "tui" / "mycli-shell" / "src" / "setup.ts").is_file()
+
+
 def test_default_user_config_path_uses_mycli_home_layout(tmp_path: Path) -> None:
     assert default_user_config_path(tmp_path) == tmp_path / ".mycli" / "config.toml"
 

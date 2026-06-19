@@ -397,7 +397,7 @@ def test_doctor_service_reports_local_runtime_health_without_leaking_secrets(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -613,7 +613,7 @@ def test_doctor_service_validates_builtin_tool_manifest(tmp_path: Path) -> None:
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "tool_manifest")
@@ -635,7 +635,7 @@ def test_doctor_service_warns_for_missing_tool_environment(tmp_path: Path) -> No
         home_dir=home,
         env={"SHELL": "missing-shell"},
         which=lambda _command: None,
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "tool_environment")
@@ -1152,7 +1152,7 @@ def test_doctor_service_fails_session_db_missing_recovery_tables(tmp_path: Path)
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1178,7 +1178,7 @@ def test_doctor_service_fails_session_db_missing_schema_version(tmp_path: Path) 
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1208,7 +1208,7 @@ def test_doctor_service_fails_session_db_stale_schema_version(tmp_path: Path) ->
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1233,7 +1233,7 @@ def test_doctor_service_fails_session_db_missing_search_objects(tmp_path: Path) 
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1262,7 +1262,7 @@ def test_doctor_service_fails_session_db_missing_history_search_objects(tmp_path
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1294,7 +1294,7 @@ def test_doctor_service_fails_session_db_foreign_key_violations(tmp_path: Path) 
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1323,7 +1323,7 @@ def test_doctor_service_fails_session_db_legacy_orphan_rows(tmp_path: Path) -> N
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1353,7 +1353,7 @@ def test_doctor_service_fails_session_db_missing_lineage_parent(tmp_path: Path) 
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1385,7 +1385,7 @@ def test_doctor_service_fails_session_db_lineage_cycle(tmp_path: Path) -> None:
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1424,7 +1424,7 @@ def test_doctor_service_fails_session_db_invalid_fork_point(tmp_path: Path) -> N
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1471,7 +1471,7 @@ def test_doctor_service_fails_session_db_child_fork_beyond_parent_messages(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1503,7 +1503,7 @@ def test_doctor_service_fails_session_db_invalid_recovery_state_json(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1535,7 +1535,7 @@ def test_doctor_service_fails_session_db_non_object_recovery_state(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1577,7 +1577,7 @@ def test_doctor_service_fails_session_db_malformed_suspended_turn_recovery_state
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1626,7 +1626,7 @@ def test_doctor_service_fails_session_db_malformed_pending_decision_shape(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1685,7 +1685,7 @@ def test_doctor_service_fails_session_db_malformed_pending_clarification_shape(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1739,7 +1739,7 @@ def test_doctor_service_fails_unresumable_pending_approval_state(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1810,7 +1810,7 @@ def test_doctor_service_accepts_pending_approval_with_waiting_turn_record(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1901,7 +1901,7 @@ def test_doctor_service_accepts_pending_approval_with_rollout_history_evidence(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -1957,7 +1957,7 @@ def test_doctor_service_fails_unresumable_pending_clarification_state(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -2035,7 +2035,7 @@ def test_doctor_service_accepts_pending_clarification_with_waiting_turn_record(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -2133,7 +2133,7 @@ def test_doctor_service_accepts_pending_clarification_with_rollout_history_evide
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "sessions_db")
@@ -2164,7 +2164,7 @@ def test_doctor_service_allows_missing_errors_log_when_no_errors_were_recorded(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     logs_check = next(check for check in report.checks if check.name == "logs")
@@ -2201,7 +2201,7 @@ def test_doctor_service_reports_clean_log_redaction_scan(tmp_path: Path) -> None
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "logs_redaction")
@@ -2232,7 +2232,7 @@ def test_doctor_service_fails_log_redaction_scan_without_printing_secret(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -2267,7 +2267,7 @@ def test_doctor_service_fails_model_raw_redaction_scan_without_printing_secret(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -2292,7 +2292,7 @@ def test_doctor_service_reports_storage_layout_missing_reserved_dirs_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "storage_layout")
@@ -2316,7 +2316,7 @@ def test_doctor_service_reports_missing_trace_directory_as_ok_without_creating_i
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "traces")
@@ -2352,7 +2352,7 @@ def test_doctor_service_reports_valid_trace_files_as_ok(tmp_path: Path) -> None:
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "traces")
@@ -2384,7 +2384,7 @@ def test_doctor_service_reports_no_stream_diagnostics_rows_as_ok(tmp_path: Path)
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "stream_diagnostics")
@@ -2405,7 +2405,7 @@ def test_doctor_service_reports_missing_approval_diagnostics_as_ok(tmp_path: Pat
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "approval_diagnostics")
@@ -2436,7 +2436,7 @@ def test_doctor_service_reports_no_approval_diagnostics_rows_as_ok(tmp_path: Pat
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "approval_diagnostics")
@@ -2522,7 +2522,7 @@ def test_doctor_service_summarizes_successful_approval_diagnostics(tmp_path: Pat
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "approval_diagnostics")
@@ -2597,7 +2597,7 @@ def test_doctor_service_warns_for_problem_approval_diagnostics_without_raw_paylo
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -2629,7 +2629,7 @@ def test_doctor_service_reports_missing_clarification_diagnostics_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "clarification_diagnostics")
@@ -2662,7 +2662,7 @@ def test_doctor_service_reports_no_clarification_diagnostics_rows_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "clarification_diagnostics")
@@ -2713,7 +2713,7 @@ def test_doctor_service_summarizes_successful_clarification_diagnostics(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "clarification_diagnostics")
@@ -2767,7 +2767,7 @@ def test_doctor_service_warns_for_problem_clarification_diagnostics_without_raw_
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -2793,7 +2793,7 @@ def test_doctor_service_reports_missing_tool_execution_diagnostics_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
@@ -2815,7 +2815,7 @@ def test_doctor_service_reports_missing_runtime_policy_diagnostics_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "runtime_policy_diagnostics")
@@ -2938,7 +2938,7 @@ def test_doctor_service_summarizes_runtime_policy_diagnostics_without_raw_args(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3035,7 +3035,7 @@ def test_doctor_service_summarizes_tool_runtime_lifecycle_integrity(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3065,7 +3065,7 @@ def test_doctor_service_reports_tool_runtime_coverage_gaps_without_raw_payload(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3110,7 +3110,7 @@ def test_doctor_service_reports_no_tool_execution_diagnostics_rows_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
@@ -3168,7 +3168,7 @@ def test_doctor_service_summarizes_successful_tool_execution_diagnostics(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "tool_execution_diagnostics")
@@ -3238,7 +3238,7 @@ def test_doctor_service_warns_for_problem_tool_execution_diagnostics_without_raw
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3271,7 +3271,7 @@ def test_doctor_service_reports_missing_turn_failure_diagnostics_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "turn_failure_diagnostics")
@@ -3293,7 +3293,7 @@ def test_doctor_service_reports_missing_turn_interrupt_diagnostics_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "turn_interrupt_diagnostics")
@@ -3342,7 +3342,7 @@ def test_doctor_service_summarizes_turn_interrupt_diagnostics_without_raw_payloa
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3413,7 +3413,7 @@ def test_doctor_service_summarizes_session_continuity_without_raw_payload(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3453,7 +3453,7 @@ def test_doctor_service_reports_no_turn_failure_diagnostics_rows_as_ok(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "turn_failure_diagnostics")
@@ -3511,7 +3511,7 @@ def test_doctor_service_warns_for_turn_failure_diagnostics_without_raw_payload(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3573,7 +3573,7 @@ def test_doctor_service_summarizes_successful_stream_diagnostics(tmp_path: Path)
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "stream_diagnostics")
@@ -3637,7 +3637,7 @@ def test_doctor_service_warns_for_failed_stream_diagnostics_without_failure_mess
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3688,7 +3688,7 @@ def test_doctor_service_fails_trace_redaction_scan_without_printing_secret(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
     rendered = "\n".join(render_doctor_report(report))
 
@@ -3727,7 +3727,7 @@ def test_doctor_service_warns_for_invalid_trace_rows(tmp_path: Path) -> None:
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "traces")
@@ -3753,7 +3753,7 @@ def test_doctor_service_bounds_trace_file_scan(tmp_path: Path) -> None:
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "traces")
@@ -3776,7 +3776,7 @@ def test_doctor_service_reports_storage_layout_reserved_dirs_as_ok(tmp_path: Pat
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "storage_layout")
@@ -3802,7 +3802,7 @@ def test_doctor_service_fails_storage_layout_when_reserved_path_is_file(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "storage_layout")
@@ -3828,7 +3828,7 @@ def test_doctor_service_fails_storage_layout_when_reserved_dir_is_not_writable(
             home_dir=home,
             env={},
             which=lambda command: f"/usr/bin/{command}",
-            import_checker=lambda module: module == "mycli.cli.tui",
+            import_checker=lambda _module: False,
         ).run()
     finally:
         traces.chmod(0o755)
@@ -3856,7 +3856,7 @@ def test_doctor_service_reports_node_tui_dependency_status(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
@@ -3978,7 +3978,7 @@ def test_doctor_service_reports_context_diagnostics_without_raw_content(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "context")
@@ -4037,7 +4037,7 @@ def test_doctor_service_warns_when_cache_shape_metadata_is_missing(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "context")
@@ -4101,7 +4101,7 @@ def test_doctor_service_warns_when_stable_prefix_changes(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "context")
@@ -4189,7 +4189,7 @@ def test_doctor_service_reports_cache_miss_triage_distribution(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "context")
@@ -4317,7 +4317,7 @@ def test_doctor_service_reports_cache_policy_validation_states(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "context")
@@ -4349,7 +4349,7 @@ def test_doctor_service_reports_provider_quirk_diagnostics_without_secrets(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(item for item in report.checks if item.name == "provider_quirk_diagnostics")
@@ -4416,7 +4416,7 @@ def test_doctor_service_reports_recovery_diagnostics_without_raw_provider_text(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "context")
@@ -4455,7 +4455,7 @@ def test_doctor_service_warns_when_node_tui_dependencies_are_missing_without_cre
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")
@@ -4483,7 +4483,7 @@ def test_doctor_service_warns_when_node_tui_dependencies_are_incomplete(
         home_dir=home,
         env={},
         which=lambda command: f"/usr/bin/{command}",
-        import_checker=lambda module: module == "mycli.cli.tui",
+        import_checker=lambda _module: False,
     ).run()
 
     dependency_check = next(check for check in report.checks if check.name == "node_tui_dependencies")

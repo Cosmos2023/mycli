@@ -49,6 +49,7 @@ class ApprovalService:
                     reason=safety.reason,
                     preview=safety.preview,
                     command_pattern=safety.command_pattern,
+                    metadata=safety.metadata,
                 ),
                 safety_metadata=safety.metadata,
             )

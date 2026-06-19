@@ -277,6 +277,7 @@ class SessionService:
                 "preview": decision.preview,
                 "options": [option.value for option in decision.options],
                 "command_pattern": decision.command_pattern,
+                "metadata": decision.metadata,
             },
         )
 
@@ -296,6 +297,7 @@ class SessionService:
             preview=str(payload["preview"]),
             options=tuple(DecisionAction(str(option)) for option in payload["options"]),
             command_pattern=optional_str(payload.get("command_pattern")),
+            metadata=dict(payload.get("metadata") or {}),
         )
 
     def clear_pending_decision(self, session_id: str) -> None:
@@ -449,6 +451,7 @@ class SessionService:
                     "reason": turn.pending_approval.reason,
                     "preview": turn.pending_approval.preview,
                     "command_pattern": turn.pending_approval.command_pattern,
+                    "metadata": turn.pending_approval.metadata,
                 },
                 "pending_clarification": None
                 if turn.pending_clarification is None
@@ -489,6 +492,7 @@ class SessionService:
                 reason=str(pending_payload["reason"]),
                 preview=str(pending_payload["preview"]),
                 command_pattern=optional_str(pending_payload.get("command_pattern")),
+                metadata=dict(pending_payload.get("metadata") or {}),
             )
 
         clarification_payload = payload.get("pending_clarification")
@@ -596,6 +600,7 @@ class SessionService:
             reason=decision.reason,
             preview=decision.preview,
             command_pattern=decision.command_pattern,
+            metadata=dict(decision.metadata),
         )
         return SuspendedTurn(
             user_message=user_message,

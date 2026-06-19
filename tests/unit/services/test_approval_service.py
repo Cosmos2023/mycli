@@ -105,10 +105,15 @@ def test_approval_service_suspends_medium_risk_write_when_strict() -> None:
     assert outcome.pending_approval is not None
     assert outcome.pending_approval.command_pattern is None
     assert outcome.pending_approval.preview == "notes.txt"
+    assert outcome.pending_approval.metadata["content_preview"] == "hello"
     assert outcome.safety_metadata == {
         "tool_name": "Write",
         "canonical_tool_name": "Write",
         "risk_level": "medium",
         "decision_kind": "needs_choice",
         "policy": "medium_risk_requires_approval",
+        "content_preview": "hello",
+        "content_line_count": 1,
+        "content_chars": 5,
+        "content_truncated": False,
     }

@@ -15,7 +15,7 @@ SUBAGENT_DENSITIES = ("compact", "normal", "detailed")
 
 
 @dataclass(frozen=True, slots=True)
-class TuiSettings:
+class ShellSettings:
     statusbar_mode: str = "full"
     view_mode: str = ViewMode.DEFAULT.value
     theme: str = "dark"
@@ -40,17 +40,17 @@ class TuiSettings:
         }
 
 
-def load_tui_settings(home_dir: Path, *, runtime_config: object | None = None) -> TuiSettings:
+def load_shell_settings(home_dir: Path, *, runtime_config: object | None = None) -> ShellSettings:
     payload = _read_toml(default_user_config_path(home_dir))
     return _settings_from_payload(payload, runtime_config=runtime_config)
 
 
-def save_tui_settings(
+def save_shell_settings(
     home_dir: Path,
     raw_settings: Mapping[str, object],
     *,
     runtime_config: object | None = None,
-) -> TuiSettings:
+) -> ShellSettings:
     path = default_user_config_path(home_dir)
     payload = _read_toml(path)
     current = _settings_from_payload(payload, runtime_config=runtime_config)
@@ -79,7 +79,7 @@ def _settings_from_payload(
     payload: Mapping[str, object],
     *,
     runtime_config: object | None = None,
-) -> TuiSettings:
+) -> ShellSettings:
     runtime_view_mode = getattr(runtime_config, "view_mode", None)
     runtime_statusline_enabled = getattr(runtime_config, "statusline_enabled", None)
     view_mode_value = payload.get("viewMode", payload.get("view_mode"))
@@ -94,7 +94,7 @@ def _settings_from_payload(
         if statusline_enabled is None and isinstance(runtime_statusline_enabled, bool):
             statusline_enabled = runtime_statusline_enabled
         statusbar_mode = "full" if statusline_enabled is not False else "off"
-    return TuiSettings(
+    return ShellSettings(
         statusbar_mode=_enum_value("statusbar_mode", statusbar_mode, STATUSBAR_MODES),
         view_mode=_view_mode_value(view_mode_value),
         theme=_enum_value("theme", payload.get("theme", payload.get("tui_theme", "dark")), THEMES),

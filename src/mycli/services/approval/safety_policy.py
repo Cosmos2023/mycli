@@ -9,6 +9,8 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.path_utils import resolve_workspace_path
 from mycli.tools.shell_safety import ShellRiskLevel, analyze_shell_command
 
+MAX_APPROVAL_CONTENT_PREVIEW_CHARS = 12_000
+
 
 @dataclass(slots=True, frozen=True)
 class ToolSafetyDecision:
@@ -276,6 +278,7 @@ class SafetyPolicy:
                 risk_level=RiskLevel.MEDIUM,
                 decision_kind=DecisionKind.NEEDS_CHOICE,
                 policy="medium_risk_requires_approval",
+                extra=_approval_preview_metadata(call=call, canonical_name=canonical_name),
             ),
         )
 
@@ -304,6 +307,7 @@ def _metadata(
     decision_kind: DecisionKind,
     policy: str,
     command_pattern: str | None = None,
+    extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "tool_name": call.name,
@@ -314,4 +318,37 @@ def _metadata(
     }
     if command_pattern:
         metadata["command_pattern"] = command_pattern
+    if extra:
+        metadata.update(extra)
     return metadata
+
+
+def _approval_preview_metadata(
+    *,
+    call: ToolCall,
+    canonical_name: str,
+) -> dict[str, object]:
+    if canonical_name != "Write":
+        return {}
+    content = call.arguments.get("content", call.arguments.get("new_content"))
+    if not isinstance(content, str):
+        return {}
+    preview, truncated = _bounded_text(content, max_chars=MAX_APPROVAL_CONTENT_PREVIEW_CHARS)
+    return {
+        "content_preview": preview,
+        "content_line_count": _line_count(content),
+        "content_chars": len(content),
+        "content_truncated": truncated,
+    }
+
+
+def _bounded_text(value: str, *, max_chars: int) -> tuple[str, bool]:
+    if len(value) <= max_chars:
+        return value, False
+    return value[:max_chars], True
+
+
+def _line_count(value: str) -> int:
+    if not value:
+        return 0
+    return value.count("\n") + (0 if value.endswith("\n") else 1)

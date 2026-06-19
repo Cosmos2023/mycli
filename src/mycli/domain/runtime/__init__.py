@@ -231,6 +231,7 @@ class PendingDecision:
     preview: str
     options: tuple[DecisionAction, ...]
     command_pattern: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.options:

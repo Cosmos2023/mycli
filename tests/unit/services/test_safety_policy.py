@@ -216,7 +216,30 @@ def test_safety_policy_requires_choice_for_medium_risk_write_when_strict() -> No
         "risk_level": "medium",
         "decision_kind": "needs_choice",
         "policy": "medium_risk_requires_approval",
+        "content_preview": "hello",
+        "content_line_count": 1,
+        "content_chars": 5,
+        "content_truncated": False,
     }
+
+
+def test_safety_policy_bounds_write_approval_content_preview() -> None:
+    content = "\n".join(f"line {index}" for index in range(2000))
+    decision = SafetyPolicy(auto_approve_medium=False).evaluate(
+        ToolCall(
+            name="write_file",
+            arguments={"file_path": "notes.txt", "content": content},
+            reason="write file",
+        )
+    )
+
+    assert decision.kind is DecisionKind.NEEDS_CHOICE
+    assert decision.metadata["canonical_tool_name"] == "Write"
+    assert isinstance(decision.metadata["content_preview"], str)
+    assert len(decision.metadata["content_preview"]) < len(content)
+    assert decision.metadata["content_line_count"] == 2000
+    assert decision.metadata["content_chars"] == len(content)
+    assert decision.metadata["content_truncated"] is True
 
 
 def test_safety_policy_requires_choice_for_medium_risk_edit_when_strict() -> None:

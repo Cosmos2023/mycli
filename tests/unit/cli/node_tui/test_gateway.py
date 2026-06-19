@@ -574,7 +574,7 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     ]
 
 
-def test_gateway_settings_load_and_save_persist_tui_settings(tmp_path: Path) -> None:
+def test_gateway_settings_load_and_save_persist_shell_settings(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     service = FakeService(tmp_path)
@@ -2045,6 +2045,11 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
             reason="git push requires confirmation.",
             preview="git push",
             options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+            metadata={
+                "content_preview": "print('hello')",
+                "content_line_count": 1,
+                "content_truncated": False,
+            },
         )
         service.fake_session_service.pending_decision = decision
         return TurnResponse(assistant_message="", pending_decision=decision)
@@ -2077,6 +2082,9 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         "risk": "needs_choice",
         "risk_reason": "git push requires confirmation.",
         "tool_name": "Bash",
+        "content_preview": "print('hello')",
+        "content_line_count": 1,
+        "content_truncated": False,
         "options": [
             {"choice": "approve_once", "label": "Allow once"},
             {"choice": "reject", "label": "Reject"},

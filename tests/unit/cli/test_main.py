@@ -2642,54 +2642,6 @@ def test_turn_service_inspect_trace_prefers_high_signal_events_over_turn_items(t
     )
 
 
-def test_main_routes_interactive_terminal_to_textual_when_requested(
-    monkeypatch, tmp_path: Path
-) -> None:
-    events: dict[str, object] = {}
-
-    class FakeStdout:
-        def isatty(self) -> bool:
-            return True
-
-    class FakeStdin:
-        def isatty(self) -> bool:
-            return True
-
-    class FakeService:
-        def __init__(self) -> None:
-            self._config = SimpleNamespace(
-                session_id="demo",
-                workspace_root=tmp_path,
-                view_mode=ViewMode.DEFAULT,
-                statusline_enabled=True,
-            )
-            self._session_service = SimpleNamespace(
-                load_pending_decision=lambda _session_id: None
-            )
-
-    def fake_run_tui(service, *, input_func=None, output_func=None) -> int:
-        events["service"] = service
-        events["input_func"] = input_func
-        events["output_func"] = output_func
-        return 0
-
-    monkeypatch.setattr("mycli.cli.main.build_turn_service", lambda *args, **kwargs: FakeService())
-    monkeypatch.setattr("mycli.cli.main.stdin", FakeStdin())
-    monkeypatch.setattr("mycli.cli.main.stdout", FakeStdout())
-    monkeypatch.setattr("mycli.cli.main.run_tui", fake_run_tui)
-
-    assert (
-        main(
-            ["--session", "demo"],
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            env={"MYCLI_TUI_BACKEND": "textual"},
-        )
-        == 0
-    )
-    assert events["service"]._config.session_id == "demo"
-
-
 def test_main_plain_flag_keeps_line_repl(monkeypatch, tmp_path: Path) -> None:
     events: dict[str, object] = {}
 

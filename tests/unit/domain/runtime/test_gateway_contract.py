@@ -46,6 +46,16 @@ def test_approval_request_options_schema_uses_decision_choice_taxonomy() -> None
     assert options["items"]["properties"]["choice"]["enum"] == list(APPROVAL_DECISION_CHOICES)
 
 
+def test_approval_request_schema_exposes_file_change_previews() -> None:
+    schema = gateway_event_payload_schemas()["approval.request"]
+
+    assert schema["properties"]["content_preview"] == {"type": "string"}
+    assert schema["properties"]["content_line_count"] == {"type": "integer"}
+    assert schema["properties"]["content_truncated"] == {"type": "boolean"}
+    assert schema["properties"]["diff"] == {"type": "string"}
+    assert schema["properties"]["diff_truncated"] == {"type": "boolean"}
+
+
 def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
     schema = gateway_event_payload_schemas()["status.changed"]
 

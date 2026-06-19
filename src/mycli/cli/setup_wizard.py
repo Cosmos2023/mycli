@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 import getpass
+import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 import tomllib
 
 from mycli.config.auth_store import AuthStore
 from mycli.config.settings import default_user_config_path
 from mycli.domain.providers import ProviderId, parse_provider
+from mycli.cli.node_tui.process import NodeTuiProcessError, build_node_setup_command, check_node_version, node_tui_child_env
 from mycli.infrastructure.providers import profile_for_provider
 from mycli.tools.ripgrep_prepare import RIPGREP_VERSION, prepare_user_ripgrep
 
@@ -54,6 +60,11 @@ def run_setup_wizard(
     secret_input_func: SecretInputFunc | None = None,
     output_func: OutputFunc = print,
 ) -> SetupResult:
+    if input_func is input and output_func is print and _stdio_is_tty():
+        with_tui = _run_node_setup_wizard(home_dir=home_dir, output_func=output_func)
+        if with_tui is not None:
+            return with_tui
+
     secret_reader = secret_input_func or getpass.getpass
     output_func("mycli setup")
     output_func("Configure a model provider for this user account.")
@@ -79,26 +90,127 @@ def run_setup_wizard(
     api_key = _prompt_secret(secret_reader, "API key")
     output_func(_BORDER)
 
-    config_path = default_user_config_path(home_dir)
-    _write_user_config(
-        config_path,
+    result = _save_setup(
+        home_dir=home_dir,
         provider=provider,
         protocol=profile.default_protocol.value,
         model=model,
         api_base_url=api_base_url,
+        api_key=api_key,
     )
-    auth_store.set_api_key(provider.value, api_key)
+    auth_store = AuthStore.from_home(home_dir)
     output_func("")
-    output_func(f"Saved configuration to {config_path}")
+    output_func(f"Saved configuration to {result.config_path}")
     output_func(f"Saved API key to {auth_store.path}")
     _prepare_ripgrep(home_dir=home_dir, output_func=output_func)
     output_func("Run `mycli doctor` if you want to verify the provider connection.")
-    return SetupResult(
-        config_path=config_path,
+    return result
+
+
+def _run_node_setup_wizard(*, home_dir: Path, output_func: OutputFunc) -> SetupResult | None:
+    try:
+        check_node_version()
+        repo_root = Path(__file__).resolve().parents[3]
+        command = build_node_setup_command(repo_root=repo_root, env={})
+    except NodeTuiProcessError as exc:
+        output_func(f"Node setup TUI unavailable; falling back to plain setup: {exc}")
+        return None
+    with tempfile.NamedTemporaryFile(prefix="mycli-setup-", suffix=".json", delete=False) as handle:
+        result_path = Path(handle.name)
+    try:
+        env = node_tui_child_env(base_env=os.environ, requested_env={})
+        env["MYCLI_SETUP_STATE"] = json.dumps(_node_setup_state(home_dir))
+        env["MYCLI_SETUP_RESULT_PATH"] = str(result_path)
+        completed = subprocess.run(command, cwd=repo_root, env=env, check=False)
+        if completed.returncode == 130:
+            raise KeyboardInterrupt
+        if completed.returncode != 0:
+            output_func("Node setup TUI exited without saving; falling back to plain setup.")
+            return None
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8") or "{}")
+        except (OSError, json.JSONDecodeError):
+            output_func("Node setup TUI returned invalid output; falling back to plain setup.")
+            return None
+    finally:
+        with contextlib.suppress(OSError):
+            result_path.unlink()
+    return _save_node_setup_payload(home_dir=home_dir, payload=payload, output_func=output_func)
+
+
+def _save_node_setup_payload(*, home_dir: Path, payload: object, output_func: OutputFunc) -> SetupResult | None:
+    if not isinstance(payload, dict):
+        output_func("Node setup TUI returned invalid output; falling back to plain setup.")
+        return None
+    try:
+        provider = parse_provider(str(payload["provider"]))
+        api_base_url = str(payload["api_base_url"])
+        model = str(payload["model"])
+        api_key = str(payload["api_key"])
+    except (KeyError, ValueError):
+        output_func("Node setup TUI returned incomplete output; falling back to plain setup.")
+        return None
+    if not api_base_url.strip() or not model.strip() or not api_key.strip():
+        output_func("Node setup TUI returned incomplete output; falling back to plain setup.")
+        return None
+    profile = profile_for_provider(provider)
+    result = _save_setup(
+        home_dir=home_dir,
         provider=provider,
+        protocol=profile.default_protocol.value,
+        model=model,
+        api_base_url=api_base_url,
+        api_key=api_key,
+    )
+    auth_store = AuthStore.from_home(home_dir)
+    output_func(f"Saved configuration to {result.config_path}")
+    output_func(f"Saved API key to {auth_store.path}")
+    _prepare_ripgrep(home_dir=home_dir, output_func=output_func)
+    output_func("Run `mycli doctor` if you want to verify the provider connection.")
+    return result
+
+
+def _node_setup_state(home_dir: Path) -> dict[str, object]:
+    auth_store = AuthStore.from_home(home_dir)
+    providers: list[dict[str, object]] = []
+    for provider in _PROVIDER_CHOICES:
+        profile = profile_for_provider(provider)
+        providers.append(
+            {
+                "id": provider.value,
+                "name": _provider_display_name(provider),
+                "configured": bool(auth_store.get_api_key(provider.value)),
+                "default_model": profile.default_model or "",
+                "default_base_url": profile.default_base_url,
+                "protocol": profile.default_protocol.value,
+            }
+        )
+    return {
+        "providers": providers,
+        "config_path": str(default_user_config_path(home_dir)),
+        "auth_path": str(auth_store.path),
+    }
+
+
+def _save_setup(
+    *,
+    home_dir: Path,
+    provider: ProviderId,
+    protocol: str,
+    model: str,
+    api_base_url: str,
+    api_key: str,
+) -> SetupResult:
+    config_path = default_user_config_path(home_dir)
+    _write_user_config(
+        config_path,
+        provider=provider,
+        protocol=protocol,
         model=model,
         api_base_url=api_base_url,
     )
+    AuthStore.from_home(home_dir).set_api_key(provider.value, api_key)
+    return SetupResult(config_path=config_path, provider=provider, model=model, api_base_url=api_base_url)
 
 
 def _prepare_ripgrep(*, home_dir: Path, output_func: OutputFunc) -> None:
@@ -171,6 +283,12 @@ def _render_panel_title(output_func: OutputFunc, title: str) -> None:
     output_func(_BORDER)
     output_func(title)
     output_func("")
+
+
+def _stdio_is_tty() -> bool:
+    import sys
+
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _prompt_text(

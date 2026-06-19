@@ -252,7 +252,7 @@ Runtime and gateway needs:
 Current implementation notes:
 
 - The gateway exposes `settings.load` and `settings.save` JSON-RPC methods.
-- Python owns validation and persistence through `mycli.config.tui_settings`.
+- Python owns validation and persistence through `mycli.config.shell_settings`.
   The user-level config file stores durable values such as `view_mode`,
   `tui_statusbar_mode`, `tui_theme`, `tui_hide_thinking`,
   `tui_tool_details_default`, cursor/resize/progress flags, and

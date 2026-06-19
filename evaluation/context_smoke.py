@@ -226,7 +226,7 @@ def main() -> int:
             home_dir=home,
             env={},
             which=lambda command: f"/usr/bin/{command}",
-            import_checker=lambda module: module == "mycli.cli.tui",
+            import_checker=lambda _module: False,
         ).run()
         context_check = next(check for check in report.checks if check.name == "context")
         workspace_section = next(

@@ -20,7 +20,6 @@ from mycli.cli.repl import (
 )
 from mycli.cli.node_tui import NodeTuiProcessError, run_node_tui
 from mycli.cli.setup_wizard import run_setup_wizard
-from mycli.cli.tui import run_tui
 from mycli.cli.rendering import (
     RenderOptions,
     render_activity_lines,
@@ -114,12 +113,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def should_use_tui(cli_args: dict[str, object]) -> bool:
-    if bool(cli_args.get("plain")):
-        return False
-    return stdin.isatty() and stdout.isatty()
-
-
 def should_run_setup_wizard() -> bool:
     return stdin.isatty() and stdout.isatty()
 
@@ -129,8 +122,6 @@ def should_use_node_tui(cli_args: dict[str, object], env: dict[str, str] | None)
         return False
     env_vars = env if env is not None else os.environ
     backend = env_vars.get("MYCLI_TUI_BACKEND", "").strip().lower()
-    if backend == "textual":
-        return False
     if bool(cli_args.get("node_tui")) or backend in {
         "node",
         "ink",
@@ -667,7 +658,6 @@ def main(
             output_func(str(retry_exc))
             return 2
     try:
-        force_plain_after_node_failure = False
         if should_use_node_tui(args, env):
             try:
                 return run_node_tui(service, cwd=cwd or Path.cwd(), env=env or dict(os.environ))
@@ -675,15 +665,9 @@ def main(
                 fallback = _node_tui_fallback(env)
                 if fallback == "plain":
                     output_func(str(exc))
-                    force_plain_after_node_failure = True
-                elif fallback == "textual" and should_use_tui(args):
-                    output_func(str(exc))
-                    return run_tui(service, input_func=input_func, output_func=output_func)
                 else:
                     output_func(str(exc))
                     return 2
-        if should_use_tui(args) and not force_plain_after_node_failure:
-            return run_tui(service, input_func=input_func, output_func=output_func)
 
         def emit_stream_event(event: RuntimeStreamEvent) -> None:
             for line in render_runtime_stream_event(event):

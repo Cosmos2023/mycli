@@ -1724,12 +1724,6 @@ class DoctorService:
 
     def _check_tui(self) -> Iterable[DoctorCheck]:
         checks: list[DoctorCheck] = []
-        if self._import_checker("mycli.cli.tui"):
-            checks.append(DoctorCheck("python_tui", DoctorStatus.OK, "mycli.cli.tui importable"))
-        else:
-            checks.append(
-                DoctorCheck("python_tui", DoctorStatus.WARNING, "mycli.cli.tui not importable")
-            )
         node_tui_root = _node_tui_source_root()
         if node_tui_root.exists():
             checks.append(DoctorCheck("node_tui", DoctorStatus.OK, "source present tui/mycli-shell"))

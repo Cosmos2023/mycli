@@ -148,6 +148,20 @@ def build_node_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
     return [str(tsx_bin), str(entrypoint)]
 
 
+def build_node_setup_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
+    override = env.get("MYCLI_NODE_SETUP_ENTRYPOINT")
+    node_root = repo_root / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    entrypoint = Path(override).expanduser() if override else node_root / "src" / "setup.ts"
+    if not tsx_bin.is_file():
+        raise NodeTuiProcessError(
+            "Node TUI dependencies are not installed. Run: npm --prefix tui/mycli-shell install"
+        )
+    if not entrypoint.is_file():
+        raise NodeTuiProcessError(f"mycli setup TUI entrypoint not found: {entrypoint}")
+    return [str(tsx_bin), str(entrypoint)]
+
+
 def build_node_tui_process(
     *,
     repo_root: Path,
