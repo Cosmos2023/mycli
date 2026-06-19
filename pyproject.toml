@@ -44,7 +44,3 @@ packages = ["mycli"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mycli"]
-artifacts = [
-    "src/mycli/vendor/ripgrep/**/rg",
-    "src/mycli/vendor/ripgrep/**/rg.exe",
-]

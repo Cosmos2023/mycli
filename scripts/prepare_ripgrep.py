@@ -55,13 +55,8 @@ def main() -> int:
     parser.add_argument(
         "--dest",
         type=Path,
-        default=None,
+        default=Path.home() / ".mycli" / "vendor" / "ripgrep",
         help="Root directory where <target>/rg will be installed.",
-    )
-    parser.add_argument(
-        "--package",
-        action="store_true",
-        help="Install into src/mycli/vendor/ripgrep for release builds.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite an existing rg binary.")
     args = parser.parse_args()
@@ -69,8 +64,7 @@ def main() -> int:
     target = args.target
     target_info = TARGETS[target]
     binary_name = "rg.exe" if target.startswith("windows-") else "rg"
-    dest_root = resolve_dest(args.dest, package=args.package)
-    target_dir = dest_root / target
+    target_dir = args.dest / target
     output_path = target_dir / binary_name
     if output_path.exists() and not args.force:
         print(f"ripgrep already prepared: {output_path}")
@@ -88,14 +82,6 @@ def main() -> int:
     output_path.chmod(output_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     print(f"prepared ripgrep {VERSION}: {output_path}")
     return 0
-
-
-def resolve_dest(dest: Path | None, *, package: bool) -> Path:
-    if dest is not None:
-        return dest
-    if package:
-        return Path(__file__).resolve().parents[1] / "src" / "mycli" / "vendor" / "ripgrep"
-    return Path.home() / ".mycli" / "vendor" / "ripgrep"
 
 
 def platform_key() -> str:
