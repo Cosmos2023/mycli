@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import signal
 import shlex
 import subprocess
 import time
 from typing import Any, Callable
 
-from mycli.domain.runtime import ShellExecutionOptions
+from mycli.domain.runtime import RuntimeInterruptToken, ShellExecutionOptions
 from mycli.domain.runtime.task_notifications import TaskNotification
-from mycli.domain.runtime.execution_policy import SAFE_SHELL_ENV_KEYS
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
+from mycli.tools.shell_environment import create_shell_environment
 from mycli.tools.shell_safety import (
     ShellRiskLevel,
     analyze_shell_command,
@@ -59,6 +60,7 @@ def execute_bash(
     command_pattern: str | None = None,
     output_file: Path | None = None,
     notification_sink: Callable[[TaskNotification], None] | None = None,
+    interrupt_token: RuntimeInterruptToken | None = None,
 ) -> dict[str, Any]:
     effective_cwd = workdir or os.getcwd()
     started = time.monotonic()
@@ -75,6 +77,16 @@ def execute_bash(
         background_payload["cwd"] = effective_cwd
         background_payload["duration_ms"] = _duration_ms(started)
         return background_payload
+
+    if interrupt_token is not None:
+        return _run_foreground_interruptible(
+            command,
+            timeout,
+            effective_cwd,
+            started=started,
+            env=env,
+            interrupt_token=interrupt_token,
+        )
 
     try:
         result = subprocess.run(
@@ -141,6 +153,201 @@ def execute_bash(
     if result.returncode != 0:
         payload["error_kind"] = "nonzero_exit"
     return payload
+
+
+def _run_foreground_interruptible(
+    command: str,
+    timeout: int,
+    cwd: str,
+    *,
+    started: float,
+    env: dict[str, str] | None,
+    interrupt_token: RuntimeInterruptToken,
+) -> dict[str, Any]:
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        executable=os.environ.get("SHELL", "/bin/bash"),
+        env=env,
+        start_new_session=os.name == "posix",
+    )
+    timed_out = False
+    interrupted = False
+    deadline = started + max(0, timeout)
+    stdout = ""
+    stderr = ""
+    while True:
+        if interrupt_token.interrupted:
+            interrupted = True
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+    cleanup_result = "not_needed"
+    if interrupted or timed_out:
+        cleanup_result = _terminate_process_group(process, prefer_interrupt=interrupted)
+        stdout, stderr = process.communicate()
+    if interrupted:
+        return _foreground_interrupted_payload(
+            stdout=stdout,
+            stderr=stderr,
+            started=started,
+            cwd=cwd,
+            cleanup_result=cleanup_result,
+            reason=interrupt_token.reason,
+        )
+    if timed_out:
+        output = _combine_output(stdout, stderr)
+        if not output:
+            output = f"[Command timed out after {timeout}s]"
+        output, output_meta = _truncate_output(output)
+        stdout, stdout_meta = _truncate_output(stdout)
+        stderr, stderr_meta = _truncate_output(stderr)
+        return {
+            "exit_code": 143,
+            "stdout": stdout,
+            "stderr": stderr,
+            "output": output,
+            "timed_out": True,
+            "truncated": output_meta["truncated"],
+            "duration_ms": _duration_ms(started),
+            "cwd": cwd,
+            "error_kind": "timeout",
+            "process_state": "timed_out",
+            "cleanup_result": cleanup_result,
+            "timeout_seconds": timeout,
+            "output_chars": output_meta["original_chars"],
+            "stdout_chars": stdout_meta["original_chars"],
+            "stderr_chars": stderr_meta["original_chars"],
+            "stdout_truncated": stdout_meta["truncated"],
+            "stderr_truncated": stderr_meta["truncated"],
+            "truncated_chars": output_meta["truncated_chars"],
+        }
+
+    return _foreground_completed_payload(
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+        started=started,
+        cwd=cwd,
+    )
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[str],
+    *,
+    prefer_interrupt: bool,
+) -> str:
+    signals = (
+        (signal.SIGINT, "sent_sigint"),
+        (signal.SIGTERM, "sent_sigterm"),
+        (signal.SIGKILL, "sent_sigkill"),
+    )
+    if not prefer_interrupt:
+        signals = signals[1:]
+    cleanup_result = "already_exited"
+    for sig, label in signals:
+        if process.poll() is not None:
+            return cleanup_result
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, sig)
+            else:
+                process.send_signal(sig)
+            cleanup_result = label
+        except ProcessLookupError:
+            return cleanup_result
+        except PermissionError:
+            cleanup_result = f"{label}_permission_denied"
+            continue
+        try:
+            process.wait(timeout=0.5)
+            return cleanup_result
+        except subprocess.TimeoutExpired:
+            continue
+    return cleanup_result
+
+
+def _foreground_completed_payload(
+    *,
+    returncode: int | None,
+    stdout: str,
+    stderr: str,
+    started: float,
+    cwd: str,
+) -> dict[str, Any]:
+    output = _combine_output(stdout, stderr)
+    output, output_meta = _truncate_output(output)
+    stdout, stdout_meta = _truncate_output(stdout)
+    stderr, stderr_meta = _truncate_output(stderr)
+    payload: dict[str, Any] = {
+        "exit_code": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "output": output,
+        "timed_out": False,
+        "truncated": output_meta["truncated"],
+        "duration_ms": _duration_ms(started),
+        "cwd": cwd,
+        "output_chars": output_meta["original_chars"],
+        "stdout_chars": stdout_meta["original_chars"],
+        "stderr_chars": stderr_meta["original_chars"],
+        "stdout_truncated": stdout_meta["truncated"],
+        "stderr_truncated": stderr_meta["truncated"],
+        "truncated_chars": output_meta["truncated_chars"],
+    }
+    if returncode != 0:
+        payload["error_kind"] = "nonzero_exit"
+    return payload
+
+
+def _foreground_interrupted_payload(
+    *,
+    stdout: str,
+    stderr: str,
+    started: float,
+    cwd: str,
+    cleanup_result: str,
+    reason: str | None,
+) -> dict[str, Any]:
+    output = _combine_output(stdout, stderr)
+    if not output:
+        output = "[Command interrupted]"
+    output, output_meta = _truncate_output(output)
+    stdout, stdout_meta = _truncate_output(stdout)
+    stderr, stderr_meta = _truncate_output(stderr)
+    return {
+        "exit_code": 130,
+        "stdout": stdout,
+        "stderr": stderr,
+        "output": output,
+        "timed_out": False,
+        "interrupted": True,
+        "truncated": output_meta["truncated"],
+        "duration_ms": _duration_ms(started),
+        "cwd": cwd,
+        "error_kind": "interrupted",
+        "process_state": "interrupted",
+        "cleanup_result": cleanup_result,
+        "interrupt_reason": reason,
+        "output_chars": output_meta["original_chars"],
+        "stdout_chars": stdout_meta["original_chars"],
+        "stderr_chars": stderr_meta["original_chars"],
+        "stdout_truncated": stdout_meta["truncated"],
+        "stderr_truncated": stderr_meta["truncated"],
+        "truncated_chars": output_meta["truncated_chars"],
+    }
 
 
 def _run_background(
@@ -330,6 +537,12 @@ class BashTool:
                 notification_sink=(
                     self._notification_sink if background_output_file is not None else None
                 ),
+                interrupt_token=arguments.get("_runtime_interrupt_token")
+                if isinstance(
+                    arguments.get("_runtime_interrupt_token"),
+                    RuntimeInterruptToken,
+                )
+                else None,
             )
         )
         payload.setdefault("command_pattern", analysis.command_pattern)
@@ -404,16 +617,7 @@ def _shell_execution_options(value: object) -> ShellExecutionOptions:
 
 
 def _shell_env(options: ShellExecutionOptions) -> dict[str, str]:
-    if options.env_policy == "inherit":
-        return dict(os.environ)
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key in SAFE_SHELL_ENV_KEYS and isinstance(value, str)
-    }
-    env.setdefault("PATH", os.defpath)
-    env["PWD"] = str(options.workspace_root)
-    return env
+    return create_shell_environment(options.resolved_shell_environment_policy())
 
 
 def _suggested_tool_arguments(command: str) -> dict[str, object]:

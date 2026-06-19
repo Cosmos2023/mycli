@@ -45,10 +45,6 @@ _DEDICATED_TOOL_HINTS = {
     "cat": "Read",
     "head": "Read",
     "tail": "Read",
-    "grep": "Grep",
-    "rg": "Grep",
-    "ls": "LS",
-    "find": "Glob",
 }
 _SHELL_INTERPRETERS = {"sh", "bash", "zsh"}
 _REDIRECTION_TOKENS = {">", ">>", "2>"}

@@ -102,6 +102,61 @@ def test_resolve_config_prefers_home_mycli_config_over_workspace_config(
     assert config.api_key == "sk-auth-store"
 
 
+def test_resolve_config_loads_shell_environment_policy(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "[shell_environment_policy]",
+                'inherit = "all"',
+                "ignore_default_excludes = false",
+                'exclude = ["CUSTOM_*"]',
+                'include_only = ["PATH", "CI"]',
+                "",
+                "[shell_environment_policy.set]",
+                'CI = "false"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    policy = config.shell_environment_policy
+    assert policy is not None
+    assert policy.inherit == "all"
+    assert policy.ignore_default_excludes is False
+    assert policy.exclude == ("CUSTOM_*",)
+    assert policy.include_only == ("PATH", "CI")
+    assert dict(policy.set or {}) == {"CI": "false"}
+
+
+def test_resolve_config_loads_shell_environment_inherit_from_env(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={"MYCLI_SHELL_ENV_INHERIT": "none"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.shell_environment_policy is not None
+    assert config.shell_environment_policy.inherit == "none"
+
+
 def test_resolve_config_accepts_codex_responses_provider(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

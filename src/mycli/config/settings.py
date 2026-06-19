@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, cast
 from uuid import uuid4
 
 from mycli.config.auth_store import AuthStore
@@ -12,6 +12,8 @@ from mycli.domain.runtime import (
     CollaborationMode,
     ProviderCachePolicyCapability,
     ReasoningEffort,
+    ShellEnvironmentInheritMode,
+    ShellEnvironmentPolicy,
     ViewMode,
 )
 from mycli.infrastructure.providers import (
@@ -199,6 +201,67 @@ def _parse_float_map(value: object) -> dict[str, float]:
             continue
         parsed[key] = numeric
     return parsed
+
+
+def _parse_string_tuple(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value if isinstance(item, str))
+    return ()
+
+
+def _parse_string_map(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    parsed: dict[str, str] = {}
+    for key, item in value.items():
+        if isinstance(key, str) and isinstance(item, str):
+            parsed[key] = item
+    return parsed
+
+
+def _shell_environment_policy_override(
+    *,
+    env: Mapping[str, str],
+    user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
+) -> ShellEnvironmentPolicy | None:
+    raw_policy = _config_value_no_env(
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        config_key="shell_environment_policy",
+    )
+    if raw_policy is None and "MYCLI_SHELL_ENV_INHERIT" not in env:
+        return None
+    policy_table = raw_policy if isinstance(raw_policy, dict) else {}
+    inherit = str(
+        env.get("MYCLI_SHELL_ENV_INHERIT")
+        or policy_table.get("inherit")
+        or "core"
+    ).strip().lower()
+    if inherit not in {"all", "core", "none"}:
+        raise ValueError(
+            "Unsupported shell_environment_policy.inherit "
+            f"'{inherit}'. Supported values: all, core, none."
+        )
+    inherit_mode = cast("ShellEnvironmentInheritMode", inherit)
+    ignore_default_excludes = _parse_optional_bool(
+        policy_table.get("ignore_default_excludes")
+    )
+    return ShellEnvironmentPolicy(
+        inherit=inherit_mode,
+        ignore_default_excludes=(
+            False if ignore_default_excludes is None else ignore_default_excludes
+        ),
+        exclude=_parse_string_tuple(policy_table.get("exclude")),
+        set=_parse_string_map(policy_table.get("set")),
+        include_only=_parse_string_tuple(policy_table.get("include_only")),
+    )
 
 
 def _new_session_id() -> str:
@@ -541,6 +604,12 @@ def resolve_config(
         profile_capability = profile.cache_policy_capability
         if resolved_cache_policy_capability != profile_capability:
             cache_policy_capability = resolved_cache_policy_capability
+    shell_environment_policy = _shell_environment_policy_override(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+    )
 
     return AgentConfig(
         workspace_root=cwd,
@@ -593,5 +662,6 @@ def resolve_config(
         usage_cache_read_cost_per_1k=usage_cache_read_cost_per_1k,
         usage_cache_write_cost_per_1k=usage_cache_write_cost_per_1k,
         recent_message_count=int(str(recent_message_count_value)),
+        shell_environment_policy=shell_environment_policy,
         auto_approve_medium=True,
     )

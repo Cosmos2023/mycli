@@ -84,12 +84,15 @@ from mycli.domain.runtime.instruction_contract import (
     InstructionFragment as InstructionFragment,
     InstructionFragmentKind as InstructionFragmentKind,
 )
+from mycli.domain.runtime.interrupts import RuntimeInterruptToken as RuntimeInterruptToken
 from mycli.domain.runtime.execution_policy import (
     ApprovalGate as ApprovalGate,
     ExecutionPolicy as ExecutionPolicy,
     RuntimeEnvironmentContract as RuntimeEnvironmentContract,
     SandboxProfile as SandboxProfile,
     ShellBackendProfile as ShellBackendProfile,
+    ShellEnvironmentInheritMode as ShellEnvironmentInheritMode,
+    ShellEnvironmentPolicy as ShellEnvironmentPolicy,
     ShellExecutionOptions as ShellExecutionOptions,
     ToolRuntimeDecision as ToolRuntimeDecision,
     ToolRuntimeDecisionKind as ToolRuntimeDecisionKind,
@@ -210,6 +213,7 @@ class AgentConfig:
     usage_cache_read_cost_per_1k: float = 0.0
     usage_cache_write_cost_per_1k: float = 0.0
     recent_message_count: int = 6
+    shell_environment_policy: ShellEnvironmentPolicy | None = None
     auto_approve_medium: bool = True
     max_tool_calls_per_turn: int = 25
     max_tokens_per_turn: int = 200_000
@@ -364,10 +368,13 @@ __all__ = [
     "RuntimeItem",
     "RuntimeRole",
     "RuntimeStreamEvent",
+    "RuntimeInterruptToken",
     "RuntimeTraceEvent",
     "SessionCommandAllowance",
     "SandboxProfile",
     "ShellBackendProfile",
+    "ShellEnvironmentInheritMode",
+    "ShellEnvironmentPolicy",
     "ShellExecutionOptions",
     "SessionRuntimeSnapshot",
     "StopReason",

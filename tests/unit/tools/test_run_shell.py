@@ -1,7 +1,13 @@
 from pathlib import Path
+import threading
 import time
 
-from mycli.domain.runtime import RiskLevel, ShellExecutionOptions
+from mycli.domain.runtime import (
+    RiskLevel,
+    RuntimeInterruptToken,
+    ShellEnvironmentPolicy,
+    ShellExecutionOptions,
+)
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
@@ -155,6 +161,36 @@ def test_shell_tool_executes_through_backend_contract(tmp_path: Path) -> None:
     assert backend_payload["isolation"] == "host_subprocess"
 
 
+def test_shell_tool_passes_runtime_interrupt_token_to_backend(tmp_path: Path) -> None:
+    token = RuntimeInterruptToken(source="test")
+
+    class FakeBackend(LocalShellBackend):
+        def __init__(self) -> None:
+            self.requests: list[ShellBackendRequest] = []
+
+        def execute(self, request: ShellBackendRequest) -> dict[str, object]:
+            self.requests.append(request)
+            return {
+                "exit_code": 0,
+                "output": "ok",
+                "truncated": False,
+                "process_state": "completed",
+            }
+
+    backend = FakeBackend()
+    tool = BashTool(workspace_root=tmp_path, shell_backend=backend)
+
+    result = tool.execute(
+        {
+            "command": "python3 -c 'print(1)'",
+            "_runtime_interrupt_token": token,
+        }
+    )
+
+    assert result.success is True
+    assert backend.requests[0].interrupt_token is token
+
+
 def test_shell_tool_applies_sanitized_runtime_environment(
     monkeypatch,
     tmp_path: Path,
@@ -189,11 +225,61 @@ def test_shell_tool_applies_sanitized_runtime_environment(
 
     env = seen["env"]
     assert isinstance(env, dict)
-    assert env["PATH"] == "/usr/bin"
+    assert env["PATH"].endswith("/usr/bin")
     assert env["PWD"] == str(tmp_path)
     assert "MYCLI_SECRET_SHOULD_NOT_LEAK" not in env
     assert result.raw_payload["runtime_enforcement"]["env_keys"] == sorted(env)
     assert "secret-value" not in str(result.raw_payload["runtime_enforcement"])
+
+
+def test_shell_tool_applies_explicit_shell_environment_policy(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("CUSTOM_VALUE", "visible")
+    monkeypatch.setenv("API_TOKEN", "secret-value")
+    tool = BashTool(workspace_root=tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_execute_bash(
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        run_in_background: bool = False,
+        env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del command, timeout, workdir, run_in_background, command_pattern, kwargs
+        seen["env"] = dict(env or {})
+        return {"exit_code": 0, "output": "ok", "truncated": False}
+
+    monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)
+
+    result = tool.execute(
+        {
+            "command": "python3 -c 'print(1)'",
+            "_runtime_shell_options": ShellExecutionOptions(
+                workspace_root=tmp_path,
+                shell_environment_policy=ShellEnvironmentPolicy(
+                    inherit="all",
+                    ignore_default_excludes=False,
+                    exclude=("CUSTOM_*",),
+                    set={"CI": "false"},
+                ),
+            ),
+        }
+    )
+
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["CI"] == "false"
+    assert "CUSTOM_VALUE" not in env
+    assert "API_TOKEN" not in env
+    assert result.raw_payload["runtime_enforcement"]["shell_environment_policy"][
+        "inherit"
+    ] == "all"
 
 
 def test_shell_tool_rejects_cwd_outside_workspace(tmp_path: Path) -> None:
@@ -227,6 +313,35 @@ def test_execute_bash_reports_timeout() -> None:
     assert result["error_kind"] == "timeout"
     assert result["timed_out"] is True
     assert result["timeout_seconds"] == 0
+
+
+def test_execute_bash_interrupt_token_stops_foreground_process() -> None:
+    token = RuntimeInterruptToken(source="test")
+    result_holder: dict[str, object] = {}
+    started = threading.Event()
+
+    def run_command() -> None:
+        started.set()
+        result_holder["result"] = execute_bash(
+            "python3 -c \"import time; time.sleep(30)\"",
+            timeout=30,
+            interrupt_token=token,
+        )
+
+    thread = threading.Thread(target=run_command)
+    thread.start()
+    assert started.wait(timeout=1.0)
+    time.sleep(0.1)
+    token.request("test_interrupt")
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    result = result_holder["result"]
+    assert isinstance(result, dict)
+    assert result["interrupted"] is True
+    assert result["error_kind"] == "interrupted"
+    assert result["process_state"] == "interrupted"
+    assert result["exit_code"] == 130
 
 
 def test_execute_bash_reports_truncation_metadata() -> None:
@@ -323,6 +438,34 @@ def test_bash_tool_reroute_includes_actionable_read_arguments(tmp_path: Path) ->
     }
     assert "file_path=data.csv" in result.error
     assert "limit=100" in result.error
+
+
+def test_bash_tool_allows_read_only_discovery_commands(monkeypatch, tmp_path: Path) -> None:
+    tool = BashTool(workspace_root=tmp_path)
+    seen: list[str] = []
+
+    def fake_execute_bash(
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        run_in_background: bool = False,
+        env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del timeout, workdir, run_in_background, env, command_pattern, kwargs
+        seen.append(command)
+        return {"exit_code": 0, "output": "ok", "truncated": False}
+
+    monkeypatch.setattr("mycli.tools.bash.execute_bash", fake_execute_bash)
+
+    for command in ("rg -n query .", "grep -R query .", "ls -la", "find . -maxdepth 1 -type f"):
+        result = tool.execute({"command": command})
+
+        assert result.success is True
+        assert result.raw_payload.get("error_kind") != "dedicated_tool_required"
+
+    assert seen == ["rg -n query .", "grep -R query .", "ls -la", "find . -maxdepth 1 -type f"]
 
 
 def test_bash_tool_refuses_denied_command(tmp_path: Path) -> None:

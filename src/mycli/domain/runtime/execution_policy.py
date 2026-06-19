@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 import shlex
-from typing import Literal, Protocol, SupportsInt
+from typing import Literal, Mapping, Protocol, SupportsInt
 
 from mycli.domain.runtime.approvals import PendingApproval
 from mycli.domain.runtime.execpolicy import ExecPolicyMatch, ExecPolicyRule
@@ -15,6 +15,7 @@ FilesystemPolicy = Literal["read_only", "workspace_write", "unrestricted"]
 NetworkPolicy = Literal["disabled", "enabled"]
 ShellPolicy = Literal["disabled", "restricted", "enabled"]
 ShellEnvPolicy = Literal["inherit", "sanitized"]
+ShellEnvironmentInheritMode = Literal["all", "core", "none"]
 ShellBackendKind = Literal["local"]
 FilesystemEffect = Literal["none", "read", "write", "unknown"]
 ToolRuntimeCoverageLevel = Literal["full", "partial", "external"]
@@ -33,6 +34,43 @@ SAFE_SHELL_ENV_KEYS = (
     "TMPDIR",
     "USER",
 )
+DEFAULT_SHELL_ENV_EXCLUDES = ("*KEY*", "*SECRET*", "*TOKEN*")
+
+
+@dataclass(slots=True, frozen=True)
+class ShellEnvironmentPolicy:
+    inherit: ShellEnvironmentInheritMode = "core"
+    ignore_default_excludes: bool = False
+    exclude: tuple[str, ...] = ()
+    set: Mapping[str, str] | None = None
+    include_only: tuple[str, ...] = ()
+    thread_id: str | None = None
+
+    @classmethod
+    def sanitized(cls, *, workspace_root: Path) -> "ShellEnvironmentPolicy":
+        return cls(
+            inherit="core",
+            set={"PWD": str(workspace_root)},
+        )
+
+    @classmethod
+    def inherit_all(cls) -> "ShellEnvironmentPolicy":
+        return cls(
+            inherit="all",
+            ignore_default_excludes=True,
+        )
+
+    def to_trace_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "inherit": self.inherit,
+            "ignore_default_excludes": self.ignore_default_excludes,
+            "exclude_count": len(self.exclude),
+            "set_keys": sorted((self.set or {}).keys()),
+            "include_only_count": len(self.include_only),
+        }
+        if self.thread_id is not None:
+            payload["thread_id_set"] = True
+        return payload
 
 
 class ToolRuntimeDecisionKind(StrEnum):
@@ -102,18 +140,32 @@ class ShellExecutionOptions:
     network: NetworkPolicy = "enabled"
     shell: ShellPolicy = "restricted"
     env_policy: ShellEnvPolicy = "sanitized"
+    shell_environment_policy: ShellEnvironmentPolicy | None = None
     max_timeout_seconds: int = DEFAULT_SHELL_TIMEOUT_SECONDS
     output_char_limit: int = DEFAULT_SHELL_OUTPUT_CHAR_LIMIT
     backend: ShellBackendProfile = ShellBackendProfile()
 
     @classmethod
-    def from_policy(cls, policy: ExecutionPolicy) -> "ShellExecutionOptions":
+    def from_policy(
+        cls,
+        policy: ExecutionPolicy,
+        *,
+        shell_environment_policy: ShellEnvironmentPolicy | None = None,
+    ) -> "ShellExecutionOptions":
         return cls(
             workspace_root=policy.sandbox.cwd,
             filesystem=policy.sandbox.filesystem,
             network=policy.sandbox.network,
             shell=policy.sandbox.shell,
+            shell_environment_policy=shell_environment_policy,
         )
+
+    def resolved_shell_environment_policy(self) -> ShellEnvironmentPolicy:
+        if self.shell_environment_policy is not None:
+            return self.shell_environment_policy
+        if self.env_policy == "inherit":
+            return ShellEnvironmentPolicy.inherit_all()
+        return ShellEnvironmentPolicy.sanitized(workspace_root=self.workspace_root)
 
     def effective_timeout(self, requested_timeout: object) -> tuple[int, bool]:
         if isinstance(requested_timeout, str | bytes | bytearray) or isinstance(
@@ -144,6 +196,7 @@ class ShellExecutionOptions:
             "network": self.network,
             "shell": self.shell,
             "env_policy": self.env_policy,
+            "shell_environment_policy": self.resolved_shell_environment_policy().to_trace_payload(),
             "env_keys": list(env_keys),
             "timeout_seconds": timeout_seconds,
             "timeout_capped": timeout_capped,
