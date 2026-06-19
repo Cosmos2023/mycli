@@ -26,6 +26,10 @@ These documents are reference material for comparing mycli with Hermes/Codex-sty
 - [parity/hermes-parity-roadmap.md](./parity/hermes-parity-roadmap.md): completed Hermes-like foundation roadmap.
 - [parity/hermes-foundation-final-report.md](./parity/hermes-foundation-final-report.md): final report for the Hermes-like foundation slice.
 - [parity/tools-parity-report.md](./parity/tools-parity-report.md): local tool foundation and contributed tool parity report.
+- [parity/pi-tui-mycli-upgrade-plan.md](./parity/pi-tui-mycli-upgrade-plan.md): Trellis-style plan for upgrading mycli's Node TUI by adapting pi-tui primitives and pi-agent interaction components.
+- [parity/pi-agent-tui-lessons.md](./parity/pi-agent-tui-lessons.md): lessons from pi-agent's TUI architecture and component split.
+- [parity/tui-development-roadmap.md](./parity/tui-development-roadmap.md): implementation batches for the current TUI roadmap.
+- [parity/tui-experience-blueprint.md](./parity/tui-experience-blueprint.md): product blueprint for the local coding-agent TUI experience.
 
 ## Historical Superpowers Docs
 

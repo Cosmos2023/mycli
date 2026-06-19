@@ -160,9 +160,13 @@ TUI 中的工具展示默认偏紧凑：
 | `/memory search <query>` | 搜索 file memory |
 | `/memory add <type> <name> :: <content>` | 手动添加 file memory |
 | `/memory forget <filename-or-query>` | 删除匹配的 file memory |
-| `/jobs` | 查看后台 job |
-| `/jobs subagents [child_session_id]` | 查看后台 subagent 或其 transcript |
-| `/jobs bashes` | 查看后台 shell |
+| `/agents` | 查看 subagent profile 配置 |
+| `/agents inspect <profile_id>` | 查看单个 subagent profile |
+| `/agents runs [child_session_id]` | 查看 subagent run 或其 transcript |
+| `/tasks` | 查看后台 task |
+| `/tasks agents [child_session_id]` | 查看后台 subagent 或其 transcript |
+| `/tasks agents kill <child_session_id>` | 停止指定后台 subagent |
+| `/tasks bashes` | 查看后台 shell |
 | `/changes` | 查看文件变更 |
 | `/changes undo` | 撤销最近一次可恢复文件变更 |
 | `/trace` | 查看最近 runtime trace |
@@ -176,7 +180,7 @@ TUI 中的工具展示默认偏紧凑：
 | `/session maintenance [--apply-empty\|--apply-orphans\|--apply-vacuum]` | 检查或执行 session 存储维护 |
 | `/quit` | 退出 |
 
-旧入口仍兼容：`/usage`、`/context`、`/stats`、`/sessions`、`/resume`、`/fork`、`/search`、`/permissions`、`/hooks`、`/toolsets`、`/bashes`、`/subagents`、`/trace-jsonl`、`/logs`、`/undo` 会映射到上面的分组命令。
+旧入口仍兼容：`/usage`、`/context`、`/stats`、`/sessions`、`/resume`、`/fork`、`/search`、`/permissions`、`/hooks`、`/toolsets`、`/jobs`、`/bashes`、`/subagents`、`/trace-jsonl`、`/logs`、`/undo` 会映射到上面的分组命令。
 
 ## 模型 Provider
 
@@ -297,6 +301,31 @@ File memory 目录会被加入允许根目录，因此 Agent 可以读写自己�
 5. 主 agent 下一次模型请求会看到该 notification。
 
 `SubagentOutput` 只用于用户明确要求查看后台任务进度/结果时。模型不应该主动轮询它；完成结果会自动通知。
+
+自定义 subagent 推荐使用 Claude Code 风格 Markdown profile：
+
+```text
+.mycli/agents/<profile-id>.md
+~/.mycli/agents/<profile-id>.md
+```
+
+示例：
+
+```md
+---
+name: security-reviewer
+description: Review security-sensitive changes.
+tools: Read, Grep, Glob, LS
+disallowedTools: Bash, Write
+model: gpt-5.4-mini
+maxTurns: 5
+---
+You are a security review sub-agent. Focus on concrete vulnerabilities,
+unsafe trust boundaries, and missing regression tests.
+```
+
+Markdown frontmatter 中 `name` 和 `description` 必填，正文会作为该 subagent 的 system prompt。旧版 TOML profile 仍兼容：
+`.mycli/subagents/*.toml` 和 `~/.mycli/subagents/*.toml`。
 
 ## Memory
 
