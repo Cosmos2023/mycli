@@ -254,6 +254,7 @@ class AgentRuntime:
         self._approval_service = approval_service or ApprovalService(
             safety_policy=SafetyPolicy(
                 workspace_root=config.workspace_root,
+                writable_roots=self._writable_roots(),
                 auto_approve_medium=config.auto_approve_medium,
             )
         )
@@ -380,6 +381,9 @@ class AgentRuntime:
         self._runtime_policy_gate = RuntimePolicyGate(
             approval_service=self._approval_service,
             workspace_root=config.workspace_root,
+            writable_roots=self._writable_roots(),
+            denied_read_roots=config.sandbox_denied_read_roots,
+            denied_read_globs=config.sandbox_denied_read_globs,
             execpolicy_rules=self._execpolicy_rules,
             collaboration_mode=config.collaboration_mode,
             shell_environment_policy=config.shell_environment_policy,
@@ -537,6 +541,9 @@ class AgentRuntime:
             workspace_log_service=self._workspace_log_service,
             trace_service=self._trace_service,
             execpolicy_rules=self._execpolicy_rules,
+            writable_roots=self._writable_roots(),
+            denied_read_roots=config.sandbox_denied_read_roots,
+            denied_read_globs=config.sandbox_denied_read_globs,
         )
         self._closed = False
         self._session_hook_contexts: dict[str, tuple[str, ...]] = {}
@@ -561,6 +568,16 @@ class AgentRuntime:
                 context={"error_kind": type(exc).__name__},
             )
             return ExecPolicyRuleSet()
+
+    def _writable_roots(self) -> tuple[Path, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    self._storage_layout.vendor_dir,
+                    *self._config.sandbox_writable_roots,
+                )
+            )
+        )
 
     @classmethod
     def for_tests(
@@ -1968,11 +1985,26 @@ class AgentRuntime:
         session_id = config.session_id
         self._workspace_log_service.set_session_id(session_id)
         self._model_state.set_config(config)
+        self._approval_service.set_safety_policy(
+            SafetyPolicy(
+                workspace_root=config.workspace_root,
+                writable_roots=self._writable_roots(),
+                auto_approve_medium=config.auto_approve_medium,
+            )
+        )
         self._runtime_context_builder.set_config(config)
         self._runtime_context_builder.set_execpolicy_rules(self._execpolicy_rules)
+        self._runtime_context_builder.set_writable_roots(self._writable_roots())
+        self._runtime_context_builder.set_denied_reads(
+            denied_read_roots=config.sandbox_denied_read_roots,
+            denied_read_globs=config.sandbox_denied_read_globs,
+        )
         self._runtime_policy_gate.set_workspace_policy(
             workspace_root=config.workspace_root,
             execpolicy_rules=self._execpolicy_rules,
+            writable_roots=self._writable_roots(),
+            denied_read_roots=config.sandbox_denied_read_roots,
+            denied_read_globs=config.sandbox_denied_read_globs,
             collaboration_mode=config.collaboration_mode,
             shell_environment_policy=config.shell_environment_policy,
         )

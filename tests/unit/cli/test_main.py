@@ -2418,7 +2418,7 @@ def test_turn_service_inspect_trace_renders_runtime_policy_bounded_fields(
                 "execpolicy_rule_argument_count": 5,
                 "sandbox": {
                     "filesystem": "workspace_write",
-                    "network": "enabled",
+                    "network": "disabled",
                     "shell": "restricted",
                 },
             },
@@ -2431,7 +2431,7 @@ def test_turn_service_inspect_trace_renders_runtime_policy_bounded_fields(
         "runtime_policy_decision Bash decision=needs_approval "
         "policy=shell_safety_analysis risk=high args=1 keys=command "
         "execpolicy=ask source=project rule=hash-only "
-        "sandbox=fs:workspace_write,net:enabled,shell:restricted",
+        "sandbox=fs:workspace_write,net:disabled,shell:restricted",
     )
     assert "git push" not in str(rendered)
     assert "sk-do-not-print" not in str(rendered)

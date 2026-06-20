@@ -22,6 +22,7 @@ ToolRuntimeCoverageLevel = Literal["full", "partial", "external"]
 
 DEFAULT_SHELL_TIMEOUT_SECONDS = 120
 DEFAULT_SHELL_OUTPUT_CHAR_LIMIT = 10_000
+DEFAULT_DENIED_READ_GLOBS = ("**/.env", "**/.env.*")
 SAFE_SHELL_ENV_KEYS = (
     "HOME",
     "LANG",
@@ -83,13 +84,19 @@ class ToolRuntimeDecisionKind(StrEnum):
 class SandboxProfile:
     workspace_roots: tuple[Path, ...]
     cwd: Path
+    writable_roots: tuple[Path, ...] = ()
+    denied_read_roots: tuple[Path, ...] = ()
+    denied_read_globs: tuple[str, ...] = ()
     filesystem: FilesystemPolicy = "workspace_write"
-    network: NetworkPolicy = "enabled"
+    network: NetworkPolicy = "disabled"
     shell: ShellPolicy = "restricted"
 
     def to_trace_payload(self) -> dict[str, object]:
         return {
             "workspace_roots": len(self.workspace_roots),
+            "writable_roots": len(self.writable_roots),
+            "denied_read_roots": len(self.denied_read_roots),
+            "denied_read_globs": len(self.denied_read_globs),
             "filesystem": self.filesystem,
             "network": self.network,
             "shell": self.shell,
@@ -111,6 +118,8 @@ class ExecutionPolicy:
             sandbox=SandboxProfile(
                 workspace_roots=(resolved,),
                 cwd=resolved,
+                writable_roots=(resolved,),
+                denied_read_globs=DEFAULT_DENIED_READ_GLOBS,
             )
         )
 
@@ -418,6 +427,9 @@ class RuntimeEnvironmentContract:
     execpolicy_rule_count: int = 0
     execpolicy_sources: tuple[str, ...] = ()
     shell_backend: ShellBackendProfile = ShellBackendProfile()
+    writable_roots: tuple[Path, ...] = ()
+    denied_read_roots: tuple[Path, ...] = ()
+    denied_read_globs: tuple[str, ...] = ()
 
     @classmethod
     def from_policy(
@@ -440,11 +452,17 @@ class RuntimeEnvironmentContract:
             execpolicy_status="enabled" if execpolicy_rule_count > 0 else "disabled",
             execpolicy_rule_count=max(0, execpolicy_rule_count),
             execpolicy_sources=normalized_sources,
+            writable_roots=policy.sandbox.writable_roots,
+            denied_read_roots=policy.sandbox.denied_read_roots,
+            denied_read_globs=policy.sandbox.denied_read_globs,
         )
 
     def to_metadata(self) -> dict[str, object]:
         return {
             "workspace_root": str(self.workspace_root),
+            "writable_roots": [str(path) for path in self.writable_roots],
+            "denied_read_roots": [str(path) for path in self.denied_read_roots],
+            "denied_read_globs": list(self.denied_read_globs),
             "filesystem": self.filesystem,
             "network": self.network,
             "shell": self.shell,

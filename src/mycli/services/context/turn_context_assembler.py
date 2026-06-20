@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from mycli.domain.conversation import Message
 from mycli.domain.memory import MemoryRecord
 from mycli.domain.runtime import (
@@ -166,7 +168,7 @@ class TurnContextAssembler:
             TurnContextSection(
                 type=TurnContextSectionType.USER_REQUEST,
                 title="Current user request",
-                content=f"Current user request: {user_message}",
+                content=user_message,
                 enabled=True,
                 source="user",
                 cache_class=TurnContextCacheClass.EPHEMERAL,
@@ -191,6 +193,9 @@ class TurnContextAssembler:
         lines = [
             "Runtime environment:",
             f"- workspace_root: {contract.workspace_root}",
+            "- writable_roots: " + _bounded_path_list(contract.writable_roots),
+            f"- denied_read_roots: {len(contract.denied_read_roots)}",
+            f"- denied_read_globs: {len(contract.denied_read_globs)}",
             f"- filesystem: {contract.filesystem}",
             f"- network: {contract.network}",
             f"- shell: {contract.shell}",
@@ -495,3 +500,13 @@ class TurnContextAssembler:
         if not body:
             return ""
         return f"<{label}>\n{note}\n\n{body}\n</{label}>"
+
+
+def _bounded_path_list(paths: tuple[Path, ...], *, limit: int = 4) -> str:
+    if not paths:
+        return "none"
+    rendered = [str(path) for path in paths[:limit]]
+    omitted = len(paths) - len(rendered)
+    if omitted > 0:
+        rendered.append(f"... {omitted} more")
+    return ", ".join(rendered)

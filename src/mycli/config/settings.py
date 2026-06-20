@@ -213,6 +213,67 @@ def _parse_string_tuple(value: object) -> tuple[str, ...]:
     return ()
 
 
+def _parse_path_tuple(value: object, *, base_dir: Path) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for raw in _parse_string_tuple(value):
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+        paths.append(candidate.resolve())
+    return tuple(dict.fromkeys(paths))
+
+
+def _merged_config_values(
+    *,
+    user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
+    config_key: str,
+) -> tuple[object, ...]:
+    values: list[object] = []
+    for config in (legacy_user_config, user_config, project_config):
+        if config_key in config:
+            values.append(config[config_key])
+    return tuple(values)
+
+
+def _parse_merged_path_tuple(
+    *,
+    user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
+    config_key: str,
+    base_dir: Path,
+) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for value in _merged_config_values(
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        config_key=config_key,
+    ):
+        paths.extend(_parse_path_tuple(value, base_dir=base_dir))
+    return tuple(dict.fromkeys(paths))
+
+
+def _parse_merged_string_tuple(
+    *,
+    user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
+    config_key: str,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for value in _merged_config_values(
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        config_key=config_key,
+    ):
+        values.extend(_parse_string_tuple(value))
+    return tuple(dict.fromkeys(values))
+
+
 def _parse_string_map(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
@@ -610,6 +671,26 @@ def resolve_config(
         project_config=project_config,
         legacy_user_config=legacy_user_config,
     )
+    sandbox_writable_roots = _parse_merged_path_tuple(
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        config_key="sandbox_writable_roots",
+        base_dir=cwd,
+    )
+    sandbox_denied_read_roots = _parse_merged_path_tuple(
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        config_key="sandbox_denied_read_roots",
+        base_dir=cwd,
+    )
+    sandbox_denied_read_globs = _parse_merged_string_tuple(
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        config_key="sandbox_denied_read_globs",
+    )
 
     return AgentConfig(
         workspace_root=cwd,
@@ -663,5 +744,8 @@ def resolve_config(
         usage_cache_write_cost_per_1k=usage_cache_write_cost_per_1k,
         recent_message_count=int(str(recent_message_count_value)),
         shell_environment_policy=shell_environment_policy,
+        sandbox_writable_roots=sandbox_writable_roots,
+        sandbox_denied_read_roots=sandbox_denied_read_roots,
+        sandbox_denied_read_globs=sandbox_denied_read_globs,
         auto_approve_medium=True,
     )

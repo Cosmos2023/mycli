@@ -219,6 +219,9 @@ def test_turn_context_assembler_renders_bounded_runtime_environment_contract() -
             config=AgentConfig(workspace_root=Path("/tmp/workspace")),
             runtime_environment=RuntimeEnvironmentContract(
                 workspace_root=Path("/tmp/workspace"),
+                writable_roots=(Path("/tmp/workspace"), Path("/tmp/workspace/.mycli/cache")),
+                denied_read_roots=(Path("/tmp/workspace/.secrets"),),
+                denied_read_globs=("**/.env",),
                 filesystem="workspace_write",
                 network="enabled",
                 shell="restricted",
@@ -242,8 +245,17 @@ def test_turn_context_assembler_renders_bounded_runtime_environment_contract() -
     assert section.cache_class is TurnContextCacheClass.DYNAMIC
     assert section.metadata["execpolicy_status"] == "enabled"
     assert section.metadata["execpolicy_rule_count"] == 2
+    assert section.metadata["writable_roots"] == [
+        "/tmp/workspace",
+        "/tmp/workspace/.mycli/cache",
+    ]
+    assert section.metadata["denied_read_roots"] == ["/tmp/workspace/.secrets"]
+    assert section.metadata["denied_read_globs"] == ["**/.env"]
     assert "Runtime environment:" in section.content
     assert "- workspace_root: /tmp/workspace" in section.content
+    assert "- writable_roots: /tmp/workspace, /tmp/workspace/.mycli/cache" in section.content
+    assert "- denied_read_roots: 1" in section.content
+    assert "- denied_read_globs: 1" in section.content
     assert "- filesystem: workspace_write" in section.content
     assert "- network: enabled" in section.content
     assert "- shell: restricted" in section.content

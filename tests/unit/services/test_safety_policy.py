@@ -169,7 +169,7 @@ def test_safety_policy_auto_allows_literal_special_chars_in_args() -> None:
     assert decision.preview == "echo a>b"
 
 
-def test_safety_policy_denies_write_outside_workspace() -> None:
+def test_safety_policy_requires_choice_for_write_outside_workspace() -> None:
     policy = SafetyPolicy(workspace_root=Path("/workspace"))
 
     decision = policy.evaluate(
@@ -180,16 +180,42 @@ def test_safety_policy_denies_write_outside_workspace() -> None:
         )
     )
 
-    assert decision.kind is DecisionKind.DENY
-    assert "workspace" in decision.reason.lower()
+    assert decision.kind is DecisionKind.NEEDS_CHOICE
+    assert "outside the workspace" in decision.reason
     assert decision.metadata == {
         "tool_name": "Write",
         "canonical_tool_name": "Write",
         "risk_level": "medium",
-        "decision_kind": "deny",
-        "policy": "workspace_boundary",
+        "decision_kind": "needs_choice",
+        "policy": "workspace_write_boundary",
         "path_boundary": "outside_workspace",
+        "content_preview": "x",
+        "content_line_count": 1,
+        "content_chars": 1,
+        "content_truncated": False,
     }
+
+
+def test_safety_policy_allows_write_inside_extra_writable_root() -> None:
+    policy = SafetyPolicy(
+        workspace_root=Path("/workspace"),
+        writable_roots=(Path("/tmp/mycli-cache"),),
+    )
+
+    decision = policy.evaluate(
+        ToolCall(
+            name="Write",
+            arguments={
+                "file_path": "/tmp/mycli-cache/runtime.json",
+                "content": "{}",
+            },
+            reason="write cache",
+        )
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.preview == "/tmp/mycli-cache/runtime.json"
+    assert decision.metadata["policy"] == "workspace_write_tool"
 
 
 def test_safety_policy_requires_choice_for_medium_risk_write_when_strict() -> None:

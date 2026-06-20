@@ -140,6 +140,83 @@ def test_resolve_config_loads_shell_environment_policy(tmp_path: Path) -> None:
     assert dict(policy.set or {}) == {"CI": "false"}
 
 
+def test_resolve_config_loads_sandbox_profile_paths(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'sandbox_writable_roots = ["build-cache"]',
+                'sandbox_denied_read_roots = [".secrets"]',
+                'sandbox_denied_read_globs = ["**/*.pem"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.sandbox_writable_roots == ((workspace / "build-cache").resolve(),)
+    assert config.sandbox_denied_read_roots == ((workspace / ".secrets").resolve(),)
+    assert config.sandbox_denied_read_globs == ("**/*.pem",)
+
+
+def test_resolve_config_merges_user_and_project_sandbox_profile(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (home_dir / ".mycli").mkdir()
+    (workspace / ".mycli").mkdir()
+    (home_dir / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                f'sandbox_writable_roots = ["{home_dir / "mycli-cache"}"]',
+                f'sandbox_denied_read_roots = ["{home_dir / "private"}"]',
+                'sandbox_denied_read_globs = ["**/*.key"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                'sandbox_writable_roots = ["scratch"]',
+                'sandbox_denied_read_roots = [".secrets"]',
+                'sandbox_denied_read_globs = ["**/*.pem"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.sandbox_writable_roots == (
+        (home_dir / "mycli-cache").resolve(),
+        (workspace / "scratch").resolve(),
+    )
+    assert config.sandbox_denied_read_roots == (
+        (home_dir / "private").resolve(),
+        (workspace / ".secrets").resolve(),
+    )
+    assert config.sandbox_denied_read_globs == ("**/*.key", "**/*.pem")
+
+
 def test_resolve_config_loads_shell_environment_inherit_from_env(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

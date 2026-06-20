@@ -26,9 +26,11 @@ class SafetyPolicy:
         self,
         *,
         workspace_root: Path | None = None,
+        writable_roots: tuple[Path, ...] = (),
         auto_approve_medium: bool = True,
     ) -> None:
         self._workspace_root = workspace_root
+        self._writable_roots = tuple(path.resolve() for path in writable_roots)
         self._auto_approve_medium = auto_approve_medium
 
     def classify(self, call: ToolCall) -> RiskLevel:
@@ -100,27 +102,11 @@ class SafetyPolicy:
             boundary_decision = self._workspace_boundary_decision(call)
             if boundary_decision is not None:
                 return boundary_decision
+            if self._targets_writable_root(call):
+                return self._auto_allow_workspace_write(call, canonical_name=name)
             if not self._auto_approve_medium:
                 return self._medium_risk_approval_decision(call, canonical_name=name)
-            return ToolSafetyDecision(
-                kind=DecisionKind.AUTO_ALLOW,
-                reason=call.reason,
-                preview=str(
-                    call.arguments.get("file_path")
-                    or call.arguments.get("path")
-                    or call.arguments.get("source")
-                    or call.arguments.get("destination")
-                    or call.arguments.get("shell_id")
-                    or ""
-                ),
-                metadata=_metadata(
-                    call=call,
-                    canonical_name=name,
-                    risk_level=RiskLevel.MEDIUM,
-                    decision_kind=DecisionKind.AUTO_ALLOW,
-                    policy="workspace_write_tool",
-                ),
-            )
+            return self._auto_allow_workspace_write(call, canonical_name=name)
         if name == "KillShell":
             if not self._auto_approve_medium:
                 return self._medium_risk_approval_decision(call, canonical_name=name)
@@ -231,18 +217,28 @@ class SafetyPolicy:
             return None
         try:
             resolve_workspace_path(self._workspace_root, raw_path)
-        except ValueError as exc:
+        except ValueError:
+            if _is_within_writable_root(raw_path, self._writable_roots):
+                return None
+            canonical_name = _canonical_tool_name(call.name)
             return ToolSafetyDecision(
-                kind=DecisionKind.DENY,
-                reason=str(exc),
+                kind=DecisionKind.NEEDS_CHOICE,
+                reason=(
+                    f"{canonical_name} targets a path outside the workspace; "
+                    "workspace-write mode requires approval for this."
+                ),
                 preview=raw_path,
                 metadata={
                     **_metadata(
                         call=call,
-                        canonical_name=_canonical_tool_name(call.name),
+                        canonical_name=canonical_name,
                         risk_level=RiskLevel.MEDIUM,
-                        decision_kind=DecisionKind.DENY,
-                        policy="workspace_boundary",
+                        decision_kind=DecisionKind.NEEDS_CHOICE,
+                        policy="workspace_write_boundary",
+                        extra=_approval_preview_metadata(
+                            call=call,
+                            canonical_name=canonical_name,
+                        ),
                     ),
                     "path_boundary": "outside_workspace",
                 },
@@ -279,6 +275,43 @@ class SafetyPolicy:
                 decision_kind=DecisionKind.NEEDS_CHOICE,
                 policy="medium_risk_requires_approval",
                 extra=_approval_preview_metadata(call=call, canonical_name=canonical_name),
+            ),
+        )
+
+    def _targets_writable_root(self, call: ToolCall) -> bool:
+        raw_path = (
+            call.arguments.get("file_path")
+            or call.arguments.get("path")
+            or call.arguments.get("target")
+        )
+        return isinstance(raw_path, str) and _is_within_writable_root(
+            raw_path,
+            self._writable_roots,
+        )
+
+    @staticmethod
+    def _auto_allow_workspace_write(
+        call: ToolCall,
+        *,
+        canonical_name: str,
+    ) -> ToolSafetyDecision:
+        return ToolSafetyDecision(
+            kind=DecisionKind.AUTO_ALLOW,
+            reason=call.reason,
+            preview=str(
+                call.arguments.get("file_path")
+                or call.arguments.get("path")
+                or call.arguments.get("source")
+                or call.arguments.get("destination")
+                or call.arguments.get("shell_id")
+                or ""
+            ),
+            metadata=_metadata(
+                call=call,
+                canonical_name=canonical_name,
+                risk_level=RiskLevel.MEDIUM,
+                decision_kind=DecisionKind.AUTO_ALLOW,
+                policy="workspace_write_tool",
             ),
         )
 
@@ -340,6 +373,22 @@ def _approval_preview_metadata(
         "content_chars": len(content),
         "content_truncated": truncated,
     }
+
+
+def _is_within_writable_root(raw_path: str, writable_roots: tuple[Path, ...]) -> bool:
+    if not writable_roots:
+        return False
+    try:
+        resolved = Path(raw_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for root in writable_roots:
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def _bounded_text(value: str, *, max_chars: int) -> tuple[str, bool]:

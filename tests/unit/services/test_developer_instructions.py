@@ -21,6 +21,9 @@ from mycli.services.context.developer_instructions import (
 def test_render_permissions_instructions_uses_codex_style_tag() -> None:
     contract = RuntimeEnvironmentContract(
         workspace_root=Path("/tmp/workspace"),
+        writable_roots=(Path("/tmp/workspace"), Path("/tmp/workspace/.mycli/cache")),
+        denied_read_roots=(Path("/tmp/workspace/.secrets"),),
+        denied_read_globs=("**/.env",),
         filesystem="workspace_write",
         network="enabled",
         shell="restricted",
@@ -49,9 +52,15 @@ def test_render_permissions_instructions_uses_codex_style_tag() -> None:
     assert rendered.kind == "permissions"
     assert rendered.cache_class is TurnContextCacheClass.DYNAMIC
     assert "<permissions instructions>" in rendered.content
-    assert "- filesystem: workspace_write" in rendered.content
-    assert "- network: enabled" in rendered.content
-    assert "- shell: restricted" in rendered.content
+    assert "`sandbox_mode` is `workspace-write`" in rendered.content
+    assert "editing files in `cwd` and `writable_roots`" in rendered.content
+    assert "The writable roots are `/tmp/workspace`, `/tmp/workspace/.mycli/cache`." in rendered.content
+    assert "Denied filesystem reads are active: 1 path root(s), 1 glob rule(s)." in rendered.content
+    assert "/tmp/workspace/.secrets" not in rendered.content
+    assert "Network access is enabled." in rendered.content
+    assert "Approval policy is `safety_policy`" in rendered.content
+    assert "approval request instead of executing the tool" in rendered.content
+    assert "sandbox_permissions" not in rendered.content
     assert "- execpolicy_sources: project, user" in rendered.content
     assert rendered.metadata["developer_instruction"] is True
 

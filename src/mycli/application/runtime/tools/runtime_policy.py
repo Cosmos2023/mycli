@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fnmatch import fnmatch
 from pathlib import Path
 import shlex
 
@@ -20,6 +21,9 @@ from mycli.tools.base import ToolEffectProfile
 
 
 SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
+READ_TOOL_NAMES = frozenset(
+    {"Read", "read_file", "read_file_range", "LS", "list_directory", "Grep", "search_text"}
+)
 
 
 class RuntimePolicyGate:
@@ -30,29 +34,78 @@ class RuntimePolicyGate:
         *,
         approval_service: ApprovalService,
         workspace_root: Path | None = None,
+        writable_roots: tuple[Path, ...] = (),
+        denied_read_roots: tuple[Path, ...] = (),
+        denied_read_globs: tuple[str, ...] = (),
         execpolicy_rules: ExecPolicyRuleSet | None = None,
         collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._approval_service = approval_service
         self._workspace_root = workspace_root
+        self._writable_roots = tuple(path.resolve() for path in writable_roots)
+        self._denied_read_roots = tuple(path.resolve() for path in denied_read_roots)
+        self._denied_read_globs = tuple(denied_read_globs)
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
         self._collaboration_mode = collaboration_mode
         self._shell_environment_policy = shell_environment_policy
 
     def default_policy(self) -> ExecutionPolicy:
         root = self._workspace_root or Path.cwd()
-        return ExecutionPolicy.for_workspace(root)
+        policy = ExecutionPolicy.for_workspace(root)
+        return ExecutionPolicy(
+            sandbox=SandboxProfile(
+                workspace_roots=policy.sandbox.workspace_roots,
+                cwd=policy.sandbox.cwd,
+                writable_roots=tuple(
+                    dict.fromkeys(
+                        (
+                            *policy.sandbox.writable_roots,
+                            *self._writable_roots,
+                        )
+                    )
+                ),
+                denied_read_roots=tuple(
+                    dict.fromkeys(
+                        (
+                            *policy.sandbox.denied_read_roots,
+                            *self._denied_read_roots,
+                        )
+                    )
+                ),
+                denied_read_globs=tuple(
+                    dict.fromkeys(
+                        (
+                            *policy.sandbox.denied_read_globs,
+                            *self._denied_read_globs,
+                        )
+                    )
+                ),
+                filesystem=policy.sandbox.filesystem,
+                network=policy.sandbox.network,
+                shell=policy.sandbox.shell,
+            ),
+            approval_policy=policy.approval_policy,
+            command_policy=policy.command_policy,
+            file_policy=policy.file_policy,
+            tool_policy=policy.tool_policy,
+        )
 
     def set_workspace_policy(
         self,
         *,
         workspace_root: Path,
         execpolicy_rules: ExecPolicyRuleSet,
+        writable_roots: tuple[Path, ...] = (),
+        denied_read_roots: tuple[Path, ...] = (),
+        denied_read_globs: tuple[str, ...] = (),
         collaboration_mode: CollaborationMode | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._workspace_root = workspace_root
+        self._writable_roots = tuple(path.resolve() for path in writable_roots)
+        self._denied_read_roots = tuple(path.resolve() for path in denied_read_roots)
+        self._denied_read_globs = tuple(denied_read_globs)
         self._execpolicy_rules = execpolicy_rules
         if collaboration_mode is not None:
             self._collaboration_mode = collaboration_mode
@@ -184,6 +237,16 @@ class RuntimePolicyGate:
     ) -> ToolRuntimeDecision | None:
         if effect is None:
             return None
+        denied_read = _denied_read_reason(call=call, sandbox=sandbox, effect=effect)
+        if denied_read is not None:
+            return ToolRuntimeDecision.denied(
+                tool_call=call,
+                policy="sandbox_denied_read_policy",
+                risk_level="medium",
+                reason_code=denied_read,
+                sandbox=sandbox,
+                effect=effect,
+            )
         if sandbox.filesystem == "read_only" and effect.filesystem in {"write", "unknown"}:
             return ToolRuntimeDecision.denied(
                 tool_call=call,
@@ -274,6 +337,68 @@ def _shell_command_args(call: ToolCall) -> tuple[str, ...]:
         return tuple(shlex.split(command_value))
     except ValueError:
         return ()
+
+
+def _denied_read_reason(
+    *,
+    call: ToolCall,
+    sandbox: SandboxProfile,
+    effect: ToolRuntimeEffect,
+) -> str | None:
+    if effect.filesystem != "read" and call.name not in READ_TOOL_NAMES:
+        return None
+    for candidate in _read_path_candidates(call):
+        if _matches_denied_read_root(candidate, sandbox.denied_read_roots, cwd=sandbox.cwd):
+            return "denied_read_root"
+        if _matches_denied_read_glob(candidate, sandbox.denied_read_globs):
+            return "denied_read_glob"
+    return None
+
+
+def _read_path_candidates(call: ToolCall) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for key in ("file_path", "path", "target", "source"):
+        value = call.arguments.get(key)
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    include = call.arguments.get("include")
+    if isinstance(include, str) and include:
+        candidates.append(include)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _matches_denied_read_root(
+    candidate: str,
+    denied_roots: tuple[Path, ...],
+    *,
+    cwd: Path,
+) -> bool:
+    if not denied_roots:
+        return False
+    try:
+        raw_path = Path(candidate).expanduser()
+        resolved = raw_path.resolve() if raw_path.is_absolute() else (cwd / raw_path).resolve()
+    except (OSError, RuntimeError):
+        return False
+    for root in denied_roots:
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _matches_denied_read_glob(candidate: str, denied_globs: tuple[str, ...]) -> bool:
+    normalized = candidate.replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1]
+    return any(
+        fnmatch(normalized, pattern)
+        or fnmatch(basename, pattern)
+        or (pattern.startswith("**/") and fnmatch(normalized, pattern[3:]))
+        or (pattern.startswith("**/") and fnmatch(basename, pattern[3:]))
+        for pattern in denied_globs
+    )
 
 
 def _runtime_effect(

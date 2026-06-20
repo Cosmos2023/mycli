@@ -27,6 +27,9 @@ def render_permissions_instructions(
         return None
 
     workspace_root = _string(metadata.get("workspace_root"))
+    writable_roots = _string_list(metadata.get("writable_roots"))
+    denied_read_roots = _string_list(metadata.get("denied_read_roots"))
+    denied_read_globs = _string_list(metadata.get("denied_read_globs"))
     filesystem = _string(metadata.get("filesystem"))
     network = _string(metadata.get("network"))
     shell = _string(metadata.get("shell"))
@@ -41,19 +44,39 @@ def render_permissions_instructions(
 
     lines = [
         "<permissions instructions>",
-        "Runtime permissions for this turn:",
-        f"- workspace_root: {workspace_root}",
-        f"- filesystem: {filesystem}",
-        f"- network: {network}",
-        f"- shell: {shell}",
-        f"- shell_backend: {shell_backend}",
-        f"- approval_policy: {approval_policy}",
-        f"- command_policy: {command_policy}",
-        f"- file_policy: {file_policy}",
-        f"- tool_policy: {tool_policy}",
-        f"- execpolicy: {execpolicy_status}",
-        f"- execpolicy_rule_count: {execpolicy_rule_count}",
+        _sandbox_text(filesystem=filesystem, network=network),
     ]
+    writable_roots_text = _writable_roots_text(writable_roots)
+    if writable_roots_text:
+        lines.extend(("", writable_roots_text))
+    denied_reads_text = _denied_reads_text(
+        denied_read_roots=denied_read_roots,
+        denied_read_globs=denied_read_globs,
+    )
+    if denied_reads_text:
+        lines.extend(("", denied_reads_text))
+    lines.extend(
+        (
+            "",
+            _approval_text(approval_policy=approval_policy),
+            "",
+            "Runtime permission metadata for this turn:",
+            f"- workspace_root: {workspace_root}",
+            f"- writable_roots_count: {len(writable_roots)}",
+            f"- denied_read_roots_count: {len(denied_read_roots)}",
+            f"- denied_read_globs_count: {len(denied_read_globs)}",
+            f"- filesystem: {filesystem}",
+            f"- network: {network}",
+            f"- shell: {shell}",
+            f"- shell_backend: {shell_backend}",
+            f"- approval_policy: {approval_policy}",
+            f"- command_policy: {command_policy}",
+            f"- file_policy: {file_policy}",
+            f"- tool_policy: {tool_policy}",
+            f"- execpolicy: {execpolicy_status}",
+            f"- execpolicy_rule_count: {execpolicy_rule_count}",
+        )
+    )
     if execpolicy_sources:
         lines.append(f"- execpolicy_sources: {', '.join(execpolicy_sources)}")
     lines.extend(
@@ -160,6 +183,69 @@ def _shell_backend_summary(value: object) -> str:
     isolation = _string(value.get("isolation"))
     available = _string(value.get("available"))
     return f"{backend} available={available} isolation={isolation}"
+
+
+def _writable_roots_text(writable_roots: tuple[str, ...]) -> str:
+    if not writable_roots:
+        return ""
+    roots = ", ".join(f"`{root}`" for root in writable_roots)
+    if len(writable_roots) == 1:
+        return f"The writable root is {roots}."
+    return f"The writable roots are {roots}."
+
+
+def _denied_reads_text(
+    *,
+    denied_read_roots: tuple[str, ...],
+    denied_read_globs: tuple[str, ...],
+) -> str:
+    if not denied_read_roots and not denied_read_globs:
+        return ""
+    return (
+        "Denied filesystem reads are active: "
+        f"{len(denied_read_roots)} path root(s), "
+        f"{len(denied_read_globs)} glob rule(s). "
+        "Do not request escalation or additional permissions for denied reads; "
+        "these are policy restrictions."
+    )
+
+
+def _approval_text(*, approval_policy: str) -> str:
+    if approval_policy == "safety_policy":
+        return (
+            "Approval policy is `safety_policy`: low-risk read and inspection "
+            "tools are auto-approved. Mutating tools, shell commands, and writes "
+            "outside the workspace may create an approval request instead of "
+            "executing the tool. Do not assume approval was granted; continue "
+            "only after the runtime returns an approved result, otherwise use an "
+            "allowed fallback or report the blocker."
+        )
+    return (
+        f"Approval policy is `{approval_policy}`. Respect runtime approval "
+        "decisions and do not assume a blocked action was approved."
+    )
+
+
+def _sandbox_text(*, filesystem: str, network: str) -> str:
+    network_access = "enabled" if network == "enabled" else "restricted"
+    if filesystem == "unrestricted":
+        return (
+            "Filesystem sandboxing defines which files can be read or written. "
+            "`sandbox_mode` is `danger-full-access`: No filesystem sandboxing - "
+            f"all commands are permitted. Network access is {network_access}."
+        )
+    if filesystem == "read_only":
+        return (
+            "Filesystem sandboxing defines which files can be read or written. "
+            "`sandbox_mode` is `read-only`: The sandbox only permits reading "
+            f"files. Network access is {network_access}."
+        )
+    return (
+        "Filesystem sandboxing defines which files can be read or written. "
+        "`sandbox_mode` is `workspace-write`: The sandbox permits reading "
+        "files, and editing files in `cwd` and `writable_roots`. Editing files "
+        f"in other directories requires approval. Network access is {network_access}."
+    )
 
 
 def _render_default_collaboration_mode() -> str:

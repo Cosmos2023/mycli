@@ -368,6 +368,8 @@ def _set_default_sandbox(
     gate: RuntimePolicyGate,
     *,
     workspace_root: Path,
+    denied_read_roots: tuple[Path, ...] = (),
+    denied_read_globs: tuple[str, ...] = (),
     filesystem: str = "workspace_write",
     network: str = "enabled",
     shell: str = "restricted",
@@ -376,6 +378,9 @@ def _set_default_sandbox(
         sandbox=SandboxProfile(
             workspace_roots=(workspace_root,),
             cwd=workspace_root,
+            writable_roots=(workspace_root,),
+            denied_read_roots=denied_read_roots,
+            denied_read_globs=denied_read_globs,
             filesystem=filesystem,  # type: ignore[arg-type]
             network=network,  # type: ignore[arg-type]
             shell=shell,  # type: ignore[arg-type]
@@ -383,7 +388,7 @@ def _set_default_sandbox(
     )
 
 
-def test_tool_execution_service_runtime_policy_denial_blocks_execution(
+def test_tool_execution_service_workspace_write_outside_workspace_requires_approval(
     tmp_path: Path,
 ) -> None:
     service, fake_tool = _service(
@@ -428,16 +433,63 @@ def test_tool_execution_service_runtime_policy_denial_blocks_execution(
 
     assert fake_tool.seen_arguments == []
     assert conversation.messages[-1].role == "tool"
-    assert (
-        "Tool denied by runtime policy: Write "
-        "(policy=workspace_boundary, reason=deny)."
-    ) in conversation.messages[-1].content
+    assert "Tool needs approval before execution." in conversation.messages[-1].content
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "needs_approval"
+    assert policy_trace.payload["policy"] == "workspace_write_boundary"
+    assert policy_trace.payload["reason_code"] == "needs_choice"
+    assert policy_trace.payload["tool_name"] == "Write"
+    assert policy_trace.payload["argument_keys"] == ["content", "file_path"]
+    assert "escape\n" not in str(policy_trace.payload)
+    assert "outside.txt" not in str(policy_trace.payload)
+
+
+def test_tool_execution_service_denied_read_root_blocks_execution_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    denied_root = tmp_path / ".secrets"
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        ),
+    )
+    _set_default_sandbox(
+        service._policy_gate,  # type: ignore[attr-defined]
+        workspace_root=tmp_path,
+        denied_read_roots=(denied_root,),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": str(denied_root / "token.txt")},
+            reason="read secret",
+            call_id="call_read_secret",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    assert conversation.messages[-1].role == "tool"
+    assert "Tool denied by runtime policy: read_file" in conversation.messages[-1].content
+    assert "token.txt" not in conversation.messages[-1].content
     trace = TraceService(home_dir=tmp_path / "home").load("demo")
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
     assert policy_trace.payload["decision"] == "denied"
-    assert policy_trace.payload["tool_name"] == "Write"
-    assert policy_trace.payload["argument_keys"] == ["content", "file_path"]
-    assert "outside.txt" not in str(policy_trace.payload)
+    assert policy_trace.payload["policy"] == "sandbox_denied_read_policy"
+    assert policy_trace.payload["reason_code"] == "denied_read_root"
+    assert "token.txt" not in str(policy_trace.payload)
 
 
 def test_runtime_policy_denial_message_includes_tool_policy_and_reason(
@@ -518,6 +570,267 @@ def test_runtime_policy_gate_plan_mode_denies_mutating_tools_and_allows_read_onl
     assert write_decision.reason_code == "plan_mode_blocks_mutating_tool"
     assert write_decision.to_trace_payload()["collaboration_mode"] == "plan"
     assert read_decision.kind.value == "allowed"
+
+
+def test_runtime_policy_gate_workspace_write_outside_workspace_requires_approval(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "../outside.txt", "content": "hello\n"},
+            reason="write outside workspace",
+            call_id="call_write_outside",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="write"),
+    )
+
+    assert decision.kind.value == "needs_approval"
+    assert decision.policy == "workspace_write_boundary"
+    assert decision.reason_code == "needs_choice"
+    assert decision.to_trace_payload()["sandbox"] == {
+        "workspace_roots": 1,
+        "writable_roots": 1,
+        "denied_read_roots": 0,
+        "denied_read_globs": 2,
+        "filesystem": "workspace_write",
+        "network": "disabled",
+        "shell": "restricted",
+    }
+
+
+def test_runtime_policy_gate_denies_read_inside_denied_read_root(
+    tmp_path: Path,
+) -> None:
+    denied_root = tmp_path / ".secrets"
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    policy = ExecutionPolicy(
+        sandbox=SandboxProfile(
+            workspace_roots=(tmp_path,),
+            cwd=tmp_path,
+            writable_roots=(tmp_path,),
+            denied_read_roots=(denied_root,),
+            denied_read_globs=(),
+        )
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Read",
+            arguments={"file_path": str(denied_root / "token.txt")},
+            reason="read secret",
+            call_id="call_read_secret",
+        ),
+        policy=policy,
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert decision.kind.value == "denied"
+    assert decision.policy == "sandbox_denied_read_policy"
+    assert decision.reason_code == "denied_read_root"
+    payload = decision.to_trace_payload()
+    assert payload["sandbox"]["denied_read_roots"] == 1
+    assert "token.txt" not in str(payload)
+
+
+def test_runtime_policy_gate_default_policy_uses_configured_denied_reads(
+    tmp_path: Path,
+) -> None:
+    denied_root = tmp_path / ".private"
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        denied_read_roots=(denied_root,),
+        denied_read_globs=("**/*.pem",),
+    )
+
+    root_decision = gate.decide(
+        ToolCall(
+            name="Read",
+            arguments={"file_path": str(denied_root / "token.txt")},
+            reason="read secret",
+            call_id="call_read_private",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+    glob_decision = gate.decide(
+        ToolCall(
+            name="Grep",
+            arguments={"pattern": "KEY", "path": ".", "include": "*.pem"},
+            reason="search pem",
+            call_id="call_grep_pem",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert root_decision.kind.value == "denied"
+    assert root_decision.reason_code == "denied_read_root"
+    assert glob_decision.kind.value == "denied"
+    assert glob_decision.reason_code == "denied_read_glob"
+
+
+def test_runtime_policy_gate_denied_read_root_matches_workspace_relative_path(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        denied_read_roots=(tmp_path / ".private",),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Read",
+            arguments={"file_path": ".private/token.txt"},
+            reason="read secret",
+            call_id="call_read_private_relative",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert decision.kind.value == "denied"
+    assert decision.reason_code == "denied_read_root"
+
+
+def test_runtime_policy_gate_denies_grep_matching_denied_read_glob(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    policy = ExecutionPolicy(
+        sandbox=SandboxProfile(
+            workspace_roots=(tmp_path,),
+            cwd=tmp_path,
+            writable_roots=(tmp_path,),
+            denied_read_roots=(),
+            denied_read_globs=("**/.env",),
+        )
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Grep",
+            arguments={"pattern": "TOKEN", "path": ".", "include": "**/.env"},
+            reason="search env",
+            call_id="call_grep_env",
+        ),
+        policy=policy,
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert decision.kind.value == "denied"
+    assert decision.policy == "sandbox_denied_read_policy"
+    assert decision.reason_code == "denied_read_glob"
+    assert decision.to_trace_payload()["argument_keys"] == ["include", "path", "pattern"]
+
+
+def test_runtime_policy_gate_denies_ls_inside_denied_read_root(
+    tmp_path: Path,
+) -> None:
+    denied_root = tmp_path / ".secrets"
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    policy = ExecutionPolicy(
+        sandbox=SandboxProfile(
+            workspace_roots=(tmp_path,),
+            cwd=tmp_path,
+            writable_roots=(tmp_path,),
+            denied_read_roots=(denied_root,),
+            denied_read_globs=(),
+        )
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="LS",
+            arguments={"path": str(denied_root)},
+            reason="list secrets",
+            call_id="call_ls_secret",
+        ),
+        policy=policy,
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert decision.kind.value == "denied"
+    assert decision.reason_code == "denied_read_root"
+
+
+def test_runtime_policy_gate_denies_grep_include_inside_denied_glob(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+    )
+    policy = ExecutionPolicy(
+        sandbox=SandboxProfile(
+            workspace_roots=(tmp_path,),
+            cwd=tmp_path,
+            writable_roots=(tmp_path,),
+            denied_read_roots=(),
+            denied_read_globs=("**/*.env",),
+        )
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Grep",
+            arguments={"pattern": "TOKEN", "path": ".", "include": "*.env"},
+            reason="search env",
+            call_id="call_grep_env",
+        ),
+        policy=policy,
+        effect_profile=ToolEffectProfile(filesystem="read"),
+    )
+
+    assert decision.kind.value == "denied"
+    assert decision.reason_code == "denied_read_glob"
+
+
+def test_runtime_policy_gate_allows_write_inside_writable_root(
+    tmp_path: Path,
+) -> None:
+    writable_root = tmp_path / ".mycli" / "cache"
+    writable_root.mkdir(parents=True)
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(
+            SafetyPolicy(
+                workspace_root=tmp_path,
+                writable_roots=(writable_root,),
+            )
+        ),
+        workspace_root=tmp_path,
+        writable_roots=(writable_root,),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Write",
+            arguments={
+                "file_path": str(writable_root / "state.json"),
+                "content": "{}",
+            },
+            reason="write cache",
+            call_id="call_write_cache",
+        ),
+        effect_profile=ToolEffectProfile(filesystem="write"),
+    )
+
+    assert decision.kind.value == "allowed"
+    assert decision.policy == "workspace_write_tool"
+    assert decision.to_trace_payload()["sandbox"]["writable_roots"] == 2
 
 
 def test_runtime_policy_gate_allows_background_shell_output_reads(

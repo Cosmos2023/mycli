@@ -214,6 +214,9 @@ class AgentConfig:
     usage_cache_write_cost_per_1k: float = 0.0
     recent_message_count: int = 6
     shell_environment_policy: ShellEnvironmentPolicy | None = None
+    sandbox_writable_roots: tuple[Path, ...] = ()
+    sandbox_denied_read_roots: tuple[Path, ...] = ()
+    sandbox_denied_read_globs: tuple[str, ...] = ()
     auto_approve_medium: bool = True
     max_tool_calls_per_turn: int = 25
     max_tokens_per_turn: int = 200_000

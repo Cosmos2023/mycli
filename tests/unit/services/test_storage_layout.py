@@ -21,6 +21,7 @@ def test_storage_layout_separates_session_snapshot_and_trace_paths(tmp_path: Pat
     assert layout.legacy_trace_path("session-id") == (
         tmp_path / ".mycli" / "sessions" / "session-id-trace.jsonl"
     )
+    assert layout.vendor_dir == tmp_path / ".mycli" / "vendor"
 
 
 @pytest.mark.parametrize("session_id", ["", "<session>", "../escape", "a/b", "a\\b"])

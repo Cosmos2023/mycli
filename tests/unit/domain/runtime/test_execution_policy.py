@@ -37,6 +37,9 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
         risk_level="high",
         sandbox=SandboxProfile(
             workspace_roots=(Path("/repo"),),
+            writable_roots=(Path("/repo"), Path("/tmp/mycli-cache")),
+            denied_read_roots=(Path("/private/secrets"),),
+            denied_read_globs=("**/.env",),
             cwd=Path("/repo"),
             filesystem="workspace_write",
             network="enabled",
@@ -60,6 +63,9 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
         "reason_code": None,
         "sandbox": {
             "workspace_roots": 1,
+            "writable_roots": 2,
+            "denied_read_roots": 1,
+            "denied_read_globs": 1,
             "filesystem": "workspace_write",
             "network": "enabled",
             "shell": "restricted",
@@ -80,13 +86,16 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
     assert "git push" not in str(payload)
 
 
-def test_execution_policy_default_sandbox_is_bounded_to_workspace() -> None:
+def test_execution_policy_default_sandbox_matches_codex_workspace_write() -> None:
     policy = ExecutionPolicy.for_workspace(Path("/repo"))
 
     assert policy.sandbox.cwd == Path("/repo")
     assert policy.sandbox.workspace_roots == (Path("/repo"),)
+    assert policy.sandbox.writable_roots == (Path("/repo"),)
+    assert policy.sandbox.denied_read_roots == ()
+    assert policy.sandbox.denied_read_globs == ("**/.env", "**/.env.*")
     assert policy.sandbox.filesystem == "workspace_write"
-    assert policy.sandbox.network == "enabled"
+    assert policy.sandbox.network == "disabled"
     assert policy.sandbox.shell == "restricted"
 
 

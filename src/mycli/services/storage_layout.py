@@ -50,6 +50,10 @@ class MycliStorageLayout:
     def logs_dir(self) -> Path:
         return self.root / "logs"
 
+    @property
+    def vendor_dir(self) -> Path:
+        return self.root / "vendor"
+
     def trace_path(self, session_id: str) -> Path:
         validate_storage_session_id(session_id)
         return self.traces_dir / f"{session_id}-trace.jsonl"

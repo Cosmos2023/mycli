@@ -215,8 +215,10 @@ def test_agent_runtime_includes_bounded_environment_contract_in_model_context(
     )
     assert "Runtime environment:" in rendered_items
     assert f"- workspace_root: {tmp_path}" in rendered_items
+    assert f"- writable_roots: {tmp_path}, {tmp_path / 'home' / '.mycli' / 'vendor'}" in rendered_items
+    assert "- denied_read_globs: 2" in rendered_items
     assert "- filesystem: workspace_write" in rendered_items
-    assert "- network: enabled" in rendered_items
+    assert "- network: disabled" in rendered_items
     assert "- shell: restricted" in rendered_items
     assert "- approval_policy: safety_policy" in rendered_items
     assert "- command_policy: shell_safety_analysis" in rendered_items
@@ -339,6 +341,269 @@ def test_agent_runtime_requires_approval_for_medium_risk_write_when_strict(
 
     assert resumed.assistant_message == "Write finished."
     assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_agent_runtime_allows_write_to_user_vendor_root_when_strict(
+    tmp_path: Path,
+) -> None:
+    vendor_file = tmp_path / "home" / ".mycli" / "vendor" / "ripgrep" / "state.json"
+
+    class VendorWriteThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(
+                                RuntimeBlock(
+                                    type="tool_call",
+                                    tool_name="Write",
+                                    tool_arguments={
+                                        "file_path": str(vendor_file),
+                                        "content": "{}",
+                                    },
+                                    call_id="call_write_vendor",
+                                ),
+                            ),
+                        ),
+                    ),
+                    done=False,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Vendor write finished."),),
+                    ),
+                ),
+                done=True,
+            )
+
+    runtime = AgentRuntime(
+        model_adapter=VendorWriteThenDoneAdapter(),
+        tool_registry=ToolRegistry.from_tools([WriteTool(tmp_path)]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            auto_approve_medium=False,
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    response = runtime.handle_user_turn("prepare vendor state")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == "Vendor write finished."
+    assert vendor_file.read_text(encoding="utf-8") == "{}"
+
+
+def test_agent_runtime_allows_write_to_configured_writable_root_when_strict(
+    tmp_path: Path,
+) -> None:
+    writable_root = tmp_path / "scratch"
+    target_file = writable_root / "state.json"
+
+    class ScratchWriteThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(
+                                RuntimeBlock(
+                                    type="tool_call",
+                                    tool_name="Write",
+                                    tool_arguments={
+                                        "file_path": str(target_file),
+                                        "content": "{}",
+                                    },
+                                    call_id="call_write_scratch",
+                                ),
+                            ),
+                        ),
+                    ),
+                    done=False,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Scratch write finished."),),
+                    ),
+                ),
+                done=True,
+            )
+
+    runtime = AgentRuntime(
+        model_adapter=ScratchWriteThenDoneAdapter(),
+        tool_registry=ToolRegistry.from_tools([WriteTool(tmp_path)]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            auto_approve_medium=False,
+            sandbox_writable_roots=(writable_root,),
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    response = runtime.handle_user_turn("prepare scratch state")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == "Scratch write finished."
+    assert target_file.read_text(encoding="utf-8") == "{}"
+
+
+def test_agent_runtime_denies_read_of_default_secret_glob(
+    tmp_path: Path,
+) -> None:
+    secret_file = tmp_path / ".env"
+    secret_file.write_text("TOKEN=sk-secret\n", encoding="utf-8")
+
+    class ReadEnvThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items, tools):
+            del items, tools
+            self.calls += 1
+            if self.calls > 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(RuntimeBlock(type="text", text="Denied."),),
+                        ),
+                    ),
+                    done=True,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="Read",
+                                tool_arguments={"file_path": str(secret_file), "offset": 1, "limit": 20},
+                                call_id="call_read_env",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReadEnvThenDoneAdapter(),
+    )
+
+    response = runtime.handle_user_turn("read env")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == "Denied."
+    trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["policy"] == "sandbox_denied_read_policy"
+    assert policy_trace.payload["reason_code"] == "denied_read_glob"
+    assert "sk-secret" not in str(policy_trace.payload)
+
+
+def test_agent_runtime_applies_configured_sandbox_profile(
+    tmp_path: Path,
+) -> None:
+    denied_root = tmp_path / ".private"
+    denied_root.mkdir()
+    secret_file = denied_root / "token.txt"
+    secret_file.write_text("TOKEN=sk-secret\n", encoding="utf-8")
+    writable_root = tmp_path / "scratch"
+
+    class ReadPrivateThenDoneAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.seen_items: list[list[RuntimeItem]] = []
+
+        def next_turn(self, *, items, tools):
+            del tools
+            self.calls += 1
+            self.seen_items.append(items)
+            if self.calls > 1:
+                return ModelTurnResult(
+                    items=(
+                        RuntimeItem(
+                            role="assistant",
+                            blocks=(RuntimeBlock(type="text", text="Denied."),),
+                        ),
+                    ),
+                    done=True,
+                )
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="Read",
+                                tool_arguments={
+                                    "file_path": str(secret_file),
+                                    "offset": 1,
+                                    "limit": 20,
+                                },
+                                call_id="call_read_private",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+
+    adapter = ReadPrivateThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(
+        AgentConfig(
+            workspace_root=tmp_path,
+            session_id="sandbox-config",
+            sandbox_writable_roots=(writable_root,),
+            sandbox_denied_read_roots=(denied_root,),
+            sandbox_denied_read_globs=("**/*.pem",),
+        )
+    )
+
+    response = runtime.handle_user_turn("read private token")
+
+    assert response.pending_decision is None
+    assert response.assistant_message == "Denied."
+    rendered_items = "\n".join(
+        block.text or ""
+        for item in adapter.seen_items[0]
+        for block in item.blocks
+        if block.type == "text"
+    )
+    assert f"- writable_roots: {tmp_path}, {tmp_path / 'home' / '.mycli' / 'vendor'}, {writable_root}" in rendered_items
+    assert "- denied_read_roots: 1" in rendered_items
+    assert "- denied_read_globs: 3" in rendered_items
+    trace = TraceService(home_dir=tmp_path / "home").load("sandbox-config")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["policy"] == "sandbox_denied_read_policy"
+    assert policy_trace.payload["reason_code"] == "denied_read_root"
+    assert "token.txt" not in str(policy_trace.payload)
+    assert "sk-secret" not in str(policy_trace.payload)
 
 
 def test_agent_runtime_plan_mode_denies_mutating_tool_without_approval(
