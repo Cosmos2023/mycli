@@ -1710,7 +1710,6 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
 
     assert list(handler("/plan")) == [
         "[mode] collaboration_mode=plan",
-        "[plan] in_progress: Inspect runtime entrypoints",
     ]
     assert list(handler("/mode")) == ["[mode] collaboration_mode=default"]
     assert list(handler("/mode plan")) == ["[mode] collaboration_mode=plan"]

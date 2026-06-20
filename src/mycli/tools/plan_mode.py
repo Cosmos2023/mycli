@@ -12,7 +12,11 @@ class EnterPlanModeTool:
     name = "enter_plan_mode"
     spec = ToolSpec(
         name="enter_plan_mode",
-        description="Create or replace docs/tasks/current.md from a structured task plan. Use for complex tasks that need a durable plan anchor.",
+        description=(
+            "Legacy compatibility tool for structured plan payloads. It returns "
+            "the normalized plan without writing repo files; collaboration mode "
+            "is controlled by the runtime, not this tool."
+        ),
         parameters=(
             ToolParameter(
                 name="items",
@@ -47,12 +51,11 @@ class EnterPlanModeTool:
                 error="enter_plan_mode requires an 'items' list.",
             )
         state = self._planning.replace(items)
-        path = self._plan_mode.write_current_plan(state)
         return ToolResult(
             success=True,
-            summary=f"Wrote plan mode anchor to {path.relative_to(self._plan_mode.plan_path.parents[2]).as_posix()}",
+            summary="Plan mode is controlled by collaboration mode; no repo file was written.",
             raw_payload={
-                "path": "docs/tasks/current.md",
+                "status": "legacy_noop",
                 "items": [
                     {
                         "id": item.id,
@@ -104,4 +107,3 @@ class ExitPlanModeTool:
 
 
 __all__ = ["EnterPlanModeTool", "ExitPlanModeTool"]
-

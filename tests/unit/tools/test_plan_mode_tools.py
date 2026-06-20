@@ -3,7 +3,7 @@ from __future__ import annotations
 from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
 
 
-def test_enter_plan_mode_tool_writes_anchor_file(tmp_path) -> None:
+def test_enter_plan_mode_tool_is_legacy_noop_and_does_not_write_repo_files(tmp_path) -> None:
     tool = EnterPlanModeTool(tmp_path)
 
     result = tool.execute(
@@ -16,8 +16,12 @@ def test_enter_plan_mode_tool_writes_anchor_file(tmp_path) -> None:
     )
 
     assert result.success is True
-    assert result.raw_payload["path"] == "docs/tasks/current.md"
-    assert (tmp_path / "docs" / "tasks" / "current.md").exists()
+    assert result.raw_payload["status"] == "legacy_noop"
+    assert result.raw_payload["items"] == [
+        {"id": "step-1", "content": "Inspect repo", "status": "completed"},
+        {"id": "step-2", "content": "Edit code", "status": "in_progress"},
+    ]
+    assert not (tmp_path / "docs" / "tasks" / "current.md").exists()
 
 
 def test_exit_plan_mode_tool_reads_anchor_file(tmp_path) -> None:
@@ -32,4 +36,3 @@ def test_exit_plan_mode_tool_reads_anchor_file(tmp_path) -> None:
     assert result.raw_payload["items"] == [
         {"id": "step-1", "content": "Inspect repo", "status": "completed"}
     ]
-

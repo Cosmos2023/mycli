@@ -86,11 +86,7 @@ def build_command_handler(
             ]
         if command == "/plan":
             mode_lines = service.set_collaboration_mode("plan")
-            plan_lines = service.inspect_plan()
-            return [
-                *(f"[mode] {line}" for line in mode_lines),
-                *(f"[plan] {line}" for line in plan_lines),
-            ]
+            return [f"[mode] {line}" for line in mode_lines]
         if command == "/mode" or command.startswith("/mode "):
             parts = command.split(maxsplit=1)
             if len(parts) == 1:
