@@ -288,6 +288,38 @@ def test_provider_request_policy_capability_can_disable_anthropic_cache_control(
     assert "cache_control" not in policy.wire_only_hints
 
 
+def test_qwen_provider_request_policy_uses_cache_control_breakpoints() -> None:
+    policy = ProviderRequestPolicyShape.for_request_shape(
+        provider="qwen",
+        protocol="chat_completions",
+        model="qwen3.6-plus",
+        system_hash="system",
+        tool_schema_hash="tools",
+        cacheable_prefix_hash="stable-prefix",
+        lane=ProviderProjectionLane.CHAT_COMPLETIONS,
+        capability=ProviderCachePolicyCapability(
+            prompt_cache_key_enabled=False,
+            cache_control_enabled=True,
+            provider_family="qwen",
+            cache_strategy="cache_control",
+        ),
+    )
+
+    payload = policy.to_dict()
+
+    assert policy.prompt_cache_key is None
+    assert policy.cache_control_breakpoints == (
+        "system_static",
+        "dynamic_boundary",
+        "long_context_1",
+        "long_context_2",
+    )
+    assert policy.wire_cache_hint_enabled is True
+    assert payload["provider_family"] == "qwen"
+    assert payload["cache_strategy"] == "cache_control"
+    assert payload["cache_control_breakpoint_count"] == 4
+
+
 def test_deepseek_provider_request_policy_reports_automatic_prefix_cache_strategy() -> None:
     policy = ProviderRequestPolicyShape.for_request_shape(
         provider="deepseek",

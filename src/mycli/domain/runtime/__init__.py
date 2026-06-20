@@ -90,6 +90,7 @@ from mycli.domain.runtime.execution_policy import (
     ApprovalGate as ApprovalGate,
     ExecutionPolicy as ExecutionPolicy,
     RuntimeEnvironmentContract as RuntimeEnvironmentContract,
+    SandboxMode as SandboxMode,
     SandboxProfile as SandboxProfile,
     ShellBackendProfile as ShellBackendProfile,
     ShellEnvironmentInheritMode as ShellEnvironmentInheritMode,
@@ -186,12 +187,14 @@ class AgentConfig:
     heartbeat_interval_seconds: float = 30.0
     view_mode: ViewMode = ViewMode.DEFAULT
     collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT
+    sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE
     statusline_enabled: bool = True
     tui_startup_mark: str = "default"
     reasoning_effort: ReasoningEffort = ReasoningEffort.MEDIUM
     thinking_enabled: bool = True
     thinking_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
     memory_enabled: bool = True
+    memory_extraction_interval_turns: int = 5
     compression_threshold_tokens: int = 8000
     compaction_l4_trigger_ratio: float = 0.9
     compaction_l4_buffer_tokens: int = 13_000
@@ -376,6 +379,7 @@ __all__ = [
     "RuntimeInterruptToken",
     "RuntimeTraceEvent",
     "SessionCommandAllowance",
+    "SandboxMode",
     "SandboxProfile",
     "ShellBackendProfile",
     "ShellEnvironmentInheritMode",

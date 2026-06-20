@@ -559,6 +559,55 @@ def test_request_shape_builder_marks_anthropic_cache_policy_on_wire_items(
     )
 
 
+def test_request_shape_builder_marks_qwen_cache_policy_on_chat_runtime_blocks(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="qwen",
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="qwen3.6-plus",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="workspace_instructions",
+                    title="Workspace",
+                    content="<workspace>static</workspace>",
+                    metadata={"cache_class": "static"},
+                ),
+                InstructionFragment(
+                    kind="runtime_environment",
+                    title="Environment",
+                    content="<environment>dynamic</environment>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            current_user_request="continue",
+        ),
+        tools=(_tool("read_file"),),
+        cache_policy_capability=ProviderCachePolicyCapability(
+            prompt_cache_key_enabled=False,
+            cache_control_enabled=True,
+            provider_family="qwen",
+            cache_strategy="cache_control",
+        ),
+    )
+
+    assert shape.provider_request_policy is not None
+    assert shape.provider_request_policy.cache_control_breakpoints == (
+        "system_static",
+        "dynamic_boundary",
+        "long_context_1",
+        "long_context_2",
+    )
+    assert shape.provider_runtime_items[0].blocks[0].metadata[
+        "qwen_cache_control_breakpoint"
+    ] == "system_static"
+
+
 def test_request_shape_builder_reports_responses_projection_contract(
     tmp_path: Path,
 ) -> None:

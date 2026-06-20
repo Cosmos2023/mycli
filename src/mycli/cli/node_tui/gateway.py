@@ -53,7 +53,9 @@ COMMAND_OVERLAYS = {
     "/status usage",
     "/status context",
     "/status stats",
+    "/sandbox",
     "/tools permissions",
+    "/permissions",
     "/changes",
     "/session list",
     "/session maintenance",
@@ -975,7 +977,13 @@ class NodeTuiGateway:
         mutated_model = command == "/model" or command.startswith("/model ")
         if mutated_model:
             self._emit_event("status.changed", self._status_payload())
-        mutated_mode = command == "/plan" or command == "/mode" or command.startswith("/mode ")
+        mutated_mode = (
+            command == "/plan"
+            or command == "/mode"
+            or command.startswith("/mode ")
+            or command == "/sandbox"
+            or command.startswith("/sandbox ")
+        )
         if mutated_mode:
             self._emit_event("status.changed", self._status_payload())
         result: dict[str, object] = {

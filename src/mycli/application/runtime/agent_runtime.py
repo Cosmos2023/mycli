@@ -391,6 +391,7 @@ class AgentRuntime:
             denied_read_globs=config.sandbox_denied_read_globs,
             execpolicy_rules=self._execpolicy_rules,
             collaboration_mode=config.collaboration_mode,
+            sandbox_mode=config.sandbox_mode,
             shell_environment_policy=config.shell_environment_policy,
         )
         self._planning_effects = RuntimePlanningEffects(
@@ -465,6 +466,7 @@ class AgentRuntime:
             child_loop=self._sub_agent_child_loop,
             memory_dir=self._memory_service.file_memory_dir(),
             trace_service=self._trace_service,
+            automatic_interval_turns=config.memory_extraction_interval_turns,
         )
         self._memory_dream_service = MemoryDreamService(
             child_loop=self._sub_agent_child_loop,
@@ -1301,6 +1303,12 @@ class AgentRuntime:
         }
         if usage is not None:
             payload["provider_usage"] = dict(usage)
+            usage_scope = usage.get("usage_scope")
+            if isinstance(usage_scope, str) and usage_scope:
+                payload["usage_scope"] = usage_scope
+            child_session_id = usage.get("child_session_id")
+            if isinstance(child_session_id, str) and child_session_id:
+                payload["child_session_id"] = child_session_id
         return payload
 
     @staticmethod
@@ -1356,7 +1364,24 @@ class AgentRuntime:
         direct = cls._usage_int(usage, "cache_write_tokens")
         if direct > 0:
             return direct
-        return cls._usage_int(usage, "prompt_cache_creation_tokens")
+        direct = cls._usage_int(usage, "prompt_cache_creation_tokens")
+        if direct > 0:
+            return direct
+        if usage is None:
+            return 0
+        for detail_key in ("input_tokens_details", "prompt_tokens_details"):
+            details = usage.get(detail_key)
+            if not isinstance(details, dict):
+                continue
+            direct = cls._usage_int(details, "cache_creation_input_tokens")
+            if direct > 0:
+                return direct
+            cache_creation = details.get("cache_creation")
+            if isinstance(cache_creation, dict):
+                direct = cls._usage_int(cache_creation, "ephemeral_5m_input_tokens")
+                if direct > 0:
+                    return direct
+        return 0
 
     def _restore_provider_input_budget_metric(self, session_id: str) -> None:
         for rollout in reversed(self._session_service.load_turn_rollouts(session_id)):
@@ -2022,6 +2047,7 @@ class AgentRuntime:
             denied_read_roots=config.sandbox_denied_read_roots,
             denied_read_globs=config.sandbox_denied_read_globs,
             collaboration_mode=config.collaboration_mode,
+            sandbox_mode=config.sandbox_mode,
             shell_environment_policy=config.shell_environment_policy,
         )
         self._request_pipeline.set_config(config)

@@ -6,12 +6,14 @@ from typing import Mapping, cast
 from uuid import uuid4
 
 from mycli.config.auth_store import AuthStore
+from mycli.config.toml_format import flatten_user_config_payload
 from mycli.domain.providers import ProviderId, parse_protocol, parse_provider
 from mycli.domain.runtime import (
     AgentConfig,
     CollaborationMode,
     ProviderCachePolicyCapability,
     ReasoningEffort,
+    SandboxMode,
     ShellEnvironmentInheritMode,
     ShellEnvironmentPolicy,
     ViewMode,
@@ -38,7 +40,7 @@ def _read_toml(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     with path.open("rb") as handle:
-        return tomllib.load(handle)
+        return flatten_user_config_payload(tomllib.load(handle))
 
 
 def _validate_reasoning_effort(reasoning_effort: str) -> ReasoningEffort:
@@ -169,6 +171,17 @@ def _parse_collaboration_mode(value: object) -> CollaborationMode:
         allowed = ", ".join(item.value for item in CollaborationMode)
         raise ValueError(
             f"Unsupported collaboration_mode '{raw}'. Supported values: {allowed}."
+        ) from exc
+
+
+def _parse_sandbox_mode(value: object) -> SandboxMode:
+    raw = str(value or SandboxMode.WORKSPACE_WRITE.value).strip().lower()
+    try:
+        return SandboxMode(raw)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in SandboxMode)
+        raise ValueError(
+            f"Unsupported sandbox_mode '{raw}'. Supported values: {allowed}."
         ) from exc
 
 
@@ -464,6 +477,13 @@ def resolve_config(
         or legacy_user_config.get("collaboration_mode")
         or CollaborationMode.DEFAULT.value
     )
+    sandbox_mode_value = (
+        env.get("MYCLI_SANDBOX_MODE")
+        or user_config.get("sandbox_mode")
+        or project_config.get("sandbox_mode")
+        or legacy_user_config.get("sandbox_mode")
+        or SandboxMode.WORKSPACE_WRITE.value
+    )
     statusline_enabled_raw: object | None = env.get("MYCLI_STATUSLINE_ENABLED")
     if statusline_enabled_raw is None:
         statusline_enabled_raw = _config_value_no_env(
@@ -514,6 +534,13 @@ def resolve_config(
             config_key="memory_enabled",
         )
     memory_enabled_value = _parse_optional_bool(memory_enabled_raw)
+    memory_extraction_interval_turns_value = (
+        env.get("MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS")
+        or user_config.get("memory_extraction_interval_turns")
+        or project_config.get("memory_extraction_interval_turns")
+        or legacy_user_config.get("memory_extraction_interval_turns")
+        or 5
+    )
     compression_threshold_tokens_value = (
         env.get("MYCLI_COMPRESSION_THRESHOLD_TOKENS")
         or user_config.get("compression_threshold_tokens")
@@ -692,6 +719,12 @@ def resolve_config(
         config_key="sandbox_denied_read_globs",
     )
 
+    memory_extraction_interval_turns = int(str(memory_extraction_interval_turns_value))
+    if memory_extraction_interval_turns < -1:
+        memory_extraction_interval_turns = -1
+    elif memory_extraction_interval_turns == 0:
+        memory_extraction_interval_turns = 1
+
     return AgentConfig(
         workspace_root=cwd,
         provider=provider,
@@ -713,6 +746,7 @@ def resolve_config(
         heartbeat_interval_seconds=float(str(heartbeat_interval_seconds_value)),
         view_mode=_parse_view_mode(view_mode_value),
         collaboration_mode=_parse_collaboration_mode(collaboration_mode_value),
+        sandbox_mode=_parse_sandbox_mode(sandbox_mode_value),
         statusline_enabled=True
         if statusline_enabled_value is None
         else statusline_enabled_value,
@@ -721,6 +755,7 @@ def resolve_config(
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,
         memory_enabled=True if memory_enabled_value is None else memory_enabled_value,
+        memory_extraction_interval_turns=memory_extraction_interval_turns,
         compression_threshold_tokens=int(str(compression_threshold_tokens_value)),
         compaction_l4_trigger_ratio=float(str(compaction_l4_trigger_ratio_value)),
         compaction_l4_buffer_tokens=int(str(compaction_l4_buffer_tokens_value)),

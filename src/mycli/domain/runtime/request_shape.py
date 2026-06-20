@@ -183,6 +183,7 @@ class ProviderRequestPolicyShape:
 
     lane: ProviderProjectionLane
     prompt_cache_key: str | None = None
+    cache_control_breakpoints: tuple[str, ...] = ()
     anthropic_cache_control_breakpoints: tuple[str, ...] = ()
     wire_only_hints: tuple[str, ...] = ()
     wire_hint_state: str = "disabled_by_policy"
@@ -203,7 +204,7 @@ class ProviderRequestPolicyShape:
         lane: ProviderProjectionLane,
         capability: ProviderCachePolicyCapability | None = None,
     ) -> ProviderRequestPolicyShape:
-        capability = capability or ProviderCachePolicyCapability()
+        capability = capability or ProviderCachePolicyCapability(provider_family=provider)
         prompt_cache_key = cls._prompt_cache_key(
             provider=provider,
             protocol=protocol,
@@ -213,15 +214,20 @@ class ProviderRequestPolicyShape:
             cacheable_prefix_hash=cacheable_prefix_hash,
             lane=lane,
         ) if capability.prompt_cache_key_enabled else None
-        breakpoints = (
-            cls._anthropic_breakpoints(lane)
+        cache_control_breakpoints = (
+            cls._cache_control_breakpoints(lane, provider_family=capability.provider_family)
             if capability.cache_control_enabled
+            else ()
+        )
+        anthropic_breakpoints = (
+            cache_control_breakpoints
+            if capability.provider_family == "anthropic"
             else ()
         )
         wire_only_hints: list[str] = []
         if prompt_cache_key is not None:
             wire_only_hints.append("prompt_cache_key")
-        if breakpoints:
+        if cache_control_breakpoints:
             wire_only_hints.append("cache_control")
         if wire_only_hints:
             wire_hint_state = "enabled_and_emitted"
@@ -235,7 +241,8 @@ class ProviderRequestPolicyShape:
         return cls(
             lane=lane,
             prompt_cache_key=prompt_cache_key,
-            anthropic_cache_control_breakpoints=breakpoints,
+            cache_control_breakpoints=cache_control_breakpoints,
+            anthropic_cache_control_breakpoints=anthropic_breakpoints,
             wire_only_hints=tuple(wire_only_hints),
             wire_hint_state=wire_hint_state,
             provider_family=capability.provider_family,
@@ -276,10 +283,19 @@ class ProviderRequestPolicyShape:
         return f"mycli:{provider}:{protocol}:{key_material}"
 
     @staticmethod
-    def _anthropic_breakpoints(
+    def _cache_control_breakpoints(
         lane: ProviderProjectionLane,
+        *,
+        provider_family: str,
     ) -> tuple[str, ...]:
-        if lane is ProviderProjectionLane.ANTHROPIC_MESSAGES:
+        if lane is ProviderProjectionLane.ANTHROPIC_MESSAGES or (
+            provider_family == "qwen"
+            and lane
+            in {
+                ProviderProjectionLane.CHAT_COMPLETIONS,
+                ProviderProjectionLane.RESPONSES,
+            }
+        ):
             return (
                 "system_static",
                 "dynamic_boundary",
@@ -298,7 +314,7 @@ class ProviderRequestPolicyShape:
 
     @property
     def wire_cache_hint_enabled(self) -> bool:
-        return bool(self.prompt_cache_key or self.anthropic_cache_control_breakpoints)
+        return bool(self.prompt_cache_key or self.cache_control_breakpoints)
 
     @property
     def prompt_cache_key_hash(self) -> str | None:
@@ -322,6 +338,8 @@ class ProviderRequestPolicyShape:
             "wire_cache_hint_enabled": self.wire_cache_hint_enabled,
             "prompt_cache_key_hash": self.prompt_cache_key_hash,
             "prompt_cache_key_preview": self.prompt_cache_key_preview,
+            "cache_control_breakpoints": self.cache_control_breakpoints,
+            "cache_control_breakpoint_count": len(self.cache_control_breakpoints),
             "anthropic_cache_control_breakpoints": self.anthropic_cache_control_breakpoints,
             "anthropic_cache_control_breakpoint_count": len(
                 self.anthropic_cache_control_breakpoints

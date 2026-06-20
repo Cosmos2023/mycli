@@ -8,6 +8,7 @@ from mycli.domain.runtime import (
     CollaborationMode,
     ExecPolicyRuleSet,
     ExecutionPolicy,
+    SandboxMode,
     SandboxProfile,
     ShellEnvironmentPolicy,
     ShellExecutionOptions,
@@ -39,6 +40,7 @@ class RuntimePolicyGate:
         denied_read_globs: tuple[str, ...] = (),
         execpolicy_rules: ExecPolicyRuleSet | None = None,
         collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
+        sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._approval_service = approval_service
@@ -48,23 +50,30 @@ class RuntimePolicyGate:
         self._denied_read_globs = tuple(denied_read_globs)
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
         self._collaboration_mode = collaboration_mode
+        self._sandbox_mode = sandbox_mode
         self._shell_environment_policy = shell_environment_policy
 
     def default_policy(self) -> ExecutionPolicy:
         root = self._workspace_root or Path.cwd()
-        policy = ExecutionPolicy.for_workspace(root)
+        policy = ExecutionPolicy.for_workspace(root, sandbox_mode=self._sandbox_mode)
+        writable_roots = (
+            tuple(
+                dict.fromkeys(
+                    (
+                        *policy.sandbox.writable_roots,
+                        *self._writable_roots,
+                    )
+                )
+            )
+            if policy.sandbox.filesystem != "read_only"
+            else ()
+        )
         return ExecutionPolicy(
             sandbox=SandboxProfile(
                 workspace_roots=policy.sandbox.workspace_roots,
                 cwd=policy.sandbox.cwd,
-                writable_roots=tuple(
-                    dict.fromkeys(
-                        (
-                            *policy.sandbox.writable_roots,
-                            *self._writable_roots,
-                        )
-                    )
-                ),
+                mode=policy.sandbox.mode,
+                writable_roots=writable_roots,
                 denied_read_roots=tuple(
                     dict.fromkeys(
                         (
@@ -100,6 +109,7 @@ class RuntimePolicyGate:
         denied_read_roots: tuple[Path, ...] = (),
         denied_read_globs: tuple[str, ...] = (),
         collaboration_mode: CollaborationMode | None = None,
+        sandbox_mode: SandboxMode | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._workspace_root = workspace_root
@@ -109,6 +119,8 @@ class RuntimePolicyGate:
         self._execpolicy_rules = execpolicy_rules
         if collaboration_mode is not None:
             self._collaboration_mode = collaboration_mode
+        if sandbox_mode is not None:
+            self._sandbox_mode = sandbox_mode
         self._shell_environment_policy = shell_environment_policy
 
     def decide(

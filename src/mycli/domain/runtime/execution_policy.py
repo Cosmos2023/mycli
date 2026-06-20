@@ -38,6 +38,42 @@ SAFE_SHELL_ENV_KEYS = (
 DEFAULT_SHELL_ENV_EXCLUDES = ("*KEY*", "*SECRET*", "*TOKEN*")
 
 
+class SandboxMode(StrEnum):
+    READ_ONLY = "read-only"
+    WORKSPACE_WRITE = "workspace-write"
+    DANGER_FULL_ACCESS = "danger-full-access"
+
+
+@dataclass(slots=True, frozen=True)
+class SandboxModePolicy:
+    filesystem: FilesystemPolicy
+    network: NetworkPolicy
+    shell: ShellPolicy
+    workspace_writable: bool
+
+
+SANDBOX_MODE_POLICIES: Mapping[SandboxMode, SandboxModePolicy] = {
+    SandboxMode.READ_ONLY: SandboxModePolicy(
+        filesystem="read_only",
+        network="disabled",
+        shell="restricted",
+        workspace_writable=False,
+    ),
+    SandboxMode.WORKSPACE_WRITE: SandboxModePolicy(
+        filesystem="workspace_write",
+        network="disabled",
+        shell="restricted",
+        workspace_writable=True,
+    ),
+    SandboxMode.DANGER_FULL_ACCESS: SandboxModePolicy(
+        filesystem="unrestricted",
+        network="enabled",
+        shell="enabled",
+        workspace_writable=True,
+    ),
+}
+
+
 @dataclass(slots=True, frozen=True)
 class ShellEnvironmentPolicy:
     inherit: ShellEnvironmentInheritMode = "core"
@@ -90,6 +126,7 @@ class SandboxProfile:
     filesystem: FilesystemPolicy = "workspace_write"
     network: NetworkPolicy = "disabled"
     shell: ShellPolicy = "restricted"
+    mode: SandboxMode = SandboxMode.WORKSPACE_WRITE
 
     def to_trace_payload(self) -> dict[str, object]:
         return {
@@ -97,6 +134,7 @@ class SandboxProfile:
             "writable_roots": len(self.writable_roots),
             "denied_read_roots": len(self.denied_read_roots),
             "denied_read_globs": len(self.denied_read_globs),
+            "sandbox_mode": self.mode.value,
             "filesystem": self.filesystem,
             "network": self.network,
             "shell": self.shell,
@@ -112,14 +150,24 @@ class ExecutionPolicy:
     tool_policy: str = "tool_exposure"
 
     @classmethod
-    def for_workspace(cls, workspace_root: Path) -> "ExecutionPolicy":
+    def for_workspace(
+        cls,
+        workspace_root: Path,
+        *,
+        sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
+    ) -> "ExecutionPolicy":
         resolved = workspace_root.resolve()
+        mode_policy = SANDBOX_MODE_POLICIES[sandbox_mode]
         return cls(
             sandbox=SandboxProfile(
                 workspace_roots=(resolved,),
                 cwd=resolved,
-                writable_roots=(resolved,),
+                mode=sandbox_mode,
+                writable_roots=(resolved,) if mode_policy.workspace_writable else (),
                 denied_read_globs=DEFAULT_DENIED_READ_GLOBS,
+                filesystem=mode_policy.filesystem,
+                network=mode_policy.network,
+                shell=mode_policy.shell,
             )
         )
 

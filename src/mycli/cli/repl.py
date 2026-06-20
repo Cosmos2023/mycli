@@ -16,9 +16,11 @@ def handle_slash_command(command: str) -> str:
                 "/memory [list|path|search|add|forget]",
                 "/plan",
                 "/mode [default|plan]",
+                "/sandbox [read-only|workspace-write|danger-full-access|next]",
                 "/status [usage|context|stats]",
                 "/session [show|list|resume|fork|search|maintenance]",
                 "/tools [list|sets|permissions|hooks|extensions|plugins|skills]",
+                "/permissions [allow <command-pattern>|revoke <command-pattern>|clear]",
                 "/agents [list|inspect <profile_id>|runs [child_session_id]|kill]",
                 "/tasks [agents [child_session_id]|agents kill <child_session_id>|bashes|kill-agents]",
                 "/changes [undo]",
@@ -46,6 +48,16 @@ def build_command_handler(
             return [f"[tool] {line}" for line in service.inspect_tools()]
         if command == "/tools permissions":
             return [f"[permission] {line}" for line in service.inspect_permissions()]
+        if command == "/permissions":
+            return [f"[permission] {line}" for line in service.inspect_permissions()]
+        if command.startswith("/permissions allow "):
+            pattern = command.removeprefix("/permissions allow ").strip()
+            return [f"[permission] {line}" for line in service.add_permission_allowance(pattern)]
+        if command.startswith("/permissions revoke "):
+            pattern = command.removeprefix("/permissions revoke ").strip()
+            return [f"[permission] {line}" for line in service.remove_permission_allowance(pattern)]
+        if command == "/permissions clear":
+            return [f"[permission] {line}" for line in service.clear_permission_allowances()]
         if command == "/tools hooks":
             return [f"[hook] {line}" for line in service.inspect_hooks()]
         if command == "/tools sets":
@@ -92,6 +104,11 @@ def build_command_handler(
             if len(parts) == 1:
                 return [f"[mode] {line}" for line in service.inspect_mode()]
             return [f"[mode] {line}" for line in service.set_collaboration_mode(parts[1])]
+        if command == "/sandbox" or command.startswith("/sandbox "):
+            parts = command.split(maxsplit=1)
+            if len(parts) == 1:
+                return [f"[sandbox] {line}" for line in service.inspect_sandbox()]
+            return [f"[sandbox] {line}" for line in service.set_sandbox_mode(parts[1])]
         if command in {"/tasks kill-agents", "/agents kill"}:
             return [f"[subagent] {line}" for line in service.cancel_background_subagents()]
         if command.startswith("/tasks agents kill "):
@@ -205,7 +222,6 @@ def canonical_slash_command(command: str) -> str:
         "/session-maintenance --apply-empty": "/session maintenance --apply-empty",
         "/session-maintenance --apply-orphans": "/session maintenance --apply-orphans",
         "/session-maintenance --apply-vacuum": "/session maintenance --apply-vacuum",
-        "/permissions": "/tools permissions",
         "/hooks": "/tools hooks",
         "/toolsets": "/tools sets",
         "/extensions": "/tools extensions",

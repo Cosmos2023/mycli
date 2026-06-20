@@ -342,6 +342,24 @@ class SessionService:
             payload=payload,
         )
 
+    def remove_command_allowance(self, session_id: str, command_pattern: str) -> bool:
+        payload = list(self.load_command_allowances(session_id))
+        if command_pattern not in payload:
+            return False
+        payload.remove(command_pattern)
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_ALLOWLIST,
+            payload=payload,
+        )
+        return True
+
+    def clear_command_allowances(self, session_id: str) -> int:
+        payload = list(self.load_command_allowances(session_id))
+        self._store.delete_state(session_id, self._KEY_ALLOWLIST)
+        return len(payload)
+
     def save_plan_state(self, session_id: str, plan_state: PlanState) -> None:
         self._save_state(
             session_id=session_id,

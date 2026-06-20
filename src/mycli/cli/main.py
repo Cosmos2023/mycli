@@ -544,6 +544,9 @@ def handle_evaluation_command(
     eval_env["MYCLI_MAX_PROMPT_TOKENS"] = str(root_config.max_prompt_tokens)
     eval_env["MYCLI_MAX_OUTPUT_TOKENS"] = str(root_config.max_output_tokens)
     eval_env["MYCLI_COMPRESSION_THRESHOLD_TOKENS"] = str(root_config.compression_threshold_tokens)
+    eval_env["MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS"] = str(
+        root_config.memory_extraction_interval_turns
+    )
     eval_env["MYCLI_RECENT_MESSAGE_COUNT"] = str(root_config.recent_message_count)
     eval_session_id = (
         f"eval-{scenario.id}-{datetime.now(tz=UTC).strftime('%Y%m%dT%H%M%SZ')}"

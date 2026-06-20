@@ -173,6 +173,12 @@ class RequestShapeBuilder:
             metadata = dict(message.metadata)
             if index == 0:
                 metadata["provider_request_policy"] = policy_payload
+            self._mark_qwen_cache_control_message_metadata(
+                metadata,
+                role=message.role,
+                attached=attached,
+                policy=policy,
+            )
             attached.append(
                 ProviderMessageShape(
                     role=message.role,
@@ -196,6 +202,24 @@ class RequestShapeBuilder:
             metadata = dict(item.metadata)
             if index == 0:
                 metadata["provider_request_policy"] = policy_payload
+            qwen_breakpoint = self._qwen_cache_control_breakpoint(
+                metadata,
+                role=item.role,
+                attached_cache_breakpoints=tuple(
+                    str(existing.metadata.get("qwen_cache_control_breakpoint"))
+                    for existing in attached
+                    if existing.metadata.get("qwen_cache_control_breakpoint")
+                ),
+                policy=policy,
+            )
+            if qwen_breakpoint:
+                metadata["qwen_cache_control_breakpoint"] = qwen_breakpoint
+                blocks = self._mark_qwen_cache_control_blocks(
+                    item.blocks,
+                    breakpoint=qwen_breakpoint,
+                )
+            else:
+                blocks = item.blocks
             if (
                 policy.lane is ProviderProjectionLane.ANTHROPIC_MESSAGES
                 and "system_static" in policy.anthropic_cache_control_breakpoints
@@ -217,11 +241,85 @@ class RequestShapeBuilder:
             attached.append(
                 ProviderRuntimeItemShape(
                     role=item.role,
-                    blocks=item.blocks,
+                    blocks=blocks,
                     metadata=metadata,
                 )
             )
         return tuple(attached)
+
+    def _mark_qwen_cache_control_message_metadata(
+        self,
+        metadata: dict[str, Any],
+        *,
+        role: str,
+        attached: list[ProviderMessageShape],
+        policy: ProviderRequestPolicyShape,
+    ) -> None:
+        breakpoint = self._qwen_cache_control_breakpoint(
+            metadata,
+            role=role,
+            attached_cache_breakpoints=tuple(
+                str(existing.metadata.get("qwen_cache_control_breakpoint"))
+                for existing in attached
+                if existing.metadata.get("qwen_cache_control_breakpoint")
+            ),
+            policy=policy,
+        )
+        if breakpoint:
+            metadata["qwen_cache_control_breakpoint"] = breakpoint
+
+    def _qwen_cache_control_breakpoint(
+        self,
+        metadata: dict[str, Any],
+        *,
+        role: str,
+        attached_cache_breakpoints: tuple[str, ...],
+        policy: ProviderRequestPolicyShape,
+    ) -> str | None:
+        if policy.provider_family != "qwen":
+            return None
+        if policy.cache_strategy != "cache_control":
+            return None
+        breakpoints = policy.cache_control_breakpoints
+        if "system_static" in breakpoints and not attached_cache_breakpoints and role in {
+            "system",
+            "developer",
+        }:
+            return "system_static"
+        if (
+            "dynamic_boundary" in breakpoints
+            and metadata.get("cache_class") == "dynamic"
+            and "dynamic_boundary" not in attached_cache_breakpoints
+        ):
+            return "dynamic_boundary"
+        return None
+
+    def _mark_qwen_cache_control_blocks(
+        self,
+        blocks: tuple[RuntimeBlock, ...],
+        *,
+        breakpoint: str,
+    ) -> tuple[RuntimeBlock, ...]:
+        marked: list[RuntimeBlock] = []
+        for block in blocks:
+            if block.type != "text":
+                marked.append(block)
+                continue
+            metadata = dict(block.metadata)
+            metadata["qwen_cache_control_breakpoint"] = breakpoint
+            marked.append(
+                RuntimeBlock(
+                    type=block.type,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_arguments=block.tool_arguments,
+                    call_id=block.call_id,
+                    provider_id=block.provider_id,
+                    source=block.source,
+                    metadata=metadata,
+                )
+            )
+        return tuple(marked)
 
     def _provider_messages(
         self,

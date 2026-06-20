@@ -41,17 +41,26 @@ def test_run_setup_wizard_writes_provider_profile_defaults(monkeypatch, tmp_path
     )
 
     config_path = tmp_path / ".mycli" / "config.toml"
+    config_text = config_path.read_text(encoding="utf-8")
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert result.config_path == config_path
     assert result.provider is ProviderId.DEEPSEEK
     assert result.model == "deepseek-v4-flash"
     assert result.api_base_url == "https://api.deepseek.com"
     assert payload == {
-        "provider": "deepseek",
-        "protocol": "chat_completions",
-        "model": "deepseek-v4-flash",
-        "api_base_url": "https://api.deepseek.com",
+        "model": {
+            "provider": "deepseek",
+            "protocol": "chat_completions",
+            "name": "deepseek-v4-flash",
+            "api_base_url": "https://api.deepseek.com",
+        },
+        "request": {
+            "cache_control_enabled": False,
+            "prompt_cache_key_enabled": False,
+        },
     }
+    assert config_text.startswith("[model]\n")
+    assert "\n[request]\n" in config_text
     assert AuthStore.from_home(tmp_path).get_api_key("deepseek") == "sk-test"
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
     assert any("Saved configuration" in line for line in outputs)
@@ -103,18 +112,96 @@ def test_run_setup_wizard_preserves_existing_config_tables_and_lists(
     )
 
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert payload["provider"] == "openai"
-    assert payload["api_base_url"] == "https://api.openai.com/v1"
-    assert payload["model"] == 'gpt-"quoted"'
+    assert payload["model"]["provider"] == "openai"
+    assert payload["model"]["api_base_url"] == "https://api.openai.com/v1"
+    assert payload["model"]["name"] == 'gpt-"quoted"'
     assert "api_key" not in payload
     assert AuthStore.from_home(tmp_path).get_api_key("openai") == 'sk-"quoted"'
-    assert payload["statusline_enabled"] is True
+    assert payload["tui"]["statusline_enabled"] is True
     assert payload["allowed_tools"] == ["Read", "Grep"]
     assert payload["mcp_servers"]["filesystem"] == {
         "command": "mcp-server-filesystem",
         "args": ["--root", "."],
         "enabled": True,
     }
+
+
+def test_run_setup_wizard_rewrites_config_with_grouped_qwen_cache_defaults(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".mycli" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                'provider = "deepseek"',
+                'protocol = "chat_completions"',
+                'model = "deepseek-v4-flash"',
+                'api_base_url = "https://api.deepseek.com"',
+                "memory_enabled = true",
+                "memory_extraction_interval_turns = -1",
+                "cache_control_enabled = false",
+                "prompt_cache_key_enabled = false",
+                "",
+                "[compaction_l4_trigger_ratios_by_model]",
+                "deepseek-v4-flash = 0.9",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    inputs = iter(["1", "qwen", "", "qwen3.6-plus"])
+    monkeypatch.setattr(
+        setup_wizard,
+        "prepare_user_ripgrep",
+        lambda **_kwargs: RipgrepPrepareResult(path=tmp_path / "rg", installed=False),
+    )
+
+    run_setup_wizard(
+        home_dir=tmp_path,
+        input_func=lambda _prompt: next(inputs),
+        secret_input_func=lambda _prompt: "sk-qwen",
+        output_func=lambda _line: None,
+    )
+
+    text = config_path.read_text(encoding="utf-8")
+    payload = tomllib.loads(text)
+    assert payload["model"]["provider"] == "qwen"
+    assert payload["model"]["protocol"] == "chat_completions"
+    assert payload["request"]["cache_control_enabled"] is True
+    assert payload["request"]["prompt_cache_key_enabled"] is False
+    assert payload["memory"]["extraction_interval_turns"] == -1
+    assert payload["compaction_l4_trigger_ratios_by_model"] == {
+        "deepseek-v4-flash": 0.9
+    }
+    assert text.index("[model]") < text.index("[request]")
+    assert text.index("[request]") < text.index("[memory]")
+    assert "\n[compaction_l4_trigger_ratios_by_model]\n" in text
+
+
+def test_run_setup_wizard_handles_interrupted_ripgrep_prepare(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    inputs = iter(["1", "deepseek", "", "deepseek-v4-flash"])
+    outputs: list[str] = []
+
+    def interrupted_prepare_user_ripgrep(**_kwargs: object) -> RipgrepPrepareResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(setup_wizard, "prepare_user_ripgrep", interrupted_prepare_user_ripgrep)
+
+    result = run_setup_wizard(
+        home_dir=tmp_path,
+        input_func=lambda _prompt: next(inputs),
+        secret_input_func=lambda _prompt: "sk-test",
+        output_func=outputs.append,
+    )
+
+    assert result.config_path.exists()
+    assert AuthStore.from_home(tmp_path).get_api_key("deepseek") == "sk-test"
+    assert any("Ripgrep preparation interrupted" in line for line in outputs)
 
 
 def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(
@@ -139,7 +226,7 @@ def test_run_setup_wizard_reprompts_invalid_provider_and_empty_secret(
 
     payload = tomllib.loads(result.config_path.read_text(encoding="utf-8"))
     assert result.provider is ProviderId.COMPATIBLE
-    assert payload["provider"] == "compatible"
+    assert payload["model"]["provider"] == "compatible"
     assert AuthStore.from_home(tmp_path).get_api_key("compatible") == "sk-compatible"
     assert any("Unsupported authentication method" in line for line in outputs)
     assert any("Unsupported provider" in line for line in outputs)

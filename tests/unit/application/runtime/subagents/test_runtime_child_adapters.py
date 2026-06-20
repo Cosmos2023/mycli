@@ -55,6 +55,7 @@ def test_runtime_child_tool_executor_uses_child_exposure_only() -> None:
 class FakeRequester:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.results: list[ModelTurnResult] = []
 
     def request_model_turn(
         self,
@@ -72,26 +73,31 @@ class FakeRequester:
                 "stream_sink": stream_sink,
             }
         )
-        return (
-            ModelTurnResult(
-                items=(
-                    RuntimeItem(
-                        role="assistant",
-                        blocks=(
-                            RuntimeBlock(type="text", text="checking"),
-                            RuntimeBlock(
-                                type="tool_call",
-                                tool_name="Read",
-                                tool_arguments={"path": "README.md"},
-                                call_id="call_1",
-                            ),
+        result = ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(
+                        RuntimeBlock(type="text", text="checking"),
+                        RuntimeBlock(
+                            type="tool_call",
+                            tool_name="Read",
+                            tool_arguments={"path": "README.md"},
+                            call_id="call_1",
                         ),
                     ),
                 ),
-                done=False,
             ),
-            (),
+            done=False,
+            metadata={
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                }
+            },
         )
+        self.results.append(result)
+        return result, ()
 
 
 def test_runtime_child_turn_requester_projects_model_result() -> None:
@@ -133,3 +139,47 @@ def test_runtime_child_turn_requester_projects_model_result() -> None:
         ),
     )
     assert requester.calls[0]["stream_sink"] is None
+
+
+def test_runtime_child_turn_requester_marks_usage_internal() -> None:
+    requester = FakeRequester()
+    child_requester = RuntimeChildTurnRequester(
+        requester=requester,
+        tool_exposure_builder=lambda names: ToolExposure(entries=()),
+        tool_renderer=lambda exposure: [],
+    )
+    result = ModelTurnResult(
+        items=(
+            RuntimeItem(
+                role="assistant",
+                blocks=(RuntimeBlock(type="text", text="done"),),
+            ),
+        ),
+        done=True,
+        metadata={
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 10,
+            }
+        },
+    )
+
+    marked = child_requester._mark_internal_usage(
+        result,
+        child_session_id="demo:memory:turn_1:abcd1234",
+    )
+
+    assert marked.metadata["usage_scope"] == "internal"
+    assert marked.metadata["child_session_id"] == "demo:memory:turn_1:abcd1234"
+    assert marked.metadata["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "usage_scope": "internal",
+        "child_session_id": "demo:memory:turn_1:abcd1234",
+    }
+    assert result.metadata == {
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 10,
+        }
+    }

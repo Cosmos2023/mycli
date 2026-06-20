@@ -149,19 +149,28 @@ class RuntimeContextBuilder:
         )
 
     def _runtime_environment_contract(self) -> RuntimeEnvironmentContract:
-        policy = ExecutionPolicy.for_workspace(self._config.workspace_root)
+        policy = ExecutionPolicy.for_workspace(
+            self._config.workspace_root,
+            sandbox_mode=self._config.sandbox_mode,
+        )
+        writable_roots = (
+            tuple(
+                dict.fromkeys(
+                    (
+                        *policy.sandbox.writable_roots,
+                        *self._writable_roots,
+                    )
+                )
+            )
+            if policy.sandbox.filesystem != "read_only"
+            else ()
+        )
         policy = ExecutionPolicy(
             sandbox=SandboxProfile(
                 workspace_roots=policy.sandbox.workspace_roots,
                 cwd=policy.sandbox.cwd,
-                writable_roots=tuple(
-                    dict.fromkeys(
-                        (
-                            *policy.sandbox.writable_roots,
-                            *self._writable_roots,
-                        )
-                    )
-                ),
+                mode=policy.sandbox.mode,
+                writable_roots=writable_roots,
                 denied_read_roots=tuple(
                     dict.fromkeys(
                         (

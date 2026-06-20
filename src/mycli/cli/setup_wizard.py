@@ -13,6 +13,7 @@ import tomllib
 
 from mycli.config.auth_store import AuthStore
 from mycli.config.settings import default_user_config_path
+from mycli.config.toml_format import format_user_config_toml
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.cli.node_tui.process import NodeTuiProcessError, build_node_setup_command, check_node_version, node_tui_child_env
 from mycli.infrastructure.providers import profile_for_provider
@@ -218,6 +219,9 @@ def _prepare_ripgrep(*, home_dir: Path, output_func: OutputFunc) -> None:
         result = prepare_user_ripgrep(
             dest_root=home_dir / ".mycli" / "vendor" / "ripgrep",
         )
+    except KeyboardInterrupt:
+        output_func("Ripgrep preparation interrupted; setup changes were saved.")
+        return
     except Exception as exc:
         output_func(f"Could not prepare ripgrep: {exc}")
         return
@@ -322,6 +326,7 @@ def _write_user_config(
 ) -> None:
     existing = _read_toml(path)
     existing.pop("api_key", None)
+    cache_capability = profile_for_provider(provider).cache_policy_capability
     payload = {
         **existing,
         "provider": provider.value,
@@ -329,8 +334,11 @@ def _write_user_config(
         "model": model,
         "api_base_url": api_base_url.rstrip("/"),
     }
+    if cache_capability is not None:
+        payload["prompt_cache_key_enabled"] = cache_capability.prompt_cache_key_enabled
+        payload["cache_control_enabled"] = cache_capability.cache_control_enabled
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_format_toml(payload), encoding="utf-8")
+    path.write_text(format_user_config_toml(payload), encoding="utf-8")
     path.chmod(0o600)
 
 
@@ -339,68 +347,6 @@ def _read_toml(path: Path) -> dict[str, object]:
         return {}
     with path.open("rb") as handle:
         return tomllib.load(handle)
-
-
-def _format_toml(payload: dict[str, object]) -> str:
-    preferred_order = ("provider", "protocol", "model", "api_base_url")
-    lines: list[str] = []
-    emitted: set[str] = set()
-    for key in preferred_order:
-        if key in payload and not isinstance(payload[key], dict):
-            lines.append(_format_toml_item(key, payload[key]))
-            emitted.add(key)
-    for key in sorted(payload):
-        if key in emitted:
-            continue
-        value = payload[key]
-        if not isinstance(value, dict):
-            lines.append(_format_toml_item(key, value))
-            emitted.add(key)
-    for key in sorted(payload):
-        if key in emitted:
-            continue
-        value = payload[key]
-        if isinstance(value, dict):
-            lines.extend(_format_toml_table((key,), value))
-    return "\n".join(lines) + "\n"
-
-
-def _format_toml_item(key: str, value: object) -> str:
-    return f"{key} = {_format_toml_value(value)}"
-
-
-def _format_toml_value(value: object) -> str:
-    if isinstance(value, bool):
-        return str(value).lower()
-    if isinstance(value, int | float):
-        return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_format_toml_value(item) for item in value) + "]"
-    return f'"{_escape_toml_string(str(value))}"'
-
-
-def _format_toml_table(path: tuple[str, ...], payload: dict[str, object]) -> list[str]:
-    scalar_lines: list[str] = []
-    nested_tables: list[tuple[str, dict[str, object]]] = []
-    for key in sorted(payload):
-        value = payload[key]
-        if isinstance(value, dict):
-            nested_tables.append((key, value))
-        else:
-            scalar_lines.append(_format_toml_item(key, value))
-
-    lines: list[str] = []
-    if scalar_lines:
-        lines.append("")
-        lines.append(f"[{'.'.join(path)}]")
-        lines.extend(scalar_lines)
-    for key, value in nested_tables:
-        lines.extend(_format_toml_table((*path, key), value))
-    return lines
-
-
-def _escape_toml_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 __all__ = [

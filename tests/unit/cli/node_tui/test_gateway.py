@@ -618,16 +618,17 @@ def test_gateway_settings_load_and_save_persist_shell_settings(tmp_path: Path) -
     }
     assert (home / ".mycli" / "config.toml").read_text(encoding="utf-8") == "\n".join(
         [
+            "[tui]",
             'view_mode = "focus"',
             "statusline_enabled = true",
-            'tui_statusbar_mode = "compact"',
-            'tui_theme = "light"',
-            "tui_hide_thinking = false",
-            "tui_clear_on_shrink = false",
-            "tui_hardware_cursor = true",
-            'tui_subagent_density = "detailed"',
-            "tui_terminal_progress = false",
-            'tui_tool_details_default = "expanded"',
+            'statusbar_mode = "compact"',
+            'theme = "light"',
+            "hide_thinking = false",
+            "clear_on_shrink = false",
+            "hardware_cursor = true",
+            'subagent_density = "detailed"',
+            "terminal_progress = false",
+            'tool_details_default = "expanded"',
             "",
         ]
     )

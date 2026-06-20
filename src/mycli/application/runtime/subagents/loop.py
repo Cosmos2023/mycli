@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Protocol
 
@@ -111,7 +111,6 @@ class RuntimeChildTurnRequester:
         tool_names: tuple[str, ...],
         child_session_id: str,
     ) -> ChildTurn:
-        del child_session_id
         exposure = self.tool_exposure_builder(tool_names)
         runtime_items = self._runtime_items(messages)
         legacy_messages = self._legacy_messages(messages)
@@ -129,7 +128,25 @@ class RuntimeChildTurnRequester:
                     legacy_messages=legacy_messages,
                     tools=tools,
                 )
+        turn_result = self._mark_internal_usage(turn_result, child_session_id=child_session_id)
         return self._project_turn(turn_result)
+
+    def _mark_internal_usage(
+        self,
+        turn_result: ModelTurnResult,
+        *,
+        child_session_id: str,
+    ) -> ModelTurnResult:
+        metadata = dict(turn_result.metadata)
+        usage = metadata.get("usage")
+        if isinstance(usage, dict):
+            scoped_usage = dict(usage)
+            scoped_usage["usage_scope"] = "internal"
+            scoped_usage["child_session_id"] = child_session_id
+            metadata["usage"] = scoped_usage
+        metadata["usage_scope"] = "internal"
+        metadata["child_session_id"] = child_session_id
+        return replace(turn_result, metadata=metadata)
 
     def _runtime_items(self, messages: list[dict[str, object]]) -> list[RuntimeItem]:
         items: list[RuntimeItem] = []

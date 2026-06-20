@@ -102,6 +102,120 @@ def test_resolve_config_prefers_home_mycli_config_over_workspace_config(
     assert config.api_key == "sk-auth-store"
 
 
+def test_resolve_config_reads_sectioned_user_config(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (home_dir / ".mycli").mkdir()
+    (home_dir / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "[model]",
+                'provider = "qwen"',
+                'protocol = "chat_completions"',
+                'name = "qwen3.6-plus"',
+                'api_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"',
+                "",
+                "[request]",
+                "max_prompt_tokens = 64000",
+                "cache_control_enabled = true",
+                "prompt_cache_key_enabled = false",
+                "",
+                "[memory]",
+                "enabled = true",
+                "extraction_interval_turns = -1",
+                "",
+                "[context]",
+                "recent_message_count = 9",
+                "",
+                "[tui]",
+                'view_mode = "focus"',
+                "statusline_enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("qwen", "sk-auth-store")
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.QWEN
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
+    assert config.model == "qwen3.6-plus"
+    assert config.api_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.api_key == "sk-auth-store"
+    assert config.max_prompt_tokens == 64_000
+    assert config.memory_enabled is True
+    assert config.memory_extraction_interval_turns == -1
+    assert config.recent_message_count == 9
+    assert config.view_mode is ViewMode.FOCUS
+    assert config.statusline_enabled is False
+    assert config.cache_policy_capability == ProviderCachePolicyCapability(
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=True,
+        provider_family="qwen",
+        cache_strategy="cache_control",
+    )
+
+
+def test_resolve_config_loads_memory_extraction_interval(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "memory_extraction_interval_turns = 8\n",
+        encoding="utf-8",
+    )
+
+    config = resolve_config(cli_args={}, env={}, cwd=workspace, home=home_dir)
+
+    assert config.memory_extraction_interval_turns == 8
+
+
+def test_resolve_config_clamps_memory_extraction_interval_to_one(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={},
+        env={"MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS": "0"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.memory_extraction_interval_turns == 1
+
+
+def test_resolve_config_allows_disabling_memory_extraction_interval(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={},
+        env={"MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS": "-1"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.memory_extraction_interval_turns == -1
+
+
 def test_resolve_config_loads_shell_environment_policy(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
@@ -167,6 +281,27 @@ def test_resolve_config_loads_sandbox_profile_paths(tmp_path: Path) -> None:
     assert config.sandbox_writable_roots == ((workspace / "build-cache").resolve(),)
     assert config.sandbox_denied_read_roots == ((workspace / ".secrets").resolve(),)
     assert config.sandbox_denied_read_globs == ("**/*.pem",)
+
+
+def test_resolve_config_loads_sandbox_mode(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        'sandbox_mode = "read-only"',
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.sandbox_mode.value == "read-only"
 
 
 def test_resolve_config_merges_user_and_project_sandbox_profile(
@@ -1039,7 +1174,7 @@ def test_resolve_config_disables_ignored_cache_control_for_deepseek_anthropic_en
     )
 
 
-def test_resolve_config_infers_qwen_provider_and_defaults_to_responses(
+def test_resolve_config_infers_qwen_provider_and_defaults_to_chat_completions(
     tmp_path: Path,
 ) -> None:
     home_dir = tmp_path / "home"
@@ -1058,7 +1193,7 @@ def test_resolve_config_infers_qwen_provider_and_defaults_to_responses(
     )
 
     assert config.provider is ProviderId.QWEN
-    assert config.protocol is ProtocolId.RESPONSES
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
     assert config.model == "qwen3.6-plus"
     assert config.api_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
@@ -1082,7 +1217,7 @@ def test_resolve_config_uses_qwen_defaults_for_explicit_provider(
     )
 
     assert config.provider is ProviderId.QWEN
-    assert config.protocol is ProtocolId.RESPONSES
+    assert config.protocol is ProtocolId.CHAT_COMPLETIONS
     assert config.model == "qwen3.6-plus"
     assert config.api_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
 

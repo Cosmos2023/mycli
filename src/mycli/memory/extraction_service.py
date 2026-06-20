@@ -59,6 +59,7 @@ class MemoryExtractionService:
         trace_service: SupportsTraceAppend | None = None,
         executor: ThreadPoolExecutor | None = None,
         max_workers: int = 1,
+        automatic_interval_turns: int = 5,
     ) -> None:
         self._memory_service = memory_service
         self._child_loop = child_loop
@@ -71,6 +72,8 @@ class MemoryExtractionService:
         self._owns_executor = executor is None
         self._lock = Lock()
         self._in_progress = False
+        self._automatic_interval_turns = automatic_interval_turns
+        self._turns_since_automatic = 0
 
     def maybe_start_background_extraction(
         self,
@@ -79,11 +82,27 @@ class MemoryExtractionService:
         if self._has_memory_write(request.turn_items):
             self._trace(request, result="skipped_direct_write")
             return ("memory_extract_skipped:direct_write",)
+        if self._automatic_interval_turns < 0:
+            self._trace(request, result="skipped_disabled")
+            return ("memory_extract_skipped:disabled",)
+        explicit = extract_explicit_memory_request(request.user_message) is not None
         with self._lock:
+            if not explicit:
+                self._turns_since_automatic += 1
+                if self._turns_since_automatic < self._automatic_interval_turns:
+                    self._trace(
+                        request,
+                        result="skipped_interval",
+                        turns_since_automatic=self._turns_since_automatic,
+                        interval_turns=self._automatic_interval_turns,
+                    )
+                    return ("memory_extract_skipped:interval",)
             if self._in_progress:
                 self._trace(request, result="skipped_in_progress")
                 return ("memory_extract_skipped:in_progress",)
             self._in_progress = True
+            if not explicit:
+                self._turns_since_automatic = 0
         self._executor.submit(self._run_background, request)
         self._trace(request, result="started")
         return ("memory_extract_started",)
@@ -208,6 +227,8 @@ class MemoryExtractionService:
         child_session_id: str | None = None,
         updates: tuple[str, ...] = (),
         error_kind: str | None = None,
+        turns_since_automatic: int | None = None,
+        interval_turns: int | None = None,
     ) -> None:
         if self._trace_service is None:
             return
@@ -223,6 +244,10 @@ class MemoryExtractionService:
             payload["child_session_id"] = child_session_id
         if error_kind:
             payload["error_kind"] = error_kind
+        if turns_since_automatic is not None:
+            payload["turns_since_automatic"] = turns_since_automatic
+        if interval_turns is not None:
+            payload["interval_turns"] = interval_turns
         self._trace_service.append(
             request.session_id,
             RuntimeTraceEvent(

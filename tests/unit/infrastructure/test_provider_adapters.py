@@ -68,10 +68,10 @@ def test_provider_profiles_declare_safe_cache_policy_capabilities() -> None:
         cache_strategy="prompt_cache_key",
     )
     assert QWEN_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
-        prompt_cache_key_enabled=True,
-        cache_control_enabled=False,
+        prompt_cache_key_enabled=False,
+        cache_control_enabled=True,
         provider_family="qwen",
-        cache_strategy="prompt_cache_key",
+        cache_strategy="cache_control",
     )
     assert DEEPSEEK_PROFILE.cache_policy_capability == ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,
@@ -362,4 +362,46 @@ def test_openai_chat_provider_adapter_strips_nested_provider_private_fields() ->
                 }
             ],
         }
+    ]
+
+
+def test_qwen_adapter_emits_cache_control_content_blocks() -> None:
+    adapter = QwenChatProviderAdapter()
+
+    adapted = adapter.adapt_messages(
+        [
+            {
+                "role": "system",
+                "content": "Stable system prompt.",
+                "metadata": {
+                    "provider_request_policy": {
+                        "cache_control_breakpoints": ("system_static",),
+                    },
+                    "qwen_cache_control_breakpoint": "system_static",
+                },
+            },
+            {
+                "role": "user",
+                "content": "Current request.",
+                "metadata": {
+                    "provider_request_policy": {
+                        "cache_control_breakpoints": ("system_static",),
+                    }
+                },
+            },
+        ]
+    )
+
+    assert adapted == [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Stable system prompt.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        },
+        {"role": "user", "content": "Current request."},
     ]

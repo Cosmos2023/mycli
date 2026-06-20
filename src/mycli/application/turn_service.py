@@ -20,6 +20,10 @@ from mycli.domain.runtime import (
     RuntimeTraceEvent,
     RuntimeInterruptToken,
     RuntimeStreamEvent,
+    SandboxMode,
+    SessionCommandAllowance,
+    ExecutionPolicy,
+    SandboxProfile,
     TurnItemType,
     TurnResponse,
     ViewMode,
@@ -80,6 +84,12 @@ def _callable_accepts_keyword(callable_obj: Callable[..., object], keyword: str)
         parameter.kind is inspect.Parameter.VAR_KEYWORD or name == keyword
         for name, parameter in signature.parameters.items()
     )
+
+
+def _next_sandbox_mode(current: SandboxMode) -> SandboxMode:
+    modes = tuple(SandboxMode)
+    index = modes.index(current)
+    return modes[(index + 1) % len(modes)]
 
 
 class TurnService:
@@ -362,6 +372,7 @@ class TurnService:
 
     def inspect_permissions(self) -> tuple[str, ...]:
         lines: list[str] = []
+        lines.extend(self.inspect_sandbox())
         load_allowances = getattr(self._session_service, "load_command_allowances", None)
         allowances = tuple(load_allowances(self._config.session_id)) if callable(load_allowances) else ()
         if allowances:
@@ -383,6 +394,32 @@ class TurnService:
         else:
             lines.append("execpolicy_rules=0")
         return tuple(lines)
+
+    def add_permission_allowance(self, pattern: str) -> tuple[str, ...]:
+        normalized = pattern.strip()
+        if not normalized:
+            return ("usage: /permissions allow <command-pattern>",)
+        self._session_service.add_command_allowance(
+            self._config.session_id,
+            SessionCommandAllowance(command_pattern=normalized),
+        )
+        return (f"allow_session pattern={normalized}",)
+
+    def remove_permission_allowance(self, pattern: str) -> tuple[str, ...]:
+        normalized = pattern.strip()
+        if not normalized:
+            return ("usage: /permissions revoke <command-pattern>",)
+        removed = self._session_service.remove_command_allowance(
+            self._config.session_id,
+            normalized,
+        )
+        if removed:
+            return (f"removed_allow_session pattern={normalized}",)
+        return (f"allow_session_not_found pattern={normalized}",)
+
+    def clear_permission_allowances(self) -> tuple[str, ...]:
+        count = self._session_service.clear_command_allowances(self._config.session_id)
+        return (f"cleared_session_allowances={count}",)
 
     def inspect_hooks(self) -> tuple[str, ...]:
         inspect = getattr(self._runtime, "inspect_hooks", None)
@@ -841,6 +878,76 @@ class TurnService:
     def inspect_mode(self) -> tuple[str, ...]:
         return (f"collaboration_mode={self._config.collaboration_mode.value}",)
 
+    def inspect_sandbox(self) -> tuple[str, ...]:
+        policy = self._runtime_policy()
+        sandbox = policy.sandbox
+        return (
+            f"sandbox_mode={sandbox.mode.value}",
+            f"filesystem={sandbox.filesystem} network={sandbox.network} shell={sandbox.shell}",
+            f"writable_roots={len(sandbox.writable_roots)} denied_read_roots={len(sandbox.denied_read_roots)} denied_read_globs={len(sandbox.denied_read_globs)}",
+        )
+
+    def set_sandbox_mode(self, mode: str) -> tuple[str, ...]:
+        raw = mode.strip().lower()
+        if raw == "next":
+            sandbox_mode = _next_sandbox_mode(self._config.sandbox_mode)
+        else:
+            try:
+                sandbox_mode = SandboxMode(raw)
+            except ValueError:
+                allowed = ", ".join(item.value for item in SandboxMode)
+                return (f"unsupported sandbox_mode={mode}; allowed={allowed}",)
+        self._config = replace(self._config, sandbox_mode=sandbox_mode)
+        if self._runtime is not None:
+            self._runtime.rebind_session(self._config)
+        return self.inspect_sandbox()
+
+    def _runtime_policy(self) -> ExecutionPolicy:
+        policy_gate = getattr(self._runtime, "_runtime_policy_gate", None)
+        default_policy = getattr(policy_gate, "default_policy", None)
+        if callable(default_policy):
+            return default_policy()
+        policy = ExecutionPolicy.for_workspace(
+            self._config.workspace_root,
+            sandbox_mode=self._config.sandbox_mode,
+        )
+        writable_roots = (
+            tuple(
+                dict.fromkeys(
+                    (
+                        *policy.sandbox.writable_roots,
+                        *self._config.sandbox_writable_roots,
+                    )
+                )
+            )
+            if policy.sandbox.filesystem != "read_only"
+            else ()
+        )
+        return ExecutionPolicy(
+            sandbox=SandboxProfile(
+                workspace_roots=policy.sandbox.workspace_roots,
+                cwd=policy.sandbox.cwd,
+                mode=policy.sandbox.mode,
+                writable_roots=writable_roots,
+                denied_read_roots=self._config.sandbox_denied_read_roots,
+                denied_read_globs=tuple(
+                    dict.fromkeys(
+                        (
+                            *policy.sandbox.denied_read_globs,
+                            *self._config.sandbox_denied_read_globs,
+                        )
+                    )
+                ),
+                filesystem=policy.sandbox.filesystem,
+                network=policy.sandbox.network,
+                shell=policy.sandbox.shell,
+            ),
+            approval_policy=policy.approval_policy,
+            command_policy=policy.command_policy,
+            file_policy=policy.file_policy,
+            tool_policy=policy.tool_policy,
+        )
+
     def set_collaboration_mode(self, mode: str) -> tuple[str, ...]:
         try:
             collaboration_mode = CollaborationMode(mode.strip().lower())
@@ -914,6 +1021,8 @@ class TurnService:
                 metadata = payload.get("metadata")
                 if not isinstance(metadata, dict):
                     continue
+                if self._is_internal_usage_metadata(metadata):
+                    continue
                 rollout_has_usage = True
                 latest_usage_metadata = metadata
                 input_tokens += self._int_metric(metadata.get("input_tokens"))
@@ -958,9 +1067,13 @@ class TurnService:
                 if payload.get("type") != TurnItemType.MODEL_USAGE.value:
                     continue
                 metadata = payload.get("metadata")
-                if isinstance(metadata, dict):
+                if isinstance(metadata, dict) and not self._is_internal_usage_metadata(metadata):
                     return metadata
         return None
+
+    @staticmethod
+    def _is_internal_usage_metadata(metadata: dict[str, object]) -> bool:
+        return metadata.get("usage_scope") == "internal"
 
     def _context_window_metrics_from_usage_metadata(
         self,

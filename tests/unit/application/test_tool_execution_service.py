@@ -24,6 +24,7 @@ from mycli.domain.runtime import (
     PlanState,
     RuntimeStreamEvent,
     RuntimeInterruptToken,
+    SandboxMode,
     SandboxProfile,
     TurnItemType,
 )
@@ -598,6 +599,7 @@ def test_runtime_policy_gate_workspace_write_outside_workspace_requires_approval
         "writable_roots": 1,
         "denied_read_roots": 0,
         "denied_read_globs": 2,
+        "sandbox_mode": "workspace-write",
         "filesystem": "workspace_write",
         "network": "disabled",
         "shell": "restricted",
@@ -675,6 +677,23 @@ def test_runtime_policy_gate_default_policy_uses_configured_denied_reads(
     assert root_decision.reason_code == "denied_read_root"
     assert glob_decision.kind.value == "denied"
     assert glob_decision.reason_code == "denied_read_glob"
+
+
+def test_runtime_policy_gate_read_only_ignores_configured_writable_roots(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        writable_roots=(tmp_path / "scratch",),
+        sandbox_mode=SandboxMode.READ_ONLY,
+    )
+
+    policy = gate.default_policy()
+
+    assert policy.sandbox.mode == SandboxMode.READ_ONLY
+    assert policy.sandbox.filesystem == "read_only"
+    assert policy.sandbox.writable_roots == ()
 
 
 def test_runtime_policy_gate_denied_read_root_matches_workspace_relative_path(

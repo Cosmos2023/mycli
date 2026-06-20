@@ -8,6 +8,7 @@ from mycli.domain.runtime import (
     ExecPolicyRule,
     ExecPolicySource,
     ExecutionPolicy,
+    SandboxMode,
     SandboxProfile,
     ShellBackendProfile,
     ShellExecutionOptions,
@@ -61,15 +62,16 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
         "argument_keys": ["command", "timeout"],
         "approval_required": False,
         "reason_code": None,
-        "sandbox": {
-            "workspace_roots": 1,
-            "writable_roots": 2,
-            "denied_read_roots": 1,
-            "denied_read_globs": 1,
-            "filesystem": "workspace_write",
-            "network": "enabled",
-            "shell": "restricted",
-        },
+            "sandbox": {
+                "workspace_roots": 1,
+                "writable_roots": 2,
+                "denied_read_roots": 1,
+                "denied_read_globs": 1,
+                "sandbox_mode": "workspace-write",
+                "filesystem": "workspace_write",
+                "network": "enabled",
+                "shell": "restricted",
+            },
         "effect": {
             "filesystem": "unknown",
             "network": False,
@@ -89,6 +91,7 @@ def test_tool_runtime_decision_redacts_arguments_and_keeps_bounded_metadata() ->
 def test_execution_policy_default_sandbox_matches_codex_workspace_write() -> None:
     policy = ExecutionPolicy.for_workspace(Path("/repo"))
 
+    assert policy.sandbox.mode == SandboxMode.WORKSPACE_WRITE
     assert policy.sandbox.cwd == Path("/repo")
     assert policy.sandbox.workspace_roots == (Path("/repo"),)
     assert policy.sandbox.writable_roots == (Path("/repo"),)
@@ -97,6 +100,25 @@ def test_execution_policy_default_sandbox_matches_codex_workspace_write() -> Non
     assert policy.sandbox.filesystem == "workspace_write"
     assert policy.sandbox.network == "disabled"
     assert policy.sandbox.shell == "restricted"
+
+
+def test_execution_policy_builds_named_sandbox_modes() -> None:
+    read_only = ExecutionPolicy.for_workspace(Path("/repo"), sandbox_mode=SandboxMode.READ_ONLY)
+    unrestricted = ExecutionPolicy.for_workspace(
+        Path("/repo"),
+        sandbox_mode=SandboxMode.DANGER_FULL_ACCESS,
+    )
+
+    assert read_only.sandbox.mode == SandboxMode.READ_ONLY
+    assert read_only.sandbox.filesystem == "read_only"
+    assert read_only.sandbox.network == "disabled"
+    assert read_only.sandbox.shell == "restricted"
+    assert read_only.sandbox.writable_roots == ()
+    assert unrestricted.sandbox.mode == SandboxMode.DANGER_FULL_ACCESS
+    assert unrestricted.sandbox.filesystem == "unrestricted"
+    assert unrestricted.sandbox.network == "enabled"
+    assert unrestricted.sandbox.shell == "enabled"
+    assert unrestricted.sandbox.writable_roots == (Path("/repo"),)
 
 
 def test_shell_backend_profile_is_bounded_runtime_metadata() -> None:

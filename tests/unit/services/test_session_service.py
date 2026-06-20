@@ -1079,6 +1079,18 @@ def test_session_service_round_trips_allowlist(tmp_path: Path) -> None:
     assert service.is_command_allowed("demo", "git push") is True
     assert service.is_command_allowed("demo", "git reset --hard") is False
 
+    assert service.remove_command_allowance("demo", "git push") is True
+    assert service.is_command_allowed("demo", "git push") is False
+    assert service.remove_command_allowance("demo", "git push") is False
+
+    service.add_command_allowance("demo", allowance)
+    service.add_command_allowance(
+        "demo",
+        SessionCommandAllowance(command_pattern="npm test"),
+    )
+    assert service.clear_command_allowances("demo") == 2
+    assert service.load_command_allowances("demo") == ()
+
 
 def test_session_service_round_trips_suspended_turn(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")

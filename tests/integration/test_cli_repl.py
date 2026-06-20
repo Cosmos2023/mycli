@@ -8,7 +8,6 @@ from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
 )
 from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
-from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
 from mycli.infrastructure.providers.deepseek import DeepSeekChatProviderAdapter
 from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
 from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
@@ -337,7 +336,7 @@ def test_build_turn_service_uses_openai_chat_provider_adapter(
     )
 
 
-def test_build_turn_service_uses_responses_for_qwen(
+def test_build_turn_service_uses_chat_completions_for_qwen(
     tmp_path: Path,
 ) -> None:
     home_dir = tmp_path / "home"
@@ -356,9 +355,13 @@ def test_build_turn_service_uses_responses_for_qwen(
     )
 
     assert service._config.provider is ProviderId.QWEN
-    assert service._config.protocol is ProtocolId.RESPONSES
+    assert service._config.protocol is ProtocolId.CHAT_COMPLETIONS
     assert service._config.model == "qwen3.6-plus"
-    assert isinstance(service._runtime._model_adapter, ResponsesModelAdapter)
+    assert isinstance(service._runtime._model_adapter, NativeToolModelAdapter)
+    assert isinstance(
+        service._runtime._model_adapter._provider_adapter,
+        QwenChatProviderAdapter,
+    )
 
 
 def test_build_turn_service_uses_qwen_chat_provider_adapter(

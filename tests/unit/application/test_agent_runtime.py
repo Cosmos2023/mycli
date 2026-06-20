@@ -4047,6 +4047,19 @@ def test_agent_runtime_skips_automatic_memory_when_disabled(tmp_path: Path) -> N
     assert dream_service.requests == []
 
 
+def test_agent_runtime_throttles_automatic_memory_extraction(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+
+    response = runtime.handle_user_turn("continue")
+
+    assert "[memory] memory_extract_started" not in response.progress_updates
+    assert "[memory] memory_extract_skipped:interval" in response.progress_updates
+
+
 def test_agent_runtime_checks_memory_dream_after_successful_turn(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
@@ -4249,6 +4262,58 @@ def test_agent_runtime_records_provider_input_tokens_for_budget_curve(
     assert usage_item.metadata["cache_read_tokens"] == 0
     assert usage_item.metadata["cache_write_tokens"] == 0
     assert usage_item.metadata["source"] == "provider"
+
+
+def test_agent_runtime_provider_budget_payload_marks_internal_usage(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+
+    payload = runtime._provider_input_budget_payload(
+        usage={
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "total_tokens": 1100,
+            "usage_scope": "internal",
+            "child_session_id": "demo:memory:turn_1:abcd1234",
+        },
+        fallback_total_tokens=1200,
+        max_tokens=2000,
+    )
+
+    assert payload["usage_scope"] == "internal"
+    assert payload["child_session_id"] == "demo:memory:turn_1:abcd1234"
+
+
+def test_agent_runtime_counts_qwen_cache_creation_tokens(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+
+    payload = runtime._provider_input_budget_payload(
+        usage={
+            "prompt_tokens": 41000,
+            "completion_tokens": 100,
+            "total_tokens": 41100,
+            "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_creation_input_tokens": 40900,
+                "cache_creation": {"ephemeral_5m_input_tokens": 40900},
+            },
+        },
+        fallback_total_tokens=41000,
+        max_tokens=100000,
+    )
+
+    assert payload["cache_write_tokens"] == 40900
 
 
 def test_agent_runtime_falls_back_to_estimate_when_provider_omits_input_tokens(

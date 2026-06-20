@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,10 +129,13 @@ def test_setup_command_writes_user_config(monkeypatch, tmp_path: Path) -> None:
     assert exit_code == 0
     assert config_path.exists()
     config_text = config_path.read_text(encoding="utf-8")
-    assert 'provider = "deepseek"' in config_text
-    assert 'protocol = "chat_completions"' in config_text
-    assert 'model = "deepseek-v4-flash"' in config_text
-    assert 'api_base_url = "https://api.deepseek.com"' in config_text
+    payload = tomllib.loads(config_text)
+    assert payload["model"] == {
+        "provider": "deepseek",
+        "protocol": "chat_completions",
+        "name": "deepseek-v4-flash",
+        "api_base_url": "https://api.deepseek.com",
+    }
     assert "api_key" not in config_text
     assert AuthStore.from_home(home).get_api_key("deepseek") == "sk-test"
     assert any("Saved configuration" in line for line in outputs)
@@ -1533,6 +1537,26 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
                 return ("collaboration_mode=default",)
             return (f"unsupported collaboration_mode={mode}; allowed=default, plan",)
 
+        def inspect_sandbox(self) -> tuple[str, ...]:
+            return (
+                "sandbox_mode=workspace-write",
+                "filesystem=workspace_write network=disabled shell=restricted",
+            )
+
+        def set_sandbox_mode(self, mode: str) -> tuple[str, ...]:
+            if mode == "next":
+                return ("sandbox_mode=danger-full-access",)
+            return (f"sandbox_mode={mode}",)
+
+        def add_permission_allowance(self, pattern: str) -> tuple[str, ...]:
+            return (f"allow_session pattern={pattern}",)
+
+        def remove_permission_allowance(self, pattern: str) -> tuple[str, ...]:
+            return (f"removed_allow_session pattern={pattern}",)
+
+        def clear_permission_allowances(self) -> tuple[str, ...]:
+            return ("cleared_session_allowances=1",)
+
         def set_model_settings(
             self,
             *,
@@ -1732,6 +1756,22 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
     assert list(handler("/permissions")) == [
         "[permission] session_allowances=0",
         "[permission] execpolicy_rules=0",
+    ]
+    assert list(handler("/permissions allow git push")) == [
+        "[permission] allow_session pattern=git push",
+    ]
+    assert list(handler("/permissions revoke git push")) == [
+        "[permission] removed_allow_session pattern=git push",
+    ]
+    assert list(handler("/permissions clear")) == [
+        "[permission] cleared_session_allowances=1",
+    ]
+    assert list(handler("/sandbox")) == [
+        "[sandbox] sandbox_mode=workspace-write",
+        "[sandbox] filesystem=workspace_write network=disabled shell=restricted",
+    ]
+    assert list(handler("/sandbox next")) == [
+        "[sandbox] sandbox_mode=danger-full-access",
     ]
     assert list(handler("/hooks")) == [
         "[hook] pre_tool_use permission_guard enabled=true calls=0 errors=0",
@@ -2150,6 +2190,76 @@ def test_turn_service_inspect_usage_sums_model_usage_rollouts(tmp_path: Path) ->
         "cumulative_usage input_tokens=1000 output_tokens=200 total_tokens=1200 cache_read_tokens=300 cache_write_tokens=100",
         "estimated_cost=0.00145",
     )
+
+
+def test_turn_service_inspect_usage_excludes_internal_memory_usage(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+
+    main_usage = TurnItem(
+        type=TurnItemType.MODEL_USAGE,
+        metadata={
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "total_tokens": 1200,
+            "cache_read_tokens": 300,
+            "cache_write_tokens": 100,
+        },
+    )
+    internal_usage = TurnItem(
+        type=TurnItemType.MODEL_USAGE,
+        metadata={
+            "usage_scope": "internal",
+            "child_session_id": "demo:memory:turn_1:abcd1234",
+            "input_tokens": 9000,
+            "output_tokens": 900,
+            "total_tokens": 9900,
+            "cache_read_tokens": 8000,
+            "cache_write_tokens": 0,
+        },
+    )
+    service._session_service.append_turn_rollout(
+        "demo",
+        TurnRollout(
+            thread_id="demo",
+            turn_id="turn_1",
+            status=TurnStatus.COMPLETED,
+            started_at="2026-05-19T00:00:00Z",
+            completed_at="2026-05-19T00:00:01Z",
+            stop_reason=StopReason.ASSISTANT_COMPLETED,
+            events=(
+                TurnRolloutEvent(
+                    event_id="turn_1:trace:1",
+                    kind="turn_item",
+                    created_at="2026-05-19T00:00:01Z",
+                    payload=main_usage.to_dict(),
+                ),
+                TurnRolloutEvent(
+                    event_id="turn_1:trace:2",
+                    kind="turn_item",
+                    created_at="2026-05-19T00:00:02Z",
+                    payload=internal_usage.to_dict(),
+                ),
+            ),
+        ),
+    )
+
+    lines = service.inspect_usage()
+
+    assert (
+        "cumulative_usage input_tokens=1000 output_tokens=200 "
+        "total_tokens=1200 cache_read_tokens=300 cache_write_tokens=100"
+    ) in lines
 
 
 def test_turn_service_inspect_usage_reports_latest_context_window_separately(

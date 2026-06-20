@@ -6,6 +6,7 @@ from typing import Mapping
 import tomllib
 
 from mycli.config.settings import default_user_config_path
+from mycli.config.toml_format import flatten_user_config_payload, format_user_config_toml
 from mycli.domain.runtime import ViewMode
 
 STATUSBAR_MODES = ("off", "compact", "full")
@@ -55,6 +56,19 @@ def save_shell_settings(
     payload = _read_toml(path)
     current = _settings_from_payload(payload, runtime_config=runtime_config)
     settings = _settings_from_payload({**current.to_payload(), **dict(raw_settings)})
+    for key in (
+        "view_mode",
+        "statusline_enabled",
+        "tui_statusbar_mode",
+        "tui_theme",
+        "tui_hide_thinking",
+        "tui_tool_details_default",
+        "tui_hardware_cursor",
+        "tui_clear_on_shrink",
+        "tui_terminal_progress",
+        "tui_subagent_density",
+    ):
+        payload.pop(key, None)
     payload.update(
         {
             "view_mode": settings.view_mode,
@@ -70,7 +84,7 @@ def save_shell_settings(
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_format_toml(payload), encoding="utf-8")
+    path.write_text(format_user_config_toml(dict(payload)), encoding="utf-8")
     path.chmod(0o600)
     return settings
 
@@ -163,76 +177,4 @@ def _read_toml(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
-def _format_toml(payload: Mapping[str, object]) -> str:
-    preferred_order = (
-        "provider",
-        "protocol",
-        "model",
-        "api_base_url",
-        "view_mode",
-        "statusline_enabled",
-        "tui_statusbar_mode",
-        "tui_theme",
-        "tui_hide_thinking",
-    )
-    lines: list[str] = []
-    emitted: set[str] = set()
-    for key in preferred_order:
-        if key in payload and not isinstance(payload[key], dict):
-            lines.append(_format_toml_item(key, payload[key]))
-            emitted.add(key)
-    for key in sorted(payload):
-        if key in emitted:
-            continue
-        value = payload[key]
-        if not isinstance(value, dict):
-            lines.append(_format_toml_item(key, value))
-            emitted.add(key)
-    for key in sorted(payload):
-        if key in emitted:
-            continue
-        value = payload[key]
-        if isinstance(value, dict):
-            lines.extend(_format_toml_table((key,), value))
-    return "\n".join(lines) + "\n"
-
-
-def _format_toml_item(key: str, value: object) -> str:
-    return f"{key} = {_format_toml_value(value)}"
-
-
-def _format_toml_value(value: object) -> str:
-    if isinstance(value, bool):
-        return str(value).lower()
-    if isinstance(value, int | float):
-        return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_format_toml_value(item) for item in value) + "]"
-    return f'"{_escape_toml_string(str(value))}"'
-
-
-def _format_toml_table(path: tuple[str, ...], payload: Mapping[str, object]) -> list[str]:
-    scalar_lines: list[str] = []
-    nested_tables: list[tuple[str, Mapping[str, object]]] = []
-    for key in sorted(payload):
-        value = payload[key]
-        if isinstance(value, dict):
-            nested_tables.append((key, value))
-        else:
-            scalar_lines.append(_format_toml_item(key, value))
-
-    lines: list[str] = []
-    if scalar_lines:
-        lines.append("")
-        lines.append(f"[{'.'.join(path)}]")
-        lines.extend(scalar_lines)
-    for key, value in nested_tables:
-        lines.extend(_format_toml_table((*path, key), value))
-    return lines
-
-
-def _escape_toml_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+        return flatten_user_config_payload(tomllib.load(handle))
