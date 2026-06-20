@@ -126,6 +126,11 @@ from mycli.application.runtime.request import (
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
 )
+from mycli.prompts.system import (
+    SYSTEM_PROMPT_VERSION,
+    build_system_prompt,
+    system_prompt_hash,
+)
 from mycli.application.runtime.response_finalizer import RuntimeResponseFinalizer
 from mycli.application.runtime.runtime_error_logger import RuntimeErrorLogger
 from mycli.application.runtime.subagents.loop import (
@@ -766,7 +771,18 @@ class AgentRuntime:
             turn_id=turn_id,
             context=context,
             turn_context=turn_context,
+            base_instructions=self._instruction_snapshot_system_prompt(),
         )
+
+    def _instruction_snapshot_system_prompt(self) -> str:
+        system_prompt = build_system_prompt()
+        snapshot = self._session_service.load_or_create_instruction_snapshot(
+            self._config.session_id,
+            system_prompt=system_prompt,
+            template_hash=system_prompt_hash(system_prompt),
+            version=SYSTEM_PROMPT_VERSION,
+        )
+        return snapshot.system
 
     def _assemble_turn_context(
         self,

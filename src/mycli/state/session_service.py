@@ -10,6 +10,7 @@ from mycli.domain.runtime import (
     DecisionKind,
     HistoryItem,
     HistoryItemType,
+    InstructionSnapshot,
     InvokedSkillSnapshot,
     PendingApproval,
     PendingClarification,
@@ -51,6 +52,7 @@ class SessionService:
     _KEY_ALLOWLIST = "command_allowances"
     _KEY_CONTEXT_BASELINE = "context_baseline"
     _KEY_CONTRIBUTED_TOOL_STATE = "contributed_tool_state"
+    _KEY_INSTRUCTION_SNAPSHOT = "instruction_snapshot"
     _KEY_INVOKED_SKILLS = "invoked_skills"
     _KEY_PENDING_DECISION = "pending_decision"
     _KEY_PLAN_STATE = "plan_state"
@@ -259,6 +261,32 @@ class SessionService:
             continuation_state={} if continuation_state is None else continuation_state.to_dict(),
             invoked_skills=invoked_skills,
         )
+
+    def load_or_create_instruction_snapshot(
+        self,
+        session_id: str,
+        *,
+        system_prompt: str,
+        template_hash: str,
+        version: str = "2026-06-codex-style-v1",
+    ) -> InstructionSnapshot:
+        existing = self._load_state_object(session_id, self._KEY_INSTRUCTION_SNAPSHOT)
+        if existing is not None:
+            return InstructionSnapshot.from_dict(existing)
+
+        snapshot = InstructionSnapshot(
+            version=version,
+            system=system_prompt,
+            source="builtin-system-md",
+            hash=template_hash,
+        )
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_INSTRUCTION_SNAPSHOT,
+            payload=snapshot.to_dict(),
+        )
+        return snapshot
 
     def save_pending_decision(self, session_id: str, decision: PendingDecision) -> None:
         self._save_state(

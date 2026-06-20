@@ -65,6 +65,14 @@ def test_build_runtime_items_preserves_structured_tool_calls_and_outputs() -> No
     )
 
 
+def test_build_runtime_items_does_not_inject_legacy_react_scaffold() -> None:
+    items = build_runtime_items(
+        contract=InstructionContract(base_instructions="base")
+    )
+
+    assert [item.role for item in items] == ["system"]
+
+
 def test_build_legacy_messages_merges_runtime_block_metadata() -> None:
     contract = InstructionContract(
         base_instructions="base",
@@ -97,3 +105,13 @@ def test_build_legacy_messages_merges_runtime_block_metadata() -> None:
         "provider": {"id": "resp_1", "reasoning_id": "rs_1"},
         "stable": True,
     }
+
+
+def test_build_legacy_messages_does_not_inject_legacy_react_scaffold() -> None:
+    messages = build_legacy_messages(
+        contract=InstructionContract(base_instructions="base")
+    )
+
+    assert [(message.role, message.content) for message in messages] == [
+        ("system", "base")
+    ]

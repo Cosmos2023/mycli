@@ -83,6 +83,7 @@ from mycli.domain.runtime.instruction_contract import (
     InstructionContract as InstructionContract,
     InstructionFragment as InstructionFragment,
     InstructionFragmentKind as InstructionFragmentKind,
+    InstructionSnapshot as InstructionSnapshot,
 )
 from mycli.domain.runtime.interrupts import RuntimeInterruptToken as RuntimeInterruptToken
 from mycli.domain.runtime.execution_policy import (

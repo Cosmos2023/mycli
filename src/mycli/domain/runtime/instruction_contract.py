@@ -64,8 +64,34 @@ class InstructionContract:
         }
 
 
+@dataclass(slots=True, frozen=True)
+class InstructionSnapshot:
+    version: str
+    system: str
+    source: str
+    hash: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "system": self.system,
+            "source": self.source,
+            "hash": self.hash,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "InstructionSnapshot":
+        return cls(
+            version=str(payload.get("version") or "legacy"),
+            system=str(payload["system"]),
+            source=str(payload.get("source") or "session"),
+            hash=str(payload.get("hash") or ""),
+        )
+
+
 __all__ = [
     "InstructionContract",
     "InstructionFragment",
     "InstructionFragmentKind",
+    "InstructionSnapshot",
 ]

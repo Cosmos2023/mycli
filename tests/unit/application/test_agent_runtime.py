@@ -130,6 +130,46 @@ def test_agent_runtime_approval_resume_streams_tool_lifecycle_events(
     assert any(kind in lifecycle_kinds for kind in {"tool_complete", "tool_failed"})
 
 
+def test_agent_runtime_uses_existing_instruction_snapshot_for_contract(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+    runtime._session_service._save_state(
+        session_id=runtime._config.session_id,
+        thread_id=runtime._config.session_id,
+        state_key="instruction_snapshot",
+        payload={
+            "version": "legacy-v1",
+            "system": "Legacy frozen system prompt",
+            "react": "Legacy react prompt",
+            "source": "legacy-session",
+            "hash": "legacy-hash",
+        },
+    )
+    context = runtime._build_context(
+        user_message="continue",
+        conversation=Conversation(session_id=runtime._config.session_id),
+        plan_state=PlanState(),
+    )
+    turn_context = runtime._turn_context_assembler.assemble(
+        user_message="continue",
+        context=context,
+    )
+
+    contract = runtime._assemble_instruction_contract(
+        turn_id="turn_snapshot",
+        context=context,
+        turn_context=turn_context,
+    )
+
+    assert contract.base_instructions.startswith("Legacy frozen system prompt")
+    assert "Legacy react prompt" not in contract.base_instructions
+
+
 def test_agent_runtime_loads_project_execpolicy_rules_before_shell_execution(
     tmp_path: Path,
 ) -> None:

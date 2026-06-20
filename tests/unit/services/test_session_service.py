@@ -48,6 +48,53 @@ def test_session_service_persists_conversation(tmp_path: Path) -> None:
     assert loaded.messages[0].content == "hello"
 
 
+def test_session_service_creates_instruction_snapshot_once(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+
+    snapshot = service.load_or_create_instruction_snapshot(
+        "demo",
+        system_prompt="Current system prompt",
+        template_hash="hash-current",
+    )
+
+    assert snapshot.system == "Current system prompt"
+    assert snapshot.hash == "hash-current"
+
+    reused = service.load_or_create_instruction_snapshot(
+        "demo",
+        system_prompt="New system prompt",
+        template_hash="hash-new",
+    )
+
+    assert reused == snapshot
+
+
+def test_session_service_preserves_legacy_instruction_snapshot(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    service._save_state(
+        session_id="legacy",
+        thread_id="legacy",
+        state_key="instruction_snapshot",
+        payload={
+            "version": "legacy-v1",
+            "system": "Legacy system prompt",
+            "react": "Legacy react prompt",
+            "source": "legacy-session",
+            "hash": "legacy-hash",
+        },
+    )
+
+    snapshot = service.load_or_create_instruction_snapshot(
+        "legacy",
+        system_prompt="Current system prompt",
+        template_hash="hash-current",
+    )
+
+    assert snapshot.version == "legacy-v1"
+    assert snapshot.system == "Legacy system prompt"
+    assert snapshot.hash == "legacy-hash"
+
+
 def test_session_service_round_trips_conversation_tree_metadata(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path / "home")
     conversation = Conversation(
