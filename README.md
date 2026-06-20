@@ -60,19 +60,26 @@ uv run python scripts/prepare_ripgrep.py
 
 进入 TUI 后，也可以运行 `/login` 打开同样的认证方式选择、provider 选择和 `Login to <Provider>` API key 输入界面。
 
-也可以手动把用户级模型配置写到 `~/.mycli/config.toml`：
+也可以手动把用户级模型配置写到 `~/.mycli/config.toml`。新配置使用标准 TOML section；旧版顶层 key 仍会兼容读取，下一次 setup 或 TUI 设置保存时会被规范化：
 
 ```toml
+[model]
 provider = "openai"
 protocol = "responses"
-model = "gpt-5"
+name = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
 
+[request]
 max_prompt_tokens = 12000
 max_output_tokens = 2048
-thinking_enabled = true
-thinking_effort = "medium"
-memory_enabled = true
+
+[reasoning]
+enabled = true
+effort = "medium"
+
+[memory]
+enabled = true
+extraction_interval_turns = 5
 ```
 
 也可以使用环境变量：
@@ -164,6 +171,10 @@ TUI 中的工具展示默认偏紧凑：
 | `/tools skills` | 查看 skills |
 | `/plan` | 查看并进入 plan 协作模式 |
 | `/mode [default\|plan]` | 查看或切换协作模式 |
+| `/sandbox [next\|read-only\|workspace-write\|danger-full-access]` | 查看或切换当前 session sandbox |
+| `/permissions allow <command-pattern>` | 为当前 session 添加 shell 命令 allowlist |
+| `/permissions revoke <command-pattern>` | 移除当前 session 命令 allowlist |
+| `/permissions clear` | 清空当前 session 命令 allowlist |
 | `/memory` | 查看 memory 摘要 |
 | `/memory path` | 查看 file memory 目录 |
 | `/memory search <query>` | 搜索 file memory |
@@ -213,9 +224,10 @@ TUI 中的工具展示默认偏紧凑：
 ### OpenAI / compatible Responses
 
 ```toml
+[model]
 provider = "openai"
 protocol = "responses"
-model = "gpt-5"
+name = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
 ```
 
@@ -225,34 +237,43 @@ Use `codex` for OpenAI-compatible Responses gateways that support Codex/OpenAI
 Responses parameters such as `parallel_tool_calls`.
 
 ```toml
+[model]
 provider = "codex"
 protocol = "responses"
-model = "gpt-5.4"
+name = "gpt-5.4"
 api_base_url = "https://your-codex-compatible-gateway.example/v1"
 ```
 
 ### Qwen
 
 ```toml
+[model]
 provider = "qwen"
-protocol = "responses"
-model = "qwen3.6-plus"
+protocol = "chat_completions"
+name = "qwen3.6-plus"
 api_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[request]
+cache_control_enabled = true
+prompt_cache_key_enabled = false
 ```
 
-如果 `api_base_url` 包含 `dashscope.aliyuncs.com`，未显式配置 provider 时会自动推断为 `qwen`。
+如果 `api_base_url` 包含 `dashscope.aliyuncs.com`，未显式配置 provider 时会自动推断为 `qwen`。Qwen 默认走 OpenAI-compatible Chat Completions，并使用 DashScope 兼容的 cache-control 上下文缓存策略。
 
 ### DeepSeek
 
 DeepSeek 走 OpenAI-compatible chat completions：
 
 ```toml
+[model]
 provider = "deepseek"
 protocol = "chat_completions"
-model = "deepseek-v4-flash"
+name = "deepseek-v4-flash"
 api_base_url = "https://api.deepseek.com"
-thinking_enabled = true
-thinking_effort = "medium"
+
+[reasoning]
+enabled = true
+effort = "medium"
 ```
 
 DeepSeek 的 reasoning metadata 会进入 activity、trace、workspace log 和 session turn history，便于调试工具调用链路。
@@ -262,13 +283,18 @@ DeepSeek 的 reasoning metadata 会进入 activity、trace、workspace log 和 s
 Anthropic 使用原生 Messages API：
 
 ```toml
+[model]
 provider = "anthropic"
 protocol = "anthropic_messages"
-model = "claude-sonnet-4-6"
+name = "claude-sonnet-4-6"
 api_base_url = "https://api.anthropic.com"
+
+[request]
 max_output_tokens = 4096
-thinking_enabled = true
-thinking_effort = "medium"
+
+[reasoning]
+enabled = true
+effort = "medium"
 ```
 
 开启 thinking 时，`thinking_effort` 会映射到 Anthropic `budget_tokens`，并要求预算小于 `max_output_tokens`。当前映射：
@@ -291,10 +317,12 @@ thinking_effort = "medium"
 
 安全模型：
 
-- 低风险读取和搜索默认自动执行。
-- 常规 workspace 内编辑默认可执行。
+- sandbox 支持 `read-only`、`workspace-write`、`danger-full-access`，可通过 `/sandbox` 查看或切换。
+- 低风险读取和搜索默认自动执行；`read-only` 下 mutating tools 会被阻止。
+- `workspace-write` 下常规 workspace 内编辑默认可执行。
 - Shell、跨 workspace、策略命中或高风险操作会进入 approval。
 - approval 支持一次允许、拒绝、session allowlist。
+- `/permissions allow <pattern>` 可以为当前 session 放行匹配的 shell 命令。
 - plan mode 是只读模式，会阻止 mutating tools。
 
 File memory 目录会被加入允许根目录，因此 Agent 可以读写自己的 memory 文件；其他 workspace 外路径仍会被 filesystem runtime 拦截。
@@ -359,7 +387,15 @@ File memory 保存在：
 关闭 memory：
 
 ```toml
-memory_enabled = false
+[memory]
+enabled = false
+```
+
+完全关闭后台 memory extraction：
+
+```toml
+[memory]
+extraction_interval_turns = -1
 ```
 
 或：
@@ -398,6 +434,8 @@ SQLite session store 会保存：
 - per-session summaries
 
 旧 JSON session 文件 `~/.mycli/sessions/*.json` 已不再作为主运行时存储。
+
+SQLite 默认使用 WAL journal mode，因此运行中可能看到 `sessions.db-wal` 和 `sessions.db-shm`。这是 SQLite 的正常写入日志文件；checkpoint 后可能变小或保留为空文件，不需要手动删除。
 
 ## MCP、Skills 与 Plugins
 
