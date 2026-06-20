@@ -19,6 +19,7 @@ from mycli.llms.clients.openai_chat import (
     _build_openai_sdk_client,
     classify_chat_provider_failure,
 )
+from mycli.llms.clients.openai_sdk import build_openai_sdk_client
 from mycli.infrastructure.providers.deepseek import (
     DEEPSEEK_SYNTHETIC_REASONING_CONTENT,
     DeepSeekChatProviderAdapter,
@@ -976,6 +977,24 @@ def test_build_openai_sdk_client_uses_extended_timeout(monkeypatch) -> None:
 
     assert captured["timeout"] == DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS
     assert captured["max_retries"] == 0
+    assert captured["default_headers"] == {"User-Agent": "mycli/0.1.0"}
+
+
+def test_standalone_openai_sdk_client_uses_mycli_user_agent(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("mycli.llms.clients.openai_sdk.OpenAI", FakeOpenAI)
+
+    build_openai_sdk_client(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+    )
+
+    assert captured["default_headers"] == {"User-Agent": "mycli/0.1.0"}
 
 
 def test_openai_chat_client_logs_request_and_response_payloads(

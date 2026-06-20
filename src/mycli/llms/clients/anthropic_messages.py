@@ -16,6 +16,7 @@ from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.runtime import RuntimeBlock, RuntimeInterruptToken, StopReason
 from mycli.llms.clients.openai_chat import ModelResponseError, _close_stream
 from mycli.llms.clients.responses_errors import FailureClassification, classify_provider_failure
+from mycli.llms.clients.user_agent import model_request_headers
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.utils.workspace_logger import WorkspaceLogService
 
@@ -33,6 +34,7 @@ def _build_anthropic_sdk_client(*, api_key: str, base_url: str) -> Anthropic:
     return Anthropic(
         api_key=api_key,
         base_url=base_url,
+        default_headers=model_request_headers(),
         timeout=DEFAULT_ANTHROPIC_SDK_TIMEOUT_SECONDS,
         max_retries=0,
     )

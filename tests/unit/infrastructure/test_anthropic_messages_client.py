@@ -382,13 +382,23 @@ def test_anthropic_client_maps_status_errors(tmp_path: Path) -> None:
     assert list((tmp_path / "log" / "model-raw").glob("*/*-error.json"))
 
 
-def test_build_anthropic_sdk_client_uses_configured_base_url() -> None:
+def test_build_anthropic_sdk_client_uses_mycli_user_agent(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("mycli.llms.clients.anthropic_messages.Anthropic", FakeAnthropic)
+
     client = _build_anthropic_sdk_client(
         api_key="test-key",
         base_url="https://api.anthropic.com",
     )
 
-    assert isinstance(client, anthropic.Anthropic)
+    assert isinstance(client, FakeAnthropic)
+    assert captured["base_url"] == "https://api.anthropic.com"
+    assert captured["default_headers"] == {"User-Agent": "mycli/0.1.0"}
 
 
 def test_anthropic_client_accepts_sdk_payload_model_dump(tmp_path: Path) -> None:

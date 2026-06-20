@@ -35,6 +35,7 @@ from mycli.llms.clients.openai_sdk import (
     sdk_payload_to_dict as _sdk_payload_to_dict,
 )
 from mycli.llms.clients.responses_errors import FailureClassification, classify_provider_failure
+from mycli.llms.clients.user_agent import model_request_headers
 from mycli.utils.workspace_logger import WorkspaceLogService
 
 __all__ = [
@@ -146,6 +147,7 @@ def _build_openai_sdk_client(*, api_key: str, base_url: str) -> OpenAI:
     return OpenAI(
         api_key=api_key,
         base_url=base_url,
+        default_headers=model_request_headers(),
         timeout=DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
         max_retries=0,
     )
