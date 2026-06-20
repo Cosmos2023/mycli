@@ -5,7 +5,11 @@ from mycli.domain.runtime import (
     AgentConfig,
     ExecutionContext,
     InstructionContract,
+    ProviderMessageShape,
+    ProviderProjectionShape,
+    ProviderRuntimeItemShape,
     RequestShape,
+    RuntimeBlock,
     RuntimeItem,
     RuntimeTraceEvent,
     TurnContext,
@@ -13,8 +17,6 @@ from mycli.domain.runtime import (
 )
 from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
-from mycli.prompts.react import build_react_prompt
-from mycli.prompts.system import build_system_prompt
 from mycli.application.runtime.request.cache_shape_diagnostics import CacheShapeDiagnostics
 from mycli.application.runtime.request.cache_shape_diagnostics import RequestShapeDiagnostic
 from mycli.application.runtime.request.request_shape_builder import RequestShapeBuilder
@@ -47,6 +49,7 @@ class RequestPipeline:
         self._workspace_log_service = workspace_log_service
         self._cache_shape_diagnostics = CacheShapeDiagnostics()
         self._previous_request_shape: RequestShape | None = None
+        self._previous_contextual_section_hashes: dict[str, str] = {}
 
     def set_config(self, config: AgentConfig) -> None:
         self._config = config
@@ -63,20 +66,12 @@ class RequestPipeline:
         turn_id: str,
         context: ExecutionContext,
         turn_context: TurnContext,
+        base_instructions: str,
     ) -> InstructionContract:
         contract = self._instruction_contract_assembler.assemble(
             turn_context=turn_context,
-            base_instructions=build_system_prompt(),
+            base_instructions=base_instructions,
             conversation_messages=context.conversation_messages,
-        )
-        stable_action_guidance = build_react_prompt()
-        contract = InstructionContract(
-            base_instructions=f"{contract.base_instructions}\n\n{stable_action_guidance}",
-            developer_sections=contract.developer_sections,
-            contextual_user_sections=contract.contextual_user_sections,
-            conversation_messages=contract.conversation_messages,
-            current_user_request=contract.current_user_request,
-            assistant_scaffold=None,
         )
         self._trace_service.append(
             self._config.session_id,
@@ -172,6 +167,10 @@ class RequestPipeline:
             tools=tools,
             cache_policy_capability=cache_policy_capability,
         )
+        shape = self._apply_context_delta_projection(
+            shape=shape,
+            contract=contract,
+        )
         payload = shape.summary()
         self._trace_service.append(
             self._config.session_id,
@@ -231,7 +230,183 @@ class RequestPipeline:
             },
         )
         self._previous_request_shape = request_shape
+        self._previous_contextual_section_hashes = self._contextual_section_hashes(
+            request_shape
+        )
         return diagnostic
+
+    def _apply_context_delta_projection(
+        self,
+        *,
+        shape: RequestShape,
+        contract: InstructionContract,
+    ) -> RequestShape:
+        if not self._previous_contextual_section_hashes:
+            return shape
+        delta_context = self._delta_context_by_cache_class(contract)
+        if delta_context is None:
+            return shape
+        messages = self._replace_contextual_messages(
+            messages=shape.provider_messages,
+            delta_context=delta_context,
+        )
+        runtime_items = self._replace_contextual_runtime_items(
+            items=shape.provider_runtime_items,
+            delta_context=delta_context,
+        )
+        return RequestShape(
+            provider=shape.provider,
+            protocol=shape.protocol,
+            model=shape.model,
+            stable_system=shape.stable_system,
+            wire_instructions=shape.wire_instructions,
+            tool_schema_hash=shape.tool_schema_hash,
+            tool_order_hash=shape.tool_order_hash,
+            fragments=shape.fragments,
+            provider_messages=messages,
+            provider_runtime_items=runtime_items,
+            provider_projection=self._projection_with_counts(
+                shape=shape,
+                message_count=len(messages),
+                runtime_item_count=len(runtime_items),
+            ),
+            provider_request_policy=shape.provider_request_policy,
+        )
+
+    def _projection_with_counts(
+        self,
+        *,
+        shape: RequestShape,
+        message_count: int,
+        runtime_item_count: int,
+    ) -> ProviderProjectionShape | None:
+        projection = shape.provider_projection
+        if projection is None:
+            return None
+        return ProviderProjectionShape(
+            lane=projection.lane,
+            message_count=message_count,
+            runtime_item_count=runtime_item_count,
+            cacheable_prefix_fragment_count=projection.cacheable_prefix_fragment_count,
+            first_dynamic_fragment_index=projection.first_dynamic_fragment_index,
+            first_ephemeral_fragment_index=projection.first_ephemeral_fragment_index,
+            cache_hint=projection.cache_hint,
+            wire_only_hints=projection.wire_only_hints,
+        )
+
+    def _delta_context_by_cache_class(
+        self,
+        contract: InstructionContract,
+    ) -> dict[str, str] | None:
+        previous = self._previous_contextual_section_hashes
+        changed_sections = [
+            section
+            for section in contract.contextual_user_sections
+            if self._contextual_section_key(section) not in previous
+            or previous[self._contextual_section_key(section)]
+            != stable_hash(section.content.strip())
+        ]
+        if len(changed_sections) == len(contract.contextual_user_sections):
+            return None
+        delta: dict[str, list[str]] = {"static": [], "dynamic": [], "ephemeral": []}
+        for section in changed_sections:
+            content = section.content.strip()
+            if not content:
+                continue
+            delta.setdefault(self._cache_class(section), []).append(content)
+        return {
+            cache_class: "\n".join(parts)
+            for cache_class, parts in delta.items()
+            if parts
+        }
+
+    def _replace_contextual_messages(
+        self,
+        *,
+        messages: tuple[ProviderMessageShape, ...],
+        delta_context: dict[str, str],
+    ) -> tuple[ProviderMessageShape, ...]:
+        replaced: list[ProviderMessageShape] = []
+        for message in messages:
+            cache_class = self._context_message_cache_class(message)
+            if cache_class is None:
+                replaced.append(message)
+                continue
+            content = delta_context.get(cache_class, "")
+            if content:
+                replaced.append(
+                    ProviderMessageShape(
+                        role=message.role,
+                        content=content,
+                        metadata=message.metadata,
+                    )
+                )
+        return tuple(replaced)
+
+    def _replace_contextual_runtime_items(
+        self,
+        *,
+        items: tuple[ProviderRuntimeItemShape, ...],
+        delta_context: dict[str, str],
+    ) -> tuple[ProviderRuntimeItemShape, ...]:
+        replaced: list[ProviderRuntimeItemShape] = []
+        for item in items:
+            cache_class = self._context_item_cache_class(item)
+            if cache_class is None:
+                replaced.append(item)
+                continue
+            content = delta_context.get(cache_class, "")
+            if content:
+                replaced.append(
+                    ProviderRuntimeItemShape(
+                        role=item.role,
+                        blocks=(RuntimeBlock(type="text", text=content),),
+                        metadata=item.metadata,
+                    )
+                )
+        return tuple(replaced)
+
+    def _context_message_cache_class(self, message: ProviderMessageShape) -> str | None:
+        if message.metadata.get("source") != "provider_context_projection":
+            return None
+        cache_class = message.metadata.get("cache_class")
+        if isinstance(cache_class, str):
+            return cache_class
+        return None
+
+    def _context_item_cache_class(self, item: ProviderRuntimeItemShape) -> str | None:
+        if item.metadata.get("source") != "provider_context_projection":
+            return None
+        cache_class = item.metadata.get("cache_class")
+        if isinstance(cache_class, str):
+            return cache_class
+        return None
+
+    def _contextual_section_hashes(
+        self,
+        shape: RequestShape,
+    ) -> dict[str, str]:
+        hashes: dict[str, str] = {}
+        for fragment in shape.fragments:
+            kind = fragment.metadata.get("instruction_fragment_kind")
+            if not kind:
+                continue
+            key = f"{kind}:{fragment.metadata.get('source') or ''}"
+            hashes[key] = fragment.content_hash
+        return hashes
+
+    def _contextual_section_key(self, section: object) -> str:
+        kind = str(getattr(section, "kind", ""))
+        source = getattr(section, "source", None)
+        return f"{kind}:{source or ''}"
+
+    def _cache_class(self, section: object) -> str:
+        metadata = getattr(section, "metadata", None)
+        if isinstance(metadata, dict):
+            value = metadata.get("cache_class")
+            if isinstance(value, str) and value:
+                return value
+        return "dynamic"
 
 
 def _bounded_context_file_diagnostics(value: dict[str, object]) -> dict[str, object]:

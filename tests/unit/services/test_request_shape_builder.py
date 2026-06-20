@@ -216,6 +216,85 @@ def test_request_shape_builder_keeps_anthropic_prompt_as_system_runtime_item(
     assert shape.provider_runtime_items[0].blocks[0].text == "Stable system rules."
 
 
+def test_request_shape_builder_sends_context_separately_from_raw_user_request(
+    tmp_path: Path,
+) -> None:
+    contract = InstructionContract(
+        base_instructions="Stable system rules.",
+        contextual_user_sections=(
+            InstructionFragment(
+                kind="environment_context",
+                title="Environment",
+                content="<environment_context>workspace=/repo</environment_context>",
+                metadata={"cache_class": "dynamic"},
+            ),
+            InstructionFragment(
+                kind="memory",
+                title="Memory",
+                content="<memory>Prefer small patches.</memory>",
+                metadata={"cache_class": "dynamic"},
+            ),
+            InstructionFragment(
+                kind="plan",
+                title="Plan",
+                content="<plan>Inspect then edit.</plan>",
+                metadata={"cache_class": "dynamic"},
+            ),
+        ),
+        current_user_request="fix the request assembly",
+    )
+    configs = (
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider="openai",
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-test",
+        ),
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider="openai",
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="gpt-test",
+        ),
+        AgentConfig(
+            workspace_root=tmp_path,
+            provider="anthropic",
+            protocol=ProtocolId.ANTHROPIC_MESSAGES,
+            model="claude-test",
+        ),
+    )
+
+    for config in configs:
+        shape = RequestShapeBuilder().build(
+            config=config,
+            contract=contract,
+            tools=(_tool("read_file"),),
+        )
+        provider_payload = "\n".join(message.content for message in shape.provider_messages)
+        runtime_payload = "\n".join(
+            block.text or ""
+            for item in shape.provider_runtime_items
+            for block in item.blocks
+        )
+
+        assert shape.fragments[-1].id == "intent:current"
+        assert shape.fragments[-1].content == "fix the request assembly"
+        assert shape.provider_messages[-1].role == "user"
+        assert shape.provider_messages[-1].content == "fix the request assembly"
+        assert shape.provider_runtime_items[-1].role == "user"
+        assert shape.provider_runtime_items[-1].blocks == (
+            RuntimeBlock(type="text", text="fix the request assembly"),
+        )
+        assert "<environment_context>workspace=/repo</environment_context>" in provider_payload
+        assert "<memory>Prefer small patches.</memory>" in provider_payload
+        assert "<plan>Inspect then edit.</plan>" in provider_payload
+        assert "<environment_context>workspace=/repo</environment_context>" in runtime_payload
+        assert "<memory>Prefer small patches.</memory>" in runtime_payload
+        assert "<plan>Inspect then edit.</plan>" in runtime_payload
+        assert "Current user request:" not in provider_payload
+        assert "Current user request:" not in runtime_payload
+
+
 def test_request_shape_builder_preserves_canonical_persistence_metadata(
     tmp_path: Path,
 ) -> None:
@@ -361,7 +440,7 @@ def test_request_shape_builder_uses_cache_class_for_fragment_stability_and_prefi
         "<workspace-context>Use pytest.</workspace-context>",
         "previous request",
         "Memory: stable enough for this task",
-        "Current user request: current request",
+        "current request",
     ]
     assert shape.provider_projection is not None
     assert shape.provider_projection.to_dict() == {
@@ -715,7 +794,8 @@ def test_request_shape_builder_places_current_user_input_after_volatile_context(
     assert shape.fragments[2].stability is FragmentStability.REPLAY
     assert provider_roles == ["system", "developer", "user", "assistant", "user"]
     assert "volatile runtime context" not in "\n".join(provider_contents)
-    assert provider_contents[-1] == "Current user request: current task"
+    assert provider_contents[-1] == "current task"
+    assert "Current user request:" not in "\n".join(provider_contents)
 
 
 def test_request_shape_builder_omits_runtime_reminders_from_responses_payload(
@@ -1791,7 +1871,7 @@ def test_request_shape_builder_splits_contextual_sections_for_diagnostics(
     assert "Runtime reminders: use compact answers" not in "\n".join(
         message.content for message in shape.provider_messages
     )
-    assert shape.provider_messages[-1].content == "Current user request: inspect"
+    assert shape.provider_messages[-1].content == "inspect"
 
 
 def test_request_shape_builder_keeps_runtime_environment_dynamic_before_user_tail(
@@ -1840,7 +1920,7 @@ def test_request_shape_builder_keeps_runtime_environment_dynamic_before_user_tai
     assert "prefix_rule" not in environment.content
     assert "git push" not in environment.content
     assert fragments[-1].id == "intent:current"
-    assert fragments[-1].content == "Current user request: inspect runtime"
+    assert fragments[-1].content == "inspect runtime"
 
 
 def test_request_shape_builder_emits_chat_dynamic_context_before_tool_replay(
@@ -2428,3 +2508,159 @@ def test_request_pipeline_disables_cache_control_for_deepseek_anthropic_endpoint
     assert policy["wire_hint_state"] == "unsupported"
     assert policy["provider_family"] == "deepseek"
     assert policy["cache_strategy"] == "automatic_prefix_cache"
+
+
+def test_request_pipeline_sends_full_context_once_then_only_changed_context(
+    tmp_path: Path,
+) -> None:
+    pipeline = RequestPipeline(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.OPENAI,
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-test",
+        ),
+        instruction_contract_assembler=InstructionContractAssembler(),
+        request_shape_builder=RequestShapeBuilder(),
+        request_shape_payload_formatter=RequestShapePayloadFormatter(),
+        trace_service=TraceService(home_dir=tmp_path / "home"),
+        workspace_log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+
+    first = pipeline.build_and_trace_request_shape(
+        turn_id="turn_1",
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="<environment_context>cwd=/repo</environment_context>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content="<memory>Prefer focused diffs.</memory>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="plan",
+                    title="Plan",
+                    content="<plan>Inspect request assembly.</plan>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            current_user_request="first request",
+        ),
+        tools=[],
+    )
+    pipeline.trace_cache_shape_diagnostic(turn_id="turn_1", request_shape=first, usage=None)
+    second = pipeline.build_and_trace_request_shape(
+        turn_id="turn_2",
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="<environment_context>cwd=/repo</environment_context>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="memory",
+                    title="Memory",
+                    content="<memory>Prefer focused diffs.</memory>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+                InstructionFragment(
+                    kind="plan",
+                    title="Plan",
+                    content="<plan>Implement delta context.</plan>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            conversation_messages=(
+                Message(role="user", content="first request"),
+                Message(role="assistant", content="first answer"),
+            ),
+            current_user_request="second request",
+        ),
+        tools=[],
+    )
+
+    first_payload = "\n".join(message.content for message in first.provider_messages)
+    second_payload = "\n".join(message.content for message in second.provider_messages)
+
+    assert "<environment_context>cwd=/repo</environment_context>" in first_payload
+    assert "<memory>Prefer focused diffs.</memory>" in first_payload
+    assert "<plan>Inspect request assembly.</plan>" in first_payload
+    assert "<environment_context>cwd=/repo</environment_context>" not in second_payload
+    assert "<memory>Prefer focused diffs.</memory>" not in second_payload
+    assert "<plan>Inspect request assembly.</plan>" not in second_payload
+    assert "<plan>Implement delta context.</plan>" in second_payload
+    assert second.provider_messages[-1].content == "second request"
+    assert second.provider_runtime_items[-1].blocks == (
+        RuntimeBlock(type="text", text="second request"),
+    )
+    assert second.provider_projection is not None
+    assert second.provider_projection.message_count == len(second.provider_messages)
+    assert second.provider_projection.runtime_item_count == len(second.provider_runtime_items)
+
+
+def test_request_pipeline_waits_for_successful_turn_before_context_delta(
+    tmp_path: Path,
+) -> None:
+    pipeline = RequestPipeline(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.OPENAI,
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-test",
+        ),
+        instruction_contract_assembler=InstructionContractAssembler(),
+        request_shape_builder=RequestShapeBuilder(),
+        request_shape_payload_formatter=RequestShapePayloadFormatter(),
+        trace_service=TraceService(home_dir=tmp_path / "home"),
+        workspace_log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+
+    first = pipeline.build_and_trace_request_shape(
+        turn_id="turn_failed_before_model",
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="<environment_context>cwd=/repo</environment_context>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            current_user_request="first request",
+        ),
+        tools=[],
+    )
+    second = pipeline.build_and_trace_request_shape(
+        turn_id="turn_retry",
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            contextual_user_sections=(
+                InstructionFragment(
+                    kind="environment_context",
+                    title="Environment",
+                    content="<environment_context>cwd=/repo</environment_context>",
+                    metadata={"cache_class": "dynamic"},
+                ),
+            ),
+            conversation_messages=(Message(role="user", content="first request"),),
+            current_user_request="retry request",
+        ),
+        tools=[],
+    )
+
+    first_payload = "\n".join(message.content for message in first.provider_messages)
+    second_payload = "\n".join(message.content for message in second.provider_messages)
+
+    assert "<environment_context>cwd=/repo</environment_context>" in first_payload
+    assert "<environment_context>cwd=/repo</environment_context>" in second_payload

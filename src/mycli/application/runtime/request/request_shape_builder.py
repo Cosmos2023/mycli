@@ -44,7 +44,7 @@ class RequestShapeBuilder:
         tool_schema = self._tool_schema_content(normalized_tools)
         tool_order = "\n".join(tool["name"] for tool in normalized_tools)
         contextual_fragments = self._contextual_fragments(contract)
-        intent_content = f"Current user request: {contract.current_user_request}"
+        intent_content = contract.current_user_request
         replay_content = self._messages.render_replay(
             self._replay_messages(contract),
         )
@@ -258,16 +258,43 @@ class RequestShapeBuilder:
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
         if stable_context:
-            messages.append(ProviderMessageShape(role="user", content=stable_context))
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=stable_context,
+                    metadata={
+                        "cache_class": "static",
+                        "source": "provider_context_projection",
+                    },
+                )
+            )
         for message in self._replay_messages(contract):
             provider_message = self._messages.provider_message_from_replay_message(message)
             if provider_message is not None:
                 messages.append(provider_message)
         messages = self._with_chat_post_tool_context_messages(messages)
         if dynamic_context:
-            messages.append(ProviderMessageShape(role="user", content=dynamic_context))
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=dynamic_context,
+                    metadata={
+                        "cache_class": "dynamic",
+                        "source": "provider_context_projection",
+                    },
+                )
+            )
         if ephemeral_context:
-            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=ephemeral_context,
+                    metadata={
+                        "cache_class": "ephemeral",
+                        "source": "provider_context_projection",
+                    },
+                )
+            )
         if intent_content and not self._replay_contains_current_user_request(contract):
             messages.append(ProviderMessageShape(role="user", content=intent_content))
         return tuple(messages)
@@ -299,7 +326,16 @@ class RequestShapeBuilder:
         if developer_content:
             messages.append(ProviderMessageShape(role="developer", content=developer_content))
         if static_context:
-            messages.append(ProviderMessageShape(role="user", content=static_context))
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=static_context,
+                    metadata={
+                        "cache_class": "static",
+                        "source": "provider_context_projection",
+                    },
+                )
+            )
         replay_before_current, replayed_current_user, replay_after_current = (
             self._split_replayed_current_user_turn(contract)
         )
@@ -308,9 +344,27 @@ class RequestShapeBuilder:
             if provider_message is not None:
                 messages.append(provider_message)
         if dynamic_context:
-            messages.append(ProviderMessageShape(role="user", content=dynamic_context))
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=dynamic_context,
+                    metadata={
+                        "cache_class": "dynamic",
+                        "source": "provider_context_projection",
+                    },
+                )
+            )
         if ephemeral_context:
-            messages.append(ProviderMessageShape(role="user", content=ephemeral_context))
+            messages.append(
+                ProviderMessageShape(
+                    role="user",
+                    content=ephemeral_context,
+                    metadata={
+                        "cache_class": "ephemeral",
+                        "source": "provider_context_projection",
+                    },
+                )
+            )
         if replayed_current_user is not None:
             messages.append(
                 ProviderMessageShape(
@@ -445,7 +499,10 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=stable_context),),
-                    metadata={"cache_class": "static"},
+                    metadata={
+                        "cache_class": "static",
+                        "source": "provider_context_projection",
+                    },
                 )
             )
         for message in self._chat_completions_replay_messages(contract):
@@ -458,7 +515,10 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=dynamic_context),),
-                    metadata={"cache_class": "dynamic"},
+                    metadata={
+                        "cache_class": "dynamic",
+                        "source": "provider_context_projection",
+                    },
                 )
             )
         if ephemeral_context:
@@ -466,7 +526,10 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
-                    metadata={"cache_class": "ephemeral"},
+                    metadata={
+                        "cache_class": "ephemeral",
+                        "source": "provider_context_projection",
+                    },
                 )
         )
         if intent_content and not self._replay_contains_current_user_request(contract):
@@ -474,7 +537,6 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=intent_content),),
-                    metadata={"cache_class": "ephemeral"},
                 )
             )
         return tuple(items)
@@ -579,7 +641,10 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=static_context),),
-                    metadata={"cache_class": "static"},
+                    metadata={
+                        "cache_class": "static",
+                        "source": "provider_context_projection",
+                    },
                 )
             )
         replay_before_current, replayed_current_user, replay_after_current = (
@@ -594,7 +659,10 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=dynamic_context),),
-                    metadata={"cache_class": "dynamic"},
+                    metadata={
+                        "cache_class": "dynamic",
+                        "source": "provider_context_projection",
+                    },
                 )
             )
         if ephemeral_context:
@@ -602,7 +670,10 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=ephemeral_context),),
-                    metadata={"cache_class": "ephemeral"},
+                    metadata={
+                        "cache_class": "ephemeral",
+                        "source": "provider_context_projection",
+                    },
                 )
             )
         if replayed_current_user is not None:
@@ -621,7 +692,6 @@ class RequestShapeBuilder:
                 ProviderRuntimeItemShape(
                     role="user",
                     blocks=(RuntimeBlock(type="text", text=contract.current_user_request),),
-                    metadata={"cache_class": "ephemeral"},
                 )
             )
         for message in replay_after_current:
@@ -1137,6 +1207,7 @@ class RequestShapeBuilder:
             "environment_context",
             "hook_context",
             "memory",
+            "plan",
             "skill_catalog",
             "workspace_instructions",
         }

@@ -50,7 +50,7 @@ def test_budgeter_trims_lower_priority_sections_and_preserves_user_request() -> 
             ),
             _section(
                 TurnContextSectionType.USER_REQUEST,
-                "Current user request: current task",
+                "current task",
                 cache_class=TurnContextCacheClass.EPHEMERAL,
             ),
         ),
@@ -64,9 +64,7 @@ def test_budgeter_trims_lower_priority_sections_and_preserves_user_request() -> 
 
     assert diagnostic.before_tokens > diagnostic.after_tokens
     assert diagnostic.trimmed_section_count >= 1
-    assert sections[TurnContextSectionType.USER_REQUEST].content == (
-        "Current user request: current task"
-    )
+    assert sections[TurnContextSectionType.USER_REQUEST].content == "current task"
     assert sections[TurnContextSectionType.TOOL_EXPOSURE].content == (
         "Available tools: Read, Edit"
     )
@@ -82,7 +80,7 @@ def test_budgeter_reports_no_trim_when_context_is_under_budget() -> None:
         user_message="hello",
         sections=(
             _section(TurnContextSectionType.BASE_INSTRUCTIONS, "rules"),
-            _section(TurnContextSectionType.USER_REQUEST, "Current user request: hello"),
+            _section(TurnContextSectionType.USER_REQUEST, "hello"),
         ),
     )
 

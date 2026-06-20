@@ -3,7 +3,6 @@ from __future__ import annotations
 from mycli.domain.conversation import Message
 from mycli.domain.runtime import InstructionContract, RuntimeBlock, RuntimeItem
 from mycli.llms.adapters.base import ModelMessage
-from mycli.prompts.react import build_react_prompt
 
 
 def build_runtime_items(*, contract: InstructionContract) -> list[RuntimeItem]:
@@ -33,17 +32,13 @@ def build_runtime_items(*, contract: InstructionContract) -> list[RuntimeItem]:
                 ),
             )
         )
-    items.append(
-        RuntimeItem(
-            role="assistant",
-            blocks=(
-                RuntimeBlock(
-                    type="text",
-                    text=contract.assistant_scaffold or build_react_prompt(),
-                ),
-            ),
+    if contract.assistant_scaffold:
+        items.append(
+            RuntimeItem(
+                role="assistant",
+                blocks=(RuntimeBlock(type="text", text=contract.assistant_scaffold),),
+            )
         )
-    )
     for message in contract.conversation_messages:
         blocks = runtime_blocks_from_message(message)
         if not blocks:
@@ -115,12 +110,13 @@ def build_legacy_messages(*, contract: InstructionContract) -> list[ModelMessage
         ModelMessage(role="user", content=section.content)
         for section in contract.contextual_user_sections
     )
-    messages.append(
-        ModelMessage(
-            role="assistant",
-            content=contract.assistant_scaffold or build_react_prompt(),
+    if contract.assistant_scaffold:
+        messages.append(
+            ModelMessage(
+                role="assistant",
+                content=contract.assistant_scaffold,
+            )
         )
-    )
     messages.extend(
         ModelMessage(
             role=message.role,

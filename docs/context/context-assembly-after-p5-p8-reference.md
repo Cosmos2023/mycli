@@ -224,7 +224,7 @@ turn_context = TurnContextAssembler().assemble(
 
 contract = InstructionContractAssembler().assemble(
     turn_context=turn_context,
-    base_instructions=build_system_prompt() + "\n\n" + build_react_prompt(),
+    base_instructions=build_system_prompt(),
     conversation_messages=execution_context.conversation_messages,
 )
 
