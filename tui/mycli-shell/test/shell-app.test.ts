@@ -2110,6 +2110,25 @@ test("mycli shell cycles collaboration mode with shift tab", async () => {
 	assert.deepEqual(commands, ["/mode plan", "/mode default"]);
 });
 
+test("mycli shell cycles sandbox mode with ctrl x", async () => {
+	const commands: string[] = [];
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onCommandSubmit: (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x18");
+	await setTimeout(25);
+
+	assert.deepEqual(commands, ["/sandbox next"]);
+});
+
 test("mycli shell command palette includes backend-supported commands", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
@@ -2136,6 +2155,8 @@ test("mycli shell command palette includes backend-supported commands", async ()
 	await assertCommandVisible(/\/changes/);
 	await assertCommandVisible(/\/trace/);
 	await assertCommandVisible(/\/session maintenance/);
+	await assertCommandVisible(/\/sandbox/);
+	await assertCommandVisible(/\/permissions/);
 });
 
 test("mycli shell local view command switches tool visibility", async () => {

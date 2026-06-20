@@ -79,6 +79,8 @@ const BACKEND_COMMANDS: MycliShellCommand[] = [
 	{ id: "session-fork", label: "/session fork", description: "Fork a saved session", run: () => undefined },
 	{ id: "plan", label: "/plan", description: "Switch to Plan mode", run: () => undefined },
 	{ id: "mode", label: "/mode", description: "Inspect or switch collaboration mode", run: () => undefined },
+	{ id: "sandbox", label: "/sandbox", description: "Inspect sandbox permissions", run: () => undefined },
+	{ id: "sandbox-next", label: "/sandbox next", description: "Cycle sandbox permissions", run: () => undefined },
 	{ id: "agents", label: "/agents", description: "Manage agent profiles", run: () => undefined },
 	{ id: "agents-list", label: "/agents list", description: "List agent profiles", run: () => undefined },
 	{ id: "agents-runs", label: "/agents runs", description: "Inspect agent runs", run: () => undefined },
@@ -90,6 +92,10 @@ const BACKEND_COMMANDS: MycliShellCommand[] = [
 	{ id: "tasks-kill-agents", label: "/tasks kill-agents", description: "Stop background agents", run: () => undefined },
 	{ id: "tools", label: "/tools", description: "Inspect backend tools", run: () => undefined },
 	{ id: "tools-permissions", label: "/tools permissions", description: "Inspect approvals and command allowances", run: () => undefined },
+	{ id: "permissions", label: "/permissions", description: "Inspect permission allowlist", run: () => undefined },
+	{ id: "permissions-allow", label: "/permissions allow", description: "Allow a shell command pattern for this session", run: () => undefined },
+	{ id: "permissions-revoke", label: "/permissions revoke", description: "Remove a session command allowance", run: () => undefined },
+	{ id: "permissions-clear", label: "/permissions clear", description: "Clear session command allowances", run: () => undefined },
 	{ id: "tools-sets", label: "/tools sets", description: "Inspect backend toolsets", run: () => undefined },
 	{ id: "tools-hooks", label: "/tools hooks", description: "Inspect configured hooks", run: () => undefined },
 	{ id: "tools-extensions", label: "/tools extensions", description: "Inspect extension runtime", run: () => undefined },
@@ -281,6 +287,9 @@ export class MycliShellRuntime {
 		this.editor.onAction("app.model.select", () => this.showModelSelector());
 		this.editor.onAction("app.mode.cycle", () => {
 			void this.cycleCollaborationMode();
+		});
+		this.editor.onAction("app.sandbox.cycle", () => {
+			void this.cycleSandboxMode();
 		});
 		this.editor.onAction("app.message.followUp", () => {
 			void this.submitFollowUp();
@@ -1430,6 +1439,11 @@ export class MycliShellRuntime {
 		await this.submitCommand(`/mode ${nextMode}`);
 	}
 
+	private async cycleSandboxMode(): Promise<void> {
+		this.addSystemNotice("Sandbox next");
+		await this.submitCommand("/sandbox next");
+	}
+
 	private toggleToolDetails(): void {
 		const nextTools = this.state.tools.map((tool) => ({ ...tool, expanded: !tool.expanded }));
 		const nextBash = this.state.bash.map((bash) => ({ ...bash, expanded: !bash.expanded }));
@@ -1498,7 +1512,7 @@ export class MycliShellRuntime {
 				"Hotkeys",
 				"ctrl+p commands · ? help",
 				"enter send/steer · esc interrupt",
-				"ctrl+l model · ctrl+o tools",
+				"ctrl+l model · ctrl+o tools · ctrl+x sandbox",
 				"ctrl+c clear/exit · alt+enter follow-up · alt+up dequeue",
 			].join("\n"),
 		);
