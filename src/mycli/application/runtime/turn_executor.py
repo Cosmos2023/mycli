@@ -27,6 +27,7 @@ from mycli.domain.runtime import (
     PendingClarification,
     PendingDecision,
     PlanState,
+    QueuedTurnInput,
     RuntimeBlock,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
@@ -38,6 +39,7 @@ from mycli.domain.runtime import (
     TurnItemType,
     TurnResponse,
     TurnStatus,
+    queue_activity,
 )
 from mycli.domain.runtime.images import local_image_block
 from mycli.memory.dream_service import MemoryDreamRequest
@@ -1366,16 +1368,25 @@ class TurnExecutor:
                     current_plan_state,
                     initial_in_progress_item_id,
                 )
-                follow_up_message = runtime.pop_next_follow_up_message()
-                if follow_up_message:
-                    conversation.append(Message(role="user", content=follow_up_message))
+                follow_up_input = runtime.pop_next_follow_up_message()
+                if follow_up_input:
+                    conversation.append(
+                        Message(
+                            role="user",
+                            content=follow_up_input.text,
+                            blocks=self._user_message_blocks(
+                                user_message=follow_up_input.text,
+                                image_paths=follow_up_input.image_paths,
+                            ),
+                        )
+                    )
                     runtime._append_turn_item(
                         turn_id=turn_id,
                         turn_items=turn_items,
                         item=TurnItem(
                             type=TurnItemType.USER_MESSAGE,
-                            text=follow_up_message,
-                            metadata={"queued": True, "queue_kind": "follow_up"},
+                            text=follow_up_input.text,
+                            metadata=self._queued_input_metadata(follow_up_input),
                         ),
                     )
                     progress_updates.append("[queue] follow-up")
@@ -1487,17 +1498,26 @@ class TurnExecutor:
         runtime = self._runtime
         drained = 0
         while True:
-            message = runtime.pop_next_steering_message()
-            if message is None:
+            queued_input = runtime.pop_next_steering_message()
+            if queued_input is None:
                 break
-            conversation.append(Message(role="user", content=message))
+            conversation.append(
+                Message(
+                    role="user",
+                    content=queued_input.text,
+                    blocks=self._user_message_blocks(
+                        user_message=queued_input.text,
+                        image_paths=queued_input.image_paths,
+                    ),
+                )
+            )
             runtime._append_turn_item(
                 turn_id=turn_id,
                 turn_items=turn_items,
                 item=TurnItem(
                     type=TurnItemType.USER_MESSAGE,
-                    text=message,
-                    metadata={"queued": True, "queue_kind": "steering"},
+                    text=queued_input.text,
+                    metadata=self._queued_input_metadata(queued_input),
                 ),
             )
             drained += 1
@@ -1509,6 +1529,19 @@ class TurnExecutor:
         )
         self._emit_queue_update(stream_sink=stream_sink)
 
+    def _queued_input_metadata(self, queued_input: QueuedTurnInput) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "queued": True,
+            "queue_kind": queued_input.kind,
+            "source": queued_input.source,
+        }
+        if queued_input.image_paths:
+            metadata["image_count"] = len(queued_input.image_paths)
+            metadata["image_paths"] = list(queued_input.image_paths)
+        if queued_input.client_turn_id:
+            metadata["client_turn_id"] = queued_input.client_turn_id
+        return metadata
+
     def _emit_queue_update(
         self,
         *,
@@ -1516,7 +1549,9 @@ class TurnExecutor:
     ) -> None:
         if stream_sink is None:
             return
+        steering_items, follow_up_items = self._runtime.queued_input_items()
         steering, follow_up = self._runtime.queued_messages()
+        activity = queue_activity((steering_items, follow_up_items))
         try:
             stream_sink(
                 RuntimeStreamEvent(
@@ -1524,6 +1559,14 @@ class TurnExecutor:
                     metadata={
                         "steering": list(steering),
                         "follow_up": list(follow_up),
+                        "has_pending_input": activity.has_pending_input,
+                        "activity": activity.to_gateway_payload(),
+                        "steering_items": [
+                            item.to_gateway_payload() for item in steering_items
+                        ],
+                        "follow_up_items": [
+                            item.to_gateway_payload() for item in follow_up_items
+                        ],
                     },
                 )
             )

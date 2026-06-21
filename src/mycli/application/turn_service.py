@@ -207,17 +207,35 @@ class TurnService:
                 context=payload,
             )
 
-    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def queue_steering_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         queue = getattr(self._runtime, "queue_steering_message", None)
         if not callable(queue):
             return (), ()
-        return cast(tuple[tuple[str, ...], tuple[str, ...]], queue(message))
+        return cast(
+            tuple[tuple[str, ...], tuple[str, ...]],
+            queue(message, image_paths=image_paths, client_turn_id=client_turn_id),
+        )
 
-    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def queue_follow_up_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         queue = getattr(self._runtime, "queue_follow_up_message", None)
         if not callable(queue):
             return (), ()
-        return cast(tuple[tuple[str, ...], tuple[str, ...]], queue(message))
+        return cast(
+            tuple[tuple[str, ...], tuple[str, ...]],
+            queue(message, image_paths=image_paths, client_turn_id=client_turn_id),
+        )
 
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         queued = getattr(self._runtime, "queued_messages", None)
@@ -230,6 +248,18 @@ class TurnService:
         if not callable(clear):
             return (), ()
         return cast(tuple[tuple[str, ...], tuple[str, ...]], clear())
+
+    def queued_input_items(self) -> object:
+        queued = getattr(self._runtime, "queued_input_items", None)
+        if not callable(queued):
+            return ((), ())
+        return queued()
+
+    def clear_queued_input_items(self) -> object:
+        clear = getattr(self._runtime, "clear_queued_input_items", None)
+        if not callable(clear):
+            return ((), ())
+        return clear()
 
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
         choice_to_action = {

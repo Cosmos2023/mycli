@@ -86,6 +86,15 @@ from mycli.domain.runtime.instruction_contract import (
     InstructionSnapshot as InstructionSnapshot,
 )
 from mycli.domain.runtime.interrupts import RuntimeInterruptToken as RuntimeInterruptToken
+from mycli.domain.runtime.message_queue import (
+    QueueActivity as QueueActivity,
+    QueueActivityKind as QueueActivityKind,
+    QueuedInputKind as QueuedInputKind,
+    QueuedTurnInput as QueuedTurnInput,
+    QueuedTurnSnapshot as QueuedTurnSnapshot,
+    queue_activity as queue_activity,
+    queue_snapshot_texts as queue_snapshot_texts,
+)
 from mycli.domain.runtime.execution_policy import (
     ApprovalGate as ApprovalGate,
     ExecutionPolicy as ExecutionPolicy,

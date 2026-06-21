@@ -2078,6 +2078,48 @@ def test_agent_runtime_consumes_steering_before_next_model_request(
     assert runtime.queued_messages() == ((), ())
 
 
+def test_agent_runtime_preserves_queued_steering_images_in_next_request(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "screenshot.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
+        b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    adapter = MultiToolThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    disable_runtime_memory(runtime)
+    original_execute_tool_calls = runtime._tool_execution_service.execute_tool_calls
+
+    def queue_steering_after_tools(**kwargs):
+        result = original_execute_tool_calls(**kwargs)
+        runtime.queue_steering_message(
+            "also check this [image #1]",
+            image_paths=(str(image_path),),
+        )
+        return result
+
+    runtime._tool_execution_service.execute_tool_calls = queue_steering_after_tools
+
+    runtime.handle_user_turn("inspect both files")
+
+    second_request_images = [
+        block
+        for item in adapter.seen_items[1]
+        if item.role == "user"
+        for block in item.blocks
+        if block.type == "image"
+    ]
+    assert [block.metadata["path"] for block in second_request_images] == [str(image_path)]
+
+
 def test_agent_runtime_consumes_follow_up_after_answer_completion(
     tmp_path: Path,
 ) -> None:
@@ -2103,6 +2145,39 @@ def test_agent_runtime_consumes_follow_up_after_answer_completion(
     ]
     assert "now summarize risks" in second_request_user_texts
     assert runtime.queued_messages() == ((), ())
+
+
+def test_agent_runtime_preserves_queued_follow_up_images_in_next_request(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "follow.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
+        b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    adapter = FollowUpCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    disable_runtime_memory(runtime)
+    runtime.queue_follow_up_message(
+        "now summarize this [image #1]",
+        image_paths=(str(image_path),),
+    )
+
+    runtime.handle_user_turn("answer first")
+
+    second_request_images = [
+        block
+        for item in adapter.seen_items[1]
+        if item.role == "user"
+        for block in item.blocks
+        if block.type == "image"
+    ]
+    assert [block.metadata["path"] for block in second_request_images] == [str(image_path)]
 
 
 def test_agent_runtime_places_subagent_notification_in_next_request(

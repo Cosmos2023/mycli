@@ -25,6 +25,9 @@ from mycli.domain.runtime import (
     PendingClarification,
     PendingDecision,
     PlanState,
+    QueuedInputKind,
+    QueuedTurnInput,
+    QueuedTurnSnapshot,
     RuntimeBlock,
     RuntimeItem,
     RuntimeInterruptToken,
@@ -45,6 +48,7 @@ from mycli.domain.runtime import (
     ExecPolicyRuleSet,
     ToolRuntimeDecision,
     ToolRuntimeDecisionKind,
+    queue_snapshot_texts,
     stable_hash,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
@@ -252,8 +256,8 @@ class AgentRuntime:
         self._home_dir = home_dir
         self._storage_layout = MycliStorageLayout.from_home_dir(home_dir)
         self._message_queue_lock = Lock()
-        self._steering_messages: list[str] = []
-        self._follow_up_messages: list[str] = []
+        self._steering_messages: list[QueuedTurnInput] = []
+        self._follow_up_messages: list[QueuedTurnInput] = []
         self._recovery_sleep = time.sleep
         self._monotonic = time.monotonic
         self._approval_service = approval_service or ApprovalService(
@@ -859,33 +863,85 @@ class AgentRuntime:
     def _set_current_turn_id(self, turn_id: str) -> None:
         self._current_turn_id = turn_id
 
-    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def queue_steering_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+        source: str = "user",
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return queue_snapshot_texts(
+            self.queue_input(
+                kind="steering",
+                message=message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+                source=source,
+            )
+        )
+
+    def queue_input(
+        self,
+        *,
+        kind: QueuedInputKind,
+        message: str,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+        source: str = "user",
+    ) -> QueuedTurnSnapshot:
         text = message.strip()
         if not text:
-            return self.queued_messages()
+            return self.queued_input_items()
+        item = QueuedTurnInput(
+            kind=kind,
+            text=text,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+            source=source,
+        )
         with self._message_queue_lock:
-            self._steering_messages.append(text)
+            if kind == "steering":
+                self._steering_messages.append(item)
+            else:
+                self._follow_up_messages.append(item)
             return tuple(self._steering_messages), tuple(self._follow_up_messages)
 
     def queue_task_notification(
         self,
         notification: TaskNotification,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return self.queue_steering_message(notification.to_xml())
+        return self.queue_steering_message(notification.to_xml(), source="task_notification")
 
-    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        text = message.strip()
-        if not text:
-            return self.queued_messages()
-        with self._message_queue_lock:
-            self._follow_up_messages.append(text)
-            return tuple(self._steering_messages), tuple(self._follow_up_messages)
+    def queue_follow_up_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+        source: str = "user",
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return queue_snapshot_texts(
+            self.queue_input(
+                kind="follow_up",
+                message=message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+                source=source,
+            )
+        )
 
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return queue_snapshot_texts(self.queued_input_items())
+
+    def queued_input_items(self) -> QueuedTurnSnapshot:
         with self._message_queue_lock:
             return tuple(self._steering_messages), tuple(self._follow_up_messages)
 
     def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return queue_snapshot_texts(self.clear_queued_input_items())
+
+    def clear_queued_input_items(self) -> QueuedTurnSnapshot:
         with self._message_queue_lock:
             steering = tuple(self._steering_messages)
             follow_up = tuple(self._follow_up_messages)
@@ -893,13 +949,13 @@ class AgentRuntime:
             self._follow_up_messages.clear()
         return steering, follow_up
 
-    def pop_next_steering_message(self) -> str | None:
+    def pop_next_steering_message(self) -> QueuedTurnInput | None:
         with self._message_queue_lock:
             if not self._steering_messages:
                 return None
             return self._steering_messages.pop(0)
 
-    def pop_next_follow_up_message(self) -> str | None:
+    def pop_next_follow_up_message(self) -> QueuedTurnInput | None:
         with self._message_queue_lock:
             if not self._follow_up_messages:
                 return None
