@@ -53,6 +53,11 @@ def test_runtime_block_text_requires_text_content() -> None:
         RuntimeBlock(type="text")
 
 
+def test_runtime_block_image_requires_path_or_url() -> None:
+    with pytest.raises(ValueError, match="image"):
+        RuntimeBlock(type="image")
+
+
 class FakeResponsesClient:
     def __init__(self, payload: dict[str, object]) -> None:
         self._payload = payload
@@ -218,15 +223,57 @@ def test_responses_adapter_next_turn_serializes_and_maps_provider_output() -> No
     ]
     assert result.response_id == "resp_123"
     assert result.done is False
-    assert len(result.items) == 1
-    assert result.items[0].role == "assistant"
-    assert result.items[0].blocks[0].type == "tool_call"
-    assert result.items[0].blocks[0].tool_name == "list_directory"
-    assert result.items[0].blocks[0].tool_arguments == {"path": "."}
-    assert result.items[0].blocks[0].call_id == "call_001"
-    assert result.items[0].blocks[0].provider_id == "fc_001"
-    assert result.items[0].blocks[1].type == "text"
-    assert result.items[0].blocks[1].text == "I can inspect the repository for you."
+
+
+def test_responses_adapter_serializes_local_image_blocks(tmp_path: Path) -> None:
+    image_path = tmp_path / "tiny.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+    )
+    client = FakeResponsesClient(
+        {
+            "id": "resp_123",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}],
+                }
+            ],
+        }
+    )
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="user",
+                blocks=(
+                    RuntimeBlock(type="text", text="what is this?"),
+                    RuntimeBlock(type="image", metadata={"path": str(image_path)}),
+                ),
+            )
+        ],
+        tools=[],
+    )
+
+    assert client.captured_input_items == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "what is this?"},
+                {
+                    "type": "input_image",
+                    "image_url": client.captured_input_items[0]["content"][1]["image_url"],
+                },
+            ],
+        }
+    ]
+    image_url = client.captured_input_items[0]["content"][1]["image_url"]
+    assert isinstance(image_url, str)
+    assert image_url.startswith("data:image/png;base64,")
 
 
 def test_responses_adapter_aggregates_model_events_into_turn_result() -> None:

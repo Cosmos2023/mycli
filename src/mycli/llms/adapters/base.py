@@ -28,6 +28,7 @@ class ModelMessage:
     tool_call_id: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
     metadata: dict[str, object] = field(default_factory=dict)
+    blocks: tuple[RuntimeBlock, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

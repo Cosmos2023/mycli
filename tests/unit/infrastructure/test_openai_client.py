@@ -11,7 +11,7 @@ from openai import APIConnectionError, BadRequestError
 
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
-from mycli.domain.runtime import RuntimeInterruptToken, StopReason
+from mycli.domain.runtime import RuntimeBlock, RuntimeInterruptToken, StopReason
 from mycli.llms.clients.openai_chat import (
     DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
     ModelResponseError,
@@ -322,6 +322,47 @@ def test_openai_chat_client_uses_prompt_cache_key_request_option(monkeypatch) ->
     assert sdk_client.chat_completions.calls[-1]["messages"] == [
         {"role": "user", "content": "Inspect the repo"}
     ]
+
+
+def test_openai_chat_client_serializes_image_blocks(monkeypatch, tmp_path: Path) -> None:
+    image_path = tmp_path / "tiny.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+    )
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={"choices": [{"message": {"content": "done"}}]}
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        max_output_tokens=2048,
+    )
+
+    client.complete(
+        [
+            {
+                "role": "user",
+                "content": "Describe [image #1]",
+                "blocks": (
+                    RuntimeBlock(type="text", text="Describe [image #1]"),
+                    RuntimeBlock(type="image", metadata={"path": str(image_path)}),
+                ),
+            }
+        ]
+    )
+
+    message = sdk_client.chat_completions.calls[-1]["messages"][0]
+    assert message["content"][0] == {"type": "text", "text": "Describe [image #1]"}
+    assert message["content"][1]["type"] == "image_url"
+    assert message["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "blocks" not in message
 
 
 def test_openai_chat_client_sends_tool_choice_none_with_stable_tools(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-BlockType = Literal["text", "tool_call", "tool_result", "reasoning"]
+BlockType = Literal["text", "image", "tool_call", "tool_result", "reasoning"]
 RuntimeRole = Literal["system", "developer", "user", "assistant", "tool"]
 ToolSource = Literal["provider", "native", "mcp", "skill", "provider_builtin"]
 
@@ -27,6 +27,11 @@ class RuntimeBlock:
                 raise ValueError("tool_call block requires call_id")
         if self.type == "text" and not self.text:
             raise ValueError("text block requires text")
+        if self.type == "image":
+            image_url = self.metadata.get("image_url")
+            path = self.metadata.get("path")
+            if not isinstance(image_url, str) and not isinstance(path, str):
+                raise ValueError("image block requires metadata image_url or path")
 
 
 @dataclass(slots=True, frozen=True)

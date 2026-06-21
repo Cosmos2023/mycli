@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from mycli.domain.runtime.blocks import RuntimeBlock, RuntimeItem
+from mycli.domain.runtime.images import image_block_to_responses_content
 from mycli.llms.adapters.base import ModelToolDefinition
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
@@ -43,6 +44,9 @@ class ResponsesInputSerializer:
                             "text": block.text,
                         }
                     )
+                    continue
+                if block.type == "image":
+                    content.append(image_block_to_responses_content(block))
                     continue
 
                 flush_message_content()

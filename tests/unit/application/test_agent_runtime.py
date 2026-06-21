@@ -219,7 +219,11 @@ def test_project_execpolicy_deny_overrides_existing_session_shell_allowance(
     response = runtime.handle_user_turn("push the branch")
 
     assert response.pending_decision is None
-    assert response.assistant_message == "Denied: Tool denied by runtime policy."
+    assert response.assistant_message.startswith(
+        "Denied: Tool denied by runtime policy: Bash"
+    )
+    assert "policy=execpolicy_prefix_rule" in response.assistant_message
+    assert "reason=execpolicy_deny" in response.assistant_message
     trace = TraceService(home_dir=tmp_path / "home").load(runtime._config.session_id)
     policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
     assert policy_trace.payload["policy"] == "execpolicy_prefix_rule"
@@ -2719,11 +2723,15 @@ def test_agent_runtime_places_stable_action_guidance_before_contextual_user_mess
 
     assert response.assistant_message == "done"
     messages = adapter.seen_messages[0]
-    assert getattr(messages[0], "role", None) == "system"
-    assert "从当前用户请求和可见上下文出发" in str(
-        getattr(messages[0], "content", "")
+    assert getattr(messages[0], "role", None) == "developer"
+    assert "<collaboration_mode>" in str(getattr(messages[0], "content", ""))
+    assert any(
+        getattr(message, "role", None) == "user"
+        and "Runtime environment:" in str(getattr(message, "content", ""))
+        for message in messages
     )
-    assert any(getattr(message, "role", None) == "user" for message in messages[1:])
+    assert getattr(messages[-1], "role", None) == "user"
+    assert getattr(messages[-1], "content", None) == "inspect cache shape"
     assert not any(getattr(message, "role", None) == "assistant" for message in messages)
 
 
@@ -2786,7 +2794,7 @@ def test_agent_runtime_reinjects_tool_results_as_transcript_messages(tmp_path: P
 
     assert response.assistant_message == "Inspection complete"
     assert adapter.calls == 2
-    assert adapter.seen_messages[0][0].role == "system"
+    assert any(message.role == "developer" for message in adapter.seen_messages[0])
     assert any(message.role == "user" for message in adapter.seen_messages[0])
     assert any(
         message.role == "assistant"
@@ -2951,9 +2959,43 @@ def test_agent_runtime_emits_waiting_approval_activity_event(tmp_path: Path) -> 
 
 
 class ErroringAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def next_turn(self, *, items, tools):
         del items, tools
+        self.calls += 1
         raise ModelResponseError("boom")
+
+
+def test_agent_runtime_blocks_image_input_when_model_config_disables_images(
+    tmp_path: Path,
+) -> None:
+    adapter = ErroringAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(replace(runtime._config, supports_images=False))
+
+    response = runtime.handle_user_turn(
+        "describe [image #1]",
+        image_paths=("/tmp/screenshot.png",),
+    )
+
+    assert adapter.calls == 0
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.FAILED
+    assert response.turn.stop_reason is StopReason.MODEL_ERROR
+    assert "does not support image input" in response.assistant_message
+    assert response.activity_events == (
+        ActivityEvent(
+            kind="model_capability",
+            message="image input blocked by model configuration",
+        ),
+    )
+    assert response.turn.items[-1].metadata["reason"] == "model_does_not_support_images"
 
 
 def test_agent_runtime_emits_model_error_activity_event(tmp_path: Path) -> None:
@@ -5416,9 +5458,14 @@ def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -
     response = runtime.handle_user_turn("please inspect this repository and summarize it")
 
     assert response.turn is not None
-    assert response.turn.status is TurnStatus.COMPLETED
+    assert response.turn.status is TurnStatus.FAILED
+    assert response.turn.stop_reason is StopReason.LOOP_DETECTED
+    assert response.assistant_message.startswith(
+        "I stopped due to repeated exploration"
+    )
     assert any(
-        item.type is TurnItemType.TOOL_RESULT and item.tool_name == "Bash"
+        item.type is TurnItemType.WARNING
+        and item.metadata.get("exit_reason") == "force_answer_tool_request"
         for item in response.turn.items
     )
 

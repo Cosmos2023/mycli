@@ -39,6 +39,7 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
 )
+from mycli.domain.runtime.images import local_image_block
 from mycli.memory.dream_service import MemoryDreamRequest
 from mycli.memory.extraction_service import MemoryExtractionRequest
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
@@ -61,6 +62,7 @@ class TurnExecutor:
     def execute_user_turn(
         self,
         user_message: str,
+        image_paths: tuple[str, ...] = (),
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
@@ -140,10 +142,23 @@ class TurnExecutor:
                     stop_reason=StopReason.RUNTIME_ERROR,
                     turn_items=turn_items,
                 )
+        unsupported_image_response = self._unsupported_image_response(
+            user_message=user_message,
+            image_paths=image_paths,
+            turn_id=turn_id,
+            started_at=started_at,
+            turn_items=turn_items,
+        )
+        if unsupported_image_response is not None:
+            return unsupported_image_response
         initial_hook_contexts = runtime._session_hook_additional_contexts(
             source="startup"
         ) + _hook_additional_contexts(prompt_hook_execution.results)
-        conversation.append(Message(role="user", content=user_message))
+        user_blocks = self._user_message_blocks(
+            user_message=user_message,
+            image_paths=image_paths,
+        )
+        conversation.append(Message(role="user", content=user_message, blocks=user_blocks))
         runtime._append_turn_item(
             turn_id=turn_id,
             turn_items=turn_items,
@@ -163,6 +178,79 @@ class TurnExecutor:
             stream_sink=stream_sink,
             initial_runtime_reminders=initial_hook_contexts,
             interrupt_token=interrupt_token,
+        )
+
+    def _user_message_blocks(
+        self,
+        *,
+        user_message: str,
+        image_paths: tuple[str, ...],
+    ) -> tuple[RuntimeBlock, ...]:
+        blocks: list[RuntimeBlock] = []
+        if user_message:
+            blocks.append(RuntimeBlock(type="text", text=user_message))
+        blocks.extend(local_image_block(path) for path in image_paths if path)
+        return tuple(blocks)
+
+    def _unsupported_image_response(
+        self,
+        *,
+        user_message: str,
+        image_paths: tuple[str, ...],
+        turn_id: str,
+        started_at: str,
+        turn_items: list[TurnItem],
+    ) -> TurnResponse | None:
+        if not image_paths or self._runtime._config.supports_images:
+            return None
+        runtime = self._runtime
+        assistant_message = (
+            "This model configuration does not support image input. "
+            "Switch to a vision-capable model or set [model].supports_images = true "
+            "if your compatible endpoint supports multimodal input."
+        )
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.USER_MESSAGE,
+                text=user_message,
+                metadata={
+                    "image_count": len(tuple(path for path in image_paths if path)),
+                    "image_input_blocked": True,
+                },
+            ),
+        )
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.WARNING,
+                text=assistant_message,
+                metadata={
+                    "reason": "model_does_not_support_images",
+                    "provider": runtime._config.provider.value,
+                    "protocol": runtime._config.protocol.value,
+                    "model": runtime._config.model,
+                },
+            ),
+        )
+        return runtime._finalize_response(
+            response=TurnResponse(
+                assistant_message=assistant_message,
+                activity_events=(
+                    ActivityEvent(
+                        kind="model_capability",
+                        message="image input blocked by model configuration",
+                    ),
+                ),
+            ),
+            turn_id=turn_id,
+            user_message=user_message,
+            started_at=started_at,
+            status=TurnStatus.FAILED,
+            stop_reason=StopReason.MODEL_ERROR,
+            turn_items=turn_items,
         )
 
     def _resume_interrupted_turn(self, suspended: SuspendedTurn) -> TurnResponse:

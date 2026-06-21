@@ -7,6 +7,7 @@ from typing import Protocol, cast
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.domain.runtime.blocks import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
+from mycli.domain.runtime.images import image_block_to_provider_content
 from mycli.domain.tooling.calls import ToolCall
 from mycli.utils.provider_replay import deterministic_provider_id
 from mycli.llms.adapters.base import (
@@ -260,6 +261,9 @@ class AnthropicMessagesModelAdapter:
                         "content": block.text or "",
                     }
                 )
+                continue
+            if block.type == "image":
+                content.append(image_block_to_provider_content(block, format="anthropic"))
                 continue
             if block.type == "reasoning" and block.text:
                 raw_anthropic_block = block.metadata.get("anthropic")

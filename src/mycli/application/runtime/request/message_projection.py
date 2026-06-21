@@ -83,6 +83,7 @@ class RequestMessageProjector:
         message: Message,
     ) -> ProviderMessageShape | None:
         content = self.message_content(message)
+        blocks = self.runtime_blocks_from_message(message)
         tool_calls = self._tool_calls_from_message(message)
         tool_call_id = self._tool_call_id_from_message(message)
         model_metadata = self._model_visible_message_metadata(message)
@@ -96,6 +97,8 @@ class RequestMessageProjector:
             metadata["tool_call_id"] = tool_call_id
         if tool_calls:
             metadata["tool_calls"] = tool_calls
+        if blocks:
+            metadata["blocks"] = blocks
         return ProviderMessageShape(
             role=message.role,
             content=content,
@@ -139,6 +142,8 @@ class RequestMessageProjector:
     def _message_metadata_from_blocks(self, message: Message) -> dict[str, object]:
         metadata: dict[str, object] = {}
         for block in message.blocks:
+            if block.type == "image":
+                continue
             for key, value in block.metadata.items():
                 existing = metadata.get(key)
                 if isinstance(existing, dict) and isinstance(value, dict):

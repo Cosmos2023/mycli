@@ -13,6 +13,7 @@ from openai import APIConnectionError, APIResponseValidationError, APIStatusErro
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
 from mycli.domain.runtime import ModelDecision, RuntimeInterruptToken
+from mycli.domain.runtime.images import image_block_to_provider_content
 from mycli.domain.tooling.calls import ToolCall
 from mycli.infrastructure.providers.chat import (
     ChatProviderAdapter,
@@ -269,7 +270,9 @@ class OpenAIChatClient:
             self._tool_names_for_wire_aliases(messages=messages, tools=tools)
         )
         adapted_messages = self._provider_adapter.adapt_messages(
-            self._messages_with_wire_tool_names(messages, tool_name_aliases)
+            self._messages_with_multimodal_content(
+                self._messages_with_wire_tool_names(messages, tool_name_aliases)
+            )
         )
         payload_body: dict[str, object] = {
             "model": self._model,
@@ -354,6 +357,38 @@ class OpenAIChatClient:
                 ]
             aliased_messages.append(aliased_message)
         return aliased_messages
+
+    def _messages_with_multimodal_content(
+        self,
+        messages: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        projected_messages: list[dict[str, object]] = []
+        for message in messages:
+            blocks = message.get("blocks")
+            if not isinstance(blocks, tuple) or not blocks:
+                projected_messages.append(message)
+                continue
+            if not any(hasattr(block, "type") and block.type == "image" for block in blocks):
+                projected_messages.append(message)
+                continue
+            content_blocks: list[dict[str, object]] = []
+            for block in blocks:
+                if not hasattr(block, "type"):
+                    continue
+                if block.type in {"text", "reasoning"} and block.text:
+                    content_blocks.append({"type": "text", "text": block.text})
+                    continue
+                if block.type == "image":
+                    content_blocks.append(
+                        image_block_to_provider_content(block, format="openai")
+                    )
+            if not content_blocks:
+                projected_messages.append(message)
+                continue
+            projected = dict(message)
+            projected["content"] = content_blocks
+            projected_messages.append(projected)
+        return projected_messages
 
     def _tool_call_with_wire_name(
         self,

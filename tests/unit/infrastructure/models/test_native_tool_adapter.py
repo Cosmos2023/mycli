@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from mycli.domain.model_events import ModelEvent, ModelEventType
 from mycli.domain.tools import ToolCall
 from mycli.domain.runtime import RuntimeBlock, RuntimeItem
@@ -73,6 +75,37 @@ def test_native_tool_adapter_stream_turn_uses_client_stream_events() -> None:
     ]
     assert client.captured_messages == [{"role": "user", "content": "Say ok."}]
     assert events[-1]["metadata"] == {"usage": {"input_tokens": 11, "output_tokens": 2}}
+
+
+def test_native_tool_adapter_serializes_runtime_image_blocks(tmp_path: Path) -> None:
+    image_path = tmp_path / "tiny.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+    )
+    client = FakeNativeClient()
+    adapter = NativeToolModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="user",
+                blocks=(
+                    RuntimeBlock(type="text", text="Describe [image #1]"),
+                    RuntimeBlock(type="image", metadata={"path": str(image_path)}),
+                ),
+            )
+        ],
+        tools=[],
+    )
+
+    content = client.captured_messages[0]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "Describe [image #1]"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "blocks" not in client.captured_messages[0]
 
 
 def test_native_tool_adapter_translates_shared_messages_and_tools() -> None:

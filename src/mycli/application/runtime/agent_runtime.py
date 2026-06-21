@@ -2069,6 +2069,7 @@ class AgentRuntime:
     def handle_user_turn(
         self,
         user_message: str,
+        image_paths: tuple[str, ...] = (),
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
@@ -2077,6 +2078,7 @@ class AgentRuntime:
         self._sub_agent_service.set_stream_sink(stream_sink)
         return TurnExecutor(self).execute_user_turn(
             user_message,
+            image_paths=image_paths,
             stream_sink=stream_sink,
             interrupt_token=interrupt_token,
         )

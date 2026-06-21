@@ -159,6 +159,29 @@ def test_request_shape_payload_formatter_keeps_empty_assistant_tool_call_message
     assert messages[0].metadata == {"deepseek": {"reasoning_content": "Need README."}}
 
 
+def test_request_shape_payload_formatter_keeps_image_only_messages() -> None:
+    image_block = RuntimeBlock(type="image", metadata={"path": "/tmp/screenshot.png"})
+    shape = RequestShape(
+        provider="qwen",
+        protocol="chat_completions",
+        model="qwen3.6-plus",
+        stable_system="stable",
+        provider_messages=(
+            ProviderMessageShape(
+                role="user",
+                content="",
+                metadata={"blocks": (image_block,)},
+            ),
+        ),
+    )
+
+    messages = RequestShapePayloadFormatter().legacy_messages(shape)
+
+    assert len(messages) == 1
+    assert messages[0].content == ""
+    assert messages[0].blocks == (image_block,)
+
+
 def test_request_shape_payload_formatter_builds_runtime_items_in_shape_order() -> None:
     shape = RequestShape(
         provider="qwen",

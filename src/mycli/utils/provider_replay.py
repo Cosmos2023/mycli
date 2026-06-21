@@ -23,6 +23,7 @@ ANTHROPIC_PRIVATE_KEYS = frozenset(
 )
 WIRE_PRIVATE_KEYS = frozenset(
     {
+        "blocks",
         "metadata",
         "provider_request_policy",
         "cache_control",

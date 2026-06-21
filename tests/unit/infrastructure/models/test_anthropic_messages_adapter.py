@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from mycli.domain.tools import ToolCall
 from mycli.llms.adapters.anthropic_messages_adapter import (
     AnthropicMessagesModelAdapter,
@@ -76,6 +78,44 @@ def test_anthropic_adapter_stream_turn_uses_client_stream_message() -> None:
     assert client.captured_messages == [
         {"role": "user", "content": [{"type": "text", "text": "Say ok."}]}
     ]
+
+
+def test_anthropic_adapter_serializes_local_image_blocks(tmp_path: Path) -> None:
+    image_path = tmp_path / "tiny.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+    )
+    client = FakeAnthropicMessagesClient(
+        {
+            "id": "msg_123",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+        }
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="user",
+                blocks=(
+                    RuntimeBlock(type="text", text="Describe [image #1]"),
+                    RuntimeBlock(type="image", metadata={"path": str(image_path)}),
+                ),
+            )
+        ],
+        tools=[],
+    )
+
+    content = client.captured_messages[0]["content"]
+    assert content[0] == {"type": "text", "text": "Describe [image #1]"}
+    assert content[1]["type"] == "image"
+    assert content[1]["source"]["type"] == "base64"
+    assert content[1]["source"]["media_type"] == "image/png"
+    assert isinstance(content[1]["source"]["data"], str)
 
 
 def test_anthropic_adapter_serializes_system_developer_messages_and_tools() -> None:

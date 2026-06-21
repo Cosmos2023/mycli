@@ -9,6 +9,7 @@ from typing import Protocol, cast
 from mycli.domain.logging import ModelLogContext
 from mycli.domain.model_events import ModelEventType
 from mycli.domain.runtime import RuntimeInterruptToken
+from mycli.domain.runtime.images import image_block_to_provider_content
 from mycli.domain.tooling.calls import ToolCall
 from mycli.llms.adapters.base import (
     ModelAction,
@@ -243,6 +244,7 @@ class NativeToolModelAdapter:
                     "content": message.content,
                     "tool_call_id": message.tool_call_id,
                     "metadata": message.metadata if message.metadata else None,
+                    "blocks": message.blocks if message.blocks else None,
                     "tool_calls": (
                         [
                             {
@@ -263,10 +265,46 @@ class NativeToolModelAdapter:
             }
             for message in messages
         ]
-        adapted_messages = self._provider_adapter.adapt_messages(
+        projected_messages = self._messages_with_multimodal_content(
             cast("list[dict[str, object]]", serialized_messages)
         )
+        adapted_messages = self._provider_adapter.adapt_messages(projected_messages)
         return self._sanitize_chat_transcript(adapted_messages)
+
+    def _messages_with_multimodal_content(
+        self,
+        messages: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        projected_messages: list[dict[str, object]] = []
+        for message in messages:
+            blocks = message.get("blocks")
+            if not isinstance(blocks, tuple) or not blocks:
+                projected_messages.append(message)
+                continue
+            if not any(
+                isinstance(block, RuntimeBlock) and block.type == "image"
+                for block in blocks
+            ):
+                projected_messages.append(message)
+                continue
+            content_blocks: list[dict[str, object]] = []
+            for block in blocks:
+                if not isinstance(block, RuntimeBlock):
+                    continue
+                if block.type in {"text", "reasoning"} and block.text:
+                    content_blocks.append({"type": "text", "text": block.text})
+                    continue
+                if block.type == "image":
+                    content_blocks.append(
+                        image_block_to_provider_content(block, format="openai")
+                    )
+            if not content_blocks:
+                projected_messages.append(message)
+                continue
+            projected = dict(message)
+            projected["content"] = content_blocks
+            projected_messages.append(projected)
+        return projected_messages
 
     def _sanitize_chat_transcript(
         self,
@@ -351,6 +389,7 @@ class NativeToolModelAdapter:
                         if block.type == "tool_call"
                     ),
                     metadata=self._merge_block_metadata(item),
+                    blocks=item.blocks,
                 )
             )
         return messages
@@ -369,6 +408,7 @@ class NativeToolModelAdapter:
                     content=block.text or "",
                     tool_call_id=block.call_id,
                     metadata=dict(block.metadata),
+                    blocks=(block,),
                 )
             )
         return messages

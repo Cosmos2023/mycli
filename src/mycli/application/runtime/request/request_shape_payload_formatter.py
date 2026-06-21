@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.runtime import RequestShape
-from mycli.llms.adapters.base import ModelMessage, RuntimeItem
+from mycli.llms.adapters.base import ModelMessage, RuntimeBlock, RuntimeItem
 from mycli.domain.tooling.calls import ToolCall
 
 
@@ -14,6 +14,7 @@ class RequestShapePayloadFormatter:
                 tool_call_id=self._tool_call_id(message.metadata),
                 tool_calls=self._tool_calls(message.metadata),
                 metadata=self._model_metadata(message.metadata),
+                blocks=self._blocks(message.metadata),
             )
             for message in shape.provider_messages
             if self._should_include_legacy_message(message)
@@ -66,6 +67,12 @@ class RequestShapePayloadFormatter:
             if key not in {"legacy_content", "tool_call_id", "tool_calls"}
         }
 
+    def _blocks(self, metadata: dict[str, object]) -> tuple[RuntimeBlock, ...]:
+        blocks = metadata.get("blocks")
+        if not isinstance(blocks, tuple):
+            return ()
+        return tuple(block for block in blocks if isinstance(block, RuntimeBlock))
+
     def _should_include_legacy_message(self, message: object) -> bool:
         if not hasattr(message, "content") or not hasattr(message, "metadata"):
             return False
@@ -78,5 +85,7 @@ class RequestShapePayloadFormatter:
         if self._tool_call_id(metadata):
             return True
         if self._tool_calls(metadata):
+            return True
+        if self._blocks(metadata):
             return True
         return bool(self._model_metadata(metadata))

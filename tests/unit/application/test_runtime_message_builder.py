@@ -107,6 +107,32 @@ def test_build_legacy_messages_merges_runtime_block_metadata() -> None:
     }
 
 
+def test_build_legacy_messages_keeps_image_paths_out_of_plain_metadata() -> None:
+    image_block = RuntimeBlock(type="image", metadata={"path": "/tmp/screenshot.png"})
+    contract = InstructionContract(
+        base_instructions="base",
+        conversation_messages=(
+            Message(
+                role="user",
+                content="[image #1]",
+                blocks=(
+                    RuntimeBlock(type="text", text="[image #1]"),
+                    image_block,
+                ),
+            ),
+        ),
+    )
+
+    messages = build_legacy_messages(contract=contract)
+
+    assert messages[-1].content == "[image #1]"
+    assert messages[-1].metadata == {}
+    assert messages[-1].blocks == (
+        RuntimeBlock(type="text", text="[image #1]"),
+        image_block,
+    )
+
+
 def test_build_legacy_messages_does_not_inject_legacy_react_scaffold() -> None:
     messages = build_legacy_messages(
         contract=InstructionContract(base_instructions="base")

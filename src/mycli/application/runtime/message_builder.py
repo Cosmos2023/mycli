@@ -87,6 +87,8 @@ def runtime_blocks_from_message(message: Message) -> tuple[RuntimeBlock, ...]:
 def message_metadata_from_blocks(message: Message) -> dict[str, object]:
     metadata: dict[str, object] = {}
     for block in message.blocks:
+        if block.type == "image":
+            continue
         for key, value in block.metadata.items():
             existing = metadata.get(key)
             if isinstance(existing, dict) and isinstance(value, dict):
@@ -124,6 +126,7 @@ def build_legacy_messages(*, contract: InstructionContract) -> list[ModelMessage
             tool_call_id=message.tool_call_id,
             tool_calls=message.tool_calls,
             metadata=message_metadata_from_blocks(message),
+            blocks=runtime_blocks_from_message(message),
         )
         for message in contract.conversation_messages
     )

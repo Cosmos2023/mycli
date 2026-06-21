@@ -175,6 +175,7 @@ class AgentConfig:
     protocol: ProtocolId = ProtocolId.RESPONSES
     api_base_url: str = "https://api.openai.com/v1"
     api_key: str | None = None
+    supports_images: bool = True
     session_id: str = "default"
     max_prompt_tokens: int = 12000
     max_output_tokens: int = 2048
