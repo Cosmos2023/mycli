@@ -19,12 +19,24 @@ import {
 import { MycliShellRuntime } from "./shell-runtime.ts";
 import { NativeChatRuntime } from "./native-chat-runtime.ts";
 import type { MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
-import type { MycliShellSubmitAttachments } from "./shell-runtime.ts";
+import type {
+	MycliShellLocalImageAttachment,
+	MycliShellQueuedInput,
+	MycliShellSubmitAttachments,
+} from "./shell-runtime.ts";
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
 
-type SubmitTurnOptions = { fromQueue?: "steer" | "followUp"; attachments?: MycliShellSubmitAttachments };
+type QueueKind = "steer" | "followUp";
+type QueuedTurnInput = {
+	kind: QueueKind;
+	message: string;
+	attachments?: MycliShellSubmitAttachments;
+	clientTurnId?: string;
+	source?: string;
+};
+type SubmitTurnOptions = { fromQueue?: QueueKind; attachments?: MycliShellSubmitAttachments };
 
 const client = new GatewayClient({
 	input: process.stdin,
@@ -39,8 +51,8 @@ let nativeRuntime: NativeChatRuntime | null = null;
 let ttyStreams: TtyStreams | null = null;
 let bootstrapped = false;
 const eventDeduper = new GatewayEventDeduper();
-const queuedSteeringTurns: string[] = [];
-const queuedFollowUpTurns: string[] = [];
+const queuedSteeringTurns: QueuedTurnInput[] = [];
+const queuedFollowUpTurns: QueuedTurnInput[] = [];
 let queueDrainTimer: NodeJS.Timeout | null = null;
 let queueDraining = false;
 let backendTurnBusy = false;
@@ -78,9 +90,9 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	}
 	if (event.method === "turn.queue.updated") {
 		queuedSteeringTurns.length = 0;
-		queuedSteeringTurns.push(...stringArrayValue(event.params.steering));
+		queuedSteeringTurns.push(...queuedItemsValue(event.params.steering_items, "steer", event.params.steering));
 		queuedFollowUpTurns.length = 0;
-		queuedFollowUpTurns.push(...stringArrayValue(event.params.follow_up));
+		queuedFollowUpTurns.push(...queuedItemsValue(event.params.follow_up_items, "followUp", event.params.follow_up));
 	}
 	scheduleQueuedTurnDrain();
 }
@@ -151,25 +163,34 @@ async function loadSessions(): Promise<void> {
 }
 
 async function submitTurn(
-	message: string,
+	messageOrQueued: string | QueuedTurnInput,
 	optionsOrAttachments: SubmitTurnOptions | MycliShellSubmitAttachments = {},
 ): Promise<void> {
 	const options = normalizeSubmitOptions(optionsOrAttachments);
-	const text = message.trim();
+	const queuedInput = typeof messageOrQueued === "string" ? null : messageOrQueued;
+	let rawText: string;
+	if (queuedInput) {
+		rawText = queuedInput.message;
+	} else {
+		rawText = messageOrQueued as string;
+	}
+	const text = rawText.trim();
+	const attachments = queuedInput?.attachments ?? options.attachments;
 	if (!text) {
 		return;
 	}
 	if (!options.fromQueue && runtimeState.turnRunning) {
-		await queueSteeringTurn(text);
+		await queueSteeringTurn({ kind: "steer", message: text, attachments });
 		return;
 	}
+	const clientTurnId = queuedInput?.clientTurnId ?? nextClientTurnId(options.fromQueue ?? "ui");
 	try {
 		await send(
 			"turn.submit",
 			{
 				message: text,
-				client_turn_id: nextClientTurnId(options.fromQueue ?? "ui"),
-				...(options.attachments?.localImages?.length ? { local_images: options.attachments.localImages } : {}),
+				client_turn_id: clientTurnId,
+				...(attachments?.localImages?.length ? { local_images: attachments.localImages } : {}),
 			},
 			{ recordErrors: false },
 		);
@@ -186,7 +207,7 @@ async function submitTurn(
 		if (error instanceof GatewayRequestError && error.code === "turn_in_progress") {
 			backendTurnBusy = true;
 			if (!options.fromQueue) {
-				enqueueSteeringTurn(text);
+				enqueueSteeringTurn({ kind: "steer", message: text, attachments, clientTurnId });
 			}
 			return;
 		}
@@ -219,71 +240,77 @@ function nextClientTurnId(prefix: string): string {
 	return `${prefix}_${Date.now()}_${clientTurnSequence}`;
 }
 
-function enqueueSteeringTurn(message: string): void {
-	queuedSteeringTurns.push(message);
+function enqueueSteeringTurn(input: QueuedTurnInput): void {
+	queuedSteeringTurns.push(input);
 	syncQueuedInputs();
 }
 
-async function submitFollowUp(message: string): Promise<void> {
+async function submitFollowUp(message: string, attachments?: MycliShellSubmitAttachments): Promise<void> {
 	const text = message.trim();
 	if (!text) {
 		return;
 	}
+	const input: QueuedTurnInput = {
+		kind: "followUp",
+		message: text,
+		attachments,
+		clientTurnId: nextClientTurnId("followUp"),
+	};
 	if (runtimeState.turnRunning || backendTurnBusy) {
-		await queueFollowUpTurn(text);
+		await queueFollowUpTurn(input);
 		return;
 	}
-	await submitTurn(text);
+	await submitTurn(input);
 }
 
-async function queueSteeringTurn(message: string): Promise<void> {
+async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 	try {
-		const result = await send("turn.steer", { message }, { recordErrors: false });
+		const result = await send("turn.steer", queueRpcPayload(input), { recordErrors: false });
 		syncQueuedInputsFromResult(result);
 		if (result.accepted === false) {
-			enqueueSteeringTurn(message);
+			enqueueSteeringTurn(input);
 		}
 	} catch {
-		enqueueSteeringTurn(message);
+		enqueueSteeringTurn(input);
 	}
 }
 
-async function queueFollowUpTurn(message: string): Promise<void> {
+async function queueFollowUpTurn(input: QueuedTurnInput): Promise<void> {
 	try {
-		const result = await send("turn.follow_up", { message }, { recordErrors: false });
+		const result = await send("turn.follow_up", queueRpcPayload(input), { recordErrors: false });
 		syncQueuedInputsFromResult(result);
 		if (result.accepted === false) {
-			queuedFollowUpTurns.push(message);
+			queuedFollowUpTurns.push(input);
 			syncQueuedInputs();
 		}
 	} catch {
-		queuedFollowUpTurns.push(message);
+		queuedFollowUpTurns.push(input);
 		syncQueuedInputs();
 	}
 }
 
-function queuedTurns(): string[] {
+function queuedTurns(): QueuedTurnInput[] {
 	return [...queuedSteeringTurns, ...queuedFollowUpTurns];
 }
 
 function visibleQueuedTurns(): string[] {
-	return queuedTurns().filter((message) => !isInternalTaskNotification(message));
+	return queuedTurns().map((input) => input.message).filter((message) => !isInternalTaskNotification(message));
 }
 
-function nextQueuedTurn(): { kind: "steer" | "followUp"; message: string } | null {
+function nextQueuedTurn(): QueuedTurnInput | null {
 	const steering = queuedSteeringTurns[0];
 	if (steering !== undefined) {
-		return { kind: "steer", message: steering };
+		return steering;
 	}
 	const followUp = queuedFollowUpTurns[0];
 	if (followUp !== undefined) {
-		return { kind: "followUp", message: followUp };
+		return followUp;
 	}
 	return null;
 }
 
-function clearQueuedTurns(): string[] {
-	const allQueued = visibleQueuedTurns();
+function clearQueuedTurns(): QueuedTurnInput[] {
+	const allQueued = queuedTurns().filter((input) => !isInternalTaskNotification(input.message));
 	queuedSteeringTurns.length = 0;
 	queuedFollowUpTurns.length = 0;
 	syncQueuedInputs();
@@ -291,35 +318,36 @@ function clearQueuedTurns(): string[] {
 }
 
 function syncQueuedInputs(): void {
-	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queuedSteeringTurns, followUp: queuedFollowUpTurns }));
+	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queueMessages(queuedSteeringTurns), followUp: queueMessages(queuedFollowUpTurns) }));
 }
 
 function syncQueuedInputsFromResult(result: Record<string, unknown>): void {
-	const steering = stringArrayValue(result.steering);
-	const followUp = stringArrayValue(result.follow_up);
 	queuedSteeringTurns.length = 0;
-	queuedSteeringTurns.push(...steering);
+	queuedSteeringTurns.push(...queuedItemsValue(result.steering_items, "steer", result.steering));
 	queuedFollowUpTurns.length = 0;
-	queuedFollowUpTurns.push(...followUp);
+	queuedFollowUpTurns.push(...queuedItemsValue(result.follow_up_items, "followUp", result.follow_up));
 	syncQueuedInputs();
 }
 
-async function dequeueQueuedInput(): Promise<string | null> {
+async function dequeueQueuedInput(): Promise<MycliShellQueuedInput | null> {
 	try {
 		const result = await send("turn.queue.clear", {}, { recordErrors: false });
-		const restored = [...stringArrayValue(result.steering), ...stringArrayValue(result.follow_up)];
-		const visibleRestored = restored.filter((message) => !isInternalTaskNotification(message));
+		const restored = [
+			...queuedItemsValue(result.steering_items, "steer", result.steering),
+			...queuedItemsValue(result.follow_up_items, "followUp", result.follow_up),
+		];
+		const visibleRestored = restored.filter((input) => !isInternalTaskNotification(input.message));
 		queuedSteeringTurns.length = 0;
 		queuedFollowUpTurns.length = 0;
 		syncQueuedInputs();
 		if (visibleRestored.length > 0) {
-			return visibleRestored.join("\n\n");
+			return combineQueuedInputs(visibleRestored);
 		}
 	} catch {
 		// Fall back to local queue below.
 	}
 	const allQueued = clearQueuedTurns();
-	return allQueued.length > 0 ? allQueued.join("\n\n") : null;
+	return allQueued.length > 0 ? combineQueuedInputs(allQueued) : null;
 }
 
 function scheduleQueuedTurnDrain(): void {
@@ -343,7 +371,7 @@ async function drainQueuedTurns(): Promise<void> {
 	}
 	queueDraining = true;
 	try {
-		await submitTurn(next.message, { fromQueue: next.kind });
+		await submitTurn(next, { fromQueue: next.kind });
 	} finally {
 		queueDraining = false;
 		scheduleQueuedTurnDrain();
@@ -382,6 +410,107 @@ async function saveApiKey(providerId: string, apiKey: string): Promise<{ message
 	};
 	refreshRuntime();
 	return { message: typeof result.message === "string" ? result.message : undefined };
+}
+
+function queueRpcPayload(input: QueuedTurnInput): Record<string, unknown> {
+	return {
+		message: input.message,
+		client_turn_id: input.clientTurnId ?? nextClientTurnId(input.kind),
+		...(input.attachments?.localImages?.length ? { local_images: input.attachments.localImages } : {}),
+	};
+}
+
+function queueMessages(items: QueuedTurnInput[]): string[] {
+	return items.map((item) => item.message);
+}
+
+function queuedItemsValue(value: unknown, kind: QueueKind, fallback: unknown): QueuedTurnInput[] {
+	const parsed = queuedItemsFromPayload(value, kind);
+	if (parsed.length > 0) {
+		return parsed;
+	}
+	return stringArrayValue(fallback).map((message) => ({ kind, message }));
+}
+
+function queuedItemsFromPayload(value: unknown, kind: QueueKind): QueuedTurnInput[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const inputs: QueuedTurnInput[] = [];
+	for (const item of value) {
+		if (typeof item === "string" && item.trim()) {
+			inputs.push({ kind, message: item.trim() });
+			continue;
+		}
+		if (!item || typeof item !== "object") {
+			continue;
+		}
+		const record = item as Record<string, unknown>;
+		const rawMessage = record.message ?? record.text;
+		if (typeof rawMessage !== "string" || !rawMessage.trim()) {
+			continue;
+		}
+		const localImages = localImagesValue(record.local_images);
+		inputs.push({
+			kind,
+			message: rawMessage.trim(),
+			...(localImages.length ? { attachments: { localImages } } : {}),
+			...(typeof record.client_turn_id === "string" ? { clientTurnId: record.client_turn_id } : {}),
+			...(typeof record.source === "string" ? { source: record.source } : {}),
+		});
+	}
+	return inputs;
+}
+
+function localImagesValue(value: unknown): MycliShellLocalImageAttachment[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const images: MycliShellLocalImageAttachment[] = [];
+	for (let index = 0; index < value.length; index += 1) {
+		const item = value[index];
+		if (typeof item === "string" && item.trim()) {
+			images.push({ path: item.trim(), placeholder: `[image #${index + 1}]` });
+			continue;
+		}
+		if (!item || typeof item !== "object") {
+			continue;
+		}
+		const record = item as Record<string, unknown>;
+		if (typeof record.path !== "string" || !record.path.trim()) {
+			continue;
+		}
+		images.push({
+			path: record.path.trim(),
+			placeholder:
+				typeof record.placeholder === "string" && record.placeholder.trim()
+					? record.placeholder.trim()
+					: `[image #${index + 1}]`,
+		});
+	}
+	return images;
+}
+
+function combineQueuedInputs(inputs: QueuedTurnInput[]): MycliShellQueuedInput {
+	const localImages: MycliShellLocalImageAttachment[] = [];
+	const textParts: string[] = [];
+	for (const input of inputs) {
+		let text = input.message;
+		for (const image of input.attachments?.localImages ?? []) {
+			const nextPlaceholder = `[image #${localImages.length + 1}]`;
+			if (image.placeholder && text.includes(image.placeholder)) {
+				text = text.split(image.placeholder).join(nextPlaceholder);
+			}
+			localImages.push({ path: image.path, placeholder: nextPlaceholder });
+		}
+		if (text.trim()) {
+			textParts.push(text.trim());
+		}
+	}
+	return {
+		text: textParts.join("\n\n"),
+		...(localImages.length ? { localImages } : {}),
+	};
 }
 
 function stringArrayValue(value: unknown): string[] {

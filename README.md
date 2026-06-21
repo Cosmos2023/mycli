@@ -137,9 +137,9 @@ uv run mycli --node-tui
 | 按键 | 行为 |
 | --- | --- |
 | `enter` | 发送当前输入 |
-| `option+enter` | 当前 turn 运行中追加 follow-up |
+| `tab` | 当前 turn 运行中追加 follow-up |
 | `esc` | 请求中断当前 turn |
-| `option+up` | 取回 queued/follow-up 输入 |
+| `option+up` / `shift+left` | 取回 queued/follow-up 输入 |
 | `ctrl+p` | 打开命令面板 |
 | `ctrl+l` | 打开模型选择器 |
 | `ctrl+o` | 切换工具详情显示 |

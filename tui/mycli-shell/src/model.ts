@@ -125,6 +125,8 @@ export type MycliShellFooterData = {
 	queueCount?: number;
 	steeringQueueCount?: number;
 	followUpQueueCount?: number;
+	hasPendingInput?: boolean;
+	queueActivity?: string;
 	trust?: string;
 	collaborationMode?: "default" | "plan";
 	liveState?: string;

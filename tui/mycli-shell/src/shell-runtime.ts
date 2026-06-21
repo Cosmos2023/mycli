@@ -53,9 +53,9 @@ export type MycliShellRuntimeOptions = {
 	trustSavedDecision?: ProjectTrustDecision;
 	projectTrusted?: boolean;
 	onSubmit?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
-	onFollowUp?: (text: string) => void | Promise<void>;
+	onFollowUp?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onInterrupt?: () => void | Promise<void>;
-	onDequeueQueuedInput?: () => string | null | Promise<string | null>;
+	onDequeueQueuedInput?: () => MycliShellQueuedInput | string | null | Promise<MycliShellQueuedInput | string | null>;
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
 	onModelSelect?: (model: MycliShellModel) => void | Promise<void>;
@@ -76,6 +76,11 @@ export type MycliShellLocalImageAttachment = {
 };
 
 export type MycliShellSubmitAttachments = {
+	localImages?: MycliShellLocalImageAttachment[];
+};
+
+export type MycliShellQueuedInput = {
+	text: string;
 	localImages?: MycliShellLocalImageAttachment[];
 };
 
@@ -297,6 +302,12 @@ export class MycliShellRuntime {
 		this.editor.onPasteImage = () => {
 			this.editor.insertTextAtCursor?.(" @");
 		};
+		this.editor.shouldHandleAction = (action) => {
+			if (action === "app.message.followUp") {
+				return this.isTurnRunning();
+			}
+			return true;
+		};
 		this.editor.onEscape = () => {
 			void this.handleInterrupt();
 		};
@@ -376,8 +387,8 @@ export class MycliShellRuntime {
 		return true;
 	}
 
-	restoreQueuedText(text: string): void {
-		this.restoreQueuedTextToEditor(text);
+	restoreQueuedText(input: MycliShellQueuedInput | string): void {
+		this.restoreQueuedInputToEditor(input);
 	}
 
 	async shutdown(): Promise<void> {
@@ -1019,13 +1030,9 @@ export class MycliShellRuntime {
 		const followUp = this.state.footer.followUpQueueCount ?? 0;
 		if (steering > 0 || followUp > 0) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
-			if (steering > 0) {
-				this.pendingMessagesContainer.addChild(new Text(theme.fg("muted", `Steering queued: ${steering}`), 1, 0));
-			}
-			if (followUp > 0) {
-				this.pendingMessagesContainer.addChild(new Text(theme.fg("muted", `Follow-up queued: ${followUp}`), 1, 0));
-			}
-			this.pendingMessagesContainer.addChild(new Text(theme.fg("dim", "↳ option+up to edit all queued messages"), 1, 0));
+			const counts = [`steer ${steering}`, `follow-up ${followUp}`].filter((part) => !part.endsWith(" 0"));
+			this.pendingMessagesContainer.addChild(new Text(theme.fg("accent", `Pending input: ${counts.join(" · ")}`), 1, 0));
+			this.pendingMessagesContainer.addChild(new Text(theme.fg("dim", "↳ alt+up / shift+left to edit all queued messages"), 1, 0));
 		}
 		if (this.state.activePlan?.length) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
@@ -1109,7 +1116,7 @@ export class MycliShellRuntime {
 		this.footerContainer.clear();
 		this.footerContainer.addChild(new Spacer(1));
 		const sendHint = this.isTurnRunning() ? rawKeyHint("enter", "steer") : rawKeyHint("enter", "send");
-		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("option+enter", "follow-up")}  ${rawKeyHint("ctrl+c", "interrupt")}  ${rawKeyHint("option+up", "dequeue")}`, 1, 0));
+		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("tab", "follow-up")}  ${rawKeyHint("ctrl+c", "interrupt")}  ${rawKeyHint("alt+up", "dequeue")}`, 1, 0));
 		this.footerContainer.addChild(new FooterComponent(this.state.footer));
 	}
 
@@ -1266,9 +1273,12 @@ export class MycliShellRuntime {
 		if (!input) {
 			return;
 		}
+		const submitted = this.extractLocalImageAttachments(input);
 		this.editor.addToHistory(input);
 		this.editor.setText("");
-		await (this.options.onFollowUp ?? this.options.onSubmit)?.(input);
+		await (this.options.onFollowUp ?? this.options.onSubmit)?.(submitted.text, {
+			localImages: submitted.localImages,
+		});
 	}
 
 	private async restoreQueuedInput(): Promise<void> {
@@ -1277,7 +1287,7 @@ export class MycliShellRuntime {
 			this.addSystemNotice("No queued message to restore.");
 			return;
 		}
-		this.restoreQueuedTextToEditor(queued);
+		this.restoreQueuedInputToEditor(queued);
 	}
 
 	private async handleInterrupt(): Promise<void> {
@@ -1324,6 +1334,19 @@ export class MycliShellRuntime {
 	private restoreQueuedTextToEditor(queued: string): void {
 		const current = this.editor.getText().trim();
 		this.editor.setText([queued, current].filter((text) => text.trim()).join("\n\n"));
+	}
+
+	private restoreQueuedInputToEditor(input: MycliShellQueuedInput | string): void {
+		const text = typeof input === "string" ? input : input.text;
+		if (typeof input !== "string") {
+			const existing = new Map(this.pendingLocalImages.map((image) => [image.placeholder, image]));
+			for (const image of input.localImages ?? []) {
+				if (text.includes(image.placeholder) && !existing.has(image.placeholder)) {
+					this.pendingLocalImages.push(image);
+				}
+			}
+		}
+		this.restoreQueuedTextToEditor(text);
 	}
 
 	private restoreLastSubmittedInput(): void {
@@ -1579,7 +1602,7 @@ export class MycliShellRuntime {
 				"ctrl+p commands · ? help",
 				"enter send/steer · esc interrupt",
 				"ctrl+l model · ctrl+o tools · ctrl+x sandbox",
-				"ctrl+c clear/exit · alt+enter follow-up · alt+up dequeue",
+				"ctrl+c clear/exit · tab follow-up · alt+up/shift+left dequeue",
 			].join("\n"),
 		);
 	}

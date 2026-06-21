@@ -885,6 +885,29 @@ test("runtime adapter syncs backend message queues", () => {
 	assert.equal(shell.footer.liveState, "Idle");
 });
 
+test("runtime adapter syncs typed backend message queues", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		steering_items: [{ message: "steer with image", local_images: [{ path: "/tmp/a.png" }] }],
+		follow_up_items: [{ text: "follow later" }],
+		has_pending_input: true,
+		activity: {
+			kind: "pending_input",
+			has_pending_input: true,
+			steering_count: 1,
+			follow_up_count: 1,
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.footer.queueCount, 2);
+	assert.equal(shell.footer.steeringQueueCount, 1);
+	assert.equal(shell.footer.followUpQueueCount, 1);
+	assert.equal(shell.footer.hasPendingInput, true);
+	assert.equal(shell.footer.queueActivity, "pending_input");
+});
+
 test("runtime adapter hides internal task notifications from visible queues and transcript", () => {
 	let state = initialRuntimeState();
 	const notification = [

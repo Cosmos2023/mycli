@@ -9,6 +9,7 @@ export class CustomEditor extends Editor {
 	public onCtrlD?: () => void;
 	public onPasteImage?: () => void;
 	public onExtensionShortcut?: (data: string) => boolean;
+	public shouldHandleAction?: (action: AppKeybinding) => boolean;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions) {
 		super(tui, theme, options);
@@ -54,6 +55,12 @@ export class CustomEditor extends Editor {
 				continue;
 			}
 			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+				if (action === "app.message.followUp" && this.keybindings.matches(data, "tui.input.tab") && this.willUseTabForAutocomplete()) {
+					continue;
+				}
+				if (this.shouldHandleAction && !this.shouldHandleAction(action)) {
+					continue;
+				}
 				handler();
 				return;
 			}

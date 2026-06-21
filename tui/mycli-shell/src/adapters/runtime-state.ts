@@ -44,6 +44,8 @@ export type RuntimeShellState = {
 	queuedInputs: string[];
 	queuedSteeringInputs: string[];
 	queuedFollowUpInputs: string[];
+	hasPendingInput: boolean;
+	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
 	liveStatus: { state: string; text: string; kind?: string; message?: string } | null;
 	liveReasoning: { text: string; kind: string } | null;
 	viewMode: "default" | "verbose" | "focus";
@@ -73,6 +75,8 @@ export function initialRuntimeState(): RuntimeShellState {
 		queuedInputs: [],
 		queuedSteeringInputs: [],
 		queuedFollowUpInputs: [],
+		hasPendingInput: false,
+		queueActivity: null,
 		liveStatus: null,
 		liveReasoning: null,
 		viewMode: "default",
@@ -179,6 +183,8 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			queueCount: queuedInputCount(state),
 			steeringQueueCount: state.queuedSteeringInputs.length,
 			followUpQueueCount: state.queuedFollowUpInputs.length,
+			hasPendingInput: state.hasPendingInput,
+			queueActivity: state.queueActivity?.kind,
 			trust: state.trust.state ?? "unknown",
 			collaborationMode: state.collaborationMode,
 			liveState: footerLiveState(state),
@@ -457,6 +463,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		const queuedFollowUp = stringArrayValue(params.queued_follow_up);
 		const visibleSteering = visibleQueuedMessages(queuedSteering);
 		const visibleFollowUp = visibleQueuedMessages(queuedFollowUp);
+		const queueActivity = queueActivityFromPayload(params.queue_activity, visibleSteering, visibleFollowUp);
 		return {
 			...state,
 			status: params,
@@ -466,6 +473,8 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			queuedSteeringInputs: visibleSteering,
 			queuedFollowUpInputs: visibleFollowUp,
 			queuedInputs: [...visibleSteering, ...visibleFollowUp],
+			hasPendingInput: booleanValue(params.has_pending_input) ?? queueActivity.kind === "pending_input",
+			queueActivity,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			model: stringValue(params.model) ?? state.model,
 			collaborationMode: collaborationModeValue(params.collaboration_mode) ?? state.collaborationMode,
@@ -479,9 +488,14 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		return { ...state, trust, trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown" };
 	}
 	if (method === "turn.queue.updated") {
-		const steering = stringArrayValue(params.steering) ?? [];
-		const followUp = stringArrayValue(params.follow_up) ?? [];
-		return runtimeStateWithMessageQueues(state, { steering, followUp });
+		const steering = queueMessagesFromPayload(params.steering_items, params.steering);
+		const followUp = queueMessagesFromPayload(params.follow_up_items, params.follow_up);
+		return runtimeStateWithMessageQueues(state, {
+			steering,
+			followUp,
+			hasPendingInput: booleanValue(params.has_pending_input) ?? undefined,
+			activity: params.activity,
+		});
 	}
 	if (method === "session.changed") {
 		return {
@@ -505,20 +519,24 @@ export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInp
 	return {
 		...state,
 		queuedInputs: visibleQueuedInputs,
+		hasPendingInput: visibleQueuedInputs.length > 0,
 	};
 }
 
 export function runtimeStateWithMessageQueues(
 	state: RuntimeShellState,
-	queues: { steering: string[]; followUp: string[] },
+	queues: { steering: string[]; followUp: string[]; hasPendingInput?: boolean; activity?: unknown },
 ): RuntimeShellState {
 	const steering = visibleQueuedMessages(queues.steering);
 	const followUp = visibleQueuedMessages(queues.followUp);
+	const queueActivity = queueActivityFromPayload(queues.activity, steering, followUp);
 	return {
 		...state,
 		queuedSteeringInputs: steering,
 		queuedFollowUpInputs: followUp,
 		queuedInputs: [...steering, ...followUp],
+		hasPendingInput: queues.hasPendingInput ?? queueActivity.kind === "pending_input",
+		queueActivity,
 	};
 }
 
@@ -527,8 +545,58 @@ function queuedInputCount(state: RuntimeShellState): number {
 	return splitQueueCount > 0 ? splitQueueCount : state.queuedInputs.length;
 }
 
+function queueActivityFromPayload(
+	value: unknown,
+	steering: string[],
+	followUp: string[],
+): { kind: string; steeringCount: number; followUpCount: number } {
+	const fallbackSteeringCount = steering.length;
+	const fallbackFollowUpCount = followUp.length;
+	const fallbackKind = fallbackSteeringCount > 0 || fallbackFollowUpCount > 0 ? "pending_input" : "idle";
+	if (!value || typeof value !== "object") {
+		return {
+			kind: fallbackKind,
+			steeringCount: fallbackSteeringCount,
+			followUpCount: fallbackFollowUpCount,
+		};
+	}
+	const record = value as Record<string, unknown>;
+	return {
+		kind: stringValue(record.kind) ?? fallbackKind,
+		steeringCount: numberValue(record.steering_count ?? record.steeringCount) ?? fallbackSteeringCount,
+		followUpCount: numberValue(record.follow_up_count ?? record.followUpCount) ?? fallbackFollowUpCount,
+	};
+}
+
 function visibleQueuedMessages(messages: string[]): string[] {
 	return messages.filter((message) => !isInternalTaskNotification(message));
+}
+
+function queueMessagesFromPayload(items: unknown, fallback: unknown): string[] {
+	const itemMessages = queueItemMessages(items);
+	return itemMessages.length > 0 ? itemMessages : stringArrayValue(fallback);
+}
+
+function queueItemMessages(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const messages: string[] = [];
+	for (const item of value) {
+		if (typeof item === "string" && item.trim()) {
+			messages.push(item.trim());
+			continue;
+		}
+		if (!item || typeof item !== "object") {
+			continue;
+		}
+		const record = item as Record<string, unknown>;
+		const message = record.message ?? record.text;
+		if (typeof message === "string" && message.trim()) {
+			messages.push(message.trim());
+		}
+	}
+	return messages;
 }
 
 function isInternalTaskNotification(text: string): boolean {

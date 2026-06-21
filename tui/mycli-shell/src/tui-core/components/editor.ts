@@ -2157,6 +2157,21 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	public willUseTabForAutocomplete(): boolean {
+		if (this.autocompleteState) {
+			return true;
+		}
+		if (!this.autocompleteProvider) {
+			return false;
+		}
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
+		if (this.isInSlashCommandContext(beforeCursor) && !beforeCursor.trimStart().includes(" ")) {
+			return true;
+		}
+		return /(?:^|[ \t])(?:@(?:"[^"]*|[^\s]*)|#[^\s]*)$/.test(beforeCursor);
+	}
+
 	private handleSlashCommandCompletion(): void {
 		this.requestAutocomplete({ force: false, explicitTab: true });
 	}

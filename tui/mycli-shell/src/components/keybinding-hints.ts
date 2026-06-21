@@ -31,7 +31,7 @@ function defaultKeyForAction(action: string): string {
 		case "app.model.select":
 			return "ctrl+l";
 		case "app.message.followUp":
-			return "alt+enter";
+			return "tab";
 		case "app.message.dequeue":
 			return "alt+up";
 		case "tui.select.confirm":

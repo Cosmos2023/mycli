@@ -51,7 +51,7 @@ export class MycliShellApp extends Container {
 	}
 
 	private composerHint(): string {
-		return `${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${rawKeyHint("enter", "send")}  ${rawKeyHint("alt+enter", "queue")}`;
+		return `${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${rawKeyHint("enter", "send")}  ${rawKeyHint("tab", "queue")}`;
 	}
 
 	private transcriptBlocks(): MycliShellTranscriptBlock[] {

@@ -1098,6 +1098,28 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /hello/);
 });
 
+test("mycli shell runtime renders pending queued input as one status row", () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: {
+				...sampleState().footer,
+				steeringQueueCount: 1,
+				followUpQueueCount: 2,
+				hasPendingInput: true,
+				queueActivity: "pending_input",
+			},
+		},
+		terminal,
+	});
+
+	const output = stripAnsi(runtime.pendingMessagesContainer.render(100).join("\n"));
+
+	assert.match(output, /Pending input: steer 1 · follow-up 2/);
+	assert.match(output, /alt\+up \/ shift\+left to edit all queued messages/);
+});
+
 test("mycli shell runtime does not rebuild stable chrome during assistant streaming", () => {
 	const terminal = new TestTerminal();
 	const initial: MycliShellState = {
@@ -1462,6 +1484,33 @@ test("mycli shell slash autocomplete accepts selected command with tab", async (
 	await setTimeout(25);
 
 	assert.equal(runtime.editor.getText(), "/settings ");
+});
+
+test("mycli shell slash autocomplete wins over tab follow-up while running", async () => {
+	const followUps: string[] = [];
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onFollowUp: (text) => {
+			followUps.push(text);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("/");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /\/settings/);
+
+	terminal.input?.("\t");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "/settings ");
+	assert.deepEqual(followUps, []);
 });
 
 test("mycli shell slash autocomplete filters and submits with enter", async () => {
@@ -2093,7 +2142,7 @@ test("mycli shell runtime forwards running-turn messages for steering queueing",
 	assert.equal(runtime.editor.getText(), "");
 });
 
-test("mycli shell runtime queues follow-up messages with alt enter", async () => {
+test("mycli shell runtime queues follow-up messages with tab while running", async () => {
 	const followUps: string[] = [];
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
@@ -2110,10 +2159,39 @@ test("mycli shell runtime queues follow-up messages with alt enter", async () =>
 	runtime.start();
 	await setTimeout(25);
 	runtime.editor.setText("after current run");
-	terminal.input?.("\x1b\r");
+	terminal.input?.("\t");
 	await setTimeout(25);
 
 	assert.deepEqual(followUps, ["after current run"]);
+	assert.equal(runtime.editor.getText(), "");
+});
+
+test("mycli shell runtime queues follow-up image attachments with tab while running", async () => {
+	const followUps: Array<{ text: string; images: string[] }> = [];
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Running" },
+		},
+		terminal,
+		onFollowUp: (text, attachments) => {
+			followUps.push({
+				text,
+				images: attachments?.localImages?.map((image) => image.path) ?? [],
+			});
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("@/tmp/follow.png summarize after current run");
+	terminal.input?.("\t");
+	await setTimeout(25);
+
+	assert.deepEqual(followUps, [
+		{ text: "[image #1] summarize after current run", images: ["/tmp/follow.png"] },
+	]);
 	assert.equal(runtime.editor.getText(), "");
 });
 
@@ -2135,6 +2213,57 @@ test("mycli shell runtime restores queued messages with alt up", async () => {
 	await setTimeout(25);
 
 	assert.equal(runtime.editor.getText(), "queued follow-up\n\ndraft");
+});
+
+test("mycli shell runtime restores queued messages with shift left", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, steeringQueueCount: 1, followUpQueueCount: 1 },
+		},
+		terminal,
+		onDequeueQueuedInput: () => "queued follow-up",
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("draft");
+	terminal.input?.("\x1b[d");
+	await setTimeout(25);
+
+	assert.equal(runtime.editor.getText(), "queued follow-up\n\ndraft");
+});
+
+test("mycli shell runtime restores queued image attachments with alt up", async () => {
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, steeringQueueCount: 1 },
+		},
+		terminal,
+		onDequeueQueuedInput: () => ({
+			text: "[image #1] queued image",
+			localImages: [{ path: "/tmp/queued.png", placeholder: "[image #1]" }],
+		}),
+		onSubmit: (text, attachments) => {
+			submitted.push({
+				text,
+				images: attachments?.localImages?.map((image) => image.path) ?? [],
+			});
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x1bp");
+	await setTimeout(25);
+	await runtime.editor.onSubmit?.(runtime.editor.getText());
+
+	assert.deepEqual(submitted, [{ text: "[image #1] queued image", images: ["/tmp/queued.png"] }]);
+	assert.equal(runtime.editor.getText(), "");
 });
 
 test("mycli shell runtime interrupts running turns with ctrl c and restores submitted input", async () => {
