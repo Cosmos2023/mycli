@@ -70,12 +70,16 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "turn_running",
         "queued_steering",
         "queued_follow_up",
+        "has_pending_input",
+        "queue_activity",
     ]
     assert sorted(schema["properties"]) == [
         "context_window",
+        "has_pending_input",
         "model",
         "pending_decision",
         "provider",
+        "queue_activity",
         "queued_follow_up",
         "queued_steering",
         "session_id",
@@ -90,6 +94,8 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
     assert schema["properties"]["turn_running"] == {"type": "boolean"}
     assert schema["properties"]["queued_steering"] == {"type": "array"}
     assert schema["properties"]["queued_follow_up"] == {"type": "array"}
+    assert schema["properties"]["has_pending_input"] == {"type": "boolean"}
+    assert schema["properties"]["queue_activity"]["properties"]["kind"]["enum"] == ["idle", "pending_input"]
     assert sorted(schema["properties"]["context_window"]["properties"]) == [
         "max_tokens",
         "source",
@@ -103,6 +109,22 @@ def test_turn_queue_updated_schema_exposes_split_queue_snapshot() -> None:
     assert schema["required"] == ["steering", "follow_up"]
     assert schema["properties"]["steering"] == {"type": "array"}
     assert schema["properties"]["follow_up"] == {"type": "array"}
+    assert schema["properties"]["has_pending_input"] == {"type": "boolean"}
+    assert schema["properties"]["activity"]["properties"]["kind"]["enum"] == ["idle", "pending_input"]
+    assert schema["properties"]["activity"]["properties"]["steering_count"] == {"type": "integer"}
+    assert schema["properties"]["activity"]["properties"]["follow_up_count"] == {"type": "integer"}
+    assert schema["properties"]["steering_items"]["type"] == "array"
+    assert schema["properties"]["follow_up_items"]["type"] == "array"
+    queued_item = schema["properties"]["steering_items"]["items"]
+    assert queued_item["properties"]["kind"]["enum"] == ["steering", "follow_up"]
+    assert queued_item["properties"]["message"] == {"type": "string"}
+    assert queued_item["properties"]["text"] == {"type": "string"}
+    assert queued_item["properties"]["source"] == {"type": "string"}
+    assert queued_item["properties"]["client_turn_id"] == {"type": "string"}
+    local_images = queued_item["properties"]["local_images"]
+    assert local_images["type"] == "array"
+    assert local_images["items"]["properties"]["path"] == {"type": "string"}
+    assert local_images["items"]["properties"]["placeholder"] == {"type": "string"}
 
 
 def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:

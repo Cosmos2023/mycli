@@ -1282,6 +1282,8 @@ class FakeTurnService(FakeService):
         self.interrupt_requests: list[str | None] = []
         self.steering_messages: list[str] = []
         self.follow_up_messages: list[str] = []
+        self.steering_image_paths: list[tuple[str, ...]] = []
+        self.follow_up_image_paths: list[tuple[str, ...]] = []
 
     def handle_user_turn(
         self,
@@ -1333,12 +1335,28 @@ class FakeTurnService(FakeService):
     def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None:
         self.interrupt_requests.append(client_turn_id)
 
-    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def queue_steering_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        del client_turn_id
         self.steering_messages.append(message)
+        self.steering_image_paths.append(image_paths)
         return tuple(self.steering_messages), tuple(self.follow_up_messages)
 
-    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def queue_follow_up_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        del client_turn_id
         self.follow_up_messages.append(message)
+        self.follow_up_image_paths.append(image_paths)
         return tuple(self.steering_messages), tuple(self.follow_up_messages)
 
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -2410,10 +2428,24 @@ def test_gateway_queues_steering_and_follow_up_while_turn_runs(tmp_path: Path) -
     )
     assert service.started.wait(timeout=2.0)
     steering = gateway.handle_request(
-        RpcRequest(id="req_2", method="turn.steer", params={"message": "steer now"})
+        RpcRequest(
+            id="req_2",
+            method="turn.steer",
+            params={
+                "message": "steer now [image #1]",
+                "local_images": [{"path": "/tmp/steer.png", "placeholder": "[image #1]"}],
+            },
+        )
     )
     follow_up = gateway.handle_request(
-        RpcRequest(id="req_3", method="turn.follow_up", params={"message": "after this"})
+        RpcRequest(
+            id="req_3",
+            method="turn.follow_up",
+            params={
+                "message": "after this [image #1]",
+                "local_images": [{"path": "/tmp/follow.png", "placeholder": "[image #1]"}],
+            },
+        )
     )
     cleared = gateway.handle_request(
         RpcRequest(id="req_4", method="turn.queue.clear", params={})
@@ -2424,30 +2456,56 @@ def test_gateway_queues_steering_and_follow_up_while_turn_runs(tmp_path: Path) -
     assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
     assert steering.result == {
         "accepted": True,
-        "steering": ["steer now"],
+        "steering": ["steer now [image #1]"],
         "follow_up": [],
+        "has_pending_input": True,
+        "activity": {
+            "kind": "pending_input",
+            "has_pending_input": True,
+            "steering_count": 1,
+            "follow_up_count": 0,
+        },
     }
     assert follow_up.result == {
         "accepted": True,
-        "steering": ["steer now"],
-        "follow_up": ["after this"],
+        "steering": ["steer now [image #1]"],
+        "follow_up": ["after this [image #1]"],
+        "has_pending_input": True,
+        "activity": {
+            "kind": "pending_input",
+            "has_pending_input": True,
+            "steering_count": 1,
+            "follow_up_count": 1,
+        },
     }
     assert cleared.result == {
-        "steering": ["steer now"],
-        "follow_up": ["after this"],
+        "steering": ["steer now [image #1]"],
+        "follow_up": ["after this [image #1]"],
+        "has_pending_input": True,
+        "activity": {
+            "kind": "pending_input",
+            "has_pending_input": True,
+            "steering_count": 1,
+            "follow_up_count": 1,
+        },
     }
-    assert (
-        "turn.queue.updated",
-        {"steering": ["steer now"], "follow_up": []},
-    ) in events
-    assert (
-        "turn.queue.updated",
-        {"steering": ["steer now"], "follow_up": ["after this"]},
-    ) in events
-    assert (
-        "turn.queue.updated",
-        {"steering": [], "follow_up": []},
-    ) in events
+    assert service.steering_image_paths == [("/tmp/steer.png",)]
+    assert service.follow_up_image_paths == [("/tmp/follow.png",)]
+    queue_events = [params for method, params in events if method == "turn.queue.updated"]
+    assert any(
+        params["steering"] == ["steer now [image #1]"] and params["follow_up"] == []
+        for params in queue_events
+    )
+    assert any(
+        params["steering"] == ["steer now [image #1]"]
+        and params["follow_up"] == ["after this [image #1]"]
+        for params in queue_events
+    )
+    assert any(
+        params["steering"] == [] and params["follow_up"] == []
+        and params["has_pending_input"] is False
+        for params in queue_events
+    )
 
 
 def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Path) -> None:

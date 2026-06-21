@@ -84,6 +84,45 @@ _CONTEXT_WINDOW = {
         "source": _STRING,
     },
 }
+_LOCAL_IMAGE_ATTACHMENT = {
+    "type": "object",
+    "properties": {
+        "path": _STRING,
+        "placeholder": _STRING,
+    },
+}
+_LOCAL_IMAGE_ATTACHMENTS = {
+    "type": "array",
+    "items": _LOCAL_IMAGE_ATTACHMENT,
+}
+_QUEUED_INPUT_KIND = {
+    "type": "string",
+    "enum": ["steering", "follow_up"],
+}
+_QUEUED_TURN_INPUT = {
+    "type": "object",
+    "properties": {
+        "kind": _QUEUED_INPUT_KIND,
+        "message": _STRING,
+        "text": _STRING,
+        "source": _STRING,
+        "client_turn_id": _STRING,
+        "local_images": _LOCAL_IMAGE_ATTACHMENTS,
+    },
+}
+_QUEUED_TURN_INPUTS = {
+    "type": "array",
+    "items": _QUEUED_TURN_INPUT,
+}
+_QUEUE_ACTIVITY = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": ["idle", "pending_input"]},
+        "has_pending_input": _BOOLEAN,
+        "steering_count": _INTEGER,
+        "follow_up_count": _INTEGER,
+    },
+}
 GATEWAY_ERROR_CODES = (
     "internal_error",
     "invalid_params",
@@ -338,6 +377,8 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "turn_running",
             "queued_steering",
             "queued_follow_up",
+            "has_pending_input",
+            "queue_activity",
         ),
         properties={
             "session_id": _STRING,
@@ -350,6 +391,8 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "turn_running": _BOOLEAN,
             "queued_steering": _ARRAY,
             "queued_follow_up": _ARRAY,
+            "has_pending_input": _BOOLEAN,
+            "queue_activity": _QUEUE_ACTIVITY,
             "trust": _OBJECT,
         },
     ),
@@ -458,6 +501,10 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         properties={
             "steering": _ARRAY,
             "follow_up": _ARRAY,
+            "has_pending_input": _BOOLEAN,
+            "activity": _QUEUE_ACTIVITY,
+            "steering_items": _QUEUED_TURN_INPUTS,
+            "follow_up_items": _QUEUED_TURN_INPUTS,
         },
     ),
     "turn.interrupted": _schema(

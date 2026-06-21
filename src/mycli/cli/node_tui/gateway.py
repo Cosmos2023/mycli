@@ -137,13 +137,29 @@ class NodeTuiServiceLike(Protocol):
 
     def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None: ...
 
-    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+    def queue_steering_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
 
-    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+    def queue_follow_up_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
 
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
 
     def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]: ...
+
+    def queued_input_items(self) -> object: ...
+
+    def clear_queued_input_items(self) -> object: ...
 
 
 class _HandleUserTurnKwargs(TypedDict, total=False):
@@ -500,6 +516,8 @@ class NodeTuiGateway:
         message = _required_str(params, "message").strip()
         if not message:
             raise ValueError("message is required.")
+        image_paths = _local_image_paths(params.get("local_images"))
+        client_turn_id = _optional_str(params.get("client_turn_id"))
         with self._turn_lock:
             running = self._turn_running
         if not running:
@@ -507,15 +525,22 @@ class NodeTuiGateway:
         queue = getattr(self.service, "queue_steering_message", None)
         if not callable(queue):
             return {"accepted": False, "reason": "unsupported", **self._queue_payload()}
-        steering, follow_up = queue(message)
+        steering, follow_up = _call_queue_message(
+            queue,
+            message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+        )
         payload = self._queue_payload(steering=steering, follow_up=follow_up)
-        self._emit_queue_update(steering=steering, follow_up=follow_up)
+        self._emit_queue_update(payload)
         return {"accepted": True, **payload}
 
     def _handle_turn_follow_up(self, params: dict[str, object]) -> dict[str, object]:
         message = _required_str(params, "message").strip()
         if not message:
             raise ValueError("message is required.")
+        image_paths = _local_image_paths(params.get("local_images"))
+        client_turn_id = _optional_str(params.get("client_turn_id"))
         with self._turn_lock:
             running = self._turn_running
         if not running:
@@ -523,19 +548,48 @@ class NodeTuiGateway:
         queue = getattr(self.service, "queue_follow_up_message", None)
         if not callable(queue):
             return {"accepted": False, "reason": "unsupported", **self._queue_payload()}
-        steering, follow_up = queue(message)
+        steering, follow_up = _call_queue_message(
+            queue,
+            message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+        )
         payload = self._queue_payload(steering=steering, follow_up=follow_up)
-        self._emit_queue_update(steering=steering, follow_up=follow_up)
+        self._emit_queue_update(payload)
         return {"accepted": True, **payload}
 
     def _handle_turn_queue_clear(self) -> dict[str, object]:
-        clear = getattr(self.service, "clear_queued_messages", None)
-        if callable(clear):
-            steering, follow_up = clear()
+        clear_items = getattr(self.service, "clear_queued_input_items", None)
+        if callable(clear_items):
+            try:
+                steering_items, follow_up_items = clear_items()
+            except AttributeError:
+                steering_items, follow_up_items = None, None
+            if steering_items is not None and follow_up_items is not None:
+                steering = tuple(_queued_item_text(item) for item in steering_items)
+                follow_up = tuple(_queued_item_text(item) for item in follow_up_items)
+                payload = self._queue_payload(
+                    steering=steering,
+                    follow_up=follow_up,
+                    steering_items=steering_items,
+                    follow_up_items=follow_up_items,
+                )
+            else:
+                clear = getattr(self.service, "clear_queued_messages", None)
+                if callable(clear):
+                    steering, follow_up = clear()
+                else:
+                    steering, follow_up = (), ()
+                payload = self._queue_payload(steering=steering, follow_up=follow_up)
         else:
-            steering, follow_up = (), ()
-        self._emit_queue_update(steering=(), follow_up=())
-        return self._queue_payload(steering=steering, follow_up=follow_up)
+            clear = getattr(self.service, "clear_queued_messages", None)
+            if callable(clear):
+                steering, follow_up = clear()
+            else:
+                steering, follow_up = (), ()
+            payload = self._queue_payload(steering=steering, follow_up=follow_up)
+        self._emit_queue_update(self._queue_payload(steering=(), follow_up=()))
+        return payload
 
     def _handle_turn_interrupt(self) -> dict[str, object]:
         with self._turn_lock:
@@ -574,6 +628,8 @@ class NodeTuiGateway:
         *,
         steering: tuple[str, ...] | None = None,
         follow_up: tuple[str, ...] | None = None,
+        steering_items: object | None = None,
+        follow_up_items: object | None = None,
     ) -> dict[str, object]:
         if steering is None or follow_up is None:
             queued = getattr(self.service, "queued_messages", None)
@@ -581,20 +637,34 @@ class NodeTuiGateway:
                 steering, follow_up = queued()
             else:
                 steering, follow_up = (), ()
-        return {
+        if steering_items is None or follow_up_items is None:
+            queued_items = getattr(self.service, "queued_input_items", None)
+            if callable(queued_items):
+                try:
+                    steering_items, follow_up_items = queued_items()
+                except AttributeError:
+                    steering_items, follow_up_items = (), ()
+            else:
+                steering_items, follow_up_items = (), ()
+        payload: dict[str, object] = {
             "steering": list(steering),
             "follow_up": list(follow_up),
         }
+        serialized_steering = _queued_items_payload(steering_items)
+        serialized_follow_up = _queued_items_payload(follow_up_items)
+        if serialized_steering or serialized_follow_up:
+            payload["steering_items"] = serialized_steering
+            payload["follow_up_items"] = serialized_follow_up
+        payload.update(_queue_activity_payload(payload["steering"], payload["follow_up"]))
+        return payload
 
     def _emit_queue_update(
         self,
-        *,
-        steering: tuple[str, ...],
-        follow_up: tuple[str, ...],
+        payload: dict[str, object],
     ) -> None:
         if self._emit is None:
             return
-        self._emit_event("turn.queue.updated", self._queue_payload(steering=steering, follow_up=follow_up))
+        self._emit_event("turn.queue.updated", payload)
 
     def _record_turn_interrupt_request(self, *, client_turn_id: str | None) -> None:
         recorder = getattr(self.service, "record_turn_interrupt_request", None)
@@ -791,13 +861,24 @@ class NodeTuiGateway:
             self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "queue_updated":
-            self._emit_event(
-                "turn.queue.updated",
-                {
-                    "steering": _string_list(event.metadata.get("steering")),
-                    "follow_up": _string_list(event.metadata.get("follow_up")),
-                },
-            )
+            payload: dict[str, object] = {
+                "steering": _string_list(event.metadata.get("steering")),
+                "follow_up": _string_list(event.metadata.get("follow_up")),
+            }
+            has_pending_input = event.metadata.get("has_pending_input")
+            activity = event.metadata.get("activity")
+            if isinstance(has_pending_input, bool):
+                payload["has_pending_input"] = has_pending_input
+            if isinstance(activity, dict):
+                payload["activity"] = activity
+            steering_items = _queued_items_payload(event.metadata.get("steering_items"))
+            follow_up_items = _queued_items_payload(event.metadata.get("follow_up_items"))
+            if steering_items or follow_up_items:
+                payload["steering_items"] = steering_items
+                payload["follow_up_items"] = follow_up_items
+            if "has_pending_input" not in payload or "activity" not in payload:
+                payload.update(_queue_activity_payload(payload["steering"], payload["follow_up"]))
+            self._emit_event("turn.queue.updated", payload)
             self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "plan_updated":
@@ -1458,6 +1539,8 @@ class NodeTuiGateway:
             "turn_running": self._turn_running,
             "queued_steering": queue_payload["steering"],
             "queued_follow_up": queue_payload["follow_up"],
+            "has_pending_input": queue_payload["has_pending_input"],
+            "queue_activity": queue_payload["activity"],
             "trust": self._trust_status_payload(),
         }
         title = self._session_title()
@@ -1569,6 +1652,85 @@ def _local_image_paths(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(paths))
 
 
+def _queued_items_payload(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list | tuple):
+        return []
+    items: list[dict[str, object]] = []
+    for item in value:
+        if hasattr(item, "to_gateway_payload"):
+            payload = item.to_gateway_payload()
+            if isinstance(payload, dict):
+                items.append(payload)
+            continue
+        if isinstance(item, dict):
+            message = item.get("message") or item.get("text")
+            if not isinstance(message, str) or not message:
+                continue
+            payload = dict(item)
+            payload.setdefault("message", message)
+            payload.setdefault("text", message)
+            local_images = _local_image_payloads(payload.get("local_images"))
+            if local_images:
+                payload["local_images"] = local_images
+            items.append(payload)
+            continue
+        if isinstance(item, str) and item:
+            items.append({"message": item, "text": item})
+    return items
+
+
+def _queue_activity_payload(
+    steering: object,
+    follow_up: object,
+) -> dict[str, object]:
+    steering_count = len(steering) if isinstance(steering, list | tuple) else 0
+    follow_up_count = len(follow_up) if isinstance(follow_up, list | tuple) else 0
+    has_pending_input = steering_count > 0 or follow_up_count > 0
+    return {
+        "has_pending_input": has_pending_input,
+        "activity": {
+            "kind": "pending_input" if has_pending_input else "idle",
+            "has_pending_input": has_pending_input,
+            "steering_count": steering_count,
+            "follow_up_count": follow_up_count,
+        },
+    }
+
+
+def _queued_item_text(item: object) -> str:
+    if hasattr(item, "to_legacy_text"):
+        text = item.to_legacy_text()
+        return text if isinstance(text, str) else ""
+    if isinstance(item, dict):
+        message = item.get("message") or item.get("text")
+        return message if isinstance(message, str) else ""
+    return item if isinstance(item, str) else ""
+
+
+def _local_image_payloads(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list | tuple):
+        return []
+    payloads: list[dict[str, object]] = []
+    for index, item in enumerate(value, start=1):
+        if isinstance(item, dict):
+            path = item.get("path")
+            if isinstance(path, str) and path:
+                placeholder = item.get("placeholder")
+                payloads.append(
+                    {
+                        "path": path,
+                        "placeholder": (
+                            placeholder
+                            if isinstance(placeholder, str) and placeholder
+                            else f"[image #{index}]"
+                        ),
+                    }
+                )
+        elif isinstance(item, str) and item:
+            payloads.append({"path": item, "placeholder": f"[image #{index}]"})
+    return payloads
+
+
 def _handle_user_turn_kwargs(
     *,
     handle_user_turn: Callable[..., object],
@@ -1587,6 +1749,29 @@ def _handle_user_turn_kwargs(
     if image_paths and _callable_accepts_keyword(handle_user_turn, "image_paths"):
         kwargs["image_paths"] = image_paths
     return kwargs
+
+
+def _call_queue_message(
+    queue: Callable[..., object],
+    message: str,
+    *,
+    image_paths: tuple[str, ...],
+    client_turn_id: str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    kwargs: dict[str, object] = {}
+    if image_paths and _callable_accepts_keyword(queue, "image_paths"):
+        kwargs["image_paths"] = image_paths
+    if client_turn_id is not None and _callable_accepts_keyword(queue, "client_turn_id"):
+        kwargs["client_turn_id"] = client_turn_id
+    result = queue(message, **kwargs)
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], tuple)
+        and isinstance(result[1], tuple)
+    ):
+        return result
+    return (), ()
 
 
 def _callable_accepts_keyword(callable_obj: Callable[..., object], keyword: str) -> bool:

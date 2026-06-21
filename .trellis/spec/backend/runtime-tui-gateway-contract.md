@@ -342,6 +342,10 @@
   - `queued_steering`: array of queued steering messages for the active turn.
   - `queued_follow_up`: array of queued follow-up messages waiting for the
     active turn to finish.
+  - `has_pending_input`: boolean derived from the queue snapshot.
+  - `queue_activity`: object with `kind`, `has_pending_input`,
+    `steering_count`, and `follow_up_count`. It is the compact Codex-like
+    pending-input signal clients can render without inspecting message text.
   - `status.changed` is a snapshot event. It is not a replacement for
     `status.update`, and booleans alone are not enough to recover a pending
     approval or clarification.
@@ -355,16 +359,29 @@
     clients to respond because they need the stable `decision_id` or
     `request_id`.
 - Running-turn queue RPCs:
-  - `turn.steer` accepts `{message}` only while a turn is running. It queues
-    steering text that the runtime may inject before the next model request in
-    the active turn.
-  - `turn.follow_up` accepts `{message}` only while a turn is running. It queues
-    a follow-up user message after the active assistant answer finishes.
+  - `turn.steer` accepts `{message, client_turn_id?, local_images?}` only while
+    a turn is running. It queues steering input that the runtime may inject
+    before the next model request in the active turn.
+  - `turn.follow_up` accepts `{message, client_turn_id?, local_images?}` only
+    while a turn is running. It queues a follow-up user input after the active
+    assistant answer finishes.
   - `turn.queue.clear` accepts `{}` and returns the cleared steering and
     follow-up messages so the TUI can restore them into the editor.
+  - `local_images` is an array of `{path, placeholder}` local image attachment
+    descriptors. Runtime-compatible clients must keep these descriptors with
+    queued inputs instead of treating `[image #n]` as plain text only.
 - `turn.queue.updated` payload:
   - `steering`: array of currently queued steering messages.
   - `follow_up`: array of currently queued follow-up messages.
+  - `has_pending_input`: boolean derived from the current queue snapshot.
+  - `activity`: object with `kind`, `has_pending_input`, `steering_count`, and
+    `follow_up_count`.
+  - `steering_items`: optional typed array of currently queued steering inputs.
+  - `follow_up_items`: optional typed array of currently queued follow-up
+    inputs.
+  - Typed queue items include `kind`, `message`, `text`, `source`,
+    optional `client_turn_id`, and optional `local_images`. New clients should
+    prefer typed arrays and fall back to string arrays for older gateways.
   - Emit after successful queue mutation and after runtime drains queued
     messages, so the footer and pending-message area stay synchronized with the
     backend instead of relying on local-only queue state.
