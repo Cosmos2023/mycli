@@ -68,6 +68,7 @@ provider = "openai"
 protocol = "responses"
 name = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
+supports_images = true
 
 [request]
 max_prompt_tokens = 12000
@@ -126,6 +127,10 @@ uv run mycli --node-tui
 ## TUI 交互
 
 默认 Node TUI 使用主屏幕渲染，但不捕获鼠标，因此终端原生复制和 scrollback 仍然可用。它也维护一个内部 transcript viewport，用于在不破坏底部输入框的情况下滚动历史。
+
+如果当前模型支持视觉输入，可以在 TUI 输入中使用 `@/path/to/image.png`、`@/path/to/image.jpg`、`@/path/to/image.webp` 或 `@/path/to/image.gif` 附加本地图片。发送时输入里的路径会替换为 `[image #1]` 占位文本，图片本体作为结构化 image block 传给 provider。
+
+`supports_images` 默认随 provider 选择：OpenAI、Codex、Qwen、Anthropic 和 compatible 默认开启，DeepSeek 默认关闭。如果 compatible endpoint 实际不支持多模态，可以在 `[model]` 中设为 `false`。
 
 常用按键：
 

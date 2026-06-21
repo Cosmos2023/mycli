@@ -30,6 +30,7 @@ class ProviderProfile:
     default_model: str | None = None
     unsupported_responses_hint: str | None = None
     supports_anthropic_messages: bool = False
+    supports_images: bool = False
     cache_policy_capability: Any | None = None
 
 

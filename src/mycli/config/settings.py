@@ -397,6 +397,16 @@ def resolve_config(
         or profile.default_model
         or "gpt-5"
     )
+    supports_images_value = _parse_optional_bool(
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_SUPPORTS_IMAGES",
+            config_key="supports_images",
+        )
+    )
     api_key_value = (
         env.get("MYCLI_API_KEY")
         or AuthStore.from_home(home).get_api_key(provider.value)
@@ -732,6 +742,11 @@ def resolve_config(
         protocol=protocol,
         api_base_url=api_base_url,
         api_key=api_key,
+        supports_images=(
+            profile.supports_images
+            if supports_images_value is None
+            else supports_images_value
+        ),
         session_id=session_id,
         cache_policy_capability=cache_policy_capability,
         max_prompt_tokens=int(str(max_prompt_tokens_value)),

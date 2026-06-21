@@ -405,3 +405,72 @@ def test_qwen_adapter_emits_cache_control_content_blocks() -> None:
         },
         {"role": "user", "content": "Current request."},
     ]
+
+
+def test_qwen_adapter_emits_cache_control_for_existing_text_blocks() -> None:
+    adapter = QwenChatProviderAdapter()
+
+    adapted = adapter.adapt_messages(
+        [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Stable system prompt.",
+                    }
+                ],
+                "metadata": {
+                    "provider_request_policy": {
+                        "cache_control_breakpoints": ("system_static",),
+                    },
+                    "qwen_cache_control_breakpoint": "system_static",
+                },
+            },
+        ]
+    )
+
+    assert adapted == [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Stable system prompt.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
+    ]
+
+
+def test_qwen_adapter_preserves_existing_cache_control_on_wire_copy() -> None:
+    adapter = QwenChatProviderAdapter()
+
+    adapted = adapter.adapt_messages(
+        [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Stable system prompt.",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert adapted == [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Stable system prompt.",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
+    ]

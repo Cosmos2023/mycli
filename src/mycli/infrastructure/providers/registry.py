@@ -22,6 +22,7 @@ COMPATIBLE_PROFILE = ProviderProfile(
     supports_chat_completions=True,
     default_base_url="https://api.openai.com/v1",
     default_model=None,
+    supports_images=True,
     cache_policy_capability=ProviderCachePolicyCapability(
         prompt_cache_key_enabled=True,
         cache_control_enabled=False,

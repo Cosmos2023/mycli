@@ -62,6 +62,7 @@ class DefaultChatProviderAdapter:
         return (
             key == "metadata"
             or key in {
+                "blocks",
                 "cache_control",
                 "anthropic",
                 "provider_state",

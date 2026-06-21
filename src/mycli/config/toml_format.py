@@ -12,6 +12,7 @@ CONFIG_SECTIONS: tuple[ConfigSection, ...] = (
             ("protocol", "protocol"),
             ("name", "model"),
             ("api_base_url", "api_base_url"),
+            ("supports_images", "supports_images"),
         ),
     ),
     (

@@ -149,6 +149,7 @@ def test_resolve_config_reads_sectioned_user_config(tmp_path: Path) -> None:
     assert config.protocol is ProtocolId.CHAT_COMPLETIONS
     assert config.model == "qwen3.6-plus"
     assert config.api_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config.supports_images is True
     assert config.api_key == "sk-auth-store"
     assert config.max_prompt_tokens == 64_000
     assert config.memory_enabled is True
@@ -162,6 +163,56 @@ def test_resolve_config_reads_sectioned_user_config(tmp_path: Path) -> None:
         provider_family="qwen",
         cache_strategy="cache_control",
     )
+
+
+def test_resolve_config_allows_explicit_image_support_override(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (home_dir / ".mycli").mkdir()
+    (home_dir / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "[model]",
+                'provider = "qwen"',
+                'protocol = "chat_completions"',
+                'name = "qwen3.6-plus"',
+                "supports_images = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={"MYCLI_API_KEY": "test-key"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.QWEN
+    assert config.supports_images is False
+
+
+def test_resolve_config_uses_deepseek_non_image_default(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={
+            "MYCLI_API_KEY": "test-key",
+            "MYCLI_PROVIDER": "deepseek",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.provider is ProviderId.DEEPSEEK
+    assert config.supports_images is False
 
 
 def test_resolve_config_loads_memory_extraction_interval(tmp_path: Path) -> None:

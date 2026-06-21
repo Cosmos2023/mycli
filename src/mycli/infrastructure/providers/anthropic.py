@@ -11,6 +11,7 @@ ANTHROPIC_PROFILE = ProviderProfile(
     supports_anthropic_messages=True,
     default_base_url="https://api.anthropic.com",
     default_model="claude-sonnet-4-6",
+    supports_images=True,
     unsupported_responses_hint="Use protocol='anthropic_messages' for Anthropic.",
     cache_policy_capability=ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,

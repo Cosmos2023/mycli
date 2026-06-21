@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from typing import cast
-
 from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
 from mycli.domain.runtime.request_shape import ProviderCachePolicyCapability
 from mycli.infrastructure.providers.chat import DefaultChatProviderAdapter
-from mycli.utils.provider_replay import sanitize_provider_private
 
 QWEN_PROFILE = ProviderProfile(
     provider=ProviderId.QWEN,
@@ -14,6 +11,7 @@ QWEN_PROFILE = ProviderProfile(
     supports_chat_completions=True,
     default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     default_model="qwen3.6-plus",
+    supports_images=True,
     cache_policy_capability=ProviderCachePolicyCapability(
         prompt_cache_key_enabled=False,
         cache_control_enabled=True,
@@ -33,10 +31,7 @@ class QwenChatProviderAdapter(DefaultChatProviderAdapter):
         adapted_messages: list[dict[str, object]] = []
         for message in messages:
             metadata = message.get("metadata")
-            adapted_message = cast(
-                dict[str, object],
-                sanitize_provider_private(message),
-            )
+            adapted_message = dict(message)
             if self._should_emit_cache_control(metadata):
                 content = adapted_message.get("content")
                 if isinstance(content, str) and content:
@@ -47,11 +42,37 @@ class QwenChatProviderAdapter(DefaultChatProviderAdapter):
                             "cache_control": {"type": "ephemeral"},
                         }
                     ]
+                elif isinstance(content, list):
+                    adapted_message["content"] = self._content_blocks_with_cache_control(
+                        content
+                    )
             for key in tuple(adapted_message):
                 if self._provider_private_message_key(key):
                     adapted_message.pop(key, None)
             adapted_messages.append(adapted_message)
         return adapted_messages
+
+    def _content_blocks_with_cache_control(
+        self,
+        content: list[object],
+    ) -> list[object]:
+        adapted_blocks: list[object] = []
+        cache_control_applied = False
+        for block in content:
+            if (
+                not cache_control_applied
+                and isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+                and block.get("text")
+            ):
+                adapted_block = dict(block)
+                adapted_block["cache_control"] = {"type": "ephemeral"}
+                adapted_blocks.append(adapted_block)
+                cache_control_applied = True
+                continue
+            adapted_blocks.append(block)
+        return adapted_blocks
 
     def _should_emit_cache_control(self, metadata: object) -> bool:
         if not isinstance(metadata, dict):
