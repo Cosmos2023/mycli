@@ -19,9 +19,12 @@ import {
 import { MycliShellRuntime } from "./shell-runtime.ts";
 import { NativeChatRuntime } from "./native-chat-runtime.ts";
 import type { MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
+import type { MycliShellSubmitAttachments } from "./shell-runtime.ts";
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
+
+type SubmitTurnOptions = { fromQueue?: "steer" | "followUp"; attachments?: MycliShellSubmitAttachments };
 
 const client = new GatewayClient({
 	input: process.stdin,
@@ -147,7 +150,11 @@ async function loadSessions(): Promise<void> {
 	}
 }
 
-async function submitTurn(message: string, options: { fromQueue?: "steer" | "followUp" } = {}): Promise<void> {
+async function submitTurn(
+	message: string,
+	optionsOrAttachments: SubmitTurnOptions | MycliShellSubmitAttachments = {},
+): Promise<void> {
+	const options = normalizeSubmitOptions(optionsOrAttachments);
 	const text = message.trim();
 	if (!text) {
 		return;
@@ -157,7 +164,15 @@ async function submitTurn(message: string, options: { fromQueue?: "steer" | "fol
 		return;
 	}
 	try {
-		await send("turn.submit", { message: text, client_turn_id: nextClientTurnId(options.fromQueue ?? "ui") }, { recordErrors: false });
+		await send(
+			"turn.submit",
+			{
+				message: text,
+				client_turn_id: nextClientTurnId(options.fromQueue ?? "ui"),
+				...(options.attachments?.localImages?.length ? { local_images: options.attachments.localImages } : {}),
+			},
+			{ recordErrors: false },
+		);
 		backendTurnBusy = true;
 		if (options.fromQueue === "steer") {
 			queuedSteeringTurns.shift();
@@ -185,6 +200,18 @@ async function submitTurn(message: string, options: { fromQueue?: "steer" | "fol
 		backendTurnBusy = false;
 		throw error;
 	}
+}
+
+function normalizeSubmitOptions(
+	value: SubmitTurnOptions | MycliShellSubmitAttachments,
+): SubmitTurnOptions {
+	if ("localImages" in value) {
+		return { attachments: value };
+	}
+	if ("fromQueue" in value || "attachments" in value) {
+		return value;
+	}
+	return {};
 }
 
 function nextClientTurnId(prefix: string): string {

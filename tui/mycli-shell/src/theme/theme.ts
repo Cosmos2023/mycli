@@ -381,6 +381,7 @@ export function getSelectListTheme(): SelectListTheme {
 export function getEditorTheme(): EditorTheme {
 	return {
 		borderColor: (text) => theme.fg("borderMuted", text),
+		imageMarker: (text) => theme.bold(theme.fg("accent", text)),
 		selectList: getSelectListTheme(),
 	};
 }

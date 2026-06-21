@@ -3,6 +3,7 @@ import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { join } from "node:path";
 import type { Terminal } from "../src/tui-core/terminal.ts";
+import { Editor } from "../src/tui-core/components/editor.ts";
 import { visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
 import { BashExecutionComponent, FooterComponent, MycliShellRuntime, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
@@ -1875,6 +1876,26 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.equal(runtime.getState().transcript?.length, 0);
 });
 
+test("mycli shell runtime submits local image attachments from @image paths", async () => {
+	const terminal = new TestTerminal();
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: (text, attachments) => {
+			submitted.push({ text, images: attachments?.localImages?.map((image) => image.path) ?? [] });
+		},
+	});
+
+	runtime.editor.setText("describe @/tmp/screenshot.JPEG and @/tmp/diagram.gif please");
+	await runtime.editor.onSubmit?.("describe @/tmp/screenshot.JPEG and @/tmp/diagram.gif please");
+
+	assert.deepEqual(submitted, [
+		{ text: "describe [image #1] and [image #2] please", images: ["/tmp/screenshot.JPEG", "/tmp/diagram.gif"] },
+	]);
+	assert.equal(runtime.editor.getText(), "");
+});
+
 test("mycli shell runtime normalizes dropped workspace file paths in editor", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
@@ -1886,6 +1907,170 @@ test("mycli shell runtime normalizes dropped workspace file paths in editor", as
 	terminal.input?.(`\x1b[200~${join(process.cwd(), "src/app.ts")}\x1b[201~`);
 
 	assert.equal(runtime.editor.getText(), "@src/app.ts");
+});
+
+test("mycli shell runtime turns dropped workspace image files into attachments", async () => {
+	const terminal = new TestTerminal();
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: (text, attachments) => {
+			submitted.push({ text, images: attachments?.localImages?.map((image) => image.path) ?? [] });
+		},
+	});
+	runtime.start();
+
+	terminal.input?.(`\x1b[200~${join(process.cwd(), "assets/screen.webp")}\x1b[201~`);
+
+	assert.equal(runtime.editor.getText(), "[image #1]");
+
+	await runtime.editor.onSubmit?.("describe [image #1]");
+
+	assert.deepEqual(submitted, [{ text: "describe [image #1]", images: ["assets/screen.webp"] }]);
+	assert.equal(runtime.editor.getText(), "");
+});
+
+test("mycli shell runtime separates dropped image placeholders from preceding words", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+	runtime.start();
+	runtime.editor.setText("describe");
+
+	terminal.input?.(`\x1b[200~${join(process.cwd(), "assets/screen.png")}\x1b[201~`);
+
+	assert.equal(runtime.editor.getText(), "describe [image #1]");
+});
+
+test("mycli shell runtime promotes plain absolute image path input into attachments", async () => {
+	const terminal = new TestTerminal();
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: (text, attachments) => {
+			submitted.push({ text, images: attachments?.localImages?.map((image) => image.path) ?? [] });
+		},
+	});
+	runtime.start();
+
+	runtime.editor.setText("/Users/cosmos/Desktop/qq_emoji_image.jpg");
+
+	assert.equal(runtime.editor.getText(), "[image #1]");
+
+	await runtime.editor.onSubmit?.("[image #1]");
+
+	assert.deepEqual(submitted, [
+		{ text: "[image #1]", images: ["/Users/cosmos/Desktop/qq_emoji_image.jpg"] },
+	]);
+});
+
+test("mycli shell runtime promotes terminal absolute image path input into attachments", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+	runtime.start();
+
+	terminal.input?.("/Users/cosmos/Desktop/qq_emoji_image.jpg");
+
+	assert.equal(runtime.editor.getText(), "[image #1]");
+});
+
+test("mycli shell runtime keeps dropped image attachments when submitting with enter", async () => {
+	const terminal = new TestTerminal();
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: (text, attachments) => {
+			submitted.push({ text, images: attachments?.localImages?.map((image) => image.path) ?? [] });
+		},
+	});
+	runtime.start();
+
+	terminal.input?.("/Users/cosmos/Desktop/qq_emoji_image.jpg");
+	terminal.input?.("这张图是什么内容");
+	terminal.input?.("\r");
+
+	assert.deepEqual(submitted, [
+		{
+			text: "[image #1]这张图是什么内容",
+			images: ["/Users/cosmos/Desktop/qq_emoji_image.jpg"],
+		},
+	]);
+});
+
+test("mycli shell editor treats image placeholders as atomic colored markers", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+	runtime.start();
+
+	terminal.input?.("/Users/cosmos/Desktop/qq_emoji_image.jpg");
+	terminal.input?.("x");
+
+	assert.equal(runtime.editor.getText(), "[image #1]x");
+	assert.match(stripAnsi(runtime.editorContainer.render(100).join("\n")), /\[image #1\]x/);
+
+	terminal.input?.("\x1b[D");
+	assert.deepEqual(runtime.editor.getCursor(), { line: 0, col: "[image #1]".length });
+
+	terminal.input?.("\x1b[D");
+	assert.deepEqual(runtime.editor.getCursor(), { line: 0, col: 0 });
+
+	terminal.input?.("\x1b[C");
+	assert.deepEqual(runtime.editor.getCursor(), { line: 0, col: "[image #1]".length });
+
+	terminal.input?.("\b");
+	assert.equal(runtime.editor.getText(), "x");
+});
+
+test("editor renders image placeholders through marker styling", () => {
+	const terminal = new TestTerminal();
+	const editor = new Editor(
+		{ terminal, requestRender: () => undefined } as never,
+		{
+			borderColor: (text) => text,
+			imageMarker: (text) => `<image>${text}</image>`,
+			selectList: {
+				selectedPrefix: (text) => text,
+				selectedText: (text) => text,
+				description: (text) => text,
+				scrollInfo: (text) => text,
+				noMatch: (text) => text,
+			},
+		},
+	);
+	editor.setText("[image #1] hello");
+
+	assert.match(editor.render(80).join("\n"), /<image>\[image #1\]<\/image> hello/);
+});
+
+test("mycli shell runtime ignores dropped image attachments after placeholder deletion", async () => {
+	const terminal = new TestTerminal();
+	const submitted: Array<{ text: string; images: string[] }> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: (text, attachments) => {
+			submitted.push({ text, images: attachments?.localImages?.map((image) => image.path) ?? [] });
+		},
+	});
+	runtime.start();
+
+	terminal.input?.(`\x1b[200~${join(process.cwd(), "assets/screen.png")}\x1b[201~`);
+	runtime.editor.setText("describe without image");
+
+	await runtime.editor.onSubmit?.("describe without image");
+
+	assert.deepEqual(submitted, [{ text: "describe without image", images: [] }]);
 });
 
 test("mycli shell runtime forwards running-turn messages for steering queueing", async () => {

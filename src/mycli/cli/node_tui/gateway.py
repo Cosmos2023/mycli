@@ -149,6 +149,7 @@ class NodeTuiServiceLike(Protocol):
 class _HandleUserTurnKwargs(TypedDict, total=False):
     stream_sink: Callable[[RuntimeStreamEvent], None]
     interrupt_token: RuntimeInterruptToken
+    image_paths: tuple[str, ...]
 
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
@@ -469,6 +470,7 @@ class NodeTuiGateway:
                 message="message is required.",
                 method=request.method,
             )
+        image_paths = _local_image_paths(request.params.get("local_images"))
         client_turn_id = _optional_str(request.params.get("client_turn_id")) or str(request.id)
         with self._turn_lock:
             if self._turn_running:
@@ -484,7 +486,11 @@ class NodeTuiGateway:
             self._interrupt_requested = False
             self._turn_thread = Thread(
                 target=self._run_turn_worker,
-                kwargs={"message": message, "client_turn_id": client_turn_id},
+                kwargs={
+                    "message": message,
+                    "client_turn_id": client_turn_id,
+                    "image_paths": image_paths,
+                },
                 daemon=True,
             )
             self._turn_thread.start()
@@ -599,7 +605,13 @@ class NodeTuiGateway:
         except AttributeError:
             return
 
-    def _run_turn_worker(self, *, message: str, client_turn_id: str) -> None:
+    def _run_turn_worker(
+        self,
+        *,
+        message: str,
+        client_turn_id: str,
+        image_paths: tuple[str, ...] = (),
+    ) -> None:
         self._emit_event("turn.started", {"client_turn_id": client_turn_id})
         self._emit_status_update(
             client_turn_id=client_turn_id,
@@ -614,6 +626,7 @@ class NodeTuiGateway:
                     handle_user_turn=self.service.handle_user_turn,
                     stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
                     interrupt_token=self._current_interrupt_token,
+                    image_paths=image_paths,
                 ),
             )
         except KeyboardInterrupt:
@@ -1541,11 +1554,27 @@ def _required_str(params: dict[str, object], key: str) -> str:
     return value
 
 
+def _local_image_paths(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    paths: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            paths.append(item)
+            continue
+        if isinstance(item, dict):
+            path = item.get("path")
+            if isinstance(path, str) and path:
+                paths.append(path)
+    return tuple(dict.fromkeys(paths))
+
+
 def _handle_user_turn_kwargs(
     *,
     handle_user_turn: Callable[..., object],
     stream_sink: Callable[[RuntimeStreamEvent], None],
     interrupt_token: RuntimeInterruptToken | None,
+    image_paths: tuple[str, ...] = (),
 ) -> _HandleUserTurnKwargs:
     # The gateway is used directly in tests with small fake services. Keep the
     # new cancellation channel optional so old service fakes remain valid.
@@ -1555,6 +1584,8 @@ def _handle_user_turn_kwargs(
         "interrupt_token",
     ):
         kwargs["interrupt_token"] = interrupt_token
+    if image_paths and _callable_accepts_keyword(handle_user_turn, "image_paths"):
+        kwargs["image_paths"] = image_paths
     return kwargs
 
 

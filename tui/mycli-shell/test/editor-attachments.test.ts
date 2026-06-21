@@ -20,6 +20,34 @@ test("editor normalizes file url drops into @ references", () => {
 	assert.equal(text, "@docs/notes.md");
 });
 
+test("editor normalizes dropped workspace image files into image placeholders", () => {
+	const images: string[] = [];
+	const text = normalizeDroppedFilePaste("/repo/assets/screen.WEBP", {
+		cwd: "/repo",
+		onDroppedImageFile: (path) => {
+			images.push(path);
+			return "[image #1]";
+		},
+	});
+
+	assert.equal(text, "[image #1]");
+	assert.deepEqual(images, ["assets/screen.WEBP"]);
+});
+
+test("editor normalizes dropped absolute image files outside workspace into image placeholders", () => {
+	const images: string[] = [];
+	const text = normalizeDroppedFilePaste("/Users/cosmos/Desktop/qq_emoji_image.jpg", {
+		cwd: "/Users/cosmos/Downloads",
+		onDroppedImageFile: (path) => {
+			images.push(path);
+			return "[image #1]";
+		},
+	});
+
+	assert.equal(text, "[image #1]");
+	assert.deepEqual(images, ["/Users/cosmos/Desktop/qq_emoji_image.jpg"]);
+});
+
 test("editor keeps multi-item and outside-workspace pastes as plain text", () => {
 	assert.equal(normalizeDroppedFilePaste("/tmp/outside.md", { cwd: "/repo" }), "/tmp/outside.md");
 	assert.equal(normalizeDroppedFilePaste("/repo/a.md\n/repo/b.md", { cwd: "/repo" }), "/repo/a.md\n/repo/b.md");

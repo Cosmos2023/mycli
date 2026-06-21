@@ -18,7 +18,12 @@ export type {
 	MycliShellToolStatus,
 } from "./model.ts";
 export { MycliShellApp, renderMycliShell } from "./shell-app.ts";
-export { MycliShellRuntime, type MycliShellRuntimeOptions } from "./shell-runtime.ts";
+export {
+	MycliShellRuntime,
+	type MycliShellLocalImageAttachment,
+	type MycliShellRuntimeOptions,
+	type MycliShellSubmitAttachments,
+} from "./shell-runtime.ts";
 export { AssistantMessageComponent } from "./components/assistant-message.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
 export { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";

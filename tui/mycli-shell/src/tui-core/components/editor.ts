@@ -2,6 +2,7 @@ import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocompl
 import { getKeybindings } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
+import { isLocalImageAttachmentPath } from "../../local-image-attachments.ts";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.ts";
 import { UndoStack } from "../undo-stack.ts";
@@ -18,9 +19,25 @@ const PASTE_MARKER_REGEX = /\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]/g;
 /** Non-global version for single-segment testing. */
 const PASTE_MARKER_SINGLE = /^\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]$/;
 
+/** Regex matching image attachment placeholders like `[image #1]`. */
+const IMAGE_MARKER_REGEX = /\[image #(\d+)\]/g;
+
+/** Non-global version for single-segment testing. */
+const IMAGE_MARKER_SINGLE = /^\[image #(\d+)\]$/;
+
+/** Check if a segment is an atomic editor marker. */
+function isAtomicEditorMarker(segment: string): boolean {
+	return isPasteMarker(segment) || isImageMarker(segment);
+}
+
 /** Check if a segment is a paste marker (i.e. was merged by segmentWithMarkers). */
 function isPasteMarker(segment: string): boolean {
 	return segment.length >= 10 && PASTE_MARKER_SINGLE.test(segment);
+}
+
+/** Check if a segment is an image marker (i.e. was merged by segmentWithMarkers). */
+function isImageMarker(segment: string): boolean {
+	return segment.length >= 10 && IMAGE_MARKER_SINGLE.test(segment);
 }
 
 /**
@@ -36,20 +53,28 @@ function segmentWithMarkers(
 	validIds: Set<number>,
 ): Iterable<Intl.SegmentData> {
 	// Fast path: no paste markers in the text or no valid IDs.
-	if (validIds.size === 0 || !text.includes("[paste #")) {
+	if ((validIds.size === 0 || !text.includes("[paste #")) && !text.includes("[image #")) {
 		return baseSegmenter.segment(text);
 	}
 
 	// Find all marker spans with valid IDs.
 	const markers: Array<{ start: number; end: number }> = [];
-	for (const m of text.matchAll(PASTE_MARKER_REGEX)) {
-		const id = Number.parseInt(m[1]!, 10);
-		if (!validIds.has(id)) continue;
-		markers.push({ start: m.index, end: m.index + m[0].length });
+	if (validIds.size > 0 && text.includes("[paste #")) {
+		for (const m of text.matchAll(PASTE_MARKER_REGEX)) {
+			const id = Number.parseInt(m[1]!, 10);
+			if (!validIds.has(id)) continue;
+			markers.push({ start: m.index, end: m.index + m[0].length });
+		}
+	}
+	if (text.includes("[image #")) {
+		for (const m of text.matchAll(IMAGE_MARKER_REGEX)) {
+			markers.push({ start: m.index, end: m.index + m[0].length });
+		}
 	}
 	if (markers.length === 0) {
 		return baseSegmenter.segment(text);
 	}
+	markers.sort((a, b) => a.start - b.start);
 
 	// Build merged segment list.
 	const baseSegments = baseSegmenter.segment(text);
@@ -131,7 +156,7 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		const grapheme = seg.segment;
 		const gWidth = visibleWidth(grapheme);
 		const charIndex = seg.index;
-		const isWs = !isPasteMarker(grapheme) && isWhitespaceChar(grapheme);
+		const isWs = !isAtomicEditorMarker(grapheme) && isWhitespaceChar(grapheme);
 
 		// Overflow check before advancing.
 		if (currentWidth + gWidth > maxWidth) {
@@ -179,7 +204,7 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		// Multiple spaces join (no break between them); the break point is
 		// after the last space before the next word.
 		const next = segments[i + 1];
-		if (isWs && next && (isPasteMarker(next.segment) || !isWhitespaceChar(next.segment))) {
+		if (isWs && next && (isAtomicEditorMarker(next.segment) || !isWhitespaceChar(next.segment))) {
 			wrapOppIndex = next.index;
 			wrapOppWidth = currentWidth;
 		}
@@ -206,12 +231,14 @@ interface LayoutLine {
 
 export interface EditorTheme {
 	borderColor: (str: string) => string;
+	imageMarker?: (str: string) => string;
 	selectList: SelectListTheme;
 }
 
 export interface EditorOptions {
 	paddingX?: number;
 	autocompleteMaxVisible?: number;
+	onDroppedImageFile?: (path: string) => string;
 }
 
 const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
@@ -221,7 +248,10 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS = 20;
 
-export function normalizeDroppedFilePaste(text: string, options: { cwd?: string } = {}): string {
+export function normalizeDroppedFilePaste(
+	text: string,
+	options: { cwd?: string; onDroppedImageFile?: (path: string) => string } = {},
+): string {
 	const trimmed = text.trim();
 	if (!trimmed || trimmed.includes("\n")) {
 		return text;
@@ -233,10 +263,19 @@ export function normalizeDroppedFilePaste(text: string, options: { cwd?: string 
 	const cwd = resolve(options.cwd ?? process.cwd());
 	const resolvedPath = resolve(pathText);
 	const relativePath = relative(cwd, resolvedPath);
+	const normalizedAbsolutePath = resolvedPath.split(sep).join("/");
+	if (isLocalImageAttachmentPath(normalizedAbsolutePath) && options.onDroppedImageFile) {
+		if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+			return options.onDroppedImageFile(normalizedAbsolutePath);
+		}
+	}
 	if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
 		return text;
 	}
 	const displayPath = relativePath.split(sep).join("/");
+	if (isLocalImageAttachmentPath(displayPath) && options.onDroppedImageFile) {
+		return options.onDroppedImageFile(displayPath);
+	}
 	if (/[\s"]/u.test(displayPath)) {
 		return `@"${displayPath.replaceAll('"', '\\"')}"`;
 	}
@@ -267,6 +306,7 @@ export class Editor implements Component, Focusable {
 	protected tui: TUI;
 	private theme: EditorTheme;
 	private paddingX: number = 0;
+	private readonly onDroppedImageFile?: (path: string) => string;
 
 	// Store last render width for cursor navigation
 	private lastWidth: number = 80;
@@ -333,6 +373,7 @@ export class Editor implements Component, Focusable {
 		this.paddingX = Number.isFinite(paddingX) ? Math.max(0, Math.floor(paddingX)) : 0;
 		const maxVisible = options.autocompleteMaxVisible ?? 5;
 		this.autocompleteMaxVisible = Number.isFinite(maxVisible) ? Math.max(3, Math.min(20, Math.floor(maxVisible))) : 5;
+		this.onDroppedImageFile = options.onDroppedImageFile;
 	}
 
 	/** Set of currently valid paste IDs, for marker-aware segmentation. */
@@ -530,27 +571,29 @@ export class Editor implements Component, Focusable {
 				const after = displayText.slice(layoutLine.cursorPos);
 
 				// Hardware cursor marker (zero-width, emitted before fake cursor for IME positioning)
-				const marker = emitCursorMarker ? CURSOR_MARKER : "";
+					const marker = emitCursorMarker ? CURSOR_MARKER : "";
 
-				if (after.length > 0) {
-					// Cursor is on a character (grapheme) - replace it with highlighted version
-					// Get the first grapheme from 'after'
-					const afterGraphemes = [...this.segment(after, "grapheme")];
-					const firstGrapheme = afterGraphemes[0]?.segment || "";
-					const restAfter = after.slice(firstGrapheme.length);
-					const cursor = `\x1b[7m${firstGrapheme}\x1b[0m`;
-					displayText = before + marker + cursor + restAfter;
-					// lineVisibleWidth stays the same - we're replacing, not adding
-				} else {
-					// Cursor is at the end - add highlighted space
-					const cursor = "\x1b[7m \x1b[0m";
-					displayText = before + marker + cursor;
-					lineVisibleWidth = lineVisibleWidth + 1;
-					// If cursor overflows content width into the padding, flag it
-					if (lineVisibleWidth > contentWidth && paddingX > 0) {
-						cursorInPadding = true;
+					if (after.length > 0) {
+						// Cursor is on a character (grapheme) - replace it with highlighted version
+						// Get the first grapheme from 'after'
+						const afterGraphemes = [...this.segment(after, "grapheme")];
+						const firstGrapheme = afterGraphemes[0]?.segment || "";
+						const restAfter = after.slice(firstGrapheme.length);
+						const cursor = `\x1b[7m${firstGrapheme}\x1b[0m`;
+						displayText = this.styleImageMarkers(before) + marker + cursor + this.styleImageMarkers(restAfter);
+						// lineVisibleWidth stays the same - we're replacing, not adding
+					} else {
+						// Cursor is at the end - add highlighted space
+						const cursor = "\x1b[7m \x1b[0m";
+						displayText = this.styleImageMarkers(before) + marker + cursor;
+						lineVisibleWidth = lineVisibleWidth + 1;
+						// If cursor overflows content width into the padding, flag it
+						if (lineVisibleWidth > contentWidth && paddingX > 0) {
+							cursorInPadding = true;
+						}
 					}
-				}
+			} else {
+				displayText = this.styleImageMarkers(displayText);
 			}
 
 			// Calculate padding based on actual visible width
@@ -582,6 +625,14 @@ export class Editor implements Component, Focusable {
 		}
 
 		return result;
+	}
+
+	private styleImageMarkers(text: string): string {
+		const markerStyle = this.theme.imageMarker;
+		if (!markerStyle || !text.includes("[image #")) {
+			return text;
+		}
+		return text.replace(IMAGE_MARKER_REGEX, (marker) => markerStyle(marker));
 	}
 
 	handleInput(data: string): void {
@@ -1161,11 +1212,11 @@ export class Editor implements Component, Focusable {
 			.split("")
 			.filter((char) => char === "\n" || char.charCodeAt(0) >= 32)
 			.join("");
-		filteredText = normalizeDroppedFilePaste(filteredText);
+		filteredText = normalizeDroppedFilePaste(filteredText, { onDroppedImageFile: this.onDroppedImageFile });
 
 		// If pasting a file path (starts with /, ~, or .) and the character before
 		// the cursor is a word character, prepend a space for better readability
-		if (/^[/~.@]/.test(filteredText)) {
+		if (/^[/~.@]/.test(filteredText) || filteredText.startsWith("[image #")) {
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
 			const charBeforeCursor = this.state.cursorCol > 0 ? currentLine[this.state.cursorCol - 1] : "";
 			if (charBeforeCursor && /\w/.test(charBeforeCursor)) {
@@ -1251,8 +1302,8 @@ export class Editor implements Component, Focusable {
 		this.undoStack.clear();
 		this.lastAction = null;
 
-		if (this.onChange) this.onChange("");
 		if (this.onSubmit) this.onSubmit(result);
+		if (this.onChange) this.onChange("");
 	}
 
 	private handleBackspace(): void {
@@ -1837,7 +1888,7 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(
 			findWordBackward(currentLine, this.state.cursorCol, {
 				segment: (text) => this.segment(text, "word"),
-				isAtomicSegment: isPasteMarker,
+				isAtomicSegment: isAtomicEditorMarker,
 			}),
 		);
 	}
@@ -2029,7 +2080,7 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(
 			findWordForward(currentLine, this.state.cursorCol, {
 				segment: (text) => this.segment(text, "word"),
-				isAtomicSegment: isPasteMarker,
+				isAtomicSegment: isAtomicEditorMarker,
 			}),
 		);
 	}

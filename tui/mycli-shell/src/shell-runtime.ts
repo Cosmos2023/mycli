@@ -42,6 +42,7 @@ import { BackgroundSubagentDialogComponent, isResolvedSubagent, SubagentTaskPane
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
+import { isLocalImageAttachmentPath } from "./local-image-attachments.ts";
 import { getEditorTheme, getSelectListTheme, theme } from "./theme/theme.ts";
 import { projectTranscriptBlocks, type ProjectedTranscriptBlock } from "./transcript-projection.ts";
 
@@ -51,7 +52,7 @@ export type MycliShellRuntimeOptions = {
 	requireTrust?: boolean;
 	trustSavedDecision?: ProjectTrustDecision;
 	projectTrusted?: boolean;
-	onSubmit?: (text: string) => void | Promise<void>;
+	onSubmit?: (text: string, attachments?: MycliShellSubmitAttachments) => void | Promise<void>;
 	onFollowUp?: (text: string) => void | Promise<void>;
 	onInterrupt?: () => void | Promise<void>;
 	onDequeueQueuedInput?: () => string | null | Promise<string | null>;
@@ -67,6 +68,15 @@ export type MycliShellRuntimeOptions = {
 	onApprovalRespond?: (decisionId: string, choice: string) => void | Promise<void>;
 	commands?: MycliShellCommand[];
 	now?: () => number;
+};
+
+export type MycliShellLocalImageAttachment = {
+	path: string;
+	placeholder: string;
+};
+
+export type MycliShellSubmitAttachments = {
+	localImages?: MycliShellLocalImageAttachment[];
 };
 
 const BACKEND_COMMANDS: MycliShellCommand[] = [
@@ -258,6 +268,7 @@ export class MycliShellRuntime {
 	private lastCtrlCAtMs: number | null = null;
 	private lastSubmittedInput: string | null = null;
 	private dismissedSubagentIds = new Set<string>();
+	private pendingLocalImages: MycliShellLocalImageAttachment[] = [];
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
@@ -268,10 +279,23 @@ export class MycliShellRuntime {
 			this.transcriptViewport.renderFullNext();
 		}
 		const keybindings = installMycliKeybindings();
-		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, { paddingX: 1, autocompleteMaxVisible: 8 });
+		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, {
+			paddingX: 1,
+			autocompleteMaxVisible: 8,
+			onDroppedImageFile: (path) => this.registerDroppedImageFile(path),
+		});
 		this.refreshAutocompleteProvider();
+		this.editor.onChange = (text) => {
+			if (this.promotePlainImagePathInput(text)) {
+				return;
+			}
+			this.retainPendingImagesInText(text);
+		};
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
+		};
+		this.editor.onPasteImage = () => {
+			this.editor.insertTextAtCursor?.(" @");
 		};
 		this.editor.onEscape = () => {
 			void this.handleInterrupt();
@@ -1188,11 +1212,53 @@ export class MycliShellRuntime {
 				return;
 			}
 		}
+		const submitted = this.extractLocalImageAttachments(input);
 		this.editor.addToHistory(input);
 		this.editor.setText("");
 		this.lastSubmittedInput = input;
 		this.lastCtrlCAtMs = null;
-		await this.options.onSubmit?.(input);
+		await this.options.onSubmit?.(submitted.text, { localImages: submitted.localImages });
+	}
+
+	private extractLocalImageAttachments(input: string): { text: string; localImages: MycliShellLocalImageAttachment[] } {
+		const pendingImages = this.pendingLocalImages.filter((image) => input.includes(image.placeholder));
+		const localImages: MycliShellLocalImageAttachment[] = [...pendingImages];
+		const text = input.replace(/(^|\s)@([^\s]+)(?=\s|$)/g, (match, prefix: string, path: string) => {
+			if (!isLocalImageAttachmentPath(path)) {
+				return match;
+			}
+			const placeholder = `[image #${localImages.length + 1}]`;
+			localImages.push({ path, placeholder });
+			return `${prefix}${placeholder}`;
+		});
+		this.pendingLocalImages = [];
+		return { text: text.trim(), localImages };
+	}
+
+	private registerDroppedImageFile(path: string): string {
+		const placeholder = `[image #${this.pendingLocalImages.length + 1}]`;
+		this.pendingLocalImages.push({ path, placeholder });
+		return placeholder;
+	}
+
+	private retainPendingImagesInText(text: string): void {
+		if (this.pendingLocalImages.length === 0) {
+			return;
+		}
+		this.pendingLocalImages = this.pendingLocalImages.filter((image) => text.includes(image.placeholder));
+	}
+
+	private promotePlainImagePathInput(text: string): boolean {
+		const path = text.trim();
+		if (!path || text.includes("[image #")) {
+			return false;
+		}
+		if (path !== text || !path.startsWith("/") || !isLocalImageAttachmentPath(path)) {
+			return false;
+		}
+		const placeholder = this.registerDroppedImageFile(path);
+		this.editor.setText(placeholder);
+		return true;
 	}
 
 	private async submitFollowUp(): Promise<void> {

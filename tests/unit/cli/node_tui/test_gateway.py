@@ -129,6 +129,8 @@ class FakeService(TurnService):
         )
         self.fake_session_service = FakeSessionService()
         self._session_service = self.fake_session_service
+        self.messages: list[str] = []
+        self.image_paths: list[tuple[str, ...]] = []
 
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=demo", "turns=1")
@@ -210,8 +212,11 @@ class FakeService(TurnService):
         self,
         message: str,
         stream_sink: StreamSink | None = None,
+        image_paths: tuple[str, ...] = (),
     ) -> TurnResponse:
-        del message, stream_sink
+        del stream_sink
+        self.messages.append(message)
+        self.image_paths.append(image_paths)
         return TurnResponse(assistant_message="")
 
     def resolve_pending_decision(
@@ -1658,6 +1663,32 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
         "kind": "completed",
         "text": "Completed",
     }
+
+
+def test_gateway_turn_submit_forwards_local_image_paths(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="turn.submit",
+            params={
+                "message": "describe [image #1]",
+                "client_turn_id": "client_1",
+                "local_images": [
+                    {"path": "/tmp/screenshot.png", "placeholder": "[image #1]"},
+                    {"path": "/tmp/screenshot.png", "placeholder": "[image #1]"},
+                    "/tmp/second.jpg",
+                ],
+            },
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    assert service.messages == ["describe [image #1]"]
+    assert service.image_paths == [("/tmp/screenshot.png", "/tmp/second.jpg")]
 
 
 def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Path) -> None:
