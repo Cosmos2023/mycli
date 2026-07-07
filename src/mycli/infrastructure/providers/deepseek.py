@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import ast
+import html
+import json
+import re
+
 from mycli.domain.providers import ProtocolId, ProviderId, ProviderProfile
 from mycli.domain.runtime.request_shape import ProviderCachePolicyCapability
 from mycli.infrastructure.providers.chat import ChatProviderSettings
@@ -7,6 +12,17 @@ from mycli.infrastructure.providers.chat import ChatProviderSettings
 DEEPSEEK_METADATA_KEY = "deepseek"
 DEEPSEEK_SYNTHETIC_REASONING_CONTENT = (
     "Provider omitted reasoning_content for this tool call."
+)
+DEEPSEEK_DSML_TOOL_CALLS_OPEN = "<｜｜DSML｜｜tool_calls>"
+DEEPSEEK_DSML_TOOL_CALLS_CLOSE = "</｜｜DSML｜｜tool_calls>"
+_DEEPSEEK_DSML_INVOKE_PATTERN = re.compile(
+    r'<｜｜DSML｜｜invoke\s+name="([^"]+)">(.*?)</｜｜DSML｜｜invoke>',
+    re.DOTALL,
+)
+_DEEPSEEK_DSML_PARAMETER_PATTERN = re.compile(
+    r'<｜｜DSML｜｜parameter\s+name="([^"]+)"(?:\s+string="(true|false)")?>(.*?)'
+    r"</｜｜DSML｜｜parameter>",
+    re.DOTALL,
 )
 DEEPSEEK_PROFILE = ProviderProfile(
     provider=ProviderId.DEEPSEEK,
@@ -95,6 +111,69 @@ class DeepSeekChatProviderAdapter:
                 }
             }
         return {}
+
+    def may_contain_content_tool_calls(self, content: str) -> bool:
+        stripped = content.lstrip()
+        return DEEPSEEK_DSML_TOOL_CALLS_OPEN.startswith(
+            stripped
+        ) or stripped.startswith(DEEPSEEK_DSML_TOOL_CALLS_OPEN)
+
+    def decode_content_tool_calls(
+        self,
+        content: str,
+        *,
+        provider_metadata: dict[str, object],
+    ) -> list[dict[str, object]]:
+        raw_content = content.strip()
+        if not (
+            raw_content.startswith(DEEPSEEK_DSML_TOOL_CALLS_OPEN)
+            and raw_content.endswith(DEEPSEEK_DSML_TOOL_CALLS_CLOSE)
+        ):
+            return []
+
+        tool_call_payloads: list[dict[str, object]] = []
+        for index, match in enumerate(
+            _DEEPSEEK_DSML_INVOKE_PATTERN.finditer(raw_content)
+        ):
+            tool_name = html.unescape(match.group(1)).strip()
+            if not tool_name:
+                continue
+            arguments: dict[str, object] = {}
+            for parameter_match in _DEEPSEEK_DSML_PARAMETER_PATTERN.finditer(
+                match.group(2)
+            ):
+                name = html.unescape(parameter_match.group(1)).strip()
+                if not name:
+                    continue
+                string_flag = parameter_match.group(2)
+                raw_value = html.unescape(parameter_match.group(3)).strip()
+                arguments[name] = (
+                    raw_value
+                    if string_flag == "true"
+                    else self._decode_dsml_parameter_value(raw_value)
+                )
+            payload: dict[str, object] = {
+                "id": f"dsml_tool_call_{index}",
+                "name": tool_name,
+                "arguments": arguments,
+                "reason": "model requested tool",
+            }
+            if provider_metadata:
+                payload["metadata"] = provider_metadata
+            tool_call_payloads.append(payload)
+        return tool_call_payloads
+
+    def _decode_dsml_parameter_value(self, raw_value: str) -> object:
+        if not raw_value:
+            return ""
+        try:
+            return json.loads(raw_value)
+        except json.JSONDecodeError:
+            pass
+        try:
+            return ast.literal_eval(raw_value)
+        except (SyntaxError, ValueError):
+            return raw_value
 
     def _reasoning_content_from_metadata(self, metadata: object) -> str | None:
         if not isinstance(metadata, dict):

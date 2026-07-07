@@ -366,10 +366,10 @@ class OpenAIChatClient:
         for message in messages:
             blocks = message.get("blocks")
             if not isinstance(blocks, tuple) or not blocks:
-                projected_messages.append(message)
+                projected_messages.append(self._without_internal_blocks(message))
                 continue
             if not any(hasattr(block, "type") and block.type == "image" for block in blocks):
-                projected_messages.append(message)
+                projected_messages.append(self._without_internal_blocks(message))
                 continue
             content_blocks: list[dict[str, object]] = []
             for block in blocks:
@@ -383,12 +383,22 @@ class OpenAIChatClient:
                         image_block_to_provider_content(block, format="openai")
                     )
             if not content_blocks:
-                projected_messages.append(message)
+                projected_messages.append(self._without_internal_blocks(message))
                 continue
-            projected = dict(message)
+            projected = self._without_internal_blocks(message)
             projected["content"] = content_blocks
             projected_messages.append(projected)
         return projected_messages
+
+    def _without_internal_blocks(
+        self,
+        message: dict[str, object],
+    ) -> dict[str, object]:
+        if "blocks" not in message:
+            return message
+        projected = dict(message)
+        projected.pop("blocks", None)
+        return projected
 
     def _tool_call_with_wire_name(
         self,
@@ -520,6 +530,19 @@ class OpenAIChatClient:
                 }, provider_metadata=provider_metadata, response_payload=payload)
         if tools:
             content = "" if message.get("content") is None else str(message["content"])
+            content_tool_call_payloads = self._content_tool_call_payloads(
+                content,
+                provider_metadata=provider_metadata,
+                aliases=tool_name_aliases,
+            )
+            if content_tool_call_payloads:
+                return _with_response_metadata({
+                    "assistant_message": None,
+                    "progress_message": None,
+                    "tool_call": content_tool_call_payloads[0],
+                    "tool_calls": content_tool_call_payloads,
+                    "done": False,
+                }, provider_metadata=provider_metadata, response_payload=payload)
             return _with_response_metadata({
                 "assistant_message": content.strip(),
                 "progress_message": None,
@@ -681,6 +704,7 @@ class OpenAIChatClient:
         usage: dict[str, object] | None = None
         tool_call_states: dict[int, dict[str, str]] = {}
         emitted_tool_calls = False
+        pending_content = ""
 
         for raw_chunk in cast(Iterable[object], stream):
             if interrupt_token is not None and interrupt_token.interrupted:
@@ -711,21 +735,59 @@ class OpenAIChatClient:
                     )
                 content = delta.get("content")
                 if isinstance(content, str) and content:
+                    pending_content += content
+                    if self._provider_adapter.may_contain_content_tool_calls(
+                        pending_content
+                    ):
+                        continue
                     yield ModelEvent.message_delta(
-                        text=content,
+                        text=pending_content,
                         provider_id=response_id,
                     )
+                    pending_content = ""
                 self._accumulate_stream_tool_calls(
                     delta.get("tool_calls"),
                     tool_call_states,
                 )
                 if raw_choice.get("finish_reason") == "tool_calls":
+                    if pending_content:
+                        yield ModelEvent.message_delta(
+                            text=pending_content,
+                            provider_id=response_id,
+                        )
+                        pending_content = ""
                     yield from self._stream_tool_call_events(
                         tool_call_states,
                         response_id=response_id,
                         aliases=aliases,
                     )
                     emitted_tool_calls = True
+
+        if pending_content:
+            content_tool_call_payloads = self._content_tool_call_payloads(
+                pending_content,
+                provider_metadata={},
+                aliases=aliases,
+            )
+            if content_tool_call_payloads:
+                for index, payload in enumerate(content_tool_call_payloads):
+                    raw_arguments = payload.get("arguments", {})
+                    raw_metadata = payload.get("metadata")
+                    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                    yield ModelEvent.tool_call_requested(
+                        tool_name=str(payload["name"]),
+                        tool_arguments=raw_arguments if isinstance(raw_arguments, dict) else {},
+                        call_id=str(payload.get("id") or f"dsml_tool_call_{index}"),
+                        source=ToolExecutionSource.NATIVE,
+                        provider_id=response_id,
+                        metadata=metadata,
+                    )
+                emitted_tool_calls = True
+            else:
+                yield ModelEvent.message_delta(
+                    text=pending_content,
+                    provider_id=response_id,
+                )
 
         if tool_call_states and not emitted_tool_calls:
             yield from self._stream_tool_call_events(
@@ -738,6 +800,21 @@ class OpenAIChatClient:
             response_id=response_id,
             usage=usage,
         )
+
+    def _content_tool_call_payloads(
+        self,
+        content: str,
+        *,
+        provider_metadata: dict[str, object],
+        aliases: _ToolNameAliases,
+    ) -> list[dict[str, object]]:
+        return [
+            self._decoded_tool_call_with_canonical_name(payload, aliases)
+            for payload in self._provider_adapter.decode_content_tool_calls(
+                content,
+                provider_metadata=provider_metadata,
+            )
+        ]
 
     def _accumulate_stream_tool_calls(
         self,

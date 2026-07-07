@@ -279,13 +279,13 @@ class NativeToolModelAdapter:
         for message in messages:
             blocks = message.get("blocks")
             if not isinstance(blocks, tuple) or not blocks:
-                projected_messages.append(message)
+                projected_messages.append(self._without_internal_blocks(message))
                 continue
             if not any(
                 isinstance(block, RuntimeBlock) and block.type == "image"
                 for block in blocks
             ):
-                projected_messages.append(message)
+                projected_messages.append(self._without_internal_blocks(message))
                 continue
             content_blocks: list[dict[str, object]] = []
             for block in blocks:
@@ -299,12 +299,22 @@ class NativeToolModelAdapter:
                         image_block_to_provider_content(block, format="openai")
                     )
             if not content_blocks:
-                projected_messages.append(message)
+                projected_messages.append(self._without_internal_blocks(message))
                 continue
-            projected = dict(message)
+            projected = self._without_internal_blocks(message)
             projected["content"] = content_blocks
             projected_messages.append(projected)
         return projected_messages
+
+    def _without_internal_blocks(
+        self,
+        message: dict[str, object],
+    ) -> dict[str, object]:
+        if "blocks" not in message:
+            return message
+        projected = dict(message)
+        projected.pop("blocks", None)
+        return projected
 
     def _sanitize_chat_transcript(
         self,

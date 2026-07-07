@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from mycli.domain.model_events import ModelEvent, ModelEventType
@@ -75,6 +76,29 @@ def test_native_tool_adapter_stream_turn_uses_client_stream_events() -> None:
     ]
     assert client.captured_messages == [{"role": "user", "content": "Say ok."}]
     assert events[-1]["metadata"] == {"usage": {"input_tokens": 11, "output_tokens": 2}}
+
+
+def test_native_tool_adapter_strips_runtime_blocks_for_deepseek_streaming() -> None:
+    client = FakeStreamingNativeClient()
+    adapter = NativeToolModelAdapter(
+        client=client,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    list(
+        adapter.stream_turn(
+            items=[
+                RuntimeItem(
+                    role="user",
+                    blocks=(RuntimeBlock(type="text", text="Say ok."),),
+                )
+            ],
+            tools=[],
+        )
+    )
+
+    assert client.captured_messages == [{"role": "user", "content": "Say ok."}]
+    json.dumps({"messages": client.captured_messages})
 
 
 def test_native_tool_adapter_serializes_runtime_image_blocks(tmp_path: Path) -> None:

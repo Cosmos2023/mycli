@@ -365,6 +365,37 @@ def test_openai_chat_client_serializes_image_blocks(monkeypatch, tmp_path: Path)
     assert "blocks" not in message
 
 
+def test_openai_chat_client_strips_runtime_blocks_for_deepseek(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={"choices": [{"message": {"content": "done"}}]}
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="deepseek-test",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    client.complete(
+        [
+            {
+                "role": "user",
+                "content": "Say ok.",
+                "blocks": (RuntimeBlock(type="text", text="Say ok."),),
+            }
+        ]
+    )
+
+    messages = sdk_client.chat_completions.calls[-1]["messages"]
+    assert messages == [{"role": "user", "content": "Say ok."}]
+    json.dumps({"messages": messages})
+
+
 def test_openai_chat_client_sends_tool_choice_none_with_stable_tools(
     monkeypatch,
 ) -> None:
@@ -523,6 +554,100 @@ def test_openai_chat_client_stream_events_normalizes_chat_chunks(monkeypatch) ->
     assert sdk_client.chat_completions.calls[-1]["stream_options"] == {
         "include_usage": True
     }
+
+
+def test_openai_chat_client_stream_events_decodes_dsml_tool_calls(monkeypatch) -> None:
+    dsml_content = (
+        "<｜｜DSML｜｜tool_calls>\n"
+        '<｜｜DSML｜｜invoke name="Bash">\n'
+        '<｜｜DSML｜｜parameter name="command" string="true">pwd</｜｜DSML｜｜parameter>\n'
+        '<｜｜DSML｜｜parameter name="timeout" string="false">5000</｜｜DSML｜｜parameter>\n'
+        "</｜｜DSML｜｜invoke>\n"
+        "</｜｜DSML｜｜tool_calls>"
+    )
+    sdk_client = _FakeStreamingOpenAISdkClient(
+        chunks=[
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"content": dsml_content[:20]}}]},
+            {"id": "chatcmpl_stream", "choices": [{"delta": {"content": dsml_content[20:]}}]},
+            {
+                "id": "chatcmpl_stream",
+                "choices": [{"finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    events = list(
+        client.stream_events(
+            input_items=[{"role": "user", "content": "inspect"}],
+            tools=[{"name": "Bash", "description": "Run shell", "parameters": []}],
+        )
+    )
+
+    assert [event.type for event in events] == [
+        ModelEventType.TOOL_CALL_REQUESTED,
+        ModelEventType.TURN_COMPLETED,
+    ]
+    assert events[0].tool_name == "Bash"
+    assert events[0].tool_arguments == {"command": "pwd", "timeout": 5000}
+    assert events[0].call_id == "dsml_tool_call_0"
+    assert events[1].usage == {"prompt_tokens": 10, "completion_tokens": 3}
+
+
+def test_openai_chat_client_complete_decodes_dsml_tool_calls(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "<｜｜DSML｜｜tool_calls>\n"
+                            '<｜｜DSML｜｜invoke name="Read">\n'
+                            '<｜｜DSML｜｜parameter name="file_path" string="true">README.md</｜｜DSML｜｜parameter>\n'
+                            "</｜｜DSML｜｜invoke>\n"
+                            "</｜｜DSML｜｜tool_calls>"
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        max_output_tokens=2048,
+        provider_adapter=DeepSeekChatProviderAdapter(),
+    )
+
+    payload = client.complete(
+        messages=[{"role": "user", "content": "inspect"}],
+        tools=[{"name": "Read", "description": "Read file", "parameters": []}],
+    )
+
+    assert payload["assistant_message"] is None
+    assert payload["tool_call"] == {
+        "id": "dsml_tool_call_0",
+        "name": "Read",
+        "arguments": {"file_path": "README.md"},
+        "reason": "model requested tool",
+    }
+    assert payload["done"] is False
 
 
 def test_openai_chat_client_closes_stream_when_interrupt_token_is_requested(

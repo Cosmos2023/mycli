@@ -135,6 +135,10 @@ class InterruptOnceThenDoneAdapter:
         )
 
 
+def _runtime_item_text(item: RuntimeItem) -> str:
+    return "".join(block.text or "" for block in item.blocks if block.type == "text")
+
+
 class RetryTwiceThenDoneAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -624,15 +628,17 @@ def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
     assert response.turn.status is TurnStatus.INTERRUPTED
     assert response.turn.stop_reason is StopReason.INTERRUPTED
     suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
-    assert suspended is not None
-    assert suspended.suspend_reason is StopReason.INTERRUPTED
+    assert suspended is None
     assert any(
         item.type is TurnItemType.WARNING
         and item.text
         and "interrupt" in item.text.lower()
-        and item.metadata.get("recovery_kind") == "interrupted_turn_saved"
+        and item.metadata.get("event_kind") == "turn_aborted_marker"
         for item in response.turn.items
     )
+    conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert conversation.messages[-1].role == "user"
+    assert "<turn_aborted>" in conversation.messages[-1].content
     trace = runtime._trace_service.load(runtime._config.session_id)
     interrupted_event = next(event for event in trace if event.kind == "turn_interrupted")
     assert interrupted_event.turn_id == response.turn.turn_id
@@ -640,16 +646,16 @@ def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
         "session_id": runtime._config.session_id,
         "turn_id": response.turn.turn_id,
         "stop_reason": "interrupted",
-        "suspend_reason": "interrupted",
-        "saved_state": True,
-        "message_count": 1,
+        "history_marker": True,
+        "saved_state": False,
+        "message_count": 2,
     }
     agent_log = runtime._workspace_log_service.agent_log_path().read_text(encoding="utf-8")
     assert "turn_interrupted" in agent_log
     assert response.turn.turn_id in agent_log
 
 
-def test_turn_executor_saves_and_resumes_interrupted_turn(
+def test_turn_executor_starts_new_turn_after_interrupted_turn(
     tmp_path: Path,
 ) -> None:
     adapter = InterruptOnceThenDoneAdapter()
@@ -665,18 +671,24 @@ def test_turn_executor_saves_and_resumes_interrupted_turn(
     assert interrupted.turn is not None
     assert interrupted.turn.status is TurnStatus.INTERRUPTED
     suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
-    assert suspended is not None
-    assert suspended.pending_approval is None
-    assert suspended.user_message == "inspect interrupted path"
+    assert suspended is None
 
-    resumed = runtime.handle_user_turn("继续")
+    resumed = runtime.handle_user_turn("new request")
 
     assert resumed.assistant_message == "Resumed after interrupt"
     assert adapter.calls == 2
+    assert any(
+        item.role == "user" and "<turn_aborted>" in _runtime_item_text(item)
+        for item in adapter.seen_items[1]
+    )
+    assert any(
+        item.role == "user" and _runtime_item_text(item) == "new request"
+        for item in adapter.seen_items[1]
+    )
     assert runtime._session_service.load_suspended_turn(runtime._config.session_id) is None
 
 
-def test_turn_executor_saves_interrupted_turn_during_pre_request_compaction(
+def test_turn_executor_records_marker_during_pre_request_compaction_interrupt(
     tmp_path: Path,
 ) -> None:
     adapter = InterruptOnceThenDoneAdapter()
@@ -698,9 +710,10 @@ def test_turn_executor_saves_interrupted_turn_during_pre_request_compaction(
     assert interrupted.turn.status is TurnStatus.INTERRUPTED
     assert adapter.calls == 0
     suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
-    assert suspended is not None
-    assert suspended.pending_approval is None
-    assert suspended.user_message == "inspect interrupted l4 path"
+    assert suspended is None
+    conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert conversation.messages[-1].role == "user"
+    assert "<turn_aborted>" in conversation.messages[-1].content
 
 
 def test_repair_interrupted_tool_results_appends_missing_tool_result() -> None:
@@ -826,10 +839,12 @@ def test_turn_executor_interrupted_finalization_repairs_dangling_tool_call(
     assert response.turn is not None
     assert response.turn.status is TurnStatus.INTERRUPTED
     suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
-    assert suspended is not None
-    assert suspended.conversation[-1].role == "tool"
-    assert suspended.conversation[-1].tool_call_id == "call_read_1"
-    assert suspended.conversation[-1].metadata["synthetic"] is True
+    assert suspended is None
+    stored = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert stored.messages[-2].role == "tool"
+    assert stored.messages[-2].tool_call_id == "call_read_1"
+    assert stored.messages[-1].role == "user"
+    assert "<turn_aborted>" in stored.messages[-1].content
     assert any(
         item.type is TurnItemType.TOOL_RESULT
         and item.call_id == "call_read_1"

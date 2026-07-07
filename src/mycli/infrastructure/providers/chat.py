@@ -36,6 +36,17 @@ class ChatProviderAdapter(Protocol):
     ) -> dict[str, object]:
         ...
 
+    def may_contain_content_tool_calls(self, content: str) -> bool:
+        ...
+
+    def decode_content_tool_calls(
+        self,
+        content: str,
+        *,
+        provider_metadata: dict[str, object],
+    ) -> list[dict[str, object]]:
+        ...
+
 
 class DefaultChatProviderAdapter:
     provider = ProviderId.COMPATIBLE
@@ -87,6 +98,19 @@ class DefaultChatProviderAdapter:
     ) -> dict[str, object]:
         del message
         return {}
+
+    def may_contain_content_tool_calls(self, content: str) -> bool:
+        del content
+        return False
+
+    def decode_content_tool_calls(
+        self,
+        content: str,
+        *,
+        provider_metadata: dict[str, object],
+    ) -> list[dict[str, object]]:
+        del content, provider_metadata
+        return []
 
 
 __all__ = [

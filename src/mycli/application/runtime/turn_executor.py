@@ -56,6 +56,14 @@ if TYPE_CHECKING:
     from mycli.application.runtime.agent_runtime import AgentRuntime
 
 
+INTERRUPTED_TURN_MARKER = (
+    "<turn_aborted>\n"
+    "The user interrupted the previous turn on purpose. Any running tools or "
+    "commands may have partially executed.\n"
+    "</turn_aborted>"
+)
+
+
 class TurnExecutor:
     def __init__(self, runtime: AgentRuntime) -> None:
         self._runtime = runtime
@@ -93,7 +101,10 @@ class TurnExecutor:
                 pending_decision=pending_decision,
             )
         if suspended is not None:
-            return self._resume_interrupted_turn(suspended)
+            if _is_legacy_interrupted_snapshot(suspended):
+                runtime._session_service.clear_suspended_turn(runtime._config.session_id)
+            else:
+                return self._resume_interrupted_turn(suspended)
 
         conversation = runtime._session_service.load_conversation(runtime._config.session_id)
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
@@ -1924,7 +1935,7 @@ class TurnExecutor:
     ) -> TurnResponse:
         runtime = self._runtime
         interrupt_warning = (
-            "Turn interrupted. Runtime state was preserved; resume from the saved context if needed."
+            "Turn interrupted. The current turn was aborted; send a new message to continue."
         )
         runtime._persist_model_continuation_state(
             turn_id=turn_id,
@@ -1940,7 +1951,7 @@ class TurnExecutor:
             item=TurnItem(
                 type=TurnItemType.WARNING,
                 text=interrupt_warning,
-                metadata={"recovery_kind": "interrupted_turn_saved"},
+                metadata={"event_kind": "turn_aborted_marker"},
             ),
         )
         for repaired in repaired_tool_results:
@@ -1959,18 +1970,31 @@ class TurnExecutor:
                     },
                 ),
             )
+        runtime._append_turn_item(
+            turn_id=turn_id,
+            turn_items=turn_items,
+            item=TurnItem(
+                type=TurnItemType.USER_MESSAGE,
+                text=INTERRUPTED_TURN_MARKER,
+                metadata={
+                    "event_kind": "turn_aborted_marker",
+                    "interrupted_turn_id": turn_id,
+                },
+            ),
+        )
+        conversation.append(
+            Message(
+                role="user",
+                content=INTERRUPTED_TURN_MARKER,
+                metadata={
+                    "event_kind": "turn_aborted_marker",
+                    "interrupted_turn_id": turn_id,
+                },
+            ),
+        )
         runtime._save_runtime_state(
             conversation=conversation,
             plan_state=current_plan_state,
-        )
-        runtime._session_service.save_suspended_turn(
-            runtime._config.session_id,
-            SuspendedTurn(
-                user_message=user_message,
-                conversation=tuple(conversation.messages),
-                plan_state=current_plan_state,
-                suspend_reason=StopReason.INTERRUPTED,
-            ),
         )
         _record_turn_interrupted(
             runtime=runtime,
@@ -2273,8 +2297,8 @@ def _record_turn_interrupted(
         "session_id": runtime._config.session_id,
         "turn_id": turn_id,
         "stop_reason": StopReason.INTERRUPTED.value,
-        "suspend_reason": StopReason.INTERRUPTED.value,
-        "saved_state": True,
+        "history_marker": True,
+        "saved_state": False,
         "message_count": message_count,
     }
     runtime._trace_service.append(
@@ -2284,8 +2308,16 @@ def _record_turn_interrupted(
     runtime._workspace_log_service.log(
         level=LogLevel.WARNING,
         event="turn_interrupted",
-        message="Interrupted turn state was saved for resume.",
+        message="Turn interrupted and recorded as aborted.",
         context=payload,
+    )
+
+
+def _is_legacy_interrupted_snapshot(suspended: SuspendedTurn) -> bool:
+    return (
+        suspended.suspend_reason is StopReason.INTERRUPTED
+        and suspended.pending_approval is None
+        and suspended.pending_clarification is None
     )
 
 

@@ -292,6 +292,40 @@ def test_deepseek_adapter_marks_missing_provider_reasoning_metadata_for_tool_cal
     }
 
 
+def test_deepseek_adapter_decodes_dsml_content_tool_calls() -> None:
+    adapter = DeepSeekChatProviderAdapter()
+
+    tool_calls = adapter.decode_content_tool_calls(
+        (
+            "<｜｜DSML｜｜tool_calls>\n"
+            '<｜｜DSML｜｜invoke name="Bash">\n'
+            '<｜｜DSML｜｜parameter name="command" string="true">pwd</｜｜DSML｜｜parameter>\n'
+            '<｜｜DSML｜｜parameter name="timeout" string="false">5000</｜｜DSML｜｜parameter>\n'
+            "</｜｜DSML｜｜invoke>\n"
+            "</｜｜DSML｜｜tool_calls>"
+        ),
+        provider_metadata={"deepseek": {"reasoning_content_missing": True}},
+    )
+
+    assert tool_calls == [
+        {
+            "id": "dsml_tool_call_0",
+            "name": "Bash",
+            "arguments": {"command": "pwd", "timeout": 5000},
+            "reason": "model requested tool",
+            "metadata": {"deepseek": {"reasoning_content_missing": True}},
+        }
+    ]
+
+
+def test_deepseek_adapter_identifies_partial_dsml_content_tool_calls() -> None:
+    adapter = DeepSeekChatProviderAdapter()
+
+    assert adapter.may_contain_content_tool_calls("<｜｜DSML")
+    assert adapter.may_contain_content_tool_calls("  <｜｜DSML｜｜tool_calls>")
+    assert not adapter.may_contain_content_tool_calls("plain answer")
+
+
 def test_openai_chat_provider_adapter_strips_provider_private_fields() -> None:
     adapter = OpenAIChatProviderAdapter()
 
