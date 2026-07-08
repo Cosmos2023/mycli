@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 
+from mycli.application.runtime.tools.tool_file_history_runtime import (
+    FILE_MUTATION_TOOLS,
+)
+from mycli.application.runtime.tools.tool_orchestrator import ToolRuntimeOrchestrator
+from mycli.application.runtime.tools.tool_write_diagnostics_runtime import (
+    WriteDiagnosticsRunner,
+)
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
@@ -19,7 +25,6 @@ from mycli.domain.runtime import (
     RuntimeInterruptToken,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
-    ToolRuntimeDecision,
     ToolRuntimeDecisionKind,
     TurnItem,
     TurnItemType,
@@ -29,14 +34,7 @@ from mycli.domain.tooling.exposure import ToolExposure
 from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.file_history import FileHistoryService
-from mycli.services.hooks import (
-    HookAction,
-    HookContext,
-    HookExecutionSummary,
-    HookManager,
-    HookPoint,
-    HookResult,
-)
+from mycli.services.hooks import HookExecutionSummary, HookManager
 from mycli.services.security import InjectionGuard
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
@@ -58,21 +56,8 @@ CONCURRENCY_SAFE_TOOLS = frozenset(
     }
 )
 
-FILE_MUTATION_TOOLS = frozenset(
-    {
-        "Edit",
-        "Patch",
-        "Write",
-        "edit_file",
-        "patch_file",
-        "write_file",
-    }
-)
-
 SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
-WriteDiagnosticsRunner = Callable[[tuple[str, ...]], dict[str, object]]
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
-MAX_WRITE_DIAGNOSTICS = 30
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
 MAX_LIFECYCLE_CONTENT_PREVIEW_CHARS = 12_000
 MAX_LIFECYCLE_DIFF_PREVIEW_CHARS = 12_000
@@ -122,12 +107,22 @@ class ToolExecutionService:
         self._apply_tool_effects = apply_tool_effects
         self._normalize_tool_call = normalize_tool_call
         self._hook_manager = hook_manager or HookManager()
-        self._file_history = file_history
         self._injection_guard = injection_guard or InjectionGuard()
         self._record_invoked_skill = record_invoked_skill
-        self._write_diagnostics_runner = write_diagnostics_runner
         self._policy_gate = policy_gate
+        self._runtime_orchestrator = ToolRuntimeOrchestrator(
+            session_id=session_id,
+            trace_service=trace_service,
+            policy_gate=policy_gate,
+            hook_manager=self._hook_manager,
+            file_history=file_history,
+            write_diagnostics_runner=write_diagnostics_runner,
+        )
         self._monotonic = monotonic
+
+    def set_session_id(self, session_id: str) -> None:
+        self._session_id = session_id
+        self._runtime_orchestrator.set_session_id(session_id)
 
     def execute_tool_calls(
         self,
@@ -147,50 +142,16 @@ class ToolExecutionService:
         lifecycle_sink: ToolLifecycleSink | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlanState:
-        _raise_if_interrupted(interrupt_token)
-        current_plan_state = plan_state
-        pending_safe_calls: list[ToolCall] = []
-
-        def flush_safe_calls() -> None:
-            nonlocal current_plan_state
-            _raise_if_interrupted(interrupt_token)
-            if not pending_safe_calls:
-                return
-            outcomes = self._execute_parallel_batch(
-                calls=tuple(pending_safe_calls),
-                tool_router=tool_router,
-                tool_exposure=tool_exposure,
-                plan_state=current_plan_state,
-                turn_id=turn_id,
-                provider_id=provider_id,
-                response_id=response_id,
-                metadata=metadata,
-                record_assistant_call=record_assistant_call,
-                lifecycle_sink=lifecycle_sink,
-                interrupt_token=interrupt_token,
-            )
-            pending_safe_calls.clear()
-            for outcome in outcomes:
-                current_plan_state = outcome.plan_state
-                conversation.messages.extend(outcome.messages)
-                activity_events.extend(outcome.activity_events)
-                turn_items.extend(outcome.turn_items)
-
-        for call in calls:
-            _raise_if_interrupted(interrupt_token)
-            if call.name in CONCURRENCY_SAFE_TOOLS:
-                pending_safe_calls.append(call)
-                continue
-            flush_safe_calls()
-            current_plan_state = self.execute_tool_call(
-                conversation=conversation,
+        def execute_call(
+            call: ToolCall,
+            batch_plan_state: PlanState,
+        ) -> _ParallelToolOutcome:
+            return self._execute_tool_call_isolated(
                 call=call,
                 tool_router=tool_router,
                 tool_exposure=tool_exposure,
-                plan_state=current_plan_state,
+                plan_state=batch_plan_state,
                 turn_id=turn_id,
-                activity_events=activity_events,
-                turn_items=turn_items,
                 provider_id=provider_id,
                 response_id=response_id,
                 metadata=metadata,
@@ -198,8 +159,39 @@ class ToolExecutionService:
                 lifecycle_sink=lifecycle_sink,
                 interrupt_token=interrupt_token,
             )
-        flush_safe_calls()
-        return current_plan_state
+
+        def apply_outcome(outcome: _ParallelToolOutcome) -> PlanState:
+            conversation.messages.extend(outcome.messages)
+            activity_events.extend(outcome.activity_events)
+            turn_items.extend(outcome.turn_items)
+            return outcome.plan_state
+
+        def abort_outcome(
+            call: ToolCall,
+            batch_plan_state: PlanState,
+        ) -> _ParallelToolOutcome:
+            return self._record_aborted_tool_call_isolated(
+                call=call,
+                tool_router=tool_router,
+                tool_exposure=tool_exposure,
+                plan_state=batch_plan_state,
+                turn_id=turn_id,
+                provider_id=provider_id,
+                response_id=response_id,
+                metadata=metadata,
+                record_assistant_call=record_assistant_call,
+                lifecycle_sink=lifecycle_sink,
+            )
+
+        return self._runtime_orchestrator.execute_tool_calls(
+            calls=calls,
+            plan_state=plan_state,
+            concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+            execute_call=execute_call,
+            apply_outcome=apply_outcome,
+            abort_outcome=abort_outcome,
+            interrupt_token=interrupt_token,
+        )
 
     def execute_tool_call(
         self,
@@ -234,7 +226,7 @@ class ToolExecutionService:
             tool_router=tool_router,
             tool_exposure=tool_exposure,
         )
-        runtime_decision = self._runtime_policy_decision(
+        runtime_decision = self._runtime_orchestrator.decide_policy(
             call=normalized_call,
             tool_exposure=tool_exposure,
             turn_id=turn_id,
@@ -259,7 +251,7 @@ class ToolExecutionService:
                 provider_id=provider_id,
                 lifecycle_sink=lifecycle_sink,
             )
-            policy_result = self._runtime_policy_tool_result(runtime_decision)
+            policy_result = self._runtime_orchestrator.policy_result(runtime_decision)
             return self._record_tool_outcome(
                 conversation=conversation,
                 normalized_call=normalized_call,
@@ -277,63 +269,40 @@ class ToolExecutionService:
                 lifecycle_sink=lifecycle_sink,
                 emit_runtime_progress=False,
             )
-        pre_hook_execution = self._hook_manager.execute_with_summary(
-            HookPoint.PRE_TOOL_USE,
-            HookContext(
-                hook_point=HookPoint.PRE_TOOL_USE,
-                tool_name=normalized_call.name,
-                tool_args=dict(normalized_call.arguments),
-                session_id=self._session_id,
-                metadata={"turn_id": turn_id},
-            ),
+        pre_hook_result = self._runtime_orchestrator.before_tool_use(
+            call=normalized_call,
+            turn_id=turn_id,
         )
-        pre_hook_summaries = pre_hook_execution.summaries
-        for hook_result in pre_hook_execution.results:
-            if hook_result.action is HookAction.DENY:
-                self._record_tool_start(
-                    normalized_call=normalized_call,
-                    turn_id=turn_id,
-                    activity_events=activity_events,
-                    turn_items=turn_items,
-                    metadata=metadata,
-                    provider_id=provider_id,
-                    lifecycle_sink=lifecycle_sink,
-                )
-                denied_result = ToolResult(
-                    success=False,
-                    summary=f"Tool denied: {hook_result.message or normalized_call.name}",
-                    error=hook_result.message or "tool denied by hook",
-                    raw_payload={
-                        "tool_name": normalized_call.name,
-                        "arguments": dict(normalized_call.arguments),
-                        "error_kind": "tool_denied_by_hook",
-                    },
-                )
-                return self._record_tool_outcome(
-                    conversation=conversation,
-                    normalized_call=normalized_call,
-                    result=denied_result,
-                    plan_state=plan_state,
-                    turn_id=turn_id,
-                    activity_events=activity_events,
-                    turn_items=turn_items,
-                    metadata=metadata,
-                    provider_id=provider_id,
-                    response_id=response_id,
-                    record_assistant_call=record_assistant_call,
-                    execution_started_at=execution_started_at,
-                    effect_profile=effect_profile,
-                    hook_summaries=pre_hook_summaries,
-                    lifecycle_sink=lifecycle_sink,
-                    emit_runtime_progress=False,
-                )
-            if hook_result.action is HookAction.MODIFY and hook_result.modified_args:
-                normalized_call = ToolCall(
-                    name=normalized_call.name,
-                    arguments={**normalized_call.arguments, **hook_result.modified_args},
-                    reason=normalized_call.reason,
-                    call_id=normalized_call.call_id,
-                )
+        normalized_call = pre_hook_result.call
+        pre_hook_summaries = pre_hook_result.summaries
+        if pre_hook_result.denied_result is not None:
+            self._record_tool_start(
+                normalized_call=normalized_call,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                lifecycle_sink=lifecycle_sink,
+            )
+            return self._record_tool_outcome(
+                conversation=conversation,
+                normalized_call=normalized_call,
+                result=pre_hook_result.denied_result,
+                plan_state=plan_state,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                metadata=metadata,
+                provider_id=provider_id,
+                response_id=response_id,
+                record_assistant_call=record_assistant_call,
+                execution_started_at=execution_started_at,
+                effect_profile=effect_profile,
+                hook_summaries=pre_hook_summaries,
+                lifecycle_sink=lifecycle_sink,
+                emit_runtime_progress=False,
+            )
         turn_metadata = dict(metadata or {})
         turn_metadata["arguments"] = normalized_call.arguments
         turn_metadata["provider_id"] = provider_id
@@ -359,7 +328,7 @@ class ToolExecutionService:
             normalized_call,
             interrupt_token=interrupt_token,
         )
-        snapshot_ids = self._snapshot_before_file_mutation(
+        snapshot_ids = self._runtime_orchestrator.snapshot_before_file_mutation(
             call=normalized_call,
             tool_router=tool_router,
             tool_exposure=tool_exposure,
@@ -372,7 +341,7 @@ class ToolExecutionService:
             _raise_if_interrupted(interrupt_token)
         except KeyboardInterrupt:
             interrupted_result = self._interrupted_tool_result(normalized_call)
-            self._finalize_file_history_snapshots(
+            self._runtime_orchestrator.finalize_file_history_snapshots(
                 snapshot_ids=snapshot_ids,
                 result=interrupted_result,
                 turn_metadata=turn_metadata,
@@ -406,12 +375,12 @@ class ToolExecutionService:
                     "error_kind": "tool_validation_error",
                 },
             )
-        self._finalize_file_history_snapshots(
+        self._runtime_orchestrator.finalize_file_history_snapshots(
             snapshot_ids=snapshot_ids,
             result=result,
             turn_metadata=turn_metadata,
         )
-        result = self._with_write_diagnostics_if_needed(
+        result = self._runtime_orchestrator.with_write_diagnostics_if_needed(
             call=normalized_call,
             result=result,
             effect_profile=effect_profile,
@@ -612,78 +581,6 @@ class ToolExecutionService:
             self._notify_lifecycle_sink(lifecycle_sink, clarify_event)
         return plan_state, pending_clarification
 
-    def _execute_parallel_batch(
-        self,
-        *,
-        calls: tuple[ToolCall, ...],
-        tool_router: ToolRouter,
-        tool_exposure: ToolExposure,
-        plan_state: PlanState,
-        turn_id: str,
-        provider_id: str | None,
-        response_id: str | None,
-        metadata: dict[str, object] | None,
-        record_assistant_call: bool,
-        lifecycle_sink: ToolLifecycleSink | None,
-        interrupt_token: RuntimeInterruptToken | None,
-    ) -> tuple[_ParallelToolOutcome, ...]:
-        _raise_if_interrupted(interrupt_token)
-        if len(calls) == 1:
-            return (
-                self._execute_tool_call_isolated(
-                    call=calls[0],
-                    tool_router=tool_router,
-                    tool_exposure=tool_exposure,
-                    plan_state=plan_state,
-                    turn_id=turn_id,
-                    provider_id=provider_id,
-                    response_id=response_id,
-                    metadata=metadata,
-                    record_assistant_call=record_assistant_call,
-                    lifecycle_sink=lifecycle_sink,
-                    interrupt_token=interrupt_token,
-                ),
-            )
-        executor = ThreadPoolExecutor(max_workers=len(calls))
-        futures: list[Future[_ParallelToolOutcome]] = [
-            executor.submit(
-                self._execute_tool_call_isolated,
-                call=call,
-                tool_router=tool_router,
-                tool_exposure=tool_exposure,
-                plan_state=plan_state,
-                turn_id=turn_id,
-                provider_id=provider_id,
-                response_id=response_id,
-                metadata=metadata,
-                record_assistant_call=record_assistant_call,
-                lifecycle_sink=lifecycle_sink,
-                interrupt_token=interrupt_token,
-            )
-            for call in calls
-        ]
-        pending = set(futures)
-        try:
-            while pending:
-                _raise_if_interrupted(interrupt_token)
-                done, pending = wait(
-                    pending,
-                    timeout=0.05,
-                    return_when=FIRST_COMPLETED,
-                )
-                for future in done:
-                    exc = future.exception()
-                    if exc is not None:
-                        raise exc
-            _raise_if_interrupted(interrupt_token)
-            return tuple(future.result() for future in futures)
-        except BaseException:
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise
-        finally:
-            if not pending:
-                executor.shutdown(wait=True)
-
     def _execute_tool_call_isolated(
         self,
         *,
@@ -720,6 +617,68 @@ class ToolExecutionService:
             lifecycle_sink=lifecycle_sink,
             policy_approved=policy_approved,
             interrupt_token=interrupt_token,
+        )
+        return _ParallelToolOutcome(
+            plan_state=next_plan_state,
+            messages=tuple(isolated_conversation.messages),
+            activity_events=tuple(isolated_activity_events),
+            turn_items=tuple(isolated_turn_items),
+        )
+
+    def _record_aborted_tool_call_isolated(
+        self,
+        *,
+        call: ToolCall,
+        tool_router: ToolRouter,
+        tool_exposure: ToolExposure,
+        plan_state: PlanState,
+        turn_id: str,
+        provider_id: str | None,
+        response_id: str | None,
+        metadata: dict[str, object] | None,
+        record_assistant_call: bool,
+        lifecycle_sink: ToolLifecycleSink | None,
+    ) -> _ParallelToolOutcome:
+        isolated_conversation = Conversation(session_id=self._session_id)
+        isolated_activity_events: list[ActivityEvent] = []
+        isolated_turn_items: list[TurnItem] = []
+        normalized_call = self._normalize_tool_call(call)
+        execution_started_at = self._monotonic()
+        self._append_tool_runtime_lifecycle_trace(
+            turn_id=turn_id,
+            call=normalized_call,
+            phase="planned",
+            status="running",
+        )
+        effect_profile = self._effect_profile_for_call(
+            call=normalized_call,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+        )
+        self._record_tool_start(
+            normalized_call=normalized_call,
+            turn_id=turn_id,
+            activity_events=isolated_activity_events,
+            turn_items=isolated_turn_items,
+            metadata=metadata,
+            provider_id=provider_id,
+            lifecycle_sink=lifecycle_sink,
+        )
+        next_plan_state = self._record_tool_outcome(
+            conversation=isolated_conversation,
+            normalized_call=normalized_call,
+            result=self._runtime_orchestrator.interrupted_tool_result(normalized_call),
+            plan_state=plan_state,
+            turn_id=turn_id,
+            activity_events=isolated_activity_events,
+            turn_items=isolated_turn_items,
+            metadata=metadata,
+            provider_id=provider_id,
+            response_id=response_id,
+            record_assistant_call=record_assistant_call,
+            execution_started_at=execution_started_at,
+            effect_profile=effect_profile,
+            lifecycle_sink=lifecycle_sink,
         )
         return _ParallelToolOutcome(
             plan_state=next_plan_state,
@@ -767,23 +726,14 @@ class ToolExecutionService:
                 response_id=response_id,
                 metadata=metadata,
             )
-        post_hook_execution = self._hook_manager.execute_with_summary(
-            HookPoint.POST_TOOL_USE,
-            HookContext(
-                hook_point=HookPoint.POST_TOOL_USE,
-                tool_name=normalized_call.name,
-                tool_args=dict(normalized_call.arguments),
-                session_id=self._session_id,
-                metadata={
-                    "turn_id": turn_id,
-                    "result_summary": result.summary[:200],
-                    "success": result.success,
-                },
-            ),
+        post_hook_result = self._runtime_orchestrator.after_tool_use(
+            call=normalized_call,
+            turn_id=turn_id,
+            result=result,
         )
-        combined_hook_summaries = (*hook_summaries, *post_hook_execution.summaries)
-        result = _apply_post_hook_results(result, post_hook_execution.results)
-        post_tool_contexts = _post_hook_additional_contexts(post_hook_execution.results)
+        combined_hook_summaries = (*hook_summaries, *post_hook_result.summaries)
+        result = post_hook_result.result
+        post_tool_contexts = post_hook_result.additional_contexts
         next_plan_state = self._apply_tool_effects(
             call=normalized_call,
             result_payload=result.raw_payload,
@@ -909,34 +859,6 @@ class ToolExecutionService:
         )
         return next_plan_state
 
-    def _runtime_policy_decision(
-        self,
-        *,
-        call: ToolCall,
-        tool_exposure: ToolExposure,
-        turn_id: str,
-        policy_approved: bool,
-        effect_profile: ToolEffectProfile,
-    ) -> ToolRuntimeDecision | None:
-        if self._policy_gate is None:
-            return None
-        if policy_approved:
-            return None
-        decision = self._policy_gate.decide(
-            call,
-            tool_exposure=tool_exposure,
-            effect_profile=effect_profile,
-        )
-        self._trace_service.append(
-            self._session_id,
-            RuntimeTraceEvent(
-                kind="runtime_policy_decision",
-                turn_id=turn_id,
-                payload=decision.to_trace_payload(),
-            ),
-        )
-        return decision
-
     def _with_runtime_execution_options(
         self,
         call: ToolCall,
@@ -955,27 +877,6 @@ class ToolExecutionService:
             arguments=arguments,
             reason=call.reason,
             call_id=call.call_id,
-        )
-
-    def _runtime_policy_tool_result(
-        self,
-        decision: ToolRuntimeDecision,
-    ) -> ToolResult:
-        if decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL:
-            summary = "Tool needs approval before execution."
-            error_kind = "tool_needs_approval"
-        else:
-            summary = runtime_policy_denial_message(decision)
-            error_kind = "tool_denied_by_policy"
-        return ToolResult(
-            success=False,
-            summary=summary,
-            error=summary,
-            raw_payload={
-                "tool_name": decision.tool_call.name,
-                "error_kind": error_kind,
-                "runtime_policy": decision.to_trace_payload(),
-            },
         )
 
     def _record_tool_start(
@@ -1047,17 +948,7 @@ class ToolExecutionService:
         return RuntimeStreamEvent(kind="tool_start", tool_name=call.name, metadata=metadata)
 
     def _interrupted_tool_result(self, call: ToolCall) -> ToolResult:
-        error = f"Tool {call.name} was interrupted before it completed."
-        return ToolResult(
-            success=False,
-            summary=error,
-            error=error,
-            raw_payload={
-                "tool_name": call.name,
-                "arguments": dict(call.arguments),
-                "error_kind": "tool_interrupted",
-            },
-        )
+        return self._runtime_orchestrator.interrupted_tool_result(call)
 
     def _tool_lifecycle_progress_event(
         self,
@@ -1649,159 +1540,6 @@ class ToolExecutionService:
         except ValueError:
             return ToolEffectProfile()
 
-    def _snapshot_before_file_mutation(
-        self,
-        *,
-        call: ToolCall,
-        tool_router: ToolRouter,
-        tool_exposure: ToolExposure,
-        turn_id: str,
-        turn_metadata: dict[str, object],
-    ) -> list[str]:
-        if self._file_history is None:
-            return []
-        try:
-            paths = tool_router.mutation_targets(call, exposure=tool_exposure)
-        except ValueError:
-            return []
-        if paths is None:
-            paths = self._legacy_mutation_paths(call)
-        if not paths:
-            return []
-        snapshot_ids: list[str] = []
-        errors: list[str] = []
-        for path in paths:
-            snapshot = self._file_history.snapshot_path(
-                session_id=self._session_id,
-                turn_id=turn_id,
-                raw_path=path,
-                tool_name=call.name,
-            )
-            if snapshot.error:
-                errors.append(snapshot.error)
-                continue
-            if not snapshot.retained or not snapshot.snapshot_id:
-                continue
-            snapshot_ids.append(snapshot.snapshot_id)
-        if snapshot_ids:
-            turn_metadata["file_history_snapshot_ids"] = snapshot_ids
-        if errors:
-            turn_metadata["file_history_errors"] = errors
-        return snapshot_ids
-
-    def _finalize_file_history_snapshots(
-        self,
-        *,
-        snapshot_ids: list[str],
-        result: ToolResult,
-        turn_metadata: dict[str, object],
-    ) -> None:
-        if self._file_history is None or not snapshot_ids:
-            return
-        if not result.success:
-            for snapshot_id in snapshot_ids:
-                self._file_history.discard_snapshot(
-                    session_id=self._session_id,
-                    snapshot_id=snapshot_id,
-                )
-            turn_metadata.pop("file_history_snapshot_ids", None)
-            return
-        retained_snapshot_ids: list[str] = []
-        errors: list[str] = []
-        for snapshot_id in snapshot_ids:
-            finalized = self._file_history.finalize_snapshot(
-                session_id=self._session_id,
-                snapshot_id=snapshot_id,
-            )
-            if finalized.error:
-                errors.append(finalized.error)
-                continue
-            if finalized.retained:
-                retained_snapshot_ids.append(snapshot_id)
-        if retained_snapshot_ids:
-            turn_metadata["file_history_snapshot_ids"] = retained_snapshot_ids
-        else:
-            turn_metadata.pop("file_history_snapshot_ids", None)
-        if errors:
-            turn_metadata["file_history_errors"] = errors
-
-    def _with_write_diagnostics_if_needed(
-        self,
-        *,
-        call: ToolCall,
-        result: ToolResult,
-        effect_profile: ToolEffectProfile,
-    ) -> ToolResult:
-        if self._write_diagnostics_runner is None:
-            return result
-        if not result.success or effect_profile.filesystem != "write":
-            return result
-        paths = self._write_diagnostic_paths(call=call, result_payload=result.raw_payload)
-        if not paths:
-            return result
-        diagnostics = self._run_write_diagnostics(paths)
-        return ToolResult(
-            success=result.success,
-            summary=result.summary,
-            artifacts=result.artifacts,
-            raw_payload={**result.raw_payload, "write_diagnostics": diagnostics},
-            evidence=result.evidence,
-            error=result.error,
-        )
-
-    def _write_diagnostic_paths(
-        self,
-        *,
-        call: ToolCall,
-        result_payload: dict[str, object],
-    ) -> tuple[str, ...]:
-        if result_payload.get("status") == "unchanged":
-            return ()
-        raw_path = result_payload.get("path") or call.arguments.get("file_path") or call.arguments.get("path")
-        if not isinstance(raw_path, str) or not raw_path:
-            return ()
-        return (raw_path,)
-
-    def _run_write_diagnostics(self, paths: tuple[str, ...]) -> dict[str, object]:
-        assert self._write_diagnostics_runner is not None
-        try:
-            payload = self._write_diagnostics_runner(paths)
-        except Exception as exc:
-            return {
-                "diagnostics": [],
-                "count": 0,
-                "truncated": False,
-                "error": str(exc),
-            }
-        return self._normalize_write_diagnostics(payload)
-
-    def _normalize_write_diagnostics(
-        self,
-        payload: dict[str, object],
-    ) -> dict[str, object]:
-        raw_diagnostics = payload.get("diagnostics")
-        diagnostics = raw_diagnostics if isinstance(raw_diagnostics, list) else []
-        count = payload.get("count")
-        normalized_count = count if isinstance(count, int) else len(diagnostics)
-        truncated = bool(payload.get("truncated")) or len(diagnostics) > MAX_WRITE_DIAGNOSTICS
-        normalized: dict[str, object] = {
-            "diagnostics": diagnostics[:MAX_WRITE_DIAGNOSTICS],
-            "count": normalized_count,
-            "truncated": truncated,
-        }
-        error = payload.get("error")
-        if isinstance(error, str) and error:
-            normalized["error"] = error
-        return normalized
-
-    def _legacy_mutation_paths(self, call: ToolCall) -> tuple[str, ...]:
-        if call.name not in FILE_MUTATION_TOOLS:
-            return ()
-        value = call.arguments.get("file_path") or call.arguments.get("path")
-        if isinstance(value, str) and value:
-            return (value,)
-        return ()
-
     def _record_tool_message(
         self,
         conversation: Conversation,
@@ -2067,63 +1805,6 @@ class ToolExecutionService:
         }
 
 
-def _apply_post_hook_results(
-    result: ToolResult,
-    hook_results: tuple[HookResult, ...],
-) -> ToolResult:
-    updated = result
-    for hook_result in hook_results:
-        action = hook_result.action
-        message = hook_result.message
-        modified_args = hook_result.modified_args
-        if action is HookAction.DENY:
-            updated = ToolResult(
-                success=False,
-                summary=f"Tool result denied by hook: {message or updated.summary}",
-                artifacts=updated.artifacts,
-                raw_payload={
-                    **updated.raw_payload,
-                    "error_kind": "tool_denied_by_post_hook",
-                },
-                evidence=updated.evidence,
-                error=message or "tool result denied by hook",
-            )
-        elif action is HookAction.MODIFY and isinstance(modified_args, dict):
-            updated = _with_post_hook_modifications(updated, modified_args)
-    return updated
-
-
-def _post_hook_additional_contexts(
-    hook_results: tuple[HookResult, ...],
-) -> tuple[str, ...]:
-    contexts: list[str] = []
-    for hook_result in hook_results:
-        for context in hook_result.additional_contexts:
-            if context.strip():
-                contexts.append(context)
-    return tuple(contexts)
-
-
-def runtime_policy_denial_message(decision: ToolRuntimeDecision) -> str:
-    if (
-        decision.policy == "collaboration_mode"
-        and decision.reason_code == "plan_mode_blocks_mutating_tool"
-    ):
-        return (
-            f"Plan mode is read-only; blocked {decision.tool_call.name}. "
-            "Switch to /mode default to allow mutating tools."
-        )
-    parts = [f"Tool denied by runtime policy: {decision.tool_call.name}"]
-    details: list[str] = []
-    if decision.policy:
-        details.append(f"policy={decision.policy}")
-    if decision.reason_code:
-        details.append(f"reason={decision.reason_code}")
-    if details:
-        parts.append(f"({', '.join(details)})")
-    return " ".join(parts) + "."
-
-
 def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
     if interrupt_token is not None:
         interrupt_token.raise_if_interrupted()
@@ -2207,31 +1888,3 @@ def _line_count(value: str) -> int:
     if not stripped:
         return 0
     return stripped.count("\n") + 1
-
-
-def _with_post_hook_modifications(
-    result: ToolResult,
-    modified_args: dict[str, object],
-) -> ToolResult:
-    summary = result.summary
-    error = result.error
-    raw_payload = dict(result.raw_payload)
-    raw_changes = modified_args.get("raw_payload")
-    if isinstance(raw_changes, dict):
-        for key, value in raw_changes.items():
-            if isinstance(key, str) and key:
-                raw_payload[key] = value
-    summary_value = modified_args.get("summary")
-    if isinstance(summary_value, str) and summary_value.strip():
-        summary = summary_value.strip()
-    error_value = modified_args.get("error")
-    if isinstance(error_value, str):
-        error = error_value.strip() or None
-    return ToolResult(
-        success=result.success,
-        summary=summary,
-        artifacts=result.artifacts,
-        raw_payload=raw_payload,
-        evidence=result.evidence,
-        error=error,
-    )

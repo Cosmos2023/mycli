@@ -3,10 +3,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 from mycli.application.runtime.tools.tool_execution_service import (
     CONCURRENCY_SAFE_TOOLS,
     ToolExecutionService,
 )
+from mycli.application.runtime.tools.tool_call_runtime import ToolCallRuntime
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import ActivityEvent, PlanState, TurnItem, TurnItemType
@@ -270,3 +273,93 @@ def test_execute_tool_calls_executes_all_calls_and_keeps_tool_results_ordered(tm
         TurnItemType.TOOL_CALL,
         TurnItemType.TOOL_RESULT,
     ]
+
+
+def test_tool_call_runtime_batches_adjacent_safe_calls_and_preserves_order() -> None:
+    calls = (
+        ToolCall(name="Read", arguments={"path": "one"}, reason="inspect", call_id="call_1"),
+        ToolCall(name="Grep", arguments={"path": "two"}, reason="inspect", call_id="call_2"),
+        ToolCall(name="Edit", arguments={"path": "three"}, reason="mutate", call_id="call_3"),
+        ToolCall(name="LS", arguments={"path": "four"}, reason="inspect", call_id="call_4"),
+    )
+    executed_batches: list[tuple[str, ...]] = []
+
+    def execute_batch(batch: tuple[ToolCall, ...], plan_state: PlanState) -> tuple[PlanState, ...]:
+        executed_batches.append(tuple(call.call_id or "" for call in batch))
+        return tuple(plan_state for _ in batch)
+
+    runtime = ToolCallRuntime(
+        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        execute_batch=execute_batch,
+    )
+
+    result = runtime.execute_calls(calls=calls, plan_state=PlanState())
+
+    assert result == PlanState()
+    assert executed_batches == [
+        ("call_1", "call_2"),
+        ("call_3",),
+        ("call_4",),
+    ]
+
+
+def test_tool_call_runtime_runs_safe_batch_in_parallel() -> None:
+    calls = (
+        ToolCall(name="Read", arguments={"path": "one"}, reason="inspect", call_id="call_1"),
+        ToolCall(name="Grep", arguments={"path": "two"}, reason="inspect", call_id="call_2"),
+    )
+
+    def execute_call(call: ToolCall, plan_state: PlanState) -> PlanState:
+        del call
+        time.sleep(0.20)
+        return plan_state
+
+    runtime = ToolCallRuntime(
+        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        execute_call=execute_call,
+    )
+
+    started_at = time.perf_counter()
+    result = runtime.execute_calls(calls=calls, plan_state=PlanState())
+    elapsed = time.perf_counter() - started_at
+
+    assert result == PlanState()
+    assert elapsed < 0.35
+
+
+def test_tool_call_runtime_records_abort_outcomes_for_interrupted_safe_batch() -> None:
+    calls = (
+        ToolCall(name="Read", arguments={"path": "one"}, reason="inspect", call_id="call_1"),
+        ToolCall(name="Grep", arguments={"path": "two"}, reason="inspect", call_id="call_2"),
+    )
+    aborted_call_ids: list[str] = []
+    applied_call_ids: list[str] = []
+
+    def execute_batch(batch: tuple[ToolCall, ...], plan_state: PlanState) -> tuple[PlanState, ...]:
+        del batch, plan_state
+        raise KeyboardInterrupt
+
+    def abort_outcome(call: ToolCall, plan_state: PlanState) -> tuple[str, PlanState]:
+        aborted_call_ids.append(call.call_id or "")
+        return call.call_id or "", plan_state
+
+    def apply_outcome(outcome: tuple[str, PlanState]) -> PlanState:
+        call_id, plan_state = outcome
+        applied_call_ids.append(call_id)
+        return plan_state
+
+    runtime = ToolCallRuntime(
+        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        execute_batch=execute_batch,
+        abort_outcome=abort_outcome,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runtime.execute_calls(
+            calls=calls,
+            plan_state=PlanState(),
+            apply_outcome=apply_outcome,
+        )
+
+    assert aborted_call_ids == ["call_1", "call_2"]
+    assert applied_call_ids == ["call_1", "call_2"]

@@ -2984,18 +2984,91 @@ def test_tool_execution_service_parallel_batch_interrupt_does_not_wait_for_slow_
     assert elapsed < 1.0
 
 
-def test_tool_execution_service_legacy_mutation_paths_include_patch(tmp_path: Path) -> None:
-    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
-
-    paths = service._legacy_mutation_paths(  # type: ignore[attr-defined]
-        ToolCall(
-            name="Patch",
-            arguments={"file_path": "app.py"},
-            reason="patch",
-        )
+def test_tool_execution_service_records_aborted_outputs_for_interrupted_parallel_batch(
+    tmp_path: Path,
+) -> None:
+    token = RuntimeInterruptToken(source="test")
+    slow_tool = FakeSlowSafeTool()
+    interrupting_tool = FakeInterruptingSafeTool(token)
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([slow_tool, interrupting_tool]),
     )
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+    turn_items = []
+    activity_events = []
 
-    assert paths == ("app.py",)
+    try:
+        service.execute_tool_calls(
+            conversation=conversation,
+            calls=[
+                ToolCall(
+                    name="Read",
+                    arguments={"path": "slow.txt"},
+                    reason="slow",
+                    call_id="call_slow_1",
+                ),
+                ToolCall(
+                    name="Grep",
+                    arguments={"pattern": "needle"},
+                    reason="interrupt",
+                    call_id="call_interrupt_safe_1",
+                ),
+            ],
+            tool_router=router,
+            tool_exposure=ToolExposure(
+                entries=(
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("Read"),
+                        source=ToolRouteSource.REGISTRY,
+                        spec=slow_tool.spec,
+                    ),
+                    ToolExposureEntry(
+                        route_key=ToolRouteKey.local("Grep"),
+                        source=ToolRouteSource.REGISTRY,
+                        spec=interrupting_tool.spec,
+                    ),
+                )
+            ),
+            plan_state=PlanState(),
+            turn_id="turn_1",
+            activity_events=activity_events,
+            turn_items=turn_items,
+            interrupt_token=token,
+        )
+    except KeyboardInterrupt:
+        pass
+    else:  # pragma: no cover - explicit failure path
+        raise AssertionError("KeyboardInterrupt should be re-raised")
+    finally:
+        slow_tool.release.set()
+
+    tool_messages = [message for message in conversation.messages if message.role == "tool"]
+    assert [message.tool_call_id for message in tool_messages] == [
+        "call_slow_1",
+        "call_interrupt_safe_1",
+    ]
+    result_blocks = [
+        block
+        for message in tool_messages
+        for block in message.blocks
+        if block.type == "tool_result"
+    ]
+    assert [block.metadata["error_kind"] for block in result_blocks] == [
+        "tool_interrupted",
+        "tool_interrupted",
+    ]
+    result_items = [item for item in turn_items if item.type is TurnItemType.TOOL_RESULT]
+    assert [item.call_id for item in result_items] == [
+        "call_slow_1",
+        "call_interrupt_safe_1",
+    ]
+    assert [item.metadata["error_kind"] for item in result_items] == [
+        "tool_interrupted",
+        "tool_interrupted",
+    ]
 
 
 def test_tool_execution_service_trace_argument_preview_redacts_shell_arguments(

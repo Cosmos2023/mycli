@@ -2113,7 +2113,7 @@ class AgentRuntime:
             self._compaction_pipeline.llm_summarization,
             config,
         )
-        self._tool_execution_service._session_id = session_id
+        self._tool_execution_service.set_session_id(session_id)
         self._tool_orchestrator._session_id = session_id
         self._event_ledger._session_id = session_id
         self._sub_agent_service._session_id = session_id

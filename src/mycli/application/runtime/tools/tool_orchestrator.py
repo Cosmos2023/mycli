@@ -1,7 +1,27 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable, Collection
+from typing import TypeVar
 
+from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
+from mycli.application.runtime.tools.tool_file_history_runtime import ToolFileHistoryRuntime
+from mycli.application.runtime.tools.tool_call_runtime import (
+    OutcomeApplier,
+    ToolBatchExecutor,
+    ToolCallExecutor,
+    ToolCallRuntime,
+    AbortOutcomeFactory,
+)
+from mycli.application.runtime.tools.tool_hook_runtime import (
+    PostToolHookResult,
+    PreToolHookResult,
+    ToolHookRuntime,
+)
+from mycli.application.runtime.tools.tool_policy_runtime import ToolPolicyRuntime
+from mycli.application.runtime.tools.tool_write_diagnostics_runtime import (
+    ToolWriteDiagnosticsRuntime,
+    WriteDiagnosticsRunner,
+)
 from mycli.domain.conversation import Conversation
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionLifecycleEvent,
@@ -9,7 +29,16 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionRegistration,
     ToolContributionSource,
 )
-from mycli.domain.runtime import ActivityEvent, PlanState, RuntimeTraceEvent, TurnItem, TurnItemType
+from mycli.domain.runtime import (
+    ActivityEvent,
+    PlanState,
+    RuntimeInterruptToken,
+    RuntimeTraceEvent,
+    ToolRuntimeDecision,
+    TurnItem,
+    TurnItemType,
+)
+from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import (
     ToolExposure,
     ToolExposureEntry,
@@ -20,7 +49,165 @@ from mycli.application.runtime.tools.contributed_tool_registry import ToolContri
 from mycli.tools.routing.tool_exposure_planner import PlannedToolExposure, ToolExposurePlanner
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.services.tracing import TraceService
+from mycli.services.hooks import HookManager
+from mycli.services.file_history import FileHistoryService
+from mycli.tools.base import ToolEffectProfile, ToolResult
 from mycli.tools.registry import ToolRegistry
+
+OutcomeT = TypeVar("OutcomeT")
+
+
+class ToolRuntimeOrchestrator:
+    """Coordinates runtime policy, hook, and result-shaping around tool execution."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        trace_service: TraceService,
+        policy_gate: RuntimePolicyGate | None,
+        hook_manager: HookManager,
+        file_history: FileHistoryService | None = None,
+        write_diagnostics_runner: WriteDiagnosticsRunner | None = None,
+    ) -> None:
+        self._policy_runtime = ToolPolicyRuntime(
+            session_id=session_id,
+            policy_gate=policy_gate,
+            trace_service=trace_service,
+        )
+        self._hook_runtime = ToolHookRuntime(
+            session_id=session_id,
+            hook_manager=hook_manager,
+        )
+        self._file_history_runtime = ToolFileHistoryRuntime(
+            session_id=session_id,
+            file_history=file_history,
+        )
+        self._write_diagnostics_runtime = ToolWriteDiagnosticsRuntime(
+            runner=write_diagnostics_runner,
+        )
+
+    def set_session_id(self, session_id: str) -> None:
+        self._policy_runtime.session_id = session_id
+        self._hook_runtime.set_session_id(session_id)
+        self._file_history_runtime.set_session_id(session_id)
+
+    def execute_tool_calls(
+        self,
+        *,
+        calls: list[ToolCall] | tuple[ToolCall, ...],
+        plan_state: PlanState,
+        concurrency_safe_tools: Collection[str],
+        execute_call: ToolCallExecutor[OutcomeT] | None = None,
+        execute_batch: ToolBatchExecutor[OutcomeT] | None = None,
+        apply_outcome: OutcomeApplier[OutcomeT] | None = None,
+        abort_outcome: AbortOutcomeFactory[OutcomeT] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> PlanState:
+        runtime: ToolCallRuntime[OutcomeT] = ToolCallRuntime(
+            concurrency_safe_tools=concurrency_safe_tools,
+            execute_call=execute_call,
+            execute_batch=execute_batch,
+            abort_outcome=abort_outcome,
+            interrupt_token=interrupt_token,
+        )
+        return runtime.execute_calls(
+            calls=calls,
+            plan_state=plan_state,
+            apply_outcome=apply_outcome,
+        )
+
+    def interrupted_tool_result(self, call: ToolCall) -> ToolResult:
+        error = f"Tool {call.name} was interrupted before it completed."
+        return ToolResult(
+            success=False,
+            summary=error,
+            error=error,
+            raw_payload={
+                "tool_name": call.name,
+                "arguments": dict(call.arguments),
+                "error_kind": "tool_interrupted",
+            },
+        )
+
+    def decide_policy(
+        self,
+        *,
+        call: ToolCall,
+        tool_exposure: ToolExposure,
+        turn_id: str,
+        policy_approved: bool,
+        effect_profile: ToolEffectProfile,
+    ) -> ToolRuntimeDecision | None:
+        return self._policy_runtime.decide(
+            call=call,
+            tool_exposure=tool_exposure,
+            turn_id=turn_id,
+            policy_approved=policy_approved,
+            effect_profile=effect_profile,
+        )
+
+    def policy_result(self, decision: ToolRuntimeDecision) -> ToolResult:
+        return self._policy_runtime.result_for_decision(decision)
+
+    def before_tool_use(self, *, call: ToolCall, turn_id: str) -> PreToolHookResult:
+        return self._hook_runtime.before_tool_use(call=call, turn_id=turn_id)
+
+    def snapshot_before_file_mutation(
+        self,
+        *,
+        call: ToolCall,
+        tool_router: ToolRouter,
+        tool_exposure: ToolExposure,
+        turn_id: str,
+        turn_metadata: dict[str, object],
+    ) -> list[str]:
+        return self._file_history_runtime.snapshot_before_file_mutation(
+            call=call,
+            tool_router=tool_router,
+            tool_exposure=tool_exposure,
+            turn_id=turn_id,
+            turn_metadata=turn_metadata,
+        )
+
+    def finalize_file_history_snapshots(
+        self,
+        *,
+        snapshot_ids: list[str],
+        result: ToolResult,
+        turn_metadata: dict[str, object],
+    ) -> None:
+        self._file_history_runtime.finalize_file_history_snapshots(
+            snapshot_ids=snapshot_ids,
+            result=result,
+            turn_metadata=turn_metadata,
+        )
+
+    def after_tool_use(
+        self,
+        *,
+        call: ToolCall,
+        turn_id: str,
+        result: ToolResult,
+    ) -> PostToolHookResult:
+        return self._hook_runtime.after_tool_use(
+            call=call,
+            turn_id=turn_id,
+            result=result,
+        )
+
+    def with_write_diagnostics_if_needed(
+        self,
+        *,
+        call: ToolCall,
+        result: ToolResult,
+        effect_profile: ToolEffectProfile,
+    ) -> ToolResult:
+        return self._write_diagnostics_runtime.with_write_diagnostics_if_needed(
+            call=call,
+            result=result,
+            effect_profile=effect_profile,
+        )
 
 
 class ToolOrchestrator:
