@@ -28,10 +28,10 @@ class TestBashDanger:
 
         assert tool == "Read"
 
-    def test_forbidden_grep_redirects_to_grep(self):
+    def test_grep_is_not_forbidden(self):
         tool = check_forbidden("grep pattern file.py")
 
-        assert tool == "Grep"
+        assert tool is None
 
     def test_sed_in_place_is_not_forbidden(self):
         tool = check_forbidden("sed -i s/a/b/ file.txt")

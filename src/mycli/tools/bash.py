@@ -51,6 +51,59 @@ def check_forbidden(command: str) -> str | None:
     return dedicated_tool_for_command(tokens)
 
 
+class ShellCommandRuntime:
+    """Coordinates local shell command execution and background shell registration."""
+
+    def execute(
+        self,
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        run_in_background: bool = False,
+        env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
+        output_file: Path | None = None,
+        notification_sink: Callable[[TaskNotification], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> dict[str, Any]:
+        effective_cwd = workdir or os.getcwd()
+        started = time.monotonic()
+        if run_in_background:
+            background_payload = _run_background(
+                command,
+                timeout,
+                effective_cwd,
+                env=env,
+                command_pattern=command_pattern,
+                output_file=output_file,
+                notification_sink=notification_sink,
+            )
+            background_payload["cwd"] = effective_cwd
+            background_payload["duration_ms"] = _duration_ms(started)
+            return background_payload
+
+        if interrupt_token is not None:
+            return _run_foreground_interruptible(
+                command,
+                timeout,
+                effective_cwd,
+                started=started,
+                env=env,
+                interrupt_token=interrupt_token,
+            )
+
+        return _run_foreground(
+            command,
+            timeout,
+            effective_cwd,
+            started=started,
+            env=env,
+        )
+
+
+DEFAULT_SHELL_COMMAND_RUNTIME = ShellCommandRuntime()
+
+
 def execute_bash(
     command: str,
     timeout: int = 120,
@@ -62,32 +115,27 @@ def execute_bash(
     notification_sink: Callable[[TaskNotification], None] | None = None,
     interrupt_token: RuntimeInterruptToken | None = None,
 ) -> dict[str, Any]:
-    effective_cwd = workdir or os.getcwd()
-    started = time.monotonic()
-    if run_in_background:
-        background_payload = _run_background(
-            command,
-            timeout,
-            effective_cwd,
-            env=env,
-            command_pattern=command_pattern,
-            output_file=output_file,
-            notification_sink=notification_sink,
-        )
-        background_payload["cwd"] = effective_cwd
-        background_payload["duration_ms"] = _duration_ms(started)
-        return background_payload
+    return DEFAULT_SHELL_COMMAND_RUNTIME.execute(
+        command,
+        timeout=timeout,
+        workdir=workdir,
+        run_in_background=run_in_background,
+        env=env,
+        command_pattern=command_pattern,
+        output_file=output_file,
+        notification_sink=notification_sink,
+        interrupt_token=interrupt_token,
+    )
 
-    if interrupt_token is not None:
-        return _run_foreground_interruptible(
-            command,
-            timeout,
-            effective_cwd,
-            started=started,
-            env=env,
-            interrupt_token=interrupt_token,
-        )
 
+def _run_foreground(
+    command: str,
+    timeout: int,
+    cwd: str,
+    *,
+    started: float,
+    env: dict[str, str] | None,
+) -> dict[str, Any]:
     try:
         result = subprocess.run(
             command,
@@ -95,7 +143,7 @@ def execute_bash(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=effective_cwd,
+            cwd=cwd,
             executable=os.environ.get("SHELL", "/bin/bash"),
             env=env,
             check=False,
@@ -117,7 +165,7 @@ def execute_bash(
             "timed_out": True,
             "truncated": output_meta["truncated"],
             "duration_ms": _duration_ms(started),
-            "cwd": effective_cwd,
+            "cwd": cwd,
             "error_kind": "timeout",
             "process_state": "timed_out",
             "cleanup_result": "subprocess_timeout_expired",
@@ -140,9 +188,10 @@ def execute_bash(
         "stderr": stderr,
         "output": output,
         "timed_out": False,
+        "process_state": "completed",
         "truncated": output_meta["truncated"],
         "duration_ms": _duration_ms(started),
-        "cwd": effective_cwd,
+        "cwd": cwd,
         "output_chars": output_meta["original_chars"],
         "stdout_chars": stdout_meta["original_chars"],
         "stderr_chars": stderr_meta["original_chars"],
