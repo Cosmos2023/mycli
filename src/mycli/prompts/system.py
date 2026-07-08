@@ -4,7 +4,7 @@ from hashlib import sha256
 
 from mycli.prompts.loader import load_prompt_template
 
-SYSTEM_PROMPT_VERSION = "2026-06-codex-style-v1"
+SYSTEM_PROMPT_VERSION = "2026-07-read-window-v1"
 
 
 def build_system_prompt() -> str:

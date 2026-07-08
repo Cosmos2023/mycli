@@ -39,7 +39,11 @@ Use tools to close specific information gaps, not to perform ritual exploration.
 # File Reading
 
 Read only what is needed for the current decision.
-For large files, start with the most relevant range and continue only when the result shows a concrete need.
+Use `Read` for file contents. `Read` calls must include explicit `offset` and `limit` arguments.
+Do not use Bash `cat` or broad shell output to read files.
+For large files, start with the most relevant small range and continue only when the result shows a concrete need.
+If a `Read` result is truncated, continue with the next `offset` shown in the result.
+Do not repeat the same `Read` call with the same path, `offset`, and `limit`; refer to the previous result or choose a different range.
 Treat source code and configuration as the source of truth. Treat README files and docs as useful context, not as proof of runtime behavior.
 
 # File Editing

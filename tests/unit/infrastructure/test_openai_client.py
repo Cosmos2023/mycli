@@ -601,13 +601,14 @@ def test_openai_chat_client_stream_events_decodes_dsml_tool_calls(monkeypatch) -
     ]
     assert events[0].tool_name == "Bash"
     assert events[0].tool_arguments == {"command": "pwd", "timeout": 5000}
-    assert events[0].call_id == "dsml_tool_call_0"
+    assert events[0].call_id == "chatcmpl_stream_dsml_tool_call_0"
     assert events[1].usage == {"prompt_tokens": 10, "completion_tokens": 3}
 
 
 def test_openai_chat_client_complete_decodes_dsml_tool_calls(monkeypatch) -> None:
     sdk_client = _FakeOpenAISdkClient(
         chat_payload={
+            "id": "chatcmpl_complete",
             "choices": [
                 {
                     "message": {
@@ -642,7 +643,7 @@ def test_openai_chat_client_complete_decodes_dsml_tool_calls(monkeypatch) -> Non
 
     assert payload["assistant_message"] is None
     assert payload["tool_call"] == {
-        "id": "dsml_tool_call_0",
+        "id": "chatcmpl_complete_dsml_tool_call_0",
         "name": "Read",
         "arguments": {"file_path": "README.md"},
         "reason": "model requested tool",

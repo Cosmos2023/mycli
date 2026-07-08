@@ -355,6 +355,32 @@ def test_resolve_config_loads_sandbox_mode(tmp_path: Path) -> None:
     assert config.sandbox_mode.value == "read-only"
 
 
+def test_resolve_config_loads_nested_sandbox_mode(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (home_dir / ".mycli").mkdir()
+    (home_dir / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "[sandbox]",
+                'sandbox_mode = "danger-full-access"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.sandbox_mode.value == "danger-full-access"
+
+
 def test_resolve_config_merges_user_and_project_sandbox_profile(
     tmp_path: Path,
 ) -> None:

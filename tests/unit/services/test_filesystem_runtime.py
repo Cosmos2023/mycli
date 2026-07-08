@@ -81,6 +81,26 @@ def test_filesystem_runtime_still_rejects_non_memory_workspace_escape(tmp_path: 
         runtime.resolve_path(str(tmp_path / "outside.txt"))
 
 
+def test_unrestricted_filesystem_runtime_allows_outside_workspace_reads(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    target = outside / "notes.txt"
+    target.write_text("external note\n", encoding="utf-8")
+    runtime = FileSystemRuntime(workspace_root=workspace, unrestricted=True)
+
+    resolved = runtime.resolve_path(str(target))
+    snapshot = runtime.build_snapshot(resolved)
+    runtime.record_read_snapshot(snapshot)
+
+    assert resolved == target.resolve()
+    assert snapshot.path == str(target.resolve())
+    assert runtime.validate_recent_read_snapshot(resolved).ok is True
+
+
 def test_filesystem_runtime_replace_text_reports_stable_error_kind(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

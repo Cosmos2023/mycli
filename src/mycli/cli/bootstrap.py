@@ -8,6 +8,7 @@ from mycli.application.runtime import AgentRuntime
 from mycli.application.runtime.tools import ToolContributionProvider
 from mycli.application.turn_service import TurnService
 from mycli.config.settings import resolve_config
+from mycli.domain.runtime import SandboxMode
 from mycli.domain.providers import ProtocolId
 from mycli.infrastructure.providers import chat_adapter_for_provider
 from mycli.llms.adapters.anthropic_messages_adapter import AnthropicMessagesModelAdapter
@@ -123,9 +124,11 @@ def build_turn_service(
         config.session_id
     )
     allowed_roots = (memory_dir, task_output_dir)
+    unrestricted_filesystem = config.sandbox_mode == SandboxMode.DANGER_FULL_ACCESS
     filesystem_runtime = FileSystemRuntime(
         workspace_root=workspace_root,
         allowed_roots=allowed_roots,
+        unrestricted=unrestricted_filesystem,
     )
     tool_registry = ToolRegistry.from_tools(
         [
@@ -133,9 +136,21 @@ def build_turn_service(
             EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
             PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
             WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            GrepTool(workspace_root, allowed_roots=allowed_roots),
-            GlobTool(workspace_root, allowed_roots=allowed_roots),
-            LSTool(workspace_root, allowed_roots=allowed_roots),
+            GrepTool(
+                workspace_root,
+                allowed_roots=allowed_roots,
+                unrestricted=unrestricted_filesystem,
+            ),
+            GlobTool(
+                workspace_root,
+                allowed_roots=allowed_roots,
+                unrestricted=unrestricted_filesystem,
+            ),
+            LSTool(
+                workspace_root,
+                allowed_roots=allowed_roots,
+                unrestricted=unrestricted_filesystem,
+            ),
             BashTool(workspace_root),
             BashOutputTool(),
             KillShellTool(),

@@ -6,7 +6,7 @@ from types import ModuleType
 from typing import Any, Callable, cast
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
-from mycli.services.filesystem import FileSystemRuntime
+from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.file_snapshot import (
     FileSnapshot,
@@ -153,7 +153,12 @@ def _looks_binary(path: Path) -> bool:
 def _read_text(file_path: str, offset: int, limit: int) -> dict[str, Any]:
     from mycli.tools.read.text import read_text
 
-    return read_text(file_path, offset=offset, limit=limit)
+    return read_text(
+        file_path,
+        offset=offset,
+        limit=limit,
+        allow_large_window=True,
+    )
 
 
 def _bounded_limit(limit: int) -> int:
@@ -222,6 +227,7 @@ class ReadTool:
                 offset = int(arguments["start_line"])
             else:
                 raise ValueError("Read requires offset and limit for bounded reads.")
+            offset = max(1, offset)
             if "end_line" in arguments and "limit" not in arguments:
                 end_line = int(arguments["end_line"])
                 limit = max(0, end_line - offset + 1)
@@ -254,7 +260,7 @@ class ReadTool:
             )
 
         snapshot = _snapshot_from_read_payload(
-            workspace_root=self._workspace_root,
+            filesystem=self._filesystem,
             target=target,
             payload=payload,
         )
@@ -268,7 +274,7 @@ class ReadTool:
             payload["snapshot"] = snapshot.to_dict()
 
         range_key = _read_range_key(
-            workspace_root=self._workspace_root,
+            filesystem=self._filesystem,
             target=target,
             offset=offset,
             limit=limit,
@@ -332,17 +338,17 @@ def _strip_read_line_numbers(content: str) -> str:
 
 def _read_range_key(
     *,
-    workspace_root: Path,
+    filesystem: FileSystemRuntime,
     target: Path,
     offset: int,
     limit: int,
     pages: str | None,
 ) -> tuple[str, int, int, str | None] | None:
-    root = workspace_root.resolve()
-    resolved = target.resolve()
-    if resolved != root and root not in resolved.parents:
+    try:
+        path_key = filesystem.relative_path(target)
+    except FileSystemRuntimeError:
         return None
-    return (resolved.relative_to(root).as_posix(), offset, limit, pages)
+    return (path_key, offset, limit, pages)
 
 
 def _same_snapshot(left: FileSnapshot, right: FileSnapshot) -> bool:
@@ -355,7 +361,7 @@ def _same_snapshot(left: FileSnapshot, right: FileSnapshot) -> bool:
 
 def _snapshot_from_read_payload(
     *,
-    workspace_root: Path,
+    filesystem: FileSystemRuntime,
     target: Path,
     payload: dict[str, Any],
 ) -> FileSnapshot | None:
@@ -368,12 +374,12 @@ def _snapshot_from_read_payload(
         return None
     if isinstance(raw_size, bool) or not isinstance(raw_size, int):
         return None
-    root = workspace_root.resolve()
-    resolved = target.resolve()
-    if resolved != root and root not in resolved.parents:
+    try:
+        path = filesystem.relative_path(target)
+    except FileSystemRuntimeError:
         return None
     return FileSnapshot(
-        path=resolved.relative_to(root).as_posix(),
+        path=path,
         sha256=raw_sha,
         mtime_ns=raw_mtime,
         size=raw_size,

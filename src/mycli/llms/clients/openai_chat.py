@@ -534,6 +534,7 @@ class OpenAIChatClient:
                 content,
                 provider_metadata=provider_metadata,
                 aliases=tool_name_aliases,
+                response_id=_response_id_from_payload(payload),
             )
             if content_tool_call_payloads:
                 return _with_response_metadata({
@@ -768,6 +769,7 @@ class OpenAIChatClient:
                 pending_content,
                 provider_metadata={},
                 aliases=aliases,
+                response_id=response_id,
             )
             if content_tool_call_payloads:
                 for index, payload in enumerate(content_tool_call_payloads):
@@ -807,13 +809,25 @@ class OpenAIChatClient:
         *,
         provider_metadata: dict[str, object],
         aliases: _ToolNameAliases,
+        response_id: str | None = None,
     ) -> list[dict[str, object]]:
-        return [
+        payloads = [
             self._decoded_tool_call_with_canonical_name(payload, aliases)
             for payload in self._provider_adapter.decode_content_tool_calls(
                 content,
                 provider_metadata=provider_metadata,
             )
+        ]
+        return [
+            {
+                **payload,
+                "id": _response_scoped_content_tool_call_id(
+                    payload.get("id"),
+                    response_id=response_id,
+                    index=index,
+                ),
+            }
+            for index, payload in enumerate(payloads)
         ]
 
     def _accumulate_stream_tool_calls(
@@ -1118,3 +1132,22 @@ def _close_stream(stream: object) -> None:
         closer()
     except Exception:
         return
+
+
+def _response_id_from_payload(payload: dict[str, object]) -> str | None:
+    response_id = payload.get("id")
+    if isinstance(response_id, str) and response_id:
+        return response_id
+    return None
+
+
+def _response_scoped_content_tool_call_id(
+    raw_id: object,
+    *,
+    response_id: str | None,
+    index: int,
+) -> str:
+    call_id = str(raw_id or f"dsml_tool_call_{index}")
+    if response_id and call_id.startswith("dsml_tool_call_"):
+        return f"{response_id}_{call_id}"
+    return call_id

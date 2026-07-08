@@ -8,11 +8,14 @@ def resolve_workspace_path(
     raw_path: str,
     *,
     allowed_roots: tuple[Path, ...] = (),
+    unrestricted: bool = False,
 ) -> Path:
     raw_candidate = Path(raw_path)
     candidate = (
         raw_candidate if raw_candidate.is_absolute() else workspace_root / raw_candidate
     ).resolve()
+    if unrestricted:
+        return candidate
     roots = (workspace_root, *allowed_roots)
     if not any(_is_within(candidate, root) for root in roots):
         raise ValueError("Path must stay within the current workspace or allowed roots.")

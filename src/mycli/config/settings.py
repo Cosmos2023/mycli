@@ -96,6 +96,45 @@ def _config_value_no_env(
     return legacy_user_config.get(config_key)
 
 
+def _sectioned_config_value(
+    config: Mapping[str, object],
+    *,
+    section: str,
+    config_key: str,
+) -> object | None:
+    if config_key in config:
+        return config[config_key]
+    table = config.get(section)
+    if not isinstance(table, Mapping):
+        return None
+    if config_key in table:
+        return table[config_key]
+    section_prefix = f"{section}_"
+    if config_key.startswith(section_prefix):
+        short_key = config_key.removeprefix(section_prefix)
+        if short_key in table:
+            return table[short_key]
+    return None
+
+
+def _sandbox_config_value_no_env(
+    *,
+    user_config: Mapping[str, object],
+    project_config: Mapping[str, object],
+    legacy_user_config: Mapping[str, object],
+    config_key: str,
+) -> object | None:
+    for config in (user_config, project_config, legacy_user_config):
+        value = _sectioned_config_value(
+            config,
+            section="sandbox",
+            config_key=config_key,
+        )
+        if value is not None:
+            return value
+    return None
+
+
 def _provider_cache_policy_override(
     *,
     provider: ProviderId,
@@ -242,9 +281,19 @@ def _merged_config_values(
     project_config: Mapping[str, object],
     legacy_user_config: Mapping[str, object],
     config_key: str,
+    config_section: str | None = None,
 ) -> tuple[object, ...]:
     values: list[object] = []
     for config in (legacy_user_config, user_config, project_config):
+        if config_section is not None:
+            value = _sectioned_config_value(
+                config,
+                section=config_section,
+                config_key=config_key,
+            )
+            if value is not None:
+                values.append(value)
+            continue
         if config_key in config:
             values.append(config[config_key])
     return tuple(values)
@@ -257,6 +306,7 @@ def _parse_merged_path_tuple(
     legacy_user_config: Mapping[str, object],
     config_key: str,
     base_dir: Path,
+    config_section: str | None = None,
 ) -> tuple[Path, ...]:
     paths: list[Path] = []
     for value in _merged_config_values(
@@ -264,6 +314,7 @@ def _parse_merged_path_tuple(
         project_config=project_config,
         legacy_user_config=legacy_user_config,
         config_key=config_key,
+        config_section=config_section,
     ):
         paths.extend(_parse_path_tuple(value, base_dir=base_dir))
     return tuple(dict.fromkeys(paths))
@@ -275,6 +326,7 @@ def _parse_merged_string_tuple(
     project_config: Mapping[str, object],
     legacy_user_config: Mapping[str, object],
     config_key: str,
+    config_section: str | None = None,
 ) -> tuple[str, ...]:
     values: list[str] = []
     for value in _merged_config_values(
@@ -282,6 +334,7 @@ def _parse_merged_string_tuple(
         project_config=project_config,
         legacy_user_config=legacy_user_config,
         config_key=config_key,
+        config_section=config_section,
     ):
         values.extend(_parse_string_tuple(value))
     return tuple(dict.fromkeys(values))
@@ -489,9 +542,12 @@ def resolve_config(
     )
     sandbox_mode_value = (
         env.get("MYCLI_SANDBOX_MODE")
-        or user_config.get("sandbox_mode")
-        or project_config.get("sandbox_mode")
-        or legacy_user_config.get("sandbox_mode")
+        or _sandbox_config_value_no_env(
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            config_key="sandbox_mode",
+        )
         or SandboxMode.WORKSPACE_WRITE.value
     )
     statusline_enabled_raw: object | None = env.get("MYCLI_STATUSLINE_ENABLED")
@@ -714,6 +770,7 @@ def resolve_config(
         legacy_user_config=legacy_user_config,
         config_key="sandbox_writable_roots",
         base_dir=cwd,
+        config_section="sandbox",
     )
     sandbox_denied_read_roots = _parse_merged_path_tuple(
         user_config=user_config,
@@ -721,12 +778,14 @@ def resolve_config(
         legacy_user_config=legacy_user_config,
         config_key="sandbox_denied_read_roots",
         base_dir=cwd,
+        config_section="sandbox",
     )
     sandbox_denied_read_globs = _parse_merged_string_tuple(
         user_config=user_config,
         project_config=project_config,
         legacy_user_config=legacy_user_config,
         config_key="sandbox_denied_read_globs",
+        config_section="sandbox",
     )
 
     memory_extraction_interval_turns = int(str(memory_extraction_interval_turns_value))

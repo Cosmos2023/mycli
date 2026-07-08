@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mycli.prompts.system import build_system_prompt
+from mycli.prompts.system import SYSTEM_PROMPT_VERSION, build_system_prompt
 
 
 def test_build_system_prompt_loads_fixed_english_template() -> None:
@@ -26,3 +26,14 @@ def test_build_system_prompt_loads_fixed_english_template() -> None:
     assert "search_text" not in prompt
     assert "list_directory" not in prompt
     assert "run_shell" not in prompt
+
+
+def test_build_system_prompt_guides_bounded_read_usage() -> None:
+    prompt = build_system_prompt()
+
+    assert SYSTEM_PROMPT_VERSION == "2026-07-read-window-v1"
+    assert "Use `Read` for file contents" in prompt
+    assert "`Read` calls must include explicit `offset` and `limit` arguments" in prompt
+    assert "Do not use Bash `cat` or broad shell output to read files" in prompt
+    assert "If a `Read` result is truncated, continue with the next `offset`" in prompt
+    assert "Do not repeat the same `Read` call with the same path, `offset`, and `limit`" in prompt

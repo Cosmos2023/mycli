@@ -2,6 +2,7 @@ from pathlib import Path
 
 from mycli.domain.tools import ToolCall, ToolEvidence
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
+from mycli.services.filesystem import FileSystemRuntime
 from mycli.tools.base import ToolResult
 from mycli.tools.grep import GrepTool
 from mycli.tools.glob import GlobTool
@@ -55,6 +56,31 @@ def test_read_only_tools_return_grounded_results(tmp_path: Path) -> None:
     assert "README.md" in listed.summary
     assert "hello world" in loaded.raw_payload["content"]
     assert "README.md" in searched.raw_payload["matches"][0]
+
+
+def test_unrestricted_read_only_tools_allow_absolute_paths_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "README.md").write_text("hello outside\n", encoding="utf-8")
+
+    listed = LSTool(root, unrestricted=True).execute({"path": str(outside)})
+    found = GlobTool(root, unrestricted=True).execute(
+        {"path": str(outside), "pattern": "*.md"}
+    )
+    searched = GrepTool(root, unrestricted=True).execute(
+        {"path": str(outside), "pattern": "hello"}
+    )
+
+    assert listed.success is True
+    assert "README.md" in listed.raw_payload["files"]
+    assert found.success is True
+    assert found.raw_payload["files"] == ["README.md"]
+    assert searched.success is True
+    assert str(outside / "README.md") in searched.raw_payload["matches"][0]
 
 
 def test_list_directory_returns_failure_for_missing_directory(tmp_path: Path) -> None:
@@ -257,6 +283,26 @@ def test_repeated_unchanged_read_returns_dedup_hint(tmp_path: Path) -> None:
     assert "README.md" in rendered
 
 
+def test_repeated_unrestricted_absolute_read_returns_dedup_hint(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    target = outside / "session.json"
+    target.write_text('{"status": "ok"}\n', encoding="utf-8")
+
+    runtime = FileSystemRuntime(workspace_root=root, unrestricted=True)
+    tool = ReadTool(root, filesystem_runtime=runtime)
+
+    first = tool.execute({"file_path": str(target), "offset": 1, "limit": 20})
+    second = tool.execute({"file_path": str(target), "offset": 1, "limit": 20})
+
+    assert first.success is True
+    assert second.success is True
+    assert second.raw_payload["dedup"] is True
+    assert str(target) in second.raw_payload["content"]
+
+
 def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -276,6 +322,41 @@ def test_read_file_records_snapshot_metadata(tmp_path: Path) -> None:
     assert snapshot["sha256"]
     assert snapshot["size"] == len("hello world\n".encode("utf-8"))
     assert isinstance(snapshot["mtime_ns"], int)
+
+
+def test_read_tool_normalizes_zero_offset_to_first_line(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text("first\nsecond\n", encoding="utf-8")
+
+    result = ReadTool(root).execute(
+        {"file_path": "README.md", "offset": 0, "limit": 1}
+    )
+
+    assert result.success is True
+    assert result.raw_payload["content"].startswith("     1\tfirst")
+    assert result.evidence[0].line_start == 1
+    assert result.evidence[0].line_end == 1
+
+
+def test_read_tool_reads_bounded_window_from_large_token_file(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = root / "huge.json"
+    target.write_text(
+        "\n".join(f'{{"index": {index}, "value": "token token token"}}' for index in range(30_000)),
+        encoding="utf-8",
+    )
+
+    result = ReadTool(root).execute(
+        {"file_path": "huge.json", "offset": 10, "limit": 2}
+    )
+
+    assert result.success is True
+    assert "    10\t" in result.raw_payload["content"]
+    assert '"index": 9' in result.raw_payload["content"]
+    assert "    11\t" in result.raw_payload["content"]
+    assert result.raw_payload["truncated"] is True
 
 
 def test_default_tools_share_read_snapshot_with_edit(tmp_path: Path) -> None:

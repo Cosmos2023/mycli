@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import hashlib
 from pathlib import Path
 import re
 
@@ -46,10 +48,12 @@ class FileSystemRuntime:
         *,
         workspace_root: Path,
         allowed_roots: tuple[Path, ...] = (),
+        unrestricted: bool = False,
         snapshot_store: FileSnapshotStore | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._allowed_roots = allowed_roots
+        self._unrestricted = unrestricted
         self._snapshot_store = snapshot_store or FileSnapshotStore()
 
     @property
@@ -64,11 +68,16 @@ class FileSystemRuntime:
     def allowed_roots(self) -> tuple[Path, ...]:
         return self._allowed_roots
 
+    @property
+    def unrestricted(self) -> bool:
+        return self._unrestricted
+
     def resolve_path(self, raw_path: str) -> Path:
         return resolve_workspace_path(
             self._workspace_root,
             raw_path,
             allowed_roots=self._allowed_roots,
+            unrestricted=self._unrestricted,
         )
 
     def relative_path(self, target: Path) -> str:
@@ -82,12 +91,25 @@ class FileSystemRuntime:
                 except ValueError:
                     continue
                 return f"{root.name}/{relative}" if relative else root.name
+            if self._unrestricted:
+                return resolved_target.as_posix()
             raise FileSystemRuntimeError(
                 "Path must stay within the current workspace or allowed roots.",
                 error_kind="workspace_escape",
             ) from exc
 
     def build_snapshot(self, target: Path) -> FileSnapshot:
+        if self._unrestricted:
+            resolved = target.resolve()
+            content = resolved.read_bytes()
+            stat = resolved.stat()
+            return FileSnapshot(
+                path=self.relative_path(resolved),
+                sha256=hashlib.sha256(content).hexdigest(),
+                mtime_ns=stat.st_mtime_ns,
+                size=len(content),
+                captured_at=datetime.now(UTC).isoformat(),
+            )
         return build_file_snapshot(workspace_root=self._workspace_root, path=target)
 
     def record_read_snapshot(self, snapshot: FileSnapshot) -> None:
@@ -129,6 +151,26 @@ class FileSystemRuntime:
         target: Path,
         expected_sha256: object,
     ) -> SnapshotValidationResult:
+        if self._unrestricted and isinstance(expected_sha256, str) and expected_sha256:
+            if not target.exists():
+                return SnapshotValidationResult(
+                    ok=False,
+                    error_kind="stale_write_snapshot",
+                    error_message=(
+                        "File no longer exists. Re-read or clear expected_sha256 before writing."
+                    ),
+                )
+            current = self.build_snapshot(target)
+            if current.sha256 != expected_sha256:
+                return SnapshotValidationResult(
+                    ok=False,
+                    error_kind="stale_write_snapshot",
+                    error_message=(
+                        "File changed since expected_sha256 was captured. "
+                        "Re-read the file and retry."
+                    ),
+                )
+            return SnapshotValidationResult(ok=True)
         ok, error_kind, error_message = validate_expected_sha256(
             workspace_root=self._workspace_root,
             target=target,
