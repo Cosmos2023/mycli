@@ -53,6 +53,7 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.logging import LogLevel
+from mycli.domain.providers import ProviderId, ProtocolId
 from mycli.domain.subagents import SubAgentRunSummary
 from mycli.domain.tooling.exposure import (
     ToolExposure,
@@ -229,6 +230,13 @@ def _runtime_role(role: str) -> RuntimeRole:
     if role == "tool":
         return "tool"
     return "system"
+
+
+def _config_supports_parallel_tool_calls(config: AgentConfig) -> bool:
+    return (
+        config.protocol is ProtocolId.RESPONSES
+        and config.provider in {ProviderId.OPENAI, ProviderId.CODEX}
+    )
 
 
 class AgentRuntime:
@@ -445,6 +453,7 @@ class AgentRuntime:
                 workspace_root=config.workspace_root,
             ).run,
             policy_gate=self._runtime_policy_gate,
+            supports_parallel_tool_calls=_config_supports_parallel_tool_calls(config),
         )
         child_executor = RuntimeChildToolExecutor(
             tool_router=ToolRouter(tool_registry=self._tool_registry),
@@ -2114,6 +2123,9 @@ class AgentRuntime:
             config,
         )
         self._tool_execution_service.set_session_id(session_id)
+        self._tool_execution_service.set_supports_parallel_tool_calls(
+            _config_supports_parallel_tool_calls(config)
+        )
         self._tool_orchestrator._session_id = session_id
         self._event_ledger._session_id = session_id
         self._sub_agent_service._session_id = session_id
