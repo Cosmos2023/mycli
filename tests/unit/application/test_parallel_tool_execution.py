@@ -5,10 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mycli.application.runtime.tools.tool_execution_service import (
-    CONCURRENCY_SAFE_TOOLS,
-    ToolExecutionService,
-)
+from mycli.application.runtime.tools.tool_execution_service import ToolExecutionService
 from mycli.application.runtime.tools.tool_call_runtime import ToolCallRuntime
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
@@ -21,6 +18,8 @@ from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_router import ToolRouter
+
+PARALLEL_TEST_TOOLS = frozenset({"Read", "Grep", "Glob", "LS"})
 
 
 class DelayedTool:
@@ -109,20 +108,6 @@ def _service(
         contributed_tool_registry=ToolContributionRegistry(),
     )
     return service, router
-
-
-def test_concurrency_safe_tools_exports_expected_names() -> None:
-    assert {
-        "Read",
-        "Grep",
-        "Glob",
-        "LS",
-        "WebSearch",
-        "WebFetch",
-        "Lint",
-    }.issubset(CONCURRENCY_SAFE_TOOLS)
-    assert "Edit" not in CONCURRENCY_SAFE_TOOLS
-    assert "Plan" not in CONCURRENCY_SAFE_TOOLS
 
 
 def test_execute_tool_calls_runs_adjacent_safe_tools_in_parallel(tmp_path: Path) -> None:
@@ -217,8 +202,6 @@ def test_execute_tool_calls_uses_tool_parallel_support_metadata(tmp_path: Path) 
     )
     elapsed = time.perf_counter() - started_at
 
-    assert "CustomParallel" not in CONCURRENCY_SAFE_TOOLS
-    assert "AnotherParallel" not in CONCURRENCY_SAFE_TOOLS
     assert elapsed < 0.35
     assert [message.tool_call_id for message in conversation.messages if message.role == "tool"] == [
         "call_1",
@@ -299,7 +282,6 @@ def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_pat
 
     assert elapsed >= 0.40
     assert elapsed < 0.55
-    assert "Edit" not in CONCURRENCY_SAFE_TOOLS
     assert [message.tool_call_id for message in conversation.messages if message.role == "tool"] == [
         "call_1",
         "call_2",
@@ -463,7 +445,7 @@ def test_tool_call_runtime_batches_adjacent_safe_calls_and_preserves_order() -> 
         return tuple(plan_state for _ in batch)
 
     runtime = ToolCallRuntime(
-        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        concurrency_safe_tools=PARALLEL_TEST_TOOLS,
         execute_batch=execute_batch,
     )
 
@@ -489,7 +471,7 @@ def test_tool_call_runtime_runs_safe_batch_in_parallel() -> None:
         return plan_state
 
     runtime = ToolCallRuntime(
-        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        concurrency_safe_tools=PARALLEL_TEST_TOOLS,
         execute_call=execute_call,
     )
 
@@ -523,7 +505,7 @@ def test_tool_call_runtime_records_abort_outcomes_for_interrupted_safe_batch() -
         return plan_state
 
     runtime = ToolCallRuntime(
-        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        concurrency_safe_tools=PARALLEL_TEST_TOOLS,
         execute_batch=execute_batch,
         abort_outcome=abort_outcome,
     )
@@ -564,7 +546,7 @@ def test_tool_call_runtime_records_abort_outcomes_for_pending_calls_after_interr
         return plan_state
 
     runtime = ToolCallRuntime(
-        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        concurrency_safe_tools=PARALLEL_TEST_TOOLS,
         execute_call=execute_call,
         abort_outcome=abort_outcome,
     )

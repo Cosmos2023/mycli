@@ -40,22 +40,6 @@ from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
 from mycli.tools.routing.tool_router import ToolRouter
 
-CONCURRENCY_SAFE_TOOLS = frozenset(
-    {
-        "Read",
-        "Grep",
-        "Glob",
-        "LS",
-        "WebSearch",
-        "WebFetch",
-        "Lint",
-        "GitStatus",
-        "GitDiff",
-        "GitLog",
-        "GitShow",
-    }
-)
-
 SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
@@ -191,7 +175,7 @@ class ToolExecutionService:
         return self._runtime_orchestrator.execute_tool_calls(
             calls=calls,
             plan_state=plan_state,
-            concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+            concurrency_safe_tools=frozenset(),
             supports_parallel_tool_call=lambda call: tool_router.supports_parallel_tool_calls(
                 call,
                 exposure=tool_exposure,

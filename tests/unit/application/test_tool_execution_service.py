@@ -6,10 +6,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from mycli.application.runtime.tools.tool_execution_service import (
-    CONCURRENCY_SAFE_TOOLS,
-    ToolExecutionService,
-)
+from mycli.application.runtime.tools.tool_execution_service import ToolExecutionService
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.domain.conversation import Conversation
@@ -2916,10 +2913,6 @@ def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) 
     assert failed.metadata["error_kind"] == "tool_validation_error"
     assert isinstance(failed.metadata["error_chars"], int)
     assert failed.metadata["error_truncated"] is False
-
-
-def test_tool_execution_service_classifies_git_tools_as_parallel_safe() -> None:
-    assert {"GitStatus", "GitDiff", "GitLog", "GitShow"}.issubset(CONCURRENCY_SAFE_TOOLS)
 
 
 def test_tool_execution_service_parallel_batch_interrupt_does_not_wait_for_slow_tools(
