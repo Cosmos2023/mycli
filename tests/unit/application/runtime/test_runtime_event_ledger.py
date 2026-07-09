@@ -107,7 +107,11 @@ def test_runtime_event_ledger_baseline_keeps_replayable_memory_and_plan() -> Non
     )
 
     assert baseline is not None
-    assert [fragment.kind for fragment in baseline.fragments] == ["memory", "plan"]
+    assert [fragment.kind for fragment in baseline.fragments] == [
+        "memory",
+        "plan",
+        "environment_context",
+    ]
     memory = baseline.fragments[0]
     assert isinstance(memory, BaselineFragment)
     assert memory.content == "Remember selected context."

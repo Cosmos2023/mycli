@@ -180,7 +180,7 @@ def test_turn_executor_forces_answer_after_repeated_successful_tool_loop(
     assert response.turn.stop_reason is StopReason.ASSISTANT_COMPLETED
     assert "summarize from gathered evidence" in response.assistant_message
     assert adapter.seen_tool_counts[0] > 0
-    assert adapter.seen_tool_counts[-1] > 0
+    assert adapter.seen_tool_counts[-1] == 0
 
 
 def test_turn_executor_records_guardrail_trace_for_repeated_tool_failure(

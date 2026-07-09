@@ -344,7 +344,7 @@ def test_agent_runtime_l4_triggers_from_full_provider_request_budget(
     assert adapter.main_requests
     rendered_main_request = "\n".join(message.content for message in adapter.main_requests[0])
     assert "Full-context L4 summary." in rendered_main_request
-    assert "Current user request: finish from the current context" in adapter.summarizer_prompts[0]
+    assert "[user]\nfinish from the current context" in adapter.summarizer_prompts[0]
     snapshot = runtime._observability_service.snapshot()
     assert snapshot.l4_last_decision == "summarize"
     assert snapshot.l4_last_source == "pre_request"

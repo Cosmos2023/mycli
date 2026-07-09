@@ -38,6 +38,7 @@ from mycli.domain.runtime import (
     ProviderProjectionLane,
     ReasoningEffort,
     RehydrationBudget,
+    SessionCommandAllowance,
     StopReason,
     TurnContext,
     TurnItem,
@@ -2142,6 +2143,7 @@ class AgentRuntime:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
         self._sub_agent_service.set_stream_sink(stream_sink)
+        self._refresh_approval_session_allowances()
         return TurnExecutor(self).execute_user_turn(
             user_message,
             image_paths=image_paths,
@@ -2157,6 +2159,7 @@ class AgentRuntime:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
         self._sub_agent_service.set_stream_sink(stream_sink)
+        self._refresh_approval_session_allowances()
         return TurnExecutor(self).resolve_pending_approval(choice, stream_sink=stream_sink)
 
     def resolve_pending_clarification(self, *, request_id: str, response: str) -> TurnResponse:
@@ -2166,3 +2169,11 @@ class AgentRuntime:
             request_id=request_id,
             response=response,
         )
+
+    def _refresh_approval_session_allowances(self) -> None:
+        raw_patterns = self._session_service.load_command_allowances(self._config.session_id)
+        allowances = tuple(
+            SessionCommandAllowance(command_pattern=pattern)
+            for pattern in raw_patterns
+        )
+        self._approval_service.set_session_allowances(allowances)

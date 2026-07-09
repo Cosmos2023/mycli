@@ -30,6 +30,12 @@ class ApprovalService:
     def set_safety_policy(self, safety_policy: SafetyPolicy) -> None:
         self._safety_policy = safety_policy
 
+    def set_session_allowances(
+        self,
+        session_allowances: tuple[SessionCommandAllowance, ...],
+    ) -> None:
+        self._session_allowances = session_allowances
+
     def evaluate(self, call: ToolCall) -> ApprovalOutcome:
         safety = self._safety_policy.evaluate(call)
         if safety.kind is DecisionKind.DENY:

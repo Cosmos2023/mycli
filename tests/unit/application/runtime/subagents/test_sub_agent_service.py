@@ -310,12 +310,12 @@ def test_service_builds_bounded_fork_context_without_parent_transcript_leak() ->
 
     snapshot = loop.calls[0]["context_snapshot"]
     assert isinstance(snapshot, SubAgentContextSnapshot)
-    assert snapshot.tool_names == ("Read", "Grep")
+    assert snapshot.tool_names == ("Read",)
     assert snapshot.baseline_fragments == ("Use pathlib. Do not leak parent transcript.",)
     assert snapshot.diagnostics["baseline_fragment_count"] == 1
-    assert snapshot.diagnostics["tool_names"] == ["Read", "Grep"]
+    assert snapshot.diagnostics["tool_names"] == ["Read"]
     assert snapshot.diagnostics["baseline_content_hash"]
-    assert result.context_diagnostics["tool_count"] == 2
+    assert result.context_diagnostics["tool_count"] == 1
     assert "Parent memory" not in result.report
 
 

@@ -196,7 +196,7 @@ def test_instruction_contract_assembler_keeps_permissions_when_environment_conte
         for fragment in contract.developer_sections
         if fragment.kind == "permissions"
     )
-    assert "Runtime permissions for this turn:" in permissions_fragment.content
+    assert "<permissions instructions>" in permissions_fragment.content
     assert not any(
         fragment.kind == "environment_context"
         for fragment in contract.contextual_user_sections

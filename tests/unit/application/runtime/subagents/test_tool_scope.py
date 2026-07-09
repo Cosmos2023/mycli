@@ -40,4 +40,4 @@ def test_resolver_keeps_stable_profile_order() -> None:
         policy_denied_tools=(),
     )
 
-    assert resolved == ("Read", "Grep", "Glob", "LS", "Lint")
+    assert resolved == ("Read", "LS", "Lint")

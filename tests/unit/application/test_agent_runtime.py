@@ -735,8 +735,7 @@ def test_agent_runtime_emits_activity_events_for_thinking_and_tool_execution(
     assert "thinking" in kinds
     assert "tool_started" in kinds
     assert "tool_finished" in kinds
-    assert any(message.startswith("query=search_text") for message in messages)
-    assert any(message.startswith("query=search_text") for message in messages)
+    assert any("rg -n --glob '*.md' search_text ." in message for message in messages)
 
 
 def test_agent_runtime_pauses_and_resumes_after_clarification(tmp_path: Path) -> None:
@@ -969,8 +968,8 @@ class SearchThenDoneAdapter:
                     "progress_message": "Searching the workspace",
                     "tool_call": ToolCall(
                         call_id="call_search_text_1",
-                        name="Grep",
-                        arguments={"query": "search_text", "path": ".", "include": "*.md", "output_mode": "content"},
+                        name="Bash",
+                        arguments={"command": "rg -n --glob '*.md' search_text ."},
                         reason="search workspace",
                     ),
                     "done": False,
@@ -1107,14 +1106,8 @@ class SearchReadEditThenDoneAdapter:
                     "progress_message": "Searching for evidence",
                     "tool_call": ToolCall(
                         call_id="call_search_1",
-                        name="Grep",
-                        arguments={
-                            "query": "needle",
-                            "path": ".",
-                            "include": "*.txt", "output_mode": "content",
-                            "case_sensitive": True,
-                            "max_matches": 5,
-                        },
+                        name="Bash",
+                        arguments={"command": "rg -n --glob '*.txt' needle ."},
                         reason="locate relevant lines",
                     ),
                     "done": False,
@@ -1182,8 +1175,8 @@ class SearchRangeThenDoneAdapter:
                     "progress_message": "Searching for evidence",
                     "tool_call": ToolCall(
                         call_id="call_search_1",
-                        name="Grep",
-                        arguments={"query": "needle", "output_mode": "content"},
+                        name="Bash",
+                        arguments={"command": "rg -n needle ."},
                         reason="find the file",
                     ),
                     "done": False,
@@ -2904,9 +2897,8 @@ def test_agent_runtime_reinjects_grounded_search_matches_into_tool_message(tmp_p
     assert any(
         message.role == "tool"
         and message.tool_call_id == "call_search_text_1"
-        and "Evidence:" in str(message.content)
-        and "[search_match] README.md:1" in str(message.content)
-        and "snippet: search_text mention" in str(message.content)
+        and "Command succeeded" in str(message.content)
+        and "README.md:1:search_text mention" in str(message.content)
         for message in adapter.seen_messages[1]
     )
 
@@ -2951,15 +2943,15 @@ def test_agent_runtime_preserves_grounded_tool_messages_across_reinjection(
     read_content = str(read_tool_message.content)
     edit_content = str(edit_tool_message.content)
 
-    assert "Evidence:" in search_content
-    assert "[search_match] notes.txt:1" in search_content
-    assert "snippet: needle one" in search_content
+    assert "Command succeeded" in search_content
+    assert "notes.txt:1:needle one" in search_content
 
-    assert "Evidence:" in read_content
-    assert "[file_excerpt] notes.txt:1-2" in read_content
-    assert "snippet: needle one line two" in read_content
+    assert "Read succeeded" in read_content
+    assert "Path: notes.txt" in read_content
+    assert "needle one" in read_content
+    assert "line two" in read_content
 
-    assert "Diff preview:" in edit_content
+    assert "Diff preview (" in edit_content
     assert "-line two" in edit_content
     assert "+line three" in edit_content
 
@@ -2992,10 +2984,10 @@ def test_agent_runtime_reinjects_search_and_range_evidence_into_tool_messages(
         and getattr(message, "tool_call_id", None) == "call_read_range_1"
     )
 
-    assert "Evidence:" in str(search_tool_message.content)
-    assert "[search_match] notes.txt:1" in str(search_tool_message.content)
-    assert "snippet: needle one" in str(search_tool_message.content)
-    assert "[file_excerpt] notes.txt:1-2" in str(range_tool_message.content)
+    assert "notes.txt:1:needle one" in str(search_tool_message.content)
+    assert "Read succeeded" in str(range_tool_message.content)
+    assert "Path: notes.txt" in str(range_tool_message.content)
+    assert "needle one" in str(range_tool_message.content)
 
 
 def test_agent_runtime_reinjects_grounded_shell_stdout_into_tool_message(
@@ -4732,8 +4724,8 @@ class ImplementationAuditForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="Grep",
-                                tool_arguments={"query": "capability activation", "path": ".", "glob": "*.py"},
+                                tool_name="Bash",
+                                tool_arguments={"command": "rg -n --glob '*.py' 'capability activation' ."},
                                 call_id="call_search_capability_activation",
                             ),
                         ),
