@@ -120,6 +120,7 @@ class WebFetchTool:
             ToolParameter(name="prompt", type="string", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def effect_profile(self) -> ToolEffectProfile:

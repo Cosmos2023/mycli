@@ -83,6 +83,7 @@ class GrepTool:
             ToolParameter(name="ignore_case", type="boolean", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(

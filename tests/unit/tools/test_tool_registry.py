@@ -87,6 +87,7 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     read = next(tool for tool in tools if tool["name"] == "Read")
     assert read["toolset"] == "file"
     assert read["risk_level"] == "low"
+    assert read["supports_parallel_tool_calls"] is True
     assert read["approval_policy"] == "auto_allow"
     assert "read" in read["capability_tags"]
     assert read["effects"] == {"filesystem": "read", "network": False, "process": False}
@@ -98,14 +99,39 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     patch = next(tool for tool in tools if tool["name"] == "Patch")
     assert patch["toolset"] == "file"
     assert patch["risk_level"] == "medium"
+    assert patch["supports_parallel_tool_calls"] is False
     assert patch["approval_policy"] == "auto_allow_or_request"
     git_status = next(tool for tool in tools if tool["name"] == "GitStatus")
     assert git_status["id"] == "builtin:GitStatus"
     assert git_status["toolset"] == "dev"
     assert git_status["risk_level"] == "low"
     assert git_status["approval_policy"] == "auto_allow"
+    assert git_status["supports_parallel_tool_calls"] is True
     assert "git" in git_status["capability_tags"]
     assert git_status["source"] == "builtin"
+
+
+def test_builtin_tool_parallel_support_matches_safe_runtime_set(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+    parallel_tools = {
+        name
+        for name in registry.list_names()
+        if registry.supports_parallel_tool_calls(name)
+    }
+
+    assert parallel_tools == {
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "WebSearch",
+        "WebFetch",
+        "GitStatus",
+        "GitDiff",
+        "GitLog",
+        "GitShow",
+        "Lint",
+    }
 
 
 def test_builtin_tool_registry_manifest_groups_toolsets(tmp_path: Path) -> None:

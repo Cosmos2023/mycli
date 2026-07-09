@@ -120,6 +120,7 @@ class LintTool:
         description="Run the detected project linter and return bounded diagnostics.",
         parameters=(ToolParameter(name="paths", type="string", required=False),),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:

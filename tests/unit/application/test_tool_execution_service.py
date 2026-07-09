@@ -277,6 +277,7 @@ class FakeSlowSafeTool:
         name="Read",
         description="Slow safe read",
         parameters=(ToolParameter("path", "string"),),
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(self) -> None:
@@ -298,6 +299,7 @@ class FakeInterruptingSafeTool:
         name="Grep",
         description="Interrupt safe grep",
         parameters=(ToolParameter("pattern", "string"),),
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(self, token: RuntimeInterruptToken) -> None:

@@ -26,7 +26,6 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.domain.tooling.calls import ToolCall
-from mycli.application.runtime.tools.tool_execution_service import CONCURRENCY_SAFE_TOOLS
 from mycli.application.runtime.tools.tool_policy_runtime import runtime_policy_denial_message
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.tracing import TraceService
@@ -194,6 +193,15 @@ class AssistantBlockConsumer:
                 )
                 pending_safe_tool_calls.clear()
 
+            def supports_parallel_tool_call(tool_call: ToolCall) -> bool:
+                try:
+                    return tool_router.supports_parallel_tool_calls(
+                        tool_call,
+                        exposure=tool_exposure,
+                    )
+                except ValueError:
+                    return False
+
             for block in item.blocks:
                 _raise_if_interrupted(interrupt_token)
                 if block.type == "reasoning":
@@ -278,7 +286,7 @@ class AssistantBlockConsumer:
                 runtime_decision: ToolRuntimeDecision | None = None
                 if (
                     self._runtime_policy_decision is not None
-                    and tool_call.name not in CONCURRENCY_SAFE_TOOLS
+                    and not supports_parallel_tool_call(tool_call)
                 ):
                     runtime_decision = self._runtime_policy_decision(
                         call=tool_call,
@@ -321,7 +329,7 @@ class AssistantBlockConsumer:
                         reason=safety.reason,
                         safety_metadata=safety.metadata,
                     )
-                    if tool_call.name in CONCURRENCY_SAFE_TOOLS:
+                    if supports_parallel_tool_call(tool_call):
                         pending_safe_tool_calls.append((tool_call, block))
                         continue
                     flush_pending_safe_tool_calls()
@@ -346,7 +354,7 @@ class AssistantBlockConsumer:
                     continue
 
                 if self._is_auto_allowed_contributed_tool(tool_call, tool_exposure):
-                    if tool_call.name in CONCURRENCY_SAFE_TOOLS:
+                    if supports_parallel_tool_call(tool_call):
                         pending_safe_tool_calls.append((tool_call, block))
                         continue
                     flush_pending_safe_tool_calls()
@@ -528,7 +536,7 @@ class AssistantBlockConsumer:
                             safety_metadata=approval.safety_metadata,
                         )
 
-                if tool_call.name in CONCURRENCY_SAFE_TOOLS:
+                if supports_parallel_tool_call(tool_call):
                     pending_safe_tool_calls.append((tool_call, block))
                     continue
                 flush_pending_safe_tool_calls()

@@ -122,6 +122,24 @@ class ToolRouter:
             return tool_effects_for_tool(contributed_tool.tool)
         return self._tool_registry.effect_profile(call)
 
+    def supports_parallel_tool_calls(
+        self,
+        call: ToolCall,
+        *,
+        exposure: ToolExposure,
+    ) -> bool:
+        call = self._canonical_call(call, exposure=exposure)
+        allowed_names = set(exposure.callable_tool_names())
+        if call.name not in allowed_names:
+            rendered = ", ".join(sorted(allowed_names)) or "none"
+            raise ValueError(
+                f"Tool '{call.name}' is not exposed for this turn. Callable tools: {rendered}."
+            )
+        contributed_tool = self._contributed_tools.get(call.name)
+        if contributed_tool is not None:
+            return contributed_tool.descriptor.spec.supports_parallel_tool_calls
+        return self._tool_registry.supports_parallel_tool_calls(call.name)
+
     def _canonical_call(self, call: ToolCall, *, exposure: ToolExposure) -> ToolCall:
         if call.name in exposure.callable_tool_names():
             return call

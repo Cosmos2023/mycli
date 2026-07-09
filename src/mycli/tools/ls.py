@@ -57,6 +57,7 @@ class LSTool:
         description="List a directory non-recursively. Hidden entries are reported separately.",
         parameters=(ToolParameter(name="path", type="string", required=True),),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(

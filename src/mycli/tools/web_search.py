@@ -73,6 +73,7 @@ class WebSearchTool:
             ToolParameter(name="provider", type="string", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def effect_profile(self) -> ToolEffectProfile:

@@ -14,13 +14,15 @@ ToolCallExecutor = Callable[[ToolCall, PlanState], OutcomeT]
 ToolBatchExecutor = Callable[[tuple[ToolCall, ...], PlanState], Sequence[OutcomeT]]
 OutcomeApplier = Callable[[OutcomeT], PlanState]
 AbortOutcomeFactory = Callable[[ToolCall, PlanState], OutcomeT]
+SupportsParallelToolCall = Callable[[ToolCall], bool]
 
 
 @dataclass(slots=True)
 class ToolCallRuntime(Generic[OutcomeT]):
-    """Coordinates turn-local tool call batching and cancellation checks."""
+    """Coordinates turn-local read/write tool phases and cancellation repair."""
 
     concurrency_safe_tools: Collection[str]
+    supports_parallel_tool_call: SupportsParallelToolCall | None = None
     execute_call: ToolCallExecutor[OutcomeT] | None = None
     execute_batch: ToolBatchExecutor[OutcomeT] | None = None
     abort_outcome: AbortOutcomeFactory[OutcomeT] | None = None
@@ -34,8 +36,11 @@ class ToolCallRuntime(Generic[OutcomeT]):
         apply_outcome: OutcomeApplier[OutcomeT] | None = None,
     ) -> PlanState:
         self._raise_if_interrupted()
+        ordered_calls = tuple(calls)
         current_plan_state = plan_state
-        pending_safe_calls: list[ToolCall] = []
+        pending_safe_calls: list[tuple[int, ToolCall]] = []
+        completed_indexes: set[int] = set()
+        aborted_indexes: set[int] = set()
 
         def apply_runtime_outcome(outcome: OutcomeT) -> None:
             nonlocal current_plan_state
@@ -44,46 +49,73 @@ class ToolCallRuntime(Generic[OutcomeT]):
             else:
                 current_plan_state = apply_outcome(outcome)
 
-        def record_batch_abort(batch: tuple[ToolCall, ...]) -> None:
-            if self.abort_outcome is None or len(batch) <= 1:
+        def record_aborted_calls(entries: tuple[tuple[int, ToolCall], ...]) -> None:
+            if self.abort_outcome is None:
                 return
-            for aborted_call in batch:
+            for index, aborted_call in entries:
+                if index in completed_indexes or index in aborted_indexes:
+                    continue
+                aborted_indexes.add(index)
                 apply_runtime_outcome(self.abort_outcome(aborted_call, current_plan_state))
 
-        def flush_safe_calls() -> None:
+        def mark_completed(entries: tuple[tuple[int, ToolCall], ...]) -> None:
+            for index, _call in entries:
+                completed_indexes.add(index)
+
+        def remaining_entries(start_index: int) -> tuple[tuple[int, ToolCall], ...]:
+            return tuple(
+                (index, ordered_calls[index])
+                for index in range(start_index, len(ordered_calls))
+                if index not in completed_indexes and index not in aborted_indexes
+            )
+
+        def flush_safe_calls(
+            *,
+            abort_tail: tuple[tuple[int, ToolCall], ...] = (),
+        ) -> None:
             self._raise_if_interrupted()
             if not pending_safe_calls:
                 return
             batch = tuple(pending_safe_calls)
             pending_safe_calls.clear()
             try:
-                outcomes = self._execute_batch(batch, current_plan_state)
+                outcomes = self._execute_batch(
+                    tuple(call for _index, call in batch),
+                    current_plan_state,
+                )
             except KeyboardInterrupt:
-                record_batch_abort(batch)
+                record_aborted_calls((*batch, *abort_tail))
                 raise
             for outcome in outcomes:
                 apply_runtime_outcome(outcome)
+            mark_completed(batch)
 
-        for call in calls:
+        for index, call in enumerate(ordered_calls):
             self._raise_if_interrupted()
-            if call.name in self.concurrency_safe_tools:
-                pending_safe_calls.append(call)
+            if self._supports_parallel(call):
+                pending_safe_calls.append((index, call))
                 continue
-            flush_safe_calls()
-            batch = (call,)
+            flush_safe_calls(abort_tail=remaining_entries(index))
+            batch = ((index, call),)
             try:
-                outcomes = self._execute_batch(batch, current_plan_state)
+                outcomes = self._execute_batch((call,), current_plan_state)
             except KeyboardInterrupt:
-                record_batch_abort(batch)
+                record_aborted_calls((*batch, *remaining_entries(index + 1)))
                 raise
             for outcome in outcomes:
                 apply_runtime_outcome(outcome)
+            mark_completed(batch)
         flush_safe_calls()
         return current_plan_state
 
     def _raise_if_interrupted(self) -> None:
         if self.interrupt_token is not None:
             self.interrupt_token.raise_if_interrupted()
+
+    def _supports_parallel(self, call: ToolCall) -> bool:
+        if self.supports_parallel_tool_call is not None:
+            return self.supports_parallel_tool_call(call)
+        return call.name in self.concurrency_safe_tools
 
     def _execute_batch(
         self,

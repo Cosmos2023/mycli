@@ -11,6 +11,7 @@ from mycli.application.runtime.tools.tool_call_runtime import (
     ToolCallExecutor,
     ToolCallRuntime,
     AbortOutcomeFactory,
+    SupportsParallelToolCall,
 )
 from mycli.application.runtime.tools.tool_hook_runtime import (
     PostToolHookResult,
@@ -98,6 +99,7 @@ class ToolRuntimeOrchestrator:
         calls: list[ToolCall] | tuple[ToolCall, ...],
         plan_state: PlanState,
         concurrency_safe_tools: Collection[str],
+        supports_parallel_tool_call: SupportsParallelToolCall | None = None,
         execute_call: ToolCallExecutor[OutcomeT] | None = None,
         execute_batch: ToolBatchExecutor[OutcomeT] | None = None,
         apply_outcome: OutcomeApplier[OutcomeT] | None = None,
@@ -106,6 +108,7 @@ class ToolRuntimeOrchestrator:
     ) -> PlanState:
         runtime: ToolCallRuntime[OutcomeT] = ToolCallRuntime(
             concurrency_safe_tools=concurrency_safe_tools,
+            supports_parallel_tool_call=supports_parallel_tool_call,
             execute_call=execute_call,
             execute_batch=execute_batch,
             abort_outcome=abort_outcome,

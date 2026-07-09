@@ -24,11 +24,18 @@ from mycli.tools.routing.tool_router import ToolRouter
 
 
 class DelayedTool:
-    def __init__(self, *, name: str, delay_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        name: str,
+        delay_seconds: float,
+        supports_parallel_tool_calls: bool = False,
+    ) -> None:
         self.spec = ToolSpec(
             name=name,
             description=f"{name} tool",
             parameters=(ToolParameter("path", "string"),),
+            supports_parallel_tool_calls=supports_parallel_tool_calls,
         )
         self._delay_seconds = delay_seconds
         self.seen_arguments: list[dict[str, object]] = []
@@ -42,6 +49,20 @@ class DelayedTool:
             summary=f"{self.spec.name} {path}",
             raw_payload={"path": path, "content": f"{self.spec.name}:{path}"},
         )
+
+
+class InterruptingTool:
+    def __init__(self, *, name: str) -> None:
+        self.spec = ToolSpec(
+            name=name,
+            description=f"{name} tool",
+            parameters=(ToolParameter("path", "string"),),
+        )
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        raise KeyboardInterrupt
 
 
 def _tool_exposure(*tool_names: str) -> ToolExposure:
@@ -103,8 +124,8 @@ def test_concurrency_safe_tools_exports_expected_names() -> None:
 
 
 def test_execute_tool_calls_runs_adjacent_safe_tools_in_parallel(tmp_path: Path) -> None:
-    read_file = DelayedTool(name="Read", delay_seconds=0.20)
-    search_text = DelayedTool(name="Grep", delay_seconds=0.20)
+    read_file = DelayedTool(name="Read", delay_seconds=0.20, supports_parallel_tool_calls=True)
+    search_text = DelayedTool(name="Grep", delay_seconds=0.20, supports_parallel_tool_calls=True)
     service, router = _service(tmp_path, tools=[read_file, search_text])
     conversation = Conversation(session_id="demo")
     activity_events: list[ActivityEvent] = []
@@ -119,7 +140,7 @@ def test_execute_tool_calls_runs_adjacent_safe_tools_in_parallel(tmp_path: Path)
         conversation=conversation,
         calls=calls,
         tool_router=router,
-        tool_exposure=_tool_exposure("read_file", "search_text"),
+        tool_exposure=_tool_exposure("Read", "Grep"),
         plan_state=PlanState(),
         turn_id="turn_1",
         activity_events=activity_events,
@@ -151,10 +172,62 @@ def test_execute_tool_calls_runs_adjacent_safe_tools_in_parallel(tmp_path: Path)
     ]
 
 
+def test_execute_tool_calls_uses_tool_parallel_support_metadata(tmp_path: Path) -> None:
+    first = DelayedTool(
+        name="CustomParallel",
+        delay_seconds=0.20,
+        supports_parallel_tool_calls=True,
+    )
+    second = DelayedTool(
+        name="AnotherParallel",
+        delay_seconds=0.20,
+        supports_parallel_tool_calls=True,
+    )
+    service, router = _service(tmp_path, tools=[first, second])
+    conversation = Conversation(session_id="demo")
+    activity_events: list[ActivityEvent] = []
+    turn_items: list[TurnItem] = []
+    calls = (
+        ToolCall(
+            name="CustomParallel",
+            arguments={"path": "alpha"},
+            reason="inspect",
+            call_id="call_1",
+        ),
+        ToolCall(
+            name="AnotherParallel",
+            arguments={"path": "beta"},
+            reason="inspect",
+            call_id="call_2",
+        ),
+    )
+
+    started_at = time.perf_counter()
+    service.execute_tool_calls(
+        conversation=conversation,
+        calls=calls,
+        tool_router=router,
+        tool_exposure=_tool_exposure("CustomParallel", "AnotherParallel"),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=activity_events,
+        turn_items=turn_items,
+    )
+    elapsed = time.perf_counter() - started_at
+
+    assert "CustomParallel" not in CONCURRENCY_SAFE_TOOLS
+    assert "AnotherParallel" not in CONCURRENCY_SAFE_TOOLS
+    assert elapsed < 0.35
+    assert [message.tool_call_id for message in conversation.messages if message.role == "tool"] == [
+        "call_1",
+        "call_2",
+    ]
+
+
 def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_path: Path) -> None:
-    read_file = DelayedTool(name="Read", delay_seconds=0.15)
+    read_file = DelayedTool(name="Read", delay_seconds=0.15, supports_parallel_tool_calls=True)
     edit_file = DelayedTool(name="Edit", delay_seconds=0.15)
-    search_text = DelayedTool(name="Grep", delay_seconds=0.15)
+    search_text = DelayedTool(name="Grep", delay_seconds=0.15, supports_parallel_tool_calls=True)
     service, router = _service(tmp_path, tools=[read_file, edit_file, search_text])
     conversation = Conversation(session_id="demo")
     activity_events: list[ActivityEvent] = []
@@ -206,10 +279,10 @@ def test_execute_tool_calls_preserves_order_across_safe_and_unsafe_calls(tmp_pat
 
 
 def test_execute_tool_calls_executes_all_calls_and_keeps_tool_results_ordered(tmp_path: Path) -> None:
-    list_directory = DelayedTool(name="LS", delay_seconds=0.10)
-    git_diff = DelayedTool(name="Grep", delay_seconds=0.10)
+    list_directory = DelayedTool(name="LS", delay_seconds=0.10, supports_parallel_tool_calls=True)
+    git_diff = DelayedTool(name="Grep", delay_seconds=0.10, supports_parallel_tool_calls=True)
     edit_file = DelayedTool(name="Edit", delay_seconds=0.10)
-    git_log = DelayedTool(name="Read", delay_seconds=0.10)
+    git_log = DelayedTool(name="Read", delay_seconds=0.10, supports_parallel_tool_calls=True)
     service, router = _service(tmp_path, tools=[list_directory, git_diff, edit_file, git_log])
     conversation = Conversation(session_id="demo")
     activity_events: list[ActivityEvent] = []
@@ -272,6 +345,61 @@ def test_execute_tool_calls_executes_all_calls_and_keeps_tool_results_ordered(tm
         TurnItemType.TOOL_RESULT,
         TurnItemType.TOOL_CALL,
         TurnItemType.TOOL_RESULT,
+    ]
+
+
+def test_execute_tool_calls_records_aborted_outputs_for_pending_calls_after_interrupt(
+    tmp_path: Path,
+) -> None:
+    search_text = InterruptingTool(name="Grep")
+    edit_file = DelayedTool(name="Edit", delay_seconds=0.01)
+    read_file = DelayedTool(name="Read", delay_seconds=0.01, supports_parallel_tool_calls=True)
+    service, router = _service(tmp_path, tools=[search_text, edit_file, read_file])
+    conversation = Conversation(session_id="demo")
+    activity_events: list[ActivityEvent] = []
+    turn_items: list[TurnItem] = []
+    calls = (
+        ToolCall(name="Grep", arguments={"path": "one"}, reason="interrupt", call_id="call_1"),
+        ToolCall(name="Edit", arguments={"path": "two"}, reason="mutate", call_id="call_2"),
+        ToolCall(name="Read", arguments={"path": "three"}, reason="inspect", call_id="call_3"),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        service.execute_tool_calls(
+            conversation=conversation,
+            calls=calls,
+            tool_router=router,
+            tool_exposure=_tool_exposure("Grep", "Edit", "Read"),
+            plan_state=PlanState(),
+            turn_id="turn_1",
+            activity_events=activity_events,
+            turn_items=turn_items,
+        )
+
+    assert search_text.seen_arguments == [{"path": "one"}]
+    assert edit_file.seen_arguments == []
+    assert read_file.seen_arguments == []
+    tool_messages = [message for message in conversation.messages if message.role == "tool"]
+    assert [message.tool_call_id for message in tool_messages] == [
+        "call_1",
+        "call_2",
+        "call_3",
+    ]
+    result_blocks = [
+        block
+        for message in tool_messages
+        for block in message.blocks
+        if block.type == "tool_result"
+    ]
+    assert [block.metadata["error_kind"] for block in result_blocks] == [
+        "tool_interrupted",
+        "tool_interrupted",
+        "tool_interrupted",
+    ]
+    assert [item.call_id for item in turn_items if item.type is TurnItemType.TOOL_RESULT] == [
+        "call_1",
+        "call_2",
+        "call_3",
     ]
 
 
@@ -363,3 +491,45 @@ def test_tool_call_runtime_records_abort_outcomes_for_interrupted_safe_batch() -
 
     assert aborted_call_ids == ["call_1", "call_2"]
     assert applied_call_ids == ["call_1", "call_2"]
+
+
+def test_tool_call_runtime_records_abort_outcomes_for_pending_calls_after_interrupt() -> None:
+    calls = (
+        ToolCall(name="Read", arguments={"path": "one"}, reason="inspect", call_id="call_1"),
+        ToolCall(name="Edit", arguments={"path": "two"}, reason="mutate", call_id="call_2"),
+        ToolCall(name="Grep", arguments={"path": "three"}, reason="inspect", call_id="call_3"),
+    )
+    executed_call_ids: list[str] = []
+    aborted_call_ids: list[str] = []
+    applied_call_ids: list[str] = []
+
+    def execute_call(call: ToolCall, plan_state: PlanState) -> PlanState:
+        del plan_state
+        executed_call_ids.append(call.call_id or "")
+        raise KeyboardInterrupt
+
+    def abort_outcome(call: ToolCall, plan_state: PlanState) -> tuple[str, PlanState]:
+        aborted_call_ids.append(call.call_id or "")
+        return call.call_id or "", plan_state
+
+    def apply_outcome(outcome: tuple[str, PlanState]) -> PlanState:
+        call_id, plan_state = outcome
+        applied_call_ids.append(call_id)
+        return plan_state
+
+    runtime = ToolCallRuntime(
+        concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+        execute_call=execute_call,
+        abort_outcome=abort_outcome,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runtime.execute_calls(
+            calls=calls,
+            plan_state=PlanState(),
+            apply_outcome=apply_outcome,
+        )
+
+    assert executed_call_ids == ["call_1"]
+    assert aborted_call_ids == ["call_1", "call_2", "call_3"]
+    assert applied_call_ids == ["call_1", "call_2", "call_3"]

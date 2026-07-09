@@ -33,6 +33,7 @@ class ToolSpec:
     description: str
     parameters: tuple[ToolParameter, ...] = field(default_factory=tuple)
     risk_level: str = "low"
+    supports_parallel_tool_calls: bool = False
 
 
 FilesystemEffect = Literal["none", "read", "write", "unknown"]

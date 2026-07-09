@@ -54,6 +54,7 @@ class GlobTool:
             ToolParameter(name="path", type="string", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(

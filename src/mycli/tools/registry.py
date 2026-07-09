@@ -550,6 +550,7 @@ class ToolRegistry:
             "description": spec.description,
             "parameters": [_parameter_manifest(parameter) for parameter in spec.parameters],
             "risk_level": spec.risk_level,
+            "supports_parallel_tool_calls": spec.supports_parallel_tool_calls,
             "approval_policy": _approval_policy_for(spec=spec, metadata=metadata),
             "capability_tags": _capability_tags_for(metadata=metadata),
             "effects": {
@@ -598,6 +599,13 @@ class ToolRegistry:
         if executor is None:
             raise ValueError(f"Unsupported tool: {call.name}")
         return tool_effects_for_tool(executor)
+
+    def supports_parallel_tool_calls(self, name: str) -> bool:
+        assert self.specs is not None
+        spec = self.specs.get(name)
+        if spec is None:
+            raise ValueError(f"Unsupported tool: {name}")
+        return spec.supports_parallel_tool_calls
 
 
 def default_tools(workspace_root: Path) -> list[SchemaTool]:

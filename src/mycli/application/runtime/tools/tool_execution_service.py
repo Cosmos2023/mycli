@@ -187,6 +187,10 @@ class ToolExecutionService:
             calls=calls,
             plan_state=plan_state,
             concurrency_safe_tools=CONCURRENCY_SAFE_TOOLS,
+            supports_parallel_tool_call=lambda call: tool_router.supports_parallel_tool_calls(
+                call,
+                exposure=tool_exposure,
+            ),
             execute_call=execute_call,
             apply_outcome=apply_outcome,
             abort_outcome=abort_outcome,

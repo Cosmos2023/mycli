@@ -23,6 +23,7 @@ class GitStatusTool:
         description="Inspect the current git branch and dirty worktree status without mutating the repository.",
         parameters=(),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(self, workspace_root: Path) -> None:
@@ -71,6 +72,7 @@ class GitDiffTool:
             ToolParameter(name="context_lines", type="integer", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(self, workspace_root: Path) -> None:
@@ -138,6 +140,7 @@ class GitLogTool:
             ToolParameter(name="ref", type="string", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(self, workspace_root: Path) -> None:
@@ -182,6 +185,7 @@ class GitShowTool:
             ToolParameter(name="include_diff", type="boolean", required=False),
         ),
         risk_level="low",
+        supports_parallel_tool_calls=True,
     )
 
     def __init__(self, workspace_root: Path) -> None:

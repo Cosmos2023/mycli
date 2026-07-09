@@ -22,11 +22,18 @@ from mycli.tools.read import ReadTool
 
 
 class FakeTool:
-    def __init__(self, name: str, summary: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        summary: str,
+        *,
+        supports_parallel_tool_calls: bool = False,
+    ) -> None:
         self.spec = ToolSpec(
             name=name,
             description=f"Tool {name}",
             parameters=(ToolParameter(name="path", type="string", required=False),),
+            supports_parallel_tool_calls=supports_parallel_tool_calls,
         )
         self.summary = summary
         self.calls: list[dict[str, object]] = []
@@ -179,6 +186,82 @@ def test_tool_router_preserves_array_parameter_item_schema() -> None:
         "required": ["status"],
         "additionalProperties": False,
     }
+
+
+def test_tool_router_reports_parallel_support_from_registry_specs() -> None:
+    registry = ToolRegistry.from_tools(
+        [
+            FakeTool("ReadOnly", "read", supports_parallel_tool_calls=True),
+            FakeTool("Mutating", "mutate"),
+        ]
+    )
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("ReadOnly"),
+                source=ToolRouteSource.REGISTRY,
+                spec=registry.specs["ReadOnly"],
+            ),
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Mutating"),
+                source=ToolRouteSource.REGISTRY,
+                spec=registry.specs["Mutating"],
+            ),
+        ),
+    )
+    router = ToolRouter(tool_registry=registry)
+
+    assert router.supports_parallel_tool_calls(
+        ToolCall(
+            name="ReadOnly",
+            arguments={},
+            reason="inspect",
+            call_id="call_read",
+        ),
+        exposure=exposure,
+    )
+    assert not router.supports_parallel_tool_calls(
+        ToolCall(
+            name="Mutating",
+            arguments={},
+            reason="mutate",
+            call_id="call_mutate",
+        ),
+        exposure=exposure,
+    )
+
+
+def test_tool_router_reports_parallel_support_from_contributed_specs() -> None:
+    registry = ToolRegistry.from_tools([FakeTool("LS", "listed")])
+    contributed = FakeTool(
+        "workspace_summary",
+        "summarized",
+        supports_parallel_tool_calls=True,
+    )
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("workspace_summary"),
+                source=ToolRouteSource.RUNTIME,
+                spec=contributed.spec,
+            ),
+        ),
+    )
+    registration = _contribution_registration(contributed)
+    router = ToolRouter(
+        tool_registry=registry,
+        contributed_tools={"workspace_summary": registration},
+    )
+
+    assert router.supports_parallel_tool_calls(
+        ToolCall(
+            name="workspace_summary",
+            arguments={"path": "."},
+            reason="summarize",
+            call_id="call_contributed",
+        ),
+        exposure=exposure,
+    )
 
 
 def test_tool_router_executes_contributed_tool_when_exposed() -> None:
