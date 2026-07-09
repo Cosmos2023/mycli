@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from mycli.domain.subagents import SubAgentContextSnapshot, SubAgentResult
 
 
-MEMORY_EXTRACTION_TOOLS = ("Read", "Grep", "Glob", "LS", "Write", "Edit")
+MEMORY_EXTRACTION_TOOLS = ("Read", "LS", "Write", "Edit")
 
 
 class SupportsTraceAppend(Protocol):

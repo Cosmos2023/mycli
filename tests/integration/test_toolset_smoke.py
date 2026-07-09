@@ -4,8 +4,6 @@ def test_all_tools_importable():
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
     from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
-    from mycli.tools.glob import GlobTool
-    from mycli.tools.grep import GrepTool
     from mycli.tools.kill_shell import KillShellTool
     from mycli.tools.lint import LintTool
     from mycli.tools.ls import LSTool
@@ -24,8 +22,6 @@ def test_all_tools_importable():
             EditTool,
             PatchTool,
             WriteTool,
-            GrepTool,
-            GlobTool,
             LSTool,
             BashTool,
             BashOutputTool,
@@ -55,8 +51,6 @@ def test_all_tools_registered():
         "Edit",
         "Patch",
         "Write",
-        "Grep",
-        "Glob",
         "LS",
         "Bash",
         "BashOutput",

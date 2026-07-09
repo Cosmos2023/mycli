@@ -87,7 +87,7 @@ def build_extract_auto_only_prompt(
         [
             f"You are now acting as the memory extraction subagent. Analyze the most recent ~{new_message_count} messages above and use them to update your persistent memory system.",
             "",
-            "Available tools: Read, Grep, Glob, LS, and Edit/Write for paths inside the memory directory only. All other tools will be denied.",
+            "Available tools: Read, LS, and Edit/Write for paths inside the memory directory only. All other tools will be denied.",
             "",
             "You have a limited turn budget. Edit requires a prior Read of the same file, so the efficient strategy is: turn 1 - issue all Read calls in parallel for every file you might update; turn 2 - issue all Write/Edit calls in parallel. Do not interleave reads and writes across many turns.",
             "",
@@ -142,7 +142,7 @@ def build_dream_consolidation_prompt(
             "You are performing a dream - a reflective pass over the persistent memory files. Synthesize what has been learned recently into durable, well-organized memories so future sessions can orient quickly.",
             "",
             f"Memory directory: `{memory_dir}`",
-            "The directory exists. Use Read, LS, Grep, Glob, Edit, and Write inside it. Bash is read-only and may only inspect files.",
+            "The directory exists. Use Read, LS, Edit, and Write inside it. Bash is read-only and may only inspect files.",
             "",
             "## Phase 1 - Orient",
             "",

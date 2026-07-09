@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from mycli.domain.subagents import SubAgentContextSnapshot, SubAgentResult
 
 
-MEMORY_DREAM_TOOLS = ("Read", "Grep", "Glob", "LS", "Write", "Edit", "Bash")
+MEMORY_DREAM_TOOLS = ("Read", "LS", "Write", "Edit", "Bash")
 DEFAULT_MIN_HOURS = 24
 DEFAULT_MIN_SESSIONS = 5
 STAMP_NAME = ".dream-last-consolidated"

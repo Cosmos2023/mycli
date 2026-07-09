@@ -27,8 +27,6 @@ MODEL_VISIBLE_BUILTIN_TOOLS: frozenset[str] = frozenset(
         "Bash",
         "BashOutput",
         "Edit",
-        "Glob",
-        "Grep",
         "KillShell",
         "LS",
         "Plan",
@@ -55,8 +53,10 @@ HIDDEN_BY_DEFAULT_BUILTIN_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+RETIRED_BUILTIN_TOOLS: frozenset[str] = frozenset({"Glob", "Grep"})
+
 KNOWN_BUILTIN_TOOLS: frozenset[str] = (
-    MODEL_VISIBLE_BUILTIN_TOOLS | HIDDEN_BY_DEFAULT_BUILTIN_TOOLS
+    MODEL_VISIBLE_BUILTIN_TOOLS | HIDDEN_BY_DEFAULT_BUILTIN_TOOLS | RETIRED_BUILTIN_TOOLS
 )
 
 

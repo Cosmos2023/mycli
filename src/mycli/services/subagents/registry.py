@@ -9,7 +9,7 @@ from mycli.domain.subagent_profiles import list_sub_agent_profiles
 from mycli.domain.subagents import SubAgentBudget, SubAgentProfile
 
 HIGH_RISK_SUBAGENT_TOOLS = frozenset({"Bash", "Write", "Edit", "Patch"})
-DEFAULT_SAFE_TOOLS = ("Read", "Grep", "Glob", "LS")
+DEFAULT_SAFE_TOOLS = ("Read", "LS")
 
 
 @dataclass(slots=True, frozen=True)

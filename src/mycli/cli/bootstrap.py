@@ -34,8 +34,6 @@ from mycli.tools.bash import BashTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.edit import EditTool
 from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
-from mycli.tools.glob import GlobTool
-from mycli.tools.grep import GrepTool
 from mycli.tools.kill_shell import KillShellTool
 from mycli.tools.lint import LintTool
 from mycli.tools.ls import LSTool
@@ -136,16 +134,6 @@ def build_turn_service(
             EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
             PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
             WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
-            GrepTool(
-                workspace_root,
-                allowed_roots=allowed_roots,
-                unrestricted=unrestricted_filesystem,
-            ),
-            GlobTool(
-                workspace_root,
-                allowed_roots=allowed_roots,
-                unrestricted=unrestricted_filesystem,
-            ),
             LSTool(
                 workspace_root,
                 allowed_roots=allowed_roots,

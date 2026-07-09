@@ -43,16 +43,6 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "auto_allow_or_request",
         "capability_tags": ("file", "write", "mutation", "backup"),
     },
-    "Grep": {
-        "toolset": "search",
-        "approval_policy": "auto_allow",
-        "capability_tags": ("search", "file", "ripgrep"),
-    },
-    "Glob": {
-        "toolset": "search",
-        "approval_policy": "auto_allow",
-        "capability_tags": ("search", "file", "glob"),
-    },
     "LS": {
         "toolset": "file",
         "approval_policy": "auto_allow",
@@ -615,8 +605,6 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
     from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
-    from mycli.tools.glob import GlobTool
-    from mycli.tools.grep import GrepTool
     from mycli.tools.kill_shell import KillShellTool
     from mycli.tools.lint import LintTool
     from mycli.tools.ls import LSTool
@@ -636,8 +624,6 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
         PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
         WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
-        GrepTool(workspace_root),
-        GlobTool(workspace_root),
         LSTool(workspace_root),
         BashTool(workspace_root),
         BashOutputTool(),

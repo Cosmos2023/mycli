@@ -386,8 +386,6 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "GitLog",
         "GitShow",
         "GitStatus",
-        "Glob",
-        "Grep",
         "KillShell",
         "LS",
         "Lint",

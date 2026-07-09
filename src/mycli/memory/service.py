@@ -213,7 +213,7 @@ class MemoryService:
         return "\n".join(
             [
                 f"You have persistent file-based memory at `{memory_dir}`.",
-                "This directory already exists and is an allowed filesystem root for Read, Write, Edit, LS, Grep, and Glob.",
+                "This directory already exists and is an allowed filesystem root for Read, Write, Edit, and LS.",
                 "Write to it directly; do not run mkdir or check for its existence first.",
                 f"`{ENTRYPOINT_NAME}` is an index, not a memory body; keep each entry one line.",
                 f"Never write memory content directly into `{ENTRYPOINT_NAME}`.",

@@ -37,6 +37,7 @@ def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> N
             FakeTool("LS", "List files"),
             FakeTool("Read", "Read file"),
             FakeTool("Grep", "Search text"),
+            FakeTool("Glob", "Discover files"),
             FakeTool("Bash", "Run shell"),
             FakeTool("Edit", "Edit file"),
         ]
@@ -48,11 +49,10 @@ def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> N
     assert set(planned.exposure.callable_tool_names()) == {
         "LS",
         "Read",
-        "Grep",
         "Bash",
         "Edit",
     }
-    assert [entry.source for entry in planned.exposure.entries] == [ToolRouteSource.REGISTRY] * 5
+    assert [entry.source for entry in planned.exposure.entries] == [ToolRouteSource.REGISTRY] * 4
 
 
 def test_tool_exposure_planner_hides_legacy_builtin_tools_by_default() -> None:

@@ -115,7 +115,7 @@ def test_memory_dream_service_runs_consolidation_agent_when_due(
     assert child_loop.calls
     call = child_loop.calls[0]
     assert call["transcript"] is None
-    assert call["tool_names"] == ("Read", "Grep", "Glob", "LS", "Write", "Edit", "Bash")
+    assert call["tool_names"] == ("Read", "LS", "Write", "Edit", "Bash")
     invocation = call["invocation"]
     assert invocation.agent_type == "dream"
     assert invocation.mode == "background"

@@ -19,7 +19,7 @@ _PROFILES: dict[str, SubAgentProfile] = {
             "You are a bounded execution sub-agent. Make small scoped changes only. "
             "Return concise findings and changed paths. Do not ask the user questions."
         ),
-        default_tools=("Read", "Grep", "Glob", "LS", "Lint"),
+        default_tools=("Read", "LS", "Lint"),
         denied_tools=GLOBAL_CHILD_DENYLIST,
     ),
     "explore": SubAgentProfile(
@@ -28,7 +28,7 @@ _PROFILES: dict[str, SubAgentProfile] = {
             "You are a read-only exploration sub-agent. Map files, symbols, and facts. "
             "Do not modify files or ask the user questions."
         ),
-        default_tools=("Read", "Grep", "Glob", "LS"),
+        default_tools=("Read", "LS"),
         denied_tools=GLOBAL_CHILD_DENYLIST,
     ),
     "review": SubAgentProfile(
@@ -37,7 +37,7 @@ _PROFILES: dict[str, SubAgentProfile] = {
             "You are a code review sub-agent. Prioritize correctness, regressions, "
             "security, and missing tests. Do not modify files."
         ),
-        default_tools=("Read", "Grep", "Glob", "LS", "Lint"),
+        default_tools=("Read", "LS", "Lint"),
         denied_tools=GLOBAL_CHILD_DENYLIST,
     ),
 }

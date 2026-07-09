@@ -610,7 +610,6 @@ class AgentRuntime:
         from mycli.tools.bash import BashTool
         from mycli.tools.edit import EditTool
         from mycli.services.filesystem import FileSystemRuntime
-        from mycli.tools.grep import GrepTool
         from mycli.tools.ls import LSTool
         from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
         from mycli.tools.plan import PlanTool
@@ -628,7 +627,6 @@ class AgentRuntime:
             [
                 LSTool(workspace_root, allowed_roots=allowed_roots),
                 ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
-                GrepTool(workspace_root, allowed_roots=allowed_roots),
                 EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
                 BashTool(workspace_root),
                 PlanTool(),

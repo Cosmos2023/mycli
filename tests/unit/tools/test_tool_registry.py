@@ -113,6 +113,9 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
 
 def test_builtin_tool_parallel_support_matches_safe_runtime_set(tmp_path: Path) -> None:
     registry = ToolRegistry(workspace_root=tmp_path)
+    assert "Grep" not in registry.list_names()
+    assert "Glob" not in registry.list_names()
+
     parallel_tools = {
         name
         for name in registry.list_names()
@@ -121,8 +124,6 @@ def test_builtin_tool_parallel_support_matches_safe_runtime_set(tmp_path: Path) 
 
     assert parallel_tools == {
         "Read",
-        "Grep",
-        "Glob",
         "LS",
         "WebSearch",
         "WebFetch",
@@ -237,7 +238,7 @@ def test_builtin_tool_manifest_aligns_with_safety_policy(tmp_path: Path) -> None
     policy = SafetyPolicy(workspace_root=tmp_path)
     manifest_tools = {tool["name"]: tool for tool in registry.manifest()["tools"]}
 
-    for name in ("Read", "Grep", "Glob", "LS", "GitStatus", "GitDiff", "GitLog", "GitShow"):
+    for name in ("Read", "LS", "GitStatus", "GitDiff", "GitLog", "GitShow"):
         decision = policy.evaluate(ToolCall(name=name, arguments={"path": "."}, reason="test"))
         assert decision.kind.value == manifest_tools[name]["approval_policy"]
         assert decision.metadata["risk_level"] == manifest_tools[name]["risk_level"]

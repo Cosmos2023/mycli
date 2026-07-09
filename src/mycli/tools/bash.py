@@ -753,7 +753,7 @@ def _suggest_tail_arguments(args: list[str]) -> dict[str, object]:
         return {}
     return {
         "file_path": file_path,
-        "note": f"Read supports offset/limit; use LS/Grep or a prior line count to choose the last {lines} lines.",
+        "note": f"Read supports offset/limit; use LS or Bash `rg`/line-count commands to choose the last {lines} lines.",
     }
 
 
