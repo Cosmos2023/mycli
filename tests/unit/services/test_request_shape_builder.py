@@ -1182,6 +1182,74 @@ def test_request_shape_builder_uses_transcript_only_messages_for_deepseek_chat(
     }
 
 
+def test_request_shape_builder_replays_complete_parallel_tool_batch_for_deepseek_chat(
+    tmp_path: Path,
+) -> None:
+    first_call = ToolCall(
+        name="Grep",
+        arguments={"pattern": "class.*Agent", "path": "src/mycli"},
+        reason="search",
+        call_id="call_00",
+    )
+    second_call = ToolCall(
+        name="Glob",
+        arguments={"pattern": "src/mycli/agents/*.py"},
+        reason="search",
+        call_id="call_01",
+    )
+    third_call = ToolCall(
+        name="LS",
+        arguments={"path": "src/mycli"},
+        reason="list",
+        call_id="call_02",
+    )
+
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider="deepseek",
+            protocol="chat_completions",
+            model="deepseek-v4-flash",
+        ),
+        contract=InstructionContract(
+            base_instructions="Stable system rules.",
+            conversation_messages=(
+                Message(role="user", content="你能一次性执行多个工具吗"),
+                Message(
+                    role="assistant",
+                    content="我会一次性跑三个只读工具。",
+                    tool_calls=(first_call, second_call, third_call),
+                ),
+                Message(role="tool", content="grep failed", tool_call_id="call_00"),
+                Message(role="tool", content="glob found files", tool_call_id="call_01"),
+                Message(role="tool", content="ls listed files", tool_call_id="call_02"),
+            ),
+            current_user_request="你能一次性执行多个工具吗",
+        ),
+        tools=(_tool("Grep"), _tool("Glob"), _tool("LS")),
+    )
+
+    replay_messages = shape.provider_messages[1:]
+
+    assert [message.role for message in replay_messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "tool",
+    ]
+    assert replay_messages[1].metadata["tool_calls"] == (
+        first_call,
+        second_call,
+        third_call,
+    )
+    assert [message.metadata["tool_call_id"] for message in replay_messages[2:]] == [
+        "call_00",
+        "call_01",
+        "call_02",
+    ]
+
+
 def test_request_shape_builder_puts_chat_static_context_in_system_prefix(
     tmp_path: Path,
 ) -> None:

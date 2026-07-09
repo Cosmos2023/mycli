@@ -896,9 +896,10 @@ class RequestShapeBuilder:
             nonlocal pending_tool_messages, deferred_messages
             if pending_assistant is None:
                 return
-            if not pending_tool_call_ids:
-                filtered.append(pending_assistant)
-                filtered.extend(pending_tool_messages)
+            if pending_tool_call_ids:
+                return
+            filtered.append(pending_assistant)
+            filtered.extend(pending_tool_messages)
             filtered.extend(deferred_messages)
             pending_assistant = None
             pending_tool_call_ids = set()
