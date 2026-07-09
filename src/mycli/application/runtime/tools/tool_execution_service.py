@@ -367,6 +367,7 @@ class ToolExecutionService:
                 raw_payload={
                     "tool_name": normalized_call.name,
                     "arguments": dict(normalized_call.arguments),
+                    "path": _tool_call_path(normalized_call),
                     "error_kind": "tool_validation_error",
                 },
             )
@@ -496,6 +497,7 @@ class ToolExecutionService:
                 raw_payload={
                     "tool_name": normalized_call.name,
                     "arguments": dict(normalized_call.arguments),
+                    "path": _tool_call_path(normalized_call),
                     "error_kind": "tool_validation_error",
                 },
             )
@@ -1835,6 +1837,11 @@ def _visible_tool_arguments(arguments: dict[str, object]) -> dict[str, object]:
         for key, value in arguments.items()
         if not str(key).startswith("_")
     }
+
+
+def _tool_call_path(call: ToolCall) -> str | None:
+    value = call.arguments.get("file_path") or call.arguments.get("path")
+    return value if isinstance(value, str) and value else None
 
 
 def _write_content_lifecycle_metadata(call: ToolCall) -> dict[str, object]:

@@ -2443,7 +2443,9 @@ def test_agent_runtime_keeps_reasoning_and_tool_call_in_same_turn(tmp_path: Path
     assert any(event.kind == "thinking" for event in response.activity_events)
     assert any(event.kind == "tool_started" and event.tool_name == "Read" for event in response.activity_events)
     assert any(
-        message.role == "tool" and "Read pyproject.toml" in message.content
+        message.role == "tool"
+        and "Read succeeded" in message.content
+        and "Path: pyproject.toml" in message.content
         for message in runtime._session_service.load_conversation(runtime._config.session_id).messages
     )
 
@@ -3011,7 +3013,8 @@ def test_agent_runtime_reinjects_grounded_shell_stdout_into_tool_message(
     assert response.assistant_message == "Shell check complete"
     assert any(
         message.role == "tool"
-        and "Stdout preview:" in str(message.content)
+        and "Command succeeded" in str(message.content)
+        and "Output:" in str(message.content)
         and "shell-output" in str(message.content)
         for message in adapter.seen_messages[-1]
     )

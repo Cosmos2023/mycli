@@ -221,7 +221,7 @@ def test_read_csv_exposes_model_visible_table_content(tmp_path: Path) -> None:
     assert result.evidence
     assert "owner,region,weekly_revenue,new_deals" in rendered
     assert "Chen,South,42000,2" in rendered
-    assert "File: weekly_sales.csv" in rendered
+    assert "Path: weekly_sales.csv" in rendered
 
 
 def test_read_csv_offset_limit_is_model_visible(tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ def test_repeated_unchanged_read_returns_dedup_hint(tmp_path: Path) -> None:
     assert first.success is True
     assert second.success is True
     assert second.raw_payload["dedup"] is True
-    assert "already read" in rendered
+    assert "unchanged duplicate" in rendered
     assert "README.md" in rendered
 
 

@@ -79,8 +79,9 @@ def test_git_formatter_renders_compact_status(tmp_path: Path) -> None:
 
     output = formatter.format("GitStatus", result)
 
-    assert "Git status" in output
-    assert "Branch:" in output or "changed path" in output or "clean" in output
+    assert output.startswith("GitStatus succeeded\n")
+    assert "Branch:" in output
+    assert "Changed paths:" in output
 
 
 def _init_repo(path: Path) -> None:
