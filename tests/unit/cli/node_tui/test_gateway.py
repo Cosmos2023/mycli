@@ -28,6 +28,7 @@ from mycli.domain.runtime import (
     ReasoningEffort,
     PendingDecision,
     PendingClarification,
+    QueuedTurnInput,
     RuntimeStreamEvent,
     RuntimeInterruptToken,
     ShellLifecycleEvent,
@@ -1543,6 +1544,63 @@ class FakeTurnService(FakeService):
         return steering, follow_up
 
 
+class QueuePopTurnService(FakeTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.steering_inputs: list[QueuedTurnInput] = []
+        self.follow_up_inputs: list[QueuedTurnInput] = []
+
+    def queue_steering_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        self.steering_inputs.append(
+            QueuedTurnInput(
+                kind="steering",
+                text=message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+            )
+        )
+        return self.queued_messages()
+
+    def queue_follow_up_message(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str | None = None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        self.follow_up_inputs.append(
+            QueuedTurnInput(
+                kind="follow_up",
+                text=message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+            )
+        )
+        return self.queued_messages()
+
+    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return (
+            tuple(item.text for item in self.steering_inputs),
+            tuple(item.text for item in self.follow_up_inputs),
+        )
+
+    def queued_input_items(
+        self,
+    ) -> tuple[tuple[QueuedTurnInput, ...], tuple[QueuedTurnInput, ...]]:
+        return tuple(self.steering_inputs), tuple(self.follow_up_inputs)
+
+    def pop_last_follow_up_input(self) -> QueuedTurnInput | None:
+        if not self.follow_up_inputs:
+            return None
+        return self.follow_up_inputs.pop()
+
+
 class BlockingTurnService(FakeTurnService):
     def __init__(self, workspace_root: Path) -> None:
         super().__init__(workspace_root)
@@ -2586,6 +2644,81 @@ def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_comp
 
     assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
     assert interrupted.result == {"interrupted": True}
+
+
+def test_gateway_queue_pop_returns_latest_follow_up_and_remaining_snapshot(
+    tmp_path: Path,
+) -> None:
+    service = QueuePopTurnService(tmp_path)
+    service.queue_steering_message(
+        "keep steering [image #1]",
+        image_paths=("/tmp/steer.png",),
+    )
+    service.queue_follow_up_message("first")
+    service.queue_follow_up_message(
+        "second [image #1]",
+        image_paths=("/tmp/second.png",),
+        client_turn_id="follow-up-2",
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(id="pop-1", method="turn.queue.pop", params={})
+    )
+
+    assert response.result is not None
+    assert response.result["item"] == {
+        "kind": "follow_up",
+        "message": "second [image #1]",
+        "text": "second [image #1]",
+        "source": "user",
+        "local_images": [
+            {"path": "/tmp/second.png", "placeholder": "[image #1]"}
+        ],
+        "client_turn_id": "follow-up-2",
+    }
+    assert response.result["steering"] == ["keep steering [image #1]"]
+    assert response.result["follow_up"] == ["first"]
+    assert response.result["has_pending_input"] is True
+    assert any(
+        method == "turn.queue.updated"
+        and params["steering"] == ["keep steering [image #1]"]
+        and params["follow_up"] == ["first"]
+        for method, params in events
+    )
+
+    remaining = gateway.handle_request(
+        RpcRequest(id="pop-2", method="turn.queue.pop", params={})
+    )
+    assert remaining.result is not None
+    assert remaining.result["item"] is not None
+    assert remaining.result["item"]["message"] == "first"
+
+    empty = gateway.handle_request(
+        RpcRequest(id="pop-3", method="turn.queue.pop", params={})
+    )
+    assert empty.result is not None
+    assert empty.result["item"] is None
+    assert empty.result["steering"] == ["keep steering [image #1]"]
+    assert empty.result["follow_up"] == []
+
+    status = gateway._status_payload()
+    assert status["queued_steering_items"] == [
+        {
+            "kind": "steering",
+            "message": "keep steering [image #1]",
+            "text": "keep steering [image #1]",
+            "source": "user",
+            "local_images": [
+                {"path": "/tmp/steer.png", "placeholder": "[image #1]"}
+            ],
+        }
+    ]
+    assert status["queued_follow_up_items"] == []
 
 
 def test_gateway_queues_steering_and_follow_up_while_turn_runs(tmp_path: Path) -> None:

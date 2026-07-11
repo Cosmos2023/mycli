@@ -186,6 +186,8 @@ class NodeTuiServiceLike(Protocol):
 
     def clear_queued_input_items(self) -> object: ...
 
+    def pop_last_follow_up_input(self) -> object | None: ...
+
     def register_shell_lifecycle_listener(
         self,
         listener: Callable[[ShellLifecycleEvent], None],
@@ -298,6 +300,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_turn_steer(request.params))
             if request.method == "turn.follow_up":
                 return result_response(request.id, self._handle_turn_follow_up(request.params))
+            if request.method == "turn.queue.pop":
+                return result_response(request.id, self._handle_turn_queue_pop())
             if request.method == "turn.queue.clear":
                 return result_response(request.id, self._handle_turn_queue_clear())
             if request.method == "turn.interrupt":
@@ -644,6 +648,15 @@ class NodeTuiGateway:
                 steering, follow_up = (), ()
             payload = self._queue_payload(steering=steering, follow_up=follow_up)
         self._emit_queue_update(self._queue_payload(steering=(), follow_up=()))
+        return payload
+
+    def _handle_turn_queue_pop(self) -> dict[str, object]:
+        pop = getattr(self.service, "pop_last_follow_up_input", None)
+        item = pop() if callable(pop) else None
+        payload = self._queue_payload()
+        serialized = _queued_items_payload((item,)) if item is not None else []
+        payload["item"] = serialized[0] if serialized else None
+        self._emit_queue_update(payload)
         return payload
 
     def _handle_turn_interrupt(self) -> dict[str, object]:
@@ -1612,6 +1625,9 @@ class NodeTuiGateway:
             "queue_activity": queue_payload["activity"],
             "trust": self._trust_status_payload(),
         }
+        if "steering_items" in queue_payload or "follow_up_items" in queue_payload:
+            payload["queued_steering_items"] = queue_payload.get("steering_items", [])
+            payload["queued_follow_up_items"] = queue_payload.get("follow_up_items", [])
         title = self._session_title()
         if title:
             payload["session_title"] = title
