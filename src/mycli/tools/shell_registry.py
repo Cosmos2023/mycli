@@ -159,6 +159,8 @@ def _snapshot_payload(snapshot: ShellSessionSnapshot) -> dict[str, object]:
         "status": snapshot.status,
         "process_state": snapshot.process_state,
         "exit_code": snapshot.exit_code,
+        "call_id": snapshot.call_id,
+        "command_preview": snapshot.command_preview,
         "stdout": _render_bounded_output(
             snapshot.stdout,
             omitted_chars=snapshot.stdout_omitted_chars,

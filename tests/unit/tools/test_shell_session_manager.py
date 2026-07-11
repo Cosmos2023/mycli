@@ -85,6 +85,166 @@ def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
     assert "owner_session_id" not in payload
 
 
+def _wait_for_lifecycle_kind(
+    events: list[ShellLifecycleEvent],
+    kind: str,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while not any(event.kind == kind for event in events) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_manager_emits_started_output_and_completed_in_order(tmp_path: Path) -> None:
+    events: list[ShellLifecycleEvent] = []
+    manager = ShellSessionManager(
+        max_sessions=8,
+        output_max_chars=1024,
+        output_event_interval_seconds=0.01,
+        output_event_max_chars=4096,
+    )
+    started = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            call_id="call-a",
+            command="printf 'one\ntwo\n'",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+
+    snapshot = _wait_for_terminal(manager, "session-a", started.shell_id)
+    _wait_for_lifecycle_kind(events, "shell.completed")
+
+    assert snapshot.terminal_state == "completed"
+    assert events[0].kind == "shell.started"
+    assert any(
+        event.kind == "shell.output" and "one" in event.output_delta
+        for event in events
+    )
+    assert next(
+        index for index, event in enumerate(events) if event.kind == "shell.completed"
+    ) > next(index for index, event in enumerate(events) if event.kind == "shell.output")
+    assert [event.sequence for event in events] == sorted(
+        event.sequence for event in events
+    )
+    assert next(event for event in events if event.kind == "shell.completed").call_id == "call-a"
+
+
+def test_manager_caps_output_event_delta_and_flushes_before_terminal(
+    tmp_path: Path,
+) -> None:
+    events: list[ShellLifecycleEvent] = []
+    manager = ShellSessionManager(
+        max_sessions=8,
+        output_max_chars=4096,
+        output_event_interval_seconds=0.01,
+        output_event_max_chars=32,
+    )
+    started = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="python3 -c \"print('x' * 200)\"",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+
+    _wait_for_terminal(manager, "session-a", started.shell_id)
+    _wait_for_lifecycle_kind(events, "shell.completed")
+
+    output_events = [event for event in events if event.kind == "shell.output"]
+    assert output_events
+    assert all(len(event.output_delta) <= 32 for event in output_events)
+    terminal_index = next(
+        index for index, event in enumerate(events) if event.kind == "shell.completed"
+    )
+    assert all(event.kind != "shell.output" for event in events[terminal_index + 1 :])
+    assert events[terminal_index].output_chars >= 200
+
+
+def test_manager_emits_owner_background_counts(tmp_path: Path) -> None:
+    events: list[ShellLifecycleEvent] = []
+    manager = ShellSessionManager(max_sessions=8, output_max_chars=1024)
+    started = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="sleep 30",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+
+    assert any(
+        event.kind == "shell.list.updated" and event.active_background_count == 1
+        for event in events
+    )
+
+    manager.terminate("session-a", started.shell_id)
+    _wait_for_lifecycle_kind(events, "shell.completed")
+
+    assert any(
+        event.kind == "shell.list.updated" and event.active_background_count == 0
+        for event in events
+    )
+
+
+def test_manager_emits_removed_when_pruning_completed_session(tmp_path: Path) -> None:
+    events: list[ShellLifecycleEvent] = []
+    manager = ShellSessionManager(max_sessions=2, output_max_chars=128)
+    running = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="sleep 30",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+    completed = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="printf done",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+    _wait_for_terminal(manager, "session-a", completed.shell_id)
+    _wait_for_lifecycle_kind(events, "shell.completed")
+
+    replacement = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="sleep 30",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+
+    try:
+        removed = [
+            event
+            for event in events
+            if event.kind == "shell.removed" and event.shell_id == completed.shell_id
+        ]
+        assert len(removed) == 1
+    finally:
+        manager.terminate("session-a", running.shell_id)
+        manager.terminate("session-a", replacement.shell_id)
+
+
 def test_background_timeout_completes_without_polling(tmp_path: Path) -> None:
     manager = ShellSessionManager(max_sessions=8, output_max_chars=1024)
     started = manager.start(

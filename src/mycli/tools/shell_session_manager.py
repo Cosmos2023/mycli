@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import os
@@ -13,7 +13,11 @@ import time
 from typing import Callable
 from uuid import uuid4
 
-from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent
+from mycli.domain.runtime import (
+    RuntimeInterruptToken,
+    ShellLifecycleEvent,
+    ShellLifecycleKind,
+)
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_output_buffer import ShellOutputBuffer
 
@@ -56,6 +60,8 @@ class ShellSessionSnapshot:
     stderr_omitted_chars: int
     cursor_was_evicted: bool
     cleanup_result: str | None
+    call_id: str | None = None
+    command_preview: str | None = None
     started_at: str | None = None
     last_observed_at: str | None = None
     completed_at: str | None = None
@@ -95,7 +101,15 @@ class _ShellSession:
     stderr: ShellOutputBuffer
     output_file: Path | None
     notification_sink: Callable[[TaskNotification], None] | None
+    call_id: str | None
+    lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None
     read_cursor: int = 0
+    event_sequence: int = 0
+    lifecycle_cursor: int = 0
+    lifecycle_omitted_chars: int = 0
+    output_event_scheduled: bool = False
+    lifecycle_terminal_emitted: bool = False
+    lifecycle_delivery_lock: Lock = field(default_factory=Lock)
     terminal_state: str | None = None
     cleanup_result: str | None = None
     completed_at: str | None = None
@@ -106,19 +120,33 @@ class _ShellSession:
 class ShellSessionManager:
     """Own local shell process lifecycle and bounded output retention."""
 
-    def __init__(self, *, max_sessions: int = 64, output_max_chars: int = 1_048_576) -> None:
+    def __init__(
+        self,
+        *,
+        max_sessions: int = 64,
+        output_max_chars: int = 1_048_576,
+        output_event_interval_seconds: float = 0.05,
+        output_event_max_chars: int = 4096,
+    ) -> None:
         if max_sessions <= 0:
             raise ValueError("max_sessions must be positive")
         if output_max_chars < 0:
             raise ValueError("output_max_chars must be non-negative")
+        if output_event_interval_seconds < 0:
+            raise ValueError("output_event_interval_seconds must be non-negative")
+        if output_event_max_chars <= 0:
+            raise ValueError("output_event_max_chars must be positive")
         self._max_sessions = max_sessions
         self._output_max_chars = output_max_chars
+        self._output_event_interval_seconds = output_event_interval_seconds
+        self._output_event_max_chars = output_event_max_chars
         self._sessions: dict[str, _ShellSession] = {}
         self._pending_starts = 0
         self._lock = Lock()
 
     def start(self, request: ShellStartRequest) -> ShellSessionSnapshot:
-        capacity_error = self._reserve_capacity(request.owner_session_id)
+        capacity_error, removed_delivery = self._reserve_capacity(request.owner_session_id)
+        self._deliver_lifecycle_delivery(removed_delivery)
         if capacity_error is not None:
             return capacity_error
 
@@ -174,11 +202,28 @@ class ShellSessionManager:
             stderr=ShellOutputBuffer(max_chars=self._output_max_chars),
             output_file=request.output_file,
             notification_sink=request.notification_sink,
+            call_id=request.call_id,
+            lifecycle_sink=request.lifecycle_sink,
             output_file_error=output_file_error,
         )
         with self._lock:
             self._pending_starts -= 1
             self._sessions[session.shell_id] = session
+            started_event = self._next_event_locked(session, kind="shell.started")
+            list_event = (
+                self._next_event_locked(
+                    session,
+                    kind="shell.list.updated",
+                    active_background_count=self._active_background_count_locked(
+                        session.owner_session_id
+                    ),
+                )
+                if session.background
+                else None
+            )
+
+        self._deliver_lifecycle_event(session, started_event)
+        self._deliver_lifecycle_event(session, list_event)
 
         stdout_thread = Thread(
             target=self._drain_stream,
@@ -271,25 +316,40 @@ class ShellSessionManager:
                 if session.process.poll() is None
             }
 
-    def _reserve_capacity(self, owner_session_id: str) -> ShellSessionSnapshot | None:
+    def _reserve_capacity(
+        self,
+        owner_session_id: str,
+    ) -> tuple[
+        ShellSessionSnapshot | None,
+        tuple[Callable[[ShellLifecycleEvent], None] | None, ShellLifecycleEvent] | None,
+    ]:
         with self._lock:
             if len(self._sessions) + self._pending_starts < self._max_sessions:
                 self._pending_starts += 1
-                return None
+                return None, None
             completed = [
                 session
                 for session in self._sessions.values()
                 if session.process.poll() is not None
+                and session.terminal_state is not None
+                and (
+                    session.lifecycle_sink is None
+                    or session.lifecycle_terminal_emitted
+                )
             ]
             if completed:
                 candidate = min(completed, key=lambda item: item.last_used_monotonic)
+                removed_event = self._next_event_locked(candidate, kind="shell.removed")
                 self._sessions.pop(candidate.shell_id, None)
                 self._pending_starts += 1
-                return None
-        return self._error_snapshot(
-            owner_session_id=owner_session_id,
-            error_kind="shell_capacity_exceeded",
-            error=f"Shell session capacity {self._max_sessions} is full.",
+                return None, (candidate.lifecycle_sink, removed_event)
+        return (
+            self._error_snapshot(
+                owner_session_id=owner_session_id,
+                error_kind="shell_capacity_exceeded",
+                error=f"Shell session capacity {self._max_sessions} is full.",
+            ),
+            None,
         )
 
     def _release_capacity_reservation(self) -> None:
@@ -331,8 +391,22 @@ class ShellSessionManager:
                 target.append(text)
                 session.output.append(text)
                 self._append_output_file(session, text)
+                schedule_output = False
                 with self._lock:
                     session.last_observed_at = _now_iso()
+                    if (
+                        session.lifecycle_sink is not None
+                        and not session.lifecycle_terminal_emitted
+                        and not session.output_event_scheduled
+                    ):
+                        session.output_event_scheduled = True
+                        schedule_output = True
+                if schedule_output:
+                    Thread(
+                        target=self._flush_output_after_delay,
+                        args=(session.shell_id,),
+                        daemon=True,
+                    ).start()
 
     def _watch_process(
         self,
@@ -346,9 +420,55 @@ class ShellSessionManager:
             return
         with contextlib.suppress(Exception):
             session.process.wait()
-        stdout_thread.join(timeout=1)
-        stderr_thread.join(timeout=1)
+        stdout_thread.join()
+        stderr_thread.join()
         self._finalize_natural(session)
+        self._finalize_lifecycle(session)
+
+    def _flush_output_after_delay(self, shell_id: str) -> None:
+        time.sleep(self._output_event_interval_seconds)
+        self._flush_lifecycle_output(shell_id)
+
+    def _flush_lifecycle_output(self, shell_id: str) -> None:
+        with self._lock:
+            session = self._sessions.get(shell_id)
+        if session is None:
+            return
+        with session.lifecycle_delivery_lock:
+            with self._lock:
+                if session.lifecycle_terminal_emitted:
+                    session.output_event_scheduled = False
+                    return
+                session.output_event_scheduled = False
+                output_event = self._output_event_locked(session)
+            self._deliver_lifecycle_event_unlocked(session, output_event)
+
+    def _finalize_lifecycle(self, session: _ShellSession) -> None:
+        with session.lifecycle_delivery_lock:
+            with self._lock:
+                if session.lifecycle_terminal_emitted:
+                    return
+                session.output_event_scheduled = False
+                output_event = self._output_event_locked(session)
+                session.lifecycle_terminal_emitted = True
+                completed_event = self._next_event_locked(
+                    session,
+                    kind="shell.completed",
+                )
+                list_event = (
+                    self._next_event_locked(
+                        session,
+                        kind="shell.list.updated",
+                        active_background_count=self._active_background_count_locked(
+                            session.owner_session_id
+                        ),
+                    )
+                    if session.background
+                    else None
+                )
+            self._deliver_lifecycle_event_unlocked(session, output_event)
+            self._deliver_lifecycle_event_unlocked(session, completed_event)
+            self._deliver_lifecycle_event_unlocked(session, list_event)
 
     def _watch_timeout(self, shell_id: str) -> None:
         with self._lock:
@@ -412,6 +532,111 @@ class ShellSessionManager:
             session.last_observed_at = session.completed_at
             notification = self._notification_for_locked(session)
         self._deliver_notification(session, notification)
+
+    def _active_background_count_locked(self, owner_session_id: str) -> int:
+        return sum(
+            1
+            for session in self._sessions.values()
+            if session.owner_session_id == owner_session_id
+            and session.background
+            and session.terminal_state is None
+        )
+
+    def _output_event_locked(
+        self,
+        session: _ShellSession,
+    ) -> ShellLifecycleEvent | None:
+        chunk = session.output.read_from(session.lifecycle_cursor)
+        session.lifecycle_cursor = chunk.next_cursor
+        if not chunk.text:
+            return None
+        output_delta = chunk.text
+        discarded_chars = max(0, len(output_delta) - self._output_event_max_chars)
+        if discarded_chars:
+            output_delta = output_delta[-self._output_event_max_chars :]
+        session.lifecycle_omitted_chars += (
+            chunk.omitted_before_chunk + discarded_chars
+        )
+        return self._next_event_locked(
+            session,
+            kind="shell.output",
+            output_delta=output_delta,
+            next_cursor=chunk.next_cursor,
+        )
+
+    def _next_event_locked(
+        self,
+        session: _ShellSession,
+        *,
+        kind: ShellLifecycleKind,
+        output_delta: str = "",
+        next_cursor: int | None = None,
+        active_background_count: int | None = None,
+    ) -> ShellLifecycleEvent:
+        session.event_sequence += 1
+        output = session.output.snapshot()
+        process_state = session.terminal_state or (
+            "running_background" if session.background else "running_foreground"
+        )
+        return ShellLifecycleEvent(
+            kind=kind,
+            shell_id=session.shell_id,
+            owner_session_id=session.owner_session_id,
+            call_id=session.call_id,
+            sequence=session.event_sequence,
+            command_preview=_command_preview(session.command),
+            background=session.background,
+            process_state=process_state,
+            terminal_state=session.terminal_state,
+            exit_code=session.process.poll(),
+            output_delta=output_delta,
+            next_cursor=output.total_chars if next_cursor is None else next_cursor,
+            output_chars=output.total_chars,
+            omitted_output_chars=max(
+                output.omitted_chars,
+                session.lifecycle_omitted_chars,
+            ),
+            cleanup_result=session.cleanup_result,
+            started_at=session.started_at,
+            completed_at=session.completed_at,
+            active_background_count=active_background_count,
+        )
+
+    def _deliver_lifecycle_event(
+        self,
+        session: _ShellSession,
+        event: ShellLifecycleEvent | None,
+    ) -> None:
+        if event is None:
+            return
+        with session.lifecycle_delivery_lock:
+            self._deliver_lifecycle_event_unlocked(session, event)
+
+    def _deliver_lifecycle_event_unlocked(
+        self,
+        session: _ShellSession,
+        event: ShellLifecycleEvent | None,
+    ) -> None:
+        if event is None or session.lifecycle_sink is None:
+            return
+        with contextlib.suppress(Exception):
+            session.lifecycle_sink(event)
+
+    def _deliver_lifecycle_delivery(
+        self,
+        delivery: tuple[
+            Callable[[ShellLifecycleEvent], None] | None,
+            ShellLifecycleEvent,
+        ]
+        | None,
+    ) -> None:
+        if delivery is None:
+            return
+        sink, event = delivery
+        if sink is None:
+            return
+        with contextlib.suppress(Exception):
+            sink(event)
 
     def _notification_for_locked(self, session: _ShellSession) -> TaskNotification | None:
         if session.notified or session.terminal_state is None:
@@ -510,7 +735,12 @@ class ShellSessionManager:
                 owner_session_id=session.owner_session_id,
                 background=session.background,
                 status="running" if terminal_state is None else "exited",
-                process_state=terminal_state or "running_background",
+                process_state=terminal_state
+                or (
+                    "running_background"
+                    if session.background
+                    else "running_foreground"
+                ),
                 terminal_state=terminal_state,
                 exit_code=exit_code,
                 output=output,
@@ -526,6 +756,8 @@ class ShellSessionManager:
                 stderr_omitted_chars=stderr.omitted_chars,
                 cursor_was_evicted=cursor_was_evicted,
                 cleanup_result=session.cleanup_result,
+                call_id=session.call_id,
+                command_preview=_command_preview(session.command),
                 started_at=session.started_at,
                 last_observed_at=session.last_observed_at,
                 completed_at=session.completed_at,
@@ -613,6 +845,13 @@ def _now_iso() -> str:
 
 def _hash_command(command: str) -> str:
     return hashlib.sha256(command.encode("utf-8")).hexdigest()[:12]
+
+
+def _command_preview(command: str) -> str:
+    preview = " ".join(command.split())
+    if len(preview) <= 160:
+        return preview
+    return f"{preview[:157]}..."
 
 
 def _shell_summary(*, status: str, exit_code: int | None) -> str:
