@@ -23,13 +23,15 @@ def handle_slash_command(command: str) -> str:
                 "/permissions [allow <command-pattern>|revoke <command-pattern>|clear]",
                 "/agents [list|inspect <profile_id>|runs [child_session_id]|kill]",
                 "/tasks [agents [child_session_id]|agents kill <child_session_id>|bashes|kill-agents]",
+                "/ps",
+                "/stop",
                 "/changes [undo]",
                 "/trace [export|logs]",
                 "/extensions",
                 "/model <model> [--thinking-effort low|medium|high|xhigh]",
                 "/view [default|verbose|focus]",
                 "/quit",
-                "Aliases: /skill, /usage, /context, /stats, /sessions, /resume, /fork, /search, /session-maintenance, /permissions, /hooks, /toolsets, /jobs, /bashes, /subagents, /trace-jsonl, /logs, /undo",
+                "Aliases: /skill, /usage, /context, /stats, /sessions, /resume, /fork, /search, /session-maintenance, /permissions, /hooks, /toolsets, /jobs, /bashes, /ps, /subagents, /trace-jsonl, /logs, /undo",
             ]
         )
     if command == "/quit":
@@ -62,6 +64,8 @@ def build_command_handler(
             return [f"[hook] {line}" for line in service.inspect_hooks()]
         if command == "/tools sets":
             return [f"[toolset] {line}" for line in service.inspect_toolsets()]
+        if command == "/stop":
+            return [f"[bash] {line}" for line in service.stop_background_shells()]
         if command in {"/tasks", "/tasks bashes"}:
             return [f"[bash] {line}" for line in service.inspect_bashes()]
         if command in {"/tasks agents", "/agents runs"}:
@@ -241,6 +245,7 @@ def canonical_slash_command(command: str) -> str:
         "/jobs subagents": "/tasks agents",
         "/jobs kill-subagents": "/tasks kill-agents",
         "/bashes": "/tasks bashes",
+        "/ps": "/tasks bashes",
         "/subagents": "/tasks agents",
         "/trace-jsonl": "/trace export",
         "/logs": "/trace logs",

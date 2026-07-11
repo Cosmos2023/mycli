@@ -194,7 +194,9 @@ class TurnService:
         return tuple(
             row
             for row in SHELL_REGISTRY.list(owner_session_id=self._config.session_id)
-            if row.get("background") is True and row.get("status") == "running"
+            if row.get("background") is True
+            and row.get("status") == "running"
+            and row.get("process_state") == "running_background"
         )
 
     def inspect_logs(self) -> tuple[str, ...]:
@@ -509,7 +511,7 @@ class TurnService:
     def inspect_bashes(self) -> tuple[str, ...]:
         from mycli.tools.shell_registry import SHELL_REGISTRY
 
-        rows = SHELL_REGISTRY.list()
+        rows = SHELL_REGISTRY.list(owner_session_id=self._config.session_id)
         if not rows:
             return ("no background shells",)
         return tuple(
@@ -520,6 +522,12 @@ class TurnService:
             )
             for row in rows
         )
+
+    def stop_background_shells(self) -> tuple[str, ...]:
+        from mycli.tools.shell_registry import SHELL_REGISTRY
+
+        SHELL_REGISTRY.terminate_owner(self._config.session_id)
+        return ("Stopping all background terminals.",)
 
     def inspect_file_changes(self) -> tuple[str, ...]:
         rows = self._file_history_service.list_snapshots(

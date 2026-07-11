@@ -193,6 +193,8 @@ class NodeTuiServiceLike(Protocol):
 
     def active_background_shells(self) -> tuple[dict[str, object], ...]: ...
 
+    def stop_background_shells(self) -> tuple[str, ...]: ...
+
 
 class _HandleUserTurnKwargs(TypedDict, total=False):
     stream_sink: Callable[[RuntimeStreamEvent], None]
@@ -1114,13 +1116,17 @@ class NodeTuiGateway:
             raise ValueError("command must start with '/'.")
         canonical_command = canonical_slash_command(command)
         command_name = canonical_command.split(maxsplit=1)[0]
-        builtin = handle_slash_command(command)
-        if builtin == "quit":
-            lines = ["Bye."]
-        elif builtin.startswith("Unknown command:"):
-            lines = list(self._command_handler(command))
+        if command == "/stop":
+            builtin = ""
+            lines = list(self.service.stop_background_shells())
         else:
-            lines = builtin.splitlines()
+            builtin = handle_slash_command(command)
+            if builtin == "quit":
+                lines = ["Bye."]
+            elif builtin.startswith("Unknown command:"):
+                lines = list(self._command_handler(command))
+            else:
+                lines = builtin.splitlines()
         mutated_session = command.startswith(("/resume", "/fork"))
         if mutated_session and self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
@@ -1146,6 +1152,11 @@ class NodeTuiGateway:
         }
         if command_name in {"/changes", "/diff"}:
             result["presentation_hint"] = "file changes"
+        if command == "/ps":
+            result["command_kind"] = "background_shells"
+            result["processes"] = self._active_background_shells()
+        elif command == "/stop":
+            result["command_kind"] = "shell_stop"
         view_mode = _view_mode_from_command(command)
         if view_mode is not None:
             result["view_mode"] = view_mode

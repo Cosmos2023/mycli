@@ -236,6 +236,10 @@ class FakeService(TurnService):
     def active_background_shells(self) -> tuple[dict[str, object], ...]:
         return self.active_shell_rows
 
+    def stop_background_shells(self) -> tuple[str, ...]:
+        self.active_shell_rows = ()
+        return ("Stopping all background terminals.",)
+
     def emit_shell_event(self, event: ShellLifecycleEvent) -> None:
         assert self.shell_listener is not None
         self.shell_listener(event)
@@ -622,6 +626,40 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
     assert response.result["mutated_session"] is False
     assert help_response.result is not None
     assert any("/status" in line for line in help_response.result["lines"])
+
+
+def test_gateway_command_run_returns_structured_background_shells_and_stop(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    service.active_shell_rows = (
+        {
+            "shell_id": "shell-1",
+            "background": True,
+            "status": "running",
+            "process_state": "running_background",
+            "command_preview": "uv run dev",
+            "output": "ready\n",
+        },
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    processes = gateway.handle_request(
+        RpcRequest(id="req-ps", method="command.run", params={"command": "/ps"})
+    )
+    stopped = gateway.handle_request(
+        RpcRequest(id="req-stop", method="command.run", params={"command": "/stop"})
+    )
+
+    assert processes.result is not None
+    assert processes.result["command_kind"] == "background_shells"
+    assert processes.result["processes"][0]["shell_id"] == "shell-1"
+    assert processes.result["processes"][0]["command_preview"] == "uv run dev"
+    assert processes.result["processes"][0]["output"] == "ready\n"
+    assert stopped.result is not None
+    assert stopped.result["command_kind"] == "shell_stop"
+    assert stopped.result["lines"] == ["Stopping all background terminals."]
+    gateway.close()
 
 
 def test_gateway_command_run_can_cancel_background_subagents(tmp_path: Path) -> None:

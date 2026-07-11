@@ -241,6 +241,45 @@ def test_turn_service_exposes_owner_scoped_shell_lifecycle_state(tmp_path: Path)
         runtime.close()
 
 
+def test_turn_service_inspects_and_stops_only_owned_background_shells(
+    tmp_path: Path,
+) -> None:
+    bash = BashTool(tmp_path)
+    config = AgentConfig(workspace_root=tmp_path, session_id="session-a-commands")
+    runtime = AgentRuntime(
+        model_adapter=DecisionModelAdapter(FakeModel()),
+        tool_registry=ToolRegistry.from_tools([bash]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    service = TurnService(runtime=runtime, config=config, home_dir=tmp_path / "home")
+    owned = bash.execute({"command": "sleep 30", "run_in_background": True})
+    owned_id = str(owned.raw_payload["shell_id"])
+    foreign = SHELL_REGISTRY.execute(
+        "sleep 30",
+        owner_session_id="session-b-commands",
+        workdir=str(tmp_path),
+        background=True,
+    )
+    foreign_id = str(foreign["shell_id"])
+
+    try:
+        lines = service.inspect_bashes()
+        assert len(lines) == 1
+        assert owned_id in lines[0]
+        assert "state=running_background" in lines[0]
+        assert foreign_id not in lines[0]
+
+        assert service.stop_background_shells() == (
+            "Stopping all background terminals.",
+        )
+        assert owned_id not in SHELL_REGISTRY.processes()
+        assert foreign_id in SHELL_REGISTRY.processes()
+    finally:
+        SHELL_REGISTRY.kill(foreign_id, owner_session_id="session-b-commands")
+        runtime.close()
+
+
 class PushThenDoneRuntimeAdapter:
     def __init__(self) -> None:
         self.calls = 0
