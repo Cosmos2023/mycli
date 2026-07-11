@@ -151,9 +151,18 @@ def _snapshot_payload(snapshot: ShellSessionSnapshot) -> dict[str, object]:
         "status": snapshot.status,
         "process_state": snapshot.process_state,
         "exit_code": snapshot.exit_code,
-        "stdout": snapshot.stdout,
-        "stderr": snapshot.stderr,
-        "output": snapshot.output,
+        "stdout": _render_bounded_output(
+            snapshot.stdout,
+            omitted_chars=snapshot.stdout_omitted_chars,
+        ),
+        "stderr": _render_bounded_output(
+            snapshot.stderr,
+            omitted_chars=snapshot.stderr_omitted_chars,
+        ),
+        "output": _render_bounded_output(
+            snapshot.output,
+            omitted_chars=snapshot.omitted_output_chars,
+        ),
         "output_chars": snapshot.output_chars,
         "new_output_chars": snapshot.new_output_chars,
         "omitted_output_chars": snapshot.omitted_output_chars,
@@ -180,6 +189,18 @@ def _snapshot_payload(snapshot: ShellSessionSnapshot) -> dict[str, object]:
         "output_file_error": snapshot.output_file_error,
         "task_id": f"shell:{snapshot.shell_id}",
     }
+
+
+def _render_bounded_output(output: str, *, omitted_chars: int) -> str:
+    if omitted_chars <= 0 or not output:
+        return output
+    marker = f"\n... [... chars omitted] ({omitted_chars} chars) ...\n"
+    if len(output) <= len(marker):
+        return output
+    available = len(output) - len(marker)
+    head_chars = (available * 3) // 5
+    tail_chars = available - head_chars
+    return f"{output[:head_chars]}{marker}{output[-tail_chars:]}"
 
 
 def _background_job_from_row(row: dict[str, object]) -> BackgroundJobSummary:
