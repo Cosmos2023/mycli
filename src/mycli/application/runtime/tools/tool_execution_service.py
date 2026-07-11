@@ -82,7 +82,6 @@ class ToolExecutionService:
         record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
         write_diagnostics_runner: WriteDiagnosticsRunner | None = None,
         policy_gate: RuntimePolicyGate | None = None,
-        supports_parallel_tool_calls: bool = True,
     ) -> None:
         self._session_id = session_id
         self._context_manager = context_manager
@@ -95,7 +94,6 @@ class ToolExecutionService:
         self._injection_guard = injection_guard or InjectionGuard()
         self._record_invoked_skill = record_invoked_skill
         self._policy_gate = policy_gate
-        self._supports_parallel_tool_calls = supports_parallel_tool_calls
         self._runtime_orchestrator = ToolRuntimeOrchestrator(
             session_id=session_id,
             trace_service=trace_service,
@@ -109,9 +107,6 @@ class ToolExecutionService:
     def set_session_id(self, session_id: str) -> None:
         self._session_id = session_id
         self._runtime_orchestrator.set_session_id(session_id)
-
-    def set_supports_parallel_tool_calls(self, supports_parallel_tool_calls: bool) -> None:
-        self._supports_parallel_tool_calls = supports_parallel_tool_calls
 
     def execute_tool_calls(
         self,
@@ -179,9 +174,7 @@ class ToolExecutionService:
             supports_parallel_tool_call=lambda call: tool_router.supports_parallel_tool_calls(
                 call,
                 exposure=tool_exposure,
-            )
-            if self._supports_parallel_tool_calls
-            else False,
+            ),
             execute_call=execute_call,
             apply_outcome=apply_outcome,
             abort_outcome=abort_outcome,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from threading import Lock
 import time
 from dataclasses import replace
 
@@ -16,6 +17,7 @@ from mycli.domain.contributed_tools import (
 )
 from mycli.domain.memory import MemoryKind
 from mycli.domain.logging import LogLevel
+from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.llms.clients.openai_responses import OpenAIResponsesClient
 from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
@@ -1326,6 +1328,41 @@ class MultiToolThenDoneAdapter:
             ),
             done=True,
         )
+
+
+class ParallelReadProbe:
+    spec = ToolSpec(
+        name="Read",
+        description="Read a file while recording overlapping executions.",
+        parameters=(
+            ToolParameter(name="path", type="string", required=False),
+            ToolParameter(name="file_path", type="string", required=False),
+            ToolParameter(name="offset", type="integer"),
+            ToolParameter(name="limit", type="integer"),
+        ),
+        supports_parallel_tool_calls=True,
+    )
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._active = 0
+        self.max_active = 0
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        with self._lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            time.sleep(0.10)
+            path = str(arguments.get("file_path") or arguments.get("path") or "")
+            return ToolResult(
+                success=True,
+                summary=f"Read {path}",
+                raw_payload={"path": path, "content": path},
+            )
+        finally:
+            with self._lock:
+                self._active -= 1
 
 
 class FollowUpCaptureAdapter:
@@ -5566,6 +5603,35 @@ def test_agent_runtime_batches_adjacent_safe_tool_calls_from_same_model_item(
     assert response.turn is not None
     assert response.turn.status is TurnStatus.COMPLETED
     assert batch_calls == [("Read", "Read")]
+    assert [
+        item.call_id
+        for item in response.turn.items
+        if item.type is TurnItemType.TOOL_RESULT
+    ] == ["call_read_readme", "call_read_pyproject"]
+
+
+def test_agent_runtime_runs_deepseek_multi_tool_batch_in_parallel(
+    tmp_path: Path,
+) -> None:
+    adapter = MultiToolThenDoneAdapter()
+    read_probe = ParallelReadProbe()
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools([read_probe]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.DEEPSEEK,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    response = runtime.handle_user_turn("inspect both files")
+
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.COMPLETED
+    assert read_probe.max_active == 2
+    assert adapter.calls == 2
     assert [
         item.call_id
         for item in response.turn.items

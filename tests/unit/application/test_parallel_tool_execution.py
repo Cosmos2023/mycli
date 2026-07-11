@@ -89,7 +89,6 @@ def _service(
     tmp_path: Path,
     *,
     tools: list[DelayedTool],
-    supports_parallel_tool_calls: bool = True,
 ) -> tuple[ToolExecutionService, ToolRouter]:
     registry = ToolRegistry.from_tools(tools)
     service = ToolExecutionService(
@@ -101,7 +100,6 @@ def _service(
         apply_tool_effects=lambda **kwargs: kwargs["plan_state"],
         normalize_tool_call=lambda call: call,
         hook_manager=HookManager(),
-        supports_parallel_tool_calls=supports_parallel_tool_calls,
     )
     router = ToolRouter(
         tool_registry=registry,
@@ -203,50 +201,6 @@ def test_execute_tool_calls_uses_tool_parallel_support_metadata(tmp_path: Path) 
     elapsed = time.perf_counter() - started_at
 
     assert elapsed < 0.35
-    assert [message.tool_call_id for message in conversation.messages if message.role == "tool"] == [
-        "call_1",
-        "call_2",
-    ]
-
-
-def test_execute_tool_calls_requires_model_parallel_support(tmp_path: Path) -> None:
-    first = DelayedTool(
-        name="Read",
-        delay_seconds=0.20,
-        supports_parallel_tool_calls=True,
-    )
-    second = DelayedTool(
-        name="Grep",
-        delay_seconds=0.20,
-        supports_parallel_tool_calls=True,
-    )
-    service, router = _service(
-        tmp_path,
-        tools=[first, second],
-        supports_parallel_tool_calls=False,
-    )
-    conversation = Conversation(session_id="demo")
-    activity_events: list[ActivityEvent] = []
-    turn_items: list[TurnItem] = []
-    calls = (
-        ToolCall(name="Read", arguments={"path": "alpha"}, reason="inspect", call_id="call_1"),
-        ToolCall(name="Grep", arguments={"path": "beta"}, reason="inspect", call_id="call_2"),
-    )
-
-    started_at = time.perf_counter()
-    service.execute_tool_calls(
-        conversation=conversation,
-        calls=calls,
-        tool_router=router,
-        tool_exposure=_tool_exposure("Read", "Grep"),
-        plan_state=PlanState(),
-        turn_id="turn_1",
-        activity_events=activity_events,
-        turn_items=turn_items,
-    )
-    elapsed = time.perf_counter() - started_at
-
-    assert elapsed >= 0.40
     assert [message.tool_call_id for message in conversation.messages if message.role == "tool"] == [
         "call_1",
         "call_2",
