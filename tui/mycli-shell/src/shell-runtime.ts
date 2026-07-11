@@ -985,7 +985,7 @@ export class MycliShellRuntime {
 			return { kind: "tool", signature, component: new ToolExecutionComponent(block.tool) };
 		}
 		if (block.kind === "bash") {
-			return { kind: "bash", signature, component: new BashExecutionComponent(block.bash) };
+			return { kind: "bash", signature, component: new BashExecutionComponent(block.bash, this.now) };
 		}
 		if (block.kind === "plan") {
 			return { kind: "plan", signature, component: new ProposedPlanComponent(block.plan) };

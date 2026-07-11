@@ -258,8 +258,8 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Read/);
 	assert.match(output, /Edit/);
 	assert.match(output, /Patch did not apply/);
-	assert.match(output, /⏺ Bash/);
-	assert.match(output, /⎿ pytest -q · exit 1/);
+	assert.match(output, /• Ran pytest -q/);
+	assert.match(output, /└ exit 1/);
 	assert.match(output, /Waiting for approval/);
 	assert.match(output, /deepseek-v4-flash/);
 });
@@ -975,19 +975,68 @@ test("tool rendering shows mutation diffs instead of success summaries", () => {
 	assert.match(output, /\+new/);
 });
 
-test("bash rendering keeps long commands folded to a Claude-like preview", () => {
+test("bash rendering keeps long commands folded in a Codex-style command cell", () => {
 	const longCommand = ["python - <<'PY'", ...Array.from({ length: 20 }, () => "print('hello')"), "PY"].join("\n");
 	const rendered = new BashExecutionComponent({
 		id: "bash",
 		command: longCommand,
 		status: "running",
-	});
+	}, () => Date.parse("2026-07-11T12:00:00Z"));
 
 	const output = stripAnsi(rendered.render(100).join("\n"));
 
-	assert.match(output, /⏺ Bash/);
-	assert.match(output, /⎿ python - <<'PY'… · Running/);
+	assert.match(output, /• Running python - <<'PY'…/);
 	assert.doesNotMatch(output, /print\('hello'\)/);
+});
+
+test("Codex-style foreground Bash shows elapsed interrupt hint", () => {
+	const now = Date.parse("2026-07-11T12:00:08Z");
+	const foreground = new BashExecutionComponent(
+		{
+			id: "bash-1",
+			command: "uv run pytest -q",
+			status: "running",
+			background: false,
+			startedAt: "2026-07-11T12:00:00Z",
+		},
+		() => now,
+	);
+
+	const output = stripAnsi(foreground.render(100).join("\n"));
+	assert.match(output, /• Running uv run pytest -q \(8s · esc to interrupt\)/);
+});
+
+test("Codex-style background Bash omits active-turn interrupt hint", () => {
+	const background = new BashExecutionComponent(
+		{
+			id: "bash-2",
+			command: "uv run dev",
+			status: "running",
+			background: true,
+		},
+		() => Date.parse("2026-07-11T12:00:08Z"),
+	);
+
+	const output = stripAnsi(background.render(100).join("\n"));
+	assert.match(output, /• Running uv run dev/);
+	assert.doesNotMatch(output, /esc to interrupt/);
+});
+
+test("Codex-style failed Bash uses Ran title and exit detail", () => {
+	const failed = new BashExecutionComponent(
+		{
+			id: "bash-3",
+			command: "uv run pytest -q",
+			status: "error",
+			exitCode: 2,
+			terminalState: "failed",
+		},
+		() => Date.parse("2026-07-11T12:00:08Z"),
+	);
+
+	const output = stripAnsi(failed.render(100).join("\n"));
+	assert.match(output, /• Ran uv run pytest -q/);
+	assert.match(output, /└ exit 2/);
 });
 
 test("trust selector owns keyboard selection", () => {

@@ -10,10 +10,12 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;
+	private readonly now: () => number;
 
-	constructor(bash: MycliShellBash) {
+	constructor(bash: MycliShellBash, now: () => number = Date.now) {
 		super();
 		this.bash = bash;
+		this.now = now;
 		this.rebuild();
 	}
 
@@ -24,13 +26,22 @@ export class BashExecutionComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
-		const presentation = presentationForBash();
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(`${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(presentation.label))}`, 1, 0));
-		this.addChild(new Text(this.resultLine(), 3, 0));
+		this.addChild(this.statusComponent());
+		const terminalDetail = this.terminalDetail();
+		if (terminalDetail) {
+			this.addChild(new Text(theme.fg("muted", `└ ${terminalDetail}`), 1, 0));
+		}
 		if (this.bash.outputPreview) {
 			this.addChild(this.outputComponent());
 		}
+	}
+
+	private statusComponent(): { render: (width: number) => string[]; invalidate: () => void } {
+		return {
+			render: (width: number) => new Text(this.statusLine(), 1, 0).render(width),
+			invalidate: () => {},
+		};
 	}
 
 	private outputComponent(): Text | { render: (width: number) => string[]; invalidate: () => void } {
@@ -38,18 +49,18 @@ export class BashExecutionComponent extends Container {
 			return new Text("", 1, 0);
 		}
 		if (this.bash.expanded) {
-			return new Text(theme.fg("muted", this.bash.outputPreview), 5, 0);
+			return new Text(theme.fg("muted", this.connectedOutput()), 1, 0);
 		}
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
 		return {
-			render: (width: number) => {
+				render: (width: number) => {
 				if (cachedWidth !== width || !cachedLines) {
 					const result = truncateToVisualLines(
-						theme.fg("muted", this.bash.outputPreview ?? ""),
+						theme.fg("muted", this.connectedOutput()),
 						presentationForBash().terminalPreviewLines,
 						width,
-						5,
+						1,
 					);
 					cachedLines = result.visualLines;
 					const hiddenCount = Math.max(this.bash.hiddenLineCount ?? 0, result.skippedCount);
@@ -70,16 +81,47 @@ export class BashExecutionComponent extends Container {
 		};
 	}
 
-	private resultLine(): string {
+	private statusLine(): string {
 		const command = commandPreview(this.bash.command) ?? "command";
 		if (this.bash.status === "running") {
-			return theme.fg("muted", `⎿ ${command} · Running... (${keyHint("app.interrupt", "to cancel")})`);
+			const details: string[] = [];
+			const elapsed = this.elapsedSeconds();
+			if (elapsed !== undefined) {
+				details.push(`${elapsed}s`);
+			}
+			if (this.bash.background !== true) {
+				details.push("esc to interrupt");
+			}
+			const suffix = details.length > 0 ? ` (${details.join(" · ")})` : "";
+			return `${theme.fg("accent", theme.bold("•"))} ${theme.bold("Running")} ${command}${suffix}`;
 		}
-		const status =
-			this.bash.status === "error" && this.bash.exitCode !== undefined
-				? `exit ${this.bash.exitCode}`
-				: this.bash.status;
-		return theme.fg(this.bash.status === "error" ? "error" : "muted", `⎿ ${command} · ${status}`);
+		const color = this.bash.status === "success" ? "success" : "error";
+		return `${theme.fg(color, theme.bold("•"))} ${theme.bold("Ran")} ${command}`;
+	}
+
+	private elapsedSeconds(): number | undefined {
+		if (!this.bash.startedAt) return undefined;
+		const started = Date.parse(this.bash.startedAt);
+		if (!Number.isFinite(started)) return undefined;
+		return Math.max(0, Math.floor((this.now() - started) / 1000));
+	}
+
+	private terminalDetail(): string | undefined {
+		if (this.bash.status === "running") return undefined;
+		if (this.bash.exitCode !== undefined && this.bash.exitCode !== 0) {
+			return `exit ${this.bash.exitCode}`;
+		}
+		if (this.bash.terminalState === "timed_out") return "timed out";
+		if (this.bash.terminalState === "interrupted") return "interrupted";
+		if (this.bash.terminalState === "killed") return "killed";
+		return undefined;
+	}
+
+	private connectedOutput(): string {
+		return (this.bash.outputPreview ?? "")
+			.split(/\r?\n/)
+			.map((line, index) => `${index === 0 ? "└" : " "} ${line}`)
+			.join("\n");
 	}
 
 	private hiddenLinesText(hiddenCount: number): string {
