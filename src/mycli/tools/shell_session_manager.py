@@ -112,6 +112,7 @@ class ShellSessionManager:
         self._max_sessions = max_sessions
         self._output_max_chars = output_max_chars
         self._sessions: dict[str, _ShellSession] = {}
+        self._pending_starts = 0
         self._lock = Lock()
 
     def start(self, request: ShellStartRequest) -> ShellSessionSnapshot:
@@ -142,6 +143,7 @@ class ShellSessionManager:
                 bufsize=1,
             )
         except OSError as exc:
+            self._release_capacity_reservation()
             return self._error_snapshot(
                 owner_session_id=request.owner_session_id,
                 error_kind="shell_spawn_failed",
@@ -173,6 +175,7 @@ class ShellSessionManager:
             output_file_error=output_file_error,
         )
         with self._lock:
+            self._pending_starts -= 1
             self._sessions[session.shell_id] = session
 
         stdout_thread = Thread(
@@ -268,7 +271,8 @@ class ShellSessionManager:
 
     def _reserve_capacity(self, owner_session_id: str) -> ShellSessionSnapshot | None:
         with self._lock:
-            if len(self._sessions) < self._max_sessions:
+            if len(self._sessions) + self._pending_starts < self._max_sessions:
+                self._pending_starts += 1
                 return None
             completed = [
                 session
@@ -278,12 +282,17 @@ class ShellSessionManager:
             if completed:
                 candidate = min(completed, key=lambda item: item.last_used_monotonic)
                 self._sessions.pop(candidate.shell_id, None)
+                self._pending_starts += 1
                 return None
         return self._error_snapshot(
             owner_session_id=owner_session_id,
             error_kind="shell_capacity_exceeded",
             error=f"Shell session capacity {self._max_sessions} is full.",
         )
+
+    def _release_capacity_reservation(self) -> None:
+        with self._lock:
+            self._pending_starts -= 1
 
     def _owned_session(
         self,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import signal
+import subprocess
+from threading import Event, Lock, Thread
 import time
 
 import pytest
@@ -161,6 +163,52 @@ def test_manager_prunes_completed_session_before_running_session(tmp_path: Path)
     finally:
         manager.terminate("session-a", running.shell_id)
         manager.terminate("session-a", replacement.shell_id)
+
+
+def test_concurrent_starts_respect_session_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = ShellSessionManager(max_sessions=1, output_max_chars=128)
+    first_spawn_entered = Event()
+    release_first_spawn = Event()
+    call_lock = Lock()
+    spawn_calls = 0
+    real_popen = subprocess.Popen
+
+    def blocking_popen(*args: object, **kwargs: object):
+        nonlocal spawn_calls
+        with call_lock:
+            spawn_calls += 1
+            call_number = spawn_calls
+        if call_number == 1:
+            first_spawn_entered.set()
+            assert release_first_spawn.wait(timeout=2)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", blocking_popen)
+    results = []
+    first = Thread(
+        target=lambda: results.append(manager.start(_request(tmp_path, "sleep 30"))),
+    )
+    first.start()
+    assert first_spawn_entered.wait(timeout=2)
+
+    results.append(manager.start(_request(tmp_path, "sleep 30")))
+    release_first_spawn.set()
+    first.join(timeout=2)
+
+    try:
+        assert len(results) == 2
+        assert sum(result.success for result in results) == 1
+        assert {result.error_kind for result in results} == {
+            None,
+            "shell_capacity_exceeded",
+        }
+    finally:
+        for result in results:
+            if result.success:
+                manager.terminate("session-a", result.shell_id)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
