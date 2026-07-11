@@ -2,17 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock, Thread
+import time
 from types import SimpleNamespace
 
 from mycli.config.auth_store import AuthStore
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.gateway import (
     NodeTuiGateway,
+    _SerializedGatewayWriter,
     supported_event_streams,
     supported_rpc_methods,
 )
-from mycli.cli.node_tui.protocol import RpcRequest
+from mycli.cli.node_tui.protocol import (
+    RpcNotification,
+    RpcRequest,
+    decode_message,
+    notification,
+)
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     CollaborationMode,
@@ -23,6 +30,7 @@ from mycli.domain.runtime import (
     PendingClarification,
     RuntimeStreamEvent,
     RuntimeInterruptToken,
+    ShellLifecycleEvent,
     StopReason,
     SuspendedTurn,
     TurnResponse,
@@ -131,6 +139,9 @@ class FakeService(TurnService):
         self._session_service = self.fake_session_service
         self.messages: list[str] = []
         self.image_paths: list[tuple[str, ...]] = []
+        self.shell_listener: Callable[[ShellLifecycleEvent], None] | None = None
+        self.shell_unsubscribe_count = 0
+        self.active_shell_rows: tuple[dict[str, object], ...] = ()
 
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=demo", "turns=1")
@@ -206,7 +217,28 @@ class FakeService(TurnService):
         return {"input_tokens": 123, "max_tokens": 100000, "source": "provider"}
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
+        if session_id is not None:
+            self._config.session_id = session_id
         return (f"resumed {session_id or 'demo'}", "messages=4")
+
+    def register_shell_lifecycle_listener(
+        self,
+        listener: Callable[[ShellLifecycleEvent], None],
+    ) -> Callable[[], None]:
+        self.shell_listener = listener
+
+        def unsubscribe() -> None:
+            self.shell_unsubscribe_count += 1
+            self.shell_listener = None
+
+        return unsubscribe
+
+    def active_background_shells(self) -> tuple[dict[str, object], ...]:
+        return self.active_shell_rows
+
+    def emit_shell_event(self, event: ShellLifecycleEvent) -> None:
+        assert self.shell_listener is not None
+        self.shell_listener(event)
 
     def handle_user_turn(
         self,
@@ -290,6 +322,109 @@ def test_gateway_bootstrap_returns_structured_runtime_state(tmp_path: Path) -> N
         "default_model": "deepseek-chat",
     } in response.result["auth_providers"]
     assert response.error is None
+
+
+def test_gateway_emits_shell_lifecycle_notification(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    emitted: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: emitted.append((method, params)),
+    )
+
+    service.emit_shell_event(
+        ShellLifecycleEvent(
+            kind="shell.started",
+            shell_id="shell-1",
+            owner_session_id=service._config.session_id,
+            call_id="call-1",
+            sequence=1,
+            command_preview="uv run dev",
+            background=True,
+            process_state="running_background",
+        )
+    )
+
+    method, payload = next(item for item in emitted if item[0] == "shell.started")
+    assert method == "shell.started"
+    assert payload["shell_id"] == "shell-1"
+    assert payload["call_id"] == "call-1"
+    assert payload["sequence"] == 1
+    gateway.close()
+
+
+def test_gateway_bootstrap_and_status_include_active_background_shells(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    row = {
+        "shell_id": "shell-1",
+        "background": True,
+        "status": "running",
+        "process_state": "running_background",
+        "command_preview": "uv run dev",
+    }
+    service.active_shell_rows = (row,)
+    gateway = NodeTuiGateway(service=service)
+
+    bootstrap = gateway._handle_bootstrap({"protocol_version": 1})
+    status = gateway._status_payload()
+
+    assert bootstrap["background_shells"] == [row]
+    assert status["background_shells"] == [row]
+    gateway.close()
+
+
+def test_gateway_rebinds_shell_listener_after_session_resume(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+    previous_listener = service.shell_listener
+
+    result = gateway._handle_session_resume({"session_id": "resumed"})
+
+    assert result["session_id"] == "resumed"
+    assert service.shell_unsubscribe_count == 1
+    assert service.shell_listener is not None
+    assert service.shell_listener is not previous_listener
+    gateway.close()
+
+
+class ConcurrentWriteProcess:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.entered = 0
+        self.max_entered = 0
+        self.lock = Lock()
+
+    def write_line(self, line: str) -> None:
+        with self.lock:
+            self.entered += 1
+            self.max_entered = max(self.max_entered, self.entered)
+        time.sleep(0.02)
+        self.lines.append(line)
+        with self.lock:
+            self.entered -= 1
+
+
+def test_serialized_gateway_writer_prevents_concurrent_process_writes() -> None:
+    process = ConcurrentWriteProcess()
+    writer = _SerializedGatewayWriter(process)
+    threads = [
+        Thread(
+            target=writer.write,
+            args=(notification("shell.output", {"sequence": index}),),
+        )
+        for index in range(2)
+    ]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert process.max_entered == 1
+    assert len(process.lines) == 2
+    assert all(isinstance(decode_message(line), RpcNotification) for line in process.lines)
 
 
 def test_gateway_auth_api_key_save_persists_credentials(tmp_path: Path) -> None:

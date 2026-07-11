@@ -14,6 +14,7 @@ from mycli.config.settings import default_user_config_path
 from mycli.config.shell_settings import load_shell_settings, save_shell_settings
 from mycli.cli.node_tui.protocol import (
     JsonRpcError,
+    RpcMessage,
     RpcRequest,
     RpcResponse,
     decode_message,
@@ -30,6 +31,7 @@ from mycli.domain.runtime import (
     PendingDecision,
     RuntimeEventEnvelope,
     RuntimeInterruptToken,
+    ShellLifecycleEvent,
     RuntimeStreamEvent,
     StopReason,
     SuspendedTurn,
@@ -102,6 +104,28 @@ class NodeTuiProcessLike(Protocol):
     def terminate(self) -> None: ...
 
 
+class _GatewayWriteTarget(Protocol):
+    def write_line(self, line: str) -> None: ...
+
+
+class _SerializedGatewayWriter:
+    def __init__(self, process: _GatewayWriteTarget) -> None:
+        self._process = process
+        self._lock = Lock()
+        self._pipe_closed = False
+
+    def write(self, message: RpcMessage) -> bool:
+        with self._lock:
+            if self._pipe_closed:
+                return False
+            try:
+                self._process.write_line(encode_message(message))
+            except BrokenPipeError:
+                self._pipe_closed = True
+                return False
+        return True
+
+
 class NodeTuiServiceLike(Protocol):
     _config: Any
     _session_service: Any
@@ -162,6 +186,13 @@ class NodeTuiServiceLike(Protocol):
 
     def clear_queued_input_items(self) -> object: ...
 
+    def register_shell_lifecycle_listener(
+        self,
+        listener: Callable[[ShellLifecycleEvent], None],
+    ) -> Callable[[], None]: ...
+
+    def active_background_shells(self) -> tuple[dict[str, object], ...]: ...
+
 
 class _HandleUserTurnKwargs(TypedDict, total=False):
     stream_sink: Callable[[RuntimeStreamEvent], None]
@@ -171,16 +202,10 @@ class _HandleUserTurnKwargs(TypedDict, total=False):
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
     process.start()
-    pipe_closed = False
+    writer = _SerializedGatewayWriter(process)
 
     def emit(method: str, params: dict[str, object]) -> None:
-        nonlocal pipe_closed
-        if pipe_closed:
-            return
-        try:
-            process.write_line(encode_message(notification(method, params)))
-        except BrokenPipeError:
-            pipe_closed = True
+        writer.write(notification(method, params))
 
     gateway = NodeTuiGateway(service=cast(NodeTuiServiceLike, service), emit=emit)
     emit("runtime.ready", gateway._status_payload())
@@ -202,9 +227,7 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
                 )
                 continue
             response = gateway.handle_request(message)
-            try:
-                process.write_line(encode_message(response))
-            except BrokenPipeError:
+            if not writer.write(response):
                 gateway.wait_for_current_turn(timeout=None)
                 return process.wait()
             if message.method == "shutdown":
@@ -213,6 +236,7 @@ def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -
     except KeyboardInterrupt:
         return 130
     finally:
+        gateway.close()
         process.terminate()
 
 
@@ -234,6 +258,33 @@ class NodeTuiGateway:
         self._interrupt_requested = False
         self._event_sequence = 0
         self._fallback_trust_state = "unknown"
+        self._shell_unsubscribe: Callable[[], None] | None = None
+        self._bind_shell_lifecycle_listener()
+
+    def _bind_shell_lifecycle_listener(self) -> None:
+        if self._shell_unsubscribe is not None:
+            self._shell_unsubscribe()
+            self._shell_unsubscribe = None
+        register = getattr(self.service, "register_shell_lifecycle_listener", None)
+        if not callable(register):
+            return
+        owner_session_id = str(self.service._config.session_id)
+
+        def listener(event: ShellLifecycleEvent) -> None:
+            if event.owner_session_id != owner_session_id:
+                return
+            if str(self.service._config.session_id) != owner_session_id:
+                return
+            self._emit_event(event.kind, event.to_tui_payload())
+
+        self._shell_unsubscribe = cast(Callable[[], None], register(listener))
+
+    def close(self) -> None:
+        if self._shell_unsubscribe is None:
+            return
+        unsubscribe = self._shell_unsubscribe
+        self._shell_unsubscribe = None
+        unsubscribe()
 
     def handle_request(self, request: RpcRequest) -> RpcResponse:
         try:
@@ -363,6 +414,7 @@ class NodeTuiGateway:
                 f"{self.service._config.protocol.value}"
             ),
             "status": self._status_payload(),
+            "background_shells": self._active_background_shells(),
             "welcome": self._welcome_payload(),
             "auth_providers": self._auth_providers_payload(),
         }
@@ -1427,6 +1479,7 @@ class NodeTuiGateway:
         if not session_id:
             raise ValueError("session_id is required.")
         lines = [f"[session] {line}" for line in self.service.resume_session(session_id)]
+        self._bind_shell_lifecycle_listener()
         if self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
             self._emit_event("status.changed", self._status_payload())
@@ -1543,6 +1596,7 @@ class NodeTuiGateway:
             "turn_running": self._turn_running,
             "queued_steering": queue_payload["steering"],
             "queued_follow_up": queue_payload["follow_up"],
+            "background_shells": self._active_background_shells(),
             "has_pending_input": queue_payload["has_pending_input"],
             "queue_activity": queue_payload["activity"],
             "trust": self._trust_status_payload(),
@@ -1551,6 +1605,12 @@ class NodeTuiGateway:
         if title:
             payload["session_title"] = title
         return payload
+
+    def _active_background_shells(self) -> list[dict[str, object]]:
+        active = getattr(self.service, "active_background_shells", None)
+        if not callable(active):
+            return []
+        return [dict(row) for row in active()]
 
     def _session_title(self) -> str | None:
         for name in ("session_title", "title"):
