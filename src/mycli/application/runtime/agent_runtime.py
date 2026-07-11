@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import contextlib
 import os
 from pathlib import Path
 from threading import Lock
@@ -32,6 +33,7 @@ from mycli.domain.runtime import (
     RuntimeItem,
     RuntimeInterruptToken,
     RuntimeRole,
+    ShellLifecycleEvent,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
     RequestShape,
@@ -259,6 +261,12 @@ class AgentRuntime:
         self._message_queue_lock = Lock()
         self._steering_messages: list[QueuedTurnInput] = []
         self._follow_up_messages: list[QueuedTurnInput] = []
+        self._shell_lifecycle_lock = Lock()
+        self._shell_lifecycle_listeners: dict[
+            int,
+            Callable[[ShellLifecycleEvent], None],
+        ] = {}
+        self._next_shell_lifecycle_listener_id = 0
         self._recovery_sleep = time.sleep
         self._monotonic = time.monotonic
         self._approval_service = approval_service or ApprovalService(
@@ -912,6 +920,30 @@ class AgentRuntime:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return self.queue_steering_message(notification.to_xml(), source="task_notification")
 
+    def register_shell_lifecycle_listener(
+        self,
+        listener: Callable[[ShellLifecycleEvent], None],
+    ) -> Callable[[], None]:
+        with self._shell_lifecycle_lock:
+            listener_id = self._next_shell_lifecycle_listener_id
+            self._next_shell_lifecycle_listener_id += 1
+            self._shell_lifecycle_listeners[listener_id] = listener
+
+        def unsubscribe() -> None:
+            with self._shell_lifecycle_lock:
+                self._shell_lifecycle_listeners.pop(listener_id, None)
+
+        return unsubscribe
+
+    def _publish_shell_lifecycle_event(self, event: ShellLifecycleEvent) -> None:
+        if event.owner_session_id != self._config.session_id:
+            return
+        with self._shell_lifecycle_lock:
+            listeners = tuple(self._shell_lifecycle_listeners.values())
+        for listener in listeners:
+            with contextlib.suppress(Exception):
+                listener(event)
+
     def queue_follow_up_message(
         self,
         message: str,
@@ -1011,6 +1043,9 @@ class AgentRuntime:
             configure_owner = getattr(tool, "configure_shell_session", None)
             if callable(configure_owner):
                 configure_owner(self._config.session_id)
+            configure_lifecycle = getattr(tool, "configure_shell_lifecycle", None)
+            if callable(configure_lifecycle):
+                configure_lifecycle(self._publish_shell_lifecycle_event)
             configure = getattr(tool, "configure_background_tasks", None)
             if not callable(configure):
                 continue

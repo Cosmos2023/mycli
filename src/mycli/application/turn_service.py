@@ -19,6 +19,7 @@ from mycli.domain.runtime import (
     ReasoningEffort,
     RuntimeTraceEvent,
     RuntimeInterruptToken,
+    ShellLifecycleEvent,
     RuntimeStreamEvent,
     SandboxMode,
     SessionCommandAllowance,
@@ -174,6 +175,27 @@ class TurnService:
         close = getattr(self._runtime, "close", None)
         if callable(close):
             close()
+
+    def register_shell_lifecycle_listener(
+        self,
+        listener: Callable[[ShellLifecycleEvent], None],
+    ) -> Callable[[], None]:
+        runtime = self._runtime
+        if runtime is None:
+            return lambda: None
+        return cast(
+            Callable[[], None],
+            runtime.register_shell_lifecycle_listener(listener),
+        )
+
+    def active_background_shells(self) -> tuple[dict[str, object], ...]:
+        from mycli.tools.shell_registry import SHELL_REGISTRY
+
+        return tuple(
+            row
+            for row in SHELL_REGISTRY.list(owner_session_id=self._config.session_id)
+            if row.get("background") is True and row.get("status") == "running"
+        )
 
     def inspect_logs(self) -> tuple[str, ...]:
         log_service = getattr(self._runtime, "_workspace_log_service", None)

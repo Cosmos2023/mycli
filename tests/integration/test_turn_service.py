@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 from mycli.cli.main import build_turn_service
 from mycli.application.runtime.agent_runtime import AgentRuntime
@@ -13,6 +14,7 @@ from mycli.domain.runtime import (
     PendingDecision,
     RuntimeBlock,
     RuntimeItem,
+    ShellLifecycleEvent,
     SessionCommandAllowance,
     StopReason,
     TurnResponse,
@@ -24,6 +26,8 @@ from mycli.domain.tools import ToolCall
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from mycli.tools.base import ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.bash import BashTool
+from mycli.tools.shell_registry import SHELL_REGISTRY
 
 
 class PushModel:
@@ -206,6 +210,35 @@ def make_turn_service(
         config=resolved_config,
         home_dir=resolved_home,
     )
+
+
+def test_turn_service_exposes_owner_scoped_shell_lifecycle_state(tmp_path: Path) -> None:
+    bash = BashTool(tmp_path)
+    config = AgentConfig(workspace_root=tmp_path, session_id="service-shell-owner")
+    runtime = AgentRuntime(
+        model_adapter=DecisionModelAdapter(FakeModel()),
+        tool_registry=ToolRegistry.from_tools([bash]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    service = TurnService(runtime=runtime, config=config, home_dir=tmp_path / "home")
+    events: list[ShellLifecycleEvent] = []
+    unsubscribe = service.register_shell_lifecycle_listener(events.append)
+
+    result = bash.execute({"command": "sleep 30", "run_in_background": True})
+    shell_id = str(result.raw_payload["shell_id"])
+    deadline = time.monotonic() + 2
+    while not events and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    try:
+        rows = service.active_background_shells()
+        assert {row["shell_id"] for row in rows} == {shell_id}
+        assert events[0].owner_session_id == "service-shell-owner"
+    finally:
+        unsubscribe()
+        SHELL_REGISTRY.kill(shell_id, owner_session_id="service-shell-owner")
+        runtime.close()
 
 
 class PushThenDoneRuntimeAdapter:

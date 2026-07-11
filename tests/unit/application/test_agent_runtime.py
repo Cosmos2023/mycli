@@ -36,6 +36,7 @@ from mycli.domain.runtime import (
     PlanStatus,
     RuntimeBlock,
     RuntimeItem,
+    ShellLifecycleEvent,
     RuntimeStreamEvent,
     SessionCommandAllowance,
     StopReason,
@@ -59,6 +60,7 @@ from mycli.tools.registry import ToolRegistry
 from mycli.tools.bash import BashTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.kill_shell import KillShellTool
+from mycli.tools.shell_registry import SHELL_REGISTRY
 from mycli.tools.grep import GrepTool
 from mycli.tools.write import WriteTool
 from mycli.tools.plan import PlanTool
@@ -1907,6 +1909,69 @@ def test_agent_runtime_configures_shell_tool_session_owner(tmp_path: Path) -> No
     assert bash._owner_session_id == "session-owner"
     assert output._session_id == "session-owner"
     assert kill._session_id == "session-owner"
+
+
+def test_agent_runtime_publishes_shell_lifecycle_events_to_registered_listener(
+    tmp_path: Path,
+) -> None:
+    bash = BashTool(tmp_path)
+    runtime = AgentRuntime(
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([bash]),
+        config=AgentConfig(workspace_root=tmp_path, session_id="session-shell-events"),
+        home_dir=tmp_path / "home",
+    )
+    events: list[ShellLifecycleEvent] = []
+    unsubscribe = runtime.register_shell_lifecycle_listener(events.append)
+
+    result = bash.execute({"command": "printf ready", "run_in_background": True})
+    shell_id = str(result.raw_payload["shell_id"])
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        snapshot = SHELL_REGISTRY.read(
+            shell_id,
+            owner_session_id="session-shell-events",
+        )
+        if snapshot.get("terminal_state") is not None:
+            break
+        time.sleep(0.01)
+    deadline = time.monotonic() + 2
+    while not any(event.kind == "shell.completed" for event in events) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    unsubscribe()
+
+    assert events[0].kind == "shell.started"
+    assert any(event.kind == "shell.completed" for event in events)
+    assert all(event.owner_session_id == "session-shell-events" for event in events)
+    runtime.close()
+
+
+def test_agent_runtime_stops_shell_events_after_listener_unsubscribe(tmp_path: Path) -> None:
+    bash = BashTool(tmp_path)
+    runtime = AgentRuntime(
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([bash]),
+        config=AgentConfig(workspace_root=tmp_path, session_id="session-unsubscribe"),
+        home_dir=tmp_path / "home",
+    )
+    events: list[ShellLifecycleEvent] = []
+    unsubscribe = runtime.register_shell_lifecycle_listener(events.append)
+    unsubscribe()
+
+    result = bash.execute({"command": "printf ready", "run_in_background": True})
+    shell_id = str(result.raw_payload["shell_id"])
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        snapshot = SHELL_REGISTRY.read(
+            shell_id,
+            owner_session_id="session-unsubscribe",
+        )
+        if snapshot.get("terminal_state") is not None:
+            break
+        time.sleep(0.01)
+
+    assert events == []
+    runtime.close()
 
 
 def test_agent_runtime_close_terminates_owned_shell_sessions(tmp_path: Path) -> None:
