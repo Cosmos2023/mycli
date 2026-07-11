@@ -992,6 +992,35 @@ test("runtime adapter handles command results and session lists", () => {
 	assert.equal(shell.sessions?.[0]?.current, false);
 });
 
+test("runtime adapter projects ps history into a background terminals block", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateWithCommandResult(state, "/ps", {
+		command_kind: "background_shells",
+		processes: [
+			{
+				shell_id: "shell-1",
+				command_preview: "uv run dev",
+				output: "starting\nready\n",
+			},
+		],
+		lines: [],
+	});
+
+	const block = projectRuntimeState(state).transcript?.at(-1);
+
+	assert.equal(block?.kind, "background_terminals");
+	assert.deepEqual(
+		block?.kind === "background_terminals" ? block.backgroundTerminals.processes : [],
+		[
+			{
+				shellId: "shell-1",
+				commandPreview: "uv run dev",
+				recentOutput: ["starting", "ready"],
+			},
+		],
+	);
+});
+
 test("runtime adapter projects usage and context commands as diagnostics", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithCommandResult(state, "/usage", {

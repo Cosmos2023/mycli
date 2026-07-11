@@ -108,12 +108,24 @@ export type MycliShellCommandDiagnostic = {
 	rawLines?: string[];
 };
 
+export type MycliShellBackgroundProcess = {
+	shellId: string;
+	commandPreview: string;
+	recentOutput: string[];
+};
+
+export type MycliShellBackgroundTerminals = {
+	id: string;
+	processes: MycliShellBackgroundProcess[];
+};
+
 export type MycliShellTranscriptBlock =
 	| { id: string; kind: "message"; message: MycliShellMessage }
 	| { id: string; kind: "plan"; plan: MycliShellPlan }
 	| { id: string; kind: "tool"; tool: MycliShellTool }
 	| { id: string; kind: "bash"; bash: MycliShellBash }
 	| { id: string; kind: "subagent"; subagent: MycliShellSubagent }
+	| { id: string; kind: "background_terminals"; backgroundTerminals: MycliShellBackgroundTerminals }
 	| { id: string; kind: "diagnostic"; diagnostic: MycliShellCommandDiagnostic };
 
 export type MycliShellFooterData = {

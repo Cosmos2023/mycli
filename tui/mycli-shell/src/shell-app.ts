@@ -5,6 +5,7 @@ import type { MycliShellMessage, MycliShellState, MycliShellTranscriptBlock } fr
 import { theme } from "./theme/theme.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
+import { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { FooterComponent } from "./components/footer.ts";
@@ -90,6 +91,8 @@ class TranscriptBlocksComponent extends Container {
 				this.addChild(new SubagentExecutionComponent(block.subagent));
 			} else if (block.kind === "diagnostic") {
 				this.addChild(new CommandDiagnosticComponent(block.diagnostic));
+			} else if (block.kind === "background_terminals") {
+				this.addChild(new BackgroundTerminalsComponent(block.backgroundTerminals));
 			} else if (block.kind === "agent_group") {
 				this.addChild(new SubagentGroupComponent(block.group));
 			} else if (block.kind === "tool_group") {

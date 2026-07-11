@@ -24,6 +24,7 @@ import type {
 import { ApprovalSelectorComponent } from "./components/approval-selector.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
+import { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
@@ -103,6 +104,8 @@ const BACKEND_COMMANDS: MycliShellCommand[] = [
 	{ id: "tasks", label: "/tasks", description: "Inspect background tasks", run: () => undefined },
 	{ id: "tasks-agents", label: "/tasks agents", description: "Inspect background agents", run: () => undefined },
 	{ id: "tasks-bashes", label: "/tasks bashes", description: "Inspect background shells", run: () => undefined },
+	{ id: "ps", label: "/ps", description: "Inspect background terminals", run: () => undefined },
+	{ id: "stop", label: "/stop", description: "Stop background terminals", run: () => undefined },
 	{ id: "tasks-agents-kill", label: "/tasks agents kill", description: "Stop a background agent", run: () => undefined },
 	{ id: "tasks-kill-agents", label: "/tasks kill-agents", description: "Stop background agents", run: () => undefined },
 	{ id: "tools", label: "/tools", description: "Inspect backend tools", run: () => undefined },
@@ -133,6 +136,7 @@ type ChatBlockComponent =
 	| { kind: "tool"; signature: string; component: ToolExecutionComponent }
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
 	| { kind: "subagent"; signature: string; component: SubagentExecutionComponent }
+	| { kind: "background_terminals"; signature: string; component: BackgroundTerminalsComponent }
 	| { kind: "diagnostic"; signature: string; component: CommandDiagnosticComponent }
 	| { kind: "agent_group"; signature: string; component: SubagentGroupComponent }
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
@@ -998,6 +1002,13 @@ export class MycliShellRuntime {
 		}
 		if (block.kind === "diagnostic") {
 			return { kind: "diagnostic", signature, component: new CommandDiagnosticComponent(block.diagnostic) };
+		}
+		if (block.kind === "background_terminals") {
+			return {
+				kind: "background_terminals",
+				signature,
+				component: new BackgroundTerminalsComponent(block.backgroundTerminals),
+			};
 		}
 		if (block.kind === "agent_group") {
 			return { kind: "agent_group", signature, component: new SubagentGroupComponent(block.group) };

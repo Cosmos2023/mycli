@@ -52,6 +52,7 @@ export class FooterComponent implements Component {
 			this.queueText(),
 			this.data.trust ? `trust ${this.data.trust}` : undefined,
 			this.data.collaborationMode ? `mode ${this.data.collaborationMode}` : undefined,
+			this.backgroundShellText(),
 			this.data.liveState,
 		].filter((part): part is string => Boolean(part));
 
@@ -102,6 +103,13 @@ export class FooterComponent implements Component {
 			return [`steer ${steering}`, `follow-up ${followUp}`].filter((part) => !part.endsWith(" 0")).join(" ");
 		}
 		return this.data.queueCount ? `queue ${this.data.queueCount}` : undefined;
+	}
+
+	private backgroundShellText(): string | undefined {
+		const count = this.data.backgroundShellCount ?? 0;
+		if (count <= 0) return undefined;
+		const noun = count === 1 ? "terminal" : "terminals";
+		return `${count} background ${noun} running · /ps to view · /stop to close`;
 	}
 
 	private costText(): string | undefined {

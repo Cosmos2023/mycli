@@ -1,6 +1,8 @@
 export type {
 	MycliShellBash,
 	MycliShellAuthProvider,
+	MycliShellBackgroundProcess,
+	MycliShellBackgroundTerminals,
 	MycliShellCommand,
 	MycliShellCommandDiagnostic,
 	MycliShellDiagnosticMetric,
@@ -26,6 +28,7 @@ export {
 } from "./shell-runtime.ts";
 export { AssistantMessageComponent } from "./components/assistant-message.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
+export { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 export { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { FooterComponent } from "./components/footer.ts";

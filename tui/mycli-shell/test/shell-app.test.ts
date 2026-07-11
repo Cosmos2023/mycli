@@ -818,6 +818,92 @@ test("footer renders collaboration mode when space allows", () => {
 	assert.match(output, /mode plan/);
 });
 
+test("background terminal footer uses singular plural and hides zero", () => {
+	const one = stripAnsi(new FooterComponent({ cwd: "/repo", backgroundShellCount: 1 }).render(120).join("\n"));
+	const two = stripAnsi(new FooterComponent({ cwd: "/repo", backgroundShellCount: 2 }).render(120).join("\n"));
+	const zero = stripAnsi(new FooterComponent({ cwd: "/repo", backgroundShellCount: 0 }).render(120).join("\n"));
+
+	assert.match(one, /1 background terminal running · \/ps to view · \/stop to close/);
+	assert.match(two, /2 background terminals running · \/ps to view · \/stop to close/);
+	assert.doesNotMatch(zero, /background terminal/);
+});
+
+test("mycli shell renders ps history with empty and multiline background terminals", () => {
+	const populated = stripAnsi(renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		pendingNotice: undefined,
+		transcript: [
+			{
+				id: "ps-1",
+				kind: "background_terminals",
+				backgroundTerminals: {
+					id: "ps-1",
+					processes: [
+						{
+							shellId: "shell-1",
+							commandPreview: "uv run dev",
+							recentOutput: ["starting", "ready"],
+						},
+					],
+				},
+			},
+		],
+	}, 100).join("\n"));
+	const empty = stripAnsi(renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		pendingNotice: undefined,
+		transcript: [
+			{
+				id: "ps-empty",
+				kind: "background_terminals",
+				backgroundTerminals: { id: "ps-empty", processes: [] },
+			},
+		],
+	}, 100).join("\n"));
+
+	assert.match(populated, /\/ps/);
+	assert.match(populated, /Background terminals/);
+	assert.match(populated, /• uv run dev/);
+	assert.match(populated, /↳ starting/);
+	assert.match(populated, /↳ ready/);
+	assert.match(empty, /No background terminals running\./);
+});
+
+test("ps history bounds long commands and caps the process list at sixteen", () => {
+	const processes = Array.from({ length: 20 }, (_, index) => ({
+		shellId: `shell-${index + 1}`,
+		commandPreview: index === 0 ? `python ${"x".repeat(200)}` : `uv run worker-${index + 1}`,
+		recentOutput: [],
+	}));
+	const lines = renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		pendingNotice: undefined,
+		transcript: [
+			{
+				id: "ps-many",
+				kind: "background_terminals",
+				backgroundTerminals: { id: "ps-many", processes },
+			},
+		],
+	}, 60);
+	const output = stripAnsi(lines.join("\n"));
+
+	assert.equal((output.match(/• /g) ?? []).length, 16);
+	assert.match(output, /\.\.\. and 4 more running/);
+	for (const line of lines) {
+		assert.ok(visibleWidth(line) <= 60, `line too wide: ${stripAnsi(line)}`);
+	}
+});
+
 test("mycli shell renders command diagnostics as structured panels", () => {
 	const output = renderMycliShell({
 		...sampleState(),

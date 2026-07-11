@@ -1,5 +1,7 @@
 import type {
 	MycliShellAuthProvider,
+	MycliShellBackgroundProcess,
+	MycliShellBackgroundTerminals,
 	MycliShellBash,
 	MycliShellCommandDiagnostic,
 	MycliShellDiagnosticMetric,
@@ -199,6 +201,11 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			const diagnostic = diagnosticFromTranscriptItem(item);
 			if (diagnostic) {
 				transcript.push({ id: item.id, kind: "diagnostic", diagnostic });
+			}
+		} else if (item.type === "background_terminals") {
+			const backgroundTerminals = backgroundTerminalsFromTranscriptItem(item);
+			if (backgroundTerminals) {
+				transcript.push({ id: item.id, kind: "background_terminals", backgroundTerminals });
 			}
 		}
 	}
@@ -663,6 +670,26 @@ function shouldClearCompletedPlan(turnState: string | null, planSteps: MycliShel
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
 	const lines = Array.isArray(result.lines) ? result.lines.map((line) => String(line)) : [String(result.message ?? "Done")];
 	const collaborationMode = collaborationModeValue(result.collaboration_mode);
+	if (result.command_kind === "background_shells") {
+		const backgroundTerminals: Omit<MycliShellBackgroundTerminals, "id"> = {
+			processes: backgroundProcessesFromUnknown(result.processes),
+		};
+		const id = nextId("command");
+		return {
+			...state,
+			collaborationMode: collaborationMode ?? state.collaborationMode,
+			transcript: [
+				...state.transcript,
+				{
+					id,
+					type: "background_terminals",
+					text: "Background terminals",
+					folded: false,
+					metadata: { command, backgroundTerminals },
+				},
+			],
+		};
+	}
 	const diagnostic = commandDiagnosticFromLines(command, lines);
 	const item = diagnostic
 		? {
@@ -677,6 +704,37 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 		...state,
 		collaborationMode: collaborationMode ?? state.collaborationMode,
 		transcript: [...state.transcript, item],
+	};
+}
+
+function backgroundTerminalsFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellBackgroundTerminals | null {
+	const metadata = recordValue(item.metadata);
+	const value = recordValue(metadata.backgroundTerminals ?? metadata.background_terminals);
+	return {
+		id: item.id,
+		processes: backgroundProcessesFromUnknown(value.processes),
+	};
+}
+
+function backgroundProcessesFromUnknown(value: unknown): MycliShellBackgroundProcess[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(backgroundProcessFromUnknown).filter((process): process is MycliShellBackgroundProcess => process !== null);
+}
+
+function backgroundProcessFromUnknown(value: unknown): MycliShellBackgroundProcess | null {
+	const record = recordValue(value);
+	const shellId = stringValue(record.shell_id) ?? stringValue(record.shellId);
+	if (!shellId) return null;
+	const output = stringValue(record.output) ?? "";
+	const recentOutput = stringArrayValue(record.recentOutput ?? record.recent_output);
+	return {
+		shellId,
+		commandPreview: stringValue(record.command_preview) ?? stringValue(record.commandPreview) ?? "command",
+		recentOutput: (recentOutput.length > 0 ? recentOutput : output.split(/\r?\n/))
+			.map((line) => line.replace(/[\r\n\t]/g, " ").trim())
+			.filter(Boolean)
+			.slice(-3)
+			.map((line) => line.slice(0, 500)),
 	};
 }
 
