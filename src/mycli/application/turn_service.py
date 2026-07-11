@@ -17,6 +17,7 @@ from mycli.domain.runtime import (
     HistoryItem,
     HistoryItemType,
     ReasoningEffort,
+    QueuedTurnInput,
     RuntimeTraceEvent,
     RuntimeInterruptToken,
     ShellLifecycleEvent,
@@ -284,6 +285,12 @@ class TurnService:
         if not callable(clear):
             return ((), ())
         return clear()
+
+    def pop_last_follow_up_input(self) -> QueuedTurnInput | None:
+        pop = getattr(self._runtime, "pop_last_follow_up_input", None)
+        if not callable(pop):
+            return None
+        return cast(QueuedTurnInput | None, pop())
 
     def _format_allowed_choices(self, options: tuple[DecisionAction, ...]) -> str:
         choice_to_action = {

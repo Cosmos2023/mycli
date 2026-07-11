@@ -1000,3 +1000,20 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     assert very_old_user not in model.prompts[1]
     assert recent_user in model.prompts[1]
     assert recent_assistant in model.prompts[1]
+
+
+def test_turn_service_pops_only_latest_follow_up(tmp_path: Path) -> None:
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=FakeModel(),
+        tool_registry=FakeToolRegistry(),
+    )
+    service.queue_steering_message("keep steering")
+    service.queue_follow_up_message("first")
+    service.queue_follow_up_message("second")
+
+    popped = service.pop_last_follow_up_input()
+
+    assert popped is not None
+    assert popped.text == "second"
+    assert service.queued_messages() == (("keep steering",), ("first",))

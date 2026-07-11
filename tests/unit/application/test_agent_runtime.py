@@ -5945,3 +5945,46 @@ def test_agent_runtime_force_answer_request_keeps_native_tool_affordance(
     assert all(count > 0 for count in adapter.seen_tool_counts[:12])
     assert adapter.seen_tool_counts[12] == adapter.seen_tool_counts[0]
     assert adapter.tool_choices[-1] == "none"
+
+
+def test_agent_runtime_pops_latest_follow_up_without_touching_steering(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=SteeringNotificationCaptureAdapter(),
+    )
+    runtime.queue_steering_message("inspect current output")
+    runtime.queue_follow_up_message("first follow-up")
+    runtime.queue_follow_up_message(
+        "second [image #1]",
+        image_paths=("/tmp/second.png",),
+        client_turn_id="follow-up-2",
+    )
+
+    popped = runtime.pop_last_follow_up_input()
+
+    assert popped is not None
+    assert popped.kind == "follow_up"
+    assert popped.text == "second [image #1]"
+    assert popped.image_paths == ("/tmp/second.png",)
+    assert popped.client_turn_id == "follow-up-2"
+    assert runtime.queued_messages() == (
+        ("inspect current output",),
+        ("first follow-up",),
+    )
+
+
+def test_agent_runtime_pop_latest_follow_up_is_idempotent_when_empty(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=SteeringNotificationCaptureAdapter(),
+    )
+    runtime.queue_steering_message("keep steering")
+
+    assert runtime.pop_last_follow_up_input() is None
+    assert runtime.queued_messages() == (("keep steering",), ())

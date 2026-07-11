@@ -992,6 +992,12 @@ class AgentRuntime:
                 return None
             return self._follow_up_messages.pop(0)
 
+    def pop_last_follow_up_input(self) -> QueuedTurnInput | None:
+        with self._message_queue_lock:
+            if not self._follow_up_messages:
+                return None
+            return self._follow_up_messages.pop()
+
     def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
         return self._sub_agent_service.recent_runs()
 
