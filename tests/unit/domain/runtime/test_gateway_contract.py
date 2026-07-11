@@ -81,7 +81,9 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "provider",
         "queue_activity",
         "queued_follow_up",
+        "queued_follow_up_items",
         "queued_steering",
+        "queued_steering_items",
         "session_id",
         "suspended_turn",
         "trust",
@@ -93,6 +95,8 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
     assert schema["properties"]["suspended_turn"] == {"type": "boolean"}
     assert schema["properties"]["turn_running"] == {"type": "boolean"}
     assert schema["properties"]["queued_steering"] == {"type": "array"}
+    assert schema["properties"]["queued_steering_items"]["type"] == "array"
+    assert schema["properties"]["queued_follow_up_items"]["type"] == "array"
     assert schema["properties"]["queued_follow_up"] == {"type": "array"}
     assert schema["properties"]["has_pending_input"] == {"type": "boolean"}
     assert schema["properties"]["queue_activity"]["properties"]["kind"]["enum"] == ["idle", "pending_input"]
