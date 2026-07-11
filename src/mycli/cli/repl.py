@@ -115,11 +115,21 @@ def build_command_handler(
             child_session_id = command.removeprefix("/tasks agents kill ").strip()
             return [f"[subagent] {line}" for line in service.cancel_background_subagent(child_session_id)]
         if command.startswith("/tasks agents"):
-            child_session_id = command.removeprefix("/tasks agents").strip() or None
-            return [f"[subagent] {line}" for line in service.inspect_subagents(child_session_id)]
+            requested_child_session_id = (
+                command.removeprefix("/tasks agents").strip() or None
+            )
+            return [
+                f"[subagent] {line}"
+                for line in service.inspect_subagents(requested_child_session_id)
+            ]
         if command.startswith("/agents runs"):
-            child_session_id = command.removeprefix("/agents runs").strip() or None
-            return [f"[subagent] {line}" for line in service.inspect_subagents(child_session_id)]
+            requested_child_session_id = (
+                command.removeprefix("/agents runs").strip() or None
+            )
+            return [
+                f"[subagent] {line}"
+                for line in service.inspect_subagents(requested_child_session_id)
+            ]
         if command in {"/agents", "/agents list"}:
             return [f"[agent] {line}" for line in service.inspect_subagent_profiles()]
         if command.startswith("/agents inspect "):

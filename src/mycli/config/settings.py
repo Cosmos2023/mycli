@@ -108,12 +108,12 @@ def _sectioned_config_value(
     if not isinstance(table, Mapping):
         return None
     if config_key in table:
-        return table[config_key]
+        return cast(object, table[config_key])
     section_prefix = f"{section}_"
     if config_key.startswith(section_prefix):
         short_key = config_key.removeprefix(section_prefix)
         if short_key in table:
-            return table[short_key]
+            return cast(object, table[short_key])
     return None
 
 

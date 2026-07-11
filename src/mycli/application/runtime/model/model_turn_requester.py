@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from queue import Empty, Queue
 from threading import Thread
 from time import monotonic
+from typing import cast
 
 from mycli.domain.runtime import (
     ModelTurnResult,
@@ -116,14 +117,15 @@ class ModelTurnRequester:
         text_bytes = 0
 
         try:
-            stream = (
+            stream = cast(
+                Iterable[object],
                 stream_turn(
                     items=runtime_items,
                     tools=tools,
                     interrupt_token=interrupt_token,
                 )
                 if stream_turn_uses_interrupt
-                else stream_turn(items=runtime_items, tools=tools)
+                else stream_turn(items=runtime_items, tools=tools),
             )
             for event in _interruptible_events(
                 stream,
@@ -366,20 +368,20 @@ _QUEUE_DONE = object()
 
 
 def _interruptible_events(
-    stream: object,
+    stream: Iterable[object],
     *,
     interrupt_token: RuntimeInterruptToken | None,
     threaded: bool,
-) -> object:
+) -> Iterator[object]:
     if interrupt_token is None or not threaded:
-        yield from stream  # type: ignore[misc]
+        yield from stream
         return
 
     queue: Queue[object] = Queue()
 
     def pump() -> None:
         try:
-            for event in stream:  # type: ignore[misc]
+            for event in stream:
                 queue.put(event)
         except BaseException as exc:  # noqa: BLE001 - re-raised by consumer thread.
             queue.put(exc)

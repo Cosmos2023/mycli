@@ -109,6 +109,7 @@ class NodeTuiServiceLike(Protocol):
     def handle_user_turn(
         self,
         message: str,
+        image_paths: tuple[str, ...] = (),
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse: ...
@@ -889,9 +890,12 @@ class NodeTuiGateway:
             self._raise_if_interrupted(client_turn_id)
             return
         if event.kind == "reasoning":
-            payload: dict[str, object] = {"client_turn_id": client_turn_id, "text": event.text}
-            self._emit_event("reasoning.delta", payload)
-            self._emit_event("thinking.delta", payload)
+            reasoning_payload: dict[str, object] = {
+                "client_turn_id": client_turn_id,
+                "text": event.text,
+            }
+            self._emit_event("reasoning.delta", reasoning_payload)
+            self._emit_event("thinking.delta", reasoning_payload)
         elif event.kind == "text_delta":
             self._emit_event(
                 "message.delta",

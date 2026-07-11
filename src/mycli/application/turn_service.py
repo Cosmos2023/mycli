@@ -941,7 +941,7 @@ class TurnService:
         policy_gate = getattr(self._runtime, "_runtime_policy_gate", None)
         default_policy = getattr(policy_gate, "default_policy", None)
         if callable(default_policy):
-            return default_policy()
+            return cast(ExecutionPolicy, default_policy())
         policy = ExecutionPolicy.for_workspace(
             self._config.workspace_root,
             sandbox_mode=self._config.sandbox_mode,

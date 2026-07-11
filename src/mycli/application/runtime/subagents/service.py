@@ -284,7 +284,7 @@ class SubAgentService:
                 )
         for summary in cancelled:
             child_session_id = summary.job_id.removeprefix("subagent:")
-            run = next(
+            matched_run = next(
                 (
                     running
                     for running_id, running in runs
@@ -292,17 +292,17 @@ class SubAgentService:
                 ),
                 None,
             )
-            if run is None:
+            if matched_run is None:
                 continue
             result = self._cancelled_background_result(
-                run.invocation,
+                matched_run.invocation,
                 child_session_id,
-                tool_calls=run.tool_calls,
+                tool_calls=matched_run.tool_calls,
             )
             self._write_subagent_snapshot(
-                run.invocation,
+                matched_run.invocation,
                 result,
-                started_at=run.started_at,
+                started_at=matched_run.started_at,
                 completed_at=summary.completed_at,
                 snapshot_report="Background sub-agent cancelled by user.",
             )

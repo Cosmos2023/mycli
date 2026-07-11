@@ -179,7 +179,11 @@ class ResponsesModelAdapter:
                 self._client.create_response
             ):
                 create_kwargs["tool_choice"] = self._tool_choice
-            payload = self._client.create_response(**create_kwargs)
+            create_response = cast(
+                Callable[..., dict[str, object]],
+                self._client.create_response,
+            )
+            payload = create_response(**create_kwargs)
             turn_result = self._output_parser.to_model_turn_result(payload)
         self._record_client_completion(turn_result)
         return turn_result
