@@ -36,15 +36,22 @@ class ShellStartRequest:
 class ShellSessionSnapshot:
     shell_id: str
     owner_session_id: str
+    background: bool
     status: str
     process_state: str
     terminal_state: str | None
     exit_code: int | None
     output: str
+    stdout: str
+    stderr: str
     next_cursor: int
     output_chars: int
     new_output_chars: int
     omitted_output_chars: int
+    stdout_chars: int
+    stderr_chars: int
+    stdout_omitted_chars: int
+    stderr_omitted_chars: int
     cursor_was_evicted: bool
     cleanup_result: str | None
     started_at: str | None = None
@@ -69,6 +76,7 @@ class ShellSessionSnapshot:
 class _ShellSession:
     shell_id: str
     owner_session_id: str
+    background: bool
     command: str
     command_hash: str
     command_length: int
@@ -81,6 +89,8 @@ class _ShellSession:
     cwd: str
     timeout_seconds: int
     output: ShellOutputBuffer
+    stdout: ShellOutputBuffer
+    stderr: ShellOutputBuffer
     output_file: Path | None
     notification_sink: Callable[[TaskNotification], None] | None
     read_cursor: int = 0
@@ -122,7 +132,7 @@ class ShellSessionManager:
                 request.command,
                 shell=True,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
                 text=True,
                 errors="replace",
                 cwd=request.cwd,
@@ -143,6 +153,7 @@ class ShellSessionManager:
         session = _ShellSession(
             shell_id=uuid4().hex[:8],
             owner_session_id=request.owner_session_id,
+            background=request.background,
             command=request.command,
             command_hash=_hash_command(request.command),
             command_length=len(request.command),
@@ -155,6 +166,8 @@ class ShellSessionManager:
             cwd=str(request.cwd),
             timeout_seconds=request.timeout_seconds,
             output=ShellOutputBuffer(max_chars=self._output_max_chars),
+            stdout=ShellOutputBuffer(max_chars=self._output_max_chars),
+            stderr=ShellOutputBuffer(max_chars=self._output_max_chars),
             output_file=request.output_file,
             notification_sink=request.notification_sink,
             output_file_error=output_file_error,
@@ -162,7 +175,23 @@ class ShellSessionManager:
         with self._lock:
             self._sessions[session.shell_id] = session
 
-        Thread(target=self._drain_output, args=(session.shell_id,), daemon=True).start()
+        stdout_thread = Thread(
+            target=self._drain_stream,
+            args=(session.shell_id, "stdout"),
+            daemon=True,
+        )
+        stderr_thread = Thread(
+            target=self._drain_stream,
+            args=(session.shell_id, "stderr"),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        Thread(
+            target=self._watch_process,
+            args=(session.shell_id, stdout_thread, stderr_thread),
+            daemon=True,
+        ).start()
         Thread(target=self._watch_timeout, args=(session.shell_id,), daemon=True).start()
 
         if request.interrupt_token is not None and not request.background:
@@ -279,20 +308,35 @@ class ShellSessionManager:
                 )
             return session, None
 
-    def _drain_output(self, shell_id: str) -> None:
+    def _drain_stream(self, shell_id: str, stream_name: str) -> None:
         with self._lock:
             session = self._sessions.get(shell_id)
         if session is None:
             return
-        stdout = session.process.stdout
-        if stdout is not None:
-            for text in stdout:
+        stream = session.process.stdout if stream_name == "stdout" else session.process.stderr
+        target = session.stdout if stream_name == "stdout" else session.stderr
+        if stream is not None:
+            for text in stream:
+                target.append(text)
                 session.output.append(text)
                 self._append_output_file(session, text)
                 with self._lock:
                     session.last_observed_at = _now_iso()
+
+    def _watch_process(
+        self,
+        shell_id: str,
+        stdout_thread: Thread,
+        stderr_thread: Thread,
+    ) -> None:
+        with self._lock:
+            session = self._sessions.get(shell_id)
+        if session is None:
+            return
         with contextlib.suppress(Exception):
             session.process.wait()
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
         self._finalize_natural(session)
 
     def _watch_timeout(self, shell_id: str) -> None:
@@ -444,6 +488,8 @@ class ShellSessionManager:
         omitted_before_chunk: int,
     ) -> ShellSessionSnapshot:
         retained = session.output.snapshot()
+        stdout = session.stdout.snapshot()
+        stderr = session.stderr.snapshot()
         with self._lock:
             terminal_state = session.terminal_state
             exit_code = session.process.poll()
@@ -451,15 +497,22 @@ class ShellSessionManager:
             return ShellSessionSnapshot(
                 shell_id=session.shell_id,
                 owner_session_id=session.owner_session_id,
+                background=session.background,
                 status="running" if terminal_state is None else "exited",
                 process_state=terminal_state or "running_background",
                 terminal_state=terminal_state,
                 exit_code=exit_code,
                 output=output,
+                stdout=stdout.text,
+                stderr=stderr.text,
                 next_cursor=next_cursor,
                 output_chars=retained.total_chars,
                 new_output_chars=new_output_chars,
                 omitted_output_chars=max(retained.omitted_chars, omitted_before_chunk),
+                stdout_chars=stdout.total_chars,
+                stderr_chars=stderr.total_chars,
+                stdout_omitted_chars=stdout.omitted_chars,
+                stderr_omitted_chars=stderr.omitted_chars,
                 cursor_was_evicted=cursor_was_evicted,
                 cleanup_result=session.cleanup_result,
                 started_at=session.started_at,
@@ -485,15 +538,22 @@ class ShellSessionManager:
         return ShellSessionSnapshot(
             shell_id=shell_id,
             owner_session_id=owner_session_id,
+            background=False,
             status="error",
             process_state="failed",
             terminal_state="failed",
             exit_code=None,
             output="",
+            stdout="",
+            stderr="",
             next_cursor=0,
             output_chars=0,
             new_output_chars=0,
             omitted_output_chars=0,
+            stdout_chars=0,
+            stderr_chars=0,
+            stdout_omitted_chars=0,
+            stderr_omitted_chars=0,
             cursor_was_evicted=False,
             cleanup_result=None,
             error_kind=error_kind,
@@ -556,4 +616,3 @@ def _shell_summary(*, status: str, exit_code: int | None) -> str:
     if status == "interrupted":
         return "Background Bash command was interrupted."
     return f"Background Bash command finished with status {status}."
-

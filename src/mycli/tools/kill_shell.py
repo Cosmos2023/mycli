@@ -5,11 +5,15 @@ from typing import Any
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.bash import _background_processes
-from mycli.tools.shell_registry import SHELL_REGISTRY
+from mycli.tools.shell_registry import LEGACY_SHELL_OWNER, SHELL_REGISTRY
 
 
-def kill_shell(shell_id: str) -> dict[str, Any]:
-    payload = SHELL_REGISTRY.kill(shell_id)
+def kill_shell(
+    shell_id: str,
+    *,
+    session_id: str = LEGACY_SHELL_OWNER,
+) -> dict[str, Any]:
+    payload = SHELL_REGISTRY.kill(shell_id, owner_session_id=session_id)
     _background_processes.clear()
     _background_processes.update(SHELL_REGISTRY.processes())
     return payload
@@ -24,6 +28,12 @@ class KillShellTool:
         risk_level="medium",
     )
 
+    def __init__(self, *, session_id: str = LEGACY_SHELL_OWNER) -> None:
+        self._session_id = session_id
+
+    def configure_shell_session(self, session_id: str) -> None:
+        self._session_id = session_id
+
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(process=True)
 
@@ -36,7 +46,7 @@ class KillShellTool:
                 error="KillShell requires shell_id.",
                 raw_payload={"error_kind": "missing_shell_id"},
             )
-        payload = kill_shell(shell_id)
+        payload = kill_shell(shell_id, session_id=self._session_id)
         success = "error" not in payload
         if not success:
             payload.setdefault("error_kind", "shell_not_found")

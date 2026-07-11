@@ -21,7 +21,7 @@ from mycli.tools.shell_safety import (
     derive_command_pattern as _derive_command_pattern,
 )
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackend, ShellBackendRequest
-from mycli.tools.shell_registry import SHELL_REGISTRY
+from mycli.tools.shell_registry import LEGACY_SHELL_OWNER, SHELL_REGISTRY
 
 
 OUTPUT_CHAR_LIMIT = 10_000
@@ -54,6 +54,12 @@ def check_forbidden(command: str) -> str | None:
 class ShellCommandRuntime:
     """Coordinates local shell command execution and background shell registration."""
 
+    def __init__(self, *, owner_session_id: str = LEGACY_SHELL_OWNER) -> None:
+        self._owner_session_id = owner_session_id
+
+    def configure_shell_session(self, session_id: str) -> None:
+        self._owner_session_id = session_id
+
     def execute(
         self,
         command: str,
@@ -68,37 +74,43 @@ class ShellCommandRuntime:
     ) -> dict[str, Any]:
         effective_cwd = workdir or os.getcwd()
         started = time.monotonic()
-        if run_in_background:
-            background_payload = _run_background(
-                command,
-                timeout,
-                effective_cwd,
-                env=env,
-                command_pattern=command_pattern,
-                output_file=output_file,
-                notification_sink=notification_sink,
-            )
-            background_payload["cwd"] = effective_cwd
-            background_payload["duration_ms"] = _duration_ms(started)
-            return background_payload
-
-        if interrupt_token is not None:
-            return _run_foreground_interruptible(
-                command,
-                timeout,
-                effective_cwd,
-                started=started,
-                env=env,
-                interrupt_token=interrupt_token,
-            )
-
-        return _run_foreground(
+        payload = SHELL_REGISTRY.execute(
             command,
-            timeout,
-            effective_cwd,
-            started=started,
+            owner_session_id=self._owner_session_id,
+            timeout_seconds=timeout,
+            workdir=effective_cwd,
+            background=run_in_background,
             env=env,
+            command_pattern=command_pattern,
+            output_file=output_file,
+            notification_sink=notification_sink,
+            interrupt_token=interrupt_token,
         )
+        payload["cwd"] = effective_cwd
+        payload["duration_ms"] = _duration_ms(started)
+        if run_in_background:
+            _background_processes.clear()
+            _background_processes.update(SHELL_REGISTRY.processes())
+            return payload
+        if "error" in payload:
+            return payload
+        stdout = str(payload.get("stdout") or "")
+        stderr = str(payload.get("stderr") or "")
+        payload["output"] = _combine_output(stdout, stderr)
+        terminal_state = payload.get("terminal_state")
+        if terminal_state == "interrupted":
+            payload.update(
+                {
+                    "exit_code": 130,
+                    "interrupted": True,
+                    "error_kind": "interrupted",
+                }
+            )
+        elif terminal_state == "timed_out":
+            payload.update({"exit_code": 143, "error_kind": "timeout"})
+        elif payload.get("exit_code") != 0:
+            payload["error_kind"] = "nonzero_exit"
+        return payload
 
 
 DEFAULT_SHELL_COMMAND_RUNTIME = ShellCommandRuntime()
@@ -108,6 +120,7 @@ def execute_bash(
     command: str,
     timeout: int = 120,
     workdir: str | None = None,
+    owner_session_id: str = LEGACY_SHELL_OWNER,
     run_in_background: bool = False,
     env: dict[str, str] | None = None,
     command_pattern: str | None = None,
@@ -115,7 +128,12 @@ def execute_bash(
     notification_sink: Callable[[TaskNotification], None] | None = None,
     interrupt_token: RuntimeInterruptToken | None = None,
 ) -> dict[str, Any]:
-    return DEFAULT_SHELL_COMMAND_RUNTIME.execute(
+    runtime = (
+        DEFAULT_SHELL_COMMAND_RUNTIME
+        if owner_session_id == LEGACY_SHELL_OWNER
+        else ShellCommandRuntime(owner_session_id=owner_session_id)
+    )
+    return runtime.execute(
         command,
         timeout=timeout,
         workdir=workdir,
@@ -298,7 +316,7 @@ def _terminate_process_group(
     *,
     prefer_interrupt: bool,
 ) -> str:
-    signals = (
+    signals: tuple[tuple[signal.Signals, str], ...] = (
         (signal.SIGINT, "sent_sigint"),
         (signal.SIGTERM, "sent_sigterm"),
         (signal.SIGKILL, "sent_sigkill"),
@@ -501,6 +519,7 @@ class BashTool:
     def __init__(self, workspace_root: Path, shell_backend: ShellBackend | None = None) -> None:
         self._workspace_root = workspace_root
         self._shell_backend = shell_backend or LocalShellBackend()
+        self._owner_session_id = LEGACY_SHELL_OWNER
         self._background_output_dir: Path | None = None
         self._notification_sink: Callable[[TaskNotification], None] | None = None
 
@@ -512,6 +531,9 @@ class BashTool:
     ) -> None:
         self._background_output_dir = output_dir
         self._notification_sink = notification_sink
+
+    def configure_shell_session(self, session_id: str) -> None:
+        self._owner_session_id = session_id
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="unknown", process=True)
@@ -579,6 +601,7 @@ class BashTool:
                 command=command_value,
                 timeout_seconds=timeout,
                 cwd=str(cwd_result),
+                owner_session_id=self._owner_session_id,
                 run_in_background=bool(arguments.get("run_in_background", False)),
                 env=env,
                 command_pattern=analysis.command_pattern,

@@ -97,6 +97,27 @@ def test_manager_bounds_retained_output(tmp_path: Path) -> None:
     assert snapshot.omitted_output_chars > 0
 
 
+def test_foreground_snapshot_preserves_stdout_and_stderr(tmp_path: Path) -> None:
+    manager = ShellSessionManager(max_sessions=8, output_max_chars=1024)
+    snapshot = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command=(
+                "python3 -c \"import sys; print('out'); "
+                "sys.stderr.write('err\\n'); sys.exit(7)\""
+            ),
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=False,
+        )
+    )
+
+    assert snapshot.exit_code == 7
+    assert snapshot.background is False
+    assert snapshot.stdout == "out\n"
+    assert snapshot.stderr == "err\n"
+
+
 def test_manager_prunes_completed_session_before_running_session(tmp_path: Path) -> None:
     manager = ShellSessionManager(max_sessions=2, output_max_chars=128)
     running = manager.start(_request(tmp_path, "sleep 30"))
@@ -139,4 +160,3 @@ def test_terminate_kills_descendant_process_group(tmp_path: Path) -> None:
     else:
         os.kill(child_pid, signal.SIGKILL)
         pytest.fail("descendant process remained alive after shell termination")
-
