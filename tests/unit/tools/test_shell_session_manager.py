@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_session_manager import ShellSessionManager, ShellStartRequest
 
 
@@ -95,6 +96,32 @@ def test_manager_bounds_retained_output(tmp_path: Path) -> None:
     assert snapshot.output_chars >= 500
     assert len(snapshot.output) <= 32
     assert snapshot.omitted_output_chars > 0
+
+
+def test_background_completion_notifies_once_after_repeated_polling(
+    tmp_path: Path,
+) -> None:
+    notifications: list[TaskNotification] = []
+    manager = ShellSessionManager(max_sessions=8, output_max_chars=1024)
+    started = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="printf done",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            notification_sink=notifications.append,
+        )
+    )
+
+    snapshot = _wait_for_terminal(manager, "session-a", started.shell_id)
+    for _ in range(5):
+        manager.poll("session-a", started.shell_id)
+
+    assert snapshot.terminal_state == "completed"
+    assert len(notifications) == 1
+    assert notifications[0].task_id == f"shell:{started.shell_id}"
+    assert notifications[0].status == "completed"
 
 
 def test_foreground_snapshot_preserves_stdout_and_stderr(tmp_path: Path) -> None:
