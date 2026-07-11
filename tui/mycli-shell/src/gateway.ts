@@ -14,6 +14,7 @@ import {
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
+	type RuntimeQueuedInputPreview,
 	type RuntimeShellState,
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
@@ -318,7 +319,7 @@ function clearQueuedTurns(): QueuedTurnInput[] {
 }
 
 function syncQueuedInputs(): void {
-	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queueMessages(queuedSteeringTurns), followUp: queueMessages(queuedFollowUpTurns) }));
+	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queuePreviews(queuedSteeringTurns), followUp: queuePreviews(queuedFollowUpTurns) }));
 }
 
 function syncQueuedInputsFromResult(result: Record<string, unknown>): void {
@@ -420,8 +421,11 @@ function queueRpcPayload(input: QueuedTurnInput): Record<string, unknown> {
 	};
 }
 
-function queueMessages(items: QueuedTurnInput[]): string[] {
-	return items.map((item) => item.message);
+function queuePreviews(items: QueuedTurnInput[]): RuntimeQueuedInputPreview[] {
+	return items.map((item) => ({
+		message: item.message,
+		hasImages: Boolean(item.attachments?.localImages?.length),
+	}));
 }
 
 function queuedItemsValue(value: unknown, kind: QueueKind, fallback: unknown): QueuedTurnInput[] {

@@ -906,6 +906,33 @@ test("runtime adapter syncs typed backend message queues", () => {
 	assert.equal(shell.footer.followUpQueueCount, 1);
 	assert.equal(shell.footer.hasPendingInput, true);
 	assert.equal(shell.footer.queueActivity, "pending_input");
+	assert.deepEqual(shell.pendingInput, {
+		steering: [{ text: "steer with image", hasImages: true }],
+		followUps: [{ text: "follow later", hasImages: false }],
+	});
+});
+
+test("runtime adapter projects typed queue items from status bootstrap", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "status.changed", {
+		model: "gpt-5.4",
+		provider: "openai/responses",
+		turn_running: true,
+		queued_steering: ["inspect current output"],
+		queued_follow_up: ["summarize afterward"],
+		queued_steering_items: [
+			{ message: "inspect current output", local_images: [{ path: "/tmp/a.png" }] },
+		],
+		queued_follow_up_items: [{ message: "summarize afterward" }],
+		trust: { state: "trusted", workspace: "/repo" },
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.pendingInput, {
+		steering: [{ text: "inspect current output", hasImages: true }],
+		followUps: [{ text: "summarize afterward", hasImages: false }],
+	});
 });
 
 test("runtime adapter hides internal task notifications from visible queues and transcript", () => {
@@ -936,6 +963,29 @@ test("runtime adapter hides internal task notifications from visible queues and 
 	assert.equal(shell.footer.queueCount, 1);
 	assert.equal(shell.footer.steeringQueueCount, 0);
 	assert.equal(shell.footer.followUpQueueCount, 1);
+	assert.deepEqual(shell.pendingInput, {
+		steering: [],
+		followUps: [{ text: "visible follow-up", hasImages: false }],
+	});
+});
+
+test("runtime adapter hides task-notification-only pending input", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		steering_items: [{ message: "<task-notification>done</task-notification>" }],
+		follow_up_items: [],
+		steering: ["<task-notification>done</task-notification>"],
+		follow_up: [],
+		has_pending_input: true,
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.pendingInput, undefined);
+	assert.equal(shell.footer.queueCount, 0);
+	assert.equal(shell.footer.steeringQueueCount, 0);
+	assert.equal(shell.footer.followUpQueueCount, 0);
+	assert.equal(shell.footer.hasPendingInput, false);
 });
 
 test("runtime adapter projects thinking effort into footer and current model", () => {

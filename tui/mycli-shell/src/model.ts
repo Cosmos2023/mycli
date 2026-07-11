@@ -157,6 +157,16 @@ export type MycliShellFooterData = {
 	extensionStatuses?: string[];
 };
 
+export type MycliShellQueuedInputPreview = {
+	text: string;
+	hasImages: boolean;
+};
+
+export type MycliShellPendingInput = {
+	steering: MycliShellQueuedInputPreview[];
+	followUps: MycliShellQueuedInputPreview[];
+};
+
 export type MycliShellModel = {
 	provider: string;
 	id: string;
@@ -269,6 +279,7 @@ export type MycliShellState = {
 	transcript?: MycliShellTranscriptBlock[];
 	activePlan?: MycliShellPlanStep[];
 	footer: MycliShellFooterData;
+	pendingInput?: MycliShellPendingInput;
 	pendingNotice?: string;
 	pendingApproval?: MycliShellPendingApproval;
 	models?: MycliShellModel[];

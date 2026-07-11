@@ -48,6 +48,11 @@ export type RuntimeShellProcess = {
 	cleanupResult?: string;
 };
 
+export type RuntimeQueuedInputPreview = {
+	message: string;
+	hasImages: boolean;
+};
+
 export type RuntimeShellState = {
 	sessionId: string | null;
 	sessionTitle: string | null;
@@ -62,8 +67,8 @@ export type RuntimeShellState = {
 	turnRunning: boolean;
 	activeAssistantItemId: string | null;
 	queuedInputs: string[];
-	queuedSteeringInputs: string[];
-	queuedFollowUpInputs: string[];
+	queuedSteeringInputs: RuntimeQueuedInputPreview[];
+	queuedFollowUpInputs: RuntimeQueuedInputPreview[];
 	hasPendingInput: boolean;
 	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
 	liveStatus: { state: string; text: string; kind?: string; message?: string } | null;
@@ -121,6 +126,14 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 	const tools: MycliShellTool[] = [];
 	const bash: MycliShellBash[] = [];
 	const transcript: MycliShellTranscriptBlock[] = [];
+	const steering = state.queuedSteeringInputs.map((item) => ({
+		text: item.message,
+		hasImages: item.hasImages,
+	}));
+	const followUps = state.queuedFollowUpInputs.map((item) => ({
+		text: item.message,
+		hasImages: item.hasImages,
+	}));
 
 	for (const item of state.transcript) {
 		if (isInternalTaskNotification(item.text)) {
@@ -217,6 +230,10 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		bash,
 		transcript,
 		activePlan: state.activePlan.length > 0 ? state.activePlan : undefined,
+		pendingInput:
+			steering.length > 0 || followUps.length > 0
+				? { steering, followUps }
+				: undefined,
 		footer: {
 			cwd: state.workspace || process.cwd(),
 			sessionName: state.sessionTitle ?? state.sessionId ?? undefined,
@@ -511,21 +528,25 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 	if (method === "status.changed") {
 		const trust = trustFromPayload(params.trust, state.workspace);
 		const turnRunning = booleanValue(params.turn_running);
-		const queuedSteering = stringArrayValue(params.queued_steering);
-		const queuedFollowUp = stringArrayValue(params.queued_follow_up);
-		const visibleSteering = visibleQueuedMessages(queuedSteering);
-		const visibleFollowUp = visibleQueuedMessages(queuedFollowUp);
-		const queueActivity = queueActivityFromPayload(params.queue_activity, visibleSteering, visibleFollowUp);
+		const queuedSteering = queuedInputPreviews(
+			params.queued_steering_items,
+			params.queued_steering,
+		);
+		const queuedFollowUp = queuedInputPreviews(
+			params.queued_follow_up_items,
+			params.queued_follow_up,
+		);
+		const queueActivity = queueActivityFromPayload(params.queue_activity, queuedSteering, queuedFollowUp);
 		const nextState = {
 			...state,
 			status: params,
 			turnRunning: turnRunning ?? state.turnRunning,
 			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
 			liveReasoning: turnRunning === false ? null : state.liveReasoning,
-			queuedSteeringInputs: visibleSteering,
-			queuedFollowUpInputs: visibleFollowUp,
-			queuedInputs: [...visibleSteering, ...visibleFollowUp],
-			hasPendingInput: booleanValue(params.has_pending_input) ?? queueActivity.kind === "pending_input",
+			queuedSteeringInputs: queuedSteering,
+			queuedFollowUpInputs: queuedFollowUp,
+			queuedInputs: [...queuedSteering, ...queuedFollowUp].map((item) => item.message),
+			hasPendingInput: queuedSteering.length > 0 || queuedFollowUp.length > 0,
 			queueActivity,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			model: stringValue(params.model) ?? state.model,
@@ -541,8 +562,8 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		return { ...state, trust, trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown" };
 	}
 	if (method === "turn.queue.updated") {
-		const steering = queueMessagesFromPayload(params.steering_items, params.steering);
-		const followUp = queueMessagesFromPayload(params.follow_up_items, params.follow_up);
+		const steering = queuedInputPreviews(params.steering_items, params.steering);
+		const followUp = queuedInputPreviews(params.follow_up_items, params.follow_up);
 		return runtimeStateWithMessageQueues(state, {
 			steering,
 			followUp,
@@ -581,17 +602,17 @@ export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInp
 
 export function runtimeStateWithMessageQueues(
 	state: RuntimeShellState,
-	queues: { steering: string[]; followUp: string[]; hasPendingInput?: boolean; activity?: unknown },
+	queues: { steering: RuntimeQueuedInputPreview[]; followUp: RuntimeQueuedInputPreview[]; hasPendingInput?: boolean; activity?: unknown },
 ): RuntimeShellState {
-	const steering = visibleQueuedMessages(queues.steering);
-	const followUp = visibleQueuedMessages(queues.followUp);
+	const steering = visibleQueuedPreviews(queues.steering);
+	const followUp = visibleQueuedPreviews(queues.followUp);
 	const queueActivity = queueActivityFromPayload(queues.activity, steering, followUp);
 	return {
 		...state,
 		queuedSteeringInputs: steering,
 		queuedFollowUpInputs: followUp,
-		queuedInputs: [...steering, ...followUp],
-		hasPendingInput: queues.hasPendingInput ?? queueActivity.kind === "pending_input",
+		queuedInputs: [...steering, ...followUp].map((item) => item.message),
+		hasPendingInput: steering.length > 0 || followUp.length > 0,
 		queueActivity,
 	};
 }
@@ -602,25 +623,17 @@ function queuedInputCount(state: RuntimeShellState): number {
 }
 
 function queueActivityFromPayload(
-	value: unknown,
-	steering: string[],
-	followUp: string[],
+	_value: unknown,
+	steering: RuntimeQueuedInputPreview[],
+	followUp: RuntimeQueuedInputPreview[],
 ): { kind: string; steeringCount: number; followUpCount: number } {
 	const fallbackSteeringCount = steering.length;
 	const fallbackFollowUpCount = followUp.length;
 	const fallbackKind = fallbackSteeringCount > 0 || fallbackFollowUpCount > 0 ? "pending_input" : "idle";
-	if (!value || typeof value !== "object") {
-		return {
-			kind: fallbackKind,
-			steeringCount: fallbackSteeringCount,
-			followUpCount: fallbackFollowUpCount,
-		};
-	}
-	const record = value as Record<string, unknown>;
 	return {
-		kind: stringValue(record.kind) ?? fallbackKind,
-		steeringCount: numberValue(record.steering_count ?? record.steeringCount) ?? fallbackSteeringCount,
-		followUpCount: numberValue(record.follow_up_count ?? record.followUpCount) ?? fallbackFollowUpCount,
+		kind: fallbackKind,
+		steeringCount: fallbackSteeringCount,
+		followUpCount: fallbackFollowUpCount,
 	};
 }
 
@@ -628,31 +641,27 @@ function visibleQueuedMessages(messages: string[]): string[] {
 	return messages.filter((message) => !isInternalTaskNotification(message));
 }
 
-function queueMessagesFromPayload(items: unknown, fallback: unknown): string[] {
-	const itemMessages = queueItemMessages(items);
-	return itemMessages.length > 0 ? itemMessages : stringArrayValue(fallback);
+function visibleQueuedPreviews(items: RuntimeQueuedInputPreview[]): RuntimeQueuedInputPreview[] {
+	return items.filter((item) => !isInternalTaskNotification(item.message));
 }
 
-function queueItemMessages(value: unknown): string[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	const messages: string[] = [];
-	for (const item of value) {
-		if (typeof item === "string" && item.trim()) {
-			messages.push(item.trim());
-			continue;
-		}
-		if (!item || typeof item !== "object") {
-			continue;
-		}
-		const record = item as Record<string, unknown>;
-		const message = record.message ?? record.text;
-		if (typeof message === "string" && message.trim()) {
-			messages.push(message.trim());
-		}
-	}
-	return messages;
+function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedInputPreview[] {
+	const raw = Array.isArray(items) && items.length > 0 ? items : stringArrayValue(fallback);
+	return raw
+		.map((item): RuntimeQueuedInputPreview | null => {
+			if (typeof item === "string") {
+				return item.trim() ? { message: item.trim(), hasImages: false } : null;
+			}
+			const record = recordValue(item);
+			const message = stringValue(record.message) ?? stringValue(record.text);
+			if (!message?.trim()) return null;
+			return {
+				message: message.trim(),
+				hasImages: Array.isArray(record.local_images) && record.local_images.length > 0,
+			};
+		})
+		.filter((item): item is RuntimeQueuedInputPreview => item !== null)
+		.filter((item) => !isInternalTaskNotification(item.message));
 }
 
 function isInternalTaskNotification(text: string): boolean {
