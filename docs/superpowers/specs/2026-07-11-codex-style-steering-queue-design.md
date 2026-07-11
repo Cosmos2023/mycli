@@ -1,201 +1,248 @@
-# Codex-Style Steering Queue Design
+# Codex 风格 Steering Queue 设计
 
-## Goal
+## 目标
 
-Make mycli's steering and follow-up queue behave and render like Codex without replacing the existing turn executor or changing model-visible conversation semantics.
+把 mycli 的 steering queue 和 follow-up queue 做得更接近 Codex，包括后端行为和 TUI 展示。
 
-The finished experience must:
+改完以后需要达到这些效果：
 
-- show the actual queued message text instead of count-only status;
-- distinguish same-turn steering from next-turn follow-up input;
-- avoid rendering the same queue state in both the pending area and footer;
-- edit only the most recent queued follow-up;
-- preserve pending steering when the user interrupts the current turn;
-- keep internal task notifications model-visible but absent from user-facing queue previews.
+- TUI 直接显示排队中的消息内容，不再只显示数量。
+- steering 和 follow-up 分开显示，用户能看懂它们什么时候会执行。
+- queue 只在输入框上方显示一次，不再在 footer 重复显示。
+- `Alt+Up` 或 `Shift+Left` 只取回最后一条 follow-up。
+- 按 `Esc` 中断当前 turn 时，不清空已经排队的消息。
+- 后台任务产生的内部 `<task-notification>` 仍然可以进入模型，但不会显示给用户。
 
-## Existing Behavior
+## 当前的问题
 
-The Python runtime already has two typed queues:
+mycli 后端现在已经有两个队列：
 
-- `steering`: drained before the next model request inside the active turn;
-- `follow_up`: started as a later turn after the active turn reaches a terminal state.
+- `steering`：当前 turn 还在运行时补充给主 agent 的消息。
+- `follow_up`：当前 turn 结束后，再启动下一轮处理的消息。
 
-The gateway already exposes typed queue items, including text, local images, source, kind, and client turn ID. The TypeScript reducer retains visible queue text internally.
+后端也已经把消息文本、图片、来源和 `client_turn_id` 传给 TUI。
 
-The mismatch is at the interaction and presentation boundaries:
+问题主要出在展示和按键行为上。
 
-- the projected TUI state exposes only queue counts;
-- the pending area renders `Pending input: steer N · follow-up N`;
-- the footer repeats the same counts;
-- the dequeue action clears and restores every queued item;
-- interrupt clears the queues before sending the interrupt request.
-
-## Codex Mapping
-
-mycli will map its existing queue types onto Codex concepts:
-
-| mycli | Codex equivalent | Delivery |
-|---|---|---|
-| `steering` | pending steer | next tool/result or model-request boundary in the active turn |
-| `follow_up` | queued user message | next turn after the active turn finishes |
-
-Codex also has rejected steers for turn kinds that cannot accept steering. mycli does not currently model non-steerable active turn kinds, so this design does not introduce a third queue prematurely. The queue model can add that state later without changing the TUI component contract.
-
-## Backend Design
-
-### Queue Ownership
-
-`AgentRuntime` remains the source of truth for queued input. Existing FIFO consumption remains unchanged:
-
-- steering is consumed from the front at safe in-turn boundaries;
-- follow-up input is consumed from the front when the TUI starts a subsequent turn.
-
-### Edit Last Follow-Up
-
-Add a typed operation that removes only the newest `follow_up` item and returns it intact, including images and client turn ID. It must not modify:
-
-- pending steering;
-- earlier follow-up items;
-- internal task notifications in the steering queue.
-
-Expose the operation through `TurnService` and a new gateway request, `turn.queue.pop`. The response contains the popped typed item plus the remaining queue snapshot. When no follow-up exists, it returns `item: null` and leaves the queue unchanged.
-
-Keep `turn.queue.clear` for backward compatibility and diagnostics, but the TUI edit binding no longer calls it.
-
-### Interrupt Behavior
-
-`turn.interrupt` must not clear either queue. The TUI sends the interrupt request directly. Once the active turn reaches a terminal state, its existing queue drain scheduler prioritizes steering before follow-up input.
-
-This gives pending steering the Codex behavior: interrupt the current work, then submit the pending steer at the earliest valid boundary. Ordinary follow-up messages stay queued.
-
-### Queue Payloads
-
-Continue sending typed `steering_items` and `follow_up_items`. Queue activity counts remain available for protocol consumers, but TUI visibility is derived from filtered user-visible items so hidden task notifications cannot create a phantom pending indicator.
-
-## TUI State
-
-Add a projected pending-input model containing two ordered arrays:
+当前 TUI 显示的是：
 
 ```text
-pendingSteering
-queuedFollowUps
+Pending input: steer 1 · follow-up 2
+↳ alt+up / shift+left to edit all queued messages
+
+...
+
+steer 1 follow-up 2 Running
 ```
 
-Each item includes the display text and whether local images are attached. The reducer populates these arrays from typed gateway items when present and falls back to legacy string arrays.
+这里有四个问题：
 
-Internal `<task-notification>` items remain in backend state but are removed from the projected display arrays and visible queue counts.
+1. 只能看到数量，看不到具体排队了什么消息。
+2. pending 区域和 footer 重复显示相同数量。
+3. `Alt+Up` 会清空并取回全部 queue，而 Codex 只取回最后一条 follow-up。
+4. 按 `Esc` 中断时，mycli 会先清空 queue，这会破坏 steering 的原本语义。
 
-The footer no longer renders queue counts. Queue state has one visual owner: the pending-input preview above the composer.
+## 与 Codex 的对应关系
 
-## Pending Input Component
+mycli 不需要重写整个 turn 调度系统，现有两个队列已经能对应 Codex 的核心概念：
 
-Create a dedicated component modeled after Codex's `PendingInputPreview`.
+| mycli | 对应 Codex | 什么时候处理 |
+|---|---|---|
+| `steering` | pending steer | 当前 turn 的下一个 tool/result 或模型请求安全边界 |
+| `follow_up` | queued user message | 当前 turn 结束后启动下一轮 |
 
-Pending steering renders first:
+Codex 还有一种 `rejected steer`，用于当前 turn 明确不允许 steering 的情况。
+
+mycli 现在没有“不可 steer 的 turn 类型”这一层状态，所以这次不提前增加第三个队列。以后真正支持 review turn、manual compact 等不可 steer 模式时，再补这个状态。
+
+## 改完后的 TUI
+
+### 有 steering 时
 
 ```text
 • Messages to be submitted after next tool call
   (press esc to interrupt and send immediately)
-  ↳ Please inspect the latest output.
+  ↳ 再检查一下刚才的命令输出
 ```
 
-Queued follow-up input renders second:
+这表示消息属于当前 turn，会在下一个安全边界交给主 agent。
+
+### 有 follow-up 时
 
 ```text
 • Queued follow-up inputs
-  ↳ Summarize the remaining risks.
+  ↳ 完成后再总结一下剩余风险
     alt+up edit last queued message
 ```
 
-Rendering rules:
+这表示消息不会插入当前 turn，而是在当前 turn 结束后启动下一轮。
 
-- omit empty sections;
-- keep steering before follow-up input;
-- show one `↳` prefix for the first visual line of each message;
-- indent wrapped continuation lines;
-- show at most three visual lines per message;
-- append an indented `…` when a message exceeds the preview limit;
-- sanitize control characters;
-- remain width-safe for CJK and ANSI-styled text;
-- show the edit hint only when a visible follow-up exists;
-- use the existing terminal-specific `Alt+Up` or `Shift+Left` binding label.
+### 两种消息同时存在时
 
-The current count-only pending row and its generic `edit all queued messages` hint are removed.
+```text
+• Messages to be submitted after next tool call
+  (press esc to interrupt and send immediately)
+  ↳ 先检查测试失败原因
 
-## Interaction Flow
+• Queued follow-up inputs
+  ↳ 测试修好以后再整理提交记录
+    alt+up edit last queued message
+```
 
-### Submit Steering
+steering 永远显示在 follow-up 上面。
 
-1. The user presses Enter during an active turn.
-2. The TUI calls `turn.steer`.
-3. The backend appends a typed steering item.
-4. `turn.queue.updated` refreshes the pending steering preview.
-5. The turn executor consumes steering at the next safe boundary.
-6. A later queue update removes the committed item from the preview.
+## TUI 展示规则
 
-### Queue Follow-Up
+- 空的 section 不显示。
+- 每条消息显示实际内容。
+- 每条消息最多显示 3 个视觉行。
+- 超过 3 行时，显示缩进后的 `…`。
+- 第一行使用 `↳`，自动换行后的内容继续缩进。
+- 控制字符会被清理，不能破坏终端布局。
+- 中文、emoji 和 ANSI 颜色必须按终端视觉宽度计算。
+- 只有存在可编辑的 follow-up 时，才显示 `Alt+Up` 或 `Shift+Left` 提示。
+- footer 删除 `steer N follow-up N`，避免重复。
 
-1. The user presses Tab during an active turn.
-2. The TUI calls `turn.follow_up`.
-3. The follow-up appears under `Queued follow-up inputs`.
-4. After the active turn ends, the existing scheduler starts the oldest follow-up.
+## 后端怎么改
 
-### Edit Last Follow-Up
+### 保留现有队列
 
-1. The user presses `Alt+Up` or the terminal-specific fallback.
-2. The TUI calls `turn.queue.pop`.
-3. The backend removes only the newest follow-up.
-4. The returned text and image placeholders are restored into the composer before the current draft.
-5. Remaining queue items stay visible.
+`AgentRuntime` 继续作为 queue 的唯一真实来源。
 
-### Interrupt
+现有消费顺序不变：
 
-1. The user presses Escape during an active turn.
-2. The TUI sends `turn.interrupt` without clearing queues.
-3. Pending steering and follow-up previews remain visible while interruption completes.
-4. Steering is submitted first when the runtime becomes eligible to drain queued input.
+- steering 从队首开始消费，在当前 turn 的安全边界进入模型。
+- follow-up 从队首开始消费，在当前 turn 结束后启动下一轮。
 
-## Error Handling
+### 新增“取回最后一条 follow-up”
 
-- `turn.queue.pop` is idempotent when no follow-up exists.
-- A stale local queue is repaired from the queue snapshot returned by every queue mutation.
-- Gateway failure leaves local queue state unchanged and displays the existing request error path.
-- Hidden internal task notifications never appear in previews or edit results.
-- Image attachments survive pop and composer restoration.
-- Narrow terminals truncate or wrap previews without moving the composer or footer unpredictably.
+后端新增一个操作，只删除并返回最新加入的 follow-up。
 
-## Testing
+它不能影响：
 
-### Python
+- steering queue；
+- 更早加入的 follow-up；
+- steering queue 中的内部 task notification。
 
-- popping the newest follow-up preserves FIFO order for remaining items;
-- popping follow-up does not remove steering or task notifications;
-- image paths and client turn ID survive the pop response;
-- empty pop is idempotent;
-- gateway `turn.queue.pop` returns the item and remaining typed snapshot;
-- interrupt does not clear either queue;
-- steering still drains before the next model request.
+返回值需要保留：
 
-### TypeScript
+- 消息文本；
+- 本地图片路径和 placeholder；
+- `client_turn_id`；
+- 剩余 queue 的完整快照。
 
-- reducer projects steering and follow-up text separately;
-- internal task notifications do not create visible sections;
-- pending steering renders before follow-up input;
-- multiline and long messages obey the three-line preview limit;
-- footer does not repeat queue counts;
-- edit binding restores only the newest follow-up and preserves remaining queue state;
-- local images survive edit restoration;
-- interrupt leaves queue previews intact;
-- all rendered lines remain width-safe.
+通过 gateway 新增 `turn.queue.pop` 请求。
 
-## Acceptance Criteria
+如果没有 follow-up，返回 `item: null`，queue 保持不变。
 
-- Queue previews match the Codex information hierarchy and wording.
-- Actual message content is visible while queued.
-- Steering and follow-up semantics remain distinct.
-- Queue state is rendered once above the composer and not repeated in the footer.
-- `Alt+Up` or `Shift+Left` edits only the newest follow-up.
-- Escape does not clear queued input.
-- Pending steering is prioritized after interruption.
-- Internal task notifications remain hidden from the TUI.
-- Existing model requests, tool execution, shell lifecycle, session persistence, and queue compatibility APIs continue to work.
+原来的 `turn.queue.clear` 保留兼容，但 TUI 不再用它编辑消息。
+
+### 修改中断行为
+
+当前 mycli 中断前会调用 clear queue，这个行为要删除。
+
+新流程是：
+
+1. 用户按 `Esc`。
+2. TUI 直接调用 `turn.interrupt`。
+3. steering 和 follow-up 都保留。
+4. 当前 turn 完成中断。
+5. queue scheduler 先处理 steering，再处理 follow-up。
+
+这样 steering 才能达到 Codex 的效果：中断当前工作，然后尽快把补充消息交给 agent。
+
+## 按键行为
+
+### Enter
+
+当前 turn 正在运行时：
+
+1. 用户按 Enter。
+2. TUI 调用 `turn.steer`。
+3. 后端把消息加入 steering queue。
+4. 消息立即出现在 steering 预览中。
+5. 到达下一个安全边界后，后端把消息交给模型。
+6. 消费完成后，消息从预览中消失。
+
+### Tab
+
+当前 turn 正在运行时：
+
+1. 用户按 Tab。
+2. TUI 调用 `turn.follow_up`。
+3. 消息显示在 `Queued follow-up inputs` 下方。
+4. 当前 turn 结束后，最早加入的 follow-up 启动下一轮。
+
+### Alt+Up / Shift+Left
+
+1. TUI 调用 `turn.queue.pop`。
+2. 后端只取出最新的一条 follow-up。
+3. 这条消息恢复到输入框。
+4. 用户当前正在编辑的草稿保留在后面。
+5. steering 和其他 follow-up 继续留在 queue 中。
+
+### Esc
+
+1. 中断当前 turn。
+2. 不清空 queue。
+3. steering 保持显示。
+4. turn 停止后优先处理 steering。
+5. follow-up 继续等待后续 turn。
+
+## 内部 Task Notification
+
+后台 Bash 或 subagent 完成后，会向 steering queue 写入 `<task-notification>`。
+
+这些消息必须：
+
+- 保留在后端 queue 中；
+- 正常进入主 agent 的下一次模型请求；
+- 不出现在 TUI queue 预览中；
+- 不计入用户可见的 queue 数量；
+- 不触发空白或幽灵 pending 区域。
+
+## 异常情况
+
+- 没有 follow-up 时调用 `turn.queue.pop`，返回空结果，不报错。
+- gateway 请求失败时，不修改本地 queue。
+- 后端响应中包含 queue 快照，TUI 用它修正可能过期的本地状态。
+- 带图片的 follow-up 被取回后，图片 placeholder 和附件信息不能丢失。
+- 窄终端下允许换行和截断，但不能挤乱输入框和 footer。
+
+## 测试范围
+
+### Python 后端
+
+- 只弹出最新 follow-up。
+- 剩余 follow-up 仍保持 FIFO 顺序。
+- steering 和 task notification 不受影响。
+- 图片与 `client_turn_id` 不丢失。
+- 空 queue 可以安全调用。
+- gateway `turn.queue.pop` 返回弹出的 item 和剩余快照。
+- interrupt 不会清空 queue。
+- steering 仍然在下一个模型请求前被消费。
+
+### TypeScript TUI
+
+- steering 和 follow-up 文本分别投影到 TUI。
+- task notification 不显示。
+- steering section 显示在 follow-up section 上面。
+- 长文本和多行文本最多显示 3 个视觉行。
+- footer 不再重复显示 queue 数量。
+- `Alt+Up` 只恢复最新 follow-up。
+- 其他 queue 内容保持不变。
+- 图片附件恢复正常。
+- interrupt 后 queue 预览仍然存在。
+- 所有渲染行不超过终端宽度。
+
+## 验收标准
+
+- queue 展示结构与 Codex 接近。
+- 用户能直接看到每条排队消息的内容。
+- steering 和 follow-up 的执行时机清晰可见。
+- queue 只显示在输入框上方，不在 footer 重复。
+- `Alt+Up` 或 `Shift+Left` 只编辑最新 follow-up。
+- `Esc` 不再清空 queue。
+- 中断完成后 steering 优先执行。
+- 内部 task notification 不出现在 TUI。
+- 现有模型调用、工具执行、Shell 生命周期和 session 持久化不受影响。
