@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import type { Terminal } from "../src/tui-core/terminal.ts";
 import { Editor } from "../src/tui-core/components/editor.ts";
 import { visibleWidth } from "../src/tui-core/tui.ts";
@@ -2387,7 +2388,10 @@ test("mycli shell runtime restores queued messages with alt up", async () => {
 	const runtime = new MycliShellRuntime({
 		initialState: {
 			...sampleState(),
-			footer: { ...sampleState().footer, steeringQueueCount: 1, followUpQueueCount: 1 },
+			pendingInput: {
+				steering: [{ text: "keep steering", hasImages: false }],
+				followUps: [{ text: "older follow-up", hasImages: false }],
+			},
 		},
 		terminal,
 		onDequeueQueuedInput: () => "queued follow-up",
@@ -2400,6 +2404,10 @@ test("mycli shell runtime restores queued messages with alt up", async () => {
 	await setTimeout(25);
 
 	assert.equal(runtime.editor.getText(), "queued follow-up\n\ndraft");
+	const output = stripAnsi(runtime.pendingMessagesContainer.render(100).join("\n"));
+	assert.match(output, /↳ keep steering/);
+	assert.match(output, /↳ older follow-up/);
+	assert.doesNotMatch(output, /↳ queued follow-up/);
 });
 
 test("mycli shell runtime restores queued messages with shift left", async () => {
@@ -2407,7 +2415,10 @@ test("mycli shell runtime restores queued messages with shift left", async () =>
 	const runtime = new MycliShellRuntime({
 		initialState: {
 			...sampleState(),
-			footer: { ...sampleState().footer, steeringQueueCount: 1, followUpQueueCount: 1 },
+			pendingInput: {
+				steering: [{ text: "keep steering", hasImages: false }],
+				followUps: [{ text: "older follow-up", hasImages: false }],
+			},
 		},
 		terminal,
 		onDequeueQueuedInput: () => "queued follow-up",
@@ -2420,6 +2431,9 @@ test("mycli shell runtime restores queued messages with shift left", async () =>
 	await setTimeout(25);
 
 	assert.equal(runtime.editor.getText(), "queued follow-up\n\ndraft");
+	const output = stripAnsi(runtime.pendingMessagesContainer.render(100).join("\n"));
+	assert.match(output, /↳ keep steering/);
+	assert.match(output, /↳ older follow-up/);
 });
 
 test("mycli shell runtime restores queued image attachments with alt up", async () => {
@@ -2428,7 +2442,10 @@ test("mycli shell runtime restores queued image attachments with alt up", async 
 	const runtime = new MycliShellRuntime({
 		initialState: {
 			...sampleState(),
-			footer: { ...sampleState().footer, steeringQueueCount: 1 },
+			pendingInput: {
+				steering: [{ text: "keep steering", hasImages: false }],
+				followUps: [{ text: "older image follow-up", hasImages: true }],
+			},
 		},
 		terminal,
 		onDequeueQueuedInput: () => ({
@@ -2451,6 +2468,7 @@ test("mycli shell runtime restores queued image attachments with alt up", async 
 
 	assert.deepEqual(submitted, [{ text: "[image #1] queued image", images: ["/tmp/queued.png"] }]);
 	assert.equal(runtime.editor.getText(), "");
+	assert.match(stripAnsi(runtime.pendingMessagesContainer.render(100).join("\n")), /↳ older image follow-up/);
 });
 
 test("mycli shell runtime interrupts running turns with ctrl c and restores submitted input", async () => {
@@ -2515,6 +2533,10 @@ test("mycli shell runtime interrupts running turns with escape", async () => {
 		initialState: {
 			...sampleState(),
 			footer: { ...sampleState().footer, liveState: "Running" },
+			pendingInput: {
+				steering: [{ text: "keep steering", hasImages: false }],
+				followUps: [{ text: "keep follow-up", hasImages: false }],
+			},
 		},
 		terminal,
 		onInterrupt: () => {
@@ -2528,7 +2550,10 @@ test("mycli shell runtime interrupts running turns with escape", async () => {
 	await setTimeout(25);
 
 	assert.equal(interrupted, 1);
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupted/);
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Interrupted/);
+	assert.match(output, /↳ keep steering/);
+	assert.match(output, /↳ keep follow-up/);
 });
 
 test("mycli shell runtime clears editor then exits on repeated ctrl c while idle", async () => {
@@ -3014,4 +3039,13 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 	);
 	assert.equal(result.status, 1, result.stdout + result.stderr);
 	assert.equal(result.stdout, "");
+});
+
+test("gateway uses pop-last editing and interrupt does not clear queues", () => {
+	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
+	const interruptBody = source.match(/async function interruptTurn\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+	assert.match(source, /send\("turn\.queue\.pop"/);
+	assert.doesNotMatch(source, /send\("turn\.queue\.clear"/);
+	assert.doesNotMatch(interruptBody, /dequeueQueuedInput|popLastQueuedFollowUp|clearQueuedTurns/);
 });

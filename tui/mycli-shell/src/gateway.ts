@@ -310,14 +310,6 @@ function nextQueuedTurn(): QueuedTurnInput | null {
 	return null;
 }
 
-function clearQueuedTurns(): QueuedTurnInput[] {
-	const allQueued = queuedTurns().filter((input) => !isInternalTaskNotification(input.message));
-	queuedSteeringTurns.length = 0;
-	queuedFollowUpTurns.length = 0;
-	syncQueuedInputs();
-	return allQueued;
-}
-
 function syncQueuedInputs(): void {
 	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queuePreviews(queuedSteeringTurns), followUp: queuePreviews(queuedFollowUpTurns) }));
 }
@@ -330,25 +322,19 @@ function syncQueuedInputsFromResult(result: Record<string, unknown>): void {
 	syncQueuedInputs();
 }
 
-async function dequeueQueuedInput(): Promise<MycliShellQueuedInput | null> {
+async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 	try {
-		const result = await send("turn.queue.clear", {}, { recordErrors: false });
-		const restored = [
-			...queuedItemsValue(result.steering_items, "steer", result.steering),
-			...queuedItemsValue(result.follow_up_items, "followUp", result.follow_up),
-		];
-		const visibleRestored = restored.filter((input) => !isInternalTaskNotification(input.message));
-		queuedSteeringTurns.length = 0;
-		queuedFollowUpTurns.length = 0;
-		syncQueuedInputs();
-		if (visibleRestored.length > 0) {
-			return combineQueuedInputs(visibleRestored);
-		}
+		const result = await send("turn.queue.pop", {}, { recordErrors: false });
+		syncQueuedInputsFromResult(result);
+		const popped = queuedItemsValue(
+			result.item === null || result.item === undefined ? [] : [result.item],
+			"followUp",
+			[],
+		)[0];
+		return popped ? combineQueuedInputs([popped]) : null;
 	} catch {
-		// Fall back to local queue below.
+		return null;
 	}
-	const allQueued = clearQueuedTurns();
-	return allQueued.length > 0 ? combineQueuedInputs(allQueued) : null;
 }
 
 function scheduleQueuedTurnDrain(): void {
@@ -390,10 +376,6 @@ function canDrainQueuedTurns(): boolean {
 }
 
 async function interruptTurn(): Promise<void> {
-	const restored = await dequeueQueuedInput();
-	if (restored) {
-		runtime?.restoreQueuedText(restored);
-	}
 	await send("turn.interrupt", {});
 }
 
@@ -635,7 +617,7 @@ async function main(): Promise<void> {
 		onSubmit: submitTurn,
 		onFollowUp: submitFollowUp,
 		onInterrupt: interruptTurn,
-		onDequeueQueuedInput: dequeueQueuedInput,
+		onDequeueQueuedInput: popLastQueuedFollowUp,
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
 		onApprovalRespond: respondApproval,

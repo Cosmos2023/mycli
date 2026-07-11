@@ -34,7 +34,7 @@ const APP_KEYBINDINGS = {
 	"app.mode.cycle": { defaultKeys: "shift+tab", description: "Cycle mode" },
 	"app.sandbox.cycle": { defaultKeys: "ctrl+x", description: "Cycle sandbox" },
 	"app.message.followUp": { defaultKeys: "tab", description: "Queue follow-up" },
-	"app.message.dequeue": { defaultKeys: ["alt+up", "shift+left"], description: "Restore queued message" },
+	"app.message.dequeue": { defaultKeys: ["alt+up", "shift+left"], description: "Edit last queued follow-up" },
 	"app.clipboard.pasteImage": { defaultKeys: "ctrl+v", description: "Paste image" },
 } as const satisfies KeybindingDefinitions;
 

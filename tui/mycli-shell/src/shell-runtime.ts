@@ -1125,7 +1125,7 @@ export class MycliShellRuntime {
 		this.footerContainer.clear();
 		this.footerContainer.addChild(new Spacer(1));
 		const sendHint = this.isTurnRunning() ? rawKeyHint("enter", "steer") : rawKeyHint("enter", "send");
-		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("tab", "follow-up")}  ${rawKeyHint("ctrl+c", "interrupt")}  ${rawKeyHint("alt+up", "dequeue")}`, 1, 0));
+		this.footerContainer.addChild(new Text(`${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${sendHint}  ${rawKeyHint("tab", "follow-up")}  ${rawKeyHint("ctrl+c", "interrupt")}  ${rawKeyHint("alt+up", "edit follow-up")}`, 1, 0));
 		this.footerContainer.addChild(new FooterComponent(this.state.footer));
 	}
 
@@ -1611,7 +1611,7 @@ export class MycliShellRuntime {
 				"ctrl+p commands · ? help",
 				"enter send/steer · esc interrupt",
 				"ctrl+l model · ctrl+o tools · ctrl+x sandbox",
-				"ctrl+c clear/exit · tab follow-up · alt+up/shift+left dequeue",
+				"ctrl+c clear/exit · tab follow-up · alt+up/shift+left edit follow-up",
 			].join("\n"),
 		);
 	}

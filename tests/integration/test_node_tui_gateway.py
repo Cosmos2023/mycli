@@ -1719,3 +1719,45 @@ def test_run_node_tui_gateway_scripted_resume_tip_then_clarification_response(
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
     assert [item["text"] for item in assistant_items] == ["clarification resumed on branch"]
+
+
+def test_gateway_queue_pop_and_interrupt_preserve_pending_steering(
+    tmp_path: Path,
+) -> None:
+    class NoModelRequestsAdapter:
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            raise AssertionError("queue management must not request the model")
+
+    config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="gateway-queue-pop",
+    )
+    runtime = AgentRuntime(
+        model_adapter=NoModelRequestsAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    service = TurnService(
+        runtime=runtime,
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    runtime.queue_steering_message("keep steering")
+    runtime.queue_follow_up_message("first")
+    runtime.queue_follow_up_message("second")
+    gateway = NodeTuiGateway(service=service)
+
+    popped = gateway.handle_request(
+        RpcRequest(id="pop", method="turn.queue.pop", params={})
+    )
+    interrupted = gateway.handle_request(
+        RpcRequest(id="interrupt", method="turn.interrupt", params={})
+    )
+
+    assert popped.result is not None
+    assert popped.result["item"]["message"] == "second"
+    assert runtime.queued_messages() == (("keep steering",), ("first",))
+    assert interrupted.result == {"interrupted": False}
+    assert runtime.queued_messages() == (("keep steering",), ("first",))
