@@ -41,7 +41,18 @@ export type MycliShellBash = {
 	id: string;
 	command: string;
 	status: MycliShellToolStatus;
+	shellId?: string;
+	callId?: string;
+	background?: boolean;
+	processState?: string;
+	terminalState?: string;
 	exitCode?: number;
+	sequence?: number;
+	startedAt?: string;
+	completedAt?: string;
+	outputChars?: number;
+	omittedOutputChars?: number;
+	cleanupResult?: string;
 	outputPreview?: string;
 	hiddenLineCount?: number;
 	expanded?: boolean;
@@ -130,6 +141,7 @@ export type MycliShellFooterData = {
 	trust?: string;
 	collaborationMode?: "default" | "plan";
 	liveState?: string;
+	backgroundShellCount?: number;
 	extensionStatuses?: string[];
 };
 

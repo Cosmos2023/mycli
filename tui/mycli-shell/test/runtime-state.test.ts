@@ -1135,3 +1135,169 @@ test("runtime adapter hides low-value successful tools outside verbose mode", ()
 	assert.equal(compact.tools.find((tool) => tool.id === "grep-failed")?.hidden, false);
 	assert.equal(verbose.tools.find((tool) => tool.id === "read")?.hidden, false);
 });
+
+test("shell lifecycle keeps background Bash running until terminal event", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "shell.started", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 1,
+		command_preview: "uv run dev",
+		background: true,
+		process_state: "running_background",
+		output_delta: "",
+	});
+	state = reduceRuntimeEvent(state, "shell.output", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 2,
+		background: true,
+		process_state: "running_background",
+		output_delta: "ready\n",
+		next_cursor: 6,
+		output_chars: 6,
+	});
+
+	let shell = projectRuntimeState(state);
+	assert.equal(shell.bash[0]?.status, "running");
+	assert.equal(shell.bash[0]?.outputPreview, "ready\n");
+	assert.equal(shell.footer.backgroundShellCount, 1);
+
+	state = reduceRuntimeEvent(state, "shell.completed", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 3,
+		background: true,
+		process_state: "completed",
+		terminal_state: "completed",
+		exit_code: 0,
+	});
+	shell = projectRuntimeState(state);
+	assert.equal(shell.bash[0]?.status, "success");
+	assert.equal(shell.bash[0]?.terminalState, "completed");
+	assert.equal(shell.footer.backgroundShellCount, 0);
+});
+
+test("background Bash tool completion cannot settle a live process", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "tool-1",
+		call_id: "call-1",
+		name: "Bash",
+		args_preview: "uv run dev",
+	});
+	state = reduceRuntimeEvent(state, "shell.started", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 1,
+		command_preview: "uv run dev",
+		background: true,
+		process_state: "running_background",
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		tool_id: "tool-1",
+		call_id: "call-1",
+		name: "Bash",
+		success: true,
+		raw_payload: { shell_id: "shell-1", status: "running" },
+	});
+
+	assert.equal(projectRuntimeState(state).bash[0]?.status, "running");
+});
+
+test("terminal shell state rejects later running events", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "shell.completed", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 5,
+		background: true,
+		process_state: "failed",
+		terminal_state: "failed",
+		exit_code: 2,
+	});
+	state = reduceRuntimeEvent(state, "shell.output", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 6,
+		background: true,
+		process_state: "running_background",
+		output_delta: "late output",
+	});
+
+	const bash = projectRuntimeState(state).bash[0];
+	assert.equal(bash?.status, "error");
+	assert.equal(bash?.terminalState, "failed");
+	assert.doesNotMatch(bash?.outputPreview ?? "", /late output/);
+});
+
+test("shell list and removal events preserve terminal transcript history", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "shell.completed", {
+		shell_id: "shell-1",
+		call_id: "call-1",
+		sequence: 1,
+		command_preview: "uv run test",
+		background: true,
+		process_state: "completed",
+		terminal_state: "completed",
+		exit_code: 0,
+	});
+	state = reduceRuntimeEvent(state, "shell.list.updated", {
+		shell_id: "shell-1",
+		sequence: 2,
+		active_background_count: 3,
+	});
+	assert.equal(projectRuntimeState(state).footer.backgroundShellCount, 3);
+
+	state = reduceRuntimeEvent(state, "shell.removed", {
+		shell_id: "shell-1",
+		sequence: 3,
+	});
+	assert.equal(state.backgroundShells["shell-1"], undefined);
+	assert.equal(projectRuntimeState(state).bash[0]?.status, "success");
+});
+
+test("background shell bootstrap restores running state without reviving terminal cells", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromBootstrap(state, {
+		session_id: "demo",
+		workspace: "/repo",
+		status: {},
+		background_shells: [
+			{
+				shell_id: "shell-1",
+				call_id: "call-1",
+				command_preview: "uv run dev",
+				background: true,
+				status: "running",
+				process_state: "running_background",
+				output: "ready\n",
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.bash[0]?.status, "running");
+	assert.equal(shell.bash[0]?.command, "uv run dev");
+	assert.equal(state.backgroundShells["shell-1"]?.outputPreview, "ready\n");
+	assert.equal(shell.footer.backgroundShellCount, 1);
+});
+
+test("shell output preview stays bounded with an omission marker", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "shell.output", {
+		shell_id: "shell-1",
+		sequence: 1,
+		command_preview: "generate output",
+		background: true,
+		process_state: "running_background",
+		output_delta: "x".repeat(12_000),
+		output_chars: 12_000,
+		omitted_output_chars: 2_000,
+	});
+
+	const preview = projectRuntimeState(state).bash[0]?.outputPreview ?? "";
+	assert.ok(preview.length <= 10_000);
+	assert.match(preview, /chars omitted/);
+});
