@@ -49,7 +49,6 @@ export class FooterComponent implements Component {
 			this.data.cacheHitRate !== undefined ? `CH${this.data.cacheHitRate.toFixed(1)}%` : undefined,
 			this.costText(),
 			this.contextText(),
-			this.queueText(),
 			this.data.trust ? `trust ${this.data.trust}` : undefined,
 			this.data.collaborationMode ? `mode ${this.data.collaborationMode}` : undefined,
 			this.backgroundShellText(),
@@ -94,15 +93,6 @@ export class FooterComponent implements Component {
 			lines.push(truncateToWidth(theme.fg("dim", sanitizeStatusText(status)), width, theme.fg("dim", "...")));
 		}
 		return lines;
-	}
-
-	private queueText(): string | undefined {
-		const steering = this.data.steeringQueueCount ?? 0;
-		const followUp = this.data.followUpQueueCount ?? 0;
-		if (steering > 0 || followUp > 0) {
-			return [`steer ${steering}`, `follow-up ${followUp}`].filter((part) => !part.endsWith(" 0")).join(" ");
-		}
-		return this.data.queueCount ? `queue ${this.data.queueCount}` : undefined;
 	}
 
 	private backgroundShellText(): string | undefined {

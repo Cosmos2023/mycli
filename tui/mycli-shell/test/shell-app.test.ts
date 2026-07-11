@@ -6,7 +6,7 @@ import type { Terminal } from "../src/tui-core/terminal.ts";
 import { Editor } from "../src/tui-core/components/editor.ts";
 import { visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
-import { BashExecutionComponent, FooterComponent, MycliShellRuntime, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
+import { BashExecutionComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
 
 function stripAnsi(text: string): string {
@@ -800,8 +800,60 @@ test("footer keeps compact shape width safe", () => {
 	assert.match(stripAnsi(lines.join("\n")), /~\/Desktop\/mycli/);
 	assert.match(stripAnsi(lines.join("\n")), /91\.2%\/128k/);
 	assert.match(stripAnsi(lines.join("\n")), /status with control chars/);
+	assert.doesNotMatch(stripAnsi(lines.join("\n")), /steer 1|follow-up 1/);
 	for (const line of lines) {
 		assert.ok(visibleWidth(line) <= 64, `line too wide: ${stripAnsi(line)}`);
+	}
+});
+
+test("footer omits queue counts at wide widths", () => {
+	const output = stripAnsi(new FooterComponent({
+		cwd: "/repo",
+		steeringQueueCount: 2,
+		followUpQueueCount: 3,
+		queueCount: 5,
+	}).render(160).join("\n"));
+
+	assert.doesNotMatch(output, /steer 2|follow-up 3|queue 5/);
+});
+
+test("pending input preview renders steering before follow-ups", () => {
+	const rendered = new PendingInputPreviewComponent({
+		steering: [{ text: "inspect current output", hasImages: false }],
+		followUps: [{ text: "summarize afterward", hasImages: true }],
+	});
+	const output = stripAnsi(rendered.render(80).join("\n"));
+
+	assert.match(output, /• Messages to be submitted after next tool call/);
+	assert.match(output, /press esc to interrupt and send immediately/);
+	assert.match(output, /↳ inspect current output/);
+	assert.match(output, /• Queued follow-up inputs/);
+	assert.match(output, /↳ summarize afterward/);
+	assert.match(output, /(?:alt|option)\+up edit last queued message/);
+	assert.ok(output.indexOf("Messages to be submitted") < output.indexOf("Queued follow-up inputs"));
+});
+
+test("pending input preview bounds multiline CJK messages at narrow widths", () => {
+	const rendered = new PendingInputPreviewComponent({
+		steering: [],
+		followUps: [
+			{
+				text: "第一行中文内容需要自动换行\nsecond line with emoji ✓ and more words\nthird line\nfourth line",
+				hasImages: false,
+			},
+		],
+	});
+	const lines = rendered.render(48);
+	const plainLines = lines.map(stripAnsi);
+	const headerIndex = plainLines.findIndex((line) => line.includes("Queued follow-up inputs"));
+	const hintIndex = plainLines.findIndex((line) => line.includes("edit last queued message"));
+	const messageLines = plainLines.slice(headerIndex + 1, hintIndex);
+
+	assert.equal(messageLines.length, 3);
+	assert.match(messageLines.join("\n"), /↳/);
+	assert.match(messageLines.join("\n"), /…/);
+	for (const line of lines) {
+		assert.ok(visibleWidth(line) <= 48, `line too wide: ${stripAnsi(line)}`);
 	}
 });
 
@@ -1233,17 +1285,14 @@ test("mycli shell runtime updates assistant transcript components in place", () 
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /hello/);
 });
 
-test("mycli shell runtime renders pending queued input as one status row", () => {
+test("mycli shell runtime renders pending queued input previews", () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
 		initialState: {
 			...sampleState(),
-			footer: {
-				...sampleState().footer,
-				steeringQueueCount: 1,
-				followUpQueueCount: 2,
-				hasPendingInput: true,
-				queueActivity: "pending_input",
+			pendingInput: {
+				steering: [{ text: "inspect current output", hasImages: false }],
+				followUps: [{ text: "summarize afterward", hasImages: false }],
 			},
 		},
 		terminal,
@@ -1251,8 +1300,11 @@ test("mycli shell runtime renders pending queued input as one status row", () =>
 
 	const output = stripAnsi(runtime.pendingMessagesContainer.render(100).join("\n"));
 
-	assert.match(output, /Pending input: steer 1 · follow-up 2/);
-	assert.match(output, /alt\+up \/ shift\+left to edit all queued messages/);
+	assert.match(output, /Messages to be submitted after next tool call/);
+	assert.match(output, /↳ inspect current output/);
+	assert.match(output, /Queued follow-up inputs/);
+	assert.match(output, /↳ summarize afterward/);
+	assert.doesNotMatch(output, /Pending input: steer/);
 });
 
 test("mycli shell runtime does not rebuild stable chrome during assistant streaming", () => {

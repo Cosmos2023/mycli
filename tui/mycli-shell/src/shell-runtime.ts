@@ -33,6 +33,7 @@ import { rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginFlowComponent } from "./components/login-flow.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import { PlanPanelComponent } from "./components/plan-panel.ts";
+import { PendingInputPreviewComponent } from "./components/pending-input-preview.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { ResourceSelectorComponent } from "./components/resource-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
@@ -1037,13 +1038,10 @@ export class MycliShellRuntime {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			this.pendingMessagesContainer.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
 		}
-		const steering = this.state.footer.steeringQueueCount ?? 0;
-		const followUp = this.state.footer.followUpQueueCount ?? 0;
-		if (steering > 0 || followUp > 0) {
+		const pendingInput = this.state.pendingInput;
+		if (pendingInput && (pendingInput.steering.length > 0 || pendingInput.followUps.length > 0)) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
-			const counts = [`steer ${steering}`, `follow-up ${followUp}`].filter((part) => !part.endsWith(" 0"));
-			this.pendingMessagesContainer.addChild(new Text(theme.fg("accent", `Pending input: ${counts.join(" · ")}`), 1, 0));
-			this.pendingMessagesContainer.addChild(new Text(theme.fg("dim", "↳ alt+up / shift+left to edit all queued messages"), 1, 0));
+			this.pendingMessagesContainer.addChild(new PendingInputPreviewComponent(pendingInput));
 		}
 		if (this.state.activePlan?.length) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
