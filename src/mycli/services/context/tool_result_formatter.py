@@ -6,6 +6,9 @@ from mycli.domain.tooling.calls import ToolEvidence
 from mycli.tools.base import ToolResult
 
 
+SHELL_RESULT_TOOLS = frozenset({"run_shell", "Bash", "BashOutput"})
+
+
 class ToolResultFormatter:
     def __init__(
         self,
@@ -38,13 +41,13 @@ class ToolResultFormatter:
             return self._read_file_max
         if tool_name == "read_file_range":
             return self._read_file_range_max
-        if tool_name in {"run_shell", "Bash"}:
+        if tool_name in SHELL_RESULT_TOOLS:
             return self._run_shell_max
         return self._default_max
 
     def _render(self, tool_name: str, result: ToolResult) -> str:
         if not result.success:
-            if tool_name in {"run_shell", "Bash"}:
+            if tool_name in SHELL_RESULT_TOOLS:
                 rendered = self._render_shell_result(result)
                 if rendered is not None:
                     return rendered
@@ -133,7 +136,7 @@ class ToolResultFormatter:
             rendered = self._render_directory_result(result)
             if rendered is not None:
                 return rendered
-        if tool_name in {"run_shell", "Bash"}:
+        if tool_name in SHELL_RESULT_TOOLS:
             rendered = self._render_shell_result(result)
             if rendered is not None:
                 return rendered
@@ -429,6 +432,15 @@ class ToolResultFormatter:
     def _render_shell_metadata(self, result: ToolResult) -> list[str]:
         payload = result.raw_payload
         parts: list[str] = []
+        shell_id = payload.get("shell_id") or payload.get("bash_id")
+        if isinstance(shell_id, str) and shell_id:
+            parts.append(f"Shell ID: {shell_id}")
+        status = payload.get("status")
+        if isinstance(status, str) and status:
+            parts.append(f"Status: {status}")
+        process_state = payload.get("process_state")
+        if isinstance(process_state, str) and process_state:
+            parts.append(f"Process state: {process_state}")
         exit_code = payload.get("exit_code")
         if isinstance(exit_code, int):
             parts.append(f"Exit code: {exit_code}")

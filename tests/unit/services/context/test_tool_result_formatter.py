@@ -64,6 +64,29 @@ def test_run_shell_failure_shows_diagnostics_and_tail() -> None:
     assert "bad" in output
 
 
+def test_bash_output_renders_incremental_output_and_status() -> None:
+    formatter = ToolResultFormatter(run_shell_max_chars=1200)
+    result = ToolResult(
+        success=True,
+        summary="Read shell shell_123 output",
+        raw_payload={
+            "shell_id": "shell_123",
+            "status": "running",
+            "process_state": "running_background",
+            "output": "ready\nprogress 50%\n",
+            "new_output_chars": 19,
+        },
+    )
+
+    output = formatter.format("BashOutput", result)
+
+    assert "Shell ID: shell_123" in output
+    assert "Status: running" in output
+    assert "Process state: running_background" in output
+    assert "ready" in output
+    assert "progress 50%" in output
+
+
 def test_search_text_includes_total_count_and_termination() -> None:
     formatter = ToolResultFormatter()
     result = ToolResult(
