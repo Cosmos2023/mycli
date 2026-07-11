@@ -128,6 +128,10 @@ from mycli.domain.runtime.session_history import (
     TurnRollout as TurnRollout,
     TurnRolloutEvent as TurnRolloutEvent,
 )
+from mycli.domain.runtime.shell_lifecycle import (
+    ShellLifecycleEvent as ShellLifecycleEvent,
+    ShellLifecycleKind as ShellLifecycleKind,
+)
 from mycli.domain.runtime.turn_state import SuspendedTurn as SuspendedTurn
 from mycli.domain.runtime.tracing import RuntimeTraceEvent as RuntimeTraceEvent
 from mycli.domain.tooling.exposure import (
@@ -395,6 +399,8 @@ __all__ = [
     "ShellEnvironmentInheritMode",
     "ShellEnvironmentPolicy",
     "ShellExecutionOptions",
+    "ShellLifecycleEvent",
+    "ShellLifecycleKind",
     "SessionRuntimeSnapshot",
     "StopReason",
     "SuspendedTurn",

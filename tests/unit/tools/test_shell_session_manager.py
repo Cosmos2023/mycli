@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from mycli.domain.runtime import ShellLifecycleEvent
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_session_manager import ShellSessionManager, ShellStartRequest
 
@@ -57,6 +58,31 @@ def _wait_for_output(
         time.sleep(0.01)
         snapshot = manager.poll(owner, shell_id, cursor=0)
     return snapshot
+
+
+def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
+    event = ShellLifecycleEvent(
+        kind="shell.started",
+        shell_id="shell-1",
+        owner_session_id="session-a",
+        call_id="call-1",
+        sequence=1,
+        command_preview="python3 -m http.server",
+        background=True,
+        process_state="running_background",
+        output_delta="",
+        next_cursor=0,
+        output_chars=0,
+        omitted_output_chars=0,
+    )
+
+    payload = event.to_tui_payload()
+
+    assert payload["shell_id"] == "shell-1"
+    assert payload["call_id"] == "call-1"
+    assert payload["sequence"] == 1
+    assert payload["command_preview"] == "python3 -m http.server"
+    assert "owner_session_id" not in payload
 
 
 def test_background_timeout_completes_without_polling(tmp_path: Path) -> None:

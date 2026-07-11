@@ -862,6 +862,8 @@ class ToolExecutionService:
             arguments["_runtime_shell_options"] = self._policy_gate.shell_execution_options()
         if interrupt_token is not None:
             arguments["_runtime_interrupt_token"] = interrupt_token
+        if call.call_id:
+            arguments["_runtime_tool_call_id"] = call.call_id
         return ToolCall(
             name=call.name,
             arguments=arguments,

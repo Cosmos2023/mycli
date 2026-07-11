@@ -13,7 +13,7 @@ import time
 from typing import Callable
 from uuid import uuid4
 
-from mycli.domain.runtime import RuntimeInterruptToken
+from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_output_buffer import ShellOutputBuffer
 
@@ -29,6 +29,8 @@ class ShellStartRequest:
     command_pattern: str | None = None
     output_file: Path | None = None
     notification_sink: Callable[[TaskNotification], None] | None = None
+    call_id: str | None = None
+    lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None
     interrupt_token: RuntimeInterruptToken | None = None
 
 

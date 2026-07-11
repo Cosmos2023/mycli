@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from mycli.domain.runtime import RuntimeInterruptToken
+from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent
 from mycli.domain.runtime.background_jobs import BackgroundJobState, BackgroundJobSummary
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_session_manager import (
@@ -37,6 +37,8 @@ class ShellProcessRegistry:
         command_pattern: str | None = None,
         output_file: Path | None = None,
         notification_sink: Callable[[TaskNotification], None] | None = None,
+        call_id: str | None = None,
+        lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> dict[str, object]:
         snapshot = self._manager.start(
@@ -50,6 +52,8 @@ class ShellProcessRegistry:
                 command_pattern=command_pattern,
                 output_file=output_file,
                 notification_sink=notification_sink,
+                call_id=call_id,
+                lifecycle_sink=lifecycle_sink,
                 interrupt_token=interrupt_token,
             )
         )
@@ -66,6 +70,8 @@ class ShellProcessRegistry:
         command_pattern: str | None = None,
         output_file: Path | None = None,
         notification_sink: Callable[[TaskNotification], None] | None = None,
+        call_id: str | None = None,
+        lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
     ) -> ShellSessionSnapshot:
         return self._manager.start(
             ShellStartRequest(
@@ -78,6 +84,8 @@ class ShellProcessRegistry:
                 command_pattern=command_pattern,
                 output_file=output_file,
                 notification_sink=notification_sink,
+                call_id=call_id,
+                lifecycle_sink=lifecycle_sink,
             )
         )
 

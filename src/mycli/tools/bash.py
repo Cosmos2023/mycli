@@ -6,7 +6,11 @@ import shlex
 import time
 from typing import Any, Callable
 
-from mycli.domain.runtime import RuntimeInterruptToken, ShellExecutionOptions
+from mycli.domain.runtime import (
+    RuntimeInterruptToken,
+    ShellExecutionOptions,
+    ShellLifecycleEvent,
+)
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
@@ -64,6 +68,8 @@ class ShellCommandRuntime:
         command_pattern: str | None = None,
         output_file: Path | None = None,
         notification_sink: Callable[[TaskNotification], None] | None = None,
+        call_id: str | None = None,
+        lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> dict[str, Any]:
         effective_cwd = workdir or os.getcwd()
@@ -78,6 +84,8 @@ class ShellCommandRuntime:
             command_pattern=command_pattern,
             output_file=output_file,
             notification_sink=notification_sink,
+            call_id=call_id,
+            lifecycle_sink=lifecycle_sink,
             interrupt_token=interrupt_token,
         )
         payload["cwd"] = effective_cwd
@@ -120,6 +128,8 @@ def execute_bash(
     command_pattern: str | None = None,
     output_file: Path | None = None,
     notification_sink: Callable[[TaskNotification], None] | None = None,
+    call_id: str | None = None,
+    lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
     interrupt_token: RuntimeInterruptToken | None = None,
 ) -> dict[str, Any]:
     runtime = (
@@ -136,6 +146,8 @@ def execute_bash(
         command_pattern=command_pattern,
         output_file=output_file,
         notification_sink=notification_sink,
+        call_id=call_id,
+        lifecycle_sink=lifecycle_sink,
         interrupt_token=interrupt_token,
     )
 
@@ -176,6 +188,7 @@ class BashTool:
         self._owner_session_id = LEGACY_SHELL_OWNER
         self._background_output_dir: Path | None = None
         self._notification_sink: Callable[[TaskNotification], None] | None = None
+        self._lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None
 
     def configure_background_tasks(
         self,
@@ -185,6 +198,12 @@ class BashTool:
     ) -> None:
         self._background_output_dir = output_dir
         self._notification_sink = notification_sink
+
+    def configure_shell_lifecycle(
+        self,
+        lifecycle_sink: Callable[[ShellLifecycleEvent], None],
+    ) -> None:
+        self._lifecycle_sink = lifecycle_sink
 
     def configure_shell_session(self, session_id: str) -> None:
         self._owner_session_id = session_id
@@ -263,6 +282,10 @@ class BashTool:
                 notification_sink=(
                     self._notification_sink if background_output_file is not None else None
                 ),
+                call_id=arguments.get("_runtime_tool_call_id")
+                if isinstance(arguments.get("_runtime_tool_call_id"), str)
+                else None,
+                lifecycle_sink=self._lifecycle_sink,
                 interrupt_token=arguments.get("_runtime_interrupt_token")
                 if isinstance(
                     arguments.get("_runtime_interrupt_token"),

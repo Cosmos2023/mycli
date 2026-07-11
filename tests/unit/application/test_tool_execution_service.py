@@ -74,6 +74,25 @@ class FakeTool:
         )
 
 
+class FakeBashTool:
+    spec = ToolSpec(
+        name="Bash",
+        description="Capture Bash runtime arguments",
+        parameters=(ToolParameter("command", "string"),),
+    )
+
+    def __init__(self) -> None:
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        return ToolResult(
+            success=True,
+            summary="captured",
+            raw_payload={"exit_code": 0},
+        )
+
+
 class FakeEditTool:
     spec = ToolSpec(
         name="edit_file",
@@ -386,6 +405,43 @@ def _set_default_sandbox(
             shell=shell,  # type: ignore[arg-type]
         )
     )
+
+
+def test_shell_call_receives_internal_runtime_call_id(tmp_path: Path) -> None:
+    tool = FakeBashTool()
+    service, _ = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("Bash"),
+                source=ToolRouteSource.REGISTRY,
+                spec=tool.spec,
+            ),
+        )
+    )
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Bash",
+            arguments={"command": "printf ok"},
+            reason="capture runtime call id",
+            call_id="call-shell",
+        ),
+        tool_router=router,
+        tool_exposure=exposure,
+        plan_state=PlanState(),
+        turn_id="turn-1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert tool.seen_arguments[0]["_runtime_tool_call_id"] == "call-shell"
 
 
 def test_tool_execution_service_workspace_write_outside_workspace_requires_approval(
