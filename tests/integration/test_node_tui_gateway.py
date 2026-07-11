@@ -5,13 +5,15 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event, Lock
+import time
 from types import SimpleNamespace
 from typing import cast
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.process import NodeTuiProcess
-from mycli.cli.node_tui.gateway import run_node_tui_gateway
+from mycli.cli.node_tui.gateway import NodeTuiGateway, run_node_tui_gateway
+from mycli.cli.node_tui.protocol import RpcRequest
 from mycli.domain.runtime import (
     AgentConfig,
     CollaborationMode,
@@ -32,6 +34,8 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.bash import BashTool
+from mycli.tools.shell_registry import SHELL_REGISTRY
 from mycli.tools.write import WriteTool
 
 
@@ -127,6 +131,117 @@ class FakeService:
 
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]:
         return (f"resumed {session_id}",)
+
+
+def test_gateway_stops_only_owned_background_shells_without_model_requests(
+    tmp_path: Path,
+) -> None:
+    class NoModelRequestsAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            self.calls += 1
+            raise AssertionError("shell lifecycle must not request the model")
+
+    adapter = NoModelRequestsAdapter()
+    bash = BashTool(tmp_path)
+    config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="gateway-shell-owner",
+    )
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools([bash]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    service = TurnService(
+        runtime=runtime,
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+    first = bash.execute({"command": "sleep 30", "run_in_background": True})
+    second = bash.execute({"command": "sleep 30", "run_in_background": True})
+    foreign = SHELL_REGISTRY.execute(
+        "sleep 30",
+        owner_session_id="gateway-shell-foreign",
+        workdir=str(tmp_path),
+        background=True,
+    )
+    first_id = str(first.raw_payload["shell_id"])
+    second_id = str(second.raw_payload["shell_id"])
+    foreign_id = str(foreign["shell_id"])
+
+    try:
+        active_rows = gateway._status_payload()["background_shells"]
+        assert isinstance(active_rows, list)
+        assert len(active_rows) == 2
+
+        ps_response = gateway.handle_request(
+            RpcRequest(
+                id="req-ps-real",
+                method="command.run",
+                params={"command": "/ps"},
+            )
+        )
+        assert ps_response.result is not None
+        assert ps_response.result["command_kind"] == "background_shells"
+        assert {
+            row["shell_id"] for row in ps_response.result["processes"]
+        } == {first_id, second_id}
+
+        stop_response = gateway.handle_request(
+            RpcRequest(
+                id="req-stop-real",
+                method="command.run",
+                params={"command": "/stop"},
+            )
+        )
+        assert stop_response.result is not None
+        assert stop_response.result["command_kind"] == "shell_stop"
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            terminal_ids = [
+                payload["shell_id"]
+                for method, payload in events
+                if method == "shell.completed"
+            ]
+            steering, _ = runtime.queued_messages()
+            if len(terminal_ids) >= 2 and len(steering) >= 2:
+                break
+            time.sleep(0.01)
+
+        assert first_id not in SHELL_REGISTRY.processes()
+        assert second_id not in SHELL_REGISTRY.processes()
+        assert foreign_id in SHELL_REGISTRY.processes()
+        terminal_ids = [
+            payload["shell_id"]
+            for method, payload in events
+            if method == "shell.completed"
+        ]
+        assert terminal_ids.count(first_id) == 1
+        assert terminal_ids.count(second_id) == 1
+        steering, follow_up = runtime.queued_messages()
+        assert follow_up == ()
+        assert len(steering) == 2
+        assert sum(first_id in message for message in steering) == 1
+        assert sum(second_id in message for message in steering) == 1
+        assert adapter.calls == 0
+    finally:
+        gateway.close()
+        SHELL_REGISTRY.kill(
+            foreign_id,
+            owner_session_id="gateway-shell-foreign",
+        )
+        runtime.close()
 
 
 def test_run_node_tui_gateway_processes_fake_node_requests(tmp_path: Path) -> None:

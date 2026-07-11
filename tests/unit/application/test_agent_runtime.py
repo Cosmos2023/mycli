@@ -2348,10 +2348,11 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
 def test_agent_runtime_enqueues_background_bash_task_notification(
     tmp_path: Path,
 ) -> None:
+    adapter = SteeringNotificationCaptureAdapter()
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
-        model_adapter=SteeringNotificationCaptureAdapter(),
+        model_adapter=adapter,
     )
     bash_tool = next(
         tool for tool in runtime._tool_registry.list_all() if tool.spec.name == "Bash"
@@ -2380,6 +2381,9 @@ def test_agent_runtime_enqueues_background_bash_task_notification(
     assert "<task-type>local_bash</task-type>" in steering[0]
     assert f"<output-file>{output_file}</output-file>" in steering[0]
     assert output_file.read_text(encoding="utf-8").strip() == "runtime-background-ready"
+    time.sleep(0.05)
+    assert len(runtime.queued_messages()[0]) == 1
+    assert adapter.calls == 0
 
 
 def test_agent_runtime_turns_reasoning_blocks_into_activity_events(tmp_path: Path) -> None:

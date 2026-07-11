@@ -17,6 +17,24 @@ test("recorded duplicate gateway mirrors replay as one assistant answer", () => 
 	assert.equal(occurrences(output, "Thinking..."), 0);
 });
 
+test("recorded shell lifecycle recovers Running output and terminal Ran state", () => {
+	const events = loadGatewayReplay("shell-lifecycle-recovery.jsonl");
+	const runningShell = projectRuntimeState(replayGatewayEvents(events.slice(0, 1)));
+	const outputShell = projectRuntimeState(replayGatewayEvents(events.slice(0, 2)));
+	const completedShell = projectRuntimeState(replayGatewayEvents(events));
+	const runningOutput = stripAnsi(renderMycliShell(runningShell, 100).join("\n"));
+	const outputOutput = stripAnsi(renderMycliShell(outputShell, 100).join("\n"));
+	const completedOutput = stripAnsi(renderMycliShell(completedShell, 100).join("\n"));
+
+	assert.equal(runningShell.footer.backgroundShellCount, 1);
+	assert.match(runningOutput, /• Running uv run dev/);
+	assert.match(runningOutput, /1 background terminal running/);
+	assert.match(outputOutput, /ready/);
+	assert.equal(completedShell.footer.backgroundShellCount, 0);
+	assert.match(completedOutput, /• Ran uv run dev/);
+	assert.doesNotMatch(completedOutput, /background terminal running/);
+});
+
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
 }
