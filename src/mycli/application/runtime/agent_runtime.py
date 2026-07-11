@@ -1008,6 +1008,9 @@ class AgentRuntime:
 
     def _configure_background_shell_tasks(self) -> None:
         for tool in self._tool_registry.list_all():
+            configure_owner = getattr(tool, "configure_shell_session", None)
+            if callable(configure_owner):
+                configure_owner(self._config.session_id)
             configure = getattr(tool, "configure_background_tasks", None)
             if not callable(configure):
                 continue
@@ -1043,6 +1046,9 @@ class AgentRuntime:
         if self._closed:
             return
         self._closed = True
+        from mycli.tools.shell_registry import SHELL_REGISTRY
+
+        SHELL_REGISTRY.terminate_owner(self._config.session_id)
         self._execute_session_hook(HookPoint.SESSION_END)
 
     def _execute_session_hook(self, hook_point: HookPoint) -> None:

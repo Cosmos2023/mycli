@@ -57,6 +57,8 @@ from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.bash import BashTool
+from mycli.tools.bash_output import BashOutputTool
+from mycli.tools.kill_shell import KillShellTool
 from mycli.tools.grep import GrepTool
 from mycli.tools.write import WriteTool
 from mycli.tools.plan import PlanTool
@@ -1888,6 +1890,41 @@ def test_agent_runtime_executes_session_lifecycle_configured_hooks(tmp_path: Pat
     assert [event.turn_id for event in traces] == ["session_start", "session_end"]
     assert [event.payload["hook_id"] for event in traces] == ["session-start", "session-end"]
     assert all(event.payload["action"] == "allow" for event in traces)
+
+
+def test_agent_runtime_configures_shell_tool_session_owner(tmp_path: Path) -> None:
+    bash = BashTool(tmp_path)
+    output = BashOutputTool()
+    kill = KillShellTool()
+
+    AgentRuntime(
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([bash, output, kill]),
+        config=AgentConfig(workspace_root=tmp_path, session_id="session-owner"),
+        home_dir=tmp_path / "home",
+    )
+
+    assert bash._owner_session_id == "session-owner"
+    assert output._session_id == "session-owner"
+    assert kill._session_id == "session-owner"
+
+
+def test_agent_runtime_close_terminates_owned_shell_sessions(tmp_path: Path) -> None:
+    bash = BashTool(tmp_path)
+    runtime = AgentRuntime(
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([bash]),
+        config=AgentConfig(workspace_root=tmp_path, session_id="session-close"),
+        home_dir=tmp_path / "home",
+    )
+    started = bash.execute({"command": "sleep 30", "run_in_background": True})
+    shell_id = str(started.raw_payload["shell_id"])
+
+    runtime.close()
+
+    from mycli.tools.shell_registry import SHELL_REGISTRY
+
+    assert shell_id not in SHELL_REGISTRY.processes()
 
 
 def test_agent_runtime_loads_enabled_plugin_hooks_and_tools(tmp_path: Path) -> None:
