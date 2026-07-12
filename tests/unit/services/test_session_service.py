@@ -137,19 +137,19 @@ def test_session_service_writes_readable_session_snapshot(tmp_path: Path) -> Non
         / "session.json"
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["session_id"] == "3ff83220-447c-4b12-ab27-6e14079b39c7"
     assert payload["cwd"] == str(workspace)
     assert payload["lineage"] == {
         "parent_session_id": "root",
-        "forked_from_turn_id": None,
         "fork_point": 2,
         "branch_name": "main",
     }
     assert payload["message_count"] == 2
-    assert payload["messages"] == [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
+    assert "messages" not in payload
+    assert payload["transcript"] == [
+        {"id": "message-1", "type": "user_message", "text": "hello"},
+        {"id": "message-2", "type": "assistant_message", "text": "hi"},
     ]
     assert payload["links"]["events"] == "events.jsonl"
     assert payload["links"]["trace"] == (
