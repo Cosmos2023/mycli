@@ -42,6 +42,24 @@ def test_snapshot_writes_sparse_v2_transcript_without_runtime_messages(tmp_path:
     assert "subagents" not in payload
 
 
+def test_snapshot_writes_readable_indented_json(tmp_path: Path) -> None:
+    service = SessionSnapshotService(home_dir=tmp_path)
+    service.write_conversation_snapshot(
+        conversation=Conversation(
+            session_id="readable",
+            messages=[Message(role="user", content="inspect repo")],
+        ),
+        history_items=(),
+        context=SessionSnapshotContext(workspace_root=tmp_path),
+    )
+
+    persisted = service.snapshot_path("readable").read_text(encoding="utf-8")
+
+    assert persisted.startswith("{\n")
+    assert '\n  "created_at":' in persisted
+    assert persisted.endswith("\n")
+
+
 def test_snapshot_preserves_created_at_across_rewrites(tmp_path: Path) -> None:
     service = SessionSnapshotService(home_dir=tmp_path)
     conversation = Conversation(

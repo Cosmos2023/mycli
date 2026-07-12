@@ -55,11 +55,12 @@ class SessionSnapshotService:
             encoded = json.dumps(
                 payload,
                 ensure_ascii=False,
-                separators=(",", ":"),
+                indent=2,
                 sort_keys=True,
             )
             with temporary.open("w", encoding="utf-8") as handle:
                 handle.write(encoded)
+                handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.replace(path)
