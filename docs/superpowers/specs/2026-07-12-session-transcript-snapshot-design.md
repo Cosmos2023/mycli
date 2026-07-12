@@ -228,11 +228,17 @@ Read、Glob、Git、Lint、MCP 和搜索结果继续遵守各自 formatter 的�
 
 1. 从当前 conversation 或 SQLite canonical messages 生成 typed transcript。
 2. 应用白名单字段和内容上限。
-3. 使用紧凑 JSON 编码写入同目录临时文件。
+3. 使用 `indent=2` 的多行 JSON 编码写入同目录临时文件。
 4. flush 并关闭临时文件。
 5. 原子替换正式 `session.json`。
 
 shell output delta、reasoning delta 和 token count 更新不触发完整快照重写。
+
+## 序列化格式
+
+schema v2 `session.json` 使用 UTF-8、`indent=2` 和稳定字段排序写成多行 JSON，确保用户可以直接在编辑器中阅读和检查。格式化只改变空白，不恢复 canonical `messages`、provider metadata 或其他已移除的重复数据。
+
+快照继续通过“临时文件写入、文件 `fsync`、原子替换”完成更新。`events.jsonl` 仍保持一行一个事件，不应用多行格式化。
 
 ## 加载流程
 
@@ -312,6 +318,7 @@ mycli 已经使用 SQLite 保存 canonical conversation，因此不需要复制 
 ### 单元测试
 
 - 每种 message/block 到 transcript item 的投影。
+- schema v2 快照是 `indent=2` 的多行 JSON，且可以重新读取。
 - `null`、空数组、空字典和默认字段省略。
 - provider metadata、raw reasoning 和 `args_preview` 不进入快照。
 - shell output 使用 UTF-8 安全的 head-tail 截断。
@@ -351,3 +358,4 @@ mycli 已经使用 SQLite 保存 canonical conversation，因此不需要复制 
 - shell 和其他工具输出具有明确硬上限。
 - 同一工具调用不会在快照中重复保存多个表示。
 - 最大样本迁移后 TUI 可见历史与迁移前一致。
+- `session.json` 默认以可读的多行 JSON 保存，`events.jsonl` 继续遵循 JSONL 格式。
