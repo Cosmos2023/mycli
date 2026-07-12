@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+import sqlite3
 from threading import Event, Lock, Thread
 import time
 from types import SimpleNamespace
@@ -54,6 +55,8 @@ def _gateway_error_events(
 class FakeSessionService:
     def __init__(self) -> None:
         self.history_items: tuple[HistoryItem, ...] = ()
+        self.load_history_error: Exception | None = None
+        self.snapshot_tui_items: tuple[dict[str, object], ...] = ()
         self.pending_decision: object | None = None
         self.suspended_turn: object | None = None
         self.include_child_session = False
@@ -85,7 +88,15 @@ class FakeSessionService:
         return self.suspended_turn
 
     def load_history_items(self, _session_id: str) -> tuple[HistoryItem, ...]:
+        if self.load_history_error is not None:
+            raise self.load_history_error
         return self.history_items
+
+    def load_snapshot_tui_items(
+        self,
+        _session_id: str,
+    ) -> tuple[dict[str, object], ...]:
+        return self.snapshot_tui_items
 
     def load_conversation(self, session_id: str) -> Conversation:
         return self.conversations.get(session_id, Conversation(session_id=session_id))
@@ -1004,6 +1015,75 @@ def test_gateway_transcript_load_limit_returns_tail_with_cursor(tmp_path: Path) 
     assert response.result is not None
     assert [item["id"] for item in response.result["items"]] == ["hist_1", "hist_2"]
     assert response.result["next_before"] == "hist_1"
+
+
+def test_gateway_transcript_load_falls_back_to_snapshot_on_sqlite_error(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.snapshot_tui_items = (
+        {
+            "id": "user-1",
+            "type": "user",
+            "text": "visible history",
+            "created_at": "",
+            "folded": False,
+            "metadata": {},
+        },
+    )
+    service.fake_session_service.load_history_error = sqlite3.DatabaseError(
+        "database unavailable"
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req-1",
+            method="transcript.load",
+            params={"session_id": "demo", "before": None},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["read_only"] is True
+    assert response.result["items"][0]["type"] == "warning"
+    assert response.result["items"][1]["text"] == "visible history"
+
+
+def test_gateway_normal_transcript_projection_drops_provider_metadata(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.history_items = (
+        HistoryItem(
+            id="hist-tool",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.TOOL_CALL,
+            text="Read pyproject.toml",
+            tool_name="Read",
+            call_id="call-1",
+            metadata={
+                "provider_id": "private",
+                "created_at": "2026-07-12T10:00:00Z",
+            },
+        ),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req-1",
+            method="transcript.load",
+            params={"session_id": "demo"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["items"][0]["metadata"] == {
+        "tool_name": "Read",
+        "call_id": "call-1",
+    }
 
 
 def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:

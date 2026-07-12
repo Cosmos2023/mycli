@@ -14,6 +14,7 @@ from mycli.services.storage_layout import MycliStorageLayout
 from mycli.services.transcript_projection import (
     project_history_items_for_snapshot,
     project_messages_for_snapshot,
+    snapshot_item_to_tui_items,
 )
 
 
@@ -92,6 +93,19 @@ class SessionSnapshotService:
             or payload.get("schema_version") != 2
             or not isinstance(payload.get("transcript"), list)
         )
+
+    def load_tui_items(self, session_id: str) -> tuple[dict[str, object], ...]:
+        payload = self.read_snapshot(session_id)
+        if payload is None or payload.get("schema_version") != 2:
+            return ()
+        raw_items = payload.get("transcript")
+        if not isinstance(raw_items, list):
+            return ()
+        projected: list[dict[str, object]] = []
+        for raw_item in raw_items:
+            if isinstance(raw_item, dict):
+                projected.extend(snapshot_item_to_tui_items(raw_item))
+        return tuple(projected)
 
     def append_event(
         self,

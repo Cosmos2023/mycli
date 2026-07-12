@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import inspect
 from pathlib import Path
+import sqlite3
 from threading import Lock, Thread
 import time
 from typing import Any, Protocol, TypedDict, cast
@@ -43,10 +44,10 @@ from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_EVENT_STREAMS,
     SUPPORTED_GATEWAY_RPC_METHODS,
 )
-from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
+from mycli.services.transcript_projection import project_history_item_for_tui
 
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {
@@ -1182,7 +1183,29 @@ class NodeTuiGateway:
         session_id = _optional_str(params.get("session_id")) or self.service._config.session_id
         limit = _positive_int(params.get("limit"), default=0) if "limit" in params else None
         before = _optional_str(params.get("before"))
-        items = list(self.service._session_service.load_history_items(session_id))
+        try:
+            items = list(self.service._session_service.load_history_items(session_id))
+        except (sqlite3.Error, OSError) as exc:
+            fallback = list(self.service._session_service.load_snapshot_tui_items(session_id))
+            if not fallback:
+                raise
+            warning = {
+                "id": f"{session_id}:snapshot-read-only",
+                "type": "warning",
+                "text": (
+                    "SQLite history is unavailable; showing read-only session snapshot: "
+                    f"{exc}"
+                ),
+                "created_at": "",
+                "folded": False,
+                "metadata": {"read_only": True},
+            }
+            return {
+                "session_id": session_id,
+                "items": [warning, *fallback],
+                "next_before": None,
+                "read_only": True,
+            }
         if before is not None:
             before_index = next(
                 (index for index, item in enumerate(items) if item.id == before),
@@ -1190,7 +1213,7 @@ class NodeTuiGateway:
             )
             items = items[:before_index]
         selected = items[-limit:] if limit is not None else items
-        projected = [_project_history_item(item) for item in selected]
+        projected = [project_history_item_for_tui(item) for item in selected]
         next_before = selected[0].id if len(items) > len(selected) and selected else None
         return {"session_id": session_id, "items": projected, "next_before": next_before}
 
@@ -2180,33 +2203,6 @@ def _find_exact_tag_line(lines: list[str], tag: str, *, start: int) -> int | Non
         if lines[index].strip() == tag:
             return index
     return None
-
-
-def _project_history_item(item: HistoryItem) -> dict[str, object]:
-    item_type = {
-        HistoryItemType.USER_MESSAGE: "user",
-        HistoryItemType.ASSISTANT_MESSAGE: "assistant_final",
-        HistoryItemType.TOOL_CALL: "tool_summary",
-        HistoryItemType.TOOL_RESULT: "tool_detail",
-        HistoryItemType.APPROVAL_REQUEST: "approval",
-        HistoryItemType.APPROVAL_RESOLUTION: "system_notice",
-        HistoryItemType.WARNING: "warning",
-        HistoryItemType.COMPACTION: "system_notice",
-    }.get(item.type, "system_notice")
-    metadata = dict(item.metadata)
-    if item.tool_name and not metadata.get("tool_name"):
-        metadata["tool_name"] = item.tool_name
-    if item.call_id and not metadata.get("call_id"):
-        metadata["call_id"] = item.call_id
-    created_at = str(metadata.pop("created_at", "") or "")
-    return {
-        "id": item.id,
-        "type": item_type,
-        "text": item.text or "",
-        "created_at": created_at,
-        "folded": item_type == "tool_detail",
-        "metadata": metadata,
-    }
 
 
 def _conversation_active_path(

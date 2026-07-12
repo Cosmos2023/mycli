@@ -129,3 +129,34 @@ def test_atomic_replace_failure_preserves_previous_snapshot(
 
     assert path.read_text(encoding="utf-8") == previous
     assert list(path.parent.glob(".session.json.*.tmp")) == []
+
+
+def test_snapshot_tui_reader_skips_malformed_items(tmp_path: Path) -> None:
+    service = SessionSnapshotService(home_dir=tmp_path)
+    path = service.snapshot_path("demo")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "session_id": "demo",
+                "transcript": [
+                    {"id": "user-1", "type": "user_message", "text": "hello"},
+                    {"id": 42, "type": "assistant_message", "text": "invalid"},
+                    "not-an-object",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert service.load_tui_items("demo") == (
+        {
+            "id": "user-1",
+            "type": "user",
+            "text": "hello",
+            "created_at": "",
+            "folded": False,
+            "metadata": {},
+        },
+    )

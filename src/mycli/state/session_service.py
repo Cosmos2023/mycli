@@ -146,6 +146,12 @@ class SessionService:
             for item in self._store.load_history_items(session_id)
         )
 
+    def load_snapshot_tui_items(
+        self,
+        session_id: str,
+    ) -> tuple[dict[str, object], ...]:
+        return self._snapshot_service.load_tui_items(session_id)
+
     def sync_conversation_view_from_history(self, session_id: str) -> None:
         conversation = Conversation(session_id=session_id)
         conversation.messages.extend(self._conversation_messages_from_history(session_id))
