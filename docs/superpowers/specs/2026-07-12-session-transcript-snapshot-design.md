@@ -121,7 +121,7 @@ TUI 恢复与快照生成必须共享相同的 typed transcript item 语义，�
 序列化时省略：
 
 - 值为 `null` 的可选字段；
-- 空数组和空字典；
+- 空数组和空字典，但必需的顶层 `transcript` 即使为空也保留为 `[]`；
 - 默认状态字段；
 - 可以从 transcript 或 SQLite 推导的内部字段。
 
