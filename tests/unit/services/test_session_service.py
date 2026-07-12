@@ -245,6 +245,108 @@ def test_snapshot_write_failure_does_not_rollback_sqlite_conversation(
     assert stored[0]["content"] == "hello"
 
 
+def test_load_conversation_imports_v1_messages_when_sqlite_is_empty(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    snapshot_path = home_dir / ".mycli" / "sessions" / "legacy" / "session.json"
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "legacy",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = SessionService(home_dir=home_dir)
+
+    conversation = service.load_conversation("legacy")
+
+    assert [message.content for message in conversation.messages] == ["hello", "hi"]
+    migrated = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert migrated["schema_version"] == 2
+    assert "messages" not in migrated
+    assert service._store.load_conversation("legacy") is not None
+
+
+def test_resume_conversation_imports_v1_snapshot_before_resolution(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    snapshot_path = home_dir / ".mycli" / "sessions" / "legacy" / "session.json"
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "legacy",
+                "messages": [{"role": "user", "content": "resume me"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = SessionService(home_dir=home_dir)
+
+    conversation = service.resume_conversation("legacy")
+
+    assert conversation.session_id == "legacy"
+    assert [message.content for message in conversation.messages] == ["resume me"]
+
+
+def test_v2_transcript_is_never_used_as_model_conversation(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    snapshot_path = home_dir / ".mycli" / "sessions" / "display-only" / "session.json"
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "session_id": "display-only",
+                "transcript": [
+                    {"id": "user-1", "type": "user_message", "text": "not canonical"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = SessionService(home_dir=home_dir)
+
+    conversation = service.load_conversation("display-only")
+
+    assert conversation.messages == []
+    assert service._store.load_conversation("display-only") is None
+
+
+def test_corrupt_snapshot_is_rebuilt_from_sqlite(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+    service.save_conversation(
+        Conversation(session_id="demo", messages=[Message(role="user", content="hello")])
+    )
+    snapshot_path = home_dir / ".mycli" / "sessions" / "demo" / "session.json"
+    snapshot_path.write_text("{broken", encoding="utf-8")
+
+    loaded = service.load_conversation("demo")
+
+    assert loaded.messages[0].content == "hello"
+    repaired = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert repaired["schema_version"] == 2
+
+
+def test_unknown_session_load_does_not_create_empty_snapshot(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+
+    conversation = service.load_conversation("missing")
+
+    assert conversation.messages == []
+    assert not (
+        home_dir / ".mycli" / "sessions" / "missing" / "session.json"
+    ).exists()
+
+
 def test_session_service_appends_session_events_jsonl(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     service = SessionService(home_dir=home_dir)

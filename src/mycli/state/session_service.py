@@ -88,14 +88,35 @@ class SessionService:
             payload={"message_count": len(conversation.messages)},
         )
 
-    def load_conversation(self, session_id: str) -> Conversation:
+    def load_conversation(
+        self,
+        session_id: str,
+        *,
+        repair_snapshot: bool = True,
+    ) -> Conversation:
         payload = self._store.load_conversation(session_id)
         conversation = Conversation(session_id=session_id)
+        has_canonical_state = False
         if payload is None:
-            conversation.messages.extend(self._conversation_messages_from_history(session_id))
-            return conversation
-        for item in payload:
-            conversation.append(deserialize_message(item))
+            history_messages = self._conversation_messages_from_history(session_id)
+            if history_messages:
+                has_canonical_state = True
+                conversation.messages.extend(history_messages)
+            else:
+                imported = self._import_legacy_snapshot_if_present(session_id)
+                if imported is not None:
+                    has_canonical_state = True
+                    conversation = imported
+        else:
+            has_canonical_state = True
+            for item in payload:
+                conversation.append(deserialize_message(item))
+        if (
+            has_canonical_state
+            and repair_snapshot
+            and self._snapshot_service.snapshot_requires_rebuild(session_id)
+        ):
+            self._write_snapshot(conversation)
         return conversation
 
     def append_history_items(
@@ -807,8 +828,32 @@ class SessionService:
         return session_id
 
     def _refresh_snapshot(self, session_id: str) -> None:
-        conversation = self.load_conversation(session_id)
+        conversation = self.load_conversation(session_id, repair_snapshot=False)
         self._write_snapshot(conversation)
+
+    def _import_legacy_snapshot_if_present(
+        self,
+        session_id: str,
+    ) -> Conversation | None:
+        legacy_payloads = self._snapshot_service.legacy_messages(session_id)
+        if not legacy_payloads:
+            return None
+        conversation = Conversation(session_id=session_id)
+        for payload in legacy_payloads:
+            try:
+                conversation.append(deserialize_message(payload))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not conversation.messages:
+            return None
+        self._store.replace_conversation(
+            session_id=session_id,
+            workspace_root=self._workspace_root,
+            thread_id=session_id,
+            messages=[serialize_message(message) for message in conversation.messages],
+        )
+        self._write_snapshot(conversation)
+        return conversation
 
     def _write_snapshot(self, conversation: Conversation) -> None:
         try:

@@ -76,6 +76,23 @@ class SessionSnapshotService:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def legacy_messages(self, session_id: str) -> tuple[dict[str, object], ...]:
+        payload = self.read_snapshot(session_id)
+        if payload is None or payload.get("schema_version") != 1:
+            return ()
+        raw_messages = payload.get("messages")
+        if not isinstance(raw_messages, list):
+            return ()
+        return tuple(dict(item) for item in raw_messages if isinstance(item, dict))
+
+    def snapshot_requires_rebuild(self, session_id: str) -> bool:
+        payload = self.read_snapshot(session_id)
+        return (
+            payload is None
+            or payload.get("schema_version") != 2
+            or not isinstance(payload.get("transcript"), list)
+        )
+
     def append_event(
         self,
         *,

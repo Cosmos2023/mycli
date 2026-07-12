@@ -24,8 +24,16 @@ class SessionService(StateSessionService):
         )
         super().save_conversation(conversation)
 
-    def load_conversation(self, session_id: str) -> Conversation:
-        conversation = super().load_conversation(session_id)
+    def load_conversation(
+        self,
+        session_id: str,
+        *,
+        repair_snapshot: bool = True,
+    ) -> Conversation:
+        conversation = super().load_conversation(
+            session_id,
+            repair_snapshot=repair_snapshot,
+        )
         metadata = self._load_conversation_tree_metadata(session_id)
         if metadata is None:
             return conversation
@@ -34,6 +42,7 @@ class SessionService(StateSessionService):
         return conversation
 
     def resume_conversation(self, session_id: str) -> Conversation:
+        self._import_legacy_snapshot_if_present(session_id)
         resolved_session_id = self._store.resolve_resume_session_id(session_id)
         conversation = Conversation(session_id=resolved_session_id)
         for item in self._store.load_conversation_lineage(session_id):
