@@ -157,6 +157,94 @@ def test_session_service_writes_readable_session_snapshot(tmp_path: Path) -> Non
     )
 
 
+def test_history_append_refreshes_snapshot_with_visible_transcript(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+
+    service.append_history_items(
+        "demo",
+        (
+            HistoryItem(
+                id="user-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="inspect repo",
+            ),
+            HistoryItem(
+                id="private-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.CONTEXT_BASELINE_UPDATE,
+                text="private context",
+            ),
+        ),
+    )
+
+    payload = json.loads(
+        (home_dir / ".mycli" / "sessions" / "demo" / "session.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert payload["transcript"] == [
+        {"id": "user-1", "type": "user_message", "text": "inspect repo"}
+    ]
+
+
+def test_conversation_save_writes_snapshot_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    writes = 0
+    original = service._snapshot_service.write_conversation_snapshot
+
+    def recording_write(**kwargs: object) -> None:
+        nonlocal writes
+        writes += 1
+        original(**kwargs)
+
+    monkeypatch.setattr(
+        service._snapshot_service,
+        "write_conversation_snapshot",
+        recording_write,
+    )
+    service.save_conversation(
+        Conversation(
+            session_id="demo",
+            parent_id="root",
+            fork_point=1,
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+
+    assert writes == 1
+
+
+def test_snapshot_write_failure_does_not_rollback_sqlite_conversation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+
+    def fail_write(**_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        service._snapshot_service,
+        "write_conversation_snapshot",
+        fail_write,
+    )
+
+    service.save_conversation(
+        Conversation(session_id="demo", messages=[Message(role="user", content="hello")])
+    )
+
+    stored = service._store.load_conversation("demo")
+    assert stored is not None
+    assert stored[0]["content"] == "hello"
+
+
 def test_session_service_appends_session_events_jsonl(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     service = SessionService(home_dir=home_dir)
@@ -236,7 +324,6 @@ def test_session_service_writes_subagent_snapshot_under_parent_session(
             "mode": "sync",
             "summary": "Found README.",
             "tool_calls": 1,
-            "error": None,
             "started_at": "2026-06-11T00:00:00+00:00",
             "completed_at": "2026-06-11T00:00:01+00:00",
             "path": f"subagents/{payload['run_id']}.json",

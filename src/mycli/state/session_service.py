@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,8 @@ from mycli.state.session_serialization import (
     optional_str,
     serialize_message,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SessionService:
@@ -808,13 +811,21 @@ class SessionService:
         self._write_snapshot(conversation)
 
     def _write_snapshot(self, conversation: Conversation) -> None:
-        self._snapshot_service.write_conversation_snapshot(
-            conversation=conversation,
-            context=SessionSnapshotContext(
-                workspace_root=self._workspace_root,
-                plan_state=self.load_plan_state(conversation.session_id),
-            ),
-        )
+        try:
+            self._snapshot_service.write_conversation_snapshot(
+                conversation=conversation,
+                context=SessionSnapshotContext(
+                    workspace_root=self._workspace_root,
+                    plan_state=self.load_plan_state(conversation.session_id),
+                ),
+                history_items=self.load_history_items(conversation.session_id),
+            )
+        except OSError as exc:
+            logger.warning(
+                "failed to write session snapshot session_id=%s: %s",
+                conversation.session_id,
+                exc,
+            )
 
     def write_subagent_snapshot(
         self,

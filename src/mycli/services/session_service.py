@@ -8,7 +8,6 @@ from mycli.state.session_serialization import deserialize_message
 
 class SessionService(StateSessionService):
     def save_conversation(self, conversation: Conversation) -> None:
-        super().save_conversation(conversation)
         parent_id = conversation.parent_id
         fork_point = conversation.fork_point
         if parent_id is None and fork_point is None:
@@ -16,14 +15,14 @@ class SessionService(StateSessionService):
             if metadata is not None:
                 parent_id = _optional_str(metadata.get("parent_id"))
                 fork_point = _optional_int(metadata.get("fork_point"))
+        conversation.parent_id = parent_id
+        conversation.fork_point = fork_point
         self._save_conversation_tree_metadata(
             conversation,
             parent_id=parent_id,
             fork_point=fork_point,
         )
-        conversation.parent_id = parent_id
-        conversation.fork_point = fork_point
-        self._write_snapshot(conversation)
+        super().save_conversation(conversation)
 
     def load_conversation(self, session_id: str) -> Conversation:
         conversation = super().load_conversation(session_id)
