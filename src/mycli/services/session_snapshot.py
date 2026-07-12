@@ -73,7 +73,7 @@ class SessionSnapshotService:
     def read_snapshot(self, session_id: str) -> dict[str, object] | None:
         try:
             payload = json.loads(self.snapshot_path(session_id).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
 

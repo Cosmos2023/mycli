@@ -27,26 +27,41 @@ _TUI_METADATA_KEYS = frozenset(
     {
         "path",
         "command",
+        "command_preview",
         "query",
         "context",
         "content_preview",
         "content_line_count",
-        "diff_preview",
+        "content_truncated",
+        "diff",
+        "diff_truncated",
         "output_preview",
         "error",
         "duration_ms",
+        "duration_s",
         "status",
         "success",
         "mutating",
+        "file_changes",
         "hidden_line_count",
+        "summary_truncated",
+        "error_truncated",
         "truncated",
         "omitted_chars",
         "process_state",
         "terminal_state",
         "exit_code",
+        "shell_id",
+        "background",
+        "output_chars",
+        "omitted_output_chars",
+        "cleanup_result",
         "started_at",
         "completed_at",
     }
+)
+_BOUNDED_METADATA_TEXT_KEYS = frozenset(
+    {"content_preview", "diff", "output_preview", "error"}
 )
 
 
@@ -126,6 +141,7 @@ def project_history_items_for_snapshot(
                 duration_ms=snapshot_item.duration_ms,
                 truncated=snapshot_item.truncated,
                 omitted_chars=snapshot_item.omitted_chars,
+                metadata={**existing.metadata, **snapshot_item.metadata},
             )
             continue
         projected.append(_history_snapshot_item(item))
@@ -177,7 +193,7 @@ def project_history_item_for_tui(item: HistoryItem) -> dict[str, object]:
         HistoryItemType.APPROVAL_RESOLUTION: "system_notice",
         HistoryItemType.WARNING: "warning",
         HistoryItemType.COMPACTION: "system_notice",
-        HistoryItemType.FILE_CHANGE: "file_change",
+        HistoryItemType.FILE_CHANGE: "system_notice",
     }.get(item.type, "system_notice")
     metadata = _visible_tui_metadata(item.metadata)
     if item.tool_name:
@@ -232,7 +248,7 @@ def snapshot_item_to_tui_items(
         "reasoning_summary": "reasoning",
         "warning": "warning",
         "error": "warning",
-        "file_change": "file_change",
+        "file_change": "system_notice",
         "plan": "system_notice",
         "status": "system_notice",
         "web_search": "tool_summary",
@@ -277,6 +293,8 @@ def _history_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
 def _tool_call_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
     tool_name = item.tool_name or "Tool"
     command = _tool_command(item.metadata)
+    metadata = _visible_tui_metadata(item.metadata)
+    _remove_snapshot_tool_duplicates(metadata)
     return TranscriptSnapshotItem(
         id=item.id,
         type="command" if tool_name.lower() in _SHELL_TOOL_NAMES else "tool",
@@ -286,14 +304,21 @@ def _tool_call_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
         call_id=item.call_id,
         command=command,
         status=_optional_str(item.metadata.get("status")) or "running",
+        metadata=metadata,
     )
 
 
 def _tool_result_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
     tool_name = item.tool_name or "Tool"
-    raw_output = item.text or ""
+    metadata = _visible_tui_metadata(item.metadata)
+    raw_output = (
+        _optional_str(metadata.pop("output_preview", None))
+        if tool_name.lower() in _SHELL_TOOL_NAMES
+        else None
+    ) or item.text or ""
     max_chars = SHELL_TRANSCRIPT_MAX_CHARS if tool_name.lower() in _SHELL_TOOL_NAMES else 8_000
     output, omitted = _bounded_head_tail(raw_output, max_chars)
+    _remove_snapshot_tool_duplicates(metadata)
     return TranscriptSnapshotItem(
         id=item.id,
         type="command" if tool_name.lower() in _SHELL_TOOL_NAMES else "tool",
@@ -307,6 +332,7 @@ def _tool_result_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
         duration_ms=_optional_int(item.metadata.get("duration_ms")),
         truncated=omitted > 0,
         omitted_chars=omitted,
+        metadata=metadata,
     )
 
 
@@ -319,17 +345,36 @@ def _visible_snapshot_metadata(metadata: dict[str, Any]) -> dict[str, object]:
 
 
 def _visible_tui_metadata(metadata: dict[str, Any]) -> dict[str, object]:
-    visible: dict[str, object] = {
-        key: metadata[key]
-        for key in _TUI_METADATA_KEYS
-        if key in metadata and metadata[key] not in (None, "", [], {})
-    }
+    visible: dict[str, object] = {}
+    for key in _TUI_METADATA_KEYS:
+        value = metadata.get(key)
+        if value in (None, "", [], {}):
+            continue
+        _set_visible_metadata_value(visible, key, value)
     raw_payload = metadata.get("raw_payload")
     if isinstance(raw_payload, dict):
-        for key in _TUI_METADATA_KEYS:
+        for key in (
+            "path",
+            "command",
+            "command_preview",
+            "query",
+            "context",
+            "diff",
+            "exit_code",
+            "process_state",
+            "terminal_state",
+            "shell_id",
+            "background",
+            "output_chars",
+            "omitted_output_chars",
+            "cleanup_result",
+        ):
             value = raw_payload.get(key)
             if key not in visible and value not in (None, "", [], {}):
-                visible[key] = value
+                _set_visible_metadata_value(visible, key, value)
+        raw_output = _combined_shell_output(raw_payload)
+        if "output_preview" not in visible and raw_output:
+            _set_visible_metadata_value(visible, "output_preview", raw_output)
     arguments = metadata.get("arguments")
     if isinstance(arguments, dict):
         for source_key, target_key in (
@@ -342,31 +387,90 @@ def _visible_tui_metadata(metadata: dict[str, Any]) -> dict[str, object]:
             value = arguments.get(source_key)
             if target_key not in visible and isinstance(value, str) and value:
                 visible[target_key] = value
+        content = arguments.get("content")
+        if "content_preview" not in visible and isinstance(content, str) and content:
+            _set_visible_metadata_value(visible, "content_preview", content)
+            visible["content_line_count"] = _line_count(content)
     summary = metadata.get("summary")
     if "output_preview" not in visible and isinstance(summary, str) and summary:
-        visible["output_preview"] = summary
+        _set_visible_metadata_value(visible, "output_preview", summary)
     return visible
 
 
 def _snapshot_tool_metadata(payload: dict[str, object]) -> dict[str, object]:
-    metadata: dict[str, object] = {}
+    raw_metadata = payload.get("metadata")
+    metadata = (
+        _visible_tui_metadata(dict(raw_metadata))
+        if isinstance(raw_metadata, dict)
+        else {}
+    )
     for key in (
         "tool_name",
         "call_id",
         "command",
-        "status",
         "exit_code",
         "duration_ms",
         "truncated",
         "omitted_chars",
     ):
         value = payload.get(key)
-        if value not in (None, "", False, 0):
+        if value not in (None, ""):
             metadata[key] = value
+    status = _optional_str(payload.get("status"))
+    if status is not None:
+        metadata["status"] = "done" if status == "completed" else status
+        if status == "completed" and "success" not in metadata:
+            metadata["success"] = True
     output = _optional_str(payload.get("output"))
     if output:
         metadata["output_preview"] = output
     return metadata
+
+
+def _set_visible_metadata_value(
+    visible: dict[str, object],
+    key: str,
+    value: object,
+) -> None:
+    if key not in _BOUNDED_METADATA_TEXT_KEYS or not isinstance(value, str):
+        visible[key] = value
+        return
+    bounded, omitted = _bounded_head_tail(value, SHELL_TRANSCRIPT_MAX_CHARS)
+    visible[key] = bounded
+    if omitted <= 0:
+        return
+    if key == "diff":
+        visible["diff_truncated"] = True
+    elif key == "content_preview":
+        visible["content_truncated"] = True
+    else:
+        visible["truncated"] = True
+        visible["omitted_chars"] = omitted
+
+
+def _combined_shell_output(payload: dict[str, Any]) -> str:
+    stdout = payload.get("stdout")
+    stderr = payload.get("stderr")
+    chunks = [value for value in (stdout, stderr) if isinstance(value, str) and value]
+    return "\n".join(chunks)
+
+
+def _remove_snapshot_tool_duplicates(metadata: dict[str, object]) -> None:
+    for key in (
+        "command",
+        "output_preview",
+        "status",
+        "exit_code",
+        "duration_ms",
+        "truncated",
+        "omitted_chars",
+    ):
+        metadata.pop(key, None)
+
+
+def _line_count(value: str) -> int:
+    stripped = value.rstrip("\n")
+    return len(stripped.splitlines()) if stripped else 0
 
 
 def _tool_command(metadata: dict[str, Any]) -> str | None:

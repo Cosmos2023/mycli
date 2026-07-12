@@ -92,6 +92,17 @@ def test_snapshot_reader_rejects_corrupt_json_without_deleting_it(tmp_path: Path
     assert path.read_text(encoding="utf-8") == '{"schema_version":'
 
 
+def test_snapshot_reader_rejects_invalid_utf8_without_deleting_it(tmp_path: Path) -> None:
+    service = SessionSnapshotService(home_dir=tmp_path)
+    path = service.snapshot_path("demo")
+    path.parent.mkdir(parents=True)
+    invalid = b'{"schema_version":2,"transcript":[]}\xff'
+    path.write_bytes(invalid)
+
+    assert service.read_snapshot("demo") is None
+    assert path.read_bytes() == invalid
+
+
 def test_atomic_replace_failure_preserves_previous_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
