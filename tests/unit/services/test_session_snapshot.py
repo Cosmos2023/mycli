@@ -160,3 +160,54 @@ def test_snapshot_tui_reader_skips_malformed_items(tmp_path: Path) -> None:
             "metadata": {},
         },
     )
+
+
+def test_v2_snapshot_omits_repeated_runtime_payloads(tmp_path: Path) -> None:
+    private_blob = "provider-private-reasoning-" * 2_000
+    repeated_tool_output = "same shell output\n" * 2_000
+    conversation = Conversation(session_id="large")
+    history = (
+        HistoryItem(
+            id="tool-call",
+            thread_id="large",
+            turn_id="turn-1",
+            type=HistoryItemType.TOOL_CALL,
+            text="Run tests",
+            tool_name="Bash",
+            call_id="call-1",
+            metadata={
+                "arguments": {"command": "pytest -q"},
+                "provider_blob": private_blob,
+            },
+        ),
+        HistoryItem(
+            id="tool-result",
+            thread_id="large",
+            turn_id="turn-1",
+            type=HistoryItemType.TOOL_RESULT,
+            text=repeated_tool_output,
+            tool_name="Bash",
+            call_id="call-1",
+            metadata={
+                "transcript_content": repeated_tool_output,
+                "summary": repeated_tool_output,
+                "provider_blob": private_blob,
+            },
+        ),
+    )
+    service = SessionSnapshotService(home_dir=tmp_path)
+
+    service.write_conversation_snapshot(
+        conversation=conversation,
+        history_items=history,
+        context=SessionSnapshotContext(workspace_root=tmp_path),
+    )
+
+    persisted = service.snapshot_path("large").read_text(encoding="utf-8")
+    payload = json.loads(persisted)
+    assert "messages" not in payload
+    assert "provider_blob" not in persisted
+    assert "transcript_content" not in persisted
+    assert '"summary"' not in persisted
+    assert len(payload["transcript"]) == 1
+    assert len(str(payload["transcript"][0]["output"])) <= 8_000
