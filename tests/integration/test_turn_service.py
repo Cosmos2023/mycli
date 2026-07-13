@@ -35,7 +35,7 @@ class PushModel:
         return ModelDecision(
             progress_message="Preparing a risky push",
             tool_call=ToolCall(
-                name="Bash",
+                name="Shell",
                 arguments={"command": "git push origin main"},
                 reason="publish branch",
             ),
@@ -58,12 +58,12 @@ class FakeModel:
 
 class FakeToolRegistry:
     def run(self, call: ToolCall) -> ToolResult:
-        if call.name == "Bash":
+        if call.name == "Shell":
             return ToolResult(success=True, summary="pushed", raw_payload={"stdout": "", "stderr": ""})
         return ToolResult(success=True, summary="src, tests", raw_payload={"entries": ["src", "tests"]})
 
     def list_names(self) -> list[str]:
-        return ["Edit", "LS", "Read", "Bash", "Grep"]
+        return ["Edit", "LS", "Read", "Shell", "Grep"]
 
 
 class SkillAwareModel:
@@ -98,10 +98,10 @@ class PromptCaptureModel:
 
 class UnusedToolRegistry:
     def run(self, _call):
-        raise AssertionError("Bash should not execute before approval")
+        raise AssertionError("Shell should not execute before approval")
 
     def list_names(self) -> list[str]:
-        return ["Edit", "LS", "Read", "Bash", "Grep"]
+        return ["Edit", "LS", "Read", "Shell", "Grep"]
 
 
 class CountingPushModel:
@@ -133,7 +133,7 @@ class SpyToolRegistry:
         return ToolResult(success=True, summary="ok", raw_payload={})
 
     def list_names(self) -> list[str]:
-        return ["LS", "Read", "Bash", "Grep", "Edit"]
+        return ["LS", "Read", "Shell", "Grep", "Edit"]
 
 
 class FakeRuntime:
@@ -290,7 +290,7 @@ class PushThenDoneRuntimeAdapter:
             return ModelDecision(
                 progress_message="Preparing a risky push",
                 tool_call=ToolCall(
-                    name="Bash",
+                    name="Shell",
                     arguments={"command": "git push origin main"},
                     reason="publish branch",
                 ),
@@ -578,28 +578,30 @@ def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) 
 
     service.handle_user_turn("push the branch")
     resolved = service.resolve_pending_decision("3")
+    shell_kind = service._active_shell_kind()
 
     assert "[decision] approved" in resolved.progress_updates
-    assert service._session_service.is_command_allowed("demo", "git push") is True
+    assert service._session_service.is_command_allowed("demo", "git push", shell_kind) is True
     trace_events = service._trace_service.load("demo")
     allowance_event = next(event for event in trace_events if event.kind == "approval_allowance")
     assert allowance_event.turn_id == resolved.turn.turn_id
     assert allowance_event.payload["call_id"]
     assert allowance_event.payload == {
         "action": "allow_session",
-        "tool_name": "Bash",
+        "tool_name": "Shell",
         "call_id": allowance_event.payload["call_id"],
         "command_pattern": "git push",
         "decision_id": allowance_event.payload["call_id"],
         "new_allowance": True,
         "reason": "git push requires confirmation.",
         "safety_metadata": {
-            "tool_name": "Bash",
-            "canonical_tool_name": "Bash",
+            "tool_name": "Shell",
+            "canonical_tool_name": "Shell",
             "risk_level": "high",
             "decision_kind": "needs_choice",
             "policy": "shell_command_analysis",
             "command_pattern": "git push",
+            "shell_kind": shell_kind.value,
         },
     }
     agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
@@ -620,9 +622,10 @@ def test_turn_service_records_duplicate_allow_session_diagnostic(tmp_path: Path)
     )
     first = service.handle_user_turn("push the branch")
     assert first.pending_decision is not None
+    shell_kind = service._active_shell_kind()
     service._session_service.add_command_allowance(
         "demo",
-        SessionCommandAllowance(command_pattern="git push"),
+        SessionCommandAllowance(command_pattern="git push", shell_kind=shell_kind),
     )
     resolved = service.resolve_pending_decision("3")
 
@@ -666,6 +669,7 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
 
     service.handle_user_turn("push the branch")
     service.resolve_pending_decision("3")
+    shell_kind = service._active_shell_kind()
     model.calls = 0
 
     response = service.handle_user_turn("push the branch again")
@@ -675,18 +679,19 @@ def test_allowlist_hit_prevents_new_pending_decision(tmp_path: Path) -> None:
     trace_events = service._trace_service.load("demo")
     auto_allowed = next(event for event in trace_events if event.kind == "approval_auto_allowed")
     assert auto_allowed.payload["source"] == "session_allowance"
-    assert auto_allowed.payload["tool_name"] == "Bash"
+    assert auto_allowed.payload["tool_name"] == "Shell"
     assert auto_allowed.payload["command_pattern"] == "git push"
     assert auto_allowed.payload["call_id"]
     assert auto_allowed.payload["decision_id"] == auto_allowed.payload["call_id"]
     assert auto_allowed.payload["reason"] == "git push requires confirmation."
     assert auto_allowed.payload["safety_metadata"] == {
-        "tool_name": "Bash",
-        "canonical_tool_name": "Bash",
+        "tool_name": "Shell",
+        "canonical_tool_name": "Shell",
         "risk_level": "high",
         "decision_kind": "needs_choice",
         "policy": "shell_command_analysis",
         "command_pattern": "git push",
+        "shell_kind": shell_kind.value,
     }
     agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
         encoding="utf-8"
@@ -767,7 +772,7 @@ def test_resolve_pending_decision_reject_clears_it(tmp_path: Path) -> None:
     )
     assert rejected_event.turn_id == rejected.turn.turn_id
     assert rejected_event.payload["choice"] == "2"
-    assert rejected_event.payload["tool_name"] == "Bash"
+    assert rejected_event.payload["tool_name"] == "Shell"
     assert rejected_event.payload["command_pattern"] == "git push"
     no_pending_event = next(
         event
@@ -803,7 +808,7 @@ def test_resolve_pending_decision_invalid_choice_keeps_it(tmp_path: Path) -> Non
     )
     assert invalid_event.payload["result"] == "invalid_choice"
     assert invalid_event.payload["choice"] == "nope"
-    assert invalid_event.payload["tool_name"] == "Bash"
+    assert invalid_event.payload["tool_name"] == "Shell"
     agent_log = service._runtime._workspace_log_service.agent_log_path().read_text(
         encoding="utf-8"
     )

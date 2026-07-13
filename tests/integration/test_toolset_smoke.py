@@ -1,6 +1,6 @@
 def test_all_tools_importable():
     from mycli.tools.ask_user_question import AskUserQuestionTool
-    from mycli.tools.bash import BashTool
+    from mycli.tools.bash import BashTool, ShellTool
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
     from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
@@ -11,6 +11,7 @@ def test_all_tools_importable():
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
+    from mycli.tools.shell_output import ShellOutputTool
     from mycli.tools.web_fetch import WebFetchTool
     from mycli.tools.web_search import WebSearchTool
     from mycli.tools.write import WriteTool
@@ -24,7 +25,9 @@ def test_all_tools_importable():
             WriteTool,
             LSTool,
             BashTool,
+            ShellTool,
             BashOutputTool,
+            ShellOutputTool,
             KillShellTool,
             WebSearchTool,
             WebFetchTool,
@@ -54,6 +57,8 @@ def test_all_tools_registered():
         "LS",
         "Bash",
         "BashOutput",
+        "Shell",
+        "ShellOutput",
         "KillShell",
         "WebSearch",
         "WebFetch",
