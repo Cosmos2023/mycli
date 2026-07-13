@@ -17,12 +17,34 @@ export class TtyOpenError extends Error {
 	}
 }
 
-export function openTtyStreams(): TtyStreams {
+type OpenTtyOptions = {
+	platform?: NodeJS.Platform;
+	stdin?: tty.ReadStream;
+	stdout?: tty.WriteStream;
+	openSync?: (path: string, flags: string) => number;
+};
+
+export function openTtyStreams(options: OpenTtyOptions = {}): TtyStreams {
+	const platform = options.platform ?? process.platform;
+	if (platform === "win32") {
+		const input = options.stdin ?? process.stdin;
+		const output = options.stdout ?? process.stdout;
+		if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") {
+			throw new TtyOpenError("mycli shell TUI requires an interactive TTY with raw input support on Windows.");
+		}
+		return {
+			input,
+			output,
+			close: () => {},
+		};
+	}
+
+	const openSync = options.openSync ?? fs.openSync;
 	let inputFd: number;
 	let outputFd: number;
 	try {
-		inputFd = fs.openSync("/dev/tty", "r");
-		outputFd = fs.openSync("/dev/tty", "w");
+		inputFd = openSync("/dev/tty", "r");
+		outputFd = openSync("/dev/tty", "w");
 	} catch (error) {
 		const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
 		throw new TtyOpenError(`Unable to open /dev/tty for mycli shell TUI.${detail}`);

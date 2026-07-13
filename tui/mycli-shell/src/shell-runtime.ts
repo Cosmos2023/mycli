@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { copyText } from "./adapters/clipboard.ts";
 import { SelectList, type SelectItem } from "./tui-core/components/select-list.ts";
 import { Spacer } from "./tui-core/components/spacer.ts";
 import { Text } from "./tui-core/components/text.ts";
@@ -1622,7 +1622,7 @@ export class MycliShellRuntime {
 			this.addSystemNotice("No assistant message to copy yet.");
 			return;
 		}
-		const copied = copyTextBestEffort(message.text);
+		const copied = copyText(message.text);
 		this.addSystemNotice(copied ? "Copied last assistant message." : "Clipboard unavailable. Last assistant message is still visible above.");
 	}
 
@@ -1785,12 +1785,4 @@ function resourceInspectCommand(type: MycliShellResource["type"]): string | null
 
 function elapsedSecondsFor(durationMs: number): number {
 	return Math.max(0, Math.floor(durationMs / 1000));
-}
-
-function copyTextBestEffort(text: string): boolean {
-	if (process.platform === "darwin") {
-		const result = spawnSync("pbcopy", { input: text, stdio: ["pipe", "ignore", "ignore"] });
-		return result.status === 0;
-	}
-	return false;
 }

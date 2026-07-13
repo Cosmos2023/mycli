@@ -1,12 +1,12 @@
 import { theme } from "../theme/theme.ts";
 
-export function formatKeyText(key: string): string {
+export function formatKeyText(key: string, platform: NodeJS.Platform = process.platform): string {
 	return key
 		.split("/")
 		.map((part) =>
 			part
 				.split("+")
-				.map((segment) => (process.platform === "darwin" && segment.toLowerCase() === "alt" ? "option" : segment))
+				.map((segment) => (platform === "darwin" && segment.toLowerCase() === "alt" ? "option" : segment))
 				.join("+"),
 		)
 		.join("/");

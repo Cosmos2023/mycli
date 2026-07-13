@@ -105,6 +105,22 @@ def test_build_node_command_defaults_to_mycli_shell_gateway(tmp_path: Path) -> N
     assert build_node_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(shell_entrypoint)]
 
 
+def test_build_node_command_uses_tsx_cmd_on_windows(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx.cmd"
+    shell_entrypoint = node_root / "src" / "gateway.ts"
+    tsx_bin.parent.mkdir(parents=True)
+    shell_entrypoint.parent.mkdir(parents=True)
+    tsx_bin.write_text("@node tsx", encoding="utf-8")
+    shell_entrypoint.write_text("export {}", encoding="utf-8")
+
+    assert build_node_command(
+        repo_root=tmp_path,
+        env={},
+        platform_name="win32",
+    ) == [str(tsx_bin), str(shell_entrypoint)]
+
+
 def test_build_node_setup_command_runs_setup_tui_entrypoint(tmp_path: Path) -> None:
     node_root = tmp_path / "tui" / "mycli-shell"
     tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
@@ -115,6 +131,22 @@ def test_build_node_setup_command_runs_setup_tui_entrypoint(tmp_path: Path) -> N
     setup_entrypoint.write_text("export {}", encoding="utf-8")
 
     assert build_node_setup_command(repo_root=tmp_path, env={}) == [str(tsx_bin), str(setup_entrypoint)]
+
+
+def test_build_node_setup_command_uses_tsx_cmd_on_windows(tmp_path: Path) -> None:
+    node_root = tmp_path / "tui" / "mycli-shell"
+    tsx_bin = node_root / "node_modules" / ".bin" / "tsx.cmd"
+    setup_entrypoint = node_root / "src" / "setup.ts"
+    tsx_bin.parent.mkdir(parents=True)
+    setup_entrypoint.parent.mkdir(parents=True)
+    tsx_bin.write_text("@node tsx", encoding="utf-8")
+    setup_entrypoint.write_text("export {}", encoding="utf-8")
+
+    assert build_node_setup_command(
+        repo_root=tmp_path,
+        env={},
+        platform_name="win32",
+    ) == [str(tsx_bin), str(setup_entrypoint)]
 
 
 def test_build_node_command_maps_legacy_ink_backend_to_mycli_shell(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 from contextlib import suppress
 import os
 import subprocess
+import sys
 from typing import Protocol
 
 
@@ -122,12 +123,17 @@ def resolve_node_entrypoint(*, repo_root: Path, env: Mapping[str, str]) -> Path:
     return candidate
 
 
-def build_node_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
+def build_node_command(
+    *,
+    repo_root: Path,
+    env: Mapping[str, str],
+    platform_name: str = sys.platform,
+) -> list[str]:
     override = env.get("MYCLI_NODE_TUI_ENTRYPOINT")
     if override and not env.get("MYCLI_NODE_TUI_SCRIPT"):
         return ["node", str(Path(override).expanduser())]
     node_root = repo_root / "tui" / "mycli-shell"
-    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    tsx_bin = node_root / "node_modules" / ".bin" / _tsx_name(platform_name)
     if env.get("MYCLI_NODE_TUI_SCRIPT"):
         entrypoint = resolve_node_entrypoint(repo_root=repo_root, env=env)
         if not tsx_bin.is_file():
@@ -148,10 +154,15 @@ def build_node_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
     return [str(tsx_bin), str(entrypoint)]
 
 
-def build_node_setup_command(*, repo_root: Path, env: Mapping[str, str]) -> list[str]:
+def build_node_setup_command(
+    *,
+    repo_root: Path,
+    env: Mapping[str, str],
+    platform_name: str = sys.platform,
+) -> list[str]:
     override = env.get("MYCLI_NODE_SETUP_ENTRYPOINT")
     node_root = repo_root / "tui" / "mycli-shell"
-    tsx_bin = node_root / "node_modules" / ".bin" / "tsx"
+    tsx_bin = node_root / "node_modules" / ".bin" / _tsx_name(platform_name)
     entrypoint = Path(override).expanduser() if override else node_root / "src" / "setup.ts"
     if not tsx_bin.is_file():
         raise NodeTuiProcessError(
@@ -160,6 +171,10 @@ def build_node_setup_command(*, repo_root: Path, env: Mapping[str, str]) -> list
     if not entrypoint.is_file():
         raise NodeTuiProcessError(f"mycli setup TUI entrypoint not found: {entrypoint}")
     return [str(tsx_bin), str(entrypoint)]
+
+
+def _tsx_name(platform_name: str) -> str:
+    return "tsx.cmd" if platform_name == "win32" else "tsx"
 
 
 def build_node_tui_process(
