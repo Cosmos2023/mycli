@@ -19,6 +19,8 @@
 - Python `3.13`
 - `uv`
 - Node.js `>=22.19.0`，用于默认 Node TUI
+- `npm`
+- Windows 需要安装 Git for Windows；agent 的所有命令统一由 Git Bash 执行
 - 一个支持的模型 provider API key
 
 ### 安装
@@ -26,15 +28,22 @@
 ```bash
 uv venv
 uv sync --dev
+npm ci --prefix tui/mycli-shell
 ```
 
-Node TUI 依赖位于 `tui/mycli-shell`：
+Linux 和 macOS 从源码启动：
 
 ```bash
-cd tui/mycli-shell
-npm install
-cd ../..
+uv run mycli
 ```
+
+Windows 可在 PowerShell 中启动：
+
+```powershell
+uv run mycli
+```
+
+Windows 上启动器可以是 PowerShell，但模型发出的 agent 命令仍使用 Git Bash 语义，不使用 CMD、PowerShell 或 WSL 命令语义。Git Bash 的发现顺序、`shell_path` 配置和 `MYCLI_SHELL_PATH` 覆盖方式见 [Windows 源码运行指南](docs/windows.md)。
 
 ### 配置模型
 

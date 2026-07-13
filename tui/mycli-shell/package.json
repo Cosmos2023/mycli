@@ -6,7 +6,7 @@
 	"scripts": {
 		"demo": "node --import ./node_modules/tsx/dist/esm/index.mjs src/demo.ts",
 		"test": "node --import ./node_modules/tsx/dist/esm/index.mjs --test \"test/**/*.test.ts\" --test-reporter=dot",
-		"typecheck": "./node_modules/.bin/tsc --noEmit"
+		"typecheck": "tsc --noEmit"
 	},
   "engines": {
     "node": ">=22.19.0"

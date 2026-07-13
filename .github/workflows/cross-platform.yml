@@ -1,0 +1,32 @@
+name: cross-platform
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: tui/mycli-shell/package-lock.json
+      - run: uv sync --locked --dev
+      - run: npm ci --prefix tui/mycli-shell
+      - run: uv run pytest -q
+      - run: uv run ruff check .
+      - run: uv run mypy src/mycli
+      - run: npm --prefix tui/mycli-shell test
+      - run: npm --prefix tui/mycli-shell run typecheck
+      - name: Shell lifecycle smoke
+        run: uv run pytest tests/integration/test_cross_platform_shell.py -q
