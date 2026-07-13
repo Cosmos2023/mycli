@@ -193,6 +193,7 @@ class ShellBackendProfile:
 @dataclass(slots=True, frozen=True)
 class ShellExecutionOptions:
     workspace_root: Path
+    shell_path: str | None = None
     filesystem: FilesystemPolicy = "workspace_write"
     network: NetworkPolicy = "enabled"
     shell: ShellPolicy = "restricted"
@@ -207,10 +208,12 @@ class ShellExecutionOptions:
         cls,
         policy: ExecutionPolicy,
         *,
+        shell_path: str | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> "ShellExecutionOptions":
         return cls(
             workspace_root=policy.sandbox.cwd,
+            shell_path=shell_path,
             filesystem=policy.sandbox.filesystem,
             network=policy.sandbox.network,
             shell=policy.sandbox.shell,
@@ -252,6 +255,7 @@ class ShellExecutionOptions:
             "filesystem": self.filesystem,
             "network": self.network,
             "shell": self.shell,
+            "custom_shell_path": self.shell_path is not None,
             "env_policy": self.env_policy,
             "shell_environment_policy": self.resolved_shell_environment_policy().to_trace_payload(),
             "env_keys": list(env_keys),

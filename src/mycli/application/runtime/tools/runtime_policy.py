@@ -41,6 +41,7 @@ class RuntimePolicyGate:
         execpolicy_rules: ExecPolicyRuleSet | None = None,
         collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
         sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
+        shell_path: str | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._approval_service = approval_service
@@ -51,6 +52,7 @@ class RuntimePolicyGate:
         self._execpolicy_rules = execpolicy_rules or ExecPolicyRuleSet()
         self._collaboration_mode = collaboration_mode
         self._sandbox_mode = sandbox_mode
+        self._shell_path = shell_path
         self._shell_environment_policy = shell_environment_policy
 
     def default_policy(self) -> ExecutionPolicy:
@@ -215,6 +217,7 @@ class RuntimePolicyGate:
     ) -> ShellExecutionOptions:
         return ShellExecutionOptions.from_policy(
             policy or self.default_policy(),
+            shell_path=self._shell_path,
             shell_environment_policy=self._shell_environment_policy,
         )
 

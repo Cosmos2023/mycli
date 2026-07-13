@@ -11,6 +11,50 @@ from mycli.config.settings import resolve_config
 from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 
 
+def test_shell_path_environment_overrides_user_and_project_config(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    (home_dir / ".mycli").mkdir(parents=True)
+    (workspace / ".mycli").mkdir(parents=True)
+    (home_dir / ".mycli" / "config.toml").write_text(
+        'shell_path = "/user/bash"\n', encoding="utf-8"
+    )
+    (workspace / ".mycli" / "config.toml").write_text(
+        'shell_path = "/project/bash"\n', encoding="utf-8"
+    )
+
+    config = resolve_config(
+        cli_args={},
+        env={"MYCLI_API_KEY": "test", "MYCLI_SHELL_PATH": "/env/bash"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.shell_path == "/env/bash"
+
+
+def test_shell_path_project_config_precedes_legacy_config(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    (home_dir / ".config" / "mycli").mkdir(parents=True)
+    (workspace / ".mycli").mkdir(parents=True)
+    (home_dir / ".config" / "mycli" / "config.toml").write_text(
+        'shell_path = "/legacy/bash"\n', encoding="utf-8"
+    )
+    (workspace / ".mycli" / "config.toml").write_text(
+        'shell_path = "/project/bash"\n', encoding="utf-8"
+    )
+
+    config = resolve_config(
+        cli_args={},
+        env={"MYCLI_API_KEY": "test"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.shell_path == "/project/bash"
+
+
 def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

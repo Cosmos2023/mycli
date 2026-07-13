@@ -16,6 +16,25 @@ from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile
 
 
+def test_runtime_policy_gate_carries_shell_path_into_execution_options(
+    tmp_path: Path,
+) -> None:
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        workspace_root=tmp_path,
+        shell_path="/configured/bash",
+    )
+
+    options = gate.shell_execution_options()
+
+    assert options.shell_path == "/configured/bash"
+    assert options.to_trace_payload(
+        timeout_seconds=1,
+        timeout_capped=False,
+        env_keys=(),
+    )["custom_shell_path"] is True
+
+
 def _read_only_gate(workspace_root: Path) -> RuntimePolicyGate:
     gate = RuntimePolicyGate(
         approval_service=ApprovalService(SafetyPolicy(workspace_root=workspace_root)),

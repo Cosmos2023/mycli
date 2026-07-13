@@ -17,6 +17,7 @@ class ShellBackendRequest:
     command: str
     timeout_seconds: int
     cwd: str
+    shell_path: str | None = None
     owner_session_id: str = "legacy"
     run_in_background: bool = False
     env: dict[str, str] | None = None
@@ -49,6 +50,7 @@ class LocalShellBackend:
             request.command,
             timeout=request.timeout_seconds,
             workdir=request.cwd,
+            shell_path=request.shell_path,
             owner_session_id=request.owner_session_id,
             run_in_background=request.run_in_background,
             env=request.env,

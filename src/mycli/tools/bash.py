@@ -64,6 +64,7 @@ class ShellCommandRuntime:
         timeout: int = 120,
         workdir: str | None = None,
         run_in_background: bool = False,
+        shell_path: str | None = None,
         env: dict[str, str] | None = None,
         command_pattern: str | None = None,
         output_file: Path | None = None,
@@ -80,6 +81,7 @@ class ShellCommandRuntime:
             timeout_seconds=timeout,
             workdir=effective_cwd,
             background=run_in_background,
+            shell_path=shell_path,
             env=env,
             command_pattern=command_pattern,
             output_file=output_file,
@@ -124,6 +126,7 @@ def execute_bash(
     workdir: str | None = None,
     owner_session_id: str = LEGACY_SHELL_OWNER,
     run_in_background: bool = False,
+    shell_path: str | None = None,
     env: dict[str, str] | None = None,
     command_pattern: str | None = None,
     output_file: Path | None = None,
@@ -131,7 +134,26 @@ def execute_bash(
     call_id: str | None = None,
     lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
     interrupt_token: RuntimeInterruptToken | None = None,
+    backend: ShellBackend | None = None,
 ) -> dict[str, Any]:
+    if backend is not None:
+        return backend.execute(
+            ShellBackendRequest(
+                command=command,
+                timeout_seconds=timeout,
+                cwd=workdir or os.getcwd(),
+                owner_session_id=owner_session_id,
+                run_in_background=run_in_background,
+                shell_path=shell_path,
+                env=env,
+                command_pattern=command_pattern,
+                output_file=output_file,
+                notification_sink=notification_sink,
+                call_id=call_id,
+                lifecycle_sink=lifecycle_sink,
+                interrupt_token=interrupt_token,
+            )
+        )
     runtime = (
         DEFAULT_SHELL_COMMAND_RUNTIME
         if owner_session_id == LEGACY_SHELL_OWNER
@@ -142,6 +164,7 @@ def execute_bash(
         timeout=timeout,
         workdir=workdir,
         run_in_background=run_in_background,
+        shell_path=shell_path,
         env=env,
         command_pattern=command_pattern,
         output_file=output_file,
@@ -276,6 +299,7 @@ class BashTool:
                 cwd=str(cwd_result),
                 owner_session_id=self._owner_session_id,
                 run_in_background=bool(arguments.get("run_in_background", False)),
+                shell_path=shell_options.shell_path,
                 env=env,
                 command_pattern=analysis.command_pattern,
                 output_file=background_output_file,

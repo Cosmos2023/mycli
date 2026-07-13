@@ -5,6 +5,7 @@ import time
 from mycli.domain.runtime import (
     RiskLevel,
     RuntimeInterruptToken,
+    ShellBackendProfile,
     ShellEnvironmentPolicy,
     ShellExecutionOptions,
 )
@@ -13,6 +14,28 @@ from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackendRequest
+
+
+def test_execute_bash_forwards_configured_shell_path(tmp_path: Path) -> None:
+    captured: list[ShellBackendRequest] = []
+
+    class CapturingBackend:
+        @property
+        def profile(self) -> ShellBackendProfile:
+            return ShellBackendProfile()
+
+        def execute(self, request: ShellBackendRequest) -> dict[str, object]:
+            captured.append(request)
+            return {"success": True, "status": "completed", "output": "ok"}
+
+    execute_bash(
+        "printf ok",
+        workdir=str(tmp_path),
+        shell_path="/configured/bash",
+        backend=CapturingBackend(),
+    )
+
+    assert captured[0].shell_path == "/configured/bash"
 
 
 def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:

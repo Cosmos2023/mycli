@@ -231,6 +231,7 @@ class AgentConfig:
     usage_cache_read_cost_per_1k: float = 0.0
     usage_cache_write_cost_per_1k: float = 0.0
     recent_message_count: int = 6
+    shell_path: str | None = None
     shell_environment_policy: ShellEnvironmentPolicy | None = None
     sandbox_writable_roots: tuple[Path, ...] = ()
     sandbox_denied_read_roots: tuple[Path, ...] = ()

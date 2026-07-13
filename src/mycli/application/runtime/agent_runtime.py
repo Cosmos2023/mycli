@@ -405,6 +405,7 @@ class AgentRuntime:
             execpolicy_rules=self._execpolicy_rules,
             collaboration_mode=config.collaboration_mode,
             sandbox_mode=config.sandbox_mode,
+            shell_path=config.shell_path,
             shell_environment_policy=config.shell_environment_policy,
         )
         self._planning_effects = RuntimePlanningEffects(

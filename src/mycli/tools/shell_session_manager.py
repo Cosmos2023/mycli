@@ -29,6 +29,7 @@ class ShellStartRequest:
     cwd: Path
     timeout_seconds: int
     background: bool
+    shell_path: str | None = None
     env: dict[str, str] | None = None
     command_pattern: str | None = None
     output_file: Path | None = None

@@ -764,6 +764,14 @@ def resolve_config(
         project_config=project_config,
         legacy_user_config=legacy_user_config,
     )
+    shell_path_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_SHELL_PATH",
+        config_key="shell_path",
+    )
     sandbox_writable_roots = _parse_merged_path_tuple(
         user_config=user_config,
         project_config=project_config,
@@ -852,6 +860,11 @@ def resolve_config(
         usage_cache_read_cost_per_1k=usage_cache_read_cost_per_1k,
         usage_cache_write_cost_per_1k=usage_cache_write_cost_per_1k,
         recent_message_count=int(str(recent_message_count_value)),
+        shell_path=(
+            str(shell_path_value).strip()
+            if shell_path_value is not None and str(shell_path_value).strip()
+            else None
+        ),
         shell_environment_policy=shell_environment_policy,
         sandbox_writable_roots=sandbox_writable_roots,
         sandbox_denied_read_roots=sandbox_denied_read_roots,
