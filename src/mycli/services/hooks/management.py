@@ -77,9 +77,16 @@ class HookManagementResponse:
 
 
 class HookManagementService:
-    def __init__(self, *, workspace_root: Path, home_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_root: Path,
+        home_dir: Path,
+        shell_path: str | None = None,
+    ) -> None:
         self._workspace_root = workspace_root
         self._home_dir = home_dir
+        self._shell_path = shell_path
 
     def list_hooks(self) -> HookManagementResponse:
         discovery, allowlist = self._load()
@@ -206,6 +213,7 @@ class HookManagementService:
         discovery = HookConfigRegistry(
             workspace_root=self._workspace_root,
             home_dir=self._home_dir,
+            shell_path=self._shell_path,
         ).discover()
         return discovery, HookAllowlist(home_dir=self._home_dir)
 

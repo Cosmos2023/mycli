@@ -1,4 +1,5 @@
 from mycli.tools.bash import check_dangerous, check_forbidden, execute_bash
+from tests.support.shell_commands import python_shell_command
 
 
 class TestBashDanger:
@@ -56,7 +57,7 @@ class TestBashExecution:
         assert "hello" in result["output"]
 
     def test_output_truncation(self):
-        result = execute_bash("python3 -c \"print('x' * 20000)\"")
+        result = execute_bash(python_shell_command("print('x' * 20000)"))
 
         assert result["truncated"] is True
         assert "[... chars omitted]" in result["output"]

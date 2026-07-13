@@ -14,6 +14,7 @@ from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.process_controller import ProcessTerminationOutcome
 from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
 from mycli.tools.shell_session_manager import ShellSessionManager, ShellStartRequest
+from tests.support.shell_commands import python_shell_command
 
 
 def _request(
@@ -232,7 +233,7 @@ def test_manager_caps_output_event_delta_and_flushes_before_terminal(
     started = manager.start(
         ShellStartRequest(
             owner_session_id="session-a",
-            command="python3 -c \"print('x' * 200)\"",
+            command=python_shell_command("print('x' * 200)"),
             cwd=tmp_path,
             timeout_seconds=30,
             background=True,
@@ -335,7 +336,7 @@ def test_background_timeout_completes_without_polling(tmp_path: Path) -> None:
     started = manager.start(
         _request(
             tmp_path,
-            "python3 -c 'import time; time.sleep(30)'",
+            python_shell_command("import time; time.sleep(30)"),
             timeout_seconds=0,
         )
     )
@@ -361,7 +362,7 @@ def test_manager_rejects_cross_session_poll(tmp_path: Path) -> None:
 def test_manager_bounds_retained_output(tmp_path: Path) -> None:
     manager = ShellSessionManager(max_sessions=8, output_max_chars=32)
     started = manager.start(
-        _request(tmp_path, "python3 -c \"print('x' * 500)\"")
+        _request(tmp_path, python_shell_command("print('x' * 500)"))
     )
 
     snapshot = _wait_for_terminal(manager, "session-a", started.shell_id)
@@ -402,9 +403,8 @@ def test_foreground_snapshot_preserves_stdout_and_stderr(tmp_path: Path) -> None
     snapshot = manager.start(
         ShellStartRequest(
             owner_session_id="session-a",
-            command=(
-                "python3 -c \"import sys; print('out'); "
-                "sys.stderr.write('err\\n'); sys.exit(7)\""
+            command=python_shell_command(
+                "import sys; print('out'); sys.stderr.write('err\\n'); sys.exit(7)"
             ),
             cwd=tmp_path,
             timeout_seconds=30,
@@ -485,10 +485,9 @@ def test_concurrent_starts_respect_session_capacity(
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
 def test_terminate_kills_descendant_process_group(tmp_path: Path) -> None:
     manager = ShellSessionManager(max_sessions=8, output_max_chars=1024)
-    command = (
-        "python3 -c \"import subprocess,time; "
-        "child=subprocess.Popen(['sleep','30']); "
-        "print(child.pid, flush=True); time.sleep(30)\""
+    command = python_shell_command(
+        "import subprocess,time; child=subprocess.Popen(['sleep','30']); "
+        "print(child.pid, flush=True); time.sleep(30)"
     )
     started = manager.start(_request(tmp_path, command))
     output = _wait_for_output(manager, "session-a", started.shell_id)

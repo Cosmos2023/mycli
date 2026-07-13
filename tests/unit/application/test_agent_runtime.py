@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import sys
 from threading import Lock
 import time
 from dataclasses import replace
@@ -65,6 +66,7 @@ from mycli.tools.grep import GrepTool
 from mycli.tools.write import WriteTool
 from mycli.tools.plan import PlanTool
 from mycli.tools.ask_user_question import AskUserQuestionTool
+from tests.support.shell_commands import python_shell_command
 
 
 class PushThenDoneAdapter:
@@ -1235,7 +1237,7 @@ class ShellThenDoneAdapter:
                     "tool_call": ToolCall(
                         call_id="call_shell_1",
                         name="Bash",
-                        arguments={"args": ["python3", "-c", "print('shell-output')"]},
+                        arguments={"args": [sys.executable, "-c", "print('shell-output')"]},
                         reason="inspect shell output",
                     ),
                     "done": False,
@@ -1857,12 +1859,12 @@ def test_agent_runtime_executes_session_lifecycle_configured_hooks(tmp_path: Pat
                     {
                         "id": "session-start",
                         "hook_point": "session_start",
-                        "command": ["python3", str(script)],
+                        "command": [sys.executable, str(script)],
                     },
                     {
                         "id": "session-end",
                         "hook_point": "session_end",
-                        "command": ["python3", str(script)],
+                        "command": [sys.executable, str(script)],
                     },
                 ]
             }
@@ -2360,7 +2362,9 @@ def test_agent_runtime_enqueues_background_bash_task_notification(
 
     result = bash_tool.execute(
         {
-            "command": "python3 -c \"print('runtime-background-ready', flush=True)\"",
+            "command": python_shell_command(
+                "print('runtime-background-ready', flush=True)"
+            ),
             "run_in_background": True,
         }
     )

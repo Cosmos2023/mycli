@@ -20,9 +20,14 @@ def register_configured_hooks(
     home_dir: Path,
     trace_service: TraceService | None,
     session_id: str,
+    shell_path: str | None = None,
     monotonic_provider: Callable[[], float] = monotonic,
 ) -> HookConfigDiscovery:
-    discovery = HookConfigRegistry(workspace_root=workspace_root, home_dir=home_dir).discover()
+    discovery = HookConfigRegistry(
+        workspace_root=workspace_root,
+        home_dir=home_dir,
+        shell_path=shell_path,
+    ).discover()
     allowlist = HookAllowlist(home_dir=home_dir)
     for spec in discovery.hooks:
         callback = ConfiguredHookCallback(

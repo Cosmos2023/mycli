@@ -1444,6 +1444,7 @@ class ToolExecutionService:
             return {"runtime_enforcement": None}
         allowed_keys = {
             "backend",
+            "custom_shell_path",
             "filesystem",
             "network",
             "shell",

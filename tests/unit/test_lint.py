@@ -1,6 +1,9 @@
+from pathlib import Path
+import subprocess
 from unittest.mock import patch
 
-from mycli.tools.lint import _detect_linters, lint
+from mycli.tools.lint import LintTool, _detect_linters, lint
+from mycli.tools.shell_resolver import ShellCommandConfig
 
 
 class TestLint:
@@ -42,3 +45,30 @@ class TestLint:
 
         assert "diagnostics" in result
         assert result["diagnostics"][0]["file"] == "test.py"
+
+    def test_lint_runs_through_resolved_bash_without_shell_true(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[tool.ruff]", encoding="utf-8")
+        completed = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
+
+        with patch("mycli.tools.lint.subprocess.run", return_value=completed) as run:
+            lint(
+                cwd=tmp_path,
+                shell_path="/configured/bash",
+                shell_resolver=lambda path: ShellCommandConfig(Path(path or "")),
+            )
+
+        args, kwargs = run.call_args
+        assert args[0] == ["/configured/bash", "-c", "ruff check --output-format json"]
+        assert "shell" not in kwargs
+
+    def test_lint_tool_uses_configured_shell_path(self):
+        tool = LintTool()
+        tool.configure_shell_path("/configured/bash")
+
+        with patch(
+            "mycli.tools.lint.lint",
+            return_value={"diagnostics": [], "count": 0, "truncated": False},
+        ) as lint_call:
+            tool.execute({})
+
+        assert lint_call.call_args.kwargs["shell_path"] == "/configured/bash"

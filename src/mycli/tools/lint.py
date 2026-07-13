@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
-from typing import Any
+from typing import Any, Callable
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.shell_resolver import ShellCommandConfig, resolve_shell
 
 
 PROJECT_LINTERS = {
@@ -23,19 +24,25 @@ PROJECT_LINTERS = {
 MAX_DIAGNOSTICS = 30
 
 
-def lint(paths: str | None = None, *, cwd: Path | str | None = None) -> dict[str, Any]:
+def lint(
+    paths: str | None = None,
+    *,
+    cwd: Path | str | None = None,
+    shell_path: str | None = None,
+    shell_resolver: Callable[[str | None], ShellCommandConfig] = resolve_shell,
+) -> dict[str, Any]:
     root = Path.cwd() if cwd is None else Path(cwd)
     commands = _detect_linters(cwd=root)
     if not commands:
         return {"error": "[No linter detected for this project]"}
 
     all_diagnostics: list[dict[str, Any]] = []
+    shell = shell_resolver(shell_path)
     for command in commands:
         effective_command = f"{command} {paths}" if paths else command
         try:
             result = subprocess.run(
-                effective_command,
-                shell=True,
+                [str(shell.executable), *shell.args, effective_command],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -123,9 +130,18 @@ class LintTool:
         supports_parallel_tool_calls=True,
     )
 
+    def __init__(self) -> None:
+        self._shell_path: str | None = None
+
+    def configure_shell_path(self, shell_path: str | None) -> None:
+        self._shell_path = shell_path
+
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         paths = arguments.get("paths")
-        payload = lint(paths=paths if isinstance(paths, str) else None)
+        payload = lint(
+            paths=paths if isinstance(paths, str) else None,
+            shell_path=self._shell_path,
+        )
         success = "error" not in payload
         return ToolResult(
             success=success,

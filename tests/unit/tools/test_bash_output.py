@@ -3,11 +3,12 @@ import time
 from mycli.tools.bash import BashTool, execute_bash
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.kill_shell import KillShellTool, kill_shell
+from tests.support.shell_commands import python_shell_command
 
 
 def test_bash_output_reads_background_output_incrementally(tmp_path):
     result = execute_bash(
-        "python3 -c \"import time; print('ready', flush=True); time.sleep(2)\"",
+        python_shell_command("import time; print('ready', flush=True); time.sleep(2)"),
         workdir=str(tmp_path),
         run_in_background=True,
     )
@@ -62,7 +63,7 @@ def test_bash_output_rejects_shell_owned_by_another_session(tmp_path) -> None:
 
 def test_background_timeout_is_enforced_without_initial_poll(tmp_path) -> None:
     result = execute_bash(
-        "python3 -c 'import time; time.sleep(30)'",
+        python_shell_command("import time; time.sleep(30)"),
         timeout=0,
         workdir=str(tmp_path),
         run_in_background=True,

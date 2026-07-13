@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -13,6 +14,8 @@ from mycli.services.diagnostics.doctor import (
     render_doctor_report,
 )
 from mycli.services.mcp.diagnostics import McpDiscoveryDiagnostics, McpServerDiagnostic
+from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
+from tests.support.shell_commands import python_shell_command
 
 
 NODE_TUI_MARKERS = (
@@ -49,7 +52,7 @@ def test_doctor_service_reports_shell_process_diagnostics_without_raw_command(
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
     workspace.mkdir()
-    command = "python3 -c 'import time; time.sleep(30)'"
+    command = python_shell_command("import time; time.sleep(30)")
     started = execute_bash(
         command,
         workdir=str(workspace),
@@ -89,7 +92,7 @@ def test_doctor_service_reports_shell_backend_diagnostics(tmp_path: Path) -> Non
     report = DoctorService(
         workspace_root=workspace,
         home_dir=home,
-        env={"SHELL": str(shell)},
+        env={"MYCLI_SHELL_PATH": str(shell)},
         which=lambda _name: None,
     ).run()
 
@@ -111,7 +114,7 @@ def test_doctor_service_reports_background_job_diagnostics_without_raw_command(
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
     workspace.mkdir()
-    command = "python3 -c 'import time; time.sleep(30)'"
+    command = python_shell_command("import time; time.sleep(30)")
     result = execute_bash(command, workdir=str(workspace), run_in_background=True)
     shell_id = str(result["shell_id"])
     try:
@@ -483,7 +486,7 @@ def test_doctor_service_reports_configured_hook_diagnostics(tmp_path: Path) -> N
                     {
                         "id": "missing",
                         "hook_point": "pre_tool_use",
-                        "command": ["python3", str(missing_script)],
+                        "command": [sys.executable, str(missing_script)],
                     }
                 ]
             }
@@ -519,7 +522,7 @@ def test_doctor_service_reports_hook_allowlist_status(tmp_path: Path) -> None:
                     {
                         "id": "repo-hook",
                         "hook_point": "pre_tool_use",
-                        "command": ["python3", str(script)],
+                        "command": [sys.executable, str(script)],
                     }
                 ]
             }
@@ -556,7 +559,7 @@ def test_doctor_service_warns_for_inherit_safe_hook_env_policy(tmp_path: Path) -
                     {
                         "id": "repo-hook",
                         "hook_point": "pre_tool_use",
-                        "command": ["python3", str(script)],
+                        "command": [sys.executable, str(script)],
                         "env_policy": "inherit_safe",
                     }
                 ]
@@ -633,15 +636,58 @@ def test_doctor_service_warns_for_missing_tool_environment(tmp_path: Path) -> No
     report = DoctorService(
         workspace_root=workspace,
         home_dir=home,
-        env={"SHELL": "missing-shell"},
+        env={"MYCLI_SHELL_PATH": "missing-shell"},
         which=lambda _command: None,
         import_checker=lambda _module: False,
     ).run()
 
     check = next(check for check in report.checks if check.name == "tool_environment")
     assert check.status is DoctorStatus.WARNING
-    assert "shell not found" in check.message
+    assert "shell_path does not exist" in check.message
     assert "git not found" in check.message
+
+
+def test_doctor_service_uses_injected_windows_shell_resolver(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+    resolved = ShellCommandConfig(Path(r"C:\Program Files\Git\bin\bash.exe"))
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={"ProgramFiles": r"C:\Program Files"},
+        shell_resolver=lambda _path: resolved,
+        which=lambda command: "git" if command == "git" else None,
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "tool_environment")
+    assert check.status is DoctorStatus.OK
+    assert str(resolved.executable) in check.detail
+
+
+def test_doctor_service_reports_shell_resolution_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    _write_project_config(workspace)
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        shell_resolver=lambda _path: (_ for _ in ()).throw(
+            ShellResolutionError("Install Git for Windows")
+        ),
+        which=lambda command: "git" if command == "git" else None,
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "shell_backend_diagnostics")
+    assert check.status is DoctorStatus.WARNING
+    assert "Install Git for Windows" in check.detail
 
 
 def test_doctor_service_warns_for_mcp_discovery_failure_without_leaking_config(

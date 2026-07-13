@@ -2,11 +2,68 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 from mycli.services.hooks.allowlist import HookAllowlist, HookAllowlistEntry, command_digest
 from mycli.services.hooks.config import ConfiguredHookSpec, HookConfigRegistry
 from mycli.services.hooks.runner import ConfiguredHookCallback
 from mycli.services.hooks.types import HookAction, HookContext, HookPoint
+from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
+
+
+def test_string_hook_uses_resolved_bash(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    _write_json(
+        workspace / ".mycli" / "hooks.json",
+        {
+            "hooks": [
+                {
+                    "id": "repo-command",
+                    "hook_point": "pre_tool_use",
+                    "command": "echo '{}'",
+                }
+            ]
+        },
+    )
+
+    discovery = HookConfigRegistry(
+        workspace_root=workspace,
+        home_dir=tmp_path / "home",
+        shell_path="/custom/bash",
+        shell_resolver=lambda path: ShellCommandConfig(Path(path or "")),
+    ).discover()
+
+    assert discovery.issues == ()
+    assert discovery.hooks[0].command == ("/custom/bash", "-c", "echo '{}'")
+
+
+def test_string_hook_reports_shell_resolution_error(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    _write_json(
+        workspace / ".mycli" / "hooks.json",
+        {
+            "hooks": [
+                {
+                    "id": "repo-command",
+                    "hook_point": "pre_tool_use",
+                    "command": "echo '{}'",
+                }
+            ]
+        },
+    )
+
+    discovery = HookConfigRegistry(
+        workspace_root=workspace,
+        home_dir=tmp_path / "home",
+        shell_resolver=lambda _path: (_ for _ in ()).throw(
+            ShellResolutionError("Install Git for Windows")
+        ),
+    ).discover()
+
+    assert discovery.hooks == ()
+    assert "Install Git for Windows" in discovery.issues[0].message
 
 
 def test_hook_config_registry_discovers_repo_and_user_hooks(tmp_path: Path) -> None:
@@ -23,7 +80,7 @@ def test_hook_config_registry_discovers_repo_and_user_hooks(tmp_path: Path) -> N
                 {
                     "id": "user-session",
                     "hook_point": "session_start",
-                    "command": ["python3", str(user_script)],
+                    "command": [sys.executable, str(user_script)],
                 }
             ]
         },
@@ -35,7 +92,7 @@ def test_hook_config_registry_discovers_repo_and_user_hooks(tmp_path: Path) -> N
                 {
                     "id": "repo-read",
                     "hook_point": "pre_tool_use",
-                    "command": ["python3", str(repo_script)],
+                    "command": [sys.executable, str(repo_script)],
                     "matcher": {"tool_name": "Read"},
                     "timeout_seconds": 3,
                     "working_directory": "config",
@@ -45,7 +102,11 @@ def test_hook_config_registry_discovers_repo_and_user_hooks(tmp_path: Path) -> N
         },
     )
 
-    discovery = HookConfigRegistry(workspace_root=workspace, home_dir=home).discover()
+    discovery = HookConfigRegistry(
+        workspace_root=workspace,
+        home_dir=home,
+        shell_resolver=lambda _path: ShellCommandConfig(Path("/bin/bash")),
+    ).discover()
 
     assert discovery.issues == ()
     assert [hook.name for hook in discovery.hooks] == [
@@ -100,7 +161,7 @@ def test_hook_config_registry_discovers_codex_grouped_hooks(tmp_path: Path) -> N
     assert discovery.hooks[0].matches(tool_name="Bash") is True
     assert discovery.hooks[0].matches(tool_name="Read") is False
     assert discovery.hooks[1].matches(tool_name="anything") is True
-    assert discovery.hooks[0].command == ("sh", "-c", "echo '{}'")
+    assert discovery.hooks[0].command == ("/bin/bash", "-c", "echo '{}'")
     assert discovery.hooks[0].timeout_seconds == 4
 
 
@@ -135,7 +196,7 @@ def test_configured_hook_callback_maps_allow_deny_modify_and_trace(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    spec = _spec(tmp_path, command=["python3", str(script)])
+    spec = _spec(tmp_path, command=[sys.executable, str(script)])
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
@@ -163,7 +224,7 @@ def test_configured_hook_callback_maps_allow_deny_modify_and_trace(tmp_path: Pat
 def test_configured_hook_callback_timeout_and_error_do_not_deny(tmp_path: Path) -> None:
     slow_script = tmp_path / "slow.py"
     slow_script.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
-    spec = _spec(tmp_path, command=["python3", str(slow_script)], timeout_seconds=0.01)
+    spec = _spec(tmp_path, command=[sys.executable, str(slow_script)], timeout_seconds=0.01)
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
@@ -188,7 +249,7 @@ def test_configured_hook_callback_nonzero_exit_maps_to_error(tmp_path: Path) -> 
         "import sys\nprint('api_key=sk-secret')\nsys.exit(7)\n",
         encoding="utf-8",
     )
-    spec = _spec(tmp_path, command=["python3", str(script)])
+    spec = _spec(tmp_path, command=[sys.executable, str(script)])
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
@@ -222,7 +283,7 @@ def test_configured_hook_callback_requires_allowlist_before_execution(tmp_path: 
         ),
         encoding="utf-8",
     )
-    spec = _spec(tmp_path, command=["python3", str(script)])
+    spec = _spec(tmp_path, command=[sys.executable, str(script)])
     traces = []
     callback = ConfiguredHookCallback(
         spec=spec,
@@ -248,7 +309,7 @@ def test_configured_hook_callback_redacts_secret_messages(tmp_path: Path) -> Non
         "import json\nprint(json.dumps({'action':'deny','message':'api_key=sk-secret'}))\n",
         encoding="utf-8",
     )
-    spec = _spec(tmp_path, command=["python3", str(script)])
+    spec = _spec(tmp_path, command=[sys.executable, str(script)])
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     traces = []
     callback = ConfiguredHookCallback(
@@ -283,7 +344,7 @@ def test_configured_hook_callback_parses_additional_contexts(tmp_path: Path) -> 
     spec = _spec(
         tmp_path,
         hook_point=HookPoint.POST_TOOL_USE,
-        command=["python3", str(script)],
+        command=[sys.executable, str(script)],
     )
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     callback = ConfiguredHookCallback(
@@ -320,7 +381,7 @@ def test_configured_hook_callback_parses_codex_additional_context(tmp_path: Path
     spec = _spec(
         tmp_path,
         hook_point=HookPoint.POST_TOOL_USE,
-        command=["python3", str(script)],
+        command=[sys.executable, str(script)],
     )
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     callback = ConfiguredHookCallback(
@@ -345,7 +406,7 @@ def test_configured_hook_callback_maps_codex_block_and_exit_2(tmp_path: Path) ->
     block_spec = _spec(
         tmp_path,
         hook_point=HookPoint.USER_PROMPT_SUBMIT,
-        command=["python3", str(block_script)],
+        command=[sys.executable, str(block_script)],
     )
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((block_spec,))
     block_callback = ConfiguredHookCallback(
@@ -365,7 +426,7 @@ def test_configured_hook_callback_maps_codex_block_and_exit_2(tmp_path: Path) ->
     exit_spec = _spec(
         tmp_path,
         hook_point=HookPoint.STOP,
-        command=["python3", str(exit_script)],
+        command=[sys.executable, str(exit_script)],
     )
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((exit_spec,))
     exit_callback = ConfiguredHookCallback(
@@ -387,7 +448,7 @@ def test_configured_hook_callback_plain_text_context_for_session_start(tmp_path:
     spec = _spec(
         tmp_path,
         hook_point=HookPoint.SESSION_START,
-        command=["python3", str(script)],
+        command=[sys.executable, str(script)],
     )
     HookAllowlist(home_dir=tmp_path / "home").write_allowed((spec,))
     callback = ConfiguredHookCallback(
@@ -405,7 +466,7 @@ def test_configured_hook_callback_plain_text_context_for_session_start(tmp_path:
 
 def test_hook_allowlist_statuses_and_parse_issues(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    spec = _spec(tmp_path, command=["python3", str(tmp_path / "hook.py")])
+    spec = _spec(tmp_path, command=[sys.executable, str(tmp_path / "hook.py")])
     allowlist = HookAllowlist(home_dir=home)
 
     missing = allowlist.status_for(spec)

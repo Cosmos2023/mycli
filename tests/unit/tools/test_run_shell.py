@@ -14,6 +14,8 @@ from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackendRequest
+from tests.support.shell_commands import python_shell_command
+import sys
 
 
 def test_execute_bash_forwards_configured_shell_path(tmp_path: Path) -> None:
@@ -44,7 +46,7 @@ def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:
     result = tool.run(
         ToolCall(
             name="Bash",
-            arguments={"args": ["python3", "-c", "print('ok')"]},
+            arguments={"args": [sys.executable, "-c", "print('ok')"]},
             reason="check shell wiring",
         )
     )
@@ -56,7 +58,7 @@ def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:
     assert result.raw_payload["stderr"] == ""
     assert result.raw_payload["timed_out"] is False
     assert isinstance(result.raw_payload["duration_ms"], int)
-    assert result.raw_payload["command_pattern"] == "python3 -c print('ok')"
+    assert result.raw_payload["command_pattern"].startswith(sys.executable)
 
 
 def test_shell_tool_executes_with_workspace_cwd(tmp_path: Path) -> None:
@@ -81,7 +83,7 @@ def test_shell_tool_background_writes_output_file_and_notifies(tmp_path: Path) -
 
     result = tool.execute(
         {
-            "command": "python3 -c \"print('background-ready', flush=True)\"",
+            "command": python_shell_command("print('background-ready', flush=True)"),
             "run_in_background": True,
         }
     )
@@ -316,7 +318,7 @@ def test_shell_tool_rejects_cwd_outside_workspace(tmp_path: Path) -> None:
 
 def test_execute_bash_reports_nonzero_exit() -> None:
     result = execute_bash(
-        "python3 -c \"import sys; sys.stderr.write('bad'); sys.exit(7)\""
+        python_shell_command("import sys; sys.stderr.write('bad'); sys.exit(7)")
     )
 
     assert result["exit_code"] == 7
@@ -328,7 +330,7 @@ def test_execute_bash_reports_nonzero_exit() -> None:
 
 def test_execute_bash_reports_timeout() -> None:
     result = execute_bash(
-        "python3 -c \"import time; time.sleep(1)\"",
+        python_shell_command("import time; time.sleep(1)"),
         timeout=0,
     )
 
@@ -346,7 +348,7 @@ def test_execute_bash_interrupt_token_stops_foreground_process() -> None:
     def run_command() -> None:
         started.set()
         result_holder["result"] = execute_bash(
-            "python3 -c \"import time; time.sleep(30)\"",
+            python_shell_command("import time; time.sleep(30)"),
             timeout=30,
             interrupt_token=token,
         )
@@ -368,7 +370,7 @@ def test_execute_bash_interrupt_token_stops_foreground_process() -> None:
 
 
 def test_execute_bash_reports_truncation_metadata() -> None:
-    result = execute_bash("python3 -c \"print('x' * 20000)\"")
+    result = execute_bash(python_shell_command("print('x' * 20000)"))
 
     assert result["truncated"] is True
     assert result["output_chars"] > 10_000

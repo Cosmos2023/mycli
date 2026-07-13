@@ -189,6 +189,7 @@ def handle_hooks_command(
     *,
     cwd: Path | None = None,
     home: Path | None = None,
+    env: dict[str, str] | None = None,
     output_func: Callable[[str], Any] = print,
 ) -> int | None:
     if cli_args.get("command") != "hooks":
@@ -196,9 +197,13 @@ def handle_hooks_command(
     utility_args = cli_args.get("utility_args", [])
     args = [str(item) for item in utility_args] if isinstance(utility_args, list) else []
     json_output = bool(cli_args.get("json_output"))
+    workspace_root = cwd or Path.cwd()
+    home_dir = home or Path.home()
+    config = resolve_config({}, dict(env or os.environ), workspace_root, home_dir)
     service = HookManagementService(
-        workspace_root=cwd or Path.cwd(),
-        home_dir=home or Path.home(),
+        workspace_root=workspace_root,
+        home_dir=home_dir,
+        shell_path=config.shell_path,
     )
     response = _dispatch_hooks_command(service, args)
     if json_output:
@@ -604,6 +609,7 @@ def main(
         args,
         cwd=cwd,
         home=home,
+        env=env,
         output_func=output_func,
     )
     if hooks_exit_code is not None:

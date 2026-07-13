@@ -5,8 +5,14 @@ from enum import StrEnum
 import json
 from pathlib import Path
 import re
+from typing import Callable
 
 from mycli.services.hooks.types import HookPoint
+from mycli.tools.shell_resolver import (
+    ShellCommandConfig,
+    ShellResolutionError,
+    resolve_shell,
+)
 
 DEFAULT_HOOK_TIMEOUT_SECONDS = 2.0
 MAX_HOOK_TIMEOUT_SECONDS = 30.0
@@ -88,9 +94,18 @@ class HookConfigDiscovery:
 
 
 class HookConfigRegistry:
-    def __init__(self, *, workspace_root: Path, home_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_root: Path,
+        home_dir: Path,
+        shell_path: str | None = None,
+        shell_resolver: Callable[[str | None], ShellCommandConfig] = resolve_shell,
+    ) -> None:
         self._workspace_root = workspace_root
         self._home_dir = home_dir
+        self._shell_path = shell_path
+        self._shell_resolver = shell_resolver
 
     @property
     def repo_config_path(self) -> Path:
@@ -144,7 +159,14 @@ class HookConfigRegistry:
         issues: list[HookConfigIssue] = []
         seen_ids: set[str] = set()
         for index, raw_hook in enumerate(raw_hooks):
-            parsed, issue = _parse_hook(scope=scope, path=path, index=index, raw_hook=raw_hook)
+            parsed, issue = _parse_hook(
+                scope=scope,
+                path=path,
+                index=index,
+                raw_hook=raw_hook,
+                shell_path=self._shell_path,
+                shell_resolver=self._shell_resolver,
+            )
             if issue is not None:
                 issues.append(issue)
                 continue
@@ -243,6 +265,8 @@ def _parse_hook(
     path: Path,
     index: int,
     raw_hook: object,
+    shell_path: str | None,
+    shell_resolver: Callable[[str | None], ShellCommandConfig],
 ) -> tuple[ConfiguredHookSpec | None, HookConfigIssue | None]:
     if not isinstance(raw_hook, dict):
         return None, HookConfigIssue(scope, path, f"hooks[{index}] must be an object")
@@ -257,7 +281,14 @@ def _parse_hook(
     except ValueError:
         allowed = ", ".join(item.value for item in HookPoint)
         return None, HookConfigIssue(scope, path, f"{hook_id}.hook_point unsupported: {allowed}")
-    command = _parse_command(raw_hook.get("command"))
+    try:
+        command = _parse_command(
+            raw_hook.get("command"),
+            shell_path=shell_path,
+            shell_resolver=shell_resolver,
+        )
+    except ShellResolutionError as exc:
+        return None, HookConfigIssue(scope, path, f"{hook_id}.command: {exc}")
     if command is None:
         return None, HookConfigIssue(scope, path, f"{hook_id}.command must be a non-empty string list")
     timeout = _parse_timeout(raw_hook.get("timeout_seconds"))
@@ -310,9 +341,15 @@ def _required_string(value: object) -> str | None:
     return None
 
 
-def _parse_command(value: object) -> tuple[str, ...] | None:
+def _parse_command(
+    value: object,
+    *,
+    shell_path: str | None,
+    shell_resolver: Callable[[str | None], ShellCommandConfig],
+) -> tuple[str, ...] | None:
     if isinstance(value, str) and value.strip():
-        return ("sh", "-c", value.strip())
+        shell = shell_resolver(shell_path)
+        return (str(shell.executable), *shell.args, value.strip())
     if not isinstance(value, list) or not value:
         return None
     command = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())

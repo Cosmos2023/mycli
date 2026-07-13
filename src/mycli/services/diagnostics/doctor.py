@@ -30,6 +30,11 @@ from mycli.services.subagents import inspect_configured_subagent_profiles
 from mycli.services.plugins import PluginCommandRegistry, PluginLoadStatus, load_enabled_plugins
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.shell_resolver import (
+    ShellCommandConfig,
+    ShellResolutionError,
+    resolve_shell,
+)
 
 _TRACE_SCAN_LIMIT = 50
 _TRACE_DETAIL_LIMIT = 3
@@ -365,6 +370,7 @@ class DoctorReport:
 
 WhichFunc = Callable[[str], str | None]
 ImportChecker = Callable[[str], bool]
+ShellResolver = Callable[[str | None], ShellCommandConfig]
 
 
 class DoctorService:
@@ -376,6 +382,7 @@ class DoctorService:
         env: Mapping[str, str],
         which: WhichFunc | None = None,
         import_checker: ImportChecker | None = None,
+        shell_resolver: ShellResolver | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._home_dir = home_dir
@@ -383,6 +390,18 @@ class DoctorService:
         self._layout = MycliStorageLayout.from_home_dir(home_dir)
         self._which = which or shutil.which
         self._import_checker = import_checker or _can_import
+        self._shell_resolver = shell_resolver or (
+            lambda path: resolve_shell(path, env=self._env)
+        )
+
+    def _resolve_shell(self) -> ShellCommandConfig:
+        config = resolve_config(
+            cli_args={"session": "doctor", "model": None},
+            env=self._env,
+            cwd=self._workspace_root,
+            home=self._home_dir,
+        )
+        return self._shell_resolver(config.shell_path)
 
     def run(self) -> DoctorReport:
         checks: list[DoctorCheck] = []
@@ -1307,17 +1326,14 @@ class DoctorService:
         from mycli.domain.runtime import ShellBackendProfile
 
         profile = ShellBackendProfile()
-        shell = self._env.get("SHELL") or "/bin/bash"
-        shell_path = Path(shell).expanduser()
-        available = False
-        detail_shell = ""
-        if shell_path.is_absolute():
-            available = shell_path.exists() and _is_executable_file(shell_path)
-            detail_shell = str(shell_path)
+        try:
+            shell = self._resolve_shell()
+        except ShellResolutionError as exc:
+            available = False
+            detail_shell = str(exc)
         else:
-            resolved = self._which(shell)
-            available = bool(resolved)
-            detail_shell = resolved or shell
+            available = True
+            detail_shell = str(shell.executable)
         status = DoctorStatus.OK if available else DoctorStatus.WARNING
         message = (
             f"shell backend {profile.backend} "
@@ -2237,19 +2253,12 @@ class DoctorService:
     def _check_tool_environment(self) -> Iterable[DoctorCheck]:
         issues: list[str] = []
         details: list[str] = []
-        shell = self._env.get("SHELL") or "/bin/bash"
-        shell_path = Path(shell).expanduser()
-        if shell_path.is_absolute():
-            if shell_path.exists() and _is_executable_file(shell_path):
-                details.append(f"shell={shell_path}")
-            else:
-                issues.append(f"shell not executable: {shell_path}")
+        try:
+            shell = self._resolve_shell()
+        except ShellResolutionError as exc:
+            issues.append(str(exc))
         else:
-            resolved_shell = self._which(shell)
-            if resolved_shell:
-                details.append(f"shell={resolved_shell}")
-            else:
-                issues.append(f"shell not found: {shell}")
+            details.append(f"shell={shell.executable}")
         git_path = self._which("git")
         if git_path:
             details.append(f"git={git_path}")

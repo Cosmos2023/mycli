@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -52,6 +53,7 @@ from mycli.tools.bash import BashTool
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.tools.write import WriteTool
+from tests.support.shell_commands import python_shell_command
 
 
 class FakeTool:
@@ -1159,7 +1161,7 @@ def test_tool_execution_service_sandbox_shell_disabled_blocks_execpolicy_allow(
         conversation=Conversation(session_id="demo"),
         call=ToolCall(
             name="Bash",
-            arguments={"command": "python3 -c 'print(\"secret-output\")'"},
+            arguments={"command": python_shell_command('print("secret-output")')},
             reason="probe",
             call_id="call_shell_disabled",
         ),
@@ -1396,7 +1398,7 @@ def test_tool_execution_service_execpolicy_allow_runs_shell_with_bounded_trace(
                     ExecPolicyRule(
                         source=ExecPolicySource.PROJECT,
                         index=0,
-                        pattern=("python3", "-c"),
+                        pattern=(sys.executable, "-c"),
                         decision=ExecPolicyDecision.ALLOW,
                     ),
                 )
@@ -1420,7 +1422,7 @@ def test_tool_execution_service_execpolicy_allow_runs_shell_with_bounded_trace(
         conversation=conversation,
         call=ToolCall(
             name="Bash",
-            arguments={"command": "python3 -c 'print(\"ok\")'"},
+            arguments={"command": python_shell_command('print("ok")')},
             reason="probe",
             call_id="call_shell_1",
         ),
@@ -1458,7 +1460,7 @@ def test_tool_execution_service_shell_lifecycle_trace_has_bounded_process_metada
                     ExecPolicyRule(
                         source=ExecPolicySource.PROJECT,
                         index=0,
-                        pattern=("python3", "-c"),
+                        pattern=(sys.executable, "-c"),
                         decision=ExecPolicyDecision.ALLOW,
                     ),
                 )
@@ -1476,7 +1478,7 @@ def test_tool_execution_service_shell_lifecycle_trace_has_bounded_process_metada
             ),
         )
     )
-    command = "python3 -c 'import time; time.sleep(30)'"
+    command = python_shell_command("import time; time.sleep(30)")
 
     service.execute_tool_call(
         conversation=Conversation(session_id="demo"),
@@ -1542,7 +1544,7 @@ def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
         conversation=Conversation(session_id="demo"),
         call=ToolCall(
             name="Bash",
-            arguments={"command": "python3 -c 'print(\"ok\")'", "timeout": 999},
+            arguments={"command": python_shell_command('print("ok")'), "timeout": 999},
             reason="probe",
             call_id="call_shell_enforced",
         ),
@@ -1613,7 +1615,7 @@ def test_tool_execution_service_injects_shell_interrupt_token_without_tracing_it
         conversation=Conversation(session_id="demo"),
         call=ToolCall(
             name="Bash",
-            arguments={"command": "python3 -c 'print(\"ok\")'"},
+            arguments={"command": python_shell_command('print("ok")')},
             reason="probe",
             call_id="call_shell_interrupt",
         ),
@@ -1939,7 +1941,7 @@ def test_tool_execution_service_runs_configured_pre_tool_hook(
                     {
                         "id": "deny-read",
                         "hook_point": "pre_tool_use",
-                        "command": ["python3", str(hook_script)],
+                        "command": [sys.executable, str(hook_script)],
                         "matcher": {"tool_name": "read_file"},
                     }
                 ]
@@ -2167,7 +2169,7 @@ def test_tool_execution_service_skips_non_allowlisted_configured_hook(
                     {
                         "id": "deny-read",
                         "hook_point": "pre_tool_use",
-                        "command": ["python3", str(hook_script)],
+                        "command": [sys.executable, str(hook_script)],
                         "matcher": {"tool_name": "read_file"},
                     }
                 ]

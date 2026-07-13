@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import shlex
 import time
@@ -212,6 +213,7 @@ class BashTool:
         self._background_output_dir: Path | None = None
         self._notification_sink: Callable[[TaskNotification], None] | None = None
         self._lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None
+        self._shell_path: str | None = None
 
     def configure_background_tasks(
         self,
@@ -230,6 +232,9 @@ class BashTool:
 
     def configure_shell_session(self, session_id: str) -> None:
         self._owner_session_id = session_id
+
+    def configure_shell_path(self, shell_path: str | None) -> None:
+        self._shell_path = shell_path
 
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="unknown", process=True)
@@ -284,6 +289,8 @@ class BashTool:
         if isinstance(cwd_result, ToolResult):
             return cwd_result
         shell_options = _shell_execution_options(arguments.get("_runtime_shell_options"))
+        if shell_options.shell_path is None and self._shell_path is not None:
+            shell_options = replace(shell_options, shell_path=self._shell_path)
         timeout_value = arguments.get("timeout", 120)
         timeout, timeout_capped = shell_options.effective_timeout(timeout_value)
         env = _shell_env(shell_options)

@@ -357,6 +357,7 @@ class AgentRuntime:
             home_dir=home_dir,
             trace_service=self._trace_service,
             session_id=config.session_id,
+            shell_path=config.shell_path,
             monotonic_provider=self._monotonic,
         )
         self._plugin_runtime_state = load_enabled_plugins(
@@ -453,6 +454,7 @@ class AgentRuntime:
             ),
             write_diagnostics_runner=WriteDiagnosticsService(
                 workspace_root=config.workspace_root,
+                shell_path=config.shell_path,
             ).run,
             policy_gate=self._runtime_policy_gate,
         )
@@ -1047,6 +1049,9 @@ class AgentRuntime:
 
     def _configure_background_shell_tasks(self) -> None:
         for tool in self._tool_registry.list_all():
+            configure_shell_path = getattr(tool, "configure_shell_path", None)
+            if callable(configure_shell_path):
+                configure_shell_path(self._config.shell_path)
             configure_owner = getattr(tool, "configure_shell_session", None)
             if callable(configure_owner):
                 configure_owner(self._config.session_id)
