@@ -6,6 +6,7 @@ from mycli.domain.runtime import (
     DecisionKind,
     PendingApproval,
     SessionCommandAllowance,
+    ShellKind,
     ShellProfile,
 )
 from mycli.domain.tooling.calls import ToolCall
@@ -84,7 +85,10 @@ class ApprovalService:
     ) -> bool:
         if command_pattern is None or call.name not in {"Shell", "Bash", "run_shell"}:
             return False
+        shell_profile = self._safety_policy.shell_profile
+        shell_kind = ShellKind.BASH if shell_profile is None else shell_profile.kind
         return any(
             allowance.command_pattern == command_pattern
+            and allowance.shell_kind is shell_kind
             for allowance in self._session_allowances
         )

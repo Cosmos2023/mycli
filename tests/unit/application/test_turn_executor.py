@@ -65,7 +65,7 @@ class PushThenLoopAdapter:
                     "assistant_message": None,
                     "progress_message": "Preparing a risky push",
                     "tool_call": ToolCall(
-                        name="Bash",
+                        name="Shell",
                         arguments={"command": "git push origin main"},
                         reason="publish branch",
                     ),

@@ -280,6 +280,7 @@ class PendingDecision:
 @dataclass(slots=True, frozen=True)
 class SessionCommandAllowance:
     command_pattern: str
+    shell_kind: ShellKind = ShellKind.BASH
 
     def __post_init__(self) -> None:
         if not self.command_pattern or not self.command_pattern.strip():

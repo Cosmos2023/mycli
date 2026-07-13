@@ -33,6 +33,7 @@ from mycli.domain.runtime import (
     RuntimeTraceEvent,
     RuntimeInterruptToken,
     SessionCommandAllowance,
+    ShellKind,
     StopReason,
     SuspendedTurn,
     TurnItem,
@@ -452,10 +453,15 @@ class TurnExecutor:
             previous_allowances = runtime._session_service.load_command_allowances(
                 runtime._config.session_id
             )
-            new_allowance = decision.command_pattern not in previous_allowances
+            shell_kind = _decision_shell_kind(decision)
+            allowance = SessionCommandAllowance(
+                command_pattern=decision.command_pattern,
+                shell_kind=shell_kind,
+            )
+            new_allowance = allowance not in previous_allowances
             runtime._session_service.add_command_allowance(
                 runtime._config.session_id,
-                SessionCommandAllowance(command_pattern=decision.command_pattern),
+                allowance,
             )
             _record_approval_allowance(
                 runtime=runtime,
@@ -2093,6 +2099,14 @@ def _record_approval_allowance(
         message=f"Allowed {decision.tool_call.name} for this session.",
         context=payload,
     )
+
+
+def _decision_shell_kind(decision: PendingDecision) -> ShellKind:
+    value = decision.metadata.get("shell_kind", ShellKind.BASH.value)
+    try:
+        return ShellKind(str(value))
+    except ValueError:
+        return ShellKind.BASH
 
 
 def _record_approval_recovery(

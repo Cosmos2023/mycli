@@ -40,6 +40,7 @@ from mycli.domain.runtime import (
     ShellLifecycleEvent,
     RuntimeStreamEvent,
     SessionCommandAllowance,
+    ShellKind,
     StopReason,
     TurnItemType,
     TurnRollout,
@@ -115,6 +116,30 @@ def test_agent_runtime_resumes_after_approval(tmp_path: Path) -> None:
 
     resumed = runtime.resolve_pending_approval("1")
     assert resumed.assistant_message == "Push finished"
+
+
+def test_agent_runtime_persists_allowance_for_active_shell_kind(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+    runtime.rebind_session(replace(runtime._config, shell_path="/bin/sh"))
+
+    first = runtime.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+
+    resumed = runtime.resolve_pending_approval("3")
+
+    assert resumed.assistant_message == "Push finished"
+    assert runtime._session_service.load_command_allowances(
+        runtime._config.session_id
+    ) == (
+        SessionCommandAllowance(
+            command_pattern="git push",
+            shell_kind=ShellKind.SH,
+        ),
+    )
 
 
 def test_agent_runtime_approval_resume_streams_tool_lifecycle_events(

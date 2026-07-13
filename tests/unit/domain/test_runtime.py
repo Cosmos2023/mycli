@@ -18,6 +18,7 @@ from mycli.domain.runtime import (
     RehydrationBudget,
     RuntimeEventEnvelope,
     SessionCommandAllowance,
+    ShellKind,
     StopReason,
     TurnItem,
     TurnItemType,
@@ -278,6 +279,12 @@ def test_pending_decision_defends_against_invalid_states(tmp_path: Path) -> None
 def test_session_command_allowance_requires_non_blank_pattern() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         SessionCommandAllowance(command_pattern="   ")
+
+
+def test_legacy_session_command_allowance_defaults_to_bash() -> None:
+    allowance = SessionCommandAllowance(command_pattern="git status")
+
+    assert allowance.shell_kind is ShellKind.BASH
 
 
 def test_tool_exposure_keeps_callable_and_namespaced_routes_stable() -> None:

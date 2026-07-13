@@ -40,7 +40,6 @@ from mycli.domain.runtime import (
     ProviderProjectionLane,
     ReasoningEffort,
     RehydrationBudget,
-    SessionCommandAllowance,
     StopReason,
     TurnContext,
     TurnItem,
@@ -2229,9 +2228,5 @@ class AgentRuntime:
         )
 
     def _refresh_approval_session_allowances(self) -> None:
-        raw_patterns = self._session_service.load_command_allowances(self._config.session_id)
-        allowances = tuple(
-            SessionCommandAllowance(command_pattern=pattern)
-            for pattern in raw_patterns
-        )
+        allowances = self._session_service.load_command_allowances(self._config.session_id)
         self._approval_service.set_session_allowances(allowances)

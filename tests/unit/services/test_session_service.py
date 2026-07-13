@@ -22,6 +22,7 @@ from mycli.domain.runtime import (
     PlanStatus,
     RuntimeBlock,
     SessionCommandAllowance,
+    ShellKind,
     StopReason,
     SuspendedTurn,
     TurnItem,
@@ -1279,6 +1280,38 @@ def test_session_service_round_trips_allowlist(tmp_path: Path) -> None:
     )
     assert service.clear_command_allowances("demo") == 2
     assert service.load_command_allowances("demo") == ()
+
+
+def test_session_service_loads_legacy_string_allowance_as_bash(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    service._save_state(
+        session_id="demo",
+        thread_id="demo",
+        state_key="command_allowances",
+        payload=["git status"],
+    )
+
+    assert service.load_command_allowances("demo") == (
+        SessionCommandAllowance(
+            command_pattern="git status",
+            shell_kind=ShellKind.BASH,
+        ),
+    )
+
+
+def test_session_service_round_trips_shell_scoped_allowance(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    allowance = SessionCommandAllowance(
+        command_pattern="git status",
+        shell_kind=ShellKind.POWERSHELL,
+    )
+
+    service.add_command_allowance("demo", allowance)
+
+    assert service.load_command_allowances("demo") == (allowance,)
+    assert service._load_state_list("demo", "command_allowances") == [
+        {"command_pattern": "git status", "shell_kind": "powershell"}
+    ]
 
 
 def test_session_service_round_trips_suspended_turn(tmp_path: Path) -> None:

@@ -20,6 +20,7 @@ from mycli.domain.runtime import (
     PlanState,
     PlanStatus,
     SessionCommandAllowance,
+    ShellKind,
     SessionRuntimeSnapshot,
     StopReason,
     SuspendedTurn,
@@ -363,25 +364,34 @@ class SessionService:
 
     def add_command_allowance(self, session_id: str, allowance: SessionCommandAllowance) -> None:
         payload = list(self.load_command_allowances(session_id))
-        if allowance.command_pattern not in payload:
-            payload.append(allowance.command_pattern)
+        if allowance not in payload:
+            payload.append(allowance)
         self._save_state(
             session_id=session_id,
             thread_id=session_id,
             state_key=self._KEY_ALLOWLIST,
-            payload=payload,
+            payload=[_serialize_command_allowance(item) for item in payload],
         )
 
-    def remove_command_allowance(self, session_id: str, command_pattern: str) -> bool:
+    def remove_command_allowance(
+        self,
+        session_id: str,
+        command_pattern: str,
+        shell_kind: ShellKind = ShellKind.BASH,
+    ) -> bool:
         payload = list(self.load_command_allowances(session_id))
-        if command_pattern not in payload:
+        allowance = SessionCommandAllowance(
+            command_pattern=command_pattern,
+            shell_kind=shell_kind,
+        )
+        if allowance not in payload:
             return False
-        payload.remove(command_pattern)
+        payload.remove(allowance)
         self._save_state(
             session_id=session_id,
             thread_id=session_id,
             state_key=self._KEY_ALLOWLIST,
-            payload=payload,
+            payload=[_serialize_command_allowance(item) for item in payload],
         )
         return True
 
@@ -717,14 +727,29 @@ class SessionService:
         payload = self._load_state_list(session_id, self._KEY_CONTRIBUTED_TOOL_STATE)
         return [item for item in payload if isinstance(item, dict)]
 
-    def is_command_allowed(self, session_id: str, command_pattern: str | None) -> bool:
+    def is_command_allowed(
+        self,
+        session_id: str,
+        command_pattern: str | None,
+        shell_kind: ShellKind = ShellKind.BASH,
+    ) -> bool:
         if not command_pattern:
             return False
-        return command_pattern in self.load_command_allowances(session_id)
+        return SessionCommandAllowance(
+            command_pattern=command_pattern,
+            shell_kind=shell_kind,
+        ) in self.load_command_allowances(session_id)
 
-    def load_command_allowances(self, session_id: str) -> tuple[str, ...]:
+    def load_command_allowances(
+        self,
+        session_id: str,
+    ) -> tuple[SessionCommandAllowance, ...]:
         payload = self._load_state_list(session_id, self._KEY_ALLOWLIST)
-        allowances = [item for item in payload if isinstance(item, str)]
+        allowances = [
+            allowance
+            for item in payload
+            if (allowance := _deserialize_command_allowance(item)) is not None
+        ]
         return tuple(allowances)
 
     def list_sessions(self, limit: int = 20) -> tuple[SessionOverview, ...]:
@@ -968,3 +993,30 @@ class SessionService:
         if not isinstance(payload, list):
             raise ValueError(f"{state_key} must serialize to a list.")
         return payload
+
+
+def _serialize_command_allowance(
+    allowance: SessionCommandAllowance,
+) -> dict[str, str]:
+    return {
+        "command_pattern": allowance.command_pattern,
+        "shell_kind": allowance.shell_kind.value,
+    }
+
+
+def _deserialize_command_allowance(item: object) -> SessionCommandAllowance | None:
+    if isinstance(item, str):
+        return SessionCommandAllowance(command_pattern=item)
+    if not isinstance(item, dict):
+        return None
+    command_pattern = item.get("command_pattern")
+    shell_kind = item.get("shell_kind", ShellKind.BASH.value)
+    if not isinstance(command_pattern, str) or not isinstance(shell_kind, str):
+        return None
+    try:
+        return SessionCommandAllowance(
+            command_pattern=command_pattern,
+            shell_kind=ShellKind(shell_kind),
+        )
+    except ValueError:
+        return None

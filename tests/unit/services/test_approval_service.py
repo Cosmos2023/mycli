@@ -1,4 +1,11 @@
-from mycli.domain.runtime import SessionCommandAllowance
+from pathlib import Path
+
+from mycli.domain.runtime import (
+    PowerShellEdition,
+    SessionCommandAllowance,
+    ShellKind,
+    ShellProfile,
+)
 from mycli.domain.tools import ToolCall
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.safety_policy import SafetyPolicy
@@ -20,7 +27,7 @@ def test_approval_service_suspends_git_push_with_command_pattern() -> None:
     assert decision.pending_approval.reason == "git push requires confirmation."
     assert decision.safety_metadata == {
         "tool_name": "run_shell",
-        "canonical_tool_name": "Bash",
+        "canonical_tool_name": "Shell",
         "risk_level": "high",
         "decision_kind": "needs_choice",
         "policy": "shell_command_analysis",
@@ -80,12 +87,41 @@ def test_approval_service_marks_session_allowance_auto_approval() -> None:
     assert outcome.reason == "git push requires confirmation."
     assert outcome.safety_metadata == {
         "tool_name": "Bash",
-        "canonical_tool_name": "Bash",
+        "canonical_tool_name": "Shell",
         "risk_level": "high",
         "decision_kind": "needs_choice",
         "policy": "shell_command_analysis",
         "command_pattern": "git push",
     }
+
+
+def test_session_allowance_matches_only_same_shell_kind() -> None:
+    service = ApprovalService(
+        safety_policy=SafetyPolicy(
+            shell_profile=ShellProfile(
+                ShellKind.POWERSHELL,
+                Path("pwsh.exe"),
+                PowerShellEdition.CORE,
+            )
+        ),
+        session_allowances=(
+            SessionCommandAllowance(
+                command_pattern="git push",
+                shell_kind=ShellKind.BASH,
+            ),
+        ),
+    )
+
+    outcome = service.evaluate(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "git push origin main"},
+            reason="publish branch",
+        )
+    )
+
+    assert outcome.auto_approved_by != "session_allowance"
+    assert outcome.pending_approval is not None
 
 
 def test_approval_service_suspends_medium_risk_write_when_strict() -> None:

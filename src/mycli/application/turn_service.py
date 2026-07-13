@@ -24,6 +24,7 @@ from mycli.domain.runtime import (
     RuntimeStreamEvent,
     SandboxMode,
     SessionCommandAllowance,
+    ShellKind,
     ExecutionPolicy,
     SandboxProfile,
     TurnItemType,
@@ -443,7 +444,11 @@ class TurnService:
         allowances = tuple(load_allowances(self._config.session_id)) if callable(load_allowances) else ()
         if allowances:
             lines.append(f"session_allowances={len(allowances)}")
-            lines.extend(f"allow_session pattern={pattern}" for pattern in allowances)
+            lines.extend(
+                f"allow_session shell={allowance.shell_kind.value} "
+                f"pattern={allowance.command_pattern}"
+                for allowance in allowances
+            )
         else:
             lines.append("session_allowances=0")
 
@@ -467,7 +472,10 @@ class TurnService:
             return ("usage: /permissions allow <command-pattern>",)
         self._session_service.add_command_allowance(
             self._config.session_id,
-            SessionCommandAllowance(command_pattern=normalized),
+            SessionCommandAllowance(
+                command_pattern=normalized,
+                shell_kind=self._active_shell_kind(),
+            ),
         )
         return (f"allow_session pattern={normalized}",)
 
@@ -478,6 +486,7 @@ class TurnService:
         removed = self._session_service.remove_command_allowance(
             self._config.session_id,
             normalized,
+            self._active_shell_kind(),
         )
         if removed:
             return (f"removed_allow_session pattern={normalized}",)
@@ -486,6 +495,12 @@ class TurnService:
     def clear_permission_allowances(self) -> tuple[str, ...]:
         count = self._session_service.clear_command_allowances(self._config.session_id)
         return (f"cleared_session_allowances={count}",)
+
+    def _active_shell_kind(self) -> ShellKind:
+        resolution = getattr(self._runtime, "_shell_resolution", None)
+        profile = getattr(resolution, "profile", None)
+        kind = getattr(profile, "kind", None)
+        return kind if isinstance(kind, ShellKind) else ShellKind.BASH
 
     def inspect_hooks(self) -> tuple[str, ...]:
         inspect = getattr(self._runtime, "inspect_hooks", None)
