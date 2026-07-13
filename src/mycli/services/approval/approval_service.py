@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mycli.domain.runtime import DecisionKind, PendingApproval, SessionCommandAllowance
+from mycli.domain.runtime import (
+    DecisionKind,
+    PendingApproval,
+    SessionCommandAllowance,
+    ShellProfile,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.approval.safety_policy import SafetyPolicy
 
@@ -29,6 +34,9 @@ class ApprovalService:
 
     def set_safety_policy(self, safety_policy: SafetyPolicy) -> None:
         self._safety_policy = safety_policy
+
+    def configure_shell_profile(self, shell_profile: ShellProfile) -> None:
+        self._safety_policy.configure_shell_profile(shell_profile)
 
     def set_session_allowances(
         self,

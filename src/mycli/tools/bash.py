@@ -10,6 +10,7 @@ from typing import Any, Callable
 from mycli.domain.runtime import (
     RuntimeInterruptToken,
     ShellExecutionOptions,
+    ShellProfile,
     ShellLifecycleEvent,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
@@ -25,6 +26,8 @@ from mycli.tools.shell_safety import (
 )
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackend, ShellBackendRequest
 from mycli.tools.shell_registry import LEGACY_SHELL_OWNER, SHELL_REGISTRY
+from mycli.tools.shell_resolver import detect_shell_profile
+from mycli.tools.shell_safety_adapters import analyze_shell_for_profile
 
 
 _background_processes = SHELL_REGISTRY.processes()
@@ -66,6 +69,7 @@ class ShellCommandRuntime:
         workdir: str | None = None,
         run_in_background: bool = False,
         shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
         env: dict[str, str] | None = None,
         command_pattern: str | None = None,
         output_file: Path | None = None,
@@ -83,6 +87,7 @@ class ShellCommandRuntime:
             workdir=effective_cwd,
             background=run_in_background,
             shell_path=shell_path,
+            shell_profile=shell_profile,
             env=env,
             command_pattern=command_pattern,
             output_file=output_file,
@@ -128,6 +133,7 @@ def execute_bash(
     owner_session_id: str = LEGACY_SHELL_OWNER,
     run_in_background: bool = False,
     shell_path: str | None = None,
+    shell_profile: ShellProfile | None = None,
     env: dict[str, str] | None = None,
     command_pattern: str | None = None,
     output_file: Path | None = None,
@@ -137,6 +143,7 @@ def execute_bash(
     interrupt_token: RuntimeInterruptToken | None = None,
     backend: ShellBackend | None = None,
 ) -> dict[str, Any]:
+    effective_profile = shell_profile or detect_shell_profile(shell_path)
     if backend is not None:
         return backend.execute(
             ShellBackendRequest(
@@ -146,6 +153,7 @@ def execute_bash(
                 owner_session_id=owner_session_id,
                 run_in_background=run_in_background,
                 shell_path=shell_path,
+                shell_profile=effective_profile,
                 env=env,
                 command_pattern=command_pattern,
                 output_file=output_file,
@@ -166,6 +174,7 @@ def execute_bash(
         workdir=workdir,
         run_in_background=run_in_background,
         shell_path=shell_path,
+        shell_profile=effective_profile,
         env=env,
         command_pattern=command_pattern,
         output_file=output_file,
@@ -214,6 +223,7 @@ class BashTool:
         self._notification_sink: Callable[[TaskNotification], None] | None = None
         self._lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None
         self._shell_path: str | None = None
+        self._shell_profile: ShellProfile | None = None
 
     def configure_background_tasks(
         self,
@@ -236,6 +246,9 @@ class BashTool:
     def configure_shell_path(self, shell_path: str | None) -> None:
         self._shell_path = shell_path
 
+    def configure_shell_profile(self, shell_profile: ShellProfile) -> None:
+        self._shell_profile = shell_profile
+
     def effect_profile(self) -> ToolEffectProfile:
         return ToolEffectProfile(filesystem="unknown", process=True)
 
@@ -250,7 +263,19 @@ class BashTool:
                 summary="Invalid shell command",
                 error="Bash requires command.",
             )
-        analysis = analyze_shell_command(command_value)
+        shell_options = _shell_execution_options(arguments.get("_runtime_shell_options"))
+        if shell_options.shell_path is None and self._shell_path is not None:
+            shell_options = replace(shell_options, shell_path=self._shell_path)
+        if shell_options.shell_profile is None:
+            shell_options = replace(
+                shell_options,
+                shell_profile=(
+                    self._shell_profile
+                    or detect_shell_profile(shell_options.shell_path)
+                ),
+            )
+        assert shell_options.shell_profile is not None
+        analysis = analyze_shell_for_profile(shell_options.shell_profile, command_value)
         if analysis.risk_level is ShellRiskLevel.DENY:
             return ToolResult(
                 success=False,
@@ -288,9 +313,6 @@ class BashTool:
         cwd_result = self._resolve_cwd(arguments.get("cwd"))
         if isinstance(cwd_result, ToolResult):
             return cwd_result
-        shell_options = _shell_execution_options(arguments.get("_runtime_shell_options"))
-        if shell_options.shell_path is None and self._shell_path is not None:
-            shell_options = replace(shell_options, shell_path=self._shell_path)
         timeout_value = arguments.get("timeout", 120)
         timeout, timeout_capped = shell_options.effective_timeout(timeout_value)
         env = _shell_env(shell_options)
@@ -307,6 +329,7 @@ class BashTool:
                 owner_session_id=self._owner_session_id,
                 run_in_background=bool(arguments.get("run_in_background", False)),
                 shell_path=shell_options.shell_path,
+                shell_profile=shell_options.shell_profile,
                 env=env,
                 command_pattern=analysis.command_pattern,
                 output_file=background_output_file,

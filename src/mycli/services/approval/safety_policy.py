@@ -40,6 +40,9 @@ class SafetyPolicy:
     def shell_profile(self) -> ShellProfile | None:
         return self._shell_profile
 
+    def configure_shell_profile(self, shell_profile: ShellProfile) -> None:
+        self._shell_profile = shell_profile
+
     def classify(self, call: ToolCall) -> RiskLevel:
         name = _canonical_tool_name(call.name)
         if name in {

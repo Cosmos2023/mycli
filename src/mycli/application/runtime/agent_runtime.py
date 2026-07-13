@@ -116,6 +116,7 @@ from mycli.services.write_diagnostics import WriteDiagnosticsService
 from mycli.services.turn_guard import TurnCheckpoint
 from mycli.utils.workspace_logger import WorkspaceLogService
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.shell_resolver import detect_shell_profile_with_diagnostics
 from mycli.tools.skill import SkillTool
 from mycli.application.runtime.context import RuntimeContextBuilder
 from mycli.application.runtime.approval_decisions import RuntimeApprovalDecisions
@@ -256,6 +257,7 @@ class AgentRuntime:
         self._model_adapter = model_adapter
         self._tool_registry = tool_registry
         self._config = config
+        self._shell_resolution = detect_shell_profile_with_diagnostics(config.shell_path)
         self._home_dir = home_dir
         self._storage_layout = MycliStorageLayout.from_home_dir(home_dir)
         self._message_queue_lock = Lock()
@@ -274,8 +276,10 @@ class AgentRuntime:
                 workspace_root=config.workspace_root,
                 writable_roots=self._writable_roots(),
                 auto_approve_medium=config.auto_approve_medium,
+                shell_profile=self._shell_resolution.profile,
             )
         )
+        self._approval_service.configure_shell_profile(self._shell_resolution.profile)
         self._tool_result_formatter = ToolResultFormatter()
         self._token_counter = TokenCounter()
         self._observability_service = observability_service or ObservabilityService()
@@ -407,6 +411,7 @@ class AgentRuntime:
             collaboration_mode=config.collaboration_mode,
             sandbox_mode=config.sandbox_mode,
             shell_path=config.shell_path,
+            shell_profile=self._shell_resolution.profile,
             shell_environment_policy=config.shell_environment_policy,
         )
         self._planning_effects = RuntimePlanningEffects(
@@ -1052,6 +1057,9 @@ class AgentRuntime:
             configure_shell_path = getattr(tool, "configure_shell_path", None)
             if callable(configure_shell_path):
                 configure_shell_path(self._config.shell_path)
+            configure_shell_profile = getattr(tool, "configure_shell_profile", None)
+            if callable(configure_shell_profile):
+                configure_shell_profile(self._shell_resolution.profile)
             configure_owner = getattr(tool, "configure_shell_session", None)
             if callable(configure_owner):
                 configure_owner(self._config.session_id)
@@ -2127,6 +2135,7 @@ class AgentRuntime:
 
     def rebind_session(self, config: AgentConfig) -> None:
         self._config = config
+        self._shell_resolution = detect_shell_profile_with_diagnostics(config.shell_path)
         self._execpolicy_rules = self._load_execpolicy_rules(
             home_dir=self._home_dir,
             config=config,
@@ -2139,6 +2148,7 @@ class AgentRuntime:
                 workspace_root=config.workspace_root,
                 writable_roots=self._writable_roots(),
                 auto_approve_medium=config.auto_approve_medium,
+                shell_profile=self._shell_resolution.profile,
             )
         )
         self._runtime_context_builder.set_config(config)
@@ -2158,6 +2168,10 @@ class AgentRuntime:
             sandbox_mode=config.sandbox_mode,
             shell_environment_policy=config.shell_environment_policy,
         )
+        self._runtime_policy_gate.set_shell_profile(
+            self._shell_resolution.profile,
+            shell_path=config.shell_path,
+        )
         self._request_pipeline.set_config(config)
         self._runtime_error_logger.set_config(config)
         self._response_finalizer.set_config(config)
@@ -2173,6 +2187,7 @@ class AgentRuntime:
         self._planning_effects.set_session_id(session_id)
         self._observability_service.metrics.reset_context_metrics()
         self._restore_provider_input_budget_metric(session_id)
+        self._configure_background_shell_tasks()
 
     def handle_user_turn(
         self,

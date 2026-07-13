@@ -8,6 +8,7 @@ from typing import Literal, Mapping, Protocol, SupportsInt
 
 from mycli.domain.runtime.approvals import PendingApproval
 from mycli.domain.runtime.execpolicy import ExecPolicyMatch, ExecPolicyRule
+from mycli.domain.runtime.shell_profile import ShellProfile
 from mycli.domain.tooling.calls import ToolCall
 
 
@@ -194,6 +195,7 @@ class ShellBackendProfile:
 class ShellExecutionOptions:
     workspace_root: Path
     shell_path: str | None = None
+    shell_profile: ShellProfile | None = None
     filesystem: FilesystemPolicy = "workspace_write"
     network: NetworkPolicy = "enabled"
     shell: ShellPolicy = "restricted"
@@ -209,11 +211,13 @@ class ShellExecutionOptions:
         policy: ExecutionPolicy,
         *,
         shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> "ShellExecutionOptions":
         return cls(
             workspace_root=policy.sandbox.cwd,
             shell_path=shell_path,
+            shell_profile=shell_profile,
             filesystem=policy.sandbox.filesystem,
             network=policy.sandbox.network,
             shell=policy.sandbox.shell,
@@ -266,6 +270,13 @@ class ShellExecutionOptions:
         }
         if cwd is not None:
             payload["cwd"] = str(cwd)
+        if self.shell_profile is not None:
+            payload["shell_kind"] = self.shell_profile.kind.value
+            payload["shell_edition"] = (
+                self.shell_profile.powershell_edition.value
+                if self.shell_profile.powershell_edition is not None
+                else None
+            )
         return payload
 
 

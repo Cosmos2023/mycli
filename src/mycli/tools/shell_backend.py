@@ -8,6 +8,7 @@ from mycli.domain.runtime import (
     RuntimeInterruptToken,
     ShellBackendProfile,
     ShellLifecycleEvent,
+    ShellProfile,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
 
@@ -18,6 +19,7 @@ class ShellBackendRequest:
     timeout_seconds: int
     cwd: str
     shell_path: str | None = None
+    shell_profile: ShellProfile | None = None
     owner_session_id: str = "legacy"
     run_in_background: bool = False
     env: dict[str, str] | None = None
@@ -51,6 +53,7 @@ class LocalShellBackend:
             timeout=request.timeout_seconds,
             workdir=request.cwd,
             shell_path=request.shell_path,
+            shell_profile=request.shell_profile,
             owner_session_id=request.owner_session_id,
             run_in_background=request.run_in_background,
             env=request.env,

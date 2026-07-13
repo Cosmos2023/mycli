@@ -6,7 +6,10 @@ from mycli.application.runtime.tools.tool_policy_runtime import ToolPolicyRuntim
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.domain.runtime import (
     ExecutionPolicy,
+    PowerShellEdition,
     SandboxProfile,
+    ShellKind,
+    ShellProfile,
     ToolRuntimeDecisionKind,
 )
 from mycli.domain.tooling.calls import ToolCall
@@ -33,6 +36,35 @@ def test_runtime_policy_gate_carries_shell_path_into_execution_options(
         timeout_capped=False,
         env_keys=(),
     )["custom_shell_path"] is True
+
+
+def test_runtime_policy_gate_carries_shell_profile_without_tracing_path(
+    tmp_path: Path,
+) -> None:
+    profile = ShellProfile(
+        ShellKind.POWERSHELL,
+        Path(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+        PowerShellEdition.CORE,
+    )
+    gate = RuntimePolicyGate(
+        approval_service=ApprovalService(
+            SafetyPolicy(workspace_root=tmp_path, shell_profile=profile)
+        ),
+        workspace_root=tmp_path,
+        shell_profile=profile,
+    )
+
+    options = gate.shell_execution_options()
+    trace = options.to_trace_payload(
+        timeout_seconds=1,
+        timeout_capped=False,
+        env_keys=(),
+    )
+
+    assert options.shell_profile is profile
+    assert trace["shell_kind"] == "powershell"
+    assert trace["shell_edition"] == "core"
+    assert str(profile.executable) not in str(trace)
 
 
 def _read_only_gate(workspace_root: Path) -> RuntimePolicyGate:

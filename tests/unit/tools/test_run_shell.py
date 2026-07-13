@@ -8,6 +8,8 @@ from mycli.domain.runtime import (
     ShellBackendProfile,
     ShellEnvironmentPolicy,
     ShellExecutionOptions,
+    ShellKind,
+    ShellProfile,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tools import ToolCall
@@ -38,6 +40,20 @@ def test_execute_bash_forwards_configured_shell_path(tmp_path: Path) -> None:
     )
 
     assert captured[0].shell_path == "/configured/bash"
+
+
+def test_execute_bash_reports_explicit_shell_profile(tmp_path: Path) -> None:
+    profile = ShellProfile(ShellKind.BASH, Path("/bin/bash"))
+
+    result = execute_bash(
+        "printf ok",
+        workdir=str(tmp_path),
+        shell_profile=profile,
+    )
+
+    assert result["shell_kind"] == "bash"
+    assert result["shell_edition"] is None
+    assert "shell_path" not in result
 
 
 def test_shell_tool_executes_structured_args(tmp_path: Path) -> None:

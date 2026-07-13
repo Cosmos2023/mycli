@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent
+from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent, ShellProfile
 from mycli.domain.runtime.background_jobs import BackgroundJobState, BackgroundJobSummary
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.shell_session_manager import (
@@ -35,6 +35,7 @@ class ShellProcessRegistry:
         timeout_seconds: int = 120,
         background: bool,
         shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
         command_pattern: str | None = None,
         output_file: Path | None = None,
         notification_sink: Callable[[TaskNotification], None] | None = None,
@@ -50,6 +51,7 @@ class ShellProcessRegistry:
                 timeout_seconds=timeout_seconds,
                 background=background,
                 shell_path=shell_path,
+                shell_profile=shell_profile,
                 env=env,
                 command_pattern=command_pattern,
                 output_file=output_file,
@@ -197,6 +199,8 @@ def _snapshot_payload(snapshot: ShellSessionSnapshot) -> dict[str, object]:
         "command_pattern": snapshot.command_pattern,
         "terminal_state": snapshot.terminal_state,
         "cleanup_result": _compat_cleanup_result(snapshot.cleanup_result),
+        "shell_kind": snapshot.shell_kind,
+        "shell_edition": snapshot.shell_edition,
         "output_file": snapshot.output_file,
         "output_file_error": snapshot.output_file_error,
         "task_id": f"shell:{snapshot.shell_id}",

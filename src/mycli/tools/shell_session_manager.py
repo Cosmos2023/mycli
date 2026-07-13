@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from mycli.domain.runtime import (
     RuntimeInterruptToken,
+    ShellKind,
     ShellLifecycleEvent,
     ShellLifecycleKind,
+    ShellProfile,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.process_controller import (
@@ -44,6 +46,7 @@ class ShellStartRequest:
     timeout_seconds: int
     background: bool
     shell_path: str | None = None
+    shell_profile: ShellProfile | None = None
     env: dict[str, str] | None = None
     command_pattern: str | None = None
     output_file: Path | None = None
@@ -75,6 +78,8 @@ class ShellSessionSnapshot:
     stderr_omitted_chars: int
     cursor_was_evicted: bool
     cleanup_result: str | None
+    shell_kind: str | None = None
+    shell_edition: str | None = None
     call_id: str | None = None
     command_preview: str | None = None
     started_at: str | None = None
@@ -104,6 +109,7 @@ class _ShellSession:
     command_hash: str
     command_length: int
     command_pattern: str | None
+    shell_profile: ShellProfile
     process: subprocess.Popen[str]
     started_at: str
     started_monotonic: float
@@ -180,9 +186,13 @@ class ShellSessionManager:
                 output_file_error = str(exc)
 
         try:
-            shell = self._shell_resolver(request.shell_path)
+            if request.shell_profile is None:
+                legacy_shell = self._shell_resolver(request.shell_path)
+                shell_profile = ShellProfile(ShellKind.BASH, legacy_shell.executable)
+            else:
+                shell_profile = request.shell_profile
             process = self._process_factory(
-                [str(shell.executable), *shell.args, request.command],
+                shell_profile.exec_argv(request.command),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -217,6 +227,7 @@ class ShellSessionManager:
             command_hash=_hash_command(request.command),
             command_length=len(request.command),
             command_pattern=request.command_pattern,
+            shell_profile=shell_profile,
             process=process,
             started_at=now,
             started_monotonic=started_monotonic,
@@ -784,6 +795,12 @@ class ShellSessionManager:
                 stderr_omitted_chars=stderr.omitted_chars,
                 cursor_was_evicted=cursor_was_evicted,
                 cleanup_result=session.cleanup_result,
+                shell_kind=session.shell_profile.kind.value,
+                shell_edition=(
+                    session.shell_profile.powershell_edition.value
+                    if session.shell_profile.powershell_edition is not None
+                    else None
+                ),
                 call_id=session.call_id,
                 command_preview=_command_preview(session.command),
                 started_at=session.started_at,

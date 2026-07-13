@@ -12,6 +12,7 @@ from mycli.domain.runtime import (
     SandboxProfile,
     ShellEnvironmentPolicy,
     ShellExecutionOptions,
+    ShellProfile,
     ToolRuntimeDecision,
     ToolRuntimeEffect,
 )
@@ -21,7 +22,7 @@ from mycli.services.approval import ApprovalService
 from mycli.tools.base import ToolEffectProfile
 
 
-SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
+SHELL_TOOL_NAMES = frozenset({"Shell", "Bash", "run_shell"})
 READ_TOOL_NAMES = frozenset(
     {"Read", "read_file", "read_file_range", "LS", "list_directory", "Grep", "search_text"}
 )
@@ -42,6 +43,7 @@ class RuntimePolicyGate:
         collaboration_mode: CollaborationMode = CollaborationMode.DEFAULT,
         sandbox_mode: SandboxMode = SandboxMode.WORKSPACE_WRITE,
         shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
         shell_environment_policy: ShellEnvironmentPolicy | None = None,
     ) -> None:
         self._approval_service = approval_service
@@ -53,6 +55,7 @@ class RuntimePolicyGate:
         self._collaboration_mode = collaboration_mode
         self._sandbox_mode = sandbox_mode
         self._shell_path = shell_path
+        self._shell_profile = shell_profile
         self._shell_environment_policy = shell_environment_policy
 
     def default_policy(self) -> ExecutionPolicy:
@@ -218,8 +221,18 @@ class RuntimePolicyGate:
         return ShellExecutionOptions.from_policy(
             policy or self.default_policy(),
             shell_path=self._shell_path,
+            shell_profile=self._shell_profile,
             shell_environment_policy=self._shell_environment_policy,
         )
+
+    def set_shell_profile(
+        self,
+        shell_profile: ShellProfile,
+        *,
+        shell_path: str | None = None,
+    ) -> None:
+        self._shell_profile = shell_profile
+        self._shell_path = shell_path
 
     def _execpolicy_decision(
         self,

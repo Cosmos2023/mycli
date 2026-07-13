@@ -9,7 +9,12 @@ import time
 
 import pytest
 
-from mycli.domain.runtime import ShellLifecycleEvent
+from mycli.domain.runtime import (
+    PowerShellEdition,
+    ShellKind,
+    ShellLifecycleEvent,
+    ShellProfile,
+)
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.process_controller import ProcessTerminationOutcome
 from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
@@ -91,6 +96,76 @@ def test_manager_spawns_resolved_shell_without_shell_true(tmp_path: Path) -> Non
     assert command == ["/custom/bash", "-c", "printf ok"]
     assert "shell" not in kwargs
     assert "executable" not in kwargs
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        (
+            ShellProfile(ShellKind.BASH, Path("/bin/bash")),
+            ["/bin/bash", "-c", "printf ok"],
+        ),
+        (
+            ShellProfile(
+                ShellKind.POWERSHELL,
+                Path("pwsh.exe"),
+                PowerShellEdition.CORE,
+            ),
+            [
+                "pwsh.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "printf ok",
+            ],
+        ),
+        (
+            ShellProfile(
+                ShellKind.POWERSHELL,
+                Path("powershell.exe"),
+                PowerShellEdition.DESKTOP,
+            ),
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "printf ok",
+            ],
+        ),
+        (
+            ShellProfile(ShellKind.CMD, Path("cmd.exe")),
+            ["cmd.exe", "/d", "/s", "/c", "printf ok"],
+        ),
+    ],
+)
+def test_manager_spawns_profile_derived_argv(
+    tmp_path: Path,
+    profile: ShellProfile,
+    expected: list[str],
+) -> None:
+    captured: list[object] = []
+
+    def failing_factory(command: object, **_kwargs: object):
+        captured.append(command)
+        raise OSError("stop after capture")
+
+    manager = ShellSessionManager(process_factory=failing_factory)
+    result = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="printf ok",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            shell_profile=profile,
+        )
+    )
+
+    assert result.error_kind == "shell_spawn_failed"
+    assert captured == [expected]
 
 
 def test_manager_does_not_register_failed_shell_resolution(tmp_path: Path) -> None:
