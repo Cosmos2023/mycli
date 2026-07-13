@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from mycli.tools.shell_resolver import ShellResolutionError, resolve_shell
+from mycli.domain.runtime import PowerShellEdition, ShellKind, ShellProfile
+from mycli.tools.shell_resolver import (
+    ShellResolutionError,
+    detect_shell_profile,
+    detect_shell_profile_with_diagnostics,
+    resolve_shell,
+)
 
 
 def test_windows_prefers_explicit_shell_path() -> None:
@@ -108,3 +114,113 @@ def test_unix_missing_shell_has_actionable_error() -> None:
             path_exists=lambda _path: False,
             which=lambda _name, _path: None,
         )
+
+
+def test_profile_detection_windows_prefers_pwsh() -> None:
+    profile = detect_shell_profile(
+        None,
+        platform_name="win32",
+        env={"PATH": "ignored"},
+        path_exists=lambda _path: False,
+        which=lambda name, _path: r"C:\Tools\pwsh.exe" if name == "pwsh" else None,
+    )
+
+    assert profile.kind is ShellKind.POWERSHELL
+    assert profile.executable == Path(r"C:\Tools\pwsh.exe")
+    assert profile.powershell_edition is PowerShellEdition.CORE
+
+
+def test_profile_detection_windows_uses_desktop_fallback_path() -> None:
+    desktop_path = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+
+    profile = detect_shell_profile(
+        None,
+        platform_name="win32",
+        env={"SystemRoot": r"C:\Windows"},
+        path_exists=lambda path: path == desktop_path,
+        which=lambda _name, _path: None,
+    )
+
+    assert profile.kind is ShellKind.POWERSHELL
+    assert profile.executable == desktop_path
+    assert profile.powershell_edition is PowerShellEdition.DESKTOP
+
+
+def test_profile_detection_windows_ultimate_fallback_is_cmd() -> None:
+    profile = detect_shell_profile(
+        None,
+        platform_name="win32",
+        env={},
+        path_exists=lambda _path: False,
+        which=lambda _name, _path: None,
+    )
+
+    assert profile == ShellProfile(ShellKind.CMD, Path("cmd.exe"))
+
+
+@pytest.mark.parametrize(
+    ("configured_path", "exists", "reason"),
+    [
+        (r"D:\missing\pwsh.exe", False, "does not exist"),
+        (r"D:\tools\company-shell.exe", True, "not recognized"),
+    ],
+)
+def test_profile_detection_ignores_unusable_explicit_path(
+    configured_path: str,
+    exists: bool,
+    reason: str,
+) -> None:
+    resolution = detect_shell_profile_with_diagnostics(
+        configured_path,
+        platform_name="win32",
+        env={},
+        path_exists=lambda path: exists and str(path) == configured_path,
+        which=lambda name, _path: "cmd.exe" if name in {"cmd", "cmd.exe"} else None,
+    )
+
+    assert resolution.profile.kind is ShellKind.CMD
+    assert resolution.explicit_path_status == "ignored"
+    assert resolution.explicit_path_reason is not None
+    assert reason in resolution.explicit_path_reason
+
+
+def test_profile_detection_accepts_recognized_explicit_path() -> None:
+    explicit = Path(r"D:\tools\bash.exe")
+
+    resolution = detect_shell_profile_with_diagnostics(
+        str(explicit),
+        platform_name="win32",
+        env={},
+        path_exists=lambda path: path == explicit,
+        which=lambda _name, _path: None,
+    )
+
+    assert resolution.profile == ShellProfile(ShellKind.BASH, explicit)
+    assert resolution.explicit_path_status == "accepted"
+    assert resolution.explicit_path_reason is None
+
+
+def test_profile_detection_macos_prefers_user_zsh() -> None:
+    profile = detect_shell_profile(
+        None,
+        platform_name="darwin",
+        env={},
+        user_shell=lambda: Path("/bin/zsh"),
+        path_exists=lambda path: path == Path("/bin/zsh"),
+        which=lambda _name, _path: None,
+    )
+
+    assert profile == ShellProfile(ShellKind.ZSH, Path("/bin/zsh"))
+
+
+def test_profile_detection_linux_falls_back_from_unknown_user_shell_to_bash() -> None:
+    profile = detect_shell_profile(
+        None,
+        platform_name="linux",
+        env={},
+        user_shell=lambda: Path("/unsupported/fish"),
+        path_exists=lambda path: path == Path("/bin/bash"),
+        which=lambda _name, _path: None,
+    )
+
+    assert profile == ShellProfile(ShellKind.BASH, Path("/bin/bash"))
