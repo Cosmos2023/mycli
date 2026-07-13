@@ -62,7 +62,7 @@ class ShellSafetyAnalysis:
     risk_level: ShellRiskLevel
     reason: str
     preview: str
-    command_pattern: str
+    command_pattern: str | None
     reroute_tool: str | None = None
     reroute_reason: str | None = None
 

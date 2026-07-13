@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from mycli.domain.runtime import DecisionKind
+from mycli.domain.runtime import (
+    DecisionKind,
+    PowerShellEdition,
+    RiskLevel,
+    ShellKind,
+    ShellProfile,
+)
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
 from mycli.tools.bash import derive_command_pattern
@@ -72,7 +78,7 @@ def test_safety_policy_requires_choice_for_git_push() -> None:
     assert decision.reason == "git push requires confirmation."
     assert decision.metadata == {
         "tool_name": "Bash",
-        "canonical_tool_name": "Bash",
+        "canonical_tool_name": "Shell",
         "risk_level": "high",
         "decision_kind": "needs_choice",
         "policy": "shell_command_analysis",
@@ -87,7 +93,7 @@ def test_safety_policy_denies_invalid_shell_call() -> None:
     assert decision.kind is DecisionKind.DENY
     assert decision.metadata == {
         "tool_name": "Bash",
-        "canonical_tool_name": "Bash",
+        "canonical_tool_name": "Shell",
         "risk_level": "high",
         "decision_kind": "deny",
         "policy": "invalid_shell_call",
@@ -266,6 +272,37 @@ def test_safety_policy_bounds_write_approval_content_preview() -> None:
     assert decision.metadata["content_line_count"] == 2000
     assert decision.metadata["content_chars"] == len(content)
     assert decision.metadata["content_truncated"] is True
+
+
+def test_safety_policy_uses_active_powershell_profile_for_shell() -> None:
+    policy = SafetyPolicy(
+        shell_profile=ShellProfile(
+            ShellKind.POWERSHELL,
+            Path("pwsh.exe"),
+            PowerShellEdition.CORE,
+        )
+    )
+
+    decision = policy.evaluate(
+        ToolCall(name="Shell", arguments={"command": "Get-Location"}, reason="inspect")
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.command_pattern == "Get-Location"
+    assert decision.metadata["canonical_tool_name"] == "Shell"
+    assert decision.metadata["shell_kind"] == "powershell"
+    assert decision.metadata["shell_edition"] == "core"
+
+
+def test_shell_aliases_have_the_same_high_risk_classification() -> None:
+    policy = SafetyPolicy()
+
+    assert policy.classify(ToolCall(name="Shell", arguments={}, reason="test")) is RiskLevel.HIGH
+    assert policy.classify(ToolCall(name="Bash", arguments={}, reason="test")) is RiskLevel.HIGH
+    assert (
+        policy.classify(ToolCall(name="run_shell", arguments={}, reason="test"))
+        is RiskLevel.HIGH
+    )
 
 
 def test_safety_policy_requires_choice_for_medium_risk_edit_when_strict() -> None:

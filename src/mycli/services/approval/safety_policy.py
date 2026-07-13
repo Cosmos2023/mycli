@@ -4,10 +4,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import shlex
 
-from mycli.domain.runtime import DecisionKind, RiskLevel
+from mycli.domain.runtime import DecisionKind, RiskLevel, ShellKind, ShellProfile
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.path_utils import resolve_workspace_path
 from mycli.tools.shell_safety import ShellRiskLevel, analyze_shell_command
+from mycli.tools.shell_safety_adapters import analyze_shell_for_profile
 
 MAX_APPROVAL_CONTENT_PREVIEW_CHARS = 12_000
 
@@ -28,10 +29,16 @@ class SafetyPolicy:
         workspace_root: Path | None = None,
         writable_roots: tuple[Path, ...] = (),
         auto_approve_medium: bool = True,
+        shell_profile: ShellProfile | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._writable_roots = tuple(path.resolve() for path in writable_roots)
         self._auto_approve_medium = auto_approve_medium
+        self._shell_profile = shell_profile
+
+    @property
+    def shell_profile(self) -> ShellProfile | None:
+        return self._shell_profile
 
     def classify(self, call: ToolCall) -> RiskLevel:
         name = _canonical_tool_name(call.name)
@@ -53,13 +60,13 @@ class SafetyPolicy:
             "ExitPlanMode",
             "Skill",
             "Task",
-            "BashOutput",
+            "ShellOutput",
             "SubagentOutput",
         }:
             return RiskLevel.LOW
         if name in {"Edit", "Patch", "Write", "KillShell"}:
             return RiskLevel.MEDIUM
-        if name == "Bash":
+        if name == "Shell":
             return RiskLevel.HIGH
         return RiskLevel.HIGH
 
@@ -83,7 +90,7 @@ class SafetyPolicy:
             "ExitPlanMode",
             "Skill",
             "Task",
-            "BashOutput",
+            "ShellOutput",
             "SubagentOutput",
         }:
             return ToolSafetyDecision(
@@ -122,7 +129,7 @@ class SafetyPolicy:
                     policy="shell_control_tool",
                 ),
             )
-        if name == "Bash":
+        if name == "Shell":
             command_value = call.arguments.get("command")
             args_value = call.arguments.get("args")
             if isinstance(command_value, str) and command_value:
@@ -134,7 +141,7 @@ class SafetyPolicy:
             else:
                 return ToolSafetyDecision(
                     kind=DecisionKind.DENY,
-                    reason="Bash requires a non-empty command.",
+                    reason="Shell requires a non-empty command.",
                     preview="invalid shell call",
                     metadata=_metadata(
                         call=call,
@@ -144,7 +151,12 @@ class SafetyPolicy:
                         policy="invalid_shell_call",
                     ),
                 )
-            analysis = analyze_shell_command(command)
+            analysis = (
+                analyze_shell_command(command)
+                if self._shell_profile is None
+                else analyze_shell_for_profile(self._shell_profile, command)
+            )
+            shell_metadata = _shell_profile_metadata(self._shell_profile)
             if analysis.risk_level is ShellRiskLevel.DENY:
                 return ToolSafetyDecision(
                     kind=DecisionKind.DENY,
@@ -158,6 +170,7 @@ class SafetyPolicy:
                         decision_kind=DecisionKind.DENY,
                         policy="shell_command_analysis",
                         command_pattern=analysis.command_pattern,
+                        extra=shell_metadata,
                     ),
                 )
             if analysis.risk_level is ShellRiskLevel.CONFIRM:
@@ -173,6 +186,7 @@ class SafetyPolicy:
                         decision_kind=DecisionKind.NEEDS_CHOICE,
                         policy="shell_command_analysis",
                         command_pattern=analysis.command_pattern,
+                        extra=shell_metadata,
                     ),
                 )
             return ToolSafetyDecision(
@@ -187,6 +201,7 @@ class SafetyPolicy:
                     decision_kind=DecisionKind.AUTO_ALLOW,
                     policy="shell_command_analysis",
                     command_pattern=analysis.command_pattern,
+                    extra=shell_metadata,
                 ),
             )
         return ToolSafetyDecision(
@@ -325,11 +340,24 @@ def _canonical_tool_name(name: str) -> str:
         "write_file": "Write",
         "search_text": "Grep",
         "list_directory": "LS",
-        "run_shell": "Bash",
+        "Shell": "Shell",
+        "Bash": "Shell",
+        "run_shell": "Shell",
+        "ShellOutput": "ShellOutput",
+        "BashOutput": "ShellOutput",
         "update_plan": "Plan",
         "enter_plan_mode": "EnterPlanMode",
         "exit_plan_mode": "ExitPlanMode",
     }.get(name, name)
+
+
+def _shell_profile_metadata(profile: ShellProfile | None) -> dict[str, object] | None:
+    if profile is None:
+        return None
+    metadata: dict[str, object] = {"shell_kind": profile.kind.value}
+    if profile.kind is ShellKind.POWERSHELL and profile.powershell_edition is not None:
+        metadata["shell_edition"] = profile.powershell_edition.value
+    return metadata
 
 
 def _metadata(
