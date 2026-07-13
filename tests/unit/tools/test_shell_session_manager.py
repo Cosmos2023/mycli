@@ -11,6 +11,8 @@ import pytest
 
 from mycli.domain.runtime import ShellLifecycleEvent
 from mycli.domain.runtime.task_notifications import TaskNotification
+from mycli.tools.process_controller import ProcessTerminationOutcome
+from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
 from mycli.tools.shell_session_manager import ShellSessionManager, ShellStartRequest
 
 
@@ -58,6 +60,89 @@ def _wait_for_output(
         time.sleep(0.01)
         snapshot = manager.poll(owner, shell_id, cursor=0)
     return snapshot
+
+
+def test_manager_spawns_resolved_shell_without_shell_true(tmp_path: Path) -> None:
+    captured: list[tuple[object, dict[str, object]]] = []
+
+    def failing_factory(command: object, **kwargs: object):
+        captured.append((command, kwargs))
+        raise OSError("stop after capture")
+
+    manager = ShellSessionManager(
+        shell_resolver=lambda _path: ShellCommandConfig(Path("/custom/bash")),
+        process_factory=failing_factory,
+    )
+
+    result = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="printf ok",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=True,
+            shell_path="/custom/bash",
+        )
+    )
+
+    assert result.error_kind == "shell_spawn_failed"
+    command, kwargs = captured[0]
+    assert command == ["/custom/bash", "-c", "printf ok"]
+    assert "shell" not in kwargs
+    assert "executable" not in kwargs
+
+
+def test_manager_does_not_register_failed_shell_resolution(tmp_path: Path) -> None:
+    def missing_shell(_path: str | None) -> ShellCommandConfig:
+        raise ShellResolutionError("Install Git for Windows")
+
+    manager = ShellSessionManager(shell_resolver=missing_shell)
+
+    result = manager.start(_request(tmp_path, "printf ok"))
+
+    assert result.error_kind == "shell_resolution_failed"
+    assert "Install Git for Windows" in str(result.error)
+    assert manager.list_sessions("session-a") == ()
+
+
+def test_manager_uses_process_terminator_result(tmp_path: Path) -> None:
+    calls: list[bool] = []
+
+    def terminate(_process: subprocess.Popen[str], prefer_interrupt: bool):
+        calls.append(prefer_interrupt)
+        _process.terminate()
+        _process.wait(timeout=2)
+        return ProcessTerminationOutcome("controller_terminated", terminal=True)
+
+    manager = ShellSessionManager(process_terminator=terminate)
+    started = manager.start(_request(tmp_path, "sleep 30"))
+
+    snapshot = manager.terminate("session-a", started.shell_id)
+
+    assert calls == [False]
+    assert snapshot.cleanup_result == "controller_terminated"
+
+
+def test_manager_keeps_running_state_when_process_termination_fails(
+    tmp_path: Path,
+) -> None:
+    manager = ShellSessionManager(
+        process_terminator=lambda _process, _prefer_interrupt: ProcessTerminationOutcome(
+            "taskkill_failed",
+            terminal=False,
+            error="access denied",
+        )
+    )
+    started = manager.start(_request(tmp_path, "sleep 30"))
+
+    snapshot = manager.terminate("session-a", started.shell_id)
+
+    assert snapshot.status == "running"
+    assert snapshot.terminal_state is None
+    assert snapshot.cleanup_result == "taskkill_failed"
+    process = manager.processes()[started.shell_id]
+    process.terminate()
+    process.wait(timeout=2)
 
 
 def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:

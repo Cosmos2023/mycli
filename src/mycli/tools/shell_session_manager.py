@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
-import os
 from pathlib import Path
-import signal
 import subprocess
 from threading import Lock, Thread
 import time
-from typing import Callable
+from typing import Any, cast
 from uuid import uuid4
 
 from mycli.domain.runtime import (
@@ -19,7 +18,22 @@ from mycli.domain.runtime import (
     ShellLifecycleKind,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
+from mycli.tools.process_controller import (
+    ProcessTerminationOutcome,
+    process_spawn_options,
+    terminate_process_tree,
+)
 from mycli.tools.shell_output_buffer import ShellOutputBuffer
+from mycli.tools.shell_resolver import (
+    ShellCommandConfig,
+    ShellResolutionError,
+    resolve_shell,
+)
+
+
+ShellResolver = Callable[[str | None], ShellCommandConfig]
+ProcessFactory = Callable[..., subprocess.Popen[str]]
+ProcessTerminator = Callable[[subprocess.Popen[str], bool], ProcessTerminationOutcome]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +142,9 @@ class ShellSessionManager:
         output_max_chars: int = 1_048_576,
         output_event_interval_seconds: float = 0.05,
         output_event_max_chars: int = 4096,
+        shell_resolver: ShellResolver | None = None,
+        process_factory: ProcessFactory | None = None,
+        process_terminator: ProcessTerminator | None = None,
     ) -> None:
         if max_sessions <= 0:
             raise ValueError("max_sessions must be positive")
@@ -141,6 +158,9 @@ class ShellSessionManager:
         self._output_max_chars = output_max_chars
         self._output_event_interval_seconds = output_event_interval_seconds
         self._output_event_max_chars = output_event_max_chars
+        self._shell_resolver = shell_resolver or resolve_shell
+        self._process_factory = process_factory or _spawn_process
+        self._process_terminator = process_terminator or _terminate_process
         self._sessions: dict[str, _ShellSession] = {}
         self._pending_starts = 0
         self._lock = Lock()
@@ -160,18 +180,24 @@ class ShellSessionManager:
                 output_file_error = str(exc)
 
         try:
-            process = subprocess.Popen(
-                request.command,
-                shell=True,
+            shell = self._shell_resolver(request.shell_path)
+            process = self._process_factory(
+                [str(shell.executable), *shell.args, request.command],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 errors="replace",
                 cwd=request.cwd,
-                executable=os.environ.get("SHELL", "/bin/bash"),
                 env=request.env,
-                start_new_session=os.name == "posix",
                 bufsize=1,
+                **process_spawn_options(),
+            )
+        except ShellResolutionError as exc:
+            self._release_capacity_reservation()
+            return self._error_snapshot(
+                owner_session_id=request.owner_session_id,
+                error_kind="shell_resolution_failed",
+                error=str(exc),
             )
         except OSError as exc:
             self._release_capacity_reservation()
@@ -511,12 +537,13 @@ class ShellSessionManager:
             session.terminal_state = terminal_state
             session.last_observed_at = _now_iso()
 
-        cleanup_result = _terminate_process_group(
-            session.process,
-            prefer_interrupt=prefer_interrupt,
-        )
+        outcome = self._process_terminator(session.process, prefer_interrupt)
         with self._lock:
-            session.cleanup_result = cleanup_result
+            session.cleanup_result = outcome.cleanup_result
+            if not outcome.terminal:
+                session.terminal_state = None
+                session.last_observed_at = _now_iso()
+                return
             session.completed_at = _now_iso()
             session.last_observed_at = session.completed_at
             notification = self._notification_for_locked(session)
@@ -805,39 +832,15 @@ class ShellSessionManager:
         )
 
 
-def _terminate_process_group(
+def _spawn_process(command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
+    return cast("subprocess.Popen[str]", subprocess.Popen(command, **kwargs))
+
+
+def _terminate_process(
     process: subprocess.Popen[str],
-    *,
     prefer_interrupt: bool,
-) -> str:
-    signals: tuple[tuple[signal.Signals, str], ...] = (
-        (signal.SIGINT, "sent_sigint"),
-        (signal.SIGTERM, "sent_sigterm"),
-        (signal.SIGKILL, "sent_sigkill"),
-    )
-    if not prefer_interrupt:
-        signals = signals[1:]
-    cleanup_result = "already_exited"
-    for sig, label in signals:
-        if process.poll() is not None:
-            return cleanup_result
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, sig)
-            else:
-                process.send_signal(sig)
-            cleanup_result = label
-        except ProcessLookupError:
-            return cleanup_result
-        except PermissionError:
-            cleanup_result = f"{label}_permission_denied"
-            continue
-        try:
-            process.wait(timeout=0.5 if sig != signal.SIGTERM else 2.0)
-            return cleanup_result
-        except subprocess.TimeoutExpired:
-            continue
-    return cleanup_result
+) -> ProcessTerminationOutcome:
+    return terminate_process_tree(process, prefer_interrupt=prefer_interrupt)
 
 
 def _now_iso() -> str:
