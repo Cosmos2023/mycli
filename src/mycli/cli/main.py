@@ -62,6 +62,7 @@ from mycli.services.subagents import (
     render_subagent_management_response,
 )
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.shell_resolver import detect_shell_profile
 
 __all__ = [
     "build_command_handler",
@@ -204,6 +205,10 @@ def handle_hooks_command(
         workspace_root=workspace_root,
         home_dir=home_dir,
         shell_path=config.shell_path,
+        shell_profile=detect_shell_profile(
+            config.shell_path,
+            env=dict(env or os.environ),
+        ),
     )
     response = _dispatch_hooks_command(service, args)
     if json_output:

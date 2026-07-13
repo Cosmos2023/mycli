@@ -4,6 +4,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Callable
 
+from mycli.domain.runtime import ShellProfile
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.services.hooks.allowlist import HookAllowlist
 from mycli.services.hooks.config import HookConfigDiscovery, HookConfigRegistry
@@ -21,12 +22,14 @@ def register_configured_hooks(
     trace_service: TraceService | None,
     session_id: str,
     shell_path: str | None = None,
+    shell_profile: ShellProfile | None = None,
     monotonic_provider: Callable[[], float] = monotonic,
 ) -> HookConfigDiscovery:
     discovery = HookConfigRegistry(
         workspace_root=workspace_root,
         home_dir=home_dir,
         shell_path=shell_path,
+        shell_profile=shell_profile,
     ).discover()
     allowlist = HookAllowlist(home_dir=home_dir)
     for spec in discovery.hooks:

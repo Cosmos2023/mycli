@@ -51,6 +51,8 @@ class ShellProfile:
             if self.powershell_edition is PowerShellEdition.CORE:
                 return "PowerShell 7"
             return "Windows PowerShell 5.1"
+        if self.kind is ShellKind.CMD:
+            return "Command Prompt"
         return self.kind.value
 
 

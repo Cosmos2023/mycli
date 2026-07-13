@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from typing import Callable
 
+from mycli.domain.runtime import ShellKind, ShellProfile
 from mycli.services.hooks.types import HookPoint
 from mycli.tools.shell_resolver import (
     ShellCommandConfig,
@@ -54,6 +55,7 @@ class ConfiguredHookSpec:
     hook_id: str
     hook_point: HookPoint
     command: tuple[str, ...]
+    shell_kind: ShellKind | None = None
     enabled: bool = True
     timeout_seconds: float = DEFAULT_HOOK_TIMEOUT_SECONDS
     working_directory: HookWorkingDirectory = HookWorkingDirectory.WORKSPACE
@@ -100,11 +102,13 @@ class HookConfigRegistry:
         workspace_root: Path,
         home_dir: Path,
         shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
         shell_resolver: Callable[[str | None], ShellCommandConfig] = resolve_shell,
     ) -> None:
         self._workspace_root = workspace_root
         self._home_dir = home_dir
         self._shell_path = shell_path
+        self._shell_profile = shell_profile
         self._shell_resolver = shell_resolver
 
     @property
@@ -165,6 +169,7 @@ class HookConfigRegistry:
                 index=index,
                 raw_hook=raw_hook,
                 shell_path=self._shell_path,
+                shell_profile=self._shell_profile,
                 shell_resolver=self._shell_resolver,
             )
             if issue is not None:
@@ -266,6 +271,7 @@ def _parse_hook(
     index: int,
     raw_hook: object,
     shell_path: str | None,
+    shell_profile: ShellProfile | None,
     shell_resolver: Callable[[str | None], ShellCommandConfig],
 ) -> tuple[ConfiguredHookSpec | None, HookConfigIssue | None]:
     if not isinstance(raw_hook, dict):
@@ -282,15 +288,17 @@ def _parse_hook(
         allowed = ", ".join(item.value for item in HookPoint)
         return None, HookConfigIssue(scope, path, f"{hook_id}.hook_point unsupported: {allowed}")
     try:
-        command = _parse_command(
+        parsed_command = _parse_command(
             raw_hook.get("command"),
             shell_path=shell_path,
+            shell_profile=shell_profile,
             shell_resolver=shell_resolver,
         )
     except ShellResolutionError as exc:
         return None, HookConfigIssue(scope, path, f"{hook_id}.command: {exc}")
-    if command is None:
+    if parsed_command is None:
         return None, HookConfigIssue(scope, path, f"{hook_id}.command must be a non-empty string list")
+    command, shell_kind = parsed_command
     timeout = _parse_timeout(raw_hook.get("timeout_seconds"))
     if timeout is None:
         return None, HookConfigIssue(
@@ -323,6 +331,7 @@ def _parse_hook(
             hook_id=hook_id,
             hook_point=hook_point,
             command=command,
+            shell_kind=shell_kind,
             enabled=enabled,
             timeout_seconds=timeout,
             working_directory=working_directory,
@@ -345,15 +354,18 @@ def _parse_command(
     value: object,
     *,
     shell_path: str | None,
+    shell_profile: ShellProfile | None,
     shell_resolver: Callable[[str | None], ShellCommandConfig],
-) -> tuple[str, ...] | None:
+) -> tuple[tuple[str, ...], ShellKind | None] | None:
     if isinstance(value, str) and value.strip():
+        if shell_profile is not None:
+            return tuple(shell_profile.exec_argv(value.strip())), shell_profile.kind
         shell = shell_resolver(shell_path)
-        return (str(shell.executable), *shell.args, value.strip())
+        return (str(shell.executable), *shell.args, value.strip()), ShellKind.BASH
     if not isinstance(value, list) or not value:
         return None
     command = tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
-    return command if len(command) == len(value) else None
+    return (command, None) if len(command) == len(value) else None
 
 
 def _parse_timeout(value: object) -> float | None:

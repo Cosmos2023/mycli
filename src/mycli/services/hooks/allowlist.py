@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from mycli.domain.runtime import ShellKind
 from mycli.infrastructure.filesystem import ensure_parent
 from mycli.services.hooks.config import ConfiguredHookSpec, HookConfigScope
 from mycli.services.hooks.types import HookPoint
@@ -17,6 +18,7 @@ class HookAllowlistEntry:
     hook_id: str
     hook_point: HookPoint
     command_digest: str
+    shell_kind: ShellKind | None = None
     approved_at: str = ""
 
     def to_dict(self) -> dict[str, str]:
@@ -28,6 +30,8 @@ class HookAllowlistEntry:
         }
         if self.approved_at:
             payload["approved_at"] = self.approved_at
+        if self.shell_kind is not None:
+            payload["shell_kind"] = self.shell_kind.value
         return payload
 
     @classmethod
@@ -42,17 +46,23 @@ class HookAllowlistEntry:
         hook_id = payload.get("hook_id")
         command_digest = payload.get("command_digest")
         approved_at = payload.get("approved_at", "")
+        raw_shell_kind = payload.get("shell_kind")
         if not isinstance(hook_id, str) or not hook_id.strip():
             return None
         if not isinstance(command_digest, str) or not command_digest.startswith("sha256:"):
             return None
         if not isinstance(approved_at, str):
             approved_at = ""
+        try:
+            shell_kind = None if raw_shell_kind is None else ShellKind(str(raw_shell_kind))
+        except ValueError:
+            return None
         return cls(
             source=source,
             hook_id=hook_id.strip(),
             hook_point=hook_point,
             command_digest=command_digest,
+            shell_kind=shell_kind,
             approved_at=approved_at,
         )
 
@@ -86,13 +96,13 @@ class HookAllowlist:
         return self._entries
 
     def status_for(self, spec: ConfiguredHookSpec) -> HookAllowlistStatus:
-        digest = command_digest(spec.command)
+        digest = command_digest(spec.command, spec.shell_kind)
         for entry in self._entries:
             if (
                 entry.source is spec.source
                 and entry.hook_id == spec.hook_id
                 and entry.hook_point is spec.hook_point
-                and entry.command_digest == digest
+                and _entry_matches_command(entry, spec, digest)
             ):
                 return HookAllowlistStatus(allowed=True, reason="matched", digest=digest)
         if not self._path.exists():
@@ -105,7 +115,8 @@ class HookAllowlist:
                 source=spec.source,
                 hook_id=spec.hook_id,
                 hook_point=spec.hook_point,
-                command_digest=command_digest(spec.command),
+                command_digest=command_digest(spec.command, spec.shell_kind),
+                shell_kind=spec.shell_kind,
                 approved_at=datetime.now(UTC).isoformat(),
             )
             for spec in specs
@@ -119,12 +130,13 @@ class HookAllowlist:
     def approve(self, spec: ConfiguredHookSpec) -> HookAllowlistEntry:
         if self._issues:
             raise ValueError("; ".join(self._issues))
-        digest = command_digest(spec.command)
+        digest = command_digest(spec.command, spec.shell_kind)
         approved = HookAllowlistEntry(
             source=spec.source,
             hook_id=spec.hook_id,
             hook_point=spec.hook_point,
             command_digest=digest,
+            shell_kind=spec.shell_kind,
             approved_at=datetime.now(UTC).isoformat(),
         )
         entries = [
@@ -179,9 +191,28 @@ class HookAllowlist:
         )
 
 
-def command_digest(command: tuple[str, ...]) -> str:
+def command_digest(
+    command: tuple[str, ...],
+    shell_kind: ShellKind | None = None,
+) -> str:
     canonical = "\0".join(command)
+    if shell_kind is not None:
+        canonical = f"shell:{shell_kind.value}\0{canonical}"
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _entry_matches_command(
+    entry: HookAllowlistEntry,
+    spec: ConfiguredHookSpec,
+    digest: str,
+) -> bool:
+    if entry.shell_kind is spec.shell_kind and entry.command_digest == digest:
+        return True
+    return (
+        entry.shell_kind is None
+        and spec.shell_kind is ShellKind.BASH
+        and entry.command_digest == command_digest(spec.command)
+    )
 
 
 def _same_hook_identity(entry: HookAllowlistEntry, spec: ConfiguredHookSpec) -> bool:

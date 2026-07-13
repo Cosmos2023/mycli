@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 
+from mycli.domain.runtime import PowerShellEdition, ShellKind, ShellProfile
 from mycli.services.hooks.allowlist import HookAllowlist, HookAllowlistEntry, command_digest
 from mycli.services.hooks.config import ConfiguredHookSpec, HookConfigRegistry
 from mycli.services.hooks.runner import ConfiguredHookCallback
@@ -36,6 +37,78 @@ def test_string_hook_uses_resolved_bash(tmp_path: Path) -> None:
 
     assert discovery.issues == ()
     assert discovery.hooks[0].command == ("/custom/bash", "-c", "echo '{}'")
+    assert discovery.hooks[0].shell_kind is ShellKind.BASH
+
+
+def test_string_hook_uses_active_powershell_profile(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    _write_json(
+        workspace / ".mycli" / "hooks.json",
+        {
+            "hooks": [
+                {
+                    "id": "repo-command",
+                    "hook_point": "pre_tool_use",
+                    "command": "Get-Location",
+                }
+            ]
+        },
+    )
+    profile = ShellProfile(
+        ShellKind.POWERSHELL,
+        Path("pwsh.exe"),
+        PowerShellEdition.CORE,
+    )
+
+    hook = HookConfigRegistry(
+        workspace_root=workspace,
+        home_dir=tmp_path / "home",
+        shell_profile=profile,
+    ).discover().hooks[0]
+
+    assert hook.command == tuple(profile.exec_argv("Get-Location"))
+    assert hook.shell_kind is ShellKind.POWERSHELL
+
+
+def test_argv_hook_remains_direct_and_has_no_shell_kind(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.joinpath(".mycli").mkdir(parents=True)
+    command = [sys.executable, "-c", "print('ok')"]
+    _write_json(
+        workspace / ".mycli" / "hooks.json",
+        {
+            "hooks": [
+                {
+                    "id": "argv-command",
+                    "hook_point": "pre_tool_use",
+                    "command": command,
+                }
+            ]
+        },
+    )
+
+    hook = HookConfigRegistry(
+        workspace_root=workspace,
+        home_dir=tmp_path / "home",
+        shell_profile=ShellProfile(
+            ShellKind.POWERSHELL,
+            Path("pwsh.exe"),
+            PowerShellEdition.CORE,
+        ),
+    ).discover().hooks[0]
+
+    assert hook.command == tuple(command)
+    assert hook.shell_kind is None
+
+
+def test_hook_digest_changes_with_shell_kind() -> None:
+    command = ("shell", "-c", "git status")
+
+    assert command_digest(command, ShellKind.BASH) != command_digest(
+        command,
+        ShellKind.POWERSHELL,
+    )
 
 
 def test_string_hook_reports_shell_resolution_error(tmp_path: Path) -> None:

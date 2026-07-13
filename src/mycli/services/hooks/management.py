@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from mycli.domain.runtime import ShellProfile
 from mycli.services.hooks.allowlist import HookAllowlist, command_digest
 from mycli.services.hooks.config import (
     ConfiguredHookSpec,
@@ -23,6 +24,7 @@ class HookManagementRow:
     timeout_seconds: float
     working_directory: str
     env_policy: str
+    shell_kind: str | None
     command_digest: str
     allowlist_status: str
     allowlist_reason: str
@@ -40,6 +42,7 @@ class HookManagementRow:
             "timeout_seconds": self.timeout_seconds,
             "working_directory": self.working_directory,
             "env_policy": self.env_policy,
+            "shell_kind": self.shell_kind,
             "command_digest": self.command_digest,
             "allowlist_status": self.allowlist_status,
             "allowlist_reason": self.allowlist_reason,
@@ -83,10 +86,12 @@ class HookManagementService:
         workspace_root: Path,
         home_dir: Path,
         shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._home_dir = home_dir
         self._shell_path = shell_path
+        self._shell_profile = shell_profile
 
     def list_hooks(self) -> HookManagementResponse:
         discovery, allowlist = self._load()
@@ -214,6 +219,7 @@ class HookManagementService:
             workspace_root=self._workspace_root,
             home_dir=self._home_dir,
             shell_path=self._shell_path,
+            shell_profile=self._shell_profile,
         ).discover()
         return discovery, HookAllowlist(home_dir=self._home_dir)
 
@@ -241,7 +247,8 @@ class HookManagementService:
             timeout_seconds=spec.timeout_seconds,
             working_directory=spec.working_directory.value,
             env_policy=spec.env_policy.value,
-            command_digest=command_digest(spec.command),
+            shell_kind=None if spec.shell_kind is None else spec.shell_kind.value,
+            command_digest=command_digest(spec.command, spec.shell_kind),
             allowlist_status="allowed" if status.allowed else "not_allowed",
             allowlist_reason=status.reason,
             config_path=str(spec.source_path or ""),

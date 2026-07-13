@@ -2,8 +2,8 @@ from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
+from mycli.domain.runtime import PowerShellEdition, ShellKind, ShellProfile
 from mycli.tools.lint import LintTool, _detect_linters, lint
-from mycli.tools.shell_resolver import ShellCommandConfig
 
 
 class TestLint:
@@ -46,24 +46,44 @@ class TestLint:
         assert "diagnostics" in result
         assert result["diagnostics"][0]["file"] == "test.py"
 
-    def test_lint_runs_through_resolved_bash_without_shell_true(self, tmp_path):
+    def test_builtin_linter_runs_as_direct_argv(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[tool.ruff]", encoding="utf-8")
         completed = subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
 
         with patch("mycli.tools.lint.subprocess.run", return_value=completed) as run:
-            lint(
-                cwd=tmp_path,
-                shell_path="/configured/bash",
-                shell_resolver=lambda path: ShellCommandConfig(Path(path or "")),
-            )
+            lint(cwd=tmp_path)
 
         args, kwargs = run.call_args
-        assert args[0] == ["/configured/bash", "-c", "ruff check --output-format json"]
+        assert args[0] == ["ruff", "check", "--output-format", "json"]
         assert "shell" not in kwargs
 
-    def test_lint_tool_uses_configured_shell_path(self):
+    def test_configured_compound_linter_uses_active_shell_profile(self, tmp_path):
+        (tmp_path / "custom.toml").write_text("", encoding="utf-8")
+        profile = ShellProfile(
+            ShellKind.POWERSHELL,
+            Path("pwsh.exe"),
+            PowerShellEdition.CORE,
+        )
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with (
+            patch.dict(
+                "mycli.tools.lint.PROJECT_LINTERS",
+                {"custom.toml": ["Invoke-Lint; Write-Output done"]},
+                clear=True,
+            ),
+            patch("mycli.tools.lint.subprocess.run", return_value=completed) as run,
+        ):
+            lint(cwd=tmp_path, shell_profile=profile)
+
+        assert run.call_args.args[0] == profile.exec_argv(
+            "Invoke-Lint; Write-Output done"
+        )
+
+    def test_lint_tool_uses_configured_shell_profile(self):
         tool = LintTool()
-        tool.configure_shell_path("/configured/bash")
+        profile = ShellProfile(ShellKind.SH, Path("/bin/sh"))
+        tool.configure_shell_profile(profile)
 
         with patch(
             "mycli.tools.lint.lint",
@@ -71,4 +91,4 @@ class TestLint:
         ) as lint_call:
             tool.execute({})
 
-        assert lint_call.call_args.kwargs["shell_path"] == "/configured/bash"
+        assert lint_call.call_args.kwargs["shell_profile"] == profile

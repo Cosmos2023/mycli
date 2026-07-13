@@ -362,6 +362,7 @@ class AgentRuntime:
             trace_service=self._trace_service,
             session_id=config.session_id,
             shell_path=config.shell_path,
+            shell_profile=self._shell_resolution.profile,
             monotonic_provider=self._monotonic,
         )
         self._plugin_runtime_state = load_enabled_plugins(
@@ -443,6 +444,11 @@ class AgentRuntime:
             trace_service=self._trace_service,
             append_turn_item=self._append_turn_item,
         )
+        self._write_diagnostics_service = WriteDiagnosticsService(
+            workspace_root=config.workspace_root,
+            shell_path=config.shell_path,
+            shell_profile=self._shell_resolution.profile,
+        )
         self._tool_execution_service = ToolExecutionService(
             session_id=config.session_id,
             context_manager=self._context_manager,
@@ -457,10 +463,7 @@ class AgentRuntime:
                 self._config.session_id,
                 snapshot,
             ),
-            write_diagnostics_runner=WriteDiagnosticsService(
-                workspace_root=config.workspace_root,
-                shell_path=config.shell_path,
-            ).run,
+            write_diagnostics_runner=self._write_diagnostics_service.run,
             policy_gate=self._runtime_policy_gate,
         )
         child_executor = RuntimeChildToolExecutor(
@@ -2172,6 +2175,9 @@ class AgentRuntime:
         self._runtime_policy_gate.set_shell_profile(
             self._shell_resolution.profile,
             shell_path=config.shell_path,
+        )
+        self._write_diagnostics_service.configure_shell_profile(
+            self._shell_resolution.profile
         )
         self._request_pipeline.set_config(config)
         self._runtime_error_logger.set_config(config)

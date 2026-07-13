@@ -14,7 +14,12 @@ from datetime import UTC, datetime
 
 from mycli.config.settings import resolve_config
 from mycli.cli.node_tui.gateway import supported_event_streams, supported_rpc_methods
-from mycli.domain.runtime import BackgroundJobSummary, tool_runtime_coverage_profiles
+from mycli.domain.runtime import (
+    BackgroundJobSummary,
+    ShellKind,
+    ShellProfile,
+    tool_runtime_coverage_profiles,
+)
 from mycli.domain.runtime.gateway_contract import gateway_event_payload_schemas
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
@@ -31,9 +36,11 @@ from mycli.services.plugins import PluginCommandRegistry, PluginLoadStatus, load
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.shell_resolver import (
+    ExplicitPathStatus,
     ShellCommandConfig,
+    ShellResolution,
     ShellResolutionError,
-    resolve_shell,
+    detect_shell_profile_with_diagnostics,
 )
 
 _TRACE_SCAN_LIMIT = 50
@@ -383,6 +390,7 @@ class DoctorService:
         which: WhichFunc | None = None,
         import_checker: ImportChecker | None = None,
         shell_resolver: ShellResolver | None = None,
+        shell_resolution: ShellResolution | None = None,
     ) -> None:
         self._workspace_root = workspace_root
         self._home_dir = home_dir
@@ -390,18 +398,32 @@ class DoctorService:
         self._layout = MycliStorageLayout.from_home_dir(home_dir)
         self._which = which or shutil.which
         self._import_checker = import_checker or _can_import
-        self._shell_resolver = shell_resolver or (
-            lambda path: resolve_shell(path, env=self._env)
-        )
+        self._shell_resolver = shell_resolver
+        self._shell_resolution = shell_resolution
 
-    def _resolve_shell(self) -> ShellCommandConfig:
+    def _resolve_shell_resolution(self) -> ShellResolution:
+        if self._shell_resolution is not None:
+            return self._shell_resolution
         config = resolve_config(
             cli_args={"session": "doctor", "model": None},
             env=self._env,
             cwd=self._workspace_root,
             home=self._home_dir,
         )
-        return self._shell_resolver(config.shell_path)
+        if self._shell_resolver is not None:
+            legacy = self._shell_resolver(config.shell_path)
+            status: ExplicitPathStatus = (
+                "accepted" if config.shell_path else "not_configured"
+            )
+            return ShellResolution(
+                profile=ShellProfile(ShellKind.BASH, legacy.executable),
+                explicit_path_status=status,
+            )
+        return detect_shell_profile_with_diagnostics(
+            config.shell_path,
+            env=self._env,
+            which=lambda name, _path: self._which(name),
+        )
 
     def run(self) -> DoctorReport:
         checks: list[DoctorCheck] = []
@@ -1327,13 +1349,13 @@ class DoctorService:
 
         profile = ShellBackendProfile()
         try:
-            shell = self._resolve_shell()
+            resolution = self._resolve_shell_resolution()
         except ShellResolutionError as exc:
             available = False
             detail_shell = str(exc)
         else:
             available = True
-            detail_shell = str(shell.executable)
+            detail_shell = str(resolution.profile.executable)
         status = DoctorStatus.OK if available else DoctorStatus.WARNING
         message = (
             f"shell backend {profile.backend} "
@@ -2140,6 +2162,7 @@ class DoctorService:
         discovery = HookConfigRegistry(
             workspace_root=self._workspace_root,
             home_dir=self._home_dir,
+            shell_profile=self._resolve_shell_resolution().profile,
         ).discover()
         snapshots = manager.snapshot()
         if not snapshots:
@@ -2254,11 +2277,22 @@ class DoctorService:
         issues: list[str] = []
         details: list[str] = []
         try:
-            shell = self._resolve_shell()
+            resolution = self._resolve_shell_resolution()
         except ShellResolutionError as exc:
             issues.append(str(exc))
         else:
-            details.append(f"shell={shell.executable}")
+            profile = resolution.profile
+            details.extend(
+                (
+                    f"shell={profile.display_name}",
+                    f"shell_path={profile.executable}",
+                    f"override={resolution.explicit_path_status}",
+                )
+            )
+            if resolution.explicit_path_reason:
+                details.append(f"override_reason={resolution.explicit_path_reason}")
+            if profile.kind is ShellKind.CMD:
+                details.append("note=PowerShell provides richer command semantics")
         git_path = self._which("git")
         if git_path:
             details.append(f"git={git_path}")

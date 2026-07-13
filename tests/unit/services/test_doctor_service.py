@@ -8,13 +8,18 @@ import sys
 import pytest
 
 import mycli.services.diagnostics.doctor as doctor_module
+from mycli.domain.runtime import ShellKind, ShellProfile
 from mycli.services.diagnostics.doctor import (
     DoctorService,
     DoctorStatus,
     render_doctor_report,
 )
 from mycli.services.mcp.diagnostics import McpDiscoveryDiagnostics, McpServerDiagnostic
-from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
+from mycli.tools.shell_resolver import (
+    ShellCommandConfig,
+    ShellResolution,
+    ShellResolutionError,
+)
 from tests.support.shell_commands import python_shell_command
 
 
@@ -643,8 +648,34 @@ def test_doctor_service_warns_for_missing_tool_environment(tmp_path: Path) -> No
 
     check = next(check for check in report.checks if check.name == "tool_environment")
     assert check.status is DoctorStatus.WARNING
-    assert "shell_path does not exist" in check.message
     assert "git not found" in check.message
+    assert "override=ignored" in check.detail
+    assert "shell_path does not exist" in check.detail
+
+
+def test_doctor_reports_ignored_override_and_active_fallback(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    resolution = ShellResolution(
+        profile=ShellProfile(ShellKind.CMD, Path("cmd.exe")),
+        explicit_path_status="ignored",
+        explicit_path_reason="configured path does not exist",
+    )
+
+    report = DoctorService(
+        workspace_root=workspace,
+        home_dir=home,
+        env={},
+        shell_resolution=resolution,
+        which=lambda command: "git" if command == "git" else None,
+    ).run()
+
+    check = next(item for item in report.checks if item.name == "tool_environment")
+    assert check.status is DoctorStatus.OK
+    assert "ignored" in check.detail
+    assert "Command Prompt" in check.detail
 
 
 def test_doctor_service_uses_injected_windows_shell_resolver(tmp_path: Path) -> None:
