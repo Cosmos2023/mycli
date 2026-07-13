@@ -98,3 +98,19 @@ def test_create_shell_environment_prepends_prepared_ripgrep(
 
     assert env["PATH"] == f"/vendor/rg{os.pathsep}/usr/bin"
     assert env["MYCLI_RIPGREP_PATH_DIR"] == "/vendor/rg"
+
+
+def test_shell_environment_updates_existing_windows_path_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        shell_environment,
+        "prepend_ripgrep_to_path",
+        lambda path: (f"C:\\vendor{os.pathsep}{path}", r"C:\vendor"),
+    )
+
+    env = create_shell_environment(
+        ShellEnvironmentPolicy.inherit_all(),
+        source_env={"Path": r"C:\Windows", "HOME": r"C:\Users\demo"},
+    )
+
+    assert env["Path"] == f"C:\\vendor{os.pathsep}C:\\Windows"
+    assert "PATH" not in env

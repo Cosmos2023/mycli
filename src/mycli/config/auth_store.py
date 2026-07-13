@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from mycli.config.file_permissions import harden_private_path
+
 
 def default_auth_path(home_dir: Path) -> Path:
     return home_dir / ".mycli" / "auth.json"
@@ -49,9 +51,9 @@ class AuthStore:
 
     def _write(self, payload: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._path.parent.chmod(0o700)
+        harden_private_path(self._path.parent, mode=0o700)
         self._path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        self._path.chmod(0o600)
+        harden_private_path(self._path, mode=0o600)
 
 
 __all__ = ["AuthStore", "default_auth_path"]

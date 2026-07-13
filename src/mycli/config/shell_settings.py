@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Mapping
 import tomllib
 
+from mycli.config.file_permissions import harden_private_path
 from mycli.config.settings import default_user_config_path
 from mycli.config.toml_format import flatten_user_config_payload, format_user_config_toml
 from mycli.domain.runtime import ViewMode
@@ -85,7 +86,7 @@ def save_shell_settings(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(format_user_config_toml(dict(payload)), encoding="utf-8")
-    path.chmod(0o600)
+    harden_private_path(path, mode=0o600)
     return settings
 
 

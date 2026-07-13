@@ -37,7 +37,8 @@ def create_shell_environment(
     if policy.thread_id:
         env[MYCLI_THREAD_ID_ENV_VAR] = policy.thread_id
 
-    env["PATH"], ripgrep_path_dir = prepend_ripgrep_to_path(env.get("PATH"))
+    path_key = next((key for key in env if key.casefold() == "path"), "PATH")
+    env[path_key], ripgrep_path_dir = prepend_ripgrep_to_path(env.get(path_key))
     if ripgrep_path_dir is not None:
         env[MYCLI_RIPGREP_PATH_DIR_ENV_VAR] = ripgrep_path_dir
     return env
