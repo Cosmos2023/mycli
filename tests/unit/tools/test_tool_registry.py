@@ -111,6 +111,26 @@ def test_builtin_tool_registry_manifest_has_stable_shape(tmp_path: Path) -> None
     assert git_status["source"] == "builtin"
 
 
+def test_default_registry_has_visible_shell_and_legacy_aliases(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    assert "Shell" in registry.list_names()
+    assert "ShellOutput" in registry.list_names()
+    assert "Bash" in registry.list_names()
+    assert "BashOutput" in registry.list_names()
+
+
+def test_legacy_bash_alias_still_executes(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    result = registry.execute(
+        ToolCall(name="Bash", arguments={"command": "printf ok"}, reason="compatibility")
+    )
+
+    assert result.success is True
+    assert result.raw_payload["output"] == "ok"
+
+
 def test_builtin_tool_parallel_support_matches_safe_runtime_set(tmp_path: Path) -> None:
     registry = ToolRegistry(workspace_root=tmp_path)
     assert "Grep" not in registry.list_names()

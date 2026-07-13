@@ -392,6 +392,8 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "Patch",
         "Plan",
         "Read",
+        "Shell",
+        "ShellOutput",
         "Skill",
         "SubagentOutput",
         "Task",

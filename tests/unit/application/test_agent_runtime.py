@@ -58,7 +58,7 @@ from mycli.tools.edit import EditTool
 from mycli.tools.ls import LSTool
 from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistry
-from mycli.tools.bash import BashTool
+from mycli.tools.bash import BashTool, ShellTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.kill_shell import KillShellTool
 from mycli.tools.shell_registry import SHELL_REGISTRY
@@ -84,7 +84,7 @@ class PushThenDoneAdapter:
                     "assistant_message": None,
                     "progress_message": "Preparing a risky push",
                     "tool_call": ToolCall(
-                        name="Bash",
+                        name="Shell",
                         arguments={"args": ["git", "push", "origin", "main"]},
                         reason="publish branch",
                     ),
@@ -228,7 +228,7 @@ def test_project_execpolicy_deny_overrides_existing_session_shell_allowance(
 
     assert response.pending_decision is None
     assert response.assistant_message.startswith(
-        "Denied: Tool denied by runtime policy: Bash"
+        "Denied: Tool denied by runtime policy: Shell"
     )
     assert "policy=execpolicy_prefix_rule" in response.assistant_message
     assert "reason=execpolicy_deny" in response.assistant_message
@@ -976,7 +976,7 @@ class SearchThenDoneAdapter:
                     "progress_message": "Searching the workspace",
                     "tool_call": ToolCall(
                         call_id="call_search_text_1",
-                        name="Bash",
+                        name="Shell",
                         arguments={"command": "rg -n --glob '*.md' search_text ."},
                         reason="search workspace",
                     ),
@@ -1114,7 +1114,7 @@ class SearchReadEditThenDoneAdapter:
                     "progress_message": "Searching for evidence",
                     "tool_call": ToolCall(
                         call_id="call_search_1",
-                        name="Bash",
+                        name="Shell",
                         arguments={"command": "rg -n --glob '*.txt' needle ."},
                         reason="locate relevant lines",
                     ),
@@ -1183,7 +1183,7 @@ class SearchRangeThenDoneAdapter:
                     "progress_message": "Searching for evidence",
                     "tool_call": ToolCall(
                         call_id="call_search_1",
-                        name="Bash",
+                        name="Shell",
                         arguments={"command": "rg -n needle ."},
                         reason="find the file",
                     ),
@@ -1236,7 +1236,7 @@ class ShellThenDoneAdapter:
                     "progress_message": "Checking the working directory",
                     "tool_call": ToolCall(
                         call_id="call_shell_1",
-                        name="Bash",
+                        name="Shell",
                         arguments={"args": [sys.executable, "-c", "print('shell-output')"]},
                         reason="inspect shell output",
                     ),
@@ -1446,7 +1446,7 @@ class PushThenResumedReasoningUnsupportedAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="Bash",
+                                tool_name="Shell",
                                 tool_arguments={"args": ["git", "push", "origin", "main"]},
                                 call_id="call_push_1",
                             ),
@@ -2076,7 +2076,7 @@ def build_runtime_with_capture_adapter(
             ReadTool(tmp_path),
             GrepTool(tmp_path),
             EditTool(tmp_path),
-            BashTool(tmp_path),
+            ShellTool(tmp_path),
             PlanTool(),
         ]
     )
@@ -2357,7 +2357,7 @@ def test_agent_runtime_enqueues_background_bash_task_notification(
         model_adapter=adapter,
     )
     bash_tool = next(
-        tool for tool in runtime._tool_registry.list_all() if tool.spec.name == "Bash"
+        tool for tool in runtime._tool_registry.list_all() if tool.spec.name == "Shell"
     )
 
     result = bash_tool.execute(
@@ -3361,7 +3361,7 @@ def test_agent_runtime_passes_session_and_turn_context_to_model_logging(
                 ReadTool(tmp_path),
                 GrepTool(tmp_path),
                 EditTool(tmp_path),
-                BashTool(tmp_path),
+                ShellTool(tmp_path),
                 PlanTool(),
             ]
         ),
@@ -3503,7 +3503,7 @@ def test_agent_runtime_logs_assembled_turn_context_summary(tmp_path: Path) -> No
                 ReadTool(tmp_path),
                 GrepTool(tmp_path),
                 EditTool(tmp_path),
-                BashTool(tmp_path),
+                ShellTool(tmp_path),
                 PlanTool(),
             ]
         ),
@@ -3989,7 +3989,7 @@ def test_agent_runtime_exposes_skill_catalog_without_auto_loading_body(tmp_path:
                 ReadTool(tmp_path),
                 GrepTool(tmp_path),
                 EditTool(tmp_path),
-                BashTool(tmp_path),
+                ShellTool(tmp_path),
                 PlanTool(),
             ]
         ),
@@ -4074,7 +4074,7 @@ def test_agent_runtime_keeps_explicit_skill_mentions_as_plain_user_text(tmp_path
                 ReadTool(tmp_path),
                 GrepTool(tmp_path),
                 EditTool(tmp_path),
-                BashTool(tmp_path),
+                ShellTool(tmp_path),
                 PlanTool(),
             ]
         ),
@@ -4871,7 +4871,7 @@ class ImplementationAuditForceAnswerAdapter:
                         blocks=(
                             RuntimeBlock(
                                 type="tool_call",
-                                tool_name="Bash",
+                                tool_name="Shell",
                                 tool_arguments={"command": "rg -n --glob '*.py' 'capability activation' ."},
                                 call_id="call_search_capability_activation",
                             ),
@@ -4980,7 +4980,7 @@ class DeferredToolRequestAdapter:
                     blocks=(
                         RuntimeBlock(
                             type="tool_call",
-                            tool_name="Bash",
+                            tool_name="Shell",
                             tool_arguments={"args": ["pwd"]},
                             call_id="call_run_shell_deferred",
                         ),
@@ -5640,7 +5640,7 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
                 LSTool(tmp_path),
                 ReadTool(tmp_path),
                 GrepTool(tmp_path),
-                BashTool(tmp_path),
+                ShellTool(tmp_path),
                 EditTool(tmp_path),
                 PlanTool(),
             ]
@@ -5654,7 +5654,7 @@ def test_agent_runtime_limits_model_tools_to_planned_exposure(tmp_path: Path) ->
     assert response.turn is not None
     assert "LS" in adapter.seen_tool_names[0]
     assert "Read" in adapter.seen_tool_names[0]
-    assert "Bash" in adapter.seen_tool_names[0]
+    assert "Shell" in adapter.seen_tool_names[0]
     assert "Edit" in adapter.seen_tool_names[0]
     assert any(item.type is TurnItemType.TOOL_EXPOSURE for item in response.turn.items)
 
@@ -5665,7 +5665,7 @@ def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -
         tool_registry=ToolRegistry.from_tools(
             [
                 LSTool(tmp_path),
-                BashTool(tmp_path),
+                ShellTool(tmp_path),
             ]
         ),
         config=AgentConfig(workspace_root=tmp_path),

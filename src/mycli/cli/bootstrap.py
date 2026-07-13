@@ -30,7 +30,7 @@ from mycli.services.mcp import (
 )
 from mycli.services.skills import SkillRegistry
 from mycli.tools.ask_user_question import AskUserQuestionTool
-from mycli.tools.bash import BashTool
+from mycli.tools.bash import BashTool, ShellTool
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.edit import EditTool
 from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
@@ -42,6 +42,7 @@ from mycli.tools.plan import PlanTool
 from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
 from mycli.tools.read import ReadTool
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.shell_output import ShellOutputTool
 from mycli.tools.subagent_output import SubagentOutputTool
 from mycli.tools.web_fetch import WebFetchTool
 from mycli.tools.web_search import WebSearchTool
@@ -139,6 +140,8 @@ def build_turn_service(
                 allowed_roots=allowed_roots,
                 unrestricted=unrestricted_filesystem,
             ),
+            ShellTool(workspace_root),
+            ShellOutputTool(),
             BashTool(workspace_root),
             BashOutputTool(),
             KillShellTool(),

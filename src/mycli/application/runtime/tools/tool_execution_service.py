@@ -40,7 +40,7 @@ from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
 from mycli.tools.routing.tool_router import ToolRouter
 
-SHELL_TOOL_NAMES = frozenset({"Bash", "run_shell"})
+SHELL_TOOL_NAMES = frozenset({"Shell", "Bash", "run_shell"})
 ToolLifecycleSink = Callable[[RuntimeStreamEvent], None]
 MAX_LIFECYCLE_PREVIEW_CHARS = 160
 MAX_LIFECYCLE_CONTENT_PREVIEW_CHARS = 12_000
@@ -1491,7 +1491,14 @@ class ToolExecutionService:
         call: ToolCall,
         result: ToolResult,
     ) -> dict[str, object]:
-        if call.name not in {"Bash", "run_shell", "BashOutput", "KillShell"}:
+        if call.name not in {
+            "Shell",
+            "Bash",
+            "run_shell",
+            "ShellOutput",
+            "BashOutput",
+            "KillShell",
+        }:
             return {}
         result_payload = result.raw_payload
         payload: dict[str, object] = {}
@@ -1686,7 +1693,7 @@ class ToolExecutionService:
             return path or "<unknown>"
         if call.name == "Plan":
             return "updating task plan"
-        if call.name == "Bash":
+        if call.name in {"Shell", "Bash"}:
             return self._activity_preview(call) or call.name
         return call.name
 
@@ -1699,7 +1706,7 @@ class ToolExecutionService:
             return path or "<unknown>"
         if call.name in FILE_MUTATION_TOOLS:
             return path or "<unknown>"
-        if call.name == "Bash":
+        if call.name in {"Shell", "Bash"}:
             return self._activity_preview(call) or (result_summary or call.name)
         if call.name == "Plan":
             return "updated task plan"

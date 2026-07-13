@@ -615,7 +615,7 @@ class AgentRuntime:
         model_adapter: ModelAdapter,
         workspace_log_service: WorkspaceLogService | None = None,
     ) -> AgentRuntime:
-        from mycli.tools.bash import BashTool
+        from mycli.tools.bash import ShellTool
         from mycli.tools.edit import EditTool
         from mycli.services.filesystem import FileSystemRuntime
         from mycli.tools.ls import LSTool
@@ -636,7 +636,7 @@ class AgentRuntime:
                 LSTool(workspace_root, allowed_roots=allowed_roots),
                 ReadTool(workspace_root, filesystem_runtime=filesystem_runtime),
                 EditTool(workspace_root, filesystem_runtime=filesystem_runtime),
-                BashTool(workspace_root),
+                ShellTool(workspace_root),
                 PlanTool(),
                 EnterPlanModeTool(workspace_root),
                 ExitPlanModeTool(workspace_root),

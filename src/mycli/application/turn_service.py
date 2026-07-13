@@ -1246,7 +1246,7 @@ class TurnService:
             if isinstance(route_name, str) and route_name and route_name not in parts:
                 parts.append(route_name)
 
-            is_shell_trace = tool_name in {"Bash", "run_shell"}
+            is_shell_trace = tool_name in {"Shell", "Bash", "run_shell"}
             arguments = event.payload.get("arguments")
             if isinstance(arguments, dict) and not is_shell_trace:
                 args = arguments.get("args")

@@ -38,7 +38,7 @@ def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> N
             FakeTool("Read", "Read file"),
             FakeTool("Grep", "Search text"),
             FakeTool("Glob", "Discover files"),
-            FakeTool("Bash", "Run shell"),
+            FakeTool("Shell", "Run shell"),
             FakeTool("Edit", "Edit file"),
         ]
     )
@@ -49,7 +49,7 @@ def test_tool_exposure_planner_exposes_static_tools_as_equal_callable_set() -> N
     assert set(planned.exposure.callable_tool_names()) == {
         "LS",
         "Read",
-        "Bash",
+        "Shell",
         "Edit",
     }
     assert [entry.source for entry in planned.exposure.entries] == [ToolRouteSource.REGISTRY] * 4
@@ -64,6 +64,8 @@ def test_tool_exposure_planner_hides_legacy_builtin_tools_by_default() -> None:
                 "Write",
                 "Edit",
                 "Patch",
+                "Shell",
+                "ShellOutput",
                 "Bash",
                 "BashOutput",
                 "KillShell",
@@ -108,6 +110,10 @@ def test_tool_exposure_planner_filters_default_registry_without_unregistering_to
     assert (MODEL_VISIBLE_BUILTIN_TOOLS & registered_names).issubset(visible_names)
     assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.isdisjoint(visible_names)
     assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.issubset(registered_names)
+    assert "Shell" in visible_names
+    assert "ShellOutput" in visible_names
+    assert "Bash" not in visible_names
+    assert "BashOutput" not in visible_names
 
 
 def test_tool_exposure_planner_keeps_write_tools_equal_for_chinese_modify_intent() -> None:

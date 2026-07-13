@@ -8,7 +8,7 @@ from pathlib import Path
 from mycli.domain.subagent_profiles import list_sub_agent_profiles
 from mycli.domain.subagents import SubAgentBudget, SubAgentProfile
 
-HIGH_RISK_SUBAGENT_TOOLS = frozenset({"Bash", "Write", "Edit", "Patch"})
+HIGH_RISK_SUBAGENT_TOOLS = frozenset({"Shell", "Bash", "Write", "Edit", "Patch"})
 DEFAULT_SAFE_TOOLS = ("Read", "LS")
 
 

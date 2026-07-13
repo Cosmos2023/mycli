@@ -15,7 +15,7 @@ LEGACY_TOOL_NAMES = {
     "write_file": "Write",
     "search_text": "Grep",
     "list_directory": "LS",
-    "run_shell": "Bash",
+    "run_shell": "Shell",
     "update_plan": "Plan",
 }
 
@@ -112,7 +112,7 @@ def _normalize_tool_arguments(
         if "case_sensitive" in normalized and "ignore_case" not in normalized:
             normalized["ignore_case"] = not bool(normalized["case_sensitive"])
         _copy_alias(normalized, "max_matches", "head_limit")
-    elif tool_name == "Bash":
+    elif tool_name in {"Shell", "Bash"}:
         args = normalized.get("args")
         if "command" not in normalized and isinstance(args, list):
             parts = [part for part in args if isinstance(part, str)]

@@ -195,25 +195,23 @@ def _duration_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
 
-class BashTool:
-    name = "Bash"
-    spec = ToolSpec(
-        name="Bash",
-        description="Execute a shell command when dedicated tools cannot handle the task. Supports timeout and background execution.",
-        parameters=(
-            ToolParameter(name="command", type="string", required=True),
-            ToolParameter(
-                name="args",
-                type="array",
-                required=False,
-                items_schema={"type": "string"},
-            ),
-            ToolParameter(name="timeout", type="integer", required=False),
-            ToolParameter(name="cwd", type="string", required=False),
-            ToolParameter(name="run_in_background", type="boolean", required=False),
-        ),
-        risk_level="high",
-    )
+_SHELL_PARAMETERS = (
+    ToolParameter(name="command", type="string", required=True),
+    ToolParameter(
+        name="args",
+        type="array",
+        required=False,
+        items_schema={"type": "string"},
+    ),
+    ToolParameter(name="timeout", type="integer", required=False),
+    ToolParameter(name="cwd", type="string", required=False),
+    ToolParameter(name="run_in_background", type="boolean", required=False),
+)
+
+
+class _ShellToolBase:
+    name: str
+    spec: ToolSpec
 
     def __init__(self, workspace_root: Path, shell_backend: ShellBackend | None = None) -> None:
         self._workspace_root = workspace_root
@@ -261,7 +259,7 @@ class BashTool:
             return ToolResult(
                 success=False,
                 summary="Invalid shell command",
-                error="Bash requires command.",
+                error=f"{self.name} requires command.",
             )
         shell_options = _shell_execution_options(arguments.get("_runtime_shell_options"))
         if shell_options.shell_path is None and self._shell_path is not None:
@@ -303,7 +301,7 @@ class BashTool:
                 raw_payload["suggested_arguments"] = suggested_arguments
             return ToolResult(
                 success=False,
-                summary=f"Use {analysis.reroute_tool} instead of Bash",
+                summary=f"Use {analysis.reroute_tool} instead of {self.name}",
                 error=message,
                 raw_payload={
                     **raw_payload,
@@ -385,7 +383,7 @@ class BashTool:
             return ToolResult(
                 success=False,
                 summary="Invalid shell cwd",
-                error="Bash cwd must be a string path within the workspace.",
+                error=f"{self.name} cwd must be a string path within the workspace.",
                 raw_payload={"error_kind": "invalid_cwd"},
             )
         try:
@@ -394,7 +392,7 @@ class BashTool:
                 return ToolResult(
                     success=False,
                     summary="Invalid shell cwd",
-                    error=f"Bash cwd is not a directory: {raw_cwd}",
+                    error=f"{self.name} cwd is not a directory: {raw_cwd}",
                     raw_payload={
                         "cwd": raw_cwd,
                         "error_kind": "not_directory",
@@ -411,6 +409,29 @@ class BashTool:
                 },
             )
         return cwd
+
+
+class ShellTool(_ShellToolBase):
+    name = "Shell"
+    spec = ToolSpec(
+        name=name,
+        description=(
+            "Execute a command in the active user shell when dedicated tools "
+            "cannot handle the task. Supports timeout and background execution."
+        ),
+        parameters=_SHELL_PARAMETERS,
+        risk_level="high",
+    )
+
+
+class BashTool(_ShellToolBase):
+    name = "Bash"
+    spec = ToolSpec(
+        name=name,
+        description="Compatibility alias for the Shell tool.",
+        parameters=_SHELL_PARAMETERS,
+        risk_level="high",
+    )
 
 
 def _shell_execution_options(value: object) -> ShellExecutionOptions:

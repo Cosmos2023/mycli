@@ -24,8 +24,8 @@ from mycli.tools.registry import ToolRegistry
 MODEL_VISIBLE_BUILTIN_TOOLS: frozenset[str] = frozenset(
     {
         "AskUserQuestion",
-        "Bash",
-        "BashOutput",
+        "Shell",
+        "ShellOutput",
         "Edit",
         "KillShell",
         "LS",
@@ -47,6 +47,8 @@ HIDDEN_BY_DEFAULT_BUILTIN_TOOLS: frozenset[str] = frozenset(
         "GitStatus",
         "Lint",
         "Patch",
+        "Bash",
+        "BashOutput",
         "SubagentOutput",
         "enter_plan_mode",
         "exit_plan_mode",

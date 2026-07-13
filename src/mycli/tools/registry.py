@@ -53,7 +53,17 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "shell_safety_analysis",
         "capability_tags": ("shell", "process", "terminal", "approval"),
     },
+    "Shell": {
+        "toolset": "terminal",
+        "approval_policy": "shell_safety_analysis",
+        "capability_tags": ("shell", "process", "terminal", "approval"),
+    },
     "BashOutput": {
+        "toolset": "terminal",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("shell", "process", "background"),
+    },
+    "ShellOutput": {
         "toolset": "terminal",
         "approval_policy": "auto_allow",
         "capability_tags": ("shell", "process", "background"),
@@ -601,7 +611,7 @@ class ToolRegistry:
 def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.services.filesystem import FileSystemRuntime
     from mycli.tools.ask_user_question import AskUserQuestionTool
-    from mycli.tools.bash import BashTool
+    from mycli.tools.bash import BashTool, ShellTool
     from mycli.tools.bash_output import BashOutputTool
     from mycli.tools.edit import EditTool
     from mycli.tools.git_tools import GitDiffTool, GitLogTool, GitShowTool, GitStatusTool
@@ -612,6 +622,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
+    from mycli.tools.shell_output import ShellOutputTool
     from mycli.tools.subagent_output import SubagentOutputTool
     from mycli.tools.task import TaskTool
     from mycli.tools.web_fetch import WebFetchTool
@@ -625,6 +636,8 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         PatchTool(workspace_root, filesystem_runtime=filesystem_runtime),
         WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
         LSTool(workspace_root),
+        ShellTool(workspace_root),
+        ShellOutputTool(),
         BashTool(workspace_root),
         BashOutputTool(),
         KillShellTool(),

@@ -82,7 +82,7 @@ class ApprovalService:
         call: ToolCall,
         command_pattern: str | None,
     ) -> bool:
-        if command_pattern is None or call.name not in {"Bash", "run_shell"}:
+        if command_pattern is None or call.name not in {"Shell", "Bash", "run_shell"}:
             return False
         return any(
             allowance.command_pattern == command_pattern

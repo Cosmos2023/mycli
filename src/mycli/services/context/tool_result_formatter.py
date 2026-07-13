@@ -6,7 +6,9 @@ from mycli.domain.tooling.calls import ToolEvidence
 from mycli.tools.base import ToolResult
 
 
-SHELL_RESULT_TOOLS = frozenset({"run_shell", "Bash", "BashOutput"})
+SHELL_RESULT_TOOLS = frozenset(
+    {"run_shell", "Shell", "Bash", "ShellOutput", "BashOutput"}
+)
 
 
 class ToolResultFormatter:
