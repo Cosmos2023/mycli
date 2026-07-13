@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from mycli.domain.runtime import PowerShellEdition, ShellKind, ShellProfile
+from mycli.prompts.shell import render_shell_guidance
 from mycli.prompts.system import SYSTEM_PROMPT_VERSION, build_system_prompt
 
 
@@ -16,11 +20,12 @@ def test_build_system_prompt_loads_fixed_english_template() -> None:
     assert "Prefer existing project patterns" in prompt
     assert "Never revert, overwrite, or discard user changes" in prompt
     assert "Use tools to close concrete information gaps" in prompt
-    assert "Search text by running `rg` through `Bash`" in prompt
-    assert "Discover files by running `rg --files` through `Bash`" in prompt
+    assert "Search text by running `rg` through `Shell`" in prompt
+    assert "Discover files by running `rg --files` through `Shell`" in prompt
     assert "explicit `offset` and `limit`" in prompt
     assert "Patch" in prompt
-    assert "Bash" in prompt
+    assert "Use `Shell`" in prompt
+    assert "through `Bash`" not in prompt
     assert "Grep" not in prompt
     assert "Glob" not in prompt
     assert "Do not use `sed`, `awk`, `perl`, Python scripts, or shell redirection to edit files directly" in prompt
@@ -38,10 +43,10 @@ def test_build_system_prompt_loads_fixed_english_template() -> None:
 def test_build_system_prompt_guides_bounded_read_usage() -> None:
     prompt = build_system_prompt()
 
-    assert SYSTEM_PROMPT_VERSION == "2026-07-codex-style-base-v1"
+    assert SYSTEM_PROMPT_VERSION == "2026-07-codex-style-base-v2"
     assert "Use `Read` for file contents" in prompt
     assert "`Read` calls must include explicit `offset` and `limit` arguments" in prompt
-    assert "Do not use Bash `cat` or broad shell output to read files" in prompt
+    assert "Do not use Shell `cat` or broad shell output to read files" in prompt
     assert "If a `Read` result is truncated, continue with the next `offset`" in prompt
     assert "Do not repeat the same `Read` call with the same path, `offset`, and `limit`" in prompt
 
@@ -67,3 +72,34 @@ def test_build_system_prompt_matches_codex_style_workflow_sections() -> None:
     assert "Final Answers" in prompt
     assert "The user does not see command output" in prompt
     assert "Do not tell the user to save or copy files" in prompt
+
+
+def test_powershell_desktop_guidance_avoids_core_chaining() -> None:
+    text = render_shell_guidance(
+        ShellProfile(
+            ShellKind.POWERSHELL,
+            Path("powershell.exe"),
+            PowerShellEdition.DESKTOP,
+        )
+    )
+
+    assert "Current shell: Windows PowerShell 5.1" in text
+    assert "Do not use && or ||" in text
+    assert "$env:NAME" in text
+    assert "powershell.exe" not in text
+
+
+def test_cmd_guidance_uses_percent_environment_variables() -> None:
+    text = render_shell_guidance(ShellProfile(ShellKind.CMD, Path("cmd.exe")))
+
+    assert "Current shell: Command Prompt" in text
+    assert "%NAME%" in text
+    assert "cmd.exe" not in text
+
+
+def test_shell_guidance_is_compact_and_identifies_posix_shell() -> None:
+    text = render_shell_guidance(ShellProfile(ShellKind.ZSH, Path("/bin/zsh")))
+
+    assert "Current shell: zsh" in text
+    assert "/bin/zsh" not in text
+    assert len(text.splitlines()) <= 6

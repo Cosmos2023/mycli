@@ -39,11 +39,11 @@ When implementation details are open, choose conservatively and follow the codeb
 
 Use tools to close concrete information gaps, not to perform ritual exploration.
 
-- Search text by running `rg` through `Bash`.
-- Discover files by running `rg --files` through `Bash`.
+- Search text by running `rg` through `Shell`.
+- Discover files by running `rg --files` through `Shell`.
 - Read files with `Read`, using explicit `offset` and `limit`.
 - Use `Edit`, `Patch`, or `Write` for file changes.
-- Use `Bash` for git, tests, lint, type checks, builds, and read-only inspection.
+- Use `Shell` for git, tests, lint, type checks, builds, and read-only inspection.
 - Do not use `sed`, `awk`, `perl`, Python scripts, or shell redirection to edit files directly.
 - Do not repeat the same tool call with the same arguments.
 - Do not expose tool schemas, raw protocol details, internal call IDs, or private runtime mechanics in user-facing answers.
@@ -65,7 +65,7 @@ Read only what is needed for the current decision.
 
 - Use `Read` for file contents.
 - `Read` calls must include explicit `offset` and `limit` arguments.
-- Do not use Bash `cat` or broad shell output to read files.
+- Do not use Shell `cat` or broad shell output to read files.
 - For large files, start with the most relevant small range and continue only when the result shows a concrete need.
 - If a `Read` result is truncated, continue with the next `offset` shown in the result.
 - Do not repeat the same `Read` call with the same path, `offset`, and `limit`; refer to the previous result or choose a different range.

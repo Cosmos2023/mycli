@@ -139,6 +139,7 @@ from mycli.prompts.system import (
     build_system_prompt,
     system_prompt_hash,
 )
+from mycli.prompts.shell import render_shell_guidance
 from mycli.application.runtime.response_finalizer import RuntimeResponseFinalizer
 from mycli.application.runtime.runtime_error_logger import RuntimeErrorLogger
 from mycli.application.runtime.subagents.loop import (
@@ -816,12 +817,13 @@ class AgentRuntime:
         tool_exposure: ToolExposure | None = None,
     ) -> tuple[ExecutionContext, TurnContext]:
         self._runtime_context_builder.set_config(self._config)
+        shell_guidance = render_shell_guidance(self._shell_resolution.profile)
         return self._runtime_context_builder.assemble_turn_context(
             turn_id=getattr(self, "_current_turn_id", "turn_unknown"),
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
-            runtime_reminders=runtime_reminders,
+            runtime_reminders=(shell_guidance, *runtime_reminders),
             compaction_rehydration=compaction_rehydration,
             tool_exposure=tool_exposure,
         )

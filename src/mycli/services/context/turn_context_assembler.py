@@ -179,12 +179,22 @@ class TurnContextAssembler:
 
     def _render_environment_context(self, context: ExecutionContext) -> str:
         runtime_context = self._render_runtime_environment_contract(context)
+        shell_guidance = next(
+            (
+                reminder.strip()
+                for reminder in context.runtime_reminders
+                if reminder.strip().startswith("Current shell:")
+            ),
+            "",
+        )
         baseline_environment = self._deduplicated_environment_baseline(
             self._baseline_fragment_content(context, "environment_context")
         )
-        if baseline_environment:
-            return f"{baseline_environment}\n{runtime_context}"
-        return runtime_context
+        return "\n".join(
+            part
+            for part in (baseline_environment, shell_guidance, runtime_context)
+            if part
+        )
 
     def _render_runtime_environment_contract(self, context: ExecutionContext) -> str:
         contract = context.runtime_environment
@@ -236,13 +246,20 @@ class TurnContextAssembler:
         )
         lines: list[str] = []
         seen: set[str] = set()
+        skipping_shell_guidance = False
         skipping_runtime_environment = False
         for raw_line in content.splitlines():
             line = raw_line.strip()
             if not line or line in seen:
                 continue
+            if line.startswith("Current shell:"):
+                skipping_shell_guidance = True
+                continue
             if line == "Runtime environment:":
+                skipping_shell_guidance = False
                 skipping_runtime_environment = True
+                continue
+            if skipping_shell_guidance:
                 continue
             if skipping_runtime_environment:
                 if line.startswith("- "):

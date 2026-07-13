@@ -178,6 +178,51 @@ def test_agent_runtime_uses_existing_instruction_snapshot_for_contract(
     assert "Legacy react prompt" not in contract.base_instructions
 
 
+def test_shell_guidance_is_dynamic_not_stored_in_instruction_snapshot(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+
+    base = runtime._instruction_snapshot_system_prompt()
+    context, turn_context = runtime._assemble_turn_context(
+        user_message="inspect the repository",
+        conversation=Conversation(session_id=runtime._config.session_id),
+        plan_state=PlanState(),
+    )
+    contract = runtime._assemble_instruction_contract(
+        turn_id="turn-shell-guidance",
+        context=context,
+        turn_context=turn_context,
+    )
+    shape = runtime._request_shape_builder.build(
+        config=runtime._config,
+        contract=contract,
+        tools=(),
+    )
+    provider_payload = "\n".join(
+        (
+            *(message.content for message in shape.provider_messages),
+            *(
+                block.text or ""
+                for item in shape.provider_runtime_items
+                for block in item.blocks
+            ),
+        )
+    )
+
+    assert "Current shell:" not in base
+    assert "Current shell:" not in contract.base_instructions
+    assert any(
+        "Current shell:" in section.content
+        for section in contract.memory_excluded_contextual_sections()
+    )
+    assert "Current shell:" in provider_payload
+
+
 def test_agent_runtime_loads_project_execpolicy_rules_before_shell_execution(
     tmp_path: Path,
 ) -> None:
