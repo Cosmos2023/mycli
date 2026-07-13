@@ -132,6 +132,11 @@ from mycli.domain.runtime.shell_lifecycle import (
     ShellLifecycleEvent as ShellLifecycleEvent,
     ShellLifecycleKind as ShellLifecycleKind,
 )
+from mycli.domain.runtime.shell_profile import (
+    PowerShellEdition as PowerShellEdition,
+    ShellKind as ShellKind,
+    ShellProfile as ShellProfile,
+)
 from mycli.domain.runtime.turn_state import SuspendedTurn as SuspendedTurn
 from mycli.domain.runtime.tracing import RuntimeTraceEvent as RuntimeTraceEvent
 from mycli.domain.tooling.exposure import (
@@ -371,6 +376,7 @@ __all__ = [
     "PlanItem",
     "PlanState",
     "PlanStatus",
+    "PowerShellEdition",
     "ProviderMessageShape",
     "ProviderCachePolicyCapability",
     "ProviderRequestPolicyShape",
@@ -400,8 +406,10 @@ __all__ = [
     "ShellEnvironmentInheritMode",
     "ShellEnvironmentPolicy",
     "ShellExecutionOptions",
+    "ShellKind",
     "ShellLifecycleEvent",
     "ShellLifecycleKind",
+    "ShellProfile",
     "SessionRuntimeSnapshot",
     "StopReason",
     "SuspendedTurn",
