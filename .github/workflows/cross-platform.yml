@@ -30,3 +30,20 @@ jobs:
       - run: npm --prefix tui/mycli-shell run typecheck
       - name: Shell lifecycle smoke
         run: uv run pytest tests/integration/test_cross_platform_shell.py -q
+
+  windows-shell-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        shell_mode: [pwsh, powershell, cmd]
+    runs-on: windows-latest
+    env:
+      MYCLI_TEST_SHELL_MODE: ${{ matrix.shell_mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked --dev
+      - name: Native shell lifecycle smoke (${{ matrix.shell_mode }})
+        run: uv run pytest tests/integration/test_cross_platform_shell.py -q

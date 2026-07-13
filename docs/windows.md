@@ -1,45 +1,47 @@
 # Windows Source Checkout
 
-mycli 支持在原生 Windows 上从源码运行。Python CLI 和 Node TUI 可以从 PowerShell 启动，但 agent 的 shell 命令统一交给 Git for Windows Bash 执行。
+mycli supports native Windows execution for both the Python CLI and Node TUI. Git Bash is optional.
 
-## Prerequisites
+## Requirements
 
 - Python 3.13
-- uv
-- Node.js 22.19 或更新版本
-- npm
-- Git for Windows，并包含 Git Bash
+- Node.js 22.19 or newer
+- `uv`
+- Git for source control; Git Bash is not required
 
-安装依赖并启动：
+## Shell Selection
 
-```powershell
-uv sync --dev
-npm ci --prefix tui/mycli-shell
-uv run mycli
-```
+On Windows, mycli detects the active command runtime in this order:
 
-## Bash Resolution
+1. PowerShell 7 (`pwsh.exe`)
+2. Windows PowerShell 5.1 (`powershell.exe`)
+3. Command Prompt (`cmd.exe`)
 
-mycli 按以下顺序寻找 Bash：
+The model sees one cross-platform `Shell` tool plus `ShellOutput` and `KillShell`. It does not receive separate Bash, PowerShell, or CMD tool schemas.
 
-1. `MYCLI_SHELL_PATH` 环境变量或配置文件中的 `shell_path`；环境变量优先。
-2. `%ProgramFiles%\Git\bin\bash.exe`。
-3. `%ProgramFiles(x86)%\Git\bin\bash.exe`。
-4. Windows `PATH` 中的 `bash.exe`。
-
-用户配置 `~/.mycli/config.toml` 示例：
+A recognized explicit `shell_path` can select Bash, zsh, sh, PowerShell, or CMD:
 
 ```toml
-shell_path = "C:\\Program Files\\Git\\bin\\bash.exe"
+shell_path = "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
 ```
 
-临时使用 PowerShell 环境变量覆盖：
+You can also set a temporary override:
 
 ```powershell
-$env:MYCLI_SHELL_PATH = "C:\Program Files\Git\bin\bash.exe"
+$env:MYCLI_SHELL_PATH = "C:\Program Files\PowerShell\7\pwsh.exe"
 uv run mycli
 ```
 
-如果提示找不到 Bash，先确认 `C:\Program Files\Git\bin\bash.exe` 存在；若 Git 安装在其他目录，设置 `MYCLI_SHELL_PATH` 或 `shell_path`。也可以把 Git 的 `bin` 目录加入 Windows `PATH` 后重新打开终端。
+Invalid paths and unknown executables are ignored. mycli continues with automatic detection, and `mycli doctor` reports the ignored override and selected fallback.
 
-第一版 Windows shell 契约只支持 Git Bash 语义。WSL、PowerShell 和 CMD 的命令语法不在支持范围内；不要向 agent 提供仅适用于这些 shell 的命令片段。
+CMD is a supported final fallback. Its command parser and approval policy are intentionally conservative: unknown syntax, expansion, redirection, pipes, and chained commands may require confirmation. PowerShell provides richer command semantics when available.
+
+## Verification
+
+Run the native shell smoke tests from PowerShell:
+
+```powershell
+uv run pytest tests/integration/test_cross_platform_shell.py -q
+```
+
+CI forces separate PowerShell 7, Windows PowerShell 5.1, and `cmd.exe` lanes so the CMD fallback remains tested even when PowerShell is installed.

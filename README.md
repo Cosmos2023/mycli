@@ -5,8 +5,8 @@
 当前分支重点是让体验更接近 Claude Code / Codex：
 
 - 默认启动 Node TUI，保留终端原生文字选择和 scrollback。
-- 工具调用以 `Read`、`Write`、`Edit`、`Bash`、`Task` 等紧凑块展示。
-- Bash 命令、写文件内容和 diff 默认折叠成可扫描预览。
+- 工具调用以 `Read`、`Write`、`Edit`、`Shell`、`Task` 等紧凑块展示。
+- Shell 命令、写文件内容和 diff 默认折叠成可扫描预览。
 - approval 使用选择器，不再只是把确认文本打在 transcript 里。
 - subagent 默认后台运行，完成后通过 `<task-notification>` 回到主对话。
 - 支持 Claude-style file memory，可按 workspace 保存长期记忆。
@@ -20,7 +20,7 @@
 - `uv`
 - Node.js `>=22.19.0`，用于默认 Node TUI
 - `npm`
-- Windows 需要安装 Git for Windows；agent 的所有命令统一由 Git Bash 执行
+- Windows 原生支持 PowerShell 7、Windows PowerShell 5.1 和 `cmd.exe`；Git Bash 可选
 - 一个支持的模型 provider API key
 
 ### 安装
@@ -43,7 +43,7 @@ Windows 可在 PowerShell 中启动：
 uv run mycli
 ```
 
-Windows 上启动器可以是 PowerShell，但模型发出的 agent 命令仍使用 Git Bash 语义，不使用 CMD、PowerShell 或 WSL 命令语义。Git Bash 的发现顺序、`shell_path` 配置和 `MYCLI_SHELL_PATH` 覆盖方式见 [Windows 源码运行指南](docs/windows.md)。
+Windows 默认依次选择 PowerShell 7、Windows PowerShell 5.1、`cmd.exe`。识别出的 `shell_path` 也可以显式选择 Bash、zsh、sh、PowerShell 或 CMD；无效或未知 override 会被忽略，并由 `mycli doctor` 报告。完整规则见 [Windows 源码运行指南](docs/windows.md)。
 
 ### 配置模型
 
@@ -160,7 +160,7 @@ TUI 中的工具展示默认偏紧凑：
 - `Read` / `Glob` / `Grep` / `LS` 等上下文工具会折叠成同类分组。
 - `Write` 会展示写入内容预览和行数。
 - `Edit` / mutation 工具优先展示 diff 预览。
-- `Bash` 只展示命令摘要，长命令默认折叠。
+- `Shell` 只展示命令摘要，长命令默认折叠，并在详情中显示当前 shell profile。
 - `Task` / subagent 会在输入框附近显示运行状态和进度。
 
 ## 常用命令
@@ -323,7 +323,7 @@ effort = "medium"
 常用内置工具：
 
 - 文件工具：`Read`、`Write`、`Edit`、`Glob`、`Grep`、`LS`
-- Shell 工具：`Bash`、`BashOutput`、`KillShell`
+- Shell 工具：`Shell`、`ShellOutput`、`KillShell`；`Bash`/`BashOutput` 仅用于旧会话兼容
 - Git 工具：`GitStatus`、`GitDiff`、`GitLog`、`GitShow`
 - 工作流工具：`Plan`、`update_plan`、`Task`、`SubagentOutput`
 - 交互工具：`AskUserQuestion`
@@ -367,7 +367,7 @@ File memory 目录会被加入允许根目录，因此 Agent 可以读写自己�
 name: security-reviewer
 description: Review security-sensitive changes.
 tools: Read, Grep, Glob, LS
-disallowedTools: Bash, Write
+disallowedTools: Shell, Write
 model: gpt-5.4-mini
 maxTurns: 5
 ---

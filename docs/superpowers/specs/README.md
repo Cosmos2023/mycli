@@ -17,6 +17,8 @@ runtime shape exists.
 
 - `2026-07-13-cross-platform-runtime-design.md`
 - [`../plans/2026-07-13-cross-platform-runtime-implementation.md`](../plans/2026-07-13-cross-platform-runtime-implementation.md)
+- `2026-07-13-codex-style-multi-shell-runtime-design.md`
+- [`../plans/2026-07-14-codex-style-multi-shell-runtime-implementation.md`](../plans/2026-07-14-codex-style-multi-shell-runtime-implementation.md)
 - `2026-04-12-mycli-next-phase-architecture-roadmap.md`
 - `2026-04-12-mycli-general-assistant-evolution-roadmap.md`
 - `2026-04-12-mycli-codex-general-agent-gap-analysis.md`
