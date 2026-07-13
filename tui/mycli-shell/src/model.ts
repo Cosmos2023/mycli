@@ -39,6 +39,7 @@ export type MycliShellTool = {
 
 export type MycliShellBash = {
 	id: string;
+	toolName?: "Shell" | "Bash" | string;
 	command: string;
 	status: MycliShellToolStatus;
 	shellId?: string;
@@ -53,6 +54,8 @@ export type MycliShellBash = {
 	outputChars?: number;
 	omittedOutputChars?: number;
 	cleanupResult?: string;
+	shellKind?: string;
+	shellEdition?: string;
 	outputPreview?: string;
 	hiddenLineCount?: number;
 	expanded?: boolean;

@@ -15,6 +15,13 @@ import {
 	resourcesFromResult,
 	type RuntimeShellState,
 } from "../src/adapters/runtime-state.ts";
+import { canonicalToolName } from "../src/components/tool-display.ts";
+
+test("canonical shell tool names preserve Shell and legacy Bash", () => {
+	assert.equal(canonicalToolName("Shell"), "Shell");
+	assert.equal(canonicalToolName("run_shell"), "Shell");
+	assert.equal(canonicalToolName("Bash"), "Bash");
+});
 
 test("runtime adapter projects bootstrap and transcript into mycli shell state", () => {
 	let state = initialRuntimeState();
@@ -1224,6 +1231,8 @@ test("shell lifecycle keeps background Bash running until terminal event", () =>
 		command_preview: "uv run dev",
 		background: true,
 		process_state: "running_background",
+		shell_kind: "powershell",
+		shell_edition: "core",
 		output_delta: "",
 	});
 	state = reduceRuntimeEvent(state, "shell.output", {
@@ -1240,6 +1249,9 @@ test("shell lifecycle keeps background Bash running until terminal event", () =>
 	let shell = projectRuntimeState(state);
 	assert.equal(shell.bash[0]?.status, "running");
 	assert.equal(shell.bash[0]?.outputPreview, "ready\n");
+	assert.equal(shell.bash[0]?.toolName, "Shell");
+	assert.equal(shell.bash[0]?.shellKind, "powershell");
+	assert.equal(shell.bash[0]?.shellEdition, "core");
 	assert.equal(shell.footer.backgroundShellCount, 1);
 
 	state = reduceRuntimeEvent(state, "shell.completed", {

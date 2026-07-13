@@ -609,7 +609,7 @@ def _display_tool_name(tool_name: str) -> str:
     if tool_name in {"read_file", "read_file_range"}:
         return "Read"
     if tool_name == "run_shell":
-        return "Bash"
+        return "Shell"
     if tool_name in {"list_directory"}:
         return "LS"
     return tool_name or "Tool"

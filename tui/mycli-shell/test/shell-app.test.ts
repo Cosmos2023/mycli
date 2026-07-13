@@ -1145,6 +1145,32 @@ test("Codex-style foreground Bash shows elapsed interrupt hint", () => {
 	assert.match(output, /• Running uv run pytest -q \(8s · esc to interrupt\)/);
 });
 
+test("expanded Shell command renders active profile and legacy Bash label", () => {
+	const powershell = stripAnsi(
+		new BashExecutionComponent({
+			id: "shell-pwsh",
+			toolName: "Shell",
+			command: "Get-Location",
+			status: "success",
+			shellKind: "powershell",
+			shellEdition: "core",
+			expanded: true,
+		}).render(100).join("\n"),
+	);
+	const legacy = stripAnsi(
+		new BashExecutionComponent({
+			id: "shell-bash",
+			toolName: "Bash",
+			command: "pwd",
+			status: "success",
+			expanded: true,
+		}).render(100).join("\n"),
+	);
+
+	assert.match(powershell, /Shell: PowerShell 7/);
+	assert.match(legacy, /Shell: Bash/);
+});
+
 test("Codex-style background Bash omits active-turn interrupt hint", () => {
 	const background = new BashExecutionComponent(
 		{

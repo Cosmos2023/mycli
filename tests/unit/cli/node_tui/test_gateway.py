@@ -358,6 +358,8 @@ def test_gateway_emits_shell_lifecycle_notification(tmp_path: Path) -> None:
             command_preview="uv run dev",
             background=True,
             process_state="running_background",
+            shell_kind="powershell",
+            shell_edition="core",
         )
     )
 
@@ -366,6 +368,9 @@ def test_gateway_emits_shell_lifecycle_notification(tmp_path: Path) -> None:
     assert payload["shell_id"] == "shell-1"
     assert payload["call_id"] == "call-1"
     assert payload["sequence"] == 1
+    assert payload["shell_kind"] == "powershell"
+    assert payload["shell_edition"] == "core"
+    assert "shell_path" not in payload
     gateway.close()
 
 

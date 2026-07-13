@@ -235,6 +235,8 @@ def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
         next_cursor=0,
         output_chars=0,
         omitted_output_chars=0,
+        shell_kind="powershell",
+        shell_edition="core",
     )
 
     payload = event.to_tui_payload()
@@ -243,6 +245,9 @@ def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
     assert payload["call_id"] == "call-1"
     assert payload["sequence"] == 1
     assert payload["command_preview"] == "python3 -m http.server"
+    assert payload["shell_kind"] == "powershell"
+    assert payload["shell_edition"] == "core"
+    assert "shell_path" not in payload
     assert "owner_session_id" not in payload
 
 

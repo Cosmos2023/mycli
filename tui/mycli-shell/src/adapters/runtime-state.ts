@@ -46,6 +46,8 @@ export type RuntimeShellProcess = {
 	outputChars: number;
 	omittedOutputChars: number;
 	cleanupResult?: string;
+	shellKind?: string;
+	shellEdition?: string;
 };
 
 export type RuntimeQueuedInputPreview = {
@@ -181,6 +183,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 				const metadata = recordValue(item.metadata);
 				const bashItem: MycliShellBash = {
 					id: tool.id,
+					toolName: tool.name,
 					command: stringValue(metadata.command_preview) ?? tool.args ?? tool.outputPreview ?? tool.name,
 					status: tool.status,
 					shellId: stringValue(metadata.shell_id) ?? undefined,
@@ -195,6 +198,8 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 					outputChars: numberValue(metadata.output_chars) ?? undefined,
 					omittedOutputChars: numberValue(metadata.omitted_output_chars) ?? undefined,
 					cleanupResult: stringValue(metadata.cleanup_result) ?? undefined,
+					shellKind: stringValue(metadata.shell_kind) ?? undefined,
+					shellEdition: stringValue(metadata.shell_edition) ?? undefined,
 					outputPreview: tool.outputPreview,
 					hiddenLineCount: tool.hiddenLineCount,
 					expanded: tool.expanded,
@@ -1641,6 +1646,8 @@ function applyShellLifecycle(
 		stringValue(params.process_state) ??
 		existingProcess?.processState ??
 		(incomingTerminalState ? incomingTerminalState : background ? "running_background" : "running_foreground");
+	const shellKind = stringValue(params.shell_kind) ?? existingProcess?.shellKind ?? stringValue(existingMetadata.shell_kind) ?? undefined;
+	const shellEdition = stringValue(params.shell_edition) ?? existingProcess?.shellEdition ?? stringValue(existingMetadata.shell_edition) ?? undefined;
 	const existingOutput =
 		existingProcess?.outputPreview ??
 		textValue(existingMetadata.output_preview) ??
@@ -1667,6 +1674,8 @@ function applyShellLifecycle(
 		outputChars: numberValue(params.output_chars) ?? existingProcess?.outputChars ?? outputPreview.length,
 		omittedOutputChars: numberValue(params.omitted_output_chars) ?? existingProcess?.omittedOutputChars ?? 0,
 		...(stringValue(params.cleanup_result) ? { cleanupResult: stringValue(params.cleanup_result)! } : {}),
+		...(shellKind ? { shellKind } : {}),
+		...(shellEdition ? { shellEdition } : {}),
 	};
 
 	const backgroundShells = { ...state.backgroundShells };
@@ -1679,7 +1688,7 @@ function applyShellLifecycle(
 	const metadata: Record<string, unknown> = {
 		...existingMetadata,
 		...params,
-		tool_name: stringValue(existingMetadata.tool_name) ?? "Bash",
+		tool_name: stringValue(existingMetadata.tool_name) ?? (shellKind ? "Shell" : "Bash"),
 		call_id: callId ?? stringValue(existingMetadata.call_id),
 		shell_id: shellId,
 		command_preview: commandPreview,
@@ -1694,6 +1703,8 @@ function applyShellLifecycle(
 		output_chars: process.outputChars,
 		omitted_output_chars: process.omittedOutputChars,
 		cleanup_result: process.cleanupResult,
+		shell_kind: process.shellKind,
+		shell_edition: process.shellEdition,
 		output_preview: outputPreview,
 		summary: outputPreview || undefined,
 		status: incomingTerminalState ? (successful ? "done" : "failed") : "running",
@@ -1702,7 +1713,7 @@ function applyShellLifecycle(
 	const item: RuntimeTranscriptItem = {
 		id: existingItem?.id ?? nextId("shell"),
 		type: "tool_summary",
-		text: `Bash ${commandPreview}`,
+		text: `${stringValue(metadata.tool_name) ?? "Shell"} ${commandPreview}`,
 		folded: existingItem?.folded ?? true,
 		metadata,
 	};

@@ -107,14 +107,18 @@ export class BashExecutionComponent extends Container {
 	}
 
 	private terminalDetail(): string | undefined {
-		if (this.bash.status === "running") return undefined;
-		if (this.bash.exitCode !== undefined && this.bash.exitCode !== 0) {
-			return `exit ${this.bash.exitCode}`;
+		const details: string[] = [];
+		if (this.bash.expanded) {
+			details.push(`Shell: ${shellDisplayName(this.bash)}`);
 		}
-		if (this.bash.terminalState === "timed_out") return "timed out";
-		if (this.bash.terminalState === "interrupted") return "interrupted";
-		if (this.bash.terminalState === "killed") return "killed";
-		return undefined;
+		if (this.bash.status === "running") return details.join(" · ") || undefined;
+		if (this.bash.exitCode !== undefined && this.bash.exitCode !== 0) {
+			details.push(`exit ${this.bash.exitCode}`);
+		}
+		if (this.bash.terminalState === "timed_out") details.push("timed out");
+		if (this.bash.terminalState === "interrupted") details.push("interrupted");
+		if (this.bash.terminalState === "killed") details.push("killed");
+		return details.join(" · ") || undefined;
 	}
 
 	private connectedOutput(): string {
@@ -129,6 +133,15 @@ export class BashExecutionComponent extends Container {
 			? keyHint("app.tools.expand", "collapse")
 			: `... ${hiddenCount} more lines (${keyHint("app.tools.expand", "expand")})`;
 	}
+}
+
+function shellDisplayName(shell: MycliShellBash): string {
+	if (shell.shellKind === "powershell") {
+		return shell.shellEdition === "desktop" ? "Windows PowerShell 5.1" : "PowerShell 7";
+	}
+	if (shell.shellKind === "cmd") return "cmd";
+	if (shell.shellKind) return shell.shellKind;
+	return shell.toolName === "Bash" ? "Bash" : "Shell";
 }
 
 function commandPreview(command: string): string | undefined {

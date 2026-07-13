@@ -639,6 +639,12 @@ class ShellSessionManager:
             started_at=session.started_at,
             completed_at=session.completed_at,
             active_background_count=active_background_count,
+            shell_kind=session.shell_profile.kind.value,
+            shell_edition=(
+                None
+                if session.shell_profile.powershell_edition is None
+                else session.shell_profile.powershell_edition.value
+            ),
         )
 
     def _deliver_lifecycle_event(

@@ -90,6 +90,33 @@ def test_snapshot_projection_coalesces_tool_call_and_result() -> None:
     }
 
 
+def test_shell_projection_keeps_profile_metadata_without_path() -> None:
+    item = HistoryItem(
+        id="tool-result-shell",
+        thread_id="demo",
+        turn_id="turn-1",
+        type=HistoryItemType.TOOL_RESULT,
+        text="ok",
+        tool_name="Shell",
+        call_id="call-shell",
+        metadata={
+            "raw_payload": {
+                "shell_kind": "powershell",
+                "shell_edition": "core",
+                "shell_path": "C:/secret/pwsh.exe",
+            }
+        },
+    )
+
+    projected = project_history_item_for_tui(item)
+    payload = projected["metadata"]
+    assert isinstance(payload, dict)
+
+    assert payload["shell_kind"] == "powershell"
+    assert payload["shell_edition"] == "core"
+    assert "shell_path" not in payload
+
+
 def test_shell_snapshot_output_uses_head_tail_limit() -> None:
     content = "a" * SHELL_TRANSCRIPT_MAX_CHARS + "middle" + "z" * 32
     projected = project_history_items_for_snapshot(

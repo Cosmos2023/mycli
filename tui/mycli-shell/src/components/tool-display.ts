@@ -21,6 +21,7 @@ export function canonicalToolName(name: string): string {
 	if (lower === "write" || lower === "write_file") return "Write";
 	if (lower === "edit" || lower === "edit_file") return "Edit";
 	if (lower === "patch" || lower === "patch_file") return "Patch";
-	if (lower === "bash" || lower === "shell" || lower === "run_shell") return "Bash";
+	if (lower === "bash") return "Bash";
+	if (lower === "shell" || lower === "run_shell") return "Shell";
 	return normalized || "Tool";
 }

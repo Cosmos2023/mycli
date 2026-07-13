@@ -33,6 +33,8 @@ class ShellLifecycleEvent:
     started_at: str | None = None
     completed_at: str | None = None
     active_background_count: int | None = None
+    shell_kind: str | None = None
+    shell_edition: str | None = None
 
     def to_tui_payload(self) -> dict[str, object]:
         return {
@@ -52,6 +54,8 @@ class ShellLifecycleEvent:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "active_background_count": self.active_background_count,
+            "shell_kind": self.shell_kind,
+            "shell_edition": self.shell_edition,
         }
 
 
