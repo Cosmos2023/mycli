@@ -676,6 +676,47 @@ test("mycli shell collapses consecutive context tool calls like Claude Code", ()
 	assert.doesNotMatch(output, /⏺ Glob/);
 });
 
+test("mycli shell keeps consecutive Shell commands in Codex-style command cells", () => {
+	const state: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		transcript: [
+			{
+				id: "shell-rg",
+				kind: "bash",
+				bash: {
+					id: "shell-rg",
+					toolName: "Shell",
+					command: "rg mycli src",
+					status: "success",
+					outputPreview: "src/mycli/app.py",
+				},
+			},
+			{
+				id: "shell-find",
+				kind: "bash",
+				bash: {
+					id: "shell-find",
+					toolName: "Shell",
+					command: "find src -name '*.py'",
+					status: "running",
+					outputPreview: "src/mycli/main.py",
+				},
+			},
+		],
+		pendingNotice: undefined,
+	};
+
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+
+	assert.match(output, /• Ran rg mycli src/);
+	assert.match(output, /• Running find src -name '\*\.py'/);
+	assert.match(output, /└ src\/mycli\/main\.py/);
+	assert.doesNotMatch(output, /running 2 commands|ran 2 commands/);
+});
+
 test("mycli shell applies context tool grouping to legacy tool arrays", () => {
 	const state: MycliShellState = {
 		...sampleState(),

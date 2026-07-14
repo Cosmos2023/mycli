@@ -1,4 +1,4 @@
-import type { MycliShellBash, MycliShellSubagent, MycliShellTranscriptBlock, MycliShellTool } from "./model.ts";
+import type { MycliShellSubagent, MycliShellTranscriptBlock, MycliShellTool } from "./model.ts";
 import type { CollapsedToolGroup, CollapsedToolGroupItem } from "./components/collapsed-tool-group.ts";
 import type { SubagentGroup } from "./components/subagent-execution.ts";
 
@@ -15,18 +15,6 @@ const CONTEXT_TOOL_NAMES = new Set([
 	"ls",
 	"list",
 ]);
-
-const CONTEXT_BASH_COMMANDS = [
-	/^pwd(?:\s|$)/,
-	/^ls(?:\s|$)/,
-	/^find(?:\s|$)/,
-	/^rg(?:\s|$)/,
-	/^grep(?:\s|$)/,
-	/^cat(?:\s|$)/,
-	/^head(?:\s|$)/,
-	/^tail(?:\s|$)/,
-	/^sed\s+-n(?:\s|$)/,
-];
 
 export function projectTranscriptBlocks(blocks: MycliShellTranscriptBlock[]): ProjectedTranscriptBlock[] {
 	const projected: ProjectedTranscriptBlock[] = [];
@@ -83,9 +71,6 @@ function isContextBlock(block: MycliShellTranscriptBlock): boolean {
 	if (block.kind === "tool") {
 		return isContextTool(block.tool);
 	}
-	if (block.kind === "bash") {
-		return isContextBash(block.bash);
-	}
 	return false;
 }
 
@@ -104,17 +89,6 @@ function isContextTool(tool: MycliShellTool): boolean {
 		return false;
 	}
 	return CONTEXT_TOOL_NAMES.has(normalizeToolName(tool.name));
-}
-
-function isContextBash(bash: MycliShellBash): boolean {
-	const firstCommand = bash.command
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.find(Boolean);
-	if (!firstCommand) {
-		return false;
-	}
-	return CONTEXT_BASH_COMMANDS.some((pattern) => pattern.test(firstCommand));
 }
 
 function normalizeToolName(name: string): string {
