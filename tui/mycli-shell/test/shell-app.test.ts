@@ -265,7 +265,7 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /deepseek-v4-flash/);
 });
 
-test("mycli shell collapses long assistant python code blocks", () => {
+test("mycli shell renders complete assistant code blocks", () => {
 	const pythonLines = Array.from({ length: 16 }, (_, index) => `print("line_${String(index + 1).padStart(2, "0")}")`);
 	const output = stripAnsi(
 		renderMycliShell(
@@ -287,8 +287,8 @@ test("mycli shell collapses long assistant python code blocks", () => {
 	);
 
 	assert.match(output, /print\("line_01"\)/);
-	assert.doesNotMatch(output, /print\("line_16"\)/);
-	assert.match(output, /\.\.\. 8 more lines/);
+	assert.match(output, /print\("line_16"\)/);
+	assert.doesNotMatch(output, /\.\.\. 8 more lines/);
 });
 
 test("mycli shell hides resolved subagent transcript blocks", () => {

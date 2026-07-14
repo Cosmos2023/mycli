@@ -7,7 +7,6 @@ import { theme } from "../theme/theme.ts";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
-const ASSISTANT_CODE_BLOCK_PREVIEW_LINES = 8;
 
 export class AssistantMessageComponent extends Container {
 	private text: string;
@@ -47,11 +46,7 @@ export class AssistantMessageComponent extends Container {
 			if (hasText) this.addChild(new Spacer(1));
 		}
 		if (hasText) {
-			this.addChild(
-				new Markdown(this.text.trim(), 1, 0, markdownTheme(), undefined, {
-					codeBlockPreviewLines: ASSISTANT_CODE_BLOCK_PREVIEW_LINES,
-				}),
-			);
+			this.addChild(new Markdown(this.text.trim(), 1, 0, markdownTheme()));
 		}
 	}
 
