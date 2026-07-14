@@ -1184,7 +1184,14 @@ class NodeTuiGateway:
         limit = _positive_int(params.get("limit"), default=0) if "limit" in params else None
         before = _optional_str(params.get("before"))
         try:
-            items = list(self.service._session_service.load_history_items(session_id))
+            session_service = self.service._session_service
+            load_replay = getattr(session_service, "load_replay_history_items", None)
+            load_history = (
+                load_replay
+                if callable(load_replay)
+                else session_service.load_history_items
+            )
+            items = list(load_history(session_id))
         except (sqlite3.Error, OSError) as exc:
             fallback = list(self.service._session_service.load_snapshot_tui_items(session_id))
             if not fallback:

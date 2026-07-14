@@ -55,6 +55,7 @@ def _gateway_error_events(
 class FakeSessionService:
     def __init__(self) -> None:
         self.history_items: tuple[HistoryItem, ...] = ()
+        self.replay_history_items: tuple[HistoryItem, ...] | None = None
         self.load_history_error: Exception | None = None
         self.snapshot_tui_items: tuple[dict[str, object], ...] = ()
         self.pending_decision: object | None = None
@@ -91,6 +92,10 @@ class FakeSessionService:
         if self.load_history_error is not None:
             raise self.load_history_error
         return self.history_items
+
+    def load_replay_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
+        history_items = self.load_history_items(session_id)
+        return self.replay_history_items or history_items
 
     def load_snapshot_tui_items(
         self,
@@ -1020,6 +1025,67 @@ def test_gateway_transcript_load_limit_returns_tail_with_cursor(tmp_path: Path) 
     assert response.result is not None
     assert [item["id"] for item in response.result["items"]] == ["hist_1", "hist_2"]
     assert response.result["next_before"] == "hist_1"
+
+
+def test_gateway_transcript_load_uses_normalized_approval_replay_before_pagination(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    original = HistoryItem(
+        id="user-original",
+        thread_id="demo",
+        turn_id="turn-original",
+        type=HistoryItemType.USER_MESSAGE,
+        text="inspect cpu",
+    )
+    legacy_duplicate = HistoryItem(
+        id="user-legacy",
+        thread_id="demo",
+        turn_id="turn-approval",
+        type=HistoryItemType.USER_MESSAGE,
+        text="inspect cpu",
+    )
+    assistant = HistoryItem(
+        id="assistant",
+        thread_id="demo",
+        turn_id="turn-approval",
+        type=HistoryItemType.ASSISTANT_MESSAGE,
+        text="CPU is idle",
+    )
+    service.fake_session_service.history_items = (
+        original,
+        legacy_duplicate,
+        assistant,
+    )
+    service.fake_session_service.replay_history_items = (original, assistant)
+    gateway = NodeTuiGateway(service=service)
+
+    full = gateway.handle_request(
+        RpcRequest(
+            id="req_full",
+            method="transcript.load",
+            params={"session_id": "demo", "before": None},
+        )
+    )
+    tail = gateway.handle_request(
+        RpcRequest(
+            id="req_tail",
+            method="transcript.load",
+            params={"session_id": "demo", "limit": 2, "before": None},
+        )
+    )
+
+    assert full.result is not None
+    assert [item["id"] for item in full.result["items"]] == [
+        "user-original",
+        "assistant",
+    ]
+    assert tail.result is not None
+    assert [item["id"] for item in tail.result["items"]] == [
+        "user-original",
+        "assistant",
+    ]
+    assert tail.result["next_before"] is None
 
 
 def test_gateway_transcript_load_falls_back_to_snapshot_on_sqlite_error(
