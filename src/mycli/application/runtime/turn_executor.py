@@ -480,11 +480,6 @@ class TurnExecutor:
         )
         initial_in_progress_item_id = current_plan_state.current_in_progress_item_id()
         runtime._load_model_continuation_state(turn_id=turn_id)
-        runtime._append_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            item=TurnItem(type=TurnItemType.USER_MESSAGE, text=suspended.user_message),
-        )
         progress_updates = ["[decision] approved"]
         activity_events: list[ActivityEvent] = []
         streamed_chunks: list[str] = []

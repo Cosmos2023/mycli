@@ -118,6 +118,23 @@ def test_agent_runtime_resumes_after_approval(tmp_path: Path) -> None:
     assert resumed.assistant_message == "Push finished"
 
 
+def test_agent_runtime_approval_resume_does_not_repeat_user_history(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenDoneAdapter(),
+    )
+
+    first = runtime.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    runtime.resolve_pending_approval("1")
+
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    user_items = [item for item in history if item.type is HistoryItemType.USER_MESSAGE]
+
+    assert [item.text for item in user_items] == ["push the branch"]
+
+
 def test_agent_runtime_persists_allowance_for_active_shell_kind(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
