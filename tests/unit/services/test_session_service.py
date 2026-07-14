@@ -987,6 +987,81 @@ def test_session_service_rebuilds_tool_call_and_tool_result_messages_from_histor
     )
 
 
+def test_session_service_normalizes_legacy_approval_replay_views(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    session_id = "approval-replay"
+    history = (
+        HistoryItem(
+            id="user-original",
+            thread_id=session_id,
+            turn_id="turn-original",
+            type=HistoryItemType.USER_MESSAGE,
+            text="inspect cpu",
+        ),
+        HistoryItem(
+            id="user-legacy",
+            thread_id=session_id,
+            turn_id="turn-approval",
+            type=HistoryItemType.USER_MESSAGE,
+            text="inspect cpu",
+        ),
+        HistoryItem(
+            id="assistant",
+            thread_id=session_id,
+            turn_id="turn-approval",
+            type=HistoryItemType.ASSISTANT_MESSAGE,
+            text="CPU is idle",
+        ),
+    )
+    service.append_history_items(session_id, history)
+    service.append_turn_rollout(
+        session_id,
+        TurnRollout(
+            thread_id=session_id,
+            turn_id="turn-approval",
+            status=TurnStatus.COMPLETED,
+            started_at="2026-07-14T00:00:00Z",
+            completed_at="2026-07-14T00:00:01Z",
+            events=(
+                TurnRolloutEvent(
+                    event_id="approval-event",
+                    kind="turn_item",
+                    created_at="2026-07-14T00:00:00Z",
+                    payload={"type": "approval_resolution", "text": "[decision] 1"},
+                ),
+            ),
+        ),
+    )
+
+    assert [item.id for item in service.load_history_items(session_id)] == [
+        "user-original",
+        "user-legacy",
+        "assistant",
+    ]
+    assert [item.id for item in service.load_replay_history_items(session_id)] == [
+        "user-original",
+        "assistant",
+    ]
+
+    runtime_snapshot = service.load_runtime_snapshot(session_id)
+    assert runtime_snapshot is not None
+    assert [item.id for item in runtime_snapshot.history_items] == [
+        "user-original",
+        "assistant",
+    ]
+    assert [message.content for message in service.load_conversation(session_id).messages] == [
+        "inspect cpu",
+        "CPU is idle",
+    ]
+
+    snapshot = service._snapshot_service.read_snapshot(session_id)
+    assert snapshot is not None
+    assert [item["id"] for item in snapshot["transcript"]] == [
+        "user-original",
+        "assistant",
+    ]
+
+
 def test_session_service_excludes_context_baseline_updates_from_conversation_view(
     tmp_path: Path,
 ) -> None:

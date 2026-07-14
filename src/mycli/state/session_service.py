@@ -39,6 +39,10 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.infrastructure.sqlite_session_store import SQLiteSessionStore
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.context.context_manager import ContextManager
+from mycli.services.history_replay import (
+    approval_resume_turn_ids,
+    normalize_history_for_replay,
+)
 from mycli.services.session_snapshot import (
     SessionSnapshotContext,
     SessionSnapshotService,
@@ -260,8 +264,16 @@ class SessionService:
             for item in self._store.load_turn_rollouts(session_id)
         )
 
+    def load_replay_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
+        return normalize_history_for_replay(
+            self.load_history_items(session_id),
+            approval_turn_ids=approval_resume_turn_ids(
+                self.load_turn_rollouts(session_id)
+            ),
+        )
+
     def load_runtime_snapshot(self, session_id: str) -> SessionRuntimeSnapshot | None:
-        history_items = self.load_history_items(session_id)
+        history_items = self.load_replay_history_items(session_id)
         context_baseline = self.load_context_baseline(session_id)
         turn_rollouts = self.load_turn_rollouts(session_id)
         continuation_state = self.load_responses_continuation_state(session_id)
@@ -848,7 +860,7 @@ class SessionService:
     def _conversation_messages_from_history(self, session_id: str) -> list[Message]:
         return list(
             ContextManager().messages_from_history(
-                self.load_history_items(session_id),
+                self.load_replay_history_items(session_id),
                 include_context_baseline_updates=False,
             )
         )
@@ -894,7 +906,7 @@ class SessionService:
                     workspace_root=self._workspace_root,
                     plan_state=self.load_plan_state(conversation.session_id),
                 ),
-                history_items=self.load_history_items(conversation.session_id),
+                history_items=self.load_replay_history_items(conversation.session_id),
             )
         except OSError as exc:
             logger.warning(
