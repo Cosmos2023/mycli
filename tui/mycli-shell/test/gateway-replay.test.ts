@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderMycliShell } from "../src/index.ts";
-import { projectRuntimeState } from "../src/adapters/runtime-state.ts";
+import { initialRuntimeState, projectRuntimeState, runtimeStateFromTranscript } from "../src/adapters/runtime-state.ts";
 import { loadGatewayReplay, replayGatewayEvents } from "./support/gateway-replay.ts";
 
 test("recorded duplicate gateway mirrors replay as one assistant answer", () => {
@@ -33,6 +33,33 @@ test("recorded shell lifecycle recovers Running output and terminal Ran state", 
 	assert.equal(completedShell.footer.backgroundShellCount, 0);
 	assert.match(completedOutput, /• Ran uv run dev/);
 	assert.doesNotMatch(completedOutput, /background terminal running/);
+});
+
+test("historical Shell transcript uses the compact completed output summary", () => {
+	const retainedOutput = Array.from({ length: 7 }, (_, index) => `history output ${index + 1}`).join("\n");
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "historical-shell-1",
+				type: "tool_summary",
+				text: "Shell generate history",
+				folded: true,
+				metadata: {
+					tool_name: "Shell",
+					command: "generate history",
+					success: true,
+					output_preview: retainedOutput,
+				},
+			},
+		],
+	});
+
+	const output = stripAnsi(renderMycliShell(projectRuntimeState(state), 100).join("\n"));
+
+	assert.match(output, /history output 1/);
+	assert.doesNotMatch(output, /history output 3/);
+	assert.match(output, /3 more lines/);
+	assert.match(output, /history output 7/);
 });
 
 function stripAnsi(text: string): string {

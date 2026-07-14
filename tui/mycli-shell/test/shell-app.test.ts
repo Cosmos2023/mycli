@@ -1128,6 +1128,55 @@ test("bash rendering keeps long commands folded in a Codex-style command cell", 
 	assert.doesNotMatch(output, /print\('hello'\)/);
 });
 
+test("multiline Shell command preview uses one bounded ellipsis", () => {
+	const rendered = new BashExecutionComponent({
+		id: "shell-long-first-line",
+		command: `\n${"x".repeat(100)}\necho hidden`,
+		status: "running",
+	});
+
+	const output = stripAnsi(rendered.render(120).join("\n"));
+
+	assert.match(output, /x…/);
+	assert.doesNotMatch(output, /……/);
+	assert.doesNotMatch(output, /echo hidden/);
+});
+
+test("running Shell output keeps only the newest five visual rows", () => {
+	const rendered = new BashExecutionComponent({
+		id: "shell-running-output",
+		command: "generate output",
+		status: "running",
+		outputPreview: Array.from({ length: 7 }, (_, index) => `output ${index + 1}`).join("\n"),
+	});
+
+	const output = stripAnsi(rendered.render(100).join("\n"));
+
+	assert.doesNotMatch(output, /output 1/);
+	assert.doesNotMatch(output, /output 2/);
+	assert.match(output, /└ output 3/);
+	assert.match(output, /output 7/);
+});
+
+test("completed Shell output keeps a five-row head and tail summary", () => {
+	const rendered = new BashExecutionComponent({
+		id: "shell-completed-output",
+		command: "generate output",
+		status: "success",
+		outputPreview: Array.from({ length: 7 }, (_, index) => `output ${index + 1}`).join("\n"),
+	});
+
+	const output = stripAnsi(rendered.render(100).join("\n"));
+
+	assert.match(output, /output 1/);
+	assert.match(output, /output 2/);
+	assert.doesNotMatch(output, /output 3/);
+	assert.doesNotMatch(output, /output 5/);
+	assert.match(output, /3 more lines/);
+	assert.match(output, /output 6/);
+	assert.match(output, /output 7/);
+});
+
 test("Codex-style foreground Bash shows elapsed interrupt hint", () => {
 	const now = Date.parse("2026-07-11T12:00:08Z");
 	const foreground = new BashExecutionComponent(
@@ -1169,6 +1218,27 @@ test("expanded Shell command renders active profile and legacy Bash label", () =
 
 	assert.match(powershell, /Shell: PowerShell 7/);
 	assert.match(legacy, /Shell: Bash/);
+});
+
+test("expanded Shell command reveals the complete command and retained output", () => {
+	const command = ["python - <<'PY'", "print('complete command')", "PY"].join("\n");
+	const outputPreview = Array.from({ length: 7 }, (_, index) => `retained output ${index + 1}`).join("\n");
+	const rendered = new BashExecutionComponent({
+		id: "shell-expanded-details",
+		toolName: "Shell",
+		command,
+		status: "success",
+		shellKind: "zsh",
+		outputPreview,
+		expanded: true,
+	});
+
+	const output = stripAnsi(rendered.render(100).join("\n"));
+
+	assert.match(output, /Command:/);
+	assert.match(output, /print\('complete command'\)/);
+	assert.match(output, /retained output 1/);
+	assert.match(output, /retained output 7/);
 });
 
 test("Codex-style background Bash omits active-turn interrupt hint", () => {
@@ -1284,6 +1354,38 @@ test("mycli shell runtime updates transcript tool components in place", () => {
 	assert.equal(runtime.chatContainer.children[0], component);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /⎿ word\.txt · 3 lines/);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /3 lines/);
+});
+
+test("mycli shell runtime streams output into the mounted Shell component", () => {
+	const terminal = new TestTerminal();
+	const initialBash = {
+		id: "shell-1",
+		toolName: "Shell",
+		command: "uv run pytest -q",
+		status: "running" as const,
+		shellId: "shell-1",
+		callId: "call-1",
+		outputPreview: "collecting\n",
+	};
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [initialBash],
+		transcript: [{ id: "shell-1", kind: "bash", bash: initialBash }],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	const component = runtime.chatContainer.children[0];
+	const updatedBash = { ...initialBash, outputPreview: "collecting\n1 passed\n" };
+
+	runtime.setState({
+		...initial,
+		bash: [updatedBash],
+		transcript: [{ id: "shell-1", kind: "bash", bash: updatedBash }],
+	});
+
+	assert.equal(runtime.chatContainer.children[0], component);
+	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /1 passed/);
 });
 
 test("mycli shell runtime updates assistant transcript components in place", () => {

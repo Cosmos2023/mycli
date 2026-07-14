@@ -21,9 +21,9 @@ const DEFAULT_PRESENTATION: ToolPresentation = {
 };
 
 const TOOL_PRESENTATIONS: Record<string, Partial<ToolPresentation>> = {
-	bash: { label: "Bash", accent: "bashMode", terminalPreviewLines: 14, alwaysShowDetails: true },
-	shell: { label: "Shell", accent: "bashMode", terminalPreviewLines: 14, alwaysShowDetails: true },
-	run_shell: { label: "Shell", accent: "bashMode", terminalPreviewLines: 14, alwaysShowDetails: true },
+	bash: { label: "Bash", accent: "bashMode", terminalPreviewLines: 5, alwaysShowDetails: true },
+	shell: { label: "Shell", accent: "bashMode", terminalPreviewLines: 5, alwaysShowDetails: true },
+	run_shell: { label: "Shell", accent: "bashMode", terminalPreviewLines: 5, alwaysShowDetails: true },
 	write: { label: "Write", accent: "warning", writePreviewLines: 10 },
 	write_file: { label: "Write", accent: "warning", writePreviewLines: 10 },
 	edit: { label: "Edit", accent: "warning", previewLines: 14 },

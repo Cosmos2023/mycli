@@ -1,12 +1,13 @@
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
+import { sliceByColumn } from "../tui-core/utils.ts";
 import type { MycliShellBash } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { presentationForBash } from "./tool-presentation.ts";
-import { sanitizeInline, shortPreview } from "./tool-display.ts";
-import { truncateToVisualLines } from "./visual-truncate.ts";
+import { sanitizeInline, shortPreview, TOOL_PREVIEW_CHARS } from "./tool-display.ts";
+import { truncateToVisualLines, truncateVisualLinesBalanced } from "./visual-truncate.ts";
 
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;
@@ -28,6 +29,9 @@ export class BashExecutionComponent extends Container {
 		this.clear();
 		this.addChild(new Spacer(1));
 		this.addChild(this.statusComponent());
+		if (this.bash.expanded) {
+			this.addChild(new Text(theme.fg("muted", this.commandDetail()), 1, 0));
+		}
 		const terminalDetail = this.terminalDetail();
 		if (terminalDetail) {
 			this.addChild(new Text(theme.fg("muted", `└ ${terminalDetail}`), 1, 0));
@@ -54,20 +58,29 @@ export class BashExecutionComponent extends Container {
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
 		return {
-				render: (width: number) => {
+			render: (width: number) => {
 				if (cachedWidth !== width || !cachedLines) {
-					const result = truncateToVisualLines(
-						theme.fg("muted", this.connectedOutput()),
-						presentationForBash().terminalPreviewLines,
-						width,
-						1,
-					);
+					const maxLines = presentationForBash().terminalPreviewLines;
+					const output = theme.fg("muted", this.connectedOutput());
+					const result = this.bash.status === "running"
+						? truncateToVisualLines(output, maxLines, width, 1)
+						: truncateVisualLinesBalanced(output, maxLines, width, 1, (skippedCount) =>
+								theme.fg("muted", this.hiddenLinesText(Math.max(this.bash.hiddenLineCount ?? 0, skippedCount))),
+							);
 					cachedLines = result.visualLines;
-					const hiddenCount = Math.max(this.bash.hiddenLineCount ?? 0, result.skippedCount);
-					if (hiddenCount > 0) {
+					if (this.bash.status === "running" && result.skippedCount > 0 && cachedLines.length > 0 && width > 3) {
 						cachedLines = [
-							...cachedLines,
-							...new Text(theme.fg("muted", this.hiddenLinesText(hiddenCount)), 5, 0).render(width),
+							`${theme.fg("muted", " └ ")}${sliceByColumn(cachedLines[0] ?? "", 3, width - 3)}`,
+							...cachedLines.slice(1),
+						];
+					}
+					const hiddenCount = this.bash.hiddenLineCount ?? 0;
+					if (this.bash.status !== "running" && result.skippedCount === 0 && hiddenCount > 0) {
+						const marker = new Text(theme.fg("muted", this.hiddenLinesText(hiddenCount)), 1, 0).render(width);
+						const retainedLines = cachedLines.slice(0, Math.max(0, maxLines - marker.length));
+						cachedLines = [
+							...retainedLines,
+							...marker.slice(0, maxLines - retainedLines.length),
 						];
 					}
 					cachedWidth = width;
@@ -128,6 +141,11 @@ export class BashExecutionComponent extends Container {
 			.join("\n");
 	}
 
+	private commandDetail(): string {
+		const commandLines = this.bash.command.split(/\r?\n/);
+		return ["└ Command:", ...commandLines.map((line) => `  ${line}`)].join("\n");
+	}
+
 	private hiddenLinesText(hiddenCount: number): string {
 		return this.bash.expanded
 			? keyHint("app.tools.expand", "collapse")
@@ -149,6 +167,5 @@ function commandPreview(command: string): string | undefined {
 	if (lines.length <= 1) {
 		return shortPreview(command);
 	}
-	const firstLine = shortPreview(lines[0], 64);
-	return firstLine ? `${firstLine}…` : undefined;
+	return shortPreview(`${lines[0]}…`, TOOL_PREVIEW_CHARS);
 }
