@@ -4,7 +4,7 @@
 
 **Goal:** Prevent approval continuation from persisting duplicate user messages and normalize legacy duplicates consistently for TUI, snapshots, and model replay.
 
-**Architecture:** Add a pure history replay normalizer that recognizes the old approval-continuation shape by turn semantics rather than message text. Stop producing the synthetic user item for new approvals, and pass stored history through the normalizer at each replay boundary without mutating canonical SQLite audit data.
+**Architecture:** Add a pure history replay normalizer that receives approval continuation turn IDs derived from persisted turn rollouts, then expose normalized replay history through `SessionService`. Stop producing the synthetic user item for new approvals, and use the normalized service view at each replay boundary without mutating canonical SQLite audit data.
 
 **Tech Stack:** Python 3.13, pytest, Ruff, Mypy, SQLite-backed session history, Node TUI JSON-RPC gateway.
 
@@ -12,14 +12,12 @@
 
 ## File Map
 
-- Create `src/mycli/services/history_replay.py`: pure normalization of legacy approval-continuation history.
+- Create `src/mycli/services/history_replay.py`: derive approval turns from rollouts and normalize legacy approval-continuation history.
 - Create `tests/unit/services/test_history_replay.py`: semantic normalization and preservation cases.
+- Modify `src/mycli/state/session_service.py`: expose normalized replay history and use it for runtime snapshots, conversation views, and readable snapshots.
+- Modify `tests/unit/services/test_session_service.py`: verify rollout-backed replay normalization.
 - Modify `src/mycli/application/runtime/turn_executor.py`: stop writing the suspended user message during approval continuation.
 - Modify `tests/unit/application/test_agent_runtime.py`: prove approval continuation persists one original user message.
-- Modify `src/mycli/services/context/context_manager.py`: normalize history before model message reconstruction.
-- Modify `tests/unit/services/test_context_manager.py`: prove legacy duplicates do not enter model context.
-- Modify `src/mycli/services/transcript_projection.py`: normalize history before writing readable snapshots.
-- Modify `tests/unit/services/test_transcript_projection.py`: prove snapshots hide legacy duplicates while retaining queued input.
 - Modify `src/mycli/cli/node_tui/gateway.py`: normalize complete history before transcript pagination and projection.
 - Modify `tests/unit/cli/node_tui/test_gateway.py`: prove old sessions reload without duplicate users and keep stable pagination.
 
@@ -31,11 +29,14 @@
 
 - [ ] **Step 1: Write failing normalization tests**
 
-Create tests with a history sequence containing an original user turn, an approval continuation with `APPROVAL_RESOLUTION` followed by the old synthetic user item, a queued user item in that continuation, and an independent later turn with identical text:
+Create tests with a history sequence containing an original user turn, an approval continuation turn ID supplied from rollout evidence, the old synthetic user item, a queued user item in that continuation, and an independent later turn with identical text. Also construct a `TurnRollout` containing a `turn_item` event whose payload type is `approval_resolution`, and assert its turn ID is discovered:
 
 ```python
 from mycli.domain.runtime import HistoryItem, HistoryItemType
-from mycli.services.history_replay import normalize_history_for_replay
+from mycli.services.history_replay import (
+    approval_resume_turn_ids,
+    normalize_history_for_replay,
+)
 
 
 def item(
@@ -65,7 +66,10 @@ def test_normalizer_removes_only_legacy_approval_resume_user_item() -> None:
         item("user-repeat", "turn-3", HistoryItemType.USER_MESSAGE, text="inspect cpu"),
     )
 
-    normalized = normalize_history_for_replay(history)
+    normalized = normalize_history_for_replay(
+        history,
+        approval_turn_ids=frozenset({"turn-2"}),
+    )
 
     assert [entry.id for entry in normalized] == [
         "user-original",
@@ -75,13 +79,10 @@ def test_normalizer_removes_only_legacy_approval_resume_user_item() -> None:
     ]
 
 
-def test_normalizer_does_not_remove_user_before_approval_resolution() -> None:
-    history = (
-        item("user", "turn-1", HistoryItemType.USER_MESSAGE, text="inspect cpu"),
-        item("approval", "turn-1", HistoryItemType.APPROVAL_RESOLUTION),
-    )
+def test_normalizer_preserves_users_outside_approval_resume_turns() -> None:
+    history = (item("user", "turn-1", HistoryItemType.USER_MESSAGE, text="inspect cpu"),)
 
-    assert normalize_history_for_replay(history) == history
+    assert normalize_history_for_replay(history, approval_turn_ids=frozenset()) == history
 ```
 
 - [ ] **Step 2: Run tests to verify RED**
@@ -104,14 +105,11 @@ from mycli.domain.runtime import HistoryItem, HistoryItemType
 
 def normalize_history_for_replay(
     items: tuple[HistoryItem, ...],
+    *,
+    approval_turn_ids: frozenset[str],
 ) -> tuple[HistoryItem, ...]:
     normalized: list[HistoryItem] = []
-    approval_turn_ids: set[str] = set()
     for item in items:
-        if item.type is HistoryItemType.APPROVAL_RESOLUTION:
-            approval_turn_ids.add(item.turn_id)
-            normalized.append(item)
-            continue
         if (
             item.type is HistoryItemType.USER_MESSAGE
             and item.turn_id in approval_turn_ids
@@ -122,7 +120,16 @@ def normalize_history_for_replay(
     return tuple(normalized)
 
 
-__all__ = ["normalize_history_for_replay"]
+def approval_resume_turn_ids(rollouts: tuple[TurnRollout, ...]) -> frozenset[str]:
+    return frozenset(
+        rollout.turn_id
+        for rollout in rollouts
+        if any(
+            event.kind == "turn_item"
+            and event.payload.get("type") == HistoryItemType.APPROVAL_RESOLUTION.value
+            for event in rollout.events
+        )
+    )
 ```
 
 - [ ] **Step 4: Run focused tests and static checks**
@@ -213,17 +220,19 @@ git add src/mycli/application/runtime/turn_executor.py tests/unit/application/te
 git commit -m "Avoid duplicate user history on approval resume"
 ```
 
-## Task 3: Normalize Snapshot And Model Replay
+## Task 3: Add The Normalized Session Replay View
 
 **Files:**
-- Modify: `src/mycli/services/context/context_manager.py`
-- Modify: `src/mycli/services/transcript_projection.py`
-- Modify: `tests/unit/services/test_context_manager.py`
-- Modify: `tests/unit/services/test_transcript_projection.py`
+- Modify: `src/mycli/state/session_service.py`
+- Modify: `tests/unit/services/test_session_service.py`
 
-- [ ] **Step 1: Write failing replay boundary tests**
+- [ ] **Step 1: Write failing replay service tests**
 
-In both tests, build the legacy sequence:
+Persist a legacy history sequence and a rollout whose first event is an
+approval resolution. Assert `load_replay_history_items` removes the synthetic
+user item while `load_history_items` remains unchanged. Then assert runtime
+snapshot history, reconstructed conversation messages, and a refreshed
+`session.json` use the normalized sequence.
 
 ```python
 history = (
@@ -251,45 +260,41 @@ history = (
 )
 ```
 
-Assert `ContextManager.messages_from_history(history)` contains one user message, while `project_history_items_for_snapshot(history)` contains one `user_message` plus the approval resolution item.
-
 - [ ] **Step 2: Run tests to verify RED**
 
 ```bash
-uv run pytest \
-  tests/unit/services/test_context_manager.py \
-  tests/unit/services/test_transcript_projection.py -q
+uv run pytest tests/unit/services/test_session_service.py -k approval_replay -q
 ```
 
-Expected: the new assertions fail because both replay paths include the legacy duplicate.
+Expected: FAIL because `load_replay_history_items` does not exist.
 
-- [ ] **Step 3: Normalize at both boundaries**
+- [ ] **Step 3: Implement and use the normalized service view**
 
-Import `normalize_history_for_replay` in both modules. At the start of `ContextManager.messages_from_history`, assign:
+Add this method to `SessionService`:
 
 ```python
-history_items = normalize_history_for_replay(history_items)
+def load_replay_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
+    return normalize_history_for_replay(
+        self.load_history_items(session_id),
+        approval_turn_ids=approval_resume_turn_ids(self.load_turn_rollouts(session_id)),
+    )
 ```
 
-At the start of `project_history_items_for_snapshot`, assign:
-
-```python
-items = normalize_history_for_replay(items)
-```
+Use `load_replay_history_items` in `load_runtime_snapshot`,
+`_conversation_messages_from_history`, and `_write_snapshot`. Keep mutation and
+maintenance paths on raw `load_history_items`.
 
 - [ ] **Step 4: Run focused tests and checks**
 
 ```bash
 uv run pytest \
+  tests/unit/services/test_session_service.py \
   tests/unit/services/test_context_manager.py \
-  tests/unit/services/test_transcript_projection.py \
   tests/unit/services/test_session_snapshot.py -q
 uv run ruff check \
-  src/mycli/services/context/context_manager.py \
-  src/mycli/services/transcript_projection.py \
-  tests/unit/services/test_context_manager.py \
-  tests/unit/services/test_transcript_projection.py
-uv run mypy src/mycli/services/context/context_manager.py src/mycli/services/transcript_projection.py
+  src/mycli/state/session_service.py \
+  tests/unit/services/test_session_service.py
+uv run mypy src/mycli/state/session_service.py
 ```
 
 Expected: all pass.
@@ -298,10 +303,8 @@ Expected: all pass.
 
 ```bash
 git add \
-  src/mycli/services/context/context_manager.py \
-  src/mycli/services/transcript_projection.py \
-  tests/unit/services/test_context_manager.py \
-  tests/unit/services/test_transcript_projection.py
+  src/mycli/state/session_service.py \
+  tests/unit/services/test_session_service.py
 git commit -m "Normalize approval history at replay boundaries"
 ```
 
@@ -345,9 +348,7 @@ In `_handle_transcript_load`, normalize immediately after loading canonical hist
 
 ```python
 items = list(
-    normalize_history_for_replay(
-        tuple(self.service._session_service.load_history_items(session_id))
-    )
+    self.service._session_service.load_replay_history_items(session_id)
 )
 ```
 

@@ -23,19 +23,21 @@ The restored conversation already contains the original user message.
 
 ### Legacy history
 
-Keep canonical stored history immutable. Add one normalization function for
-history replay that suppresses only legacy synthetic user items matching all of
-these conditions:
+Keep canonical stored history immutable. Approval resolutions are stored in
+turn rollouts rather than canonical provider history, so identify legacy
+approval continuation turns from rollout events first. Add one normalization
+function for history replay that suppresses only legacy synthetic user items
+matching all of these conditions:
 
 - the item is an unqueued `USER_MESSAGE`;
-- an `APPROVAL_RESOLUTION` appeared earlier in the same turn;
-- both items have the same `turn_id`.
+- the item's `turn_id` belongs to a rollout containing an
+  `APPROVAL_RESOLUTION` turn item.
 
 The rule does not compare message text. Independent repeated questions remain
 visible, and queued steering or follow-up messages remain visible because they
 carry `metadata.queued = true`.
 
-Apply normalization before:
+Expose the normalized view through `SessionService` and use it before:
 
 - Node TUI `transcript.load` projection;
 - readable `session.json` snapshot projection;

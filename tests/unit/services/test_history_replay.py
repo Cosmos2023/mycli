@@ -1,5 +1,14 @@
-from mycli.domain.runtime import HistoryItem, HistoryItemType
-from mycli.services.history_replay import normalize_history_for_replay
+from mycli.domain.runtime import (
+    HistoryItem,
+    HistoryItemType,
+    TurnRollout,
+    TurnRolloutEvent,
+    TurnStatus,
+)
+from mycli.services.history_replay import (
+    approval_resume_turn_ids,
+    normalize_history_for_replay,
+)
 
 
 def _item(
@@ -23,7 +32,6 @@ def _item(
 def test_normalizer_removes_only_legacy_approval_resume_user_item() -> None:
     history = (
         _item("user-original", "turn-1", HistoryItemType.USER_MESSAGE, text="inspect cpu"),
-        _item("approval", "turn-2", HistoryItemType.APPROVAL_RESOLUTION),
         _item("user-legacy", "turn-2", HistoryItemType.USER_MESSAGE, text="inspect cpu"),
         _item(
             "user-queued",
@@ -35,20 +43,39 @@ def test_normalizer_removes_only_legacy_approval_resume_user_item() -> None:
         _item("user-repeat", "turn-3", HistoryItemType.USER_MESSAGE, text="inspect cpu"),
     )
 
-    normalized = normalize_history_for_replay(history)
+    normalized = normalize_history_for_replay(
+        history,
+        approval_turn_ids=frozenset({"turn-2"}),
+    )
 
     assert [entry.id for entry in normalized] == [
         "user-original",
-        "approval",
         "user-queued",
         "user-repeat",
     ]
 
 
-def test_normalizer_does_not_remove_user_before_approval_resolution() -> None:
-    history = (
-        _item("user", "turn-1", HistoryItemType.USER_MESSAGE, text="inspect cpu"),
-        _item("approval", "turn-1", HistoryItemType.APPROVAL_RESOLUTION),
+def test_normalizer_preserves_users_outside_approval_resume_turns() -> None:
+    history = (_item("user", "turn-1", HistoryItemType.USER_MESSAGE, text="inspect cpu"),)
+
+    assert normalize_history_for_replay(history, approval_turn_ids=frozenset()) == history
+
+
+def test_approval_resume_turn_ids_uses_rollout_turn_items() -> None:
+    rollout = TurnRollout(
+        thread_id="demo",
+        turn_id="turn-approval",
+        status=TurnStatus.COMPLETED,
+        started_at="2026-07-14T00:00:00Z",
+        completed_at="2026-07-14T00:00:01Z",
+        events=(
+            TurnRolloutEvent(
+                event_id="event-1",
+                kind="turn_item",
+                created_at="2026-07-14T00:00:00Z",
+                payload={"type": "approval_resolution", "text": "[decision] 1"},
+            ),
+        ),
     )
 
-    assert normalize_history_for_replay(history) == history
+    assert approval_resume_turn_ids((rollout,)) == frozenset({"turn-approval"})
