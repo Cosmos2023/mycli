@@ -108,6 +108,7 @@ class McpToolDescriptor:
 @dataclass(slots=True, frozen=True)
 class McpToolCallResult:
     content: tuple[JsonObject, ...] = ()
+    structured_content: object | None = None
     is_error: bool = False
 
     @property
@@ -281,7 +282,11 @@ class McpClient:
         result = self.request("tools/call", {"name": name, "arguments": dict(arguments)})
         content = result.get("content", ())
         items = tuple(dict(item) for item in content if isinstance(item, Mapping)) if isinstance(content, list) else ()
-        return McpToolCallResult(content=items, is_error=bool(result.get("isError", False)))
+        return McpToolCallResult(
+            content=items,
+            structured_content=result.get("structuredContent"),
+            is_error=bool(result.get("isError", False)),
+        )
 
     def list_resources(self) -> tuple[McpResourceDescriptor, ...]:
         result = self.request("resources/list")

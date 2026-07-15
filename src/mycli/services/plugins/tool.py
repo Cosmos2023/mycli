@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolSpec
 
-PluginToolHandler = Callable[[dict[str, Any]], ToolResult | dict[str, Any] | str]
+PluginToolHandler = Callable[
+    [dict[str, Any]],
+    ToolResult | ToolModelOutput | dict[str, Any] | str,
+]
 
 
 @dataclass(slots=True)
@@ -35,13 +39,39 @@ class PluginTool:
                 success=False,
                 summary="plugin tool failed",
                 error=exc.__class__.__name__,
+                model_output=ToolModelOutput.from_text(
+                    f"Plugin tool failed: {exc.__class__.__name__}",
+                    success=False,
+                ),
             )
         if isinstance(result, ToolResult):
-            return result
+            if result.model_output is not None:
+                return result
+            text = result.summary or result.error or "plugin tool completed"
+            return replace(
+                result,
+                model_output=ToolModelOutput.from_text(text, success=result.success),
+            )
+        if isinstance(result, ToolModelOutput):
+            success = result.success is not False
+            return ToolResult(
+                success=success,
+                summary=result.text_content() or "plugin tool completed",
+                model_output=result,
+            )
         if isinstance(result, dict):
             summary = result.get("summary") or result.get("content") or result.get("message") or "plugin tool completed"
-            return ToolResult(success=True, summary=str(summary), raw_payload=dict(result))
-        return ToolResult(success=True, summary=str(result))
+            return ToolResult(
+                success=True,
+                summary=str(summary),
+                raw_payload=dict(result),
+                model_output=ToolModelOutput.from_json(result, success=True),
+            )
+        return ToolResult(
+            success=True,
+            summary=str(result),
+            model_output=ToolModelOutput.from_text(str(result), success=True),
+        )
 
     def run(self, call: ToolCall) -> ToolResult:
         return self.execute(call.arguments)

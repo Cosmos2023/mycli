@@ -9,6 +9,7 @@ import pytest
 from mycli.services.mcp.client import JsonRpcError, McpClient, McpServerConfig, load_mcp_server_configs
 from mycli.services.mcp.resource_adapter import McpResourceAdapter
 from mycli.services.mcp.tool_adapter import McpToolAdapter
+from mycli.domain.tooling.output import ToolImageContent, ToolJsonContent, ToolTextContent
 
 
 class FakeTransport:
@@ -161,6 +162,55 @@ def test_mcp_tool_adapter_exposes_stubs_then_hydrates_full_schema_on_demand() ->
     assert registration.descriptor.origin_metadata["transport"] == "stdio"
     assert registration.descriptor.origin_metadata["failure_semantics"] == "mcp_local_tool"
     assert registration.descriptor.origin_metadata["result_summary_policy"] == "bounded_model_summary"
+
+
+def test_mcp_tool_adapter_preserves_mixed_model_output_content() -> None:
+    transport = FakeTransport(
+        {
+            "initialize": {"protocolVersion": "2025-03-26"},
+            "tools/list": {
+                "tools": [
+                    {
+                        "name": "inspect",
+                        "description": "Inspect mixed content",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            },
+            "tools/call": {
+                "content": [
+                    {"type": "text", "text": "first line\nsecond line"},
+                    {
+                        "type": "image",
+                        "data": "aW1hZ2U=",
+                        "mimeType": "image/png",
+                    },
+                    {
+                        "type": "resource",
+                        "resource": {"uri": "file:///README.md", "text": "docs"},
+                    },
+                ],
+                "structuredContent": {"count": 2},
+                "isError": False,
+            },
+        }
+    )
+    client = McpClient(
+        McpServerConfig(name="fs", transport="stdio", command="mcp"),
+        transport=transport,
+    )
+    result = McpToolAdapter({"fs": client}).list_tool_stubs()[0].tool.execute({})
+
+    assert result.model_output is not None
+    assert result.model_output.content == (
+        ToolTextContent("first line\nsecond line"),
+        ToolImageContent("data:image/png;base64,aW1hZ2U="),
+        ToolJsonContent(
+            {"resource": {"text": "docs", "uri": "file:///README.md"}, "type": "resource"}
+        ),
+        ToolJsonContent({"count": 2}),
+    )
+    assert result.model_output.contains_external_context is True
 
 
 def test_mcp_tool_adapter_truncates_long_tool_output() -> None:

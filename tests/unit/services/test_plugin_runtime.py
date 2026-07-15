@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint
 from mycli.services.plugins import PluginCommandRegistry, discover_plugins, load_enabled_plugins
 from mycli.services.plugins.management import PluginManagementService
+from mycli.services.plugins.tool import PluginTool
+from mycli.tools.base import ToolSpec
 from mycli.tools.registry import ToolRegistry
 
 
@@ -121,6 +124,46 @@ def register(ctx):
     manifest_entry = next(item for item in registry.manifest()["tools"] if item["name"] == "DemoTool")
     assert manifest_entry["source"] == "plugin"
     assert manifest_entry["id"] == "plugin:demo:DemoTool"
+
+
+def test_plugin_tool_normalizes_supported_handler_results() -> None:
+    spec = ToolSpec(name="DemoTool", description="Demo", parameters=())
+    outputs = (
+        ToolModelOutput.from_text("typed", success=True),
+        {"count": 2, "message": "dictionary"},
+        "plain text",
+        ToolResult(success=True, summary="legacy result"),
+    )
+
+    results = [
+        PluginTool(spec=spec, handler=lambda _args, value=value: value, plugin_id="demo").execute({})
+        for value in outputs
+    ]
+
+    assert [result.model_output is not None for result in results] == [True] * 4
+    assert results[0].model_output == outputs[0]
+    assert results[1].model_output is not None
+    assert results[1].model_output.text_content() == '{"count":2,"message":"dictionary"}'
+    assert results[2].model_output is not None
+    assert results[2].model_output.text_content() == "plain text"
+    assert results[3].model_output is not None
+    assert results[3].model_output.text_content() == "legacy result"
+
+
+def test_plugin_tool_exception_returns_bounded_typed_failure() -> None:
+    def explode(_arguments):
+        raise RuntimeError("secret must not leak")
+
+    result = PluginTool(
+        spec=ToolSpec(name="DemoTool", description="Demo", parameters=()),
+        handler=explode,
+        plugin_id="demo",
+    ).execute({})
+
+    assert result.success is False
+    assert result.model_output is not None
+    assert result.model_output.text_content() == "Plugin tool failed: RuntimeError"
+    assert "secret" not in result.model_output.text_content()
 
 
 def test_plugin_runtime_hook_dict_can_return_additional_contexts(tmp_path: Path) -> None:

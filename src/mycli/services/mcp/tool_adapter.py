@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import (
+    ToolImageContent,
+    ToolJsonContent,
+    ToolModelOutput,
+    ToolOutputContent,
+    ToolTextContent,
+)
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
     ToolContributionLifecycleState,
@@ -44,6 +51,7 @@ class _McpSchemaTool:
                     "error": error,
                 },
                 error=error,
+                model_output=ToolModelOutput.from_text(error, success=False),
             )
         result_text = result.text or "MCP tool returned no content."
         content_summary = _content_summary(result.content, text=result_text)
@@ -71,6 +79,7 @@ class _McpSchemaTool:
                 "truncated": raw_truncated or summary_truncated,
             },
             error=summary if result.is_error else None,
+            model_output=_mcp_model_output(result),
         )
 
     def run(self, call: ToolCall) -> ToolResult:
@@ -196,3 +205,50 @@ def _content_summary(content: tuple[dict[str, Any], ...], *, text: str) -> dict[
         "type_counts": type_counts,
         "text_chars": len(text),
     }
+
+
+def _mcp_model_output(result: object) -> ToolModelOutput:
+    content = getattr(result, "content", ())
+    model_content: list[ToolOutputContent] = []
+    if isinstance(content, tuple):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type == "text" and isinstance(item.get("text"), str):
+                model_content.append(ToolTextContent(str(item["text"])))
+                continue
+            if item_type == "image":
+                image_url = _mcp_image_url(item)
+                if image_url is not None:
+                    model_content.append(ToolImageContent(image_url))
+                    continue
+            if item_type == "json":
+                model_content.append(ToolJsonContent(item.get("json", item.get("data"))))
+                continue
+            model_content.append(ToolJsonContent(dict(item)))
+
+    structured_content = getattr(result, "structured_content", None)
+    if structured_content is not None:
+        model_content.append(ToolJsonContent(structured_content))
+    if not model_content:
+        model_content.append(ToolTextContent("MCP tool returned no content."))
+    is_error = bool(getattr(result, "is_error", False))
+    return ToolModelOutput(
+        content=tuple(model_content),
+        success=not is_error,
+        contains_external_context=True,
+    )
+
+
+def _mcp_image_url(item: dict[str, Any]) -> str | None:
+    url = item.get("url")
+    if isinstance(url, str) and url.strip():
+        return url
+    data = item.get("data")
+    mime_type = item.get("mimeType", item.get("mime_type"))
+    if not isinstance(data, str) or not data:
+        return None
+    if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
+        return None
+    return f"data:{mime_type};base64,{data}"
