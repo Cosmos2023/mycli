@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.services.skills import SkillRegistry
 from mycli.tools.skill import SkillTool
 
@@ -33,6 +34,8 @@ def test_skill_tool_returns_markdown_body_as_tool_result(tmp_path: Path) -> None
     assert result.raw_payload["description"] == "Review code for correctness risks"
     assert result.raw_payload["content"] == "Find correctness bugs before style issues."
     assert result.raw_payload["source_path"].endswith("code-review.md")
+    assert isinstance(result.model_output, ToolModelOutput)
+    assert result.model_output.text_content() == "Activated skill: code-review"
     assert "kind" not in result.raw_payload
     assert "body" not in result.raw_payload
 

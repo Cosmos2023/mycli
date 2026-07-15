@@ -153,15 +153,17 @@ class FakeSkillTool:
     )
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
+        summary = "Activated skill: code-review"
         return ToolResult(
             success=True,
-            summary="Activated skill: code-review",
+            summary=summary,
             raw_payload={
                 "skill_name": str(arguments["skill_name"]),
                 "description": "Review code",
                 "content": "Find correctness bugs first.",
                 "source_path": "/tmp/code-review.md",
             },
+            model_output=ToolModelOutput.from_text(summary, success=True),
         )
 
 
@@ -2295,7 +2297,7 @@ def test_tool_execution_service_persists_successful_skill_instructions(
     skill_instruction = conversation.messages[-1]
     assert tool_result.tool_name == "Skill"
     assert tool_result.call_id == "call_skill"
-    assert tool_result.metadata["transcript_content"] == "Find correctness bugs first."
+    assert tool_result.metadata["transcript_content"] == "Activated skill: code-review"
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
     skill_instruction_item = next(
         item for item in turn_items if item.type is TurnItemType.SKILL_INSTRUCTIONS
@@ -2319,6 +2321,8 @@ def test_tool_execution_service_persists_successful_skill_instructions(
     assert "<path>/tmp/code-review.md</path>" in skill_instruction.content
     assert "Find correctness bugs first." in skill_instruction.content
     assert "not the current user request" in skill_instruction.content
+    model_visible = "\n".join(message.content for message in conversation.messages)
+    assert model_visible.count("Find correctness bugs first.") == 1
 
 
 def test_tool_execution_service_records_successful_skill_invocation(tmp_path: Path) -> None:

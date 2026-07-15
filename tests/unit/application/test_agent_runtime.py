@@ -4028,12 +4028,12 @@ def test_agent_runtime_continues_same_turn_with_skill_tool_result(tmp_path: Path
     second_request_text = "\n".join(
         str(getattr(message, "content", "")) for message in adapter.seen_messages[1]
     )
-    assert "Find correctness bugs first." in second_request_text
+    assert second_request_text.count("Find correctness bugs first.") == 1
     assert response.turn is not None
     assert any(
         item.type is TurnItemType.TOOL_RESULT
         and item.tool_name == "Skill"
-        and "Find correctness bugs first." in str(item.metadata.get("transcript_content", ""))
+        and item.metadata.get("transcript_content") == "Activated skill: code-review"
         for item in response.turn.items
     )
     assert any(

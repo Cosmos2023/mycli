@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.services.skills import SkillRegistry
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 
@@ -45,9 +46,10 @@ class SkillTool:
                 error=f"Skill '{skill_name}' not found.",
             )
 
+        summary = f"Activated skill: {skill.name}"
         return ToolResult(
             success=True,
-            summary=f"Activated skill: {skill.name}",
+            summary=summary,
             raw_payload={
                 "skill_name": skill.name,
                 "description": skill.description,
@@ -57,6 +59,7 @@ class SkillTool:
                 "workspace_dependencies": list(skill.workspace_dependencies),
                 "guardrails": list(skill.guardrails),
             },
+            model_output=ToolModelOutput.from_text(summary, success=True),
         )
 
     def run(self, call: ToolCall) -> ToolResult:
