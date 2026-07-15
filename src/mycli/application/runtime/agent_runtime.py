@@ -84,7 +84,6 @@ from mycli.services.context.compaction import (
     ToolResultBudget,
 )
 from mycli.services.context.token_counter import TokenCounter
-from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks.allowlist import HookAllowlist
 from mycli.services.hooks import (
@@ -280,7 +279,6 @@ class AgentRuntime:
             )
         )
         self._approval_service.configure_shell_profile(self._shell_resolution.profile)
-        self._tool_result_formatter = ToolResultFormatter()
         self._token_counter = TokenCounter()
         self._observability_service = observability_service or ObservabilityService()
         self._hook_manager = HookManager()
@@ -306,7 +304,7 @@ class AgentRuntime:
         )
         self._configure_l4_summarization(llm_summarization, config)
         self._compaction_pipeline = CompactionPipeline(
-            tool_result_budget=ToolResultBudget(self._tool_result_formatter),
+            tool_result_budget=ToolResultBudget(),
             context_window_analyzer=ContextWindowAnalyzer(
                 dedup_trigger_ratio=0.4,
                 eviction_trigger_ratio=0.7,
@@ -316,9 +314,7 @@ class AgentRuntime:
             token_counter=self._token_counter,
             hook_manager=self._hook_manager,
         )
-        self._context_manager = context_manager or ContextManager(
-            formatter=self._tool_result_formatter,
-        )
+        self._context_manager = context_manager or ContextManager()
         self._file_history_service = FileHistoryService(
             home_dir=home_dir,
             workspace_root=config.workspace_root,

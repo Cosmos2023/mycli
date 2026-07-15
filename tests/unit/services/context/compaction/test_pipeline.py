@@ -229,6 +229,43 @@ class TestContextWindowAnalyzer:
 
 
 class TestToolResultBudget:
+    def test_reuses_stored_function_output_payload_without_reformatting(self) -> None:
+        strategy = ToolResultBudget()
+        budget = ContextBudget(max_tokens=1000)
+        message = Message(
+            role="tool",
+            content="stale text",
+            tool_call_id="c1",
+            blocks=(
+                RuntimeBlock(
+                    type="tool_result",
+                    text="stale text",
+                    call_id="c1",
+                    metadata={
+                        "tool_name": "Read",
+                        "success": True,
+                        "summary": "Read file",
+                        "content": "legacy raw content",
+                        "function_call_output_payload": {
+                            "body": "typed bounded content",
+                            "content_items": [],
+                            "structured_content": [{"count": 2}],
+                            "success": True,
+                        },
+                    },
+                ),
+            ),
+        )
+        conversation = Conversation(session_id="test", messages=[message])
+
+        result = strategy.apply(conversation, _zones(conversation), budget)
+
+        assert result.messages[0].content == "typed bounded content"
+        block_payload = result.messages[0].blocks[0].metadata[
+            "function_call_output_payload"
+        ]
+        assert block_payload["structured_content"] == [{"count": 2}]
+
     def test_formats_fresh_tool_results_and_marks_them_compacted(self) -> None:
         strategy = ToolResultBudget(ToolResultFormatter(read_file_max_chars=120))
         budget = ContextBudget(max_tokens=1000)

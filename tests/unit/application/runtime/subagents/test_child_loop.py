@@ -13,6 +13,7 @@ from mycli.domain.subagents import (
     SubAgentProfile,
 )
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolModelOutput, ToolOutputBudgetClass
 from mycli.domain.tooling.exposure import ToolExposure
 from mycli.tools.base import ToolResult
 
@@ -70,6 +71,11 @@ class FakeExecutor:
             success=True,
             summary="read ok",
             raw_payload={"content": "file content"},
+            model_output=ToolModelOutput.from_text(
+                "file content",
+                success=True,
+                budget_class=ToolOutputBudgetClass.READ,
+            ),
         )
 
 
@@ -147,6 +153,7 @@ def test_child_loop_executes_tool_then_returns_final_text() -> None:
     assert executor.tool_scopes == [("Read",)]
     assert requester.seen_messages[1][-1]["role"] == "tool"
     assert requester.seen_messages[1][-1]["tool_call_id"] == "call_1"
+    assert requester.seen_messages[1][-1]["content"] == "file content"
 
 
 def test_runtime_child_turn_requester_joins_streamed_text_blocks_without_newlines() -> None:

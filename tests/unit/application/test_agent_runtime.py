@@ -2671,8 +2671,8 @@ def test_agent_runtime_keeps_reasoning_and_tool_call_in_same_turn(tmp_path: Path
     assert any(event.kind == "tool_started" and event.tool_name == "Read" for event in response.activity_events)
     assert any(
         message.role == "tool"
-        and "Read succeeded" in message.content
-        and "Path: pyproject.toml" in message.content
+        and "[project]" in message.content
+        and "name='demo'" in message.content
         for message in runtime._session_service.load_conversation(runtime._config.session_id).messages
     )
 
@@ -3131,7 +3131,6 @@ def test_agent_runtime_reinjects_grounded_search_matches_into_tool_message(tmp_p
     assert any(
         message.role == "tool"
         and message.tool_call_id == "call_search_text_1"
-        and "Command succeeded" in str(message.content)
         and "README.md:1:search_text mention" in str(message.content)
         for message in adapter.seen_messages[1]
     )
@@ -3177,15 +3176,12 @@ def test_agent_runtime_preserves_grounded_tool_messages_across_reinjection(
     read_content = str(read_tool_message.content)
     edit_content = str(edit_tool_message.content)
 
-    assert "Command succeeded" in search_content
     assert "notes.txt:1:needle one" in search_content
 
-    assert "Read succeeded" in read_content
-    assert "Path: notes.txt" in read_content
     assert "needle one" in read_content
     assert "line two" in read_content
 
-    assert "Diff preview (" in edit_content
+    assert "Diff:" in edit_content
     assert "-line two" in edit_content
     assert "+line three" in edit_content
 
@@ -3219,8 +3215,6 @@ def test_agent_runtime_reinjects_search_and_range_evidence_into_tool_messages(
     )
 
     assert "notes.txt:1:needle one" in str(search_tool_message.content)
-    assert "Read succeeded" in str(range_tool_message.content)
-    assert "Path: notes.txt" in str(range_tool_message.content)
     assert "needle one" in str(range_tool_message.content)
 
 
@@ -3239,8 +3233,6 @@ def test_agent_runtime_reinjects_grounded_shell_stdout_into_tool_message(
     assert response.assistant_message == "Shell check complete"
     assert any(
         message.role == "tool"
-        and "Command succeeded" in str(message.content)
-        and "Output:" in str(message.content)
         and "shell-output" in str(message.content)
         for message in adapter.seen_messages[-1]
     )

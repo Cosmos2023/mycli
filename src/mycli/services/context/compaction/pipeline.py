@@ -11,7 +11,9 @@ from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.token_counter import TokenCounter
+from mycli.services.context.tool_output_projector import ToolModelOutputProjector
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
+from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
 from mycli.services.hooks import HookContext, HookManager, HookPoint
 from mycli.tools.base import ToolResult
 
@@ -106,8 +108,13 @@ class ContextWindowMetrics:
 
 
 class ToolResultBudget:
-    def __init__(self, formatter: ToolResultFormatter) -> None:
-        self._formatter = formatter
+    def __init__(
+        self,
+        formatter: ToolResultFormatter | None = None,
+        *,
+        projector: ToolModelOutputProjector | None = None,
+    ) -> None:
+        self._projector = projector or ToolModelOutputProjector(formatter=formatter)
 
     def apply(
         self,
@@ -125,16 +132,20 @@ class ToolResultBudget:
             if _is_append_only(message):
                 continue
 
-            tool_name = _tool_name_for_message(message)
-            raw_payload = _tool_raw_payload(message)
-            result = ToolResult(
-                success=_tool_success_for_message(message),
-                summary=_tool_summary_for_message(message),
-                raw_payload=raw_payload,
-                evidence=_tool_evidence_for_message(message),
-                error=_tool_error_for_message(message),
-            )
-            formatted = self._formatter.format(tool_name, result)
+            stored_payload = _function_output_payload_for_message(message)
+            if stored_payload is not None:
+                formatted = stored_payload.to_text()
+            else:
+                tool_name = _tool_name_for_message(message)
+                raw_payload = _tool_raw_payload(message)
+                result = ToolResult(
+                    success=_tool_success_for_message(message),
+                    summary=_tool_summary_for_message(message),
+                    raw_payload=raw_payload,
+                    evidence=_tool_evidence_for_message(message),
+                    error=_tool_error_for_message(message),
+                )
+                formatted = self._projector.project(tool_name, result).text_content()
             if formatted == message.content:
                 continue
 
@@ -151,7 +162,7 @@ class ToolResultBudget:
         return compacted if changed else conversation
 
     def format_result(self, tool_name: str, result: ToolResult) -> str:
-        return self._formatter.format(tool_name, result)
+        return self._projector.project(tool_name, result).text_content()
 
 
 class ContextWindowAnalyzer:
@@ -1063,13 +1074,7 @@ def _replace_tool_message(
         metadata: dict[str, object] = {}
         for block in message.blocks:
             if block.type == "tool_result":
-                metadata = {
-                    "tool_name": block.metadata.get("tool_name"),
-                    "path": block.metadata.get("path"),
-                    "success": block.metadata.get("success"),
-                    "summary": block.metadata.get("summary"),
-                    "error": block.metadata.get("error"),
-                }
+                metadata = dict(block.metadata)
                 if block_metadata_updates:
                     metadata.update(block_metadata_updates)
                 break
@@ -1088,6 +1093,18 @@ def _replace_tool_message(
         blocks=blocks,
         metadata=message_metadata,
     )
+
+
+def _function_output_payload_for_message(
+    message: Message,
+) -> ResponsesFunctionCallOutputPayload | None:
+    for block in message.blocks:
+        if block.type != "tool_result":
+            continue
+        raw_payload = block.metadata.get("function_call_output_payload")
+        if isinstance(raw_payload, dict):
+            return ResponsesFunctionCallOutputPayload.from_dict(raw_payload)
+    return None
 
 
 def _is_append_only(message: Message) -> bool:

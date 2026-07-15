@@ -38,6 +38,7 @@ class ToolWriteDiagnosticsRuntime:
             raw_payload={**result.raw_payload, "write_diagnostics": diagnostics},
             evidence=result.evidence,
             error=result.error,
+            model_output=result.model_output,
         )
 
     def _write_diagnostic_paths(

@@ -42,7 +42,10 @@ from mycli.schemas.responses_protocol import (
     ResponsesFunctionCallOutputTextItem,
 )
 from mycli.services.context.context_manager import ContextManager
-from mycli.services.context.tool_output_projector import ToolModelOutputProjector
+from mycli.services.context.tool_output_projector import (
+    ToolModelOutputProjector,
+    legacy_runtime_tool_result_text,
+)
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookExecutionSummary, HookManager
 from mycli.services.security import InjectionGuard
@@ -108,11 +111,8 @@ class ToolExecutionService:
         self._tool_model_output_projector = (
             tool_model_output_projector
             or ToolModelOutputProjector(
-                legacy_renderer=lambda tool_name, result: (
-                    self._context_manager.render_tool_result(
-                        result,
-                        tool_name=tool_name,
-                    )
+                legacy_renderer=lambda _tool_name, result: (
+                    legacy_runtime_tool_result_text(result)
                 )
             )
         )

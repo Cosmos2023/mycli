@@ -72,4 +72,17 @@ def _legacy_budget_class(tool_name: str) -> ToolOutputBudgetClass:
     return ToolOutputBudgetClass.DEFAULT
 
 
-__all__ = ["ToolModelOutputProjector"]
+def legacy_runtime_tool_result_text(result: ToolResult) -> str:
+    parts = [result.summary]
+    if result.error and result.error not in result.summary:
+        parts.append(f"Error: {result.error}")
+    error_kind = result.raw_payload.get("error_kind")
+    if isinstance(error_kind, str) and error_kind:
+        parts.append(f"Error kind: {error_kind}")
+    path = result.raw_payload.get("path")
+    if isinstance(path, str) and path:
+        parts.append(f"Path: {path}")
+    return "\n".join(parts)
+
+
+__all__ = ["ToolModelOutputProjector", "legacy_runtime_tool_result_text"]

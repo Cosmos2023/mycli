@@ -20,7 +20,7 @@ from mycli.domain.tooling.exposure import (
     ToolRouteSource,
 )
 from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
-from mycli.services.context.tool_result_formatter import ToolResultFormatter
+from mycli.services.context.tool_output_projector import ToolModelOutputProjector
 from mycli.tools.base import ToolResult, ToolSpec
 from mycli.tools.routing.tool_router import ToolRouter
 
@@ -267,7 +267,7 @@ class SubAgentChildLoop:
     def __init__(self, *, requester: ChildTurnRequester, executor: ChildToolExecutor) -> None:
         self._requester = requester
         self._executor = executor
-        self._formatter = ToolResultFormatter()
+        self._model_output_projector = ToolModelOutputProjector()
 
     def run(
         self,
@@ -372,7 +372,10 @@ class SubAgentChildLoop:
                     tool_names=tool_names,
                 )
                 tool_calls += 1
-                formatted_result = self._formatter.format(call.name, result)
+                formatted_result = self._model_output_projector.project(
+                    call.name,
+                    result,
+                ).text_content()
                 if transcript is not None:
                     transcript.record_tool_result(
                         call_id=call.call_id,
