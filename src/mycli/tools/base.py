@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from mycli.domain.tooling.calls import ToolCall, ToolResult
+from mycli.tools.model_output import ToolModelOutputAdapter, compact_model_output
 
 __all__ = [
     "MutationAwareTool",
@@ -34,6 +35,7 @@ class ToolSpec:
     parameters: tuple[ToolParameter, ...] = field(default_factory=tuple)
     risk_level: str = "low"
     supports_parallel_tool_calls: bool = False
+    model_output_adapter: ToolModelOutputAdapter = compact_model_output
 
 
 FilesystemEffect = Literal["none", "read", "write", "unknown"]

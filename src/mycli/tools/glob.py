@@ -6,6 +6,7 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.model_output import structured_model_output
 from mycli.tools.path_utils import resolve_workspace_path
 
 
@@ -55,6 +56,7 @@ class GlobTool:
         ),
         risk_level="low",
         supports_parallel_tool_calls=True,
+        model_output_adapter=structured_model_output,
     )
 
     def __init__(

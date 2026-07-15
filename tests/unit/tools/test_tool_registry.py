@@ -9,6 +9,7 @@ from mycli.domain.tooling.contributed_tools import (
 )
 from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolOutputBudgetClass
 from mycli.services.approval.safety_policy import SafetyPolicy
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.registry import (
@@ -129,6 +130,47 @@ def test_legacy_bash_alias_still_executes(tmp_path: Path) -> None:
 
     assert result.success is True
     assert result.raw_payload["output"] == "ok"
+    assert result.model_output is not None
+    assert "ok" in result.model_output.text_content()
+    assert result.model_output.budget_class is ToolOutputBudgetClass.SHELL
+
+
+def test_tool_registry_adds_compact_typed_output_for_legacy_results() -> None:
+    tool = FakeTool("Demo")
+    registry = ToolRegistry.from_tools([tool])
+
+    result = registry.execute(ToolCall(name="Demo", arguments={}, reason="test"))
+
+    assert result.model_output is not None
+    assert result.model_output.text_content() == "Demo ok"
+
+
+def test_registry_uses_declared_read_and_mutation_presenters(tmp_path: Path) -> None:
+    source = tmp_path / "demo.txt"
+    source.write_text("one\ntwo\n", encoding="utf-8")
+    registry = ToolRegistry(workspace_root=tmp_path)
+
+    read_result = registry.execute(
+        ToolCall(
+            name="Read",
+            arguments={"file_path": "demo.txt", "offset": 1, "limit": 20},
+            reason="read",
+        )
+    )
+    write_result = registry.execute(
+        ToolCall(
+            name="Write",
+            arguments={"file_path": "created.txt", "content": "hello\n"},
+            reason="write",
+        )
+    )
+
+    assert read_result.model_output is not None
+    assert "one" in read_result.model_output.text_content()
+    assert read_result.model_output.budget_class is ToolOutputBudgetClass.READ
+    assert write_result.model_output is not None
+    assert "Wrote created.txt" in write_result.model_output.text_content()
+    assert "Diff:" in write_result.model_output.text_content()
 
 
 def test_builtin_tool_parallel_support_matches_safe_runtime_set(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from mycli.domain.runtime import (
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.model_output import shell_model_output
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
 from mycli.tools.shell_environment import create_shell_environment
 from mycli.tools.shell_safety import (
@@ -421,6 +422,7 @@ class ShellTool(_ShellToolBase):
         ),
         parameters=_SHELL_PARAMETERS,
         risk_level="high",
+        model_output_adapter=shell_model_output,
     )
 
 
@@ -431,6 +433,7 @@ class BashTool(_ShellToolBase):
         description="Compatibility alias for the Shell tool.",
         parameters=_SHELL_PARAMETERS,
         risk_level="high",
+        model_output_adapter=shell_model_output,
     )
 
 

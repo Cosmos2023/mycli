@@ -6,6 +6,7 @@ from typing import Any
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.model_output import mutation_model_output
 from mycli.tools.file_mutation import (
     backup_file,
     unified_diff,
@@ -48,6 +49,7 @@ class WriteTool:
             ToolParameter(name="expected_sha256", type="string", required=False),
         ),
         risk_level="medium",
+        model_output_adapter=mutation_model_output,
     )
 
     def __init__(

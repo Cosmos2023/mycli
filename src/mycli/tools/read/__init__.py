@@ -8,6 +8,7 @@ from typing import Any, Callable, cast
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.services.filesystem import FileSystemRuntime, FileSystemRuntimeError
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.model_output import read_model_output
 from mycli.tools.file_snapshot import (
     FileSnapshot,
     FileSnapshotStore,
@@ -197,6 +198,7 @@ class ReadTool:
         ),
         risk_level="low",
         supports_parallel_tool_calls=True,
+        model_output_adapter=read_model_output,
     )
 
     def __init__(

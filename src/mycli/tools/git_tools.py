@@ -6,6 +6,7 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.model_output import git_model_output
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
 
 
@@ -24,6 +25,7 @@ class GitStatusTool:
         parameters=(),
         risk_level="low",
         supports_parallel_tool_calls=True,
+        model_output_adapter=git_model_output,
     )
 
     def __init__(self, workspace_root: Path) -> None:
@@ -73,6 +75,7 @@ class GitDiffTool:
         ),
         risk_level="low",
         supports_parallel_tool_calls=True,
+        model_output_adapter=git_model_output,
     )
 
     def __init__(self, workspace_root: Path) -> None:
@@ -141,6 +144,7 @@ class GitLogTool:
         ),
         risk_level="low",
         supports_parallel_tool_calls=True,
+        model_output_adapter=git_model_output,
     )
 
     def __init__(self, workspace_root: Path) -> None:
@@ -186,6 +190,7 @@ class GitShowTool:
         ),
         risk_level="low",
         supports_parallel_tool_calls=True,
+        model_output_adapter=git_model_output,
     )
 
     def __init__(self, workspace_root: Path) -> None:

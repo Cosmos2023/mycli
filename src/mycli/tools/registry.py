@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -581,7 +581,13 @@ class ToolRegistry:
         executor = self.executors.get(call.name)
         if executor is None:
             raise ValueError(f"Unsupported tool: {call.name}")
-        return executor.execute(call.arguments)
+        result = executor.execute(call.arguments)
+        if result.model_output is not None:
+            return result
+        return replace(
+            result,
+            model_output=executor.spec.model_output_adapter(result),
+        )
 
     def mutation_targets(self, call: ToolCall) -> tuple[str, ...] | None:
         assert self.executors is not None

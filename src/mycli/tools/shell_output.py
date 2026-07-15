@@ -4,6 +4,7 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.model_output import shell_model_output
 from mycli.tools.shell_registry import LEGACY_SHELL_OWNER, SHELL_REGISTRY
 
 
@@ -14,6 +15,7 @@ class ShellOutputTool:
         description="Read incremental output and status for a background Shell process.",
         parameters=(ToolParameter(name="shell_id", type="string", required=True),),
         risk_level="low",
+        model_output_adapter=shell_model_output,
     )
 
     def __init__(self, *, session_id: str = LEGACY_SHELL_OWNER) -> None:
