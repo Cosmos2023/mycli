@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from mycli.domain.subagents import SubAgentOutput
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 
 
@@ -58,6 +59,13 @@ class SubagentOutputTool:
                 },
             )
         output = self._service.read_output(child_session_id)
+        lines = [
+            f"Child session: {output.child_session_id}",
+            f"Status: {output.status}",
+            f"Tool calls: {output.tool_calls}",
+        ]
+        if output.report:
+            lines.extend(("Report:", output.report))
         return ToolResult(
             success=output.status != "missing",
             summary=f"Sub-agent {output.status}.",
@@ -71,6 +79,10 @@ class SubagentOutputTool:
                 "error": output.error,
                 "transcript": list(output.transcript_lines),
             },
+            model_output=ToolModelOutput.from_text(
+                "\n".join(lines),
+                success=output.status != "missing",
+            ),
         )
 
     def run(self, call: ToolCall) -> ToolResult:

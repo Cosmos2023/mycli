@@ -13,7 +13,7 @@ class FakeSubAgentOutputService:
         return SubAgentOutput(
             child_session_id=child_session_id,
             status="completed",
-            report="final report",
+            report="first line\n\nsecond line",
             tool_calls=2,
             transcript_lines=("explore completed tools=2 demo:sub", "  final final report"),
         )
@@ -28,12 +28,21 @@ def test_subagent_output_tool_reads_output_from_service() -> None:
     assert result.success is True
     assert result.summary == "Sub-agent completed."
     assert result.raw_payload["status"] == "completed"
-    assert result.raw_payload["report"] == "final report"
+    assert result.raw_payload["report"] == "first line\n\nsecond line"
     assert result.raw_payload["transcript"] == [
         "explore completed tools=2 demo:sub",
         "  final final report",
     ]
     assert service.child_session_ids == ["demo:sub:turn_1:abcd1234"]
+    assert result.model_output is not None
+    assert result.model_output.text_content() == (
+        "Child session: demo:sub:turn_1:abcd1234\n"
+        "Status: completed\n"
+        "Tool calls: 2\n"
+        "Report:\n"
+        "first line\n\nsecond line"
+    )
+    assert "file read" not in result.model_output.text_content().lower()
 
 
 def test_subagent_output_tool_description_discourages_proactive_polling() -> None:

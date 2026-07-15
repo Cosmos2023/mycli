@@ -8,6 +8,7 @@ from typing import Any
 
 from mycli.domain.runtime import ShellKind, ShellProfile
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
 from mycli.tools.shell_resolver import detect_shell_profile
 
@@ -25,6 +26,32 @@ PROJECT_LINTERS: dict[str, list[LintCommand]] = {
 }
 
 MAX_DIAGNOSTICS = 30
+
+
+def _lint_model_output(payload: dict[str, Any], *, success: bool) -> ToolModelOutput:
+    if not success:
+        return ToolModelOutput.from_text(
+            str(payload.get("error") or "Lint failed."),
+            success=False,
+        )
+    count = payload.get("count")
+    lines = [f"Lint diagnostics: {count if isinstance(count, int) else 0}"]
+    diagnostics = payload.get("diagnostics")
+    if isinstance(diagnostics, list):
+        for diagnostic in diagnostics:
+            if not isinstance(diagnostic, dict):
+                continue
+            path = str(diagnostic.get("file") or "<unknown>")
+            line = diagnostic.get("line")
+            column = diagnostic.get("column")
+            rule = str(diagnostic.get("rule") or "").strip()
+            message = str(diagnostic.get("message") or diagnostic.get("raw") or "").strip()
+            location = f"{path}:{line if isinstance(line, int) else 0}:{column if isinstance(column, int) else 0}"
+            rule_text = f" [{rule}]" if rule else ""
+            lines.append(f"{location}{rule_text} {message}".rstrip())
+    if payload.get("truncated") is True:
+        lines.append("Diagnostics truncated: true")
+    return ToolModelOutput.from_text("\n".join(lines), success=True)
 
 
 def lint(
@@ -168,6 +195,7 @@ class LintTool:
             ),
             error=str(payload["error"]) if "error" in payload else None,
             raw_payload=payload,
+            model_output=_lint_model_output(payload, success=success),
         )
 
     def run(self, call: ToolCall) -> ToolResult:

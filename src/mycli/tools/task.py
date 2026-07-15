@@ -5,6 +5,7 @@ from typing import Any, Protocol
 from mycli.domain.subagents import SubAgentResult
 from mycli.services.subagents.tool_result_payload import (
     subagent_tool_artifacts,
+    subagent_tool_model_output,
     subagent_tool_payload,
 )
 from mycli.domain.tooling.calls import ToolCall
@@ -117,12 +118,19 @@ class TaskTool(SchemaTool):
             allowed_tools=allowed_tools,
             mode=mode,
         )
+        success = _task_success(result.status)
+        payload = subagent_tool_payload(profile=agent_type, result=result)
         return ToolResult(
-            success=_task_success(result.status),
+            success=success,
             summary=_task_summary(agent_type, result.status),
             artifacts=subagent_tool_artifacts(result),
             error=result.error,
-            raw_payload=subagent_tool_payload(profile=agent_type, result=result),
+            raw_payload=payload,
+            model_output=subagent_tool_model_output(
+                profile=agent_type,
+                payload=payload,
+                success=success,
+            ),
         )
 
     def run(self, call: ToolCall) -> ToolResult:

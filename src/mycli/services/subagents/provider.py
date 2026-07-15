@@ -19,6 +19,7 @@ from mycli.domain.tooling.exposure import ToolRouteKey
 from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.services.subagents.tool_result_payload import (
     subagent_tool_artifacts,
+    subagent_tool_model_output,
     subagent_tool_payload,
 )
 from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
@@ -81,12 +82,19 @@ class _SubAgentContributionTool:
             allowed_tools=allowed_tools,
             mode=mode,
         )
+        success = _subagent_tool_success(result.status)
+        payload = subagent_tool_payload(profile=self.profile.name, result=result)
         return ToolResult(
-            success=_subagent_tool_success(result.status),
+            success=success,
             summary=_subagent_tool_summary(self.profile.name, result.status),
             artifacts=subagent_tool_artifacts(result),
             error=result.error,
-            raw_payload=subagent_tool_payload(profile=self.profile.name, result=result),
+            raw_payload=payload,
+            model_output=subagent_tool_model_output(
+                profile=self.profile.name,
+                payload=payload,
+                success=success,
+            ),
         )
 
     def run(self, call: ToolCall) -> ToolResult:

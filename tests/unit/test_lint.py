@@ -92,3 +92,29 @@ class TestLint:
             tool.execute({})
 
         assert lint_call.call_args.kwargs["shell_profile"] == profile
+
+    def test_lint_tool_model_output_preserves_diagnostic_fields(self):
+        tool = LintTool()
+        with patch(
+            "mycli.tools.lint.lint",
+            return_value={
+                "diagnostics": [
+                    {
+                        "file": "src/app.py",
+                        "line": 3,
+                        "column": 4,
+                        "rule": "F841",
+                        "message": "local variable is assigned but never used",
+                    }
+                ],
+                "count": 1,
+                "truncated": False,
+            },
+        ):
+            result = tool.execute({})
+
+        assert result.model_output is not None
+        assert result.model_output.text_content() == (
+            "Lint diagnostics: 1\n"
+            "src/app.py:3:4 [F841] local variable is assigned but never used"
+        )

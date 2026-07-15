@@ -69,6 +69,15 @@ def test_task_tool_delegates_to_bound_service() -> None:
     assert result.artifacts["context_diagnostics"]["content_hash"] == "abc123"
     assert result.raw_payload["artifacts"]["subagent_report"] == result.raw_payload["report"]
     assert result.raw_payload["content"] == result.raw_payload["report"]
+    assert result.model_output is not None
+    assert result.model_output.text_content() == (
+        "Sub-agent: explore\n"
+        "Child session: demo:sub:turn_1:abcd1234\n"
+        "Status: completed\n"
+        "Tool calls: 1\n"
+        "Report:\n"
+        '<sub-agent-report agent="explore" status="completed">ok</sub-agent-report>'
+    )
     assert service.calls == [
             {
                 "description": "Find tests",

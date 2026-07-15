@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import requests  # type: ignore[import-untyped]
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolModelOutput, ToolOutputBudgetClass
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 
 
@@ -137,11 +138,27 @@ class WebFetchTool:
         prompt = arguments.get("prompt")
         payload = web_fetch(url, prompt=prompt if isinstance(prompt, str) else None)
         success = "error" not in payload
+        content = payload.get("content")
+        source_url = payload.get("url")
+        if success and isinstance(content, str):
+            model_output = ToolModelOutput.from_text(
+                f"Source: {source_url if isinstance(source_url, str) else url}\n\n{content}",
+                success=True,
+                contains_external_context=True,
+                budget_class=ToolOutputBudgetClass.READ,
+            )
+        else:
+            model_output = ToolModelOutput.from_text(
+                str(payload.get("error") or f"Failed to fetch {url}"),
+                success=False,
+                contains_external_context=True,
+            )
         return ToolResult(
             success=success,
             summary=f"Fetched {url}" if success else f"Failed to fetch {url}",
             error=str(payload["error"]) if "error" in payload else None,
             raw_payload=payload,
+            model_output=model_output,
         )
 
     def run(self, call: ToolCall) -> ToolResult:

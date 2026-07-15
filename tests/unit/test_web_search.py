@@ -1,4 +1,4 @@
-from mycli.tools.web_search import _normalize_serpapi_results, web_search
+from mycli.tools.web_search import WebSearchTool, _normalize_serpapi_results, web_search
 
 
 class TestWebSearch:
@@ -35,3 +35,26 @@ class TestWebSearch:
             "results": [{"title": "A", "url": "https://example.com"}],
             "total": 1,
         }
+
+    def test_tool_model_output_preserves_query_titles_and_urls(self, monkeypatch):
+        monkeypatch.setattr(
+            "mycli.tools.web_search.web_search",
+            lambda query, provider: {
+                "results": [
+                    {"title": "Python 3.14", "url": "https://python.org"},
+                    {"title": "Downloads", "url": "https://python.org/downloads"},
+                ],
+                "total": 2,
+            },
+        )
+
+        result = WebSearchTool().execute(
+            {"query": "Python version", "provider": "serpapi"}
+        )
+
+        assert result.model_output is not None
+        text = result.model_output.text_content()
+        assert '"query":"Python version"' in text
+        assert '"title":"Python 3.14"' in text
+        assert '"url":"https://python.org/downloads"' in text
+        assert result.model_output.contains_external_context is True

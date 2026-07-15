@@ -112,6 +112,9 @@ def test_subagent_provider_tool_flows_through_orchestrator_registry_and_router(
     assert result.raw_payload["run_id"] == "demo:sub:turn_1:abcd1234"
     assert result.raw_payload["trace"]["status"] == "completed"
     assert result.raw_payload["artifacts"]["child_session_id"] == "demo:sub:turn_1:abcd1234"
+    assert result.model_output is not None
+    assert "Child session: demo:sub:turn_1:abcd1234" in result.model_output.text_content()
+    assert "Status: completed" in result.model_output.text_content()
     assert service.calls == [
         {
             "description": "Map repository docs",

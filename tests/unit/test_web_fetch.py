@@ -1,6 +1,6 @@
 import time
 
-from mycli.tools.web_fetch import _html_to_markdown, web_fetch
+from mycli.tools.web_fetch import WebFetchTool, _html_to_markdown, web_fetch
 
 
 class TestWebFetch:
@@ -60,3 +60,18 @@ class TestWebFetch:
 
         assert first == second
         assert len(calls) == 1
+
+    def test_tool_model_output_preserves_markdown_whitespace(self, monkeypatch):
+        markdown = "# Example\n\n```python\nprint('ok')\n```\n\nLast line."
+        monkeypatch.setattr(
+            "mycli.tools.web_fetch.web_fetch",
+            lambda url, prompt=None: {"url": url, "content": markdown},
+        )
+
+        result = WebFetchTool().execute({"url": "https://example.com"})
+
+        assert result.model_output is not None
+        assert result.model_output.text_content() == (
+            "Source: https://example.com\n\n" + markdown
+        )
+        assert result.model_output.contains_external_context is True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mycli.domain.subagents import SubAgentResult
+from mycli.domain.tooling.output import ToolModelOutput
 
 BACKGROUND_SUBAGENT_NOTIFICATION_GUIDANCE = (
     "The sub-agent is working in the background. You will be notified "
@@ -47,3 +48,24 @@ def subagent_tool_payload(
         "report": report,
         "content": report,
     }
+
+
+def subagent_tool_model_output(
+    *,
+    profile: str,
+    payload: dict[str, object],
+    success: bool,
+) -> ToolModelOutput:
+    child_session_id = str(payload.get("child_session_id") or "")
+    status = str(payload.get("status") or "unknown")
+    tool_calls = payload.get("tool_calls")
+    report = str(payload.get("report") or "")
+    lines = [
+        f"Sub-agent: {profile}",
+        f"Child session: {child_session_id}",
+        f"Status: {status}",
+        f"Tool calls: {tool_calls if isinstance(tool_calls, int) else 0}",
+    ]
+    if report:
+        lines.extend(("Report:", report))
+    return ToolModelOutput.from_text("\n".join(lines), success=success)

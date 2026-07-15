@@ -4,6 +4,7 @@ import os
 from typing import Any, cast
 
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 
 
@@ -63,6 +64,26 @@ def _normalize_serpapi_results(data: dict[str, Any]) -> dict[str, Any]:
     return {"results": results, "total": len(results)}
 
 
+def _web_search_model_output(
+    *,
+    query: str,
+    payload: dict[str, Any],
+    success: bool,
+) -> ToolModelOutput:
+    if not success:
+        return ToolModelOutput.from_text(
+            str(payload.get("error") or "Web search failed."),
+            success=False,
+            contains_external_context=True,
+        )
+    model_payload = {"query": query, **payload}
+    return ToolModelOutput.from_json(
+        model_payload,
+        success=True,
+        contains_external_context=True,
+    )
+
+
 class WebSearchTool:
     name = "WebSearch"
     spec = ToolSpec(
@@ -94,6 +115,11 @@ class WebSearchTool:
             summary=f"WebSearch for {query}",
             error=str(payload["error"]) if "error" in payload else None,
             raw_payload=payload,
+            model_output=_web_search_model_output(
+                query=query,
+                payload=payload,
+                success=success,
+            ),
         )
 
     def run(self, call: ToolCall) -> ToolResult:
