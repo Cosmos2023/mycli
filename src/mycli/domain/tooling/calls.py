@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from mycli.domain.tooling.output import ToolModelOutput
+
 
 @dataclass(slots=True, frozen=True)
 class ToolCall:
@@ -31,3 +33,4 @@ class ToolResult:
     raw_payload: dict[str, Any] = field(default_factory=dict)
     evidence: tuple[ToolEvidence, ...] = field(default_factory=tuple)
     error: str | None = None
+    model_output: ToolModelOutput | None = None

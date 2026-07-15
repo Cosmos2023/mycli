@@ -26,6 +26,14 @@ if TYPE_CHECKING:
         ToolRouteSource,
     )
     from mycli.domain.tooling.tool_set import ToolSet, ToolSetEntry
+    from mycli.domain.tooling.output import (
+        ToolImageContent,
+        ToolJsonContent,
+        ToolModelOutput,
+        ToolOutputBudgetClass,
+        ToolOutputTruncation,
+        ToolTextContent,
+    )
 
 __all__ = [
     "ToolContributionConflictOutcome",
@@ -37,6 +45,12 @@ __all__ = [
     "ToolContributionSource",
     "ToolCall",
     "ToolEvidence",
+    "ToolImageContent",
+    "ToolJsonContent",
+    "ToolModelOutput",
+    "ToolOutputBudgetClass",
+    "ToolOutputTruncation",
+    "ToolTextContent",
     "ToolExposure",
     "ToolExposureEntry",
     "ToolExposureKind",
@@ -57,6 +71,12 @@ _EXPORT_MODULES = {
     "ToolContributionSource": "mycli.domain.tooling.contributed_tools",
     "ToolCall": "mycli.domain.tooling.calls",
     "ToolEvidence": "mycli.domain.tooling.calls",
+    "ToolImageContent": "mycli.domain.tooling.output",
+    "ToolJsonContent": "mycli.domain.tooling.output",
+    "ToolModelOutput": "mycli.domain.tooling.output",
+    "ToolOutputBudgetClass": "mycli.domain.tooling.output",
+    "ToolOutputTruncation": "mycli.domain.tooling.output",
+    "ToolTextContent": "mycli.domain.tooling.output",
     "ToolExposure": "mycli.domain.tooling.exposure",
     "ToolExposureEntry": "mycli.domain.tooling.exposure",
     "ToolExposureKind": "mycli.domain.tooling.exposure",
