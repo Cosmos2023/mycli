@@ -9,6 +9,11 @@ from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.domain.runtime.blocks import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
 from mycli.domain.runtime.images import image_block_to_provider_content
 from mycli.domain.tooling.calls import ToolCall
+from mycli.schemas.responses_protocol import (
+    ResponsesFunctionCallOutputImageItem,
+    ResponsesFunctionCallOutputPayload,
+    ResponsesFunctionCallOutputTextItem,
+)
 from mycli.utils.provider_replay import deterministic_provider_id
 from mycli.llms.adapters.base import (
     ModelAction,
@@ -258,7 +263,7 @@ class AnthropicMessagesModelAdapter:
                     {
                         "type": "tool_result",
                         "tool_use_id": self._tool_result_use_id(block, state),
-                        "content": block.text or "",
+                        "content": self._tool_result_content(block),
                     }
                 )
                 continue
@@ -273,6 +278,38 @@ class AnthropicMessagesModelAdapter:
                 ):
                     content.append(self._anthropic_thinking_block(raw_anthropic_block))
         return content
+
+    def _tool_result_content(self, block: RuntimeBlock) -> object:
+        raw_payload = block.metadata.get("function_call_output_payload")
+        if not isinstance(raw_payload, dict):
+            return block.text or ""
+        payload = ResponsesFunctionCallOutputPayload.from_dict(raw_payload)
+        if not payload.content_items:
+            return payload.to_text()
+
+        content: list[dict[str, object]] = []
+        for item in payload.content_items:
+            if isinstance(item, ResponsesFunctionCallOutputTextItem):
+                content.append({"type": "text", "text": item.text})
+                continue
+            content.append(self._anthropic_tool_result_image(item))
+        return content
+
+    def _anthropic_tool_result_image(
+        self,
+        item: ResponsesFunctionCallOutputImageItem,
+    ) -> dict[str, object]:
+        if item.image_url.startswith("data:"):
+            return image_block_to_provider_content(
+                RuntimeBlock(type="image", metadata={"image_url": item.image_url}),
+                format="anthropic",
+            )
+        if item.image_url.startswith(("https://", "http://")):
+            return {
+                "type": "image",
+                "source": {"type": "url", "url": item.image_url},
+            }
+        return {"type": "text", "text": f"[image: {item.image_url}]"}
 
     def _anthropic_thinking_block(
         self,

@@ -31,8 +31,18 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.domain.tooling.exposure import ToolExposure
-from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
+from mycli.domain.tooling.output import (
+    ToolImageContent,
+    ToolJsonContent,
+    ToolModelOutput,
+)
+from mycli.schemas.responses_protocol import (
+    ResponsesFunctionCallOutputImageItem,
+    ResponsesFunctionCallOutputPayload,
+    ResponsesFunctionCallOutputTextItem,
+)
 from mycli.services.context.context_manager import ContextManager
+from mycli.services.context.tool_output_projector import ToolModelOutputProjector
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookExecutionSummary, HookManager
 from mycli.services.security import InjectionGuard
@@ -82,6 +92,7 @@ class ToolExecutionService:
         record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
         write_diagnostics_runner: WriteDiagnosticsRunner | None = None,
         policy_gate: RuntimePolicyGate | None = None,
+        tool_model_output_projector: ToolModelOutputProjector | None = None,
     ) -> None:
         self._session_id = session_id
         self._context_manager = context_manager
@@ -94,6 +105,17 @@ class ToolExecutionService:
         self._injection_guard = injection_guard or InjectionGuard()
         self._record_invoked_skill = record_invoked_skill
         self._policy_gate = policy_gate
+        self._tool_model_output_projector = (
+            tool_model_output_projector
+            or ToolModelOutputProjector(
+                legacy_renderer=lambda tool_name, result: (
+                    self._context_manager.render_tool_result(
+                        result,
+                        tool_name=tool_name,
+                    )
+                )
+            )
+        )
         self._runtime_orchestrator = ToolRuntimeOrchestrator(
             session_id=session_id,
             trace_service=trace_service,
@@ -741,14 +763,19 @@ class ToolExecutionService:
                     },
                 ),
             )
-        tool_transcript_content = self._context_manager.render_tool_result(
+        model_output = self._tool_model_output_projector.project(
+            normalized_call.name,
             result,
-            tool_name=normalized_call.name,
         )
+        tool_transcript_content = model_output.text_content()
         guarded_tool_transcript_content = (
             tool_transcript_content
             if normalized_call.name == "Skill"
             else self._injection_guard.guard_tool_output(tool_transcript_content)
+        )
+        function_call_output_payload = self._function_call_output_payload(
+            model_output,
+            guarded_text=guarded_tool_transcript_content,
         )
         self._record_tool_message(
             conversation,
@@ -761,6 +788,7 @@ class ToolExecutionService:
             evidence=result.evidence,
             tool_call_id=normalized_call.call_id,
             post_tool_contexts=post_tool_contexts,
+            function_call_output_payload=function_call_output_payload,
         )
         self._record_skill_instruction_message(
             conversation,
@@ -1557,6 +1585,7 @@ class ToolExecutionService:
         evidence: tuple[ToolEvidence, ...] = (),
         tool_call_id: str | None = None,
         post_tool_contexts: tuple[str, ...] = (),
+        function_call_output_payload: ResponsesFunctionCallOutputPayload | None = None,
     ) -> None:
         post_tool_context_metadata = (
             {"post_tool_additional_contexts": post_tool_contexts}
@@ -1583,11 +1612,11 @@ class ToolExecutionService:
                         "evidence": [self._serialize_evidence(item) for item in evidence],
                         "error_kind": raw_payload.get("error_kind"),
                         "function_call_output_payload": (
-                            ResponsesFunctionCallOutputPayload.from_text(
-                                content,
-                                success=success,
-                            ).to_dict()
-                        ),
+                            function_call_output_payload
+                            or ResponsesFunctionCallOutputPayload.from_text(
+                                content, success=success
+                            )
+                        ).to_dict(),
                         **post_tool_context_metadata,
                     },
                 ),
@@ -1605,6 +1634,40 @@ class ToolExecutionService:
                     **post_tool_context_metadata,
                 },
             )
+        )
+
+    def _function_call_output_payload(
+        self,
+        output: ToolModelOutput,
+        *,
+        guarded_text: str,
+    ) -> ResponsesFunctionCallOutputPayload:
+        structured_content = tuple(
+            item.value for item in output.content if isinstance(item, ToolJsonContent)
+        )
+        images = tuple(
+            item for item in output.content if isinstance(item, ToolImageContent)
+        )
+        if not images:
+            return ResponsesFunctionCallOutputPayload.from_text(
+                guarded_text,
+                success=output.success,
+                structured_content=structured_content,
+            )
+        return ResponsesFunctionCallOutputPayload.from_content_items(
+            (
+                ResponsesFunctionCallOutputTextItem(text=guarded_text),
+                *(
+                    ResponsesFunctionCallOutputImageItem(
+                        image_url=item.image_url,
+                        detail=item.detail,
+                    )
+                    for item in images
+                ),
+            ),
+            fallback_text=guarded_text,
+            success=output.success,
+            structured_content=structured_content,
         )
 
     def _record_assistant_tool_call(

@@ -587,6 +587,57 @@ def test_responses_adapter_serializes_tool_result_payload_metadata_to_wire_text(
     ]
 
 
+def test_responses_adapter_serializes_tool_result_content_items() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="fallback",
+                        call_id="call_image_1",
+                        metadata={
+                            "function_call_output_payload": {
+                                "body": "fallback",
+                                "content_items": [
+                                    {"type": "input_text", "text": "image result"},
+                                    {
+                                        "type": "input_image",
+                                        "image_url": "https://example.com/result.png",
+                                        "detail": "high",
+                                    },
+                                ],
+                                "structured_content": [],
+                                "success": True,
+                            }
+                        },
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_input_items == [
+        {
+            "type": "function_call_output",
+            "call_id": "call_image_1",
+            "output": [
+                {"type": "input_text", "text": "image result"},
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.com/result.png",
+                    "detail": "high",
+                },
+            ],
+        }
+    ]
+
+
 def test_responses_adapter_forwards_reasoning_effort_to_client() -> None:
     client = FakeResponsesClient({"id": "resp_123", "output": []})
     adapter = ResponsesModelAdapter(client=client)

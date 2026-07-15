@@ -22,6 +22,7 @@ from mycli.llms.adapters.base import (
 from mycli.llms.adapters.turn_event_aggregator import TurnEventAggregator
 from mycli.infrastructure.providers import ChatProviderAdapter, DefaultChatProviderAdapter
 from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.schemas.responses_protocol import ResponsesFunctionCallOutputPayload
 
 
 class NativeToolClient(Protocol):
@@ -415,13 +416,19 @@ class NativeToolModelAdapter:
             messages.append(
                 ModelMessage(
                     role="tool",
-                    content=block.text or "",
+                    content=self._tool_result_text(block),
                     tool_call_id=block.call_id,
                     metadata=dict(block.metadata),
                     blocks=(block,),
                 )
             )
         return messages
+
+    def _tool_result_text(self, block: RuntimeBlock) -> str:
+        raw_payload = block.metadata.get("function_call_output_payload")
+        if not isinstance(raw_payload, dict):
+            return block.text or ""
+        return ResponsesFunctionCallOutputPayload.from_dict(raw_payload).to_text()
 
     def _merge_block_metadata(self, item: RuntimeItem) -> dict[str, object]:
         merged: dict[str, object] = {}

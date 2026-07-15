@@ -209,6 +209,56 @@ def test_native_tool_adapter_serializes_assistant_tool_calls_and_tool_messages()
     assert client.captured_messages[1]["tool_call_id"] == "call_list_directory_1"
 
 
+def test_native_tool_adapter_uses_deterministic_tool_result_text_fallback() -> None:
+    client = FakeNativeClient()
+    adapter = NativeToolModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="inspect_image",
+                        tool_arguments={},
+                        call_id="call_image_1",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="stale text",
+                        call_id="call_image_1",
+                        metadata={
+                            "function_call_output_payload": {
+                                "body": '{"count":2}\n[image: https://example.com/result.png]',
+                                "content_items": [
+                                    {"type": "input_text", "text": '{"count":2}'},
+                                    {
+                                        "type": "input_image",
+                                        "image_url": "https://example.com/result.png",
+                                    },
+                                ],
+                                "structured_content": [{"count": 2}],
+                                "success": True,
+                            }
+                        },
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages[-1]["content"] == (
+        '{"count":2}\n[image: https://example.com/result.png]'
+    )
+
+
 def test_native_tool_adapter_drops_orphan_tool_messages_after_provider_adaptation() -> None:
     client = FakeNativeClient()
     adapter = NativeToolModelAdapter(client=client)

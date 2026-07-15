@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, TypeAlias
 from urllib.parse import urlparse
 
 from mycli.domain.providers import ProviderId
@@ -10,6 +10,7 @@ from mycli.domain.providers import ProviderId
 
 MessageRole = Literal["system", "developer", "user", "assistant"]
 TextContentType = Literal["input_text", "output_text"]
+FunctionCallOutputImageDetail = Literal["auto", "low", "high", "original"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -22,8 +23,41 @@ class ResponsesTextContentItem:
 
 
 @dataclass(slots=True, frozen=True)
+class ResponsesFunctionCallOutputTextItem:
+    text: str
+
+    def to_wire(self) -> dict[str, object]:
+        return {"type": "input_text", "text": self.text}
+
+
+@dataclass(slots=True, frozen=True)
+class ResponsesFunctionCallOutputImageItem:
+    image_url: str
+    detail: FunctionCallOutputImageDetail | None = None
+
+    def __post_init__(self) -> None:
+        if not self.image_url.strip():
+            raise ValueError("function call output image requires image_url")
+
+    def to_wire(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "type": "input_image",
+            "image_url": self.image_url,
+        }
+        if self.detail is not None:
+            payload["detail"] = self.detail
+        return payload
+
+
+ResponsesFunctionCallOutputContentItem: TypeAlias = (
+    ResponsesFunctionCallOutputTextItem | ResponsesFunctionCallOutputImageItem
+)
+
+
+@dataclass(slots=True, frozen=True)
 class ResponsesFunctionCallOutputPayload:
     body: str
+    content_items: tuple[ResponsesFunctionCallOutputContentItem, ...] = ()
     structured_content: tuple[object, ...] = ()
     success: bool | None = None
 
@@ -36,6 +70,22 @@ class ResponsesFunctionCallOutputPayload:
     ) -> "ResponsesFunctionCallOutputPayload":
         return cls(
             body=text,
+            structured_content=structured_content,
+            success=success,
+        )
+
+    @classmethod
+    def from_content_items(
+        cls,
+        content_items: tuple[ResponsesFunctionCallOutputContentItem, ...],
+        *,
+        fallback_text: str,
+        success: bool | None = None,
+        structured_content: tuple[object, ...] = (),
+    ) -> "ResponsesFunctionCallOutputPayload":
+        return cls(
+            body=fallback_text,
+            content_items=tuple(content_items),
             structured_content=structured_content,
             success=success,
         )
@@ -55,7 +105,9 @@ class ResponsesFunctionCallOutputPayload:
             success=success,
         )
 
-    def to_wire_output(self) -> str:
+    def to_wire_output(self) -> str | list[dict[str, object]]:
+        if self.content_items:
+            return [item.to_wire() for item in self.content_items]
         return self.body
 
     def to_text(self) -> str:
@@ -64,6 +116,7 @@ class ResponsesFunctionCallOutputPayload:
     def to_dict(self) -> dict[str, object]:
         return {
             "body": self.body,
+            "content_items": [item.to_wire() for item in self.content_items],
             "structured_content": list(self.structured_content),
             "success": self.success,
         }
@@ -77,12 +130,46 @@ class ResponsesFunctionCallOutputPayload:
         structured_content: tuple[object, ...] = ()
         if isinstance(raw_structured_content, list):
             structured_content = tuple(raw_structured_content)
+        raw_content_items = payload.get("content_items", [])
+        content_items: list[ResponsesFunctionCallOutputContentItem] = []
+        if isinstance(raw_content_items, list):
+            for raw_item in raw_content_items:
+                parsed = _function_call_output_content_item_from_dict(raw_item)
+                if parsed is not None:
+                    content_items.append(parsed)
         success = payload.get("success")
         return cls(
             body=str(payload.get("body", "")),
+            content_items=tuple(content_items),
             structured_content=structured_content,
             success=success if isinstance(success, bool) else None,
         )
+
+
+def _function_call_output_content_item_from_dict(
+    raw_item: object,
+) -> ResponsesFunctionCallOutputContentItem | None:
+    if not isinstance(raw_item, dict):
+        return None
+    item_type = raw_item.get("type")
+    if item_type == "input_text":
+        text = raw_item.get("text")
+        if isinstance(text, str):
+            return ResponsesFunctionCallOutputTextItem(text=text)
+        return None
+    if item_type != "input_image":
+        return None
+    image_url = raw_item.get("image_url")
+    if not isinstance(image_url, str) or not image_url.strip():
+        return None
+    raw_detail = raw_item.get("detail")
+    detail: FunctionCallOutputImageDetail | None = None
+    if raw_detail in {"auto", "low", "high", "original"}:
+        detail = raw_detail
+    return ResponsesFunctionCallOutputImageItem(
+        image_url=image_url,
+        detail=detail,
+    )
 
 
 @dataclass(slots=True, frozen=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from mycli.domain.tooling.calls import ToolResult
@@ -13,6 +14,7 @@ class ToolModelOutputProjector:
         self,
         *,
         formatter: ToolResultFormatter | None = None,
+        legacy_renderer: Callable[[str, ToolResult], str] | None = None,
         budgeter: ToolOutputBudgeter | None = None,
         read_max_chars: int = 8_000,
         read_range_max_chars: int = 6_000,
@@ -26,6 +28,7 @@ class ToolModelOutputProjector:
             run_shell_max_chars=shell_max_chars,
             default_max_chars=default_max_chars,
         )
+        self._legacy_renderer = legacy_renderer
         self._budgeter = budgeter or ToolOutputBudgeter()
         self._limits = {
             ToolOutputBudgetClass.READ: read_max_chars,
@@ -38,8 +41,13 @@ class ToolModelOutputProjector:
     def project(self, tool_name: str, result: ToolResult) -> ToolModelOutput:
         output = result.model_output
         if output is None:
+            rendered = (
+                self._legacy_renderer(tool_name, result)
+                if self._legacy_renderer is not None
+                else self._formatter.format(tool_name, result)
+            )
             output = ToolModelOutput.from_text(
-                self._formatter.format(tool_name, result),
+                rendered,
                 success=result.success,
                 budget_class=_legacy_budget_class(tool_name),
             )

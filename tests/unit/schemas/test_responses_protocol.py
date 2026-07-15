@@ -7,8 +7,10 @@ from mycli.schemas.responses_protocol import (
     ResponsesContinuationState,
     ResponsesFailedEvent,
     ResponsesFunctionCallInputItem,
+    ResponsesFunctionCallOutputImageItem,
     ResponsesFunctionCallOutputInputItem,
     ResponsesFunctionCallOutputPayload,
+    ResponsesFunctionCallOutputTextItem,
     ResponsesMessageInputItem,
     ResponsesOutputTextDeltaEvent,
     ResponsesTextContentItem,
@@ -34,6 +36,32 @@ def test_responses_function_call_output_payload_round_trips_structured_metadata(
 
     assert payload.to_text() == '{"path": "README.md", "exists": true}'
     assert payload.structured_content == ({"path": "README.md", "exists": True},)
+    assert ResponsesFunctionCallOutputPayload.from_dict(payload.to_dict()) == payload
+
+
+def test_responses_function_call_output_payload_prefers_content_items_on_wire() -> None:
+    payload = ResponsesFunctionCallOutputPayload.from_content_items(
+        (
+            ResponsesFunctionCallOutputTextItem(text="bounded output"),
+            ResponsesFunctionCallOutputImageItem(
+                image_url="https://example.com/result.png",
+                detail="high",
+            ),
+        ),
+        fallback_text="bounded output\n[image: https://example.com/result.png]",
+        success=True,
+        structured_content=({"count": 2},),
+    )
+
+    assert payload.to_wire_output() == [
+        {"type": "input_text", "text": "bounded output"},
+        {
+            "type": "input_image",
+            "image_url": "https://example.com/result.png",
+            "detail": "high",
+        },
+    ]
+    assert payload.to_text() == "bounded output\n[image: https://example.com/result.png]"
     assert ResponsesFunctionCallOutputPayload.from_dict(payload.to_dict()) == payload
 
 

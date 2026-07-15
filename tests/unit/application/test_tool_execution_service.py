@@ -27,6 +27,11 @@ from mycli.domain.runtime import (
     TurnItemType,
 )
 from mycli.domain.tooling.calls import ToolCall
+from mycli.domain.tooling.output import (
+    ToolJsonContent,
+    ToolModelOutput,
+    ToolTextContent,
+)
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
     ToolContributionLifecycleState,
@@ -202,6 +207,29 @@ class FakeLongOutputTool:
                 "stderr": "stderr " * 80,
                 "error_kind": "long_output",
             },
+        )
+
+
+class FakeTypedOutputTool:
+    spec = ToolSpec(
+        name="typed_output",
+        description="Return typed model output",
+        parameters=(),
+    )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        return ToolResult(
+            success=True,
+            summary="typed",
+            raw_payload={"content": "legacy"},
+            model_output=ToolModelOutput(
+                content=(
+                    ToolTextContent("typed body"),
+                    ToolJsonContent({"count": 2}),
+                ),
+                success=True,
+            ),
         )
 
 
@@ -2384,6 +2412,57 @@ def test_tool_execution_service_applies_modified_args(tmp_path: Path) -> None:
     assert conversation.messages[-1].content.startswith("<tool_output><![CDATA[")
     assert "pyproject.toml" in conversation.messages[-1].content
     assert conversation.messages[-1].content.endswith("]]></tool_output>")
+
+
+def test_tool_execution_service_projects_typed_model_output_into_tool_payload(
+    tmp_path: Path,
+) -> None:
+    tool = FakeTypedOutputTool()
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    conversation = Conversation(session_id="demo")
+
+    service.execute_tool_call(
+        conversation=conversation,
+        call=ToolCall(
+            name="typed_output",
+            arguments={},
+            reason="test typed output",
+            call_id="call_typed_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("typed_output"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    tool_message = conversation.messages[-1]
+    assert tool_message.content == (
+        '<tool_output><![CDATA[typed body\n{"count":2}]]></tool_output>'
+    )
+    assert "legacy" not in tool_message.content
+    assert len(tool_message.blocks) == 1
+    payload = tool_message.blocks[0].metadata["function_call_output_payload"]
+    assert payload == {
+        "body": tool_message.content,
+        "content_items": [],
+        "structured_content": [{"count": 2}],
+        "success": True,
+    }
 
 
 def test_tool_execution_service_guards_tool_transcript_before_context(tmp_path: Path) -> None:

@@ -465,6 +465,79 @@ def test_anthropic_adapter_serializes_prior_tool_use_and_tool_result() -> None:
     ]
 
 
+def test_anthropic_adapter_serializes_typed_tool_result_content_items() -> None:
+    client = FakeAnthropicMessagesClient(
+        {
+            "id": "msg_124",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+        }
+    )
+    adapter = AnthropicMessagesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="inspect_image",
+                        tool_arguments={},
+                        call_id="toolu_image_1",
+                    ),
+                ),
+            ),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="fallback",
+                        call_id="toolu_image_1",
+                        metadata={
+                            "function_call_output_payload": {
+                                "body": "fallback",
+                                "content_items": [
+                                    {"type": "input_text", "text": "image result"},
+                                    {
+                                        "type": "input_image",
+                                        "image_url": "https://example.com/result.png",
+                                    },
+                                ],
+                                "structured_content": [],
+                                "success": True,
+                            }
+                        },
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_messages[-1] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_image_1",
+                "content": [
+                    {"type": "text", "text": "image result"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": "https://example.com/result.png",
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+
 def test_anthropic_adapter_groups_adjacent_tool_results_after_multi_tool_use() -> None:
     client = FakeAnthropicMessagesClient(
         {"id": "msg_1", "content": [{"type": "text", "text": "ok"}]}
