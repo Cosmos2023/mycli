@@ -6,15 +6,20 @@ from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.domain.runtime import BaselineFragment, ContextBaseline, HistoryItem, HistoryItemType
 from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.subagents import SubAgentContextSnapshot, SubAgentProfile, SubAgentResult
+from mycli.domain.tooling.calls import ToolCall
 
 
 class FakeLoop:
     def __init__(self, result: SubAgentResult) -> None:
         self.result = result
         self.calls: list[dict[str, object]] = []
+        self.pending_messages: list[tuple[str, ...]] = []
 
     def run(self, **kwargs):
         self.calls.append(kwargs)
+        pending_message_provider = kwargs.get("pending_message_provider")
+        if callable(pending_message_provider):
+            self.pending_messages.append(pending_message_provider())
         transcript = kwargs.get("transcript")
         if transcript is not None:
             transcript.record_user_text("fake child transcript")
@@ -71,6 +76,33 @@ class ExplodingLoop:
 
     def run(self, **kwargs):
         raise self.exc
+
+
+class CompletionRaceLoop:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.pending_messages: list[tuple[str, ...]] = []
+        self.on_first_completion = lambda: None
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        provider = kwargs.get("pending_message_provider")
+        self.pending_messages.append(provider() if callable(provider) else ())
+        transcript = kwargs.get("transcript")
+        if transcript is not None:
+            transcript.record_final(
+                status="completed",
+                report=f"answer {len(self.calls)}",
+                tool_calls=0,
+            )
+        if len(self.calls) == 1:
+            self.on_first_completion()
+        return SubAgentResult(
+            status="completed",
+            report=f"answer {len(self.calls)}",
+            child_session_id="ignored",
+            tool_calls=0,
+        )
 
 
 class ObservedLock:
@@ -508,6 +540,209 @@ def test_background_task_returns_running_then_records_completion() -> None:
         "completed",
     ]
     assert session_service.subagent_snapshots[-1]["report"] == "done"
+
+
+def test_send_message_queues_input_for_running_background_child() -> None:
+    executor = DeferredBackgroundExecutor()
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="done",
+            child_session_id="ignored",
+            tool_calls=0,
+        )
+    )
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+        background_executor=executor,
+        session_service=FakeHistorySessionService(),
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+
+    delivery = service.send_message(started.child_session_id, "Focus on failing tests.")
+    executor.run_next()
+
+    assert delivery.accepted is True
+    assert delivery.delivery == "queued"
+    assert delivery.child_session_id == started.child_session_id
+    assert loop.pending_messages == [("Focus on failing tests.",)]
+
+
+def test_send_message_rejects_blank_or_unknown_target() -> None:
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=FakeLoop(
+            SubAgentResult(
+                status="completed",
+                report="unused",
+                child_session_id="ignored",
+                tool_calls=0,
+            )
+        ),
+        session_service=FakeHistorySessionService(),
+    )
+
+    blank = service.send_message("", "hello")
+    unknown = service.send_message("missing-child", "hello")
+
+    assert blank.accepted is False
+    assert blank.delivery == "invalid"
+    assert "child_session_id" in (blank.error or "")
+    assert unknown.accepted is False
+    assert unknown.delivery == "missing"
+
+
+def test_send_message_resumes_terminal_child_from_structured_history() -> None:
+    executor = DeferredBackgroundExecutor()
+    session_service = FakeHistorySessionService()
+    loop = FakeLoop(
+        SubAgentResult(
+            status="completed",
+            report="done",
+            child_session_id="ignored",
+            tool_calls=1,
+        )
+    )
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_2",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+        background_executor=executor,
+        session_service=session_service,
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    executor.run_next()
+    child_session_id = started.child_session_id
+    session_service.items[child_session_id] = (
+        HistoryItem(
+            id="system",
+            thread_id=child_session_id,
+            turn_id="turn_1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="Read only.",
+            metadata={"role": "system"},
+        ),
+        HistoryItem(
+            id="user",
+            thread_id=child_session_id,
+            turn_id="turn_1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="Inspect repo",
+        ),
+        HistoryItem(
+            id="assistant",
+            thread_id=child_session_id,
+            turn_id="turn_1",
+            type=HistoryItemType.ASSISTANT_MESSAGE,
+            text="Need README.",
+        ),
+        HistoryItem(
+            id="call",
+            thread_id=child_session_id,
+            turn_id="turn_1",
+            type=HistoryItemType.TOOL_CALL,
+            tool_name="Read",
+            call_id="call_1",
+            metadata={"arguments": {"path": "README.md"}},
+        ),
+        HistoryItem(
+            id="result",
+            thread_id=child_session_id,
+            turn_id="turn_1",
+            type=HistoryItemType.TOOL_RESULT,
+            tool_name="Read",
+            call_id="call_1",
+            text="mycli",
+        ),
+        HistoryItem(
+            id="final",
+            thread_id=child_session_id,
+            turn_id="turn_1",
+            type=HistoryItemType.ASSISTANT_MESSAGE,
+            text="Found README.",
+            metadata={"sub_agent_status": "completed", "tool_calls": 1},
+        ),
+    )
+
+    delivery = service.send_message(child_session_id, "Now inspect tests.")
+    executor.run_next()
+
+    assert delivery.accepted is True
+    assert delivery.delivery == "resumed"
+    assert delivery.child_session_id == child_session_id
+    resumed = loop.calls[1]
+    assert resumed["child_session_id"] == child_session_id
+    assert resumed["initial_messages"] == [
+        {"role": "system", "content": "Read only."},
+        {"role": "user", "content": "Inspect repo"},
+        {
+            "role": "assistant",
+            "content": "Need README.",
+            "tool_calls": (
+                ToolCall(
+                    name="Read",
+                    arguments={"path": "README.md"},
+                    reason="resumed child tool call",
+                    call_id="call_1",
+                ),
+            ),
+        },
+        {
+            "role": "tool",
+            "tool_name": "Read",
+            "tool_call_id": "call_1",
+            "content": "mycli",
+        },
+        {"role": "assistant", "content": "Found README."},
+    ]
+    assert loop.pending_messages[-1] == ("Now inspect tests.",)
+    assert service.recent_runs()[0].tool_calls == 2
+
+
+def test_message_racing_with_background_completion_is_not_lost() -> None:
+    executor = DeferredBackgroundExecutor()
+    loop = CompletionRaceLoop()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+        background_executor=executor,
+        session_service=FakeHistorySessionService(),
+    )
+    started = service.run_task(
+        description="Inspect repo",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    deliveries = []
+    loop.on_first_completion = lambda: deliveries.append(
+        service.send_message(started.child_session_id, "Check failures too.")
+    )
+
+    executor.run_next()
+
+    assert deliveries[0].accepted is True
+    assert deliveries[0].delivery == "queued"
+    assert loop.pending_messages == [(), ("Check failures too.",)]
+    assert service.read_output(started.child_session_id).status == "completed"
 
 
 def test_background_task_projects_bounded_job_summary() -> None:

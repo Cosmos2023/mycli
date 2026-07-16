@@ -278,26 +278,32 @@ class SubAgentChildLoop:
         tool_names: tuple[str, ...],
         context_snapshot: SubAgentContextSnapshot | None = None,
         transcript: ChildTranscriptRecorder | None = None,
+        initial_messages: list[dict[str, object]] | None = None,
+        pending_message_provider: Callable[[], tuple[str, ...]] | None = None,
     ) -> SubAgentResult:
-        context_text = self._render_context_snapshot(context_snapshot)
-        messages: list[dict[str, object]] = [
-            {"role": "system", "content": profile.system_prompt},
-        ]
-        if context_text:
-            messages.append({"role": "system", "content": context_text})
-        messages.append({"role": "user", "content": invocation.description})
-        if transcript is not None:
-            transcript.record_system_text(profile.system_prompt)
+        if initial_messages is None:
+            context_text = self._render_context_snapshot(context_snapshot)
+            messages: list[dict[str, object]] = [
+                {"role": "system", "content": profile.system_prompt},
+            ]
             if context_text:
-                transcript.record_reference_text(
-                    context_text,
-                    dict(context_snapshot.diagnostics) if context_snapshot is not None else {},
-                )
-            transcript.record_user_text(invocation.description)
+                messages.append({"role": "system", "content": context_text})
+            messages.append({"role": "user", "content": invocation.description})
+            if transcript is not None:
+                transcript.record_system_text(profile.system_prompt)
+                if context_text:
+                    transcript.record_reference_text(
+                        context_text,
+                        dict(context_snapshot.diagnostics) if context_snapshot is not None else {},
+                    )
+                transcript.record_user_text(invocation.description)
+        else:
+            messages = [dict(message) for message in initial_messages]
         tool_calls = 0
         no_progress_turns = 0
 
         for _turn_index in range(profile.budget.max_turns):
+            self._append_pending_messages(messages, pending_message_provider, transcript)
             turn = self._requester.request_child_turn(
                 messages=messages,
                 tool_names=tool_names,
@@ -306,6 +312,14 @@ class SubAgentChildLoop:
             text = (turn.text or "").strip()
             calls = tuple(turn.tool_calls)
             if text and not calls:
+                pending_messages = self._pending_messages(pending_message_provider)
+                if pending_messages:
+                    messages.append({"role": "assistant", "content": text})
+                    if transcript is not None:
+                        transcript.record_assistant_text(text)
+                    self._append_user_messages(messages, pending_messages, transcript)
+                    no_progress_turns = 0
+                    continue
                 self._record_final(
                     transcript,
                     status="completed",
@@ -320,6 +334,11 @@ class SubAgentChildLoop:
                     context_diagnostics=self._context_diagnostics(context_snapshot),
                 )
             if not text and not calls:
+                pending_messages = self._pending_messages(pending_message_provider)
+                if pending_messages:
+                    self._append_user_messages(messages, pending_messages, transcript)
+                    no_progress_turns = 0
+                    continue
                 no_progress_turns += 1
                 if no_progress_turns >= profile.budget.no_progress_turn_limit:
                     report = "Child sub-agent stopped after repeated no-progress turns."
@@ -422,6 +441,7 @@ class SubAgentChildLoop:
                 }
             )
             messages.extend(tool_messages)
+            self._append_pending_messages(messages, pending_message_provider, transcript)
 
         report = "Child sub-agent reached the max turn limit."
         self._record_final(
@@ -437,6 +457,33 @@ class SubAgentChildLoop:
             tool_calls=tool_calls,
             context_diagnostics=self._context_diagnostics(context_snapshot),
         )
+
+    def _append_pending_messages(
+        self,
+        messages: list[dict[str, object]],
+        provider: Callable[[], tuple[str, ...]] | None,
+        transcript: ChildTranscriptRecorder | None,
+    ) -> None:
+        self._append_user_messages(messages, self._pending_messages(provider), transcript)
+
+    def _pending_messages(
+        self,
+        provider: Callable[[], tuple[str, ...]] | None,
+    ) -> tuple[str, ...]:
+        if provider is None:
+            return ()
+        return tuple(text.strip() for text in provider() if text.strip())
+
+    def _append_user_messages(
+        self,
+        messages: list[dict[str, object]],
+        pending_messages: tuple[str, ...],
+        transcript: ChildTranscriptRecorder | None,
+    ) -> None:
+        for message in pending_messages:
+            messages.append({"role": "user", "content": message})
+            if transcript is not None:
+                transcript.record_user_text(message)
 
     def _render_context_snapshot(self, snapshot: SubAgentContextSnapshot | None) -> str:
         if snapshot is None or not snapshot.has_content():

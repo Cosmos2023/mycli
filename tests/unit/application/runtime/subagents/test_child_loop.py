@@ -156,6 +156,112 @@ def test_child_loop_executes_tool_then_returns_final_text() -> None:
     assert requester.seen_messages[1][-1]["content"] == "file content"
 
 
+def test_child_loop_delivers_pending_input_after_tool_round() -> None:
+    requester = FakeRequester(
+        [
+            FakeTurn(
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_1",
+                    ),
+                )
+            ),
+            FakeTurn(text="Focused on tests."),
+        ]
+    )
+    pending_batches = iter(((), ("Focus on the tests.",), (), ()))
+    loop = SubAgentChildLoop(requester=requester, executor=FakeExecutor())
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=4),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+        pending_message_provider=lambda: next(pending_batches, ()),
+    )
+
+    assert result.status == "completed"
+    assert [message["role"] for message in requester.seen_messages[1][-3:]] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert requester.seen_messages[1][-1]["content"] == "Focus on the tests."
+
+
+def test_child_loop_does_not_finish_when_input_arrives_during_model_request() -> None:
+    requester = FakeRequester(
+        [
+            FakeTurn(text="Initial answer."),
+            FakeTurn(text="Revised answer."),
+        ]
+    )
+    pending_batches = iter(((), ("Also inspect failures.",), (), ()))
+    recorder = FakeTranscriptRecorder()
+    loop = SubAgentChildLoop(requester=requester, executor=FakeExecutor())
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+            budget=SubAgentBudget(max_turns=4),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+        transcript=recorder,
+        pending_message_provider=lambda: next(pending_batches, ()),
+    )
+
+    assert result.status == "completed"
+    assert result.report == "Revised answer."
+    assert requester.requests == 2
+    assert requester.seen_messages[1][-2:] == [
+        {"role": "assistant", "content": "Initial answer."},
+        {"role": "user", "content": "Also inspect failures."},
+    ]
+    assert ("assistant", "Initial answer.") in recorder.events
+    assert ("user", "Also inspect failures.") in recorder.events
+
+
+def test_child_loop_uses_initial_messages_for_resumed_run() -> None:
+    requester = FakeRequester([FakeTurn(text="Continued.")])
+    loop = SubAgentChildLoop(requester=requester, executor=FakeExecutor())
+    initial_messages = [
+        {"role": "system", "content": "Read only."},
+        {"role": "user", "content": "Find files"},
+        {"role": "assistant", "content": "Found README."},
+    ]
+    pending_batches = iter((("Now inspect tests.",), ()))
+
+    result = loop.run(
+        invocation=_invocation(),
+        profile=SubAgentProfile(
+            name="explore",
+            system_prompt="Read only.",
+            default_tools=("Read",),
+        ),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+        initial_messages=initial_messages,
+        pending_message_provider=lambda: next(pending_batches, ()),
+    )
+
+    assert result.status == "completed"
+    assert requester.seen_messages[0] == initial_messages + [
+        {"role": "user", "content": "Now inspect tests."}
+    ]
+
+
 def test_runtime_child_turn_requester_joins_streamed_text_blocks_without_newlines() -> None:
     requester = RuntimeChildTurnRequester(
         requester=FakeRuntimeRequester(

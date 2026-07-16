@@ -31,6 +31,7 @@ MODEL_VISIBLE_BUILTIN_TOOLS: frozenset[str] = frozenset(
         "LS",
         "Plan",
         "Read",
+        "SendMessage",
         "Skill",
         "Task",
         "WebFetch",

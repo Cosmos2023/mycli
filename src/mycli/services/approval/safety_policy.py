@@ -64,6 +64,7 @@ class SafetyPolicy:
             "Skill",
             "Task",
             "ShellOutput",
+            "SendMessage",
             "SubagentOutput",
         }:
             return RiskLevel.LOW
@@ -94,6 +95,7 @@ class SafetyPolicy:
             "Skill",
             "Task",
             "ShellOutput",
+            "SendMessage",
             "SubagentOutput",
         }:
             return ToolSafetyDecision(

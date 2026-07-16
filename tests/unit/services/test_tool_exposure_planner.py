@@ -83,6 +83,7 @@ def test_tool_exposure_planner_hides_legacy_builtin_tools_by_default() -> None:
                 "exit_plan_mode",
                 "Task",
                 "SubagentOutput",
+                "SendMessage",
                 "WebFetch",
                 "WebSearch",
                 "Skill",

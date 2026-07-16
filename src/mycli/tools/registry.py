@@ -138,6 +138,11 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "auto_allow",
         "capability_tags": ("task", "workflow", "subagent", "background"),
     },
+    "SendMessage": {
+        "toolset": "workflow",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("task", "workflow", "subagent", "message"),
+    },
 }
 
 
@@ -628,6 +633,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
+    from mycli.tools.send_message import SendMessageTool
     from mycli.tools.shell_output import ShellOutputTool
     from mycli.tools.subagent_output import SubagentOutputTool
     from mycli.tools.task import TaskTool
@@ -660,6 +666,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         ExitPlanModeTool(workspace_root),
         TaskTool(),
         SubagentOutputTool(),
+        SendMessageTool(),
     ]
 
 

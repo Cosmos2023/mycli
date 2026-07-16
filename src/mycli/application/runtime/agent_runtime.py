@@ -149,6 +149,7 @@ from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.tools.task import TaskTool
+from mycli.tools.send_message import SendMessageTool
 from mycli.tools.subagent_output import SubagentOutputTool
 
 
@@ -508,6 +509,7 @@ class AgentRuntime:
         self._configure_background_shell_tasks()
         self._tool_registry.register(TaskTool(service=self._sub_agent_service))
         self._tool_registry.register(SubagentOutputTool(service=self._sub_agent_service))
+        self._tool_registry.register(SendMessageTool(service=self._sub_agent_service))
         self._contributed_tool_providers = (
             *self._contributed_tool_providers,
             SubAgentToolContributionProvider(

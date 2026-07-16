@@ -5,7 +5,7 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from html import escape
 from html.parser import HTMLParser
@@ -31,11 +31,13 @@ from mycli.domain.runtime.tracing import RuntimeTraceEvent
 from mycli.domain.subagents import (
     SubAgentContextSnapshot,
     SubAgentInvocation,
+    SubAgentMessageResult,
     SubAgentOutput,
     SubAgentProfile,
     SubAgentResult,
     SubAgentRunSummary,
 )
+from mycli.domain.tooling.calls import ToolCall
 from mycli.services.subagents.tool_result_payload import (
     BACKGROUND_SUBAGENT_NOTIFICATION_GUIDANCE,
 )
@@ -73,6 +75,7 @@ class _BackgroundRun:
     future: SupportsFuture
     tool_calls: int = 0
     cancelled: bool = False
+    pending_messages: deque[str] = field(default_factory=deque)
 
 
 class SubAgentService:
@@ -154,6 +157,9 @@ class SubAgentService:
         *,
         persist_snapshot: bool = True,
         record_result: bool = True,
+        initial_messages: list[dict[str, object]] | None = None,
+        pending_message_provider: Callable[[], tuple[str, ...]] | None = None,
+        prior_tool_calls: int = 0,
     ) -> SubAgentResult:
         profile = self._profile_lookup(invocation.agent_type)
         if profile is None:
@@ -194,6 +200,8 @@ class SubAgentService:
             tool_names=tool_names,
             context_snapshot=context_snapshot,
             transcript=self._transcript_recorder(invocation, child_session_id),
+            initial_messages=initial_messages,
+            pending_message_provider=pending_message_provider,
         )
         context_diagnostics = (
             loop_result.context_diagnostics or dict(context_snapshot.diagnostics)
@@ -203,13 +211,13 @@ class SubAgentService:
             report=self._xml_report(
                 agent=invocation.agent_type,
                 status=loop_result.status,
-                tool_calls=loop_result.tool_calls,
+                tool_calls=prior_tool_calls + loop_result.tool_calls,
                 child_session_id=child_session_id,
                 body=loop_result.report,
                 limit=profile.budget.report_char_limit,
             ),
             child_session_id=child_session_id,
-            tool_calls=loop_result.tool_calls,
+            tool_calls=prior_tool_calls + loop_result.tool_calls,
             error=loop_result.error,
             context_diagnostics=context_diagnostics,
         )
@@ -414,6 +422,77 @@ class SubAgentService:
             transcript_lines=transcript_lines,
         )
 
+    def send_message(self, child_session_id: str, message: str) -> SubAgentMessageResult:
+        child_session_id = child_session_id.strip()
+        message = message.strip()
+        if not child_session_id:
+            return SubAgentMessageResult(
+                child_session_id="",
+                accepted=False,
+                delivery="invalid",
+                error="SendMessage requires child_session_id.",
+            )
+        if not message:
+            return SubAgentMessageResult(
+                child_session_id=child_session_id,
+                accepted=False,
+                delivery="invalid",
+                error="SendMessage requires a non-empty message.",
+            )
+        with self._run_state_lock:
+            running = self._running_background.get(child_session_id)
+            if running is not None and not running.cancelled:
+                running.pending_messages.append(message)
+                return SubAgentMessageResult(
+                    child_session_id=child_session_id,
+                    accepted=True,
+                    delivery="queued",
+                )
+            summary = self._summary_for_child_unlocked(child_session_id)
+        if summary is None:
+            return SubAgentMessageResult(
+                child_session_id=child_session_id,
+                accepted=False,
+                delivery="missing",
+                error=f"Sub-agent not found: {child_session_id}",
+            )
+        initial_messages = self._resume_messages(child_session_id)
+        if not initial_messages:
+            return SubAgentMessageResult(
+                child_session_id=child_session_id,
+                accepted=False,
+                delivery="unavailable",
+                error=f"Sub-agent transcript is unavailable: {child_session_id}",
+            )
+        allowed_tools = summary.allowed_tools or self._parent_tool_names()
+        invocation = SubAgentInvocation(
+            agent_type=summary.agent_type,
+            description=summary.description,
+            allowed_tools=allowed_tools,
+            parent_session_id=self._session_id,
+            parent_turn_id=self._turn_id_provider(),
+            mode="background",
+        )
+        started = self._run_background(
+            invocation,
+            child_session_id,
+            initial_messages=initial_messages,
+            initial_pending_messages=(message,),
+            initial_tool_calls=summary.tool_calls,
+        )
+        if started.status != "running":
+            return SubAgentMessageResult(
+                child_session_id=child_session_id,
+                accepted=False,
+                delivery="unavailable",
+                error=started.error or "Unable to resume sub-agent.",
+            )
+        return SubAgentMessageResult(
+            child_session_id=child_session_id,
+            accepted=True,
+            delivery="resumed",
+        )
+
     def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
         deadline = monotonic() + timeout_seconds
         with self._run_state_lock:
@@ -447,6 +526,10 @@ class SubAgentService:
         self,
         invocation: SubAgentInvocation,
         child_session_id: str,
+        *,
+        initial_messages: list[dict[str, object]] | None = None,
+        initial_pending_messages: tuple[str, ...] = (),
+        initial_tool_calls: int = 0,
     ) -> SubAgentResult:
         with self._run_state_lock:
             if len(self._running_background) >= self._max_concurrent_background_tasks:
@@ -461,50 +544,89 @@ class SubAgentService:
             report=self._xml_report(
                 agent=invocation.agent_type,
                 status="running",
-                tool_calls=0,
+                tool_calls=initial_tool_calls,
                 child_session_id=child_session_id,
                 body="Sub-agent started in background. Use /tasks agents to inspect it.",
                 limit=8000,
                 mode=invocation.mode,
             ),
             child_session_id=child_session_id,
-            tool_calls=0,
+            tool_calls=initial_tool_calls,
         )
         self._record(invocation, running, started_at=started_at, completed_at=None)
+        pending_messages = deque(initial_pending_messages)
+
+        def drain_pending_messages() -> tuple[str, ...]:
+            with self._run_state_lock:
+                drained = tuple(pending_messages)
+                pending_messages.clear()
+            return drained
 
         def run_child() -> None:
-            try:
-                final_result = self._run_sync_invocation(
-                    invocation,
-                    child_session_id,
-                    persist_snapshot=False,
-                    record_result=False,
-                )
-            except Exception as exc:
-                final_result = SubAgentResult(
-                    status="failed",
-                    report=self._xml_report(
-                        agent=invocation.agent_type,
+            resumed_messages = initial_messages
+            prior_tool_calls = initial_tool_calls
+            while True:
+                try:
+                    final_result = self._run_sync_invocation(
+                        invocation,
+                        child_session_id,
+                        persist_snapshot=False,
+                        record_result=False,
+                        initial_messages=resumed_messages,
+                        pending_message_provider=drain_pending_messages,
+                        prior_tool_calls=prior_tool_calls,
+                    )
+                except Exception as exc:
+                    final_result = SubAgentResult(
                         status="failed",
-                        tool_calls=0,
+                        report=self._xml_report(
+                            agent=invocation.agent_type,
+                            status="failed",
+                            tool_calls=prior_tool_calls,
+                            child_session_id=child_session_id,
+                            body=f"Background sub-agent failed: {exc}",
+                            limit=8000,
+                        ),
                         child_session_id=child_session_id,
-                        body=f"Background sub-agent failed: {exc}",
-                        limit=8000,
-                    ),
-                    child_session_id=child_session_id,
-                    tool_calls=0,
-                    error=str(exc),
+                        tool_calls=prior_tool_calls,
+                        error=str(exc),
+                    )
+                with self._run_state_lock:
+                    run = self._running_background.get(child_session_id)
+                    if run is not None and run.cancelled:
+                        return
+                    if run is not None:
+                        run.tool_calls = final_result.tool_calls
+                    if run is None and self._has_terminal_record_unlocked(
+                        child_session_id,
+                        terminal_statuses={"cancelled"},
+                    ):
+                        return
+                    if pending_messages:
+                        should_continue = True
+                        completed_at = None
+                    else:
+                        should_continue = False
+                        completed_at = self._timestamp()
+                        self._running_background.pop(child_session_id, None)
+                        self._replace_record_unlocked(
+                            invocation,
+                            final_result,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                        )
+                if should_continue:
+                    resumed_messages = self._resume_messages(child_session_id) or resumed_messages
+                    prior_tool_calls = final_result.tool_calls
+                    continue
+                assert completed_at is not None
+                self._persist_background_completion(
+                    invocation,
+                    final_result,
+                    started_at=started_at,
+                    completed_at=completed_at,
                 )
-            with self._run_state_lock:
-                run = self._running_background.get(child_session_id)
-                if run is not None and run.cancelled:
-                    return
-                if run is None and self._has_terminal_record_unlocked(
-                    child_session_id,
-                    terminal_statuses={"cancelled"},
-                ):
-                    return
-            self._mark_background_finished(invocation, final_result, started_at)
+                return
 
         future = self._background_executor.submit(run_child)
         with suppress(TimeoutError):
@@ -516,8 +638,61 @@ class SubAgentService:
                 invocation=invocation,
                 started_at=started_at,
                 future=future,
+                tool_calls=initial_tool_calls,
+                pending_messages=pending_messages,
             )
         return running
+
+    def _resume_messages(self, child_session_id: str) -> list[dict[str, object]]:
+        if self._session_service is None:
+            return []
+        messages: list[dict[str, object]] = []
+        for item in self._session_service.load_history_items(child_session_id):
+            if item.type is HistoryItemType.USER_MESSAGE:
+                role = "system" if item.metadata.get("role") == "system" else "user"
+                if item.text:
+                    messages.append({"role": role, "content": item.text})
+                continue
+            if item.type is HistoryItemType.CONTEXT_BASELINE_UPDATE:
+                if item.text:
+                    messages.append({"role": "system", "content": item.text})
+                continue
+            if item.type is HistoryItemType.ASSISTANT_MESSAGE:
+                if item.text:
+                    messages.append({"role": "assistant", "content": item.text})
+                continue
+            if item.type is HistoryItemType.TOOL_CALL and item.tool_name:
+                arguments = item.metadata.get("arguments")
+                call = ToolCall(
+                    name=item.tool_name,
+                    arguments=dict(arguments) if isinstance(arguments, dict) else {},
+                    reason="resumed child tool call",
+                    call_id=item.call_id,
+                )
+                if messages and messages[-1].get("role") == "assistant":
+                    assistant = messages[-1]
+                    existing_calls = assistant.get("tool_calls")
+                    calls = (
+                        tuple(existing_calls)
+                        if isinstance(existing_calls, list | tuple)
+                        else ()
+                    )
+                    assistant["tool_calls"] = (*calls, call)
+                else:
+                    messages.append(
+                        {"role": "assistant", "content": "", "tool_calls": (call,)}
+                    )
+                continue
+            if item.type is HistoryItemType.TOOL_RESULT:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_name": item.tool_name or "",
+                        "tool_call_id": item.call_id,
+                        "content": item.text or "",
+                    }
+                )
+        return messages
 
     def _background_limit_result(
         self,
@@ -557,6 +732,21 @@ class SubAgentService:
                 started_at=started_at,
                 completed_at=completed_at,
             )
+        self._persist_background_completion(
+            invocation,
+            result,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+
+    def _persist_background_completion(
+        self,
+        invocation: SubAgentInvocation,
+        result: SubAgentResult,
+        *,
+        started_at: str,
+        completed_at: str,
+    ) -> None:
         self._write_subagent_snapshot(
             invocation,
             result,

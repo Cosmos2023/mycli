@@ -986,6 +986,9 @@ def test_runtime_registers_bound_task_tool(tmp_path: Path) -> None:
     assert "SubagentOutput" in runtime._tool_registry.list_names()
     output_tool = runtime._tool_registry.executors["SubagentOutput"]
     assert getattr(output_tool, "_service", None) is runtime._sub_agent_service
+    assert "SendMessage" in runtime._tool_registry.list_names()
+    send_message_tool = runtime._tool_registry.executors["SendMessage"]
+    assert getattr(send_message_tool, "_service", None) is runtime._sub_agent_service
 
 
 def test_runtime_extension_manifest_exposes_live_subagent_contributed_tools(

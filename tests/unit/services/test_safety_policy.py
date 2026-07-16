@@ -69,6 +69,22 @@ def test_safety_policy_auto_allows_subagent_output_reads() -> None:
     assert decision.metadata["risk_level"] == "low"
 
 
+def test_safety_policy_auto_allows_send_message() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(
+            name="SendMessage",
+            arguments={
+                "child_session_id": "demo:sub:turn_1:abcd",
+                "message": "Inspect failing tests.",
+            },
+            reason="steer running sub-agent",
+        )
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.metadata["policy"] == "builtin_safe_tool"
+
+
 def test_safety_policy_requires_choice_for_git_push() -> None:
     decision = SafetyPolicy().evaluate(
         ToolCall(name="Bash", arguments={"command": "git push origin main"}, reason="publish")

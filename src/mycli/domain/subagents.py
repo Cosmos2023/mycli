@@ -196,6 +196,14 @@ class SubAgentOutput:
 
 
 @dataclass(slots=True, frozen=True)
+class SubAgentMessageResult:
+    child_session_id: str
+    accepted: bool
+    delivery: str
+    error: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class SubAgentRunSummary:
     agent_type: str
     description: str
@@ -209,6 +217,7 @@ class SubAgentRunSummary:
     completed_at: str | None = None
     error: str | None = None
     context_diagnostics: dict[str, Any] = field(default_factory=dict)
+    allowed_tools: tuple[str, ...] = ()
 
     @classmethod
     def from_result(
@@ -232,6 +241,7 @@ class SubAgentRunSummary:
             completed_at=completed_at,
             error=result.error,
             context_diagnostics=dict(result.context_diagnostics),
+            allowed_tools=invocation.allowed_tools,
         )
 
 
@@ -239,6 +249,7 @@ __all__ = [
     "SubAgentBudget",
     "SubAgentContextSnapshot",
     "SubAgentInvocation",
+    "SubAgentMessageResult",
     "SubAgentMode",
     "SubAgentOutput",
     "SubAgentProfile",
