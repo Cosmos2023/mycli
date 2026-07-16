@@ -47,7 +47,7 @@ from mycli.domain.runtime.gateway_contract import (
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
-from mycli.services.transcript_projection import project_history_item_for_tui
+from mycli.services.transcript_projection import project_history_items_for_tui
 
 PROTOCOL_VERSION = 1
 COMMAND_OVERLAYS = {
@@ -1213,16 +1213,24 @@ class NodeTuiGateway:
                 "next_before": None,
                 "read_only": True,
             }
+        projected = list(project_history_items_for_tui(tuple(items)))
         if before is not None:
             before_index = next(
-                (index for index, item in enumerate(items) if item.id == before),
-                len(items),
+                (
+                    index
+                    for index, item in enumerate(projected)
+                    if item.get("id") == before
+                ),
+                len(projected),
             )
-            items = items[:before_index]
-        selected = items[-limit:] if limit is not None else items
-        projected = [project_history_item_for_tui(item) for item in selected]
-        next_before = selected[0].id if len(items) > len(selected) and selected else None
-        return {"session_id": session_id, "items": projected, "next_before": next_before}
+            projected = projected[:before_index]
+        selected = projected[-limit:] if limit is not None else projected
+        next_before = (
+            selected[0].get("id")
+            if len(projected) > len(selected) and selected
+            else None
+        )
+        return {"session_id": session_id, "items": selected, "next_before": next_before}
 
     def _handle_decision_resolve(self, request: RpcRequest) -> RpcResponse:
         return self._handle_approval_response(request)

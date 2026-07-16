@@ -1908,6 +1908,12 @@ def test_tool_execution_service_emits_lifecycle_and_trace_for_denied_tool(
         "name": "read_file",
         "context": "read_file",
         "args_preview": "path=README.md",
+        "display": {
+            "target": "README.md",
+            "status": "running",
+            "summary": "Reading",
+            "presentation": "context",
+        },
     }
     failed = events[-1]
     assert failed.tool_name == "read_file"
@@ -1916,6 +1922,14 @@ def test_tool_execution_service_emits_lifecycle_and_trace_for_denied_tool(
     assert failed.metadata["success"] is False
     assert failed.metadata["summary"] == "Tool denied: blocked by safety"
     assert failed.metadata["error"] == "blocked by safety"
+    assert failed.metadata["display"] == {
+        "target": "README.md",
+        "status": "error",
+        "summary": "Tool denied: blocked by safety",
+        "error": "blocked by safety",
+        "metrics": {"duration_ms": 250},
+        "presentation": "context",
+    }
     assert [item.type for item in turn_items] == [
         TurnItemType.TOOL_CALL,
         TurnItemType.TOOL_RESULT,
@@ -2641,6 +2655,12 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         "name": "read_file",
         "context": "read_file",
         "args_preview": "path=README.md",
+        "display": {
+            "target": "README.md",
+            "status": "running",
+            "summary": "Reading",
+            "presentation": "context",
+        },
     }
     assert events[1].tool_name == "read_file"
     assert events[1].metadata == {
@@ -2650,6 +2670,12 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         "stage": "executing",
         "message": "Executing read_file",
         "args_preview": "path=README.md",
+        "display": {
+            "target": "README.md",
+            "status": "running",
+            "summary": "Reading",
+            "presentation": "context",
+        },
     }
     assert events[2].tool_name == "read_file"
     assert events[2].metadata == {
@@ -2661,8 +2687,115 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
         "summary_chars": len("Read README.md"),
         "summary_truncated": False,
         "success": True,
+        "display": {
+            "target": "README.md",
+            "status": "success",
+            "summary": "Read README.md",
+            "detail": "content of README.md",
+            "metrics": {"duration_ms": 125},
+            "presentation": "context",
+        },
     }
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
+
+
+def test_tool_execution_service_reuses_display_for_lifecycle_and_turn_items(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
+    router = service._test_router  # type: ignore[attr-defined]
+    service._monotonic = iter((10.0, 10.125)).__next__  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+    turn_items = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            reason="inspect",
+            call_id="call_read_display",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=turn_items,
+        lifecycle_sink=events.append,
+    )
+
+    start_display = events[0].metadata["display"]
+    complete_display = events[-1].metadata["display"]
+    tool_call = next(item for item in turn_items if item.type is TurnItemType.TOOL_CALL)
+    tool_result = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+
+    assert start_display == {
+        "target": "README.md",
+        "status": "running",
+        "summary": "Reading",
+        "presentation": "context",
+    }
+    assert complete_display == {
+        "target": "README.md",
+        "status": "success",
+        "summary": "Read README.md",
+        "detail": "content of README.md",
+        "metrics": {"duration_ms": 125},
+        "presentation": "context",
+    }
+    assert tool_call.metadata["display"] == start_display
+    assert tool_result.metadata["display"] == complete_display
+
+
+def test_tool_execution_service_keeps_skill_name_in_lifecycle_events(
+    tmp_path: Path,
+) -> None:
+    skill_tool = FakeSkillTool()
+    registry = ToolRegistry.from_tools([skill_tool])
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=registry,
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    events: list[RuntimeStreamEvent] = []
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Skill",
+            arguments={"skill_name": "repository-analysis"},
+            reason="Inspect repository",
+            call_id="call_skill_1",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("Skill"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=skill_tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+        lifecycle_sink=events.append,
+    )
+
+    assert [event.kind for event in events] == [
+        "tool_start",
+        "tool_progress",
+        "tool_complete",
+    ]
+    assert [event.metadata["skill_name"] for event in events] == [
+        "repository-analysis",
+        "repository-analysis",
+        "repository-analysis",
+    ]
 
 
 def test_tool_execution_service_exposes_write_preview_and_diff_lifecycle_metadata(

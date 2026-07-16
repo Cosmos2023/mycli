@@ -7,8 +7,13 @@ from mycli.domain.runtime import (
     InstructionContract,
     InstructionFragment,
     RuntimeTraceEvent,
+    TurnItem,
+    TurnItemType,
+    TurnRecord,
     TurnRollout,
+    TurnStatus,
 )
+from mycli.services.transcript_projection import project_history_items_for_snapshot
 from mycli.state.session_service import SessionService
 
 
@@ -44,6 +49,57 @@ def _ledger() -> RuntimeEventLedger:
         trace_service=_NoopTraceService(),  # type: ignore[arg-type]
         continuation_state_provider=lambda: None,
     )
+
+
+def test_tool_display_survives_ledger_history_and_snapshot_projection() -> None:
+    turn = TurnRecord(
+        thread_id="demo",
+        turn_id="turn-1",
+        status=TurnStatus.COMPLETED,
+        started_at="2026-07-15T10:00:00Z",
+        items=(
+            TurnItem(
+                type=TurnItemType.TOOL_CALL,
+                text="Read",
+                tool_name="Read",
+                call_id="call-1",
+                metadata={
+                    "display": {
+                        "target": "src/app.py",
+                        "status": "running",
+                        "summary": "Reading",
+                        "presentation": "context",
+                    }
+                },
+            ),
+            TurnItem(
+                type=TurnItemType.TOOL_RESULT,
+                text="Read complete",
+                tool_name="Read",
+                call_id="call-1",
+                metadata={
+                    "display": {
+                        "status": "success",
+                        "summary": "Read 20 lines",
+                        "detail": "1\tline",
+                        "presentation": "context",
+                    },
+                    "raw_payload": {"content": "private duplicate"},
+                },
+            ),
+        ),
+    )
+
+    history = _ledger().provider_history_items_from_turn(turn)
+    snapshot = project_history_items_for_snapshot(history)
+
+    assert history[1].metadata["display"]["status"] == "success"
+    assert len(snapshot) == 1
+    display = snapshot[0].metadata["display"]
+    assert display["target"] == "src/app.py"
+    assert display["status"] == "success"
+    assert display["detail"] == "1\tline"
+    assert "raw_payload" not in str(snapshot[0].to_dict())
 
 
 def test_runtime_event_ledger_baseline_keeps_replayable_memory_and_plan() -> None:

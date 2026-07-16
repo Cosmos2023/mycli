@@ -5,6 +5,7 @@ from typing import Any
 
 from mycli.domain.conversation import Message
 from mycli.domain.runtime import HistoryItem, HistoryItemType
+from mycli.services.tool_display import ToolDisplayEnvelope
 
 SHELL_TRANSCRIPT_MAX_CHARS = 8_000
 
@@ -29,6 +30,7 @@ _TUI_METADATA_KEYS = frozenset(
         "command",
         "command_preview",
         "query",
+        "skill_name",
         "context",
         "content_preview",
         "content_line_count",
@@ -133,6 +135,13 @@ def project_history_items_for_snapshot(
                     tool_indexes[item.call_id] = len(projected) - 1
                 continue
             existing = projected[existing_index]
+            merged_metadata = {**existing.metadata, **snapshot_item.metadata}
+            merged_display = _merge_tool_display(
+                existing.metadata.get("display"),
+                snapshot_item.metadata.get("display"),
+            )
+            if merged_display is not None:
+                merged_metadata["display"] = merged_display
             projected[existing_index] = replace(
                 existing,
                 tool_name=existing.tool_name or snapshot_item.tool_name,
@@ -143,7 +152,7 @@ def project_history_items_for_snapshot(
                 duration_ms=snapshot_item.duration_ms,
                 truncated=snapshot_item.truncated,
                 omitted_chars=snapshot_item.omitted_chars,
-                metadata={**existing.metadata, **snapshot_item.metadata},
+                metadata=merged_metadata,
             )
             continue
         projected.append(_history_snapshot_item(item))
@@ -181,6 +190,15 @@ def project_messages_for_snapshot(
                     omitted_chars=omitted,
                 )
             )
+    return tuple(projected)
+
+
+def project_history_items_for_tui(
+    items: tuple[HistoryItem, ...],
+) -> tuple[dict[str, object], ...]:
+    projected: list[dict[str, object]] = []
+    for item in project_history_items_for_snapshot(items):
+        projected.extend(snapshot_item_to_tui_items(item.to_dict()))
     return tuple(projected)
 
 
@@ -232,18 +250,7 @@ def snapshot_item_to_tui_items(
             "folded": False,
             "metadata": metadata,
         }
-        output = _optional_str(payload.get("output"))
-        if not output:
-            return (summary,)
-        detail = {
-            "id": f"{item_id}:detail",
-            "type": "tool_detail",
-            "text": output,
-            "created_at": created_at,
-            "folded": True,
-            "metadata": metadata,
-        }
-        return summary, detail
+        return (summary,)
     tui_type = {
         "user_message": "user",
         "assistant_message": "assistant_final",
@@ -313,11 +320,15 @@ def _tool_call_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
 def _tool_result_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
     tool_name = item.tool_name or "Tool"
     metadata = _visible_tui_metadata(item.metadata)
-    raw_output = (
-        _optional_str(metadata.pop("output_preview", None))
-        if tool_name.lower() in _SHELL_TOOL_NAMES
-        else None
-    ) or item.text or ""
+    if "display" in metadata:
+        metadata.pop("output_preview", None)
+        raw_output = ""
+    else:
+        raw_output = (
+            _optional_str(metadata.pop("output_preview", None))
+            if tool_name.lower() in _SHELL_TOOL_NAMES
+            else None
+        ) or item.text or ""
     max_chars = SHELL_TRANSCRIPT_MAX_CHARS if tool_name.lower() in _SHELL_TOOL_NAMES else 8_000
     output, omitted = _bounded_head_tail(raw_output, max_chars)
     _remove_snapshot_tool_duplicates(metadata)
@@ -348,6 +359,9 @@ def _visible_snapshot_metadata(metadata: dict[str, Any]) -> dict[str, object]:
 
 def _visible_tui_metadata(metadata: dict[str, Any]) -> dict[str, object]:
     visible: dict[str, object] = {}
+    display = ToolDisplayEnvelope.from_mapping(metadata.get("display"))
+    if display is not None:
+        visible["display"] = display.to_dict()
     for key in _TUI_METADATA_KEYS:
         value = metadata.get(key)
         if value in (None, "", [], {}):
@@ -360,6 +374,7 @@ def _visible_tui_metadata(metadata: dict[str, Any]) -> dict[str, object]:
             "command",
             "command_preview",
             "query",
+            "skill_name",
             "context",
             "diff",
             "exit_code",
@@ -386,6 +401,7 @@ def _visible_tui_metadata(metadata: dict[str, Any]) -> dict[str, object]:
             ("path", "path"),
             ("command", "command"),
             ("query", "query"),
+            ("skill_name", "skill_name"),
             ("context", "context"),
         ):
             value = arguments.get(source_key)
@@ -399,6 +415,22 @@ def _visible_tui_metadata(metadata: dict[str, Any]) -> dict[str, object]:
     if "output_preview" not in visible and isinstance(summary, str) and summary:
         _set_visible_metadata_value(visible, "output_preview", summary)
     return visible
+
+
+def _merge_tool_display(
+    start: object,
+    finish: object,
+) -> dict[str, object] | None:
+    start_display = ToolDisplayEnvelope.from_mapping(start)
+    finish_display = ToolDisplayEnvelope.from_mapping(finish)
+    if start_display is None:
+        return None if finish_display is None else finish_display.to_dict()
+    if finish_display is None:
+        return start_display.to_dict()
+    payload = finish_display.to_dict()
+    if not finish_display.target and start_display.target:
+        payload["target"] = start_display.target
+    return payload
 
 
 def _snapshot_tool_metadata(payload: dict[str, object]) -> dict[str, object]:
@@ -517,6 +549,7 @@ __all__ = [
     "SHELL_TRANSCRIPT_MAX_CHARS",
     "TranscriptSnapshotItem",
     "project_history_item_for_tui",
+    "project_history_items_for_tui",
     "project_history_items_for_snapshot",
     "project_messages_for_snapshot",
     "snapshot_item_to_tui_items",

@@ -956,6 +956,20 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
             call_id="call_read_1",
             metadata={"created_at": "2026-05-27T08:00:02Z"},
         ),
+        HistoryItem(
+            id="hist_tool_result",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.TOOL_RESULT,
+            text="file contents",
+            tool_name="Read",
+            call_id="call_read_1",
+            metadata={
+                "created_at": "2026-05-27T08:00:03Z",
+                "success": True,
+                "duration_ms": 25,
+            },
+        ),
     )
     gateway = NodeTuiGateway(service=service)
 
@@ -992,7 +1006,14 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
                 "text": "/Users/cosmos/.mycli/sessions/demo/session.json",
                 "created_at": "2026-05-27T08:00:02Z",
                 "folded": False,
-                "metadata": {"tool_name": "Read", "call_id": "call_read_1"},
+                "metadata": {
+                    "tool_name": "Read",
+                    "call_id": "call_read_1",
+                    "duration_ms": 25,
+                    "status": "done",
+                    "success": True,
+                    "output_preview": "file contents",
+                },
             },
         ],
         "next_before": None,
@@ -1154,6 +1175,7 @@ def test_gateway_normal_transcript_projection_drops_provider_metadata(
     assert response.result["items"][0]["metadata"] == {
         "tool_name": "Read",
         "call_id": "call-1",
+        "status": "running",
     }
 
 

@@ -4,6 +4,7 @@ from mycli.domain.runtime import HistoryItem, HistoryItemType
 from mycli.services.transcript_projection import (
     SHELL_TRANSCRIPT_MAX_CHARS,
     project_history_item_for_tui,
+    project_history_items_for_tui,
     project_history_items_for_snapshot,
     snapshot_item_to_tui_items,
 )
@@ -88,6 +89,113 @@ def test_snapshot_projection_coalesces_tool_call_and_result() -> None:
         "exit_code": 0,
         "duration_ms": 4210,
     }
+
+
+def test_tui_projection_preserves_skill_name_when_coalescing_history() -> None:
+    projected = project_history_items_for_tui(
+        (
+            HistoryItem(
+                id="tool-call-skill",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.TOOL_CALL,
+                text="Skill",
+                tool_name="Skill",
+                call_id="call-skill-1",
+                metadata={"arguments": {"skill_name": "repository-analysis"}},
+            ),
+            HistoryItem(
+                id="tool-result-skill",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.TOOL_RESULT,
+                text="Activated skill: repository-analysis",
+                tool_name="Skill",
+                call_id="call-skill-1",
+                metadata={
+                    "success": True,
+                    "raw_payload": {"skill_name": "repository-analysis"},
+                },
+            ),
+        )
+    )
+
+    assert len(projected) == 1
+    assert projected[0]["metadata"]["skill_name"] == "repository-analysis"
+
+
+def test_snapshot_coalesces_tool_display_without_raw_payload() -> None:
+    items = (
+        HistoryItem(
+            id="call",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.TOOL_CALL,
+            text="Read",
+            tool_name="Read",
+            call_id="call-1",
+            metadata={
+                "display": {
+                    "target": "src/app.py",
+                    "status": "running",
+                    "summary": "Reading",
+                    "presentation": "context",
+                },
+                "arguments": {"file_path": "src/app.py"},
+            },
+        ),
+        HistoryItem(
+            id="result",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.TOOL_RESULT,
+            text="Read complete",
+            tool_name="Read",
+            call_id="call-1",
+            metadata={
+                "display": {
+                    "status": "success",
+                    "summary": "Read 20 lines",
+                    "detail": "1\tline",
+                    "metrics": {"line_count": 20},
+                    "presentation": "context",
+                },
+                "raw_payload": {"content": "model-only duplicate"},
+            },
+        ),
+    )
+
+    payload = project_history_items_for_snapshot(items)[0].to_dict()
+    metadata = payload["metadata"]
+    assert isinstance(metadata, dict)
+    display = metadata["display"]
+    assert isinstance(display, dict)
+    assert display["target"] == "src/app.py"
+    assert display["status"] == "success"
+    assert display["detail"] == "1\tline"
+    assert "output" not in payload
+    assert "raw_payload" not in str(payload)
+
+
+def test_tui_projection_ignores_malformed_display_and_keeps_legacy_target() -> None:
+    item = HistoryItem(
+        id="legacy-read",
+        thread_id="demo",
+        turn_id="turn-1",
+        type=HistoryItemType.TOOL_CALL,
+        text="Read src/app.py",
+        tool_name="Read",
+        call_id="call-read",
+        metadata={
+            "path": "src/app.py",
+            "display": {"status": 42, "summary": ["invalid"]},
+        },
+    )
+
+    metadata = project_history_item_for_tui(item)["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["path"] == "src/app.py"
+    assert "display" not in metadata
 
 
 def test_shell_projection_keeps_profile_metadata_without_path() -> None:
@@ -257,10 +365,12 @@ def test_snapshot_tool_fallback_maps_completed_status_and_keeps_zero_exit_code()
         }
     )
 
+    assert len(tui_items) == 1
     metadata = tui_items[0]["metadata"]
     assert metadata["status"] == "done"
     assert metadata["success"] is True
     assert metadata["exit_code"] == 0
+    assert metadata["output_preview"] == "128 passed"
 
 
 def test_file_change_history_uses_tui_supported_system_notice_type() -> None:

@@ -49,6 +49,7 @@ from mycli.services.context.tool_output_projector import (
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookExecutionSummary, HookManager
 from mycli.services.security import InjectionGuard
+from mycli.services.tool_display import ToolDisplayProjector
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
 from mycli.tools.routing.tool_router import ToolRouter
@@ -95,6 +96,7 @@ class ToolExecutionService:
         record_invoked_skill: Callable[[InvokedSkillSnapshot], None] | None = None,
         write_diagnostics_runner: WriteDiagnosticsRunner | None = None,
         policy_gate: RuntimePolicyGate | None = None,
+        tool_display_projector: ToolDisplayProjector | None = None,
         tool_model_output_projector: ToolModelOutputProjector | None = None,
     ) -> None:
         self._session_id = session_id
@@ -108,6 +110,7 @@ class ToolExecutionService:
         self._injection_guard = injection_guard or InjectionGuard()
         self._record_invoked_skill = record_invoked_skill
         self._policy_gate = policy_gate
+        self._tool_display_projector = tool_display_projector or ToolDisplayProjector()
         self._tool_model_output_projector = (
             tool_model_output_projector
             or ToolModelOutputProjector(
@@ -316,6 +319,9 @@ class ToolExecutionService:
         turn_metadata = dict(metadata or {})
         turn_metadata["arguments"] = normalized_call.arguments
         turn_metadata["provider_id"] = provider_id
+        turn_metadata["display"] = self._tool_display_projector.project_start(
+            normalized_call
+        ).to_dict()
         self._record_tool_start(
             normalized_call=normalized_call,
             turn_id=turn_id,
@@ -458,6 +464,9 @@ class ToolExecutionService:
         turn_metadata = dict(metadata or {})
         turn_metadata["arguments"] = normalized_call.arguments
         turn_metadata["provider_id"] = provider_id
+        turn_metadata["display"] = self._tool_display_projector.project_start(
+            normalized_call
+        ).to_dict()
         start_event = self._tool_activity_event(normalized_call, phase="start")
         activity_events.append(start_event)
         self._notify_lifecycle_sink(
@@ -808,6 +817,7 @@ class ToolExecutionService:
             phase="finish",
             result_summary=result.summary,
         )
+        duration_seconds = max(0.0, self._monotonic() - execution_started_at)
         result_metadata: dict[str, object] = {
             "success": result.success,
             "summary": result.summary,
@@ -820,6 +830,11 @@ class ToolExecutionService:
                 call=normalized_call,
                 result_payload=result.raw_payload,
             ),
+            "display": self._tool_display_projector.project_result(
+                normalized_call,
+                result,
+                duration_ms=round(duration_seconds * 1000),
+            ).to_dict(),
         }
         diff = result.raw_payload.get("diff")
         if isinstance(diff, str) and diff:
@@ -828,7 +843,6 @@ class ToolExecutionService:
         if isinstance(write_diagnostics, dict):
             result_metadata["write_diagnostics"] = write_diagnostics
         activity_events.append(finish_event)
-        duration_seconds = max(0.0, self._monotonic() - execution_started_at)
         self._append_turn_item(
             turn_id=turn_id,
             turn_items=turn_items,
@@ -913,6 +927,9 @@ class ToolExecutionService:
         turn_metadata = dict(metadata or {})
         turn_metadata["arguments"] = normalized_call.arguments
         turn_metadata["provider_id"] = provider_id
+        turn_metadata["display"] = self._tool_display_projector.project_start(
+            normalized_call
+        ).to_dict()
         start_event = self._tool_activity_event(normalized_call, phase="start")
         activity_events.append(start_event)
         self._notify_lifecycle_sink(
@@ -960,10 +977,14 @@ class ToolExecutionService:
             "call_id": call.call_id or "",
             "name": call.name,
             "context": self._lifecycle_preview(context),
+            "display": self._tool_display_projector.project_start(call).to_dict(),
         }
         args_preview = self._tool_args_preview(call)
         if args_preview:
             metadata["args_preview"] = args_preview
+        skill_name = self._skill_name(call)
+        if skill_name:
+            metadata["skill_name"] = skill_name
         metadata.update(_write_content_lifecycle_metadata(call))
         return RuntimeStreamEvent(kind="tool_start", tool_name=call.name, metadata=metadata)
 
@@ -981,10 +1002,14 @@ class ToolExecutionService:
             "name": call.name,
             "stage": "executing",
             "message": self._lifecycle_preview(f"Executing {call.name}"),
+            "display": self._tool_display_projector.project_start(call).to_dict(),
         }
         args_preview = self._tool_args_preview(call)
         if args_preview:
             metadata["args_preview"] = args_preview
+        skill_name = self._skill_name(call)
+        if skill_name:
+            metadata["skill_name"] = skill_name
         return RuntimeStreamEvent(kind="tool_progress", tool_name=call.name, metadata=metadata)
 
     def _tool_lifecycle_finish_event(
@@ -1000,6 +1025,11 @@ class ToolExecutionService:
             "name": call.name,
             "duration_s": round(duration_seconds, 3),
             "success": result.success,
+            "display": self._tool_display_projector.project_result(
+                call,
+                result,
+                duration_ms=round(duration_seconds * 1000),
+            ).to_dict(),
             **self._lifecycle_text_metadata("summary", result.summary),
         }
         if not result.success and result.error:
@@ -1007,6 +1037,9 @@ class ToolExecutionService:
             error_kind = result.raw_payload.get("error_kind")
             if isinstance(error_kind, str) and error_kind:
                 metadata["error_kind"] = error_kind
+        skill_name = self._skill_name(call)
+        if skill_name:
+            metadata["skill_name"] = skill_name
         metadata.update(_mutation_diff_lifecycle_metadata(call=call, result=result))
         return RuntimeStreamEvent(
             kind="tool_complete" if result.success else "tool_failed",
@@ -1170,6 +1203,14 @@ class ToolExecutionService:
         if not preview_parts:
             return None
         return self._lifecycle_preview(" ".join(preview_parts))
+
+    def _skill_name(self, call: ToolCall) -> str | None:
+        if call.name.lower() != "skill":
+            return None
+        skill_name = call.arguments.get("skill_name")
+        if not isinstance(skill_name, str) or not skill_name.strip():
+            return None
+        return self._lifecycle_preview(skill_name)
 
     def _lifecycle_preview(self, value: str) -> str:
         normalized = self._context_manager._normalize_whitespace(value)

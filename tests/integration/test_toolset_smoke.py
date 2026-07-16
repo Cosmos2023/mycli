@@ -1,3 +1,6 @@
+from pathlib import Path
+
+
 def test_all_tools_importable():
     from mycli.tools.ask_user_question import AskUserQuestionTool
     from mycli.tools.bash import BashTool, ShellTool
@@ -11,6 +14,7 @@ def test_all_tools_importable():
     from mycli.tools.plan import PlanTool
     from mycli.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
     from mycli.tools.read import ReadTool
+    from mycli.tools.send_message import SendMessageTool
     from mycli.tools.shell_output import ShellOutputTool
     from mycli.tools.web_fetch import WebFetchTool
     from mycli.tools.web_search import WebSearchTool
@@ -20,6 +24,7 @@ def test_all_tools_importable():
         tool is not None
         for tool in (
             ReadTool,
+            SendMessageTool,
             EditTool,
             PatchTool,
             WriteTool,
@@ -71,7 +76,22 @@ def test_all_tools_registered():
         "Plan",
         "Task",
         "SubagentOutput",
+        "SendMessage",
         "enter_plan_mode",
         "exit_plan_mode",
     }
     assert set(names) == expected
+
+
+def test_every_default_tool_has_display_presentation(tmp_path: Path) -> None:
+    from mycli.services.tool_display import ToolDisplayProjector
+    from mycli.tools.registry import default_tools
+
+    projector = ToolDisplayProjector()
+    unknown = [
+        tool.spec.name
+        for tool in default_tools(tmp_path)
+        if projector.presentation_for(tool.spec.name) == "external"
+    ]
+
+    assert unknown == []
