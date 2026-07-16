@@ -47,7 +47,6 @@ from mycli.memory.dream_service import MemoryDreamRequest
 from mycli.memory.extraction_service import MemoryExtractionRequest
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
 from mycli.domain.logging import LogLevel
-from mycli.domain.tooling.exposure import ToolExposure
 from mycli.services.context.compaction import CacheZones, ContextBudget
 from mycli.services.hooks import HookAction, HookContext, HookPoint, HookResult
 from mycli.llms.clients.openai_chat import ModelResponseError
@@ -769,12 +768,10 @@ class TurnExecutor:
                     message="deciding next action",
                 )
             )
-            force_answer = checkpoint_result.continue_reason is ContinueReason.FORCE_ANSWER
-            supports_tool_choice = _supports_tool_choice(runtime._model_adapter)
             runtime._set_model_log_context(turn_id)
             runtime._set_model_runtime_event_recorder(turn_id)
             runtime._set_model_reasoning_effort(reasoning_effort)
-            runtime._set_model_tool_choice("none" if force_answer and supports_tool_choice else None)
+            runtime._set_model_tool_choice(None)
             planned_exposure = runtime._plan_tool_exposure(
                 user_message=user_message,
                 conversation=conversation,
@@ -910,13 +907,9 @@ class TurnExecutor:
             tools = runtime._render_model_tools(
                 tool_exposure=planned_exposure.exposure,
                 tool_router=tool_router,
-                allow_tools=not force_answer or supports_tool_choice,
+                allow_tools=True,
             )
-            model_tool_exposure = (
-                planned_exposure.exposure
-                if not force_answer or supports_tool_choice
-                else ToolExposure()
-            )
+            model_tool_exposure = planned_exposure.exposure
             request_shape = runtime._build_and_trace_request_shape(
                 turn_id=turn_id,
                 contract=contract,
@@ -925,7 +918,6 @@ class TurnExecutor:
             request_budget = runtime._estimate_request_window_budget(request_shape)
             request_needs_l4 = (
                 not l4_applied_before_request
-                and checkpoint_result.continue_reason is not ContinueReason.FORCE_ANSWER
             )
             if request_needs_l4:
                 conversation_before_request_compaction = conversation_for_model
@@ -1291,60 +1283,6 @@ class TurnExecutor:
             )
             if early_response is not None:
                 response, status, stop_reason = early_response
-                if (
-                    force_answer
-                    and status is TurnStatus.FAILED
-                    and stop_reason is StopReason.MODEL_ERROR
-                    and "unsupported tool" in response.assistant_message.lower()
-                ):
-                    assistant_message = (
-                        "I stopped due to repeated exploration: the model requested another "
-                        "tool after force-answer mode was already active. Summarize from the "
-                        "evidence gathered so far or narrow the request."
-                    )
-                    runtime._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.WARNING,
-                            text=assistant_message,
-                            metadata={
-                                "exit_reason": "force_answer_tool_request",
-                                "guardrail": {
-                                    "trigger": "tool_requested_during_force_answer",
-                                },
-                            },
-                        ),
-                    )
-                    runtime._save_runtime_state(
-                        conversation=conversation,
-                        plan_state=current_plan_state,
-                    )
-                    progress_updates.append("[guardrail] tool request during force-answer")
-                    activity_events.append(
-                        ActivityEvent(
-                            kind="guardrail",
-                            message="tool request during force-answer",
-                        )
-                    )
-                    return runtime._finalize_response(
-                        response=TurnResponse(
-                            assistant_message=assistant_message,
-                            activity_events=tuple(activity_events),
-                            streamed_chunks=tuple(streamed_chunks),
-                            progress_updates=tuple(progress_updates),
-                            plan_steps=runtime._planning_service.render_steps(
-                                current_plan_state
-                            ),
-                        ),
-                        turn_id=turn_id,
-                        user_message=user_message,
-                        started_at=started_at,
-                        status=TurnStatus.FAILED,
-                        stop_reason=StopReason.LOOP_DETECTED,
-                        turn_items=turn_items,
-                        context_baseline=latest_context_baseline,
-                    )
                 if status is not TurnStatus.WAITING_APPROVAL:
                     runtime._save_runtime_state(
                         conversation=conversation,
@@ -1367,7 +1305,6 @@ class TurnExecutor:
                 runtime._record_ptl_metric(
                     triggered=checkpoint_result.continue_reason
                     in {
-                        ContinueReason.FORCE_ANSWER,
                         ContinueReason.REROUTE,
                         ContinueReason.TRUNCATION_AWARE,
                     }
@@ -2388,13 +2325,6 @@ def _set_max_output_tokens(model_adapter: object, value: int) -> None:
     setter = getattr(model_adapter, "set_max_output_tokens", None)
     if callable(setter):
         setter(value)
-
-
-def _supports_tool_choice(model_adapter: object) -> bool:
-    checker = getattr(model_adapter, "supports_tool_choice", None)
-    if callable(checker):
-        return bool(checker())
-    return False
 
 
 def _hook_additional_contexts(results: tuple[HookResult, ...]) -> tuple[str, ...]:

@@ -5050,8 +5050,22 @@ class ForceAnswerRequestShapeAdapter:
 
 
 class DeferredToolRequestAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def next_turn(self, *, items, tools):
         del items, tools
+        self.calls += 1
+        if self.calls > 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="Deferred tool completed."),),
+                    ),
+                ),
+                done=True,
+            )
         return ModelTurnResult(
             items=(
                 RuntimeItem(
@@ -5754,14 +5768,13 @@ def test_agent_runtime_executes_deferred_tool_calls_from_model(tmp_path: Path) -
     response = runtime.handle_user_turn("please inspect this repository and summarize it")
 
     assert response.turn is not None
-    assert response.turn.status is TurnStatus.FAILED
-    assert response.turn.stop_reason is StopReason.LOOP_DETECTED
-    assert response.assistant_message.startswith(
-        "I stopped due to repeated exploration"
-    )
+    assert response.turn.status is TurnStatus.COMPLETED
+    assert response.turn.stop_reason is StopReason.ASSISTANT_COMPLETED
+    assert response.assistant_message == "Deferred tool completed."
     assert any(
-        item.type is TurnItemType.WARNING
-        and item.metadata.get("exit_reason") == "force_answer_tool_request"
+        item.type is TurnItemType.TOOL_RESULT
+        and item.tool_name == "Shell"
+        and item.metadata.get("success") is True
         for item in response.turn.items
     )
 
@@ -6003,7 +6016,7 @@ def test_agent_runtime_observes_sufficient_implementation_audit_without_forcing_
     assert not any(event.kind == "runtime_policy" for event in response.activity_events)
 
 
-def test_agent_runtime_force_answer_request_keeps_native_tool_affordance(
+def test_agent_runtime_does_not_disable_tools_after_twelve_steps(
     tmp_path: Path,
 ) -> None:
     adapter = ForceAnswerRequestShapeAdapter()
@@ -6027,7 +6040,7 @@ def test_agent_runtime_force_answer_request_keeps_native_tool_affordance(
     assert adapter.seen_tool_counts[:12]
     assert all(count > 0 for count in adapter.seen_tool_counts[:12])
     assert adapter.seen_tool_counts[12] == adapter.seen_tool_counts[0]
-    assert adapter.tool_choices[-1] == "none"
+    assert "none" not in adapter.tool_choices
 
 
 def test_agent_runtime_pops_latest_follow_up_without_touching_steering(

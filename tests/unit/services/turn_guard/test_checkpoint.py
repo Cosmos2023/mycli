@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
+
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
+    AgentConfig,
     PlanItem,
     PlanState,
     PlanStatus,
@@ -10,6 +13,19 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.tooling.calls import ToolCall
 from mycli.services.turn_guard import ContinueReason, ExitReason, NoProgressTracker, TurnCheckpoint
+
+
+def test_turn_checkpoint_does_not_expose_force_answer_configuration() -> None:
+    parameters = inspect.signature(TurnCheckpoint).parameters
+    config_parameters = inspect.signature(AgentConfig).parameters
+
+    assert "max_tool_calls_per_turn" not in parameters
+    assert "max_same_tool_calls" not in parameters
+    assert "force_answer_threshold" not in parameters
+    assert "max_tool_calls_per_turn" not in config_parameters
+    assert "max_same_tool_calls" not in config_parameters
+    assert "force_answer_threshold" not in config_parameters
+    assert "FORCE_ANSWER" not in ContinueReason.__members__
 
 
 def _tool_message(
@@ -131,8 +147,8 @@ def test_cumulative_prompt_tokens_are_not_a_checkpoint_input() -> None:
     assert result.continue_reason == ContinueReason.NEXT_STEP
 
 
-def test_tool_count_exceeded_warns_without_hard_stop() -> None:
-    checkpoint = TurnCheckpoint(max_tool_calls_per_turn=5)
+def test_tool_count_exceeded_does_not_force_answer() -> None:
+    checkpoint = TurnCheckpoint()
 
     result = checkpoint.evaluate(
         step_index=6,
@@ -141,12 +157,12 @@ def test_tool_count_exceeded_warns_without_hard_stop() -> None:
 
     assert result.exit_reason is None
     assert result.stop_reason is None
-    assert result.continue_reason == ContinueReason.FORCE_ANSWER
-    assert any("maximum tool call limit" in reminder for reminder in result.reminders)
+    assert result.continue_reason == ContinueReason.NEXT_STEP
+    assert result.reminders == ()
 
 
-def test_tool_count_at_limit_gives_force_answer_not_hard_stop() -> None:
-    checkpoint = TurnCheckpoint(max_tool_calls_per_turn=5)
+def test_tool_count_at_limit_does_not_force_answer() -> None:
+    checkpoint = TurnCheckpoint()
 
     result = checkpoint.evaluate(
         step_index=5,
@@ -154,12 +170,12 @@ def test_tool_count_at_limit_gives_force_answer_not_hard_stop() -> None:
     )
 
     assert result.exit_reason is None
-    assert result.continue_reason == ContinueReason.FORCE_ANSWER
-    assert any("MUST answer" in reminder for reminder in result.reminders)
+    assert result.continue_reason == ContinueReason.NEXT_STEP
+    assert result.reminders == ()
 
 
-def test_repeated_successful_tool_calls_force_answer_without_loop_stop() -> None:
-    checkpoint = TurnCheckpoint(max_same_tool_calls=4)
+def test_repeated_successful_tool_calls_only_request_a_different_path() -> None:
+    checkpoint = TurnCheckpoint()
     repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated, repeated)
 
@@ -170,8 +186,8 @@ def test_repeated_successful_tool_calls_force_answer_without_loop_stop() -> None
 
     assert result.exit_reason is None
     assert result.stop_reason is None
-    assert result.continue_reason == ContinueReason.FORCE_ANSWER
-    assert any("Do not call more tools" in reminder for reminder in result.reminders)
+    assert result.continue_reason == ContinueReason.REROUTE
+    assert any("different" in reminder.lower() for reminder in result.reminders)
 
 
 def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:
@@ -199,7 +215,7 @@ def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:
 
 
 def test_loop_detector_is_current_turn_scoped() -> None:
-    checkpoint = TurnCheckpoint(max_same_tool_calls=4)
+    checkpoint = TurnCheckpoint()
     repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = Conversation(
         session_id="test",
@@ -297,8 +313,8 @@ def test_no_progress_resets_when_new_tool_called() -> None:
     assert tracker.no_progress_count() == 0
 
 
-def test_force_answer_when_step_exceeds_threshold() -> None:
-    checkpoint = TurnCheckpoint(force_answer_threshold=12)
+def test_high_step_count_does_not_disable_tools() -> None:
+    checkpoint = TurnCheckpoint()
 
     result = checkpoint.evaluate(
         step_index=12,
@@ -306,12 +322,12 @@ def test_force_answer_when_step_exceeds_threshold() -> None:
     )
 
     assert result.exit_reason is None
-    assert result.continue_reason == ContinueReason.FORCE_ANSWER
-    assert any("Stop exploring" in reminder for reminder in result.reminders)
+    assert result.continue_reason == ContinueReason.NEXT_STEP
+    assert result.reminders == ()
 
 
 def test_reroute_when_repeated_calls_but_below_stop_threshold() -> None:
-    checkpoint = TurnCheckpoint(max_same_tool_calls=4, reroute_threshold=3)
+    checkpoint = TurnCheckpoint(reroute_threshold=3)
     repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated)
 
@@ -358,11 +374,9 @@ def test_next_step_when_all_conditions_normal() -> None:
     assert result.reminders == ()
 
 
-def test_force_answer_beats_reroute_in_priority() -> None:
+def test_repeated_calls_remain_an_advisory_after_many_steps() -> None:
     checkpoint = TurnCheckpoint(
-        force_answer_threshold=10,
         reroute_threshold=3,
-        max_same_tool_calls=10,
     )
     repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
     conversation = _conversation(repeated, repeated, repeated)
@@ -373,4 +387,4 @@ def test_force_answer_beats_reroute_in_priority() -> None:
     )
 
     assert result.exit_reason is None
-    assert result.continue_reason == ContinueReason.FORCE_ANSWER
+    assert result.continue_reason == ContinueReason.REROUTE

@@ -27,7 +27,6 @@ def run_deterministic_soak(
 ) -> SoakResult:
     conversation = Conversation(session_id="soak")
     checkpoint = TurnCheckpoint(
-        max_tool_calls_per_turn=max(tool_calls + 1, 25),
         max_tokens_per_turn=max_tokens_per_turn,
     )
     counter = TokenCounter()

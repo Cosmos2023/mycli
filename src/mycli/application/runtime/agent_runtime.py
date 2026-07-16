@@ -370,11 +370,8 @@ class AgentRuntime:
             env=dict(os.environ),
         )
         self._checkpoint = TurnCheckpoint(
-            max_tool_calls_per_turn=config.max_tool_calls_per_turn,
             max_tokens_per_turn=config.max_prompt_tokens,
-            max_same_tool_calls=config.max_same_tool_calls,
             no_progress_threshold=config.no_progress_threshold,
-            force_answer_threshold=config.force_answer_threshold,
             reroute_threshold=config.reroute_threshold,
         )
         self._turn_context_assembler = TurnContextAssembler()

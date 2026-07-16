@@ -15,15 +15,9 @@ class LoopingDirectoryAdapter:
         self.seen_tool_counts: list[int] = []
 
     def next_action(self, *, messages, tools):
+        del messages
         self.seen_tool_counts.append(len(tools))
-        payload = "\n".join(str(getattr(message, "content", "")) for message in messages)
-        if (
-            not tools
-            or
-            "Do not call more tools" in payload
-            or "Do not call tools" in payload
-            or "Answer now" in payload
-        ):
+        if len(self.seen_tool_counts) >= 5:
             return type(
                 "Action",
                 (),
@@ -162,7 +156,7 @@ class CaptureMessagesDoneAdapter:
         )()
 
 
-def test_turn_executor_forces_answer_after_repeated_successful_tool_loop(
+def test_turn_executor_keeps_tools_available_after_repeated_successful_calls(
     tmp_path: Path,
 ) -> None:
     from mycli.application.runtime.turn_executor import TurnExecutor
@@ -180,7 +174,7 @@ def test_turn_executor_forces_answer_after_repeated_successful_tool_loop(
     assert response.turn.stop_reason is StopReason.ASSISTANT_COMPLETED
     assert "summarize from gathered evidence" in response.assistant_message
     assert adapter.seen_tool_counts[0] > 0
-    assert adapter.seen_tool_counts[-1] == 0
+    assert adapter.seen_tool_counts[-1] == adapter.seen_tool_counts[0]
 
 
 def test_turn_executor_records_guardrail_trace_for_repeated_tool_failure(
@@ -230,7 +224,7 @@ def test_turn_executor_allows_completion_after_multiple_tool_calls(tmp_path: Pat
     assert adapter.calls == 3
 
 
-def test_turn_executor_handles_resumed_approval_loop_detection(tmp_path: Path) -> None:
+def test_turn_executor_handles_resumed_approval_no_progress_detection(tmp_path: Path) -> None:
     from mycli.application.runtime.turn_executor import TurnExecutor
 
     runtime = AgentRuntime.for_tests(
@@ -246,7 +240,7 @@ def test_turn_executor_handles_resumed_approval_loop_detection(tmp_path: Path) -
 
     assert resumed.turn is not None
     assert resumed.turn.stop_reason is StopReason.LOOP_DETECTED
-    assert "repeated exploration" in resumed.assistant_message.lower()
+    assert "no new evidence" in resumed.assistant_message.lower()
 
 
 def test_user_prompt_submit_hook_can_block_before_model_call(tmp_path: Path) -> None:

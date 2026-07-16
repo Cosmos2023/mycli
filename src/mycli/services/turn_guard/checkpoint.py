@@ -18,7 +18,6 @@ class ExitReason(StrEnum):
 
 
 class ContinueReason(StrEnum):
-    FORCE_ANSWER = "force_answer"
     COMPACT_CONTEXT = "compact_context"
     REROUTE = "reroute"
     TRUNCATION_AWARE = "truncation_aware"
@@ -67,20 +66,14 @@ class TurnCheckpoint:
     def __init__(
         self,
         *,
-        max_tool_calls_per_turn: int = 25,
         max_tokens_per_turn: int = 200_000,
-        max_same_tool_calls: int = 4,
         no_progress_threshold: int = 6,
-        force_answer_threshold: int = 12,
         reroute_threshold: int = 3,
         repeated_replanning_threshold: int = 2,
         repeated_failed_tool_threshold: int = 3,
     ) -> None:
-        self._max_tool_calls = max_tool_calls_per_turn
         self._max_tokens = max_tokens_per_turn
-        self._max_same_tool_calls = max_same_tool_calls
         self._no_progress_threshold = no_progress_threshold
-        self._force_answer_threshold = force_answer_threshold
         self._reroute_threshold = reroute_threshold
         self._repeated_replanning_threshold = repeated_replanning_threshold
         self._repeated_failed_tool_threshold = repeated_failed_tool_threshold
@@ -95,15 +88,6 @@ class TurnCheckpoint:
         no_progress_tracker: NoProgressTracker | None = None,
     ) -> CheckpointResult:
         max_repeated = self._max_repeated_tool_signatures(conversation)
-        if max_repeated >= self._max_same_tool_calls:
-            return CheckpointResult(
-                continue_reason=ContinueReason.FORCE_ANSWER,
-                reminders=(
-                    "You have repeated the same successful tool call several times. "
-                    "Do not call more tools. Answer now using the evidence already gathered.",
-                ),
-            )
-
         repeated_failure = self._repeated_failed_tool_result(conversation)
         if repeated_failure is not None:
             return CheckpointResult(
@@ -153,21 +137,8 @@ class TurnCheckpoint:
                 "Context window is at or over budget. Compact context before the next model request, then continue the current turn."
             )
 
-        if step_index >= self._max_tool_calls:
-            continue_reason = ContinueReason.FORCE_ANSWER
-            reminders.append(
-                "You have reached the maximum tool call limit. You MUST answer now "
-                "using only the evidence you already have. Do NOT call any more tools."
-            )
-
-        if step_index >= self._force_answer_threshold and step_index < self._max_tool_calls:
-            continue_reason = ContinueReason.FORCE_ANSWER
-            reminders.append(
-                "You have taken many steps. Stop exploring and answer now based on available evidence."
-            )
-
         if max_repeated >= self._reroute_threshold:
-            if continue_reason == ContinueReason.NEXT_STEP:
+            if continue_reason is ContinueReason.NEXT_STEP:
                 continue_reason = ContinueReason.REROUTE
             reminders.append(
                 "You are repeating the same tool exploration. Summarize what is already known or choose a different confirmed path."
