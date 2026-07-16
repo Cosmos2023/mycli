@@ -1865,7 +1865,7 @@ def test_tool_execution_service_denies_tool_before_execution(tmp_path: Path) -> 
     )
 
     assert fake_tool.seen_arguments == []
-    assert conversation.messages[-1].content.startswith("<tool_output><![CDATA[")
+    assert "<tool_output>" not in conversation.messages[-1].content
     assert "Tool denied:" in conversation.messages[-1].content
 
 
@@ -2413,9 +2413,8 @@ def test_tool_execution_service_applies_modified_args(tmp_path: Path) -> None:
     )
 
     assert fake_tool.seen_arguments == [{"path": "pyproject.toml"}]
-    assert conversation.messages[-1].content.startswith("<tool_output><![CDATA[")
+    assert "<tool_output>" not in conversation.messages[-1].content
     assert "pyproject.toml" in conversation.messages[-1].content
-    assert conversation.messages[-1].content.endswith("]]></tool_output>")
 
 
 def test_tool_execution_service_projects_typed_model_output_into_tool_payload(
@@ -2455,9 +2454,7 @@ def test_tool_execution_service_projects_typed_model_output_into_tool_payload(
     )
 
     tool_message = conversation.messages[-1]
-    assert tool_message.content == (
-        '<tool_output><![CDATA[typed body\n{"count":2}]]></tool_output>'
-    )
+    assert tool_message.content == 'typed body\n{"count":2}'
     assert "legacy" not in tool_message.content
     assert len(tool_message.blocks) == 1
     payload = tool_message.blocks[0].metadata["function_call_output_payload"]
@@ -2493,8 +2490,8 @@ def test_tool_execution_service_guards_tool_transcript_before_context(tmp_path: 
     )
 
     content = conversation.messages[-1].content
-    assert content.startswith("<tool_output><![CDATA[")
-    assert content.endswith("]]></tool_output>")
+    assert "<tool_output>" not in content
+    assert "<![CDATA[" not in content
     assert turn_items[-1].metadata["transcript_content"] == content
 
 

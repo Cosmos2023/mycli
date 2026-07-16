@@ -197,7 +197,12 @@ def _duration_ms(started: float) -> int:
 
 
 _SHELL_PARAMETERS = (
-    ToolParameter(name="command", type="string", required=True),
+    ToolParameter(
+        name="command",
+        type="string",
+        required=True,
+        description="Shell command to execute in the active user shell.",
+    ),
     ToolParameter(
         name="args",
         type="array",
@@ -205,7 +210,14 @@ _SHELL_PARAMETERS = (
         items_schema={"type": "string"},
     ),
     ToolParameter(name="timeout", type="integer", required=False),
-    ToolParameter(name="cwd", type="string", required=False),
+    ToolParameter(
+        name="cwd",
+        type="string",
+        required=False,
+        description=(
+            "Working directory for the command. Defaults to the workspace root."
+        ),
+    ),
     ToolParameter(name="run_in_background", type="boolean", required=False),
 )
 
@@ -418,7 +430,9 @@ class ShellTool(_ShellToolBase):
         name=name,
         description=(
             "Execute a command in the active user shell when dedicated tools "
-            "cannot handle the task. Supports timeout and background execution."
+            "cannot handle the task. Supports timeout and background execution. "
+            "Always set the `cwd` parameter when using this tool. Do not use `cd` "
+            "unless absolutely necessary."
         ),
         parameters=_SHELL_PARAMETERS,
         risk_level="high",
@@ -430,7 +444,10 @@ class BashTool(_ShellToolBase):
     name = "Bash"
     spec = ToolSpec(
         name=name,
-        description="Compatibility alias for the Shell tool.",
+        description=(
+            "Compatibility alias for the Shell tool. Always set the `cwd` parameter "
+            "when using this tool. Do not use `cd` unless absolutely necessary."
+        ),
         parameters=_SHELL_PARAMETERS,
         risk_level="high",
         model_output_adapter=shell_model_output,

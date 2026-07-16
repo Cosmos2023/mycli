@@ -317,7 +317,7 @@ class ReadTool:
                     path=raw_path,
                     line_start=offset,
                     line_end=line_end,
-                    snippet=_strip_read_line_numbers(content),
+                    snippet=_read_excerpt_snippet(content),
                 ),
             )
         return ToolResult(
@@ -331,11 +331,10 @@ class ReadTool:
         return self.execute(call.arguments)
 
 
-def _strip_read_line_numbers(content: str) -> str:
-    lines: list[str] = []
-    for line in content.splitlines():
-        _, separator, text = line.partition("\t")
-        lines.append(text if separator else line)
+def _read_excerpt_snippet(content: str) -> str:
+    lines = content.splitlines()
+    if lines and lines[-1].startswith("... (output truncated, showing "):
+        lines.pop()
     return "\n".join(lines)
 
 

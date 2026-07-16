@@ -5,12 +5,6 @@ from dataclasses import dataclass, field
 from typing import Final
 
 
-TOOL_OUTPUT_OPEN: Final = "<tool_output><![CDATA["
-TOOL_OUTPUT_CLOSE: Final = "]]></tool_output>"
-CDATA_TERMINATOR: Final = "]]>"
-CDATA_TERMINATOR_ESCAPE: Final = "]]]]><![CDATA[>"
-
-
 _EMAIL_PATTERN: Final = re.compile(
     r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 )
@@ -68,6 +62,4 @@ class InjectionGuard:
     privacy_filter: PrivacyFilter = field(default_factory=PrivacyFilter)
 
     def guard_tool_output(self, content: str) -> str:
-        redacted = self.privacy_filter.redact(content)
-        escaped = redacted.replace(CDATA_TERMINATOR, CDATA_TERMINATOR_ESCAPE)
-        return f"{TOOL_OUTPUT_OPEN}{escaped}{TOOL_OUTPUT_CLOSE}"
+        return self.privacy_filter.redact(content)

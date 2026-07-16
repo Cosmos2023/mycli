@@ -55,7 +55,6 @@ def read_file(
         content = _format_content(
             rows=selected_rows,
             delimiter=delimiter,
-            start_line=requested_start,
             columns=headers,
         )
         shown_lines = len(selected_rows)
@@ -84,7 +83,6 @@ def read_file(
             "content": _format_content(
                 rows=selected_rows,
                 delimiter=delimiter,
-                start_line=1,
                 profile=_format_numeric_profile(numeric_summary),
             ),
             "numeric_summary": numeric_summary,
@@ -106,7 +104,6 @@ def read_file(
         "content": _format_content(
             rows=selected_rows,
             delimiter=delimiter,
-            start_line=1,
             profile=_format_numeric_profile(numeric_summary),
         ),
         "numeric_summary": numeric_summary,
@@ -138,16 +135,14 @@ def _format_content(
     *,
     rows: list[list[str]],
     delimiter: str,
-    start_line: int,
     columns: list[str] | None = None,
     profile: str = "",
 ) -> str:
     lines: list[str] = []
     if columns is not None:
         lines.append(f"Columns: {_serialize_row(columns, delimiter)}")
-    for index, row in enumerate(rows):
-        line_num = start_line + index
-        lines.append(f"{line_num:6d}\t{_serialize_row(row, delimiter)}")
+    for row in rows:
+        lines.append(_serialize_row(row, delimiter))
     if profile:
         lines.append(profile)
     if not lines:

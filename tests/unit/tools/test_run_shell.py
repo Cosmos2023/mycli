@@ -14,7 +14,7 @@ from mycli.domain.runtime import (
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tools import ToolCall
 from mycli.services.safety_policy import SafetyPolicy
-from mycli.tools.bash import BashTool, derive_command_pattern, execute_bash
+from mycli.tools.bash import BashTool, ShellTool, derive_command_pattern, execute_bash
 from mycli.tools.shell_backend import LocalShellBackend, ShellBackendRequest
 from tests.support.shell_commands import python_shell_command
 import sys
@@ -87,6 +87,17 @@ def test_shell_tool_executes_with_workspace_cwd(tmp_path: Path) -> None:
     assert result.success is True
     assert result.raw_payload["cwd"] == str(nested.resolve())
     assert str(nested.resolve()) in result.raw_payload["output"]
+
+
+def test_shell_tool_schema_prefers_cwd_over_cd_prefixes() -> None:
+    parameters = {parameter.name: parameter for parameter in ShellTool.spec.parameters}
+
+    assert parameters["cwd"].required is False
+    assert parameters["cwd"].description is not None
+    assert "working directory" in parameters["cwd"].description.lower()
+    for spec in (ShellTool.spec, BashTool.spec):
+        assert "always set the `cwd`" in spec.description.lower()
+        assert "do not use `cd` unless absolutely necessary" in spec.description.lower()
 
 
 def test_shell_tool_background_writes_output_file_and_notifies(tmp_path: Path) -> None:

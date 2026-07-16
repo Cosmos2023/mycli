@@ -30,6 +30,31 @@ def read_model_output(result: ToolResult) -> ToolModelOutput:
 
 def shell_model_output(result: ToolResult) -> ToolModelOutput:
     payload = result.raw_payload
+    shell_id = payload.get("shell_id") or payload.get("bash_id")
+    status = payload.get("status")
+    process_state = payload.get("process_state")
+    if (
+        isinstance(shell_id, str)
+        and shell_id
+        and (status == "running" or process_state == "running_background")
+    ):
+        poll_arguments = json.dumps(
+            {"shell_id": shell_id},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return ToolModelOutput.from_text(
+            "\n".join(
+                (
+                    "Background shell started",
+                    f"shell_id: {shell_id}",
+                    f"status: {status or 'running'}",
+                    f"Poll with ShellOutput({poll_arguments})",
+                )
+            ),
+            success=result.success,
+            budget_class=ToolOutputBudgetClass.SHELL,
+        )
     output = payload.get("output")
     if not isinstance(output, str):
         parts = [

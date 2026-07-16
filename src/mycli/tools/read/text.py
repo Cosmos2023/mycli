@@ -59,12 +59,11 @@ def read_text(
     line_truncated = end < original_total_lines
 
     result_lines: list[str] = []
-    for index, line in enumerate(shown):
-        line_num = start + index + 1
+    for line in shown:
         text = line.rstrip("\r")
         if len(text) > MAX_LINE_CHARS:
             text = text[:MAX_LINE_CHARS] + " [... truncated]"
-        result_lines.append(f"{line_num:6d}\t{text}")
+        result_lines.append(text)
 
     output = "\n".join(result_lines)
     if output:
@@ -131,7 +130,7 @@ def _read_text_window(path: Path, *, offset: int, limit: int) -> dict[str, objec
         return {"error": f"[Cannot decode file as UTF-8: {path}: {exc}]"}
 
     selected_content = "\n".join(selected_lines)
-    output = _format_numbered_lines(selected_lines, start=start)
+    output = _format_lines(selected_lines)
     line_truncated = end < total_lines
     if line_truncated:
         next_offset = start + len(selected_lines) + 1
@@ -155,14 +154,13 @@ def _read_text_window(path: Path, *, offset: int, limit: int) -> dict[str, objec
     }
 
 
-def _format_numbered_lines(lines: list[str], *, start: int) -> str:
+def _format_lines(lines: list[str]) -> str:
     result_lines: list[str] = []
-    for index, line in enumerate(lines):
-        line_num = start + index + 1
+    for line in lines:
         text = line.rstrip("\r")
         if len(text) > MAX_LINE_CHARS:
             text = text[:MAX_LINE_CHARS] + " [... truncated]"
-        result_lines.append(f"{line_num:6d}\t{text}")
+        result_lines.append(text)
 
     output = "\n".join(result_lines)
     if output:

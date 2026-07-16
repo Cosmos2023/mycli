@@ -6,7 +6,7 @@ class TestReadText:
         f = tmp_path / "test.py"
         f.write_text("line1\nline2\nline3\n")
         result = read_text(str(f))
-        assert result["content"] == "     1\tline1\n     2\tline2\n     3\tline3\n"
+        assert result["content"] == "line1\nline2\nline3\n"
         assert result["truncated"] is False
 
     def test_offset_and_limit(self, tmp_path):
@@ -70,8 +70,10 @@ class TestReadText:
         assert result["shown_lines"] == 2
         assert result["total_lines"] == 30_000
         assert result["total_tokens"] < 100
-        assert "    10\tline 9" in result["content"]
-        assert "    11\tline 10" in result["content"]
+        assert result["content"].startswith(
+            "line 9 token token token token token\n"
+            "line 10 token token token token token\n"
+        )
 
     def test_reads_long_low_token_file_without_head_tail_truncation(self, tmp_path):
         f = tmp_path / "medium.py"

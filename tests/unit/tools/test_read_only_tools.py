@@ -149,6 +149,29 @@ def test_read_file_exposes_file_excerpt_evidence(tmp_path: Path) -> None:
     assert "second line" in evidence.snippet
 
 
+def test_read_file_returns_plain_content_without_automatic_line_numbers(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "alpha\n\tbeta\ngamma\ndelta\n",
+        encoding="utf-8",
+    )
+
+    result = ReadTool(root).execute(
+        {"file_path": "README.md", "offset": 2, "limit": 2}
+    )
+
+    assert result.success is True
+    content = result.raw_payload["content"]
+    assert content.startswith("\tbeta\ngamma\n")
+    assert "use offset=4 with limit to continue" in content
+    assert result.evidence[0].line_start == 2
+    assert result.evidence[0].line_end == 3
+    assert result.evidence[0].snippet == "\tbeta\ngamma"
+
+
 def test_read_file_requires_explicit_offset_and_limit(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -240,6 +263,9 @@ def test_read_csv_offset_limit_is_model_visible(tmp_path: Path) -> None:
     assert "Bob,20" in rendered
     assert "Charlie,30" in rendered
     assert "Alice,10" not in rendered
+    assert "\nBob,20\nCharlie,30\n" in result.raw_payload["content"]
+    assert "     3\t" not in result.raw_payload["content"]
+    assert "Charlie,30" in result.evidence[0].snippet
     assert result.raw_payload["shown_lines"] == 2
     assert result.raw_payload["truncated"] is True
 
@@ -334,7 +360,7 @@ def test_read_tool_normalizes_zero_offset_to_first_line(tmp_path: Path) -> None:
     )
 
     assert result.success is True
-    assert result.raw_payload["content"].startswith("     1\tfirst")
+    assert result.raw_payload["content"].startswith("first\n")
     assert result.evidence[0].line_start == 1
     assert result.evidence[0].line_end == 1
 
@@ -353,9 +379,10 @@ def test_read_tool_reads_bounded_window_from_large_token_file(tmp_path: Path) ->
     )
 
     assert result.success is True
-    assert "    10\t" in result.raw_payload["content"]
-    assert '"index": 9' in result.raw_payload["content"]
-    assert "    11\t" in result.raw_payload["content"]
+    assert result.raw_payload["content"].startswith(
+        '{"index": 9, "value": "token token token"}\n'
+        '{"index": 10, "value": "token token token"}\n'
+    )
     assert result.raw_payload["truncated"] is True
 
 
