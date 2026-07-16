@@ -37,8 +37,15 @@ const TOOL_PRESENTATIONS: Record<string, Partial<ToolPresentation>> = {
 	compact: { label: "Compact", previewLines: 6 },
 };
 
-export function presentationForTool(name: string, status?: MycliShellToolStatus, mutating?: boolean): ToolPresentation {
-	const base = { ...DEFAULT_PRESENTATION, label: canonicalToolName(name) };
+export function presentationForTool(
+	name: string,
+	status?: MycliShellToolStatus,
+	mutating?: boolean,
+	semantic?: string,
+): ToolPresentation {
+	const semanticAccent: ToolPresentation["accent"] =
+		semantic === "shell" ? "bashMode" : semantic === "mutation" ? "warning" : semantic === "control" ? "muted" : "accent";
+	const base = { ...DEFAULT_PRESENTATION, label: canonicalToolName(name), accent: semanticAccent };
 	const keyed = TOOL_PRESENTATIONS[name.trim().toLowerCase()] ?? {};
 	const presentation = { ...base, ...keyed };
 	if (status === "error") {
@@ -55,6 +62,14 @@ export function presentationForBash(): ToolPresentation {
 }
 
 export function conciseToolResult(tool: MycliShellTool): string {
+	if (tool.name.trim().toLowerCase() === "skill") {
+		if (tool.status === "running") return "Activating...";
+		if (tool.status === "cancelled") return "Cancelled";
+		if (tool.status === "error") {
+			return firstMeaningfulLine(tool.errorPreview ?? tool.outputPreview) ?? "Failed";
+		}
+		return "Activated";
+	}
 	const target = shortPreview(tool.args);
 	if (tool.status === "running") {
 		return target ? `${target} · Running...` : "Running...";
@@ -74,7 +89,7 @@ export function conciseToolResult(tool: MycliShellTool): string {
 	if (tool.diffPreview) {
 		return target ? `Updated ${target}` : "Updated file";
 	}
-	const summary = firstMeaningfulLine(tool.outputPreview) ?? statusLabel(tool);
+	const summary = firstMeaningfulLine(tool.summaryPreview ?? tool.outputPreview) ?? statusLabel(tool);
 	if (target && summary !== target) {
 		return `${target} · ${summary}`;
 	}

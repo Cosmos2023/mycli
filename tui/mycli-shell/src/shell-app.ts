@@ -11,7 +11,6 @@ import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { PlanPanelComponent } from "./components/plan-panel.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
-import { SubagentExecutionComponent, SubagentGroupComponent } from "./components/subagent-execution.ts";
 import { isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
@@ -87,14 +86,10 @@ class TranscriptBlocksComponent extends Container {
 				this.addChild(new ToolExecutionComponent(block.tool));
 			} else if (block.kind === "bash") {
 				this.addChild(new BashExecutionComponent(block.bash));
-			} else if (block.kind === "subagent") {
-				this.addChild(new SubagentExecutionComponent(block.subagent));
 			} else if (block.kind === "diagnostic") {
 				this.addChild(new CommandDiagnosticComponent(block.diagnostic));
 			} else if (block.kind === "background_terminals") {
 				this.addChild(new BackgroundTerminalsComponent(block.backgroundTerminals));
-			} else if (block.kind === "agent_group") {
-				this.addChild(new SubagentGroupComponent(block.group));
 			} else if (block.kind === "tool_group") {
 				this.addChild(new CollapsedToolGroupComponent(block.group));
 			}

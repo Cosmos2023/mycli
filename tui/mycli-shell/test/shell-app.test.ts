@@ -323,7 +323,7 @@ test("mycli shell hides resolved subagent transcript blocks", () => {
 	assert.doesNotMatch(output, /Mapped Claude Code worker badge behavior/);
 });
 
-test("mycli shell renders only running same-turn subagents in main progress", () => {
+test("mycli shell keeps running subagents out of the transcript and exposes tasks entry", () => {
 	const output = stripAnsi(
 		renderMycliShell(
 			subagentPanelState(),
@@ -331,10 +331,10 @@ test("mycli shell renders only running same-turn subagents in main progress", ()
 		).join("\n"),
 	);
 
-	assert.match(output, /Running agent/);
-	assert.match(output, /└─ explore \(Inspect auth bug\) · 2 tool uses/);
-	assert.match(output, /⎿ Read path=src\/auth\/session\.py/);
-	assert.match(output, /⎿ Found token refresh logic/);
+	assert.doesNotMatch(output, /Running agent/);
+	assert.doesNotMatch(output, /explore \(Inspect auth bug\)/);
+	assert.doesNotMatch(output, /Read path=src\/auth\/session\.py/);
+	assert.doesNotMatch(output, /Found token refresh logic/);
 	assert.doesNotMatch(output, /review \(Research tests\)/);
 	assert.doesNotMatch(output, /⎿ Done/);
 	assert.match(output, /◇ 1 local agent · \/tasks view/);
@@ -397,7 +397,6 @@ test("mycli shell keeps completed background subagents out of the main transcrip
 
 	assert.doesNotMatch(output, /Agent "Inspect repo" completed/);
 	assert.doesNotMatch(output, /Agent finished/);
-	assert.doesNotMatch(output, /◇ 1 agent done/);
 	assert.doesNotMatch(output, /\/tasks view/);
 });
 
@@ -432,7 +431,50 @@ test("mycli shell keeps resolved subagents out of the main transcript even witho
 	assert.doesNotMatch(output, /\/tasks view/);
 });
 
-test("mycli shell completed background subagent is not an active tasks entry", async () => {
+test("mycli shell clears max-turns agents from the active UI", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			transcript: [
+				{
+					id: "subagent-limited",
+					kind: "subagent",
+					subagent: {
+						id: "subagent-limited",
+						role: "explore",
+						description: "Explore the tools subsystem",
+						status: "max_turns",
+						mode: "background",
+						childSessionId: "child-session-limited",
+						toolCalls: 41,
+						summary: "Child sub-agent reached the max turn limit.",
+					},
+				},
+			],
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+
+	assert.doesNotMatch(output, /Child sub-agent reached the max turn limit\./);
+	assert.doesNotMatch(output, /Running agent/);
+	assert.doesNotMatch(output, /\/tasks view/);
+
+	runtime.editor.setText("/tasks");
+	await runtime.editor.onSubmit?.("/tasks");
+	await setTimeout(25);
+	output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /No background agents currently running/);
+	assert.doesNotMatch(output, /Explore the tools subsystem/);
+	assert.doesNotMatch(output, /Child sub-agent reached the max turn limit\./);
+});
+
+test("mycli shell clears completed background subagents from tasks", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
 		initialState: {
@@ -1100,6 +1142,39 @@ test("tool rendering stays collapsed until expanded and marks failure", () => {
 	assert.match(output, /⎿ pytest -q · Traceback/);
 	assert.match(output, /boom/);
 	assert.match(output, /1\.3s/);
+});
+
+test("skill rendering shows the concrete skill name without repeating it", () => {
+	const rendered = new ToolExecutionComponent({
+		id: "skill",
+		name: "Skill",
+		args: "repository-analysis",
+		status: "success",
+		outputPreview: "Activated skill: repository-analysis",
+	});
+
+	const output = stripAnsi(rendered.render(80).join("\n"));
+
+	assert.match(output, /⏺ Skill repository-analysis/);
+	assert.match(output, /⎿ Activated/);
+	assert.doesNotMatch(output, /⎿ repository-analysis/);
+});
+
+test("tool rendering keeps display summary and detail separate", () => {
+	const rendered = new ToolExecutionComponent({
+		id: "grep",
+		name: "Grep",
+		args: "src: ToolResult",
+		status: "success",
+		summaryPreview: "12 matches",
+		detailPreview: "src/a.py:10: class ToolResult",
+		presentation: "context",
+	});
+
+	const output = stripAnsi(rendered.render(100).join("\n"));
+	assert.match(output, /⎿ src: ToolResult · 12 matches/);
+	assert.match(output, /src\/a\.py:10: class ToolResult/);
+	assert.equal(output.match(/12 matches/g)?.length, 1);
 });
 
 test("tool rendering previews write content like coding-agent", () => {

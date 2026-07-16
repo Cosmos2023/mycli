@@ -39,7 +39,6 @@ import { ResourceSelectorComponent } from "./components/resource-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SessionTreeSelectorComponent } from "./components/session-tree-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
-import { SubagentExecutionComponent, SubagentGroupComponent } from "./components/subagent-execution.ts";
 import { BackgroundSubagentDialogComponent, isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TrustSelectorComponent, type ProjectTrustDecision } from "./components/trust-selector.ts";
@@ -136,10 +135,8 @@ type ChatBlockComponent =
 	| { kind: "plan"; signature: string; component: ProposedPlanComponent }
 	| { kind: "tool"; signature: string; component: ToolExecutionComponent }
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
-	| { kind: "subagent"; signature: string; component: SubagentExecutionComponent }
 	| { kind: "background_terminals"; signature: string; component: BackgroundTerminalsComponent }
 	| { kind: "diagnostic"; signature: string; component: CommandDiagnosticComponent }
-	| { kind: "agent_group"; signature: string; component: SubagentGroupComponent }
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
 class TurnActivityComponent implements Component {
@@ -961,16 +958,6 @@ export class MycliShellRuntime {
 				cached.signature = signature;
 				return cached;
 			}
-			if (block.kind === "subagent" && cached.component instanceof SubagentExecutionComponent) {
-				cached.component.updateSubagent(block.subagent);
-				cached.signature = signature;
-				return cached;
-			}
-			if (block.kind === "agent_group" && cached.component instanceof SubagentGroupComponent) {
-				cached.component.updateGroup(block.group);
-				cached.signature = signature;
-				return cached;
-			}
 			if (block.kind === "message" && cached.kind === "message" && cached.signature === signature) {
 				return cached;
 			}
@@ -998,9 +985,6 @@ export class MycliShellRuntime {
 		if (block.kind === "tool_group") {
 			return { kind: "tool_group", signature, component: new CollapsedToolGroupComponent(block.group) };
 		}
-		if (block.kind === "subagent") {
-			return { kind: "subagent", signature, component: new SubagentExecutionComponent(block.subagent) };
-		}
 		if (block.kind === "diagnostic") {
 			return { kind: "diagnostic", signature, component: new CommandDiagnosticComponent(block.diagnostic) };
 		}
@@ -1010,9 +994,6 @@ export class MycliShellRuntime {
 				signature,
 				component: new BackgroundTerminalsComponent(block.backgroundTerminals),
 			};
-		}
-		if (block.kind === "agent_group") {
-			return { kind: "agent_group", signature, component: new SubagentGroupComponent(block.group) };
 		}
 		return { kind: "message", signature, role: block.message.role, component: this.createMessageComponent(block.message) };
 	}

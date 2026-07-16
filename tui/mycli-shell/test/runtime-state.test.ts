@@ -61,6 +61,175 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.tools[0]?.durationMs, 1200);
 });
 
+test("runtime adapter projects a resumed Skill name as its tool argument", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "skill-1",
+				type: "tool_summary",
+				text: "Skill",
+				folded: false,
+				metadata: {
+					tool_name: "Skill",
+					skill_name: "repository-analysis",
+					success: true,
+					output_preview: "Activated skill: repository-analysis",
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.tools[0]?.name, "Skill");
+	assert.equal(shell.tools[0]?.args, "repository-analysis");
+});
+
+test("runtime adapter prefers display envelope over conflicting legacy metadata", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "tool-1",
+				type: "tool_summary",
+				text: "legacy text",
+				metadata: {
+					tool_name: "Grep",
+					path: "wrong-path",
+					summary: "wrong summary",
+					display: {
+						target: "src: ToolResult",
+						status: "success",
+						summary: "12 matches",
+						detail: "src/a.py:10: class ToolResult",
+						metrics: { match_count: 12, duration_ms: 25 },
+						presentation: "context",
+					},
+				},
+			},
+		],
+	});
+
+	const tool = projectRuntimeState(state).tools[0];
+	assert.equal(tool?.args, "src: ToolResult");
+	assert.equal(tool?.status, "success");
+	assert.equal(tool?.summaryPreview, "12 matches");
+	assert.equal(tool?.detailPreview, "src/a.py:10: class ToolResult");
+	assert.equal(tool?.presentation, "context");
+	assert.equal(tool?.durationMs, 25);
+});
+
+test("runtime adapter projects equal live and resumed display semantics", () => {
+	const display = {
+		target: "repository-analysis",
+		status: "success",
+		summary: "Activated",
+		presentation: "skill",
+	};
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "skill-resumed",
+				type: "tool_summary",
+				text: "Skill",
+				metadata: { tool_name: "Skill", call_id: "skill-call", display },
+			},
+		],
+	});
+	const live = reduceRuntimeEvent(initialRuntimeState(), "tool.complete", {
+		tool_id: "skill-live",
+		call_id: "skill-call",
+		name: "Skill",
+		display,
+	});
+
+	const resumedTool = projectRuntimeState(resumed).tools[0];
+	const liveTool = projectRuntimeState(live).tools[0];
+	assert.deepEqual(
+		{ ...liveTool, id: "stable" },
+		{ ...resumedTool, id: "stable" },
+	);
+});
+
+test("runtime adapter falls back to legacy metadata for malformed display", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "legacy-read",
+				type: "tool_summary",
+				text: "Read src/app.py",
+				metadata: {
+					tool_name: "Read",
+					path: "src/app.py",
+					success: true,
+					display: { status: 42, summary: ["invalid"] },
+				},
+			},
+		],
+	});
+
+	assert.equal(projectRuntimeState(state).tools[0]?.args, "src/app.py");
+});
+
+test("runtime adapter accepts an empty display summary", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "external-running",
+				type: "tool_summary",
+				text: "External",
+				metadata: {
+					tool_name: "mcp__demo__run",
+					display: {
+						target: "job-1",
+						status: "running",
+						summary: "",
+						presentation: "external",
+					},
+				},
+			},
+		],
+	});
+
+	const tool = projectRuntimeState(state).tools[0];
+	assert.equal(tool?.args, "job-1");
+	assert.equal(tool?.presentation, "external");
+	assert.equal(tool?.status, "running");
+});
+
+test("runtime adapter sends shell display detail and metrics to the shell cell", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "shell-1",
+				type: "tool_summary",
+				text: "Shell",
+				metadata: {
+					tool_name: "Shell",
+					call_id: "shell-call",
+					display: {
+						target: "pytest -q",
+						status: "success",
+						summary: "Exit 0",
+						detail: "2 passed",
+						metrics: { exit_code: 0, duration_ms: 125, shell_id: "shell-1" },
+						presentation: "shell",
+					},
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state).bash[0];
+	assert.equal(shell?.command, "pytest -q");
+	assert.equal(shell?.outputPreview, "2 passed");
+	assert.equal(shell?.exitCode, 0);
+	assert.equal(shell?.shellId, "shell-1");
+});
+
 test("runtime adapter projects runtime-backed visual settings", () => {
 	let state = initialRuntimeState();
 	const settings = settingsFromResult({
@@ -225,6 +394,103 @@ test("runtime adapter preserves interleaved transcript block order", () => {
 	assert.equal(shell.transcript?.[2]?.kind === "message" ? shell.transcript[2].message.text : "", "done");
 });
 
+test("runtime adapter coalesces legacy tool summary and detail on resume", () => {
+	let state = initialRuntimeState();
+	state = { ...state, workspace: "/repo" };
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "read-call",
+				type: "tool_summary",
+				text: "Read /repo/word.txt",
+				folded: true,
+				metadata: {
+					tool_name: "Read",
+					call_id: "call-read-1",
+					path: "/repo/word.txt",
+					status: "running",
+				},
+			},
+			{
+				id: "read-result",
+				type: "tool_detail",
+				text: "file contents",
+				folded: true,
+				metadata: {
+					tool_name: "Read",
+					call_id: "call-read-1",
+					status: "done",
+					success: true,
+					output_preview: "file contents",
+					duration_ms: 25,
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.tools.length, 1);
+	assert.equal(shell.tools[0]?.id, "read-call");
+	assert.equal(shell.tools[0]?.status, "success");
+	assert.equal(shell.tools[0]?.outputPreview, "file contents");
+	assert.equal(shell.tools[0]?.durationMs, 25);
+});
+
+test("runtime adapter folds resumed ShellOutput rows into their Shell command", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "shell-command",
+				type: "tool_summary",
+				text: "echo started; sleep 3; echo done",
+				metadata: {
+					tool_name: "Shell",
+					call_id: "shell-call",
+					shell_id: "shell-1",
+					command_preview: "echo started; sleep 3; echo done",
+					background: true,
+					process_state: "running_background",
+					display: {
+						status: "running",
+						summary: "Running",
+						target: "echo started; sleep 3; echo done",
+						presentation: "shell",
+					},
+				},
+			},
+			{
+				id: "shell-poll",
+				type: "tool_summary",
+				text: "ShellOutput",
+				metadata: {
+					tool_name: "ShellOutput",
+					call_id: "poll-call",
+					shell_id: "shell-1",
+					process_state: "completed",
+					terminal_state: "completed",
+					exit_code: 0,
+					display: {
+						status: "success",
+						summary: "Exit 0",
+						detail: "started\ndone\n",
+						target: "shell-1",
+						presentation: "shell",
+						metrics: { shell_id: "shell-1", exit_code: 0 },
+					},
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.bash.length, 1);
+	assert.equal(shell.tools.some((tool) => tool.name === "ShellOutput"), false);
+	assert.equal(shell.bash[0]?.command, "echo started; sleep 3; echo done");
+	assert.equal(shell.bash[0]?.status, "success");
+	assert.equal(shell.bash[0]?.outputPreview, "started\ndone\n");
+});
+
 test("runtime adapter reduces live gateway events", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithUserMessage(state, "hello");
@@ -358,6 +624,72 @@ test("runtime adapter clears pending approval when approved turn starts", () => 
 	assert.equal(shell.footer.liveState, "Running");
 });
 
+test("runtime adapter removes transient approval preview after a response", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", {
+		decision_id: "decision-1",
+		preview: "echo duplicated command",
+		options: [
+			{ choice: "approve_once", label: "Allow once" },
+			{ choice: "reject", label: "Reject" },
+		],
+	});
+
+	assert.equal(projectRuntimeState(state).messages.some((message) => message.text === "echo duplicated command"), true);
+
+	state = reduceRuntimeEvent(state, "approval.respond", {
+		decision_id: "decision-1",
+		choice: "approve_once",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.pendingApproval, undefined);
+	assert.equal(shell.messages.some((message) => message.text === "echo duplicated command"), false);
+});
+
+test("runtime adapter removes the transient clarification question after a response", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "clarify.request", {
+		request_id: "request-1",
+		tool_id: "tool-1",
+		call_id: "call-1",
+		tool_name: "AskUserQuestion",
+		question: "Which implementation should we use?",
+		options: [],
+		multi_select: false,
+	});
+
+	assert.equal(projectRuntimeState(state).messages.some((message) => message.text === "Which implementation should we use?"), true);
+
+	state = reduceRuntimeEvent(state, "clarify.respond", {
+		request_id: "request-1",
+		response: "Use the first implementation.",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(state.pendingClarification, null);
+	assert.equal(shell.messages.some((message) => message.text === "Which implementation should we use?"), false);
+});
+
+test("runtime adapter clears stale clarification questions when the resumed turn starts", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "clarify.request", {
+		request_id: "request-1",
+		tool_id: "tool-1",
+		call_id: "call-1",
+		tool_name: "AskUserQuestion",
+		question: "Which implementation should we use?",
+		options: [],
+		multi_select: false,
+	});
+
+	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "clarification-1" });
+
+	const shell = projectRuntimeState(state);
+	assert.equal(state.pendingClarification, null);
+	assert.equal(shell.messages.some((message) => message.text === "Which implementation should we use?"), false);
+});
+
 test("runtime adapter projects subagent updates into dedicated transcript blocks", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "subagent.updated", {
@@ -429,6 +761,65 @@ test("runtime adapter accumulates subagent progress updates", () => {
 		"Read path=src/auth/session.py",
 		"Found token refresh logic",
 	]);
+});
+
+test("runtime adapter gives successful Task calls to the dedicated subagent UI", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "tool-task-1",
+		call_id: "call-task-1",
+		name: "Task",
+		context: "Task",
+	});
+	state = reduceRuntimeEvent(state, "subagent.updated", {
+		subagent: {
+			run_id: "subagent-a1",
+			child_session_id: "child-session-1",
+			parent_turn_id: "turn-1",
+			role: "explore",
+			description: "Explore the tools subsystem",
+			status: "running",
+			mode: "background",
+			summary: "Sub-agent started",
+			tool_calls: 0,
+		},
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		tool_id: "tool-task-1",
+		call_id: "call-task-1",
+		name: "Task",
+		success: true,
+		summary: "Sub-agent explore started in background.",
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.tools.some((tool) => tool.name === "Task"), false);
+	assert.equal(shell.transcript?.filter((block) => block.kind === "subagent").length, 1);
+});
+
+test("runtime adapter hides successful Task rows when reloading history", () => {
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "task-success",
+				type: "tool_detail",
+				text: "Sub-agent explore started in background.",
+				metadata: { tool_name: "Task", call_id: "call-task-1", success: true, status: "completed" },
+			},
+			{
+				id: "task-failed",
+				type: "tool_detail",
+				text: "Task tool is unavailable.",
+				metadata: { tool_name: "Task", call_id: "call-task-2", success: false, status: "failed", error: "Unavailable" },
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.equal(shell.tools.length, 1);
+	assert.equal(shell.tools[0]?.errorPreview, "Unavailable");
 });
 
 test("runtime adapter keeps tool calls between assistant text segments", () => {
@@ -1294,6 +1685,76 @@ test("background Bash tool completion cannot settle a live process", () => {
 	});
 
 	assert.equal(projectRuntimeState(state).bash[0]?.status, "running");
+});
+
+test("ShellOutput updates the original Shell card without creating a polling card", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "shell-tool",
+		call_id: "shell-call",
+		name: "Shell",
+		args_preview: "echo started; sleep 3; echo done",
+		display: {
+			status: "running",
+			summary: "Running",
+			presentation: "shell",
+			target: "echo started; sleep 3; echo done",
+		},
+	});
+	state = reduceRuntimeEvent(state, "shell.started", {
+		shell_id: "shell-1",
+		call_id: "shell-call",
+		sequence: 1,
+		command_preview: "echo started; sleep 3; echo done",
+		background: true,
+		process_state: "running_background",
+	});
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "poll-tool",
+		call_id: "poll-call",
+		name: "ShellOutput",
+		args_preview: "shell_id=shell-1",
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		tool_id: "poll-tool",
+		call_id: "poll-call",
+		name: "ShellOutput",
+		success: true,
+		raw_payload: {
+			shell_id: "shell-1",
+			status: "running",
+			process_state: "running_background",
+			output: "started\n",
+		},
+		display: {
+			status: "running",
+			summary: "Running",
+			detail: "started\n",
+			presentation: "shell",
+			target: "shell-1",
+			metrics: { shell_id: "shell-1" },
+		},
+	});
+
+	let shell = projectRuntimeState(state);
+	assert.equal(shell.bash.length, 1);
+	assert.equal(shell.tools.some((tool) => tool.name === "ShellOutput"), false);
+	assert.equal(shell.bash[0]?.command, "echo started; sleep 3; echo done");
+	assert.equal(shell.bash[0]?.outputPreview, "started\n");
+
+	state = reduceRuntimeEvent(state, "shell.completed", {
+		shell_id: "shell-1",
+		call_id: "shell-call",
+		sequence: 2,
+		background: true,
+		process_state: "completed",
+		terminal_state: "completed",
+		exit_code: 0,
+	});
+	shell = projectRuntimeState(state);
+	assert.equal(shell.bash.length, 1);
+	assert.equal(shell.bash[0]?.status, "success");
+	assert.equal(shell.bash[0]?.terminalState, "completed");
 });
 
 test("terminal shell state rejects later running events", () => {

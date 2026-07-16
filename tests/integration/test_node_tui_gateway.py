@@ -547,10 +547,8 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_waiting_state_route
     assert state["liveStatus"]["state"] == "completed"
     approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
     clarification_items = [item for item in state["transcript"] if item["type"] == "clarification"]
-    assert len(approval_items) == 1
-    assert approval_items[0]["metadata"]["decision_id"] == "call_approval_1"
-    assert len(clarification_items) == 1
-    assert clarification_items[0]["metadata"]["request_id"] == "call_question_1"
+    assert approval_items == []
+    assert clarification_items == []
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
@@ -677,16 +675,7 @@ def test_run_node_tui_gateway_with_real_runtime_strict_write_approval(
     assert state["pendingApproval"] is None
     assert state["liveStatus"]["state"] == "completed"
     approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
-    assert len(approval_items) == 1
-    assert approval_items[0]["metadata"]["decision_id"] == "call_write_strict_1"
-    assert approval_items[0]["metadata"]["tool_name"] == "Write"
-    assert approval_items[0]["metadata"]["action"] == "Write"
-    assert approval_items[0]["metadata"]["risk"]
-    assert approval_items[0]["metadata"]["risk_reason"]
-    assert approval_items[0]["metadata"]["options"] == [
-        {"choice": "approve_once", "label": "Allow once"},
-        {"choice": "reject", "label": "Reject"},
-    ]
+    assert approval_items == []
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
@@ -1495,14 +1484,12 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_ma
     assert [item["text"] for item in errors] == ["Provider failed after retries."]
 
     approval_items = [item for item in state["transcript"] if item["type"] == "approval"]
-    assert len(approval_items) == 1
-    assert approval_items[0]["metadata"]["decision_id"] == "call_recovery_approval_1"
+    assert approval_items == []
 
     clarification_items = [
         item for item in state["transcript"] if item["type"] == "clarification"
     ]
-    assert len(clarification_items) == 1
-    assert clarification_items[0]["metadata"]["request_id"] == "call_recovery_question_1"
+    assert clarification_items == []
 
     tool_items = [item for item in state["transcript"] if item["type"] == "tool_summary"]
     assert len(tool_items) == 2

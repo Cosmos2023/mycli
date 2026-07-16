@@ -181,27 +181,31 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			const tool = toolFromTranscriptItem(item, state.workspace, state.viewMode, state.settings.toolDetailsDefault);
 			if (isShellTool(tool.name)) {
 				const metadata = recordValue(item.metadata);
+				const display = toolDisplayFromMetadata(metadata);
+				const displayMetrics = display?.metrics ?? {};
 				const bashItem: MycliShellBash = {
 					id: tool.id,
 					toolName: tool.name,
 					command: stringValue(metadata.command_preview) ?? tool.args ?? tool.outputPreview ?? tool.name,
 					status: tool.status,
-					shellId: stringValue(metadata.shell_id) ?? undefined,
+					shellId: stringValue(metadata.shell_id) ?? stringValue(displayMetrics.shell_id) ?? undefined,
 					callId: stringValue(metadata.call_id) ?? undefined,
 					background: booleanValue(metadata.background) ?? undefined,
 					processState: stringValue(metadata.process_state) ?? undefined,
 					terminalState: stringValue(metadata.terminal_state) ?? undefined,
-					exitCode: numberValue(metadata.exit_code) ?? undefined,
+					exitCode: numberValue(metadata.exit_code) ?? numberValue(displayMetrics.exit_code) ?? undefined,
 					sequence: numberValue(metadata.shell_sequence) ?? undefined,
 					startedAt: stringValue(metadata.started_at) ?? undefined,
 					completedAt: stringValue(metadata.completed_at) ?? undefined,
 					outputChars: numberValue(metadata.output_chars) ?? undefined,
-					omittedOutputChars: numberValue(metadata.omitted_output_chars) ?? undefined,
+					omittedOutputChars:
+						numberValue(metadata.omitted_output_chars) ??
+						(display?.truncated ? display.omittedChars : undefined),
 					cleanupResult: stringValue(metadata.cleanup_result) ?? undefined,
 					shellKind: stringValue(metadata.shell_kind) ?? undefined,
 					shellEdition: stringValue(metadata.shell_edition) ?? undefined,
-					outputPreview: tool.outputPreview,
-					hiddenLineCount: tool.hiddenLineCount,
+					outputPreview: tool.detailPreview ?? tool.outputPreview,
+					hiddenLineCount: tool.hiddenLineCount ?? (display?.truncated ? 1 : undefined),
 					expanded: tool.expanded,
 				};
 				bash.push(bashItem);
@@ -345,9 +349,90 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 
 export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
 	const items = Array.isArray(payload.items)
-		? payload.items.filter(isTranscriptItem).map((item) => ({ ...item, metadata: recordValue(item.metadata) }))
+		? payload.items
+				.filter(isTranscriptItem)
+				.map((item) => ({ ...item, metadata: recordValue(item.metadata) }))
 		: [];
-	return { ...state, transcript: [...state.transcript, ...items] };
+	const transcript = coalesceResumedShellOutputItems(
+		coalesceLegacyToolItems([...state.transcript, ...items]),
+	)
+		.filter((item) => !shouldSuppressSuccessfulTaskItem(item));
+	return { ...state, transcript };
+}
+
+function coalesceResumedShellOutputItems(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
+	let coalesced: RuntimeTranscriptItem[] = [];
+	for (const item of items) {
+		const metadata = recordValue(item.metadata);
+		const display = recordValue(metadata.display);
+		const failed =
+			booleanValue(metadata.success) === false ||
+			["error", "failed", "cancelled"].includes(stringValue(display.status) ?? stringValue(metadata.status) ?? "");
+		if (isShellOutputLifecycle(metadata) && !failed) {
+			const merged = mergeShellOutputIntoExecution(coalesced, metadata);
+			if (merged !== null) {
+				coalesced = merged;
+				continue;
+			}
+		}
+		coalesced.push(item);
+	}
+	return coalesced;
+}
+
+function coalesceLegacyToolItems(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
+	const coalesced: RuntimeTranscriptItem[] = [];
+	const pendingByCallId = new Map<string, number>();
+
+	for (const item of items) {
+		const callId = toolItemCallId(item);
+		const existingIndex = callId ? pendingByCallId.get(callId) : undefined;
+		const existing = existingIndex === undefined ? undefined : coalesced[existingIndex];
+		if (existing && isToolSummaryDetailPair(existing, item)) {
+			coalesced[existingIndex!] = mergeToolSummaryDetail(existing, item);
+			pendingByCallId.delete(callId!);
+			continue;
+		}
+
+		const index = coalesced.push(item) - 1;
+		if (callId && isToolTranscriptItem(item)) {
+			pendingByCallId.set(callId, index);
+		}
+	}
+
+	return coalesced;
+}
+
+function toolItemCallId(item: RuntimeTranscriptItem): string | null {
+	if (!isToolTranscriptItem(item)) return null;
+	const metadata = recordValue(item.metadata);
+	return stringValue(metadata.call_id) ?? stringValue(metadata.callId);
+}
+
+function isToolTranscriptItem(item: RuntimeTranscriptItem): boolean {
+	return item.type === "tool_summary" || item.type === "tool_detail";
+}
+
+function isToolSummaryDetailPair(first: RuntimeTranscriptItem, second: RuntimeTranscriptItem): boolean {
+	return (first.type === "tool_summary" && second.type === "tool_detail")
+		|| (first.type === "tool_detail" && second.type === "tool_summary");
+}
+
+function mergeToolSummaryDetail(first: RuntimeTranscriptItem, second: RuntimeTranscriptItem): RuntimeTranscriptItem {
+	const summary = first.type === "tool_summary" ? first : second;
+	const detail = first.type === "tool_detail" ? first : second;
+	const summaryMetadata = recordValue(summary.metadata);
+	const detailMetadata = recordValue(detail.metadata);
+	const outputPreview = textValue(detailMetadata.output_preview) ?? textValue(detail.text);
+	return {
+		...summary,
+		metadata: {
+			...summaryMetadata,
+			...detailMetadata,
+			status: stringValue(detailMetadata.status) ?? "done",
+			...(outputPreview ? { output_preview: outputPreview } : {}),
+		},
+	};
 }
 
 export function reduceRuntimeEvent(state: RuntimeShellState, method: string, params: Record<string, unknown>): RuntimeShellState {
@@ -367,6 +452,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			liveStatus: { state: "running", kind: "running", text: "Running" },
 			pendingApproval: null,
 			pendingClarification: null,
+			transcript: removeTransientClarificationItems(removeTransientApprovalItems(state.transcript)),
 		};
 	}
 	if (method === "message.delta") {
@@ -512,7 +598,14 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		};
 	}
 	if (method === "approval.respond") {
-		return { ...state, pendingApproval: null };
+		return {
+			...state,
+			pendingApproval: null,
+			transcript: removeTransientApprovalItems(
+				state.transcript,
+				stringValue(params.decision_id) ?? stringValue(params.decisionId) ?? undefined,
+			),
+		};
 	}
 	if (method === "clarify.request") {
 		return {
@@ -528,7 +621,14 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		};
 	}
 	if (method === "clarify.respond") {
-		return { ...state, pendingClarification: null };
+		return {
+			...state,
+			pendingClarification: null,
+			transcript: removeTransientClarificationItems(
+				state.transcript,
+				stringValue(params.request_id) ?? stringValue(params.requestId) ?? undefined,
+			),
+		};
 	}
 	if (method === "status.changed") {
 		const trust = trustFromPayload(params.trust, state.workspace);
@@ -1146,9 +1246,40 @@ function toolFromTranscriptItem(
 	const metadata = recordValue(item.metadata);
 	const status = toolStatus(metadata);
 	const name = stringValue(metadata.tool_name) ?? stringValue(metadata.name) ?? item.text.split(/\s+/, 1)[0] ?? "Tool";
+	const display = toolDisplayFromMetadata(metadata);
+	if (display) {
+		const mutating = display.presentation === "mutation" || mutatingTool(name, metadata);
+		const writeContent = mutating && isWriteTool(name) ? display.detail : undefined;
+		const mutationDiff = mutating && !isWriteTool(name) ? display.detail : undefined;
+		return {
+			id: item.id,
+			name,
+			args: compactTarget(commandTargetPreview(name, display.target ?? null), workspace) ?? undefined,
+			status: display.status,
+			durationMs: numberValue(display.metrics.duration_ms) ?? undefined,
+			mutating,
+			contentPreview: writeContent,
+			contentLineCount:
+				numberValue(display.metrics.line_count) ?? (writeContent ? lineCount(writeContent) : undefined),
+			diffPreview: mutationDiff,
+			summaryPreview: display.summary || undefined,
+			detailPreview: writeContent || mutationDiff ? undefined : display.detail,
+			outputPreview: display.summary || undefined,
+			errorPreview: display.error,
+			presentation: display.presentation,
+			displayTruncated: display.truncated,
+			displayOmittedChars: display.omittedChars,
+			hiddenLineCount: display.truncated ? 1 : undefined,
+			hidden: shouldHideTool(name, display.status, mutating, viewMode),
+			expanded: item.folded === false || (item.folded === undefined && toolDetailsDefault === "expanded"),
+		};
+	}
 	const rawPayload = recordValue(metadata.raw_payload);
 	const argumentsPayload = recordValue(metadata.arguments);
 	const target =
+		stringValue(metadata.skill_name) ??
+		stringValue(rawPayload.skill_name) ??
+		stringValue(argumentsPayload.skill_name) ??
 		stringValue(metadata.path) ??
 		stringValue(rawPayload.path) ??
 		stringValue(argumentsPayload.file_path) ??
@@ -1180,6 +1311,70 @@ function toolFromTranscriptItem(
 		hiddenLineCount: hiddenLineCountForTool(metadata, contentPreview),
 		expanded: item.folded === false || (item.folded === undefined && toolDetailsDefault === "expanded"),
 	};
+}
+
+type ToolDisplay = {
+	target?: string;
+	status: MycliShellToolStatus;
+	summary: string;
+	detail?: string;
+	error?: string;
+	metrics: Record<string, string | number | boolean>;
+	truncated: boolean;
+	omittedChars: number;
+	presentation: string;
+};
+
+const DISPLAY_PRESENTATIONS = new Set([
+	"tool",
+	"context",
+	"mutation",
+	"shell",
+	"skill",
+	"web",
+	"diagnostic",
+	"control",
+	"external",
+]);
+
+function toolDisplayFromMetadata(metadata: Record<string, unknown>): ToolDisplay | null {
+	const display = recordValue(metadata.display);
+	const rawStatus = stringValue(display.status);
+	const summary = typeof display.summary === "string" ? display.summary : null;
+	if (!rawStatus || summary === null) return null;
+	let status: MycliShellToolStatus;
+	if (rawStatus === "success" || rawStatus === "error" || rawStatus === "cancelled") {
+		status = rawStatus;
+	} else if (rawStatus === "running" || rawStatus === "waiting") {
+		status = "running";
+	} else {
+		return null;
+	}
+	const rawPresentation = stringValue(display.presentation) ?? "tool";
+	return {
+		target: stringValue(display.target) ?? undefined,
+		status,
+		summary,
+		detail: textValue(display.detail) ?? undefined,
+		error: textValue(display.error) ?? undefined,
+		metrics: scalarDisplayMetrics(display.metrics),
+		truncated: booleanValue(display.truncated) ?? false,
+		omittedChars: numberValue(display.omitted_chars) ?? 0,
+		presentation: DISPLAY_PRESENTATIONS.has(rawPresentation) ? rawPresentation : "tool",
+	};
+}
+
+function scalarDisplayMetrics(value: unknown): Record<string, string | number | boolean> {
+	const raw = recordValue(value);
+	const metrics: Record<string, string | number | boolean> = {};
+	for (const [key, item] of Object.entries(raw).slice(0, 16)) {
+		if (typeof item === "string" || typeof item === "boolean") {
+			metrics[key] = item;
+		} else if (typeof item === "number" && Number.isFinite(item)) {
+			metrics[key] = item;
+		}
+	}
+	return metrics;
 }
 
 function transcriptItemFromSubagent(subagent: Record<string, unknown>): RuntimeTranscriptItem | null {
@@ -1289,7 +1484,7 @@ function outputPreviewForTool(
 	if (isShellTool(name)) {
 		return textValue(metadata.summary) ?? textValue(metadata.output_preview) ?? textValue(metadata.stdout) ?? textValue(metadata.stderr) ?? undefined;
 	}
-	return stringValue(metadata.summary) ?? (status === "success" ? itemText : undefined);
+	return textValue(metadata.summary) ?? textValue(metadata.output_preview) ?? (status === "success" ? itemText : undefined);
 }
 
 function hiddenLineCountForTool(metadata: Record<string, unknown>, contentPreview: string | undefined): number | undefined {
@@ -1710,6 +1905,14 @@ function applyShellLifecycle(
 		status: incomingTerminalState ? (successful ? "done" : "failed") : "running",
 		success: incomingTerminalState ? successful : undefined,
 	};
+	metadata.display = shellDisplayEnvelope({
+		metadata,
+		shellId,
+		commandPreview,
+		outputPreview,
+		terminalState: incomingTerminalState,
+		exitCode: process.exitCode,
+	});
 	const item: RuntimeTranscriptItem = {
 		id: existingItem?.id ?? nextId("shell"),
 		type: "tool_summary",
@@ -1764,6 +1967,20 @@ function boundedShellOutput(existing: string, delta: string, omittedChars: numbe
 }
 
 function applyToolLifecycle(items: RuntimeTranscriptItem[], method: string, params: Record<string, unknown>): RuntimeTranscriptItem[] {
+	if (isTaskTool(params) && method !== "tool.failed" && booleanValue(params.success) !== false) {
+		const existingIndex = findToolIndex(items, params);
+		return existingIndex < 0 ? items : [...items.slice(0, existingIndex), ...items.slice(existingIndex + 1)];
+	}
+	if (isShellOutputLifecycle(params) && method !== "tool.failed") {
+		const withoutPollingItem = removeToolLifecycleItem(items, params);
+		if (method !== "tool.complete") {
+			return withoutPollingItem;
+		}
+		const merged = mergeShellOutputIntoExecution(withoutPollingItem, params);
+		if (merged !== null) {
+			return merged;
+		}
+	}
 	const rawPayload = recordValue(params.raw_payload);
 	const backgroundStillRunning =
 		method === "tool.complete" &&
@@ -1783,6 +2000,178 @@ function applyToolLifecycle(items: RuntimeTranscriptItem[], method: string, para
 		metadata: matchIndex >= 0 ? { ...recordValue(items[matchIndex]!.metadata), ...metadata } : metadata,
 	};
 	return matchIndex >= 0 ? [...items.slice(0, matchIndex), item, ...items.slice(matchIndex + 1)] : [...items, item];
+}
+
+function removeTransientApprovalItems(items: RuntimeTranscriptItem[], decisionId?: string): RuntimeTranscriptItem[] {
+	return items.filter((item) => {
+		if (item.type !== "approval") return true;
+		if (!decisionId) return false;
+		const metadata = recordValue(item.metadata);
+		const itemDecisionId = stringValue(metadata.decision_id) ?? stringValue(metadata.decisionId);
+		return itemDecisionId !== decisionId;
+	});
+}
+
+function removeTransientClarificationItems(items: RuntimeTranscriptItem[], requestId?: string): RuntimeTranscriptItem[] {
+	return items.filter((item) => {
+		if (item.type !== "clarification") return true;
+		if (!requestId) return false;
+		const metadata = recordValue(item.metadata);
+		const itemRequestId = stringValue(metadata.request_id) ?? stringValue(metadata.requestId);
+		return itemRequestId !== requestId;
+	});
+}
+
+function isShellOutputLifecycle(params: Record<string, unknown>): boolean {
+	const name = stringValue(params.name) ?? stringValue(params.tool_name) ?? "";
+	const normalized = name.trim().toLowerCase().replace(/[_-]/g, "");
+	return normalized === "shelloutput" || normalized === "bashoutput";
+}
+
+function removeToolLifecycleItem(items: RuntimeTranscriptItem[], params: Record<string, unknown>): RuntimeTranscriptItem[] {
+	const index = findToolIndex(items, params);
+	return index < 0 ? items : [...items.slice(0, index), ...items.slice(index + 1)];
+}
+
+function mergeShellOutputIntoExecution(
+	items: RuntimeTranscriptItem[],
+	params: Record<string, unknown>,
+): RuntimeTranscriptItem[] | null {
+	const rawPayload = recordValue(params.raw_payload);
+	const incomingDisplay = recordValue(params.display);
+	const incomingMetrics = recordValue(incomingDisplay.metrics);
+	const shellId =
+		stringValue(rawPayload.shell_id) ??
+		stringValue(rawPayload.bash_id) ??
+		stringValue(params.shell_id) ??
+		stringValue(params.bash_id) ??
+		stringValue(incomingMetrics.shell_id);
+	if (!shellId) return null;
+
+	const index = findShellTranscriptIndex(items, shellId, undefined);
+	if (index < 0) return null;
+	const existing = items[index]!;
+	const metadata = recordValue(existing.metadata);
+	const existingDisplay = recordValue(metadata.display);
+	const existingOutput =
+		textValue(metadata.output_preview) ??
+		textValue(existingDisplay.detail) ??
+		"";
+	const incomingOutput =
+		textValue(incomingDisplay.detail) ??
+		textValue(rawPayload.output) ??
+		textValue(rawPayload.stdout) ??
+		"";
+	const outputPreview = mergeShellOutputText(existingOutput, incomingOutput);
+	const terminalState =
+		stringValue(rawPayload.terminal_state) ??
+		stringValue(params.terminal_state) ??
+		undefined;
+	const exitCode = numberValue(rawPayload.exit_code) ?? numberValue(params.exit_code) ?? undefined;
+	const commandPreview =
+		stringValue(metadata.command_preview) ??
+		stringValue(existingDisplay.target) ??
+		"command";
+	const nextMetadata: Record<string, unknown> = {
+		...metadata,
+		shell_id: shellId,
+		background:
+			booleanValue(rawPayload.background) ??
+			booleanValue(params.background) ??
+			booleanValue(metadata.background),
+		process_state:
+			stringValue(rawPayload.process_state) ??
+			stringValue(params.process_state) ??
+			stringValue(metadata.process_state),
+		terminal_state: terminalState ?? stringValue(metadata.terminal_state),
+		exit_code: exitCode ?? numberValue(metadata.exit_code) ?? undefined,
+		output_chars:
+			numberValue(rawPayload.output_chars) ??
+			numberValue(params.output_chars) ??
+			numberValue(metadata.output_chars) ??
+			undefined,
+		omitted_output_chars:
+			numberValue(rawPayload.omitted_output_chars) ??
+			numberValue(params.omitted_output_chars) ??
+			numberValue(metadata.omitted_output_chars) ??
+			0,
+		output_preview: outputPreview || undefined,
+		status: terminalState ? (terminalState === "completed" && (exitCode === undefined || exitCode === 0) ? "done" : "failed") : "running",
+		success: terminalState ? terminalState === "completed" && (exitCode === undefined || exitCode === 0) : undefined,
+	};
+	nextMetadata.display = shellDisplayEnvelope({
+		metadata: { ...nextMetadata, display: { ...existingDisplay, ...incomingDisplay, target: existingDisplay.target } },
+		shellId,
+		commandPreview,
+		outputPreview,
+		terminalState,
+		exitCode,
+	});
+	const merged: RuntimeTranscriptItem = {
+		...existing,
+		metadata: nextMetadata,
+	};
+	return [...items.slice(0, index), merged, ...items.slice(index + 1)];
+}
+
+function mergeShellOutputText(existing: string, incoming: string): string {
+	if (!incoming) return existing;
+	if (!existing) return incoming;
+	if (existing.includes(incoming)) return existing;
+	if (incoming.includes(existing)) return incoming;
+	return `${existing}${incoming}`;
+}
+
+function shellDisplayEnvelope(options: {
+	metadata: Record<string, unknown>;
+	shellId: string;
+	commandPreview: string;
+	outputPreview: string;
+	terminalState?: string;
+	exitCode?: number;
+}): Record<string, unknown> {
+	const existing = recordValue(options.metadata.display);
+	const metrics = recordValue(existing.metrics);
+	const successful =
+		options.terminalState === "completed" &&
+		(options.exitCode === undefined || options.exitCode === 0);
+	const status = options.terminalState ? (successful ? "success" : "error") : "running";
+	const summary = options.terminalState
+		? options.exitCode === undefined
+			? options.terminalState
+			: `Exit ${options.exitCode}`
+		: "Running";
+	return {
+		...existing,
+		target: options.commandPreview,
+		status,
+		summary,
+		...(options.outputPreview ? { detail: options.outputPreview } : {}),
+		presentation: "shell",
+		metrics: {
+			...metrics,
+			shell_id: options.shellId,
+			...(options.exitCode === undefined ? {} : { exit_code: options.exitCode }),
+		},
+	};
+}
+
+function shouldSuppressSuccessfulTaskItem(item: RuntimeTranscriptItem): boolean {
+	if (item.type !== "tool_summary" && item.type !== "tool_detail") {
+		return false;
+	}
+	const metadata = recordValue(item.metadata);
+	if (!isTaskTool(metadata)) {
+		return false;
+	}
+	const status = (stringValue(metadata.status) ?? "").toLowerCase();
+	const failedStatus = ["failed", "error", "denied", "interrupted"].includes(status);
+	return booleanValue(metadata.success) !== false && !failedStatus && !stringValue(metadata.error);
+}
+
+function isTaskTool(metadata: Record<string, unknown>): boolean {
+	const name = stringValue(metadata.name) ?? stringValue(metadata.tool_name) ?? "";
+	return name.trim().toLowerCase() === "task";
 }
 
 function applyCompactionLifecycle(items: RuntimeTranscriptItem[], method: string, params: Record<string, unknown>): RuntimeTranscriptItem[] {

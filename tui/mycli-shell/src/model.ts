@@ -30,8 +30,13 @@ export type MycliShellTool = {
 	contentPreview?: string;
 	contentLineCount?: number;
 	diffPreview?: string;
+	summaryPreview?: string;
+	detailPreview?: string;
 	outputPreview?: string;
 	errorPreview?: string;
+	presentation?: string;
+	displayTruncated?: boolean;
+	displayOmittedChars?: number;
 	hiddenLineCount?: number;
 	hidden?: boolean;
 	expanded?: boolean;

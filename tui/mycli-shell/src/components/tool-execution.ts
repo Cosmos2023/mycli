@@ -4,6 +4,7 @@ import { Container } from "../tui-core/tui.ts";
 import type { MycliShellTool } from "../model.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
+import { shortPreview } from "./tool-display.ts";
 import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "./tool-presentation.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
 
@@ -47,10 +48,12 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private headerText(): string {
-		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
 		const duration = formatDuration(this.tool.durationMs);
+		const target = this.tool.name.trim().toLowerCase() === "skill" ? shortPreview(this.tool.args) : undefined;
+		const targetSuffix = target ? ` ${target}` : "";
 		const suffix = duration ? theme.fg("dim", ` ${duration}`) : "";
-		return `${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(presentation.label))}${suffix}`;
+		return `${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(`${presentation.label}${targetSuffix}`))}${suffix}`;
 	}
 
 	private resultText(): string {
@@ -99,13 +102,16 @@ export class ToolExecutionComponent extends Container {
 
 	private detailText(): string {
 		if (this.tool.status === "error") {
-			return this.tool.errorPreview ?? this.tool.outputPreview ?? "";
+			return this.tool.errorPreview ?? this.tool.detailPreview ?? this.tool.outputPreview ?? "";
 		}
 		if (this.tool.diffPreview) {
 			return this.tool.diffPreview;
 		}
 		if (this.tool.contentPreview) {
 			return this.tool.contentPreview;
+		}
+		if (this.tool.detailPreview) {
+			return this.tool.detailPreview;
 		}
 		if (!this.tool.expanded && !this.tool.hiddenLineCount && singleLineText(this.tool.outputPreview)) {
 			return "";
@@ -124,13 +130,13 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private previewLineLimit(): number {
-		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
 		return this.tool.contentPreview ? presentation.writePreviewLines : presentation.previewLines;
 	}
 
 	private hiddenLineCount(): number {
 		if (this.tool.contentPreview && this.tool.contentLineCount !== undefined) {
-			const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+			const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
 			return Math.max(0, this.tool.contentLineCount - presentation.writePreviewLines);
 		}
 		return this.tool.hiddenLineCount ?? 0;
@@ -149,7 +155,7 @@ export class ToolExecutionComponent extends Container {
 			return truncateToVisualLines(styled, this.previewLineLimit(), width, 5);
 		}
 		const visualLines = new Text(styled, 5, 0).render(width);
-		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating);
+		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
 		if (visualLines.length <= presentation.writePreviewLines) {
 			return { visualLines, skippedCount: 0 };
 		}
@@ -167,7 +173,14 @@ export class ToolExecutionComponent extends Container {
 	private shouldShowCollapsedHint(): boolean {
 		return (
 			!this.tool.expanded &&
-			Boolean(this.tool.hiddenLineCount || this.tool.outputPreview || this.tool.errorPreview || this.tool.diffPreview || this.tool.contentPreview)
+			Boolean(
+				this.tool.hiddenLineCount ||
+					this.tool.outputPreview ||
+					this.tool.errorPreview ||
+					this.tool.diffPreview ||
+					this.tool.contentPreview ||
+					this.tool.detailPreview,
+			)
 		);
 	}
 
