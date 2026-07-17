@@ -1327,7 +1327,7 @@ class ShellThenDoneAdapter:
                     "tool_call": ToolCall(
                         call_id="call_shell_1",
                         name="Shell",
-                        arguments={"args": [sys.executable, "-c", "print('shell-output')"]},
+                        arguments={"args": ["echo", "shell-output"]},
                         reason="inspect shell output",
                     ),
                     "done": False,

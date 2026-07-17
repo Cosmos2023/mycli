@@ -1369,6 +1369,39 @@ def test_tool_execution_service_execpolicy_deny_blocks_shell_without_raw_command
     assert "sk-do-not-print" not in str(policy_trace.payload)
 
 
+def test_unknown_shell_command_suspends_before_tool_execution(tmp_path: Path) -> None:
+    service, fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        policy_gate=RuntimePolicyGate(
+            approval_service=ApprovalService(SafetyPolicy(workspace_root=tmp_path)),
+        ),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="Shell",
+            arguments={"command": "python script.py"},
+            reason="run",
+            call_id="call_shell_unknown",
+        ),
+        tool_router=router,
+        tool_exposure=_tool_exposure(),
+        plan_state=PlanState(),
+        turn_id="turn_unknown",
+        activity_events=[],
+        turn_items=[],
+    )
+
+    assert fake_tool.seen_arguments == []
+    trace = TraceService(home_dir=tmp_path / "home").load("demo")
+    policy_trace = next(event for event in trace if event.kind == "runtime_policy_decision")
+    assert policy_trace.payload["decision"] == "needs_approval"
+    assert "python script.py" not in str(policy_trace.payload)
+
+
 def test_tool_execution_service_execpolicy_ask_blocks_shell_for_approval(
     tmp_path: Path,
 ) -> None:
@@ -1574,7 +1607,7 @@ def test_tool_execution_service_injects_bounded_shell_runtime_enforcement(
         conversation=Conversation(session_id="demo"),
         call=ToolCall(
             name="Bash",
-            arguments={"command": python_shell_command('print("ok")'), "timeout": 999},
+            arguments={"command": "echo ok", "timeout": 999},
             reason="probe",
             call_id="call_shell_enforced",
         ),

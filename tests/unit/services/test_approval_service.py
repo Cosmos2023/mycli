@@ -124,6 +124,44 @@ def test_session_allowance_matches_only_same_shell_kind() -> None:
     assert outcome.pending_approval is not None
 
 
+def test_session_allowance_approves_matching_simple_unknown_command() -> None:
+    service = ApprovalService(
+        session_allowances=(
+            SessionCommandAllowance(command_pattern="python script.py"),
+        )
+    )
+
+    outcome = service.evaluate(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "python script.py"},
+            reason="run script",
+        )
+    )
+
+    assert outcome.auto_approved_by == "session_allowance"
+
+
+def test_complex_command_does_not_match_session_allowance() -> None:
+    service = ApprovalService(
+        session_allowances=(
+            SessionCommandAllowance(command_pattern="echo >"),
+        )
+    )
+
+    outcome = service.evaluate(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "echo hello > output.txt"},
+            reason="write",
+        )
+    )
+
+    assert outcome.auto_approved is False
+    assert outcome.pending_approval is not None
+    assert outcome.pending_approval.command_pattern is None
+
+
 def test_approval_service_suspends_medium_risk_write_when_strict() -> None:
     service = ApprovalService(
         safety_policy=SafetyPolicy(auto_approve_medium=False),

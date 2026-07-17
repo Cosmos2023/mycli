@@ -204,7 +204,7 @@ def test_safety_policy_requires_choice_for_output_redirection() -> None:
     )
 
     assert decision.kind is DecisionKind.NEEDS_CHOICE
-    assert decision.command_pattern == "echo >"
+    assert decision.command_pattern is None
 
 
 def test_safety_policy_auto_allows_literal_special_chars_in_args() -> None:

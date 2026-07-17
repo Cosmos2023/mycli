@@ -146,7 +146,9 @@ def analyze_shell_command(command: str) -> ShellSafetyAnalysis:
             risk_level=ShellRiskLevel.CONFIRM,
             reason=confirm_reason,
             preview=preview,
-            command_pattern=pattern,
+            command_pattern=(
+                None if _has_redirection(args, stripped) else pattern
+            ),
             reroute_tool=reroute_tool,
             reroute_reason=reroute_reason,
         )
