@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from pathlib import Path
 import shutil
@@ -120,10 +120,20 @@ def _wait_for_terminal(
 ) -> ToolResult:
     deadline = time.monotonic() + timeout_seconds
     output_tool = ShellOutputTool(session_id=session_id)
+    output_parts: list[str] = []
     while time.monotonic() < deadline:
         result = output_tool.execute({"shell_id": shell_id})
+        output = result.raw_payload.get("output")
+        if isinstance(output, str) and output:
+            output_parts.append(output)
         if result.raw_payload.get("status") != "running":
-            return result
+            return replace(
+                result,
+                raw_payload={
+                    **result.raw_payload,
+                    "output": "".join(output_parts),
+                },
+            )
         time.sleep(0.02)
     raise AssertionError(f"shell {shell_id} did not finish")
 

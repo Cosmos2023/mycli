@@ -47,3 +47,18 @@ jobs:
       - run: uv sync --locked --dev
       - name: Native shell lifecycle smoke (${{ matrix.shell_mode }})
         run: uv run pytest tests/integration/test_cross_platform_shell.py -q
+
+  windows-conpty-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked --dev
+      - name: ConPTY transport and shell integration smoke
+        run: >-
+          uv run pytest
+          tests/unit/tools/shell_transport/test_windows_conpty.py
+          tests/integration/test_cross_platform_shell.py
+          -q
