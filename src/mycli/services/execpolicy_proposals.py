@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePath, PureWindowsPath
+import re
 
 from mycli.domain.runtime import (
     ExecPolicyDecision,
@@ -122,7 +123,10 @@ class ExecPolicyProposalValidator:
         )
         if executable in {"env", "sudo", "osascript"}:
             return True
-        if executable in {"python", "python3", "py"}:
+        if executable == "py" or re.fullmatch(
+            r"python(?:\d+(?:\.\d+)*)?",
+            executable,
+        ):
             return len(pattern) == 1 or comparable[1:2] == ("-c",)
         if executable == "node":
             return len(pattern) == 1 or comparable[1:2] == ("-e",)

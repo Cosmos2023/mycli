@@ -50,6 +50,11 @@ from mycli.domain.logging import LogLevel
 from mycli.services.context.compaction import CacheZones, ContextBudget
 from mycli.services.hooks import HookAction, HookContext, HookPoint, HookResult
 from mycli.llms.clients.openai_chat import ModelResponseError
+from mycli.services.execpolicy import ExecPolicyRefreshError
+from mycli.services.execpolicy_writer import (
+    ExecPolicyWriteError,
+    ExecPolicyWriteResult,
+)
 from mycli.services.turn_guard import ContinueReason, NoProgressTracker
 
 if TYPE_CHECKING:
@@ -339,6 +344,7 @@ class TurnExecutor:
             "1": DecisionAction.APPROVE_ONCE,
             "2": DecisionAction.REJECT,
             "3": DecisionAction.ALLOW_SESSION,
+            "4": DecisionAction.ALWAYS_ALLOW,
         }
         allowed_choices = tuple(
             key for key, action in choice_to_action.items() if action in decision.options
@@ -364,6 +370,23 @@ class TurnExecutor:
                 runtime=runtime,
                 turn_id=f"approval_{uuid4().hex}",
                 result="allow_session_unavailable",
+                choice=normalized,
+                decision=decision,
+            )
+            return TurnResponse(
+                assistant_message=(
+                    f"Please choose {runtime._format_allowed_choices(decision.options)}."
+                ),
+                pending_decision=decision,
+            )
+        if (
+            selected_action is DecisionAction.ALWAYS_ALLOW
+            and decision.proposed_execpolicy_pattern is None
+        ):
+            _record_approval_resolution(
+                runtime=runtime,
+                turn_id=f"approval_{uuid4().hex}",
+                result="always_allow_unavailable",
                 choice=normalized,
                 decision=decision,
             )
@@ -443,6 +466,50 @@ class TurnExecutor:
                     "The pending decision exists, but the suspended turn cannot be resumed."
                 ),
                 pending_decision=decision,
+            )
+
+        if selected_action is DecisionAction.ALWAYS_ALLOW:
+            pattern = decision.proposed_execpolicy_pattern
+            assert pattern is not None
+            try:
+                write_result = runtime._execpolicy_writer.allow_prefix(pattern)
+            except ExecPolicyWriteError as exc:
+                _record_persistent_approval_failure(
+                    runtime=runtime,
+                    turn_id=turn_id,
+                    decision=decision,
+                    stage="write",
+                    error=exc,
+                )
+                return TurnResponse(
+                    assistant_message=(
+                        "Could not persist the Shell approval. "
+                        "The command is still pending."
+                    ),
+                    pending_decision=decision,
+                )
+            try:
+                runtime.refresh_execpolicy_rules()
+            except ExecPolicyRefreshError as exc:
+                _record_persistent_approval_failure(
+                    runtime=runtime,
+                    turn_id=turn_id,
+                    decision=decision,
+                    stage="refresh",
+                    error=exc,
+                )
+                return TurnResponse(
+                    assistant_message=(
+                        "The Shell rule was persisted but could not be activated "
+                        "in this runtime. The command is still pending."
+                    ),
+                    pending_decision=decision,
+                )
+            _record_persistent_approval(
+                runtime=runtime,
+                turn_id=turn_id,
+                decision=decision,
+                write_result=write_result,
             )
 
         if (
@@ -2029,6 +2096,67 @@ def _record_approval_allowance(
         level=LogLevel.INFO,
         event="approval_allowance",
         message=f"Allowed {decision.tool_call.name} for this session.",
+        context=payload,
+    )
+
+
+def _record_persistent_approval(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    decision: PendingDecision,
+    write_result: ExecPolicyWriteResult,
+) -> None:
+    payload: dict[str, object] = {
+        "action": DecisionAction.ALWAYS_ALLOW.value,
+        "shell_kind": _decision_shell_kind(decision).value,
+        "rule_source": "user",
+        "pattern_token_count": len(decision.proposed_execpolicy_pattern or ()),
+        "pattern_hash": write_result.pattern_hash,
+        "write_result": write_result.status,
+    }
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(
+            kind="persistent_approval",
+            turn_id=turn_id,
+            payload=payload,
+        ),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.INFO,
+        event="persistent_approval",
+        message="Persisted a global Shell approval rule.",
+        context=payload,
+    )
+
+
+def _record_persistent_approval_failure(
+    *,
+    runtime: AgentRuntime,
+    turn_id: str,
+    decision: PendingDecision,
+    stage: str,
+    error: Exception,
+) -> None:
+    payload: dict[str, object] = {
+        "action": DecisionAction.ALWAYS_ALLOW.value,
+        "stage": stage,
+        "error_kind": type(error).__name__,
+        "validated_pattern": decision.proposed_execpolicy_pattern is not None,
+    }
+    runtime._trace_service.append(
+        runtime._config.session_id,
+        RuntimeTraceEvent(
+            kind="persistent_approval_failed",
+            turn_id=turn_id,
+            payload=payload,
+        ),
+    )
+    runtime._workspace_log_service.log(
+        level=LogLevel.WARNING,
+        event="persistent_approval_failed",
+        message="Could not activate a global Shell approval rule.",
         context=payload,
     )
 

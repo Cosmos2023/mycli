@@ -28,6 +28,8 @@ from mycli.tools.base import ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.bash import BashTool
 from mycli.tools.shell_registry import SHELL_REGISTRY
+from mycli.services.execpolicy import ExecPolicyRefreshError
+from mycli.services.execpolicy_writer import ExecPolicyWriteError
 
 
 class PushModel:
@@ -121,6 +123,28 @@ class PushThenDoneModel:
         self.calls += 1
         if self.calls == 1:
             return PushModel().decide()
+        return ModelDecision(assistant_message="Done", done=True)
+
+
+class PersistentPushTwiceModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def decide(self, *_args, **_kwargs) -> ModelDecision:
+        self.calls += 1
+        if self.calls in {1, 3}:
+            return ModelDecision(
+                progress_message="Preparing a persistent push",
+                tool_call=ToolCall(
+                    name="Shell",
+                    arguments={
+                        "command": "git push origin main",
+                        "prefix_rule": ["git", "push"],
+                    },
+                    reason="publish branch",
+                    call_id=f"call_push_{self.calls}",
+                ),
+            )
         return ModelDecision(assistant_message="Done", done=True)
 
 
@@ -609,6 +633,127 @@ def test_turn_service_allows_session_pattern_after_choice_three(tmp_path: Path) 
     )
     assert "approval_allowance" in agent_log
     assert "git push" in agent_log
+
+
+def test_turn_service_persists_and_immediately_uses_always_allow(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    registry = SpyToolRegistry()
+    model = PersistentPushTwiceModel()
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=model,
+        tool_registry=registry,
+        config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
+        home_dir=home_dir,
+    )
+
+    first = service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    assert first.pending_decision.options[-1] is DecisionAction.ALWAYS_ALLOW
+
+    resolved = service.resolve_pending_decision("4")
+
+    assert resolved.pending_decision is None
+    assert len(registry.calls) == 1
+    assert service._session_service.load_pending_decision("demo") is None
+    rules_text = (home_dir / ".mycli" / "rules" / "default.rules").read_text(
+        encoding="utf-8"
+    )
+    assert 'pattern=["git", "push"]' in rules_text
+    audit = next(
+        event
+        for event in service._trace_service.load("demo")
+        if event.kind == "persistent_approval"
+    )
+    assert audit.payload["action"] == "always_allow"
+    assert audit.payload["rule_source"] == "user"
+    assert audit.payload["pattern_token_count"] == 2
+    assert audit.payload["write_result"] == "created"
+    assert len(str(audit.payload["pattern_hash"])) == 16
+    assert "git" not in str(audit.payload)
+
+    second = service.handle_user_turn("push the branch again")
+
+    assert second.pending_decision is None
+    assert len(registry.calls) == 2
+    policy_events = [
+        event
+        for event in service._trace_service.load("demo")
+        if event.kind == "runtime_policy_decision"
+        and event.payload.get("execpolicy_decision") == "allow"
+    ]
+    assert policy_events
+
+
+def test_always_allow_write_failure_keeps_command_pending(tmp_path: Path) -> None:
+    registry = SpyToolRegistry()
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PersistentPushTwiceModel(),
+        tool_registry=registry,
+        config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
+        home_dir=tmp_path / "home",
+    )
+    first = service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+
+    class FailingWriter:
+        def allow_prefix(self, _pattern: tuple[str, ...]):
+            raise ExecPolicyWriteError("write failed")
+
+    service._runtime._execpolicy_writer = FailingWriter()
+
+    failed = service.resolve_pending_decision("4")
+
+    assert "could not persist" in failed.assistant_message.lower()
+    assert failed.pending_decision is not None
+    assert service._session_service.load_pending_decision("demo") is not None
+    assert service._session_service.load_suspended_turn("demo") is not None
+    assert registry.calls == []
+
+
+def test_always_allow_refresh_failure_reports_persisted_rule_and_retries(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    registry = SpyToolRegistry()
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PersistentPushTwiceModel(),
+        tool_registry=registry,
+        config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
+        home_dir=home_dir,
+    )
+    first = service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    original_refresh = service._runtime.refresh_execpolicy_rules
+
+    def fail_refresh():
+        raise ExecPolicyRefreshError("refresh failed")
+
+    service._runtime.refresh_execpolicy_rules = fail_refresh
+    try:
+        failed = service.resolve_pending_decision("4")
+    finally:
+        service._runtime.refresh_execpolicy_rules = original_refresh
+
+    assert "persisted" in failed.assistant_message.lower()
+    assert failed.pending_decision is not None
+    assert registry.calls == []
+    assert (home_dir / ".mycli" / "rules" / "default.rules").exists()
+
+    retried = service.resolve_pending_decision("4")
+
+    assert retried.pending_decision is None
+    assert len(registry.calls) == 1
+    audit = next(
+        event
+        for event in service._trace_service.load("demo")
+        if event.kind == "persistent_approval"
+    )
+    assert audit.payload["write_result"] == "existing"
 
 
 def test_turn_service_records_duplicate_allow_session_diagnostic(tmp_path: Path) -> None:

@@ -140,6 +140,9 @@ class RuntimePolicyGate:
             self._sandbox_mode = sandbox_mode
         self._shell_environment_policy = shell_environment_policy
 
+    def set_execpolicy_rules(self, rules: ExecPolicyRuleSet) -> None:
+        self._execpolicy_rules = rules
+
     def decide(
         self,
         call: ToolCall,

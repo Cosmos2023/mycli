@@ -16,6 +16,10 @@ class ExecPolicyLoadError(ValueError):
     pass
 
 
+class ExecPolicyRefreshError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True, frozen=True)
 class ExecPolicyLoader:
     home_dir: Path

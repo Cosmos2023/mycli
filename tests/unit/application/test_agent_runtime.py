@@ -42,12 +42,14 @@ from mycli.domain.runtime import (
     SessionCommandAllowance,
     ShellKind,
     StopReason,
+    ToolRuntimeDecisionKind,
     TurnItemType,
     TurnRollout,
     TurnStatus,
 )
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.trace_service import TraceService
+from mycli.services.execpolicy_writer import ExecPolicyWriter
 from mycli.services.hooks import HookAllowlist, HookConfigRegistry
 from mycli.application.runtime.tools.contributed_tool_provider import ToolContributionProvider
 from mycli.domain.tools import ToolCall
@@ -290,6 +292,32 @@ def test_agent_runtime_loads_project_execpolicy_rules_before_shell_execution(
     assert policy_trace.payload["execpolicy_decision"] == "deny"
     assert policy_trace.payload["execpolicy_rule_source"] == "project"
     assert "git push" not in str(policy_trace.payload)
+
+
+def test_refresh_execpolicy_rules_updates_gate_without_session_rebind(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=home_dir,
+        model_adapter=PushThenDoneAdapter(),
+    )
+    ExecPolicyWriter(home_dir=home_dir).allow_prefix(("git", "push"))
+
+    rules = runtime.refresh_execpolicy_rules()
+
+    assert rules.match(("git", "push", "origin", "main")) is not None
+    decision = runtime._runtime_policy_gate.decide_execpolicy(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "git push origin main"},
+            reason="publish branch",
+        )
+    )
+    assert decision is not None
+    assert decision.kind is ToolRuntimeDecisionKind.ALLOWED
+    assert decision.policy == "execpolicy_prefix_rule"
 
 
 def test_project_execpolicy_deny_overrides_existing_session_shell_allowance(

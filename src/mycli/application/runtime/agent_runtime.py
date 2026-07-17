@@ -71,7 +71,12 @@ from mycli.memory.memdir import ensure_memory_dir, memory_dir_for
 from mycli.memory.selector import ModelFileMemorySelector
 from mycli.services.approval.approval_service import ApprovalService
 from mycli.services.approval.safety_policy import SafetyPolicy
-from mycli.services.execpolicy import ExecPolicyLoadError, ExecPolicyLoader
+from mycli.services.execpolicy import (
+    ExecPolicyLoadError,
+    ExecPolicyLoader,
+    ExecPolicyRefreshError,
+)
+from mycli.services.execpolicy_writer import ExecPolicyWriter
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.compaction import (
     CompactionRehydrationService,
@@ -395,6 +400,7 @@ class AgentRuntime:
         )
         self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
+        self._execpolicy_writer = ExecPolicyWriter(home_dir=home_dir)
         self._execpolicy_rules = self._load_execpolicy_rules(home_dir=home_dir, config=config)
         self._runtime_policy_gate = RuntimePolicyGate(
             approval_service=self._approval_service,
@@ -594,6 +600,21 @@ class AgentRuntime:
                 context={"error_kind": type(exc).__name__},
             )
             return ExecPolicyRuleSet()
+
+    def refresh_execpolicy_rules(self) -> ExecPolicyRuleSet:
+        try:
+            rules = ExecPolicyLoader(
+                home_dir=self._home_dir,
+                workspace_root=self._config.workspace_root,
+            ).load()
+            self._execpolicy_rules = rules
+            self._runtime_policy_gate.set_execpolicy_rules(rules)
+            self._runtime_context_builder.set_execpolicy_rules(rules)
+            return rules
+        except Exception as exc:
+            raise ExecPolicyRefreshError(
+                "Could not refresh Shell approval rules."
+            ) from exc
 
     def _writable_roots(self) -> tuple[Path, ...]:
         return tuple(
@@ -2118,7 +2139,8 @@ class AgentRuntime:
             effect_profile=effect_profile,
         )
         if decision.kind is ToolRuntimeDecisionKind.ALLOWED:
-            return None
+            if decision.policy != "execpolicy_prefix_rule":
+                return None
         self._trace_service.append(
             self._config.session_id,
             RuntimeTraceEvent(

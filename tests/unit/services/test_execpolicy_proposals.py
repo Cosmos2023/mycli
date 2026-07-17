@@ -88,6 +88,7 @@ def test_rejects_invalid_non_prefix_cross_segment_and_complex_proposals(
     [
         ("python script.py", ["python"]),
         ("/usr/bin/python3 -c pass", ["/usr/bin/python3", "-c"]),
+        ("/usr/bin/python3.13 -c pass", ["/usr/bin/python3.13", "-c"]),
         ("node app.js", ["node"]),
         ("bash -lc make", ["bash", "-lc"]),
         ("sudo make install", ["sudo"]),
