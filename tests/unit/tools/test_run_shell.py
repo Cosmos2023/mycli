@@ -136,6 +136,15 @@ def test_bash_schema_retains_legacy_background_parameters() -> None:
     assert "timeout" in parameters
 
 
+def test_legacy_background_false_waits_for_completion(tmp_path: Path) -> None:
+    tool = BashTool(tmp_path)
+
+    result = tool.execute({"command": "printf done", "run_in_background": False})
+
+    assert result.raw_payload["terminal_state"] == "completed"
+    assert result.raw_payload["output"] == "done"
+
+
 def test_shell_tool_background_writes_output_file_and_notifies(tmp_path: Path) -> None:
     notifications: list[TaskNotification] = []
     tool = BashTool(workspace_root=tmp_path)

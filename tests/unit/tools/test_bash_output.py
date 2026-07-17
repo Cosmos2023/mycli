@@ -3,6 +3,7 @@ import time
 from mycli.tools.bash import BashTool, execute_bash
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.kill_shell import KillShellTool, kill_shell
+from mycli.tools.shell_output import ShellOutputTool
 from tests.support.shell_commands import python_shell_command
 
 
@@ -44,6 +45,21 @@ def test_bash_output_reports_missing_shell_id_argument() -> None:
 
     assert output.success is False
     assert output.raw_payload["error_kind"] == "missing_shell_id"
+
+
+def test_shell_output_accepts_legacy_bash_id_alias(tmp_path) -> None:
+    started = BashTool(tmp_path).execute(
+        {"command": "sleep 30", "run_in_background": True}
+    )
+    shell_id = str(started.raw_payload["shell_id"])
+
+    try:
+        result = ShellOutputTool().execute({"bash_id": shell_id})
+
+        assert result.success is True
+        assert result.raw_payload["shell_id"] == shell_id
+    finally:
+        KillShellTool().execute({"shell_id": shell_id})
 
 
 def test_bash_output_rejects_shell_owned_by_another_session(tmp_path) -> None:
