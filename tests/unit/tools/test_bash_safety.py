@@ -40,7 +40,7 @@ def test_shell_safety_requires_choice_for_output_redirection() -> None:
     result = analyze_shell_command("echo hello > notes.txt")
 
     assert result.risk_level is ShellRiskLevel.CONFIRM
-    assert result.command_pattern == "echo >"
+    assert result.command_pattern is None
     assert "redirection" in result.reason
 
 
@@ -48,7 +48,7 @@ def test_shell_safety_requires_choice_for_compact_output_redirection() -> None:
     result = analyze_shell_command("echo hello>notes.txt")
 
     assert result.risk_level is ShellRiskLevel.CONFIRM
-    assert result.command_pattern == "echo >"
+    assert result.command_pattern is None
     assert "redirection" in result.reason
 
 

@@ -154,6 +154,9 @@ def analyze_shell_command(command: str) -> ShellSafetyAnalysis:
         )
 
     classification = classify_shell_command(stripped, shell_kind=ShellKind.BASH)
+    if len(classification.segments) != 1:
+        reroute_tool = None
+        reroute_reason = None
     if classification.decision is not ShellCommandDecision.SAFE:
         return _confirmation_from_classification(
             classification,
