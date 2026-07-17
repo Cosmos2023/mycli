@@ -843,7 +843,7 @@ class ShellSessionManager:
             sink(event)
 
     def _notification_for_locked(self, session: _ShellSession) -> TaskNotification | None:
-        if session.notified or session.terminal_state is None:
+        if session.notified or session.terminal_state is None or not session.background:
             return None
         session.notified = True
         snapshot = session.output.snapshot()

@@ -133,6 +133,28 @@ def test_completion_wins_race_with_yield(tmp_path: Path) -> None:
     assert snapshot.yielded is False
 
 
+def test_new_session_notifies_only_after_it_yields(tmp_path: Path) -> None:
+    notifications: list[TaskNotification] = []
+    transport = FakeShellTransport()
+    transport.finish(0)
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+
+    snapshot = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="ignored",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=None,
+            yield_time_ms=250,
+            notification_sink=notifications.append,
+        )
+    )
+
+    assert snapshot.terminal_state == "completed"
+    assert notifications == []
+
+
 def _wait_for_terminal(
     manager: ShellSessionManager,
     owner: str,

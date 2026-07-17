@@ -58,6 +58,11 @@ _BUILTIN_TOOL_METADATA: dict[str, dict[str, object]] = {
         "approval_policy": "shell_safety_analysis",
         "capability_tags": ("shell", "process", "terminal", "approval"),
     },
+    "WriteStdin": {
+        "toolset": "terminal",
+        "approval_policy": "auto_allow",
+        "capability_tags": ("shell", "process", "terminal", "continuation"),
+    },
     "BashOutput": {
         "toolset": "terminal",
         "approval_policy": "auto_allow",
@@ -639,6 +644,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
     from mycli.tools.task import TaskTool
     from mycli.tools.web_fetch import WebFetchTool
     from mycli.tools.web_search import WebSearchTool
+    from mycli.tools.write_stdin import WriteStdinTool
     from mycli.tools.write import WriteTool
 
     filesystem_runtime = FileSystemRuntime(workspace_root=workspace_root)
@@ -649,6 +655,7 @@ def default_tools(workspace_root: Path) -> list[SchemaTool]:
         WriteTool(workspace_root, filesystem_runtime=filesystem_runtime),
         LSTool(workspace_root),
         ShellTool(workspace_root),
+        WriteStdinTool(),
         ShellOutputTool(),
         BashTool(workspace_root),
         BashOutputTool(),

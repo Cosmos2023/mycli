@@ -7,7 +7,7 @@ from mycli.tools.base import ToolResult
 
 
 SHELL_RESULT_TOOLS = frozenset(
-    {"run_shell", "Shell", "Bash", "ShellOutput", "BashOutput"}
+    {"run_shell", "Shell", "Bash", "ShellOutput", "BashOutput", "WriteStdin"}
 )
 
 

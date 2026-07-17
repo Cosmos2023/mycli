@@ -116,6 +116,7 @@ def test_default_registry_has_visible_shell_and_legacy_aliases(tmp_path: Path) -
     registry = ToolRegistry(workspace_root=tmp_path)
 
     assert "Shell" in registry.list_names()
+    assert "WriteStdin" in registry.list_names()
     assert "ShellOutput" in registry.list_names()
     assert "Bash" in registry.list_names()
     assert "BashOutput" in registry.list_names()

@@ -1566,6 +1566,7 @@ class ToolExecutionService:
             "run_shell",
             "ShellOutput",
             "BashOutput",
+            "WriteStdin",
             "KillShell",
         }:
             return {}

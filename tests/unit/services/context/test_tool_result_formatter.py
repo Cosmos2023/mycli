@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from mycli.domain.tooling.calls import ToolEvidence
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 from mycli.tools.base import ToolResult
@@ -64,7 +66,8 @@ def test_run_shell_failure_shows_diagnostics_and_tail() -> None:
     assert "bad" in output
 
 
-def test_bash_output_renders_incremental_output_and_status() -> None:
+@pytest.mark.parametrize("tool_name", ["BashOutput", "WriteStdin"])
+def test_shell_continuation_renders_incremental_output_and_status(tool_name: str) -> None:
     formatter = ToolResultFormatter(run_shell_max_chars=1200)
     result = ToolResult(
         success=True,
@@ -78,7 +81,7 @@ def test_bash_output_renders_incremental_output_and_status() -> None:
         },
     )
 
-    output = formatter.format("BashOutput", result)
+    output = formatter.format(tool_name, result)
 
     assert "Shell ID: shell_123" in output
     assert "Status: running" in output

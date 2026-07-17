@@ -55,6 +55,20 @@ def test_safety_policy_auto_allows_background_shell_output_reads() -> None:
     assert decision.metadata["risk_level"] == "low"
 
 
+def test_safety_policy_auto_allows_write_stdin_continuation() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(
+            name="WriteStdin",
+            arguments={"session_id": "shell_123", "chars": ""},
+            reason="wait for shell output",
+        )
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.metadata["canonical_tool_name"] == "WriteStdin"
+    assert decision.metadata["policy"] == "builtin_safe_tool"
+
+
 def test_safety_policy_auto_allows_subagent_output_reads() -> None:
     decision = SafetyPolicy().evaluate(
         ToolCall(

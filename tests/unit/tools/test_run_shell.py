@@ -111,15 +111,29 @@ def test_shell_tool_executes_with_workspace_cwd(tmp_path: Path) -> None:
     assert str(nested.resolve()) in result.raw_payload["output"]
 
 
-def test_shell_tool_schema_prefers_cwd_over_cd_prefixes() -> None:
+def test_shell_schema_exposes_codex_style_parameters() -> None:
     parameters = {parameter.name: parameter for parameter in ShellTool.spec.parameters}
 
+    assert set(parameters) == {
+        "command",
+        "cwd",
+        "tty",
+        "yield_time_ms",
+        "max_output_tokens",
+    }
     assert parameters["cwd"].required is False
     assert parameters["cwd"].description is not None
     assert "working directory" in parameters["cwd"].description.lower()
     for spec in (ShellTool.spec, BashTool.spec):
         assert "always set the `cwd`" in spec.description.lower()
         assert "do not use `cd` unless absolutely necessary" in spec.description.lower()
+
+
+def test_bash_schema_retains_legacy_background_parameters() -> None:
+    parameters = {parameter.name for parameter in BashTool.spec.parameters}
+
+    assert "run_in_background" in parameters
+    assert "timeout" in parameters
 
 
 def test_shell_tool_background_writes_output_file_and_notifies(tmp_path: Path) -> None:
@@ -237,6 +251,39 @@ def test_shell_tool_executes_through_backend_contract(tmp_path: Path) -> None:
     backend_payload = result.raw_payload["runtime_enforcement"]["backend"]
     assert backend_payload["backend"] == "local"
     assert backend_payload["isolation"] == "host_subprocess"
+
+
+def test_shell_tool_maps_new_session_controls_to_backend(tmp_path: Path) -> None:
+    class FakeBackend(LocalShellBackend):
+        def __init__(self) -> None:
+            self.requests: list[ShellBackendRequest] = []
+
+        def execute(self, request: ShellBackendRequest) -> dict[str, object]:
+            self.requests.append(request)
+            return {
+                "status": "running",
+                "output": "",
+                "process_state": "running_background",
+            }
+
+    backend = FakeBackend()
+    tool = ShellTool(workspace_root=tmp_path, shell_backend=backend)
+
+    result = tool.execute(
+        {
+            "command": "python3 worker.py",
+            "tty": True,
+            "yield_time_ms": 500,
+            "max_output_tokens": 321,
+        }
+    )
+
+    assert result.success is True
+    request = backend.requests[0]
+    assert request.legacy_background is None
+    assert request.tty is True
+    assert request.yield_time_ms == 500
+    assert request.max_output_tokens == 321
 
 
 def test_shell_tool_passes_runtime_interrupt_token_to_backend(tmp_path: Path) -> None:

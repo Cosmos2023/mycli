@@ -65,7 +65,14 @@ def _legacy_budget_class(tool_name: str) -> ToolOutputBudgetClass:
         return ToolOutputBudgetClass.READ
     if tool_name == "read_file_range":
         return ToolOutputBudgetClass.READ_RANGE
-    if tool_name in {"run_shell", "Shell", "Bash", "ShellOutput", "BashOutput"}:
+    if tool_name in {
+        "run_shell",
+        "Shell",
+        "Bash",
+        "ShellOutput",
+        "BashOutput",
+        "WriteStdin",
+    }:
         return ToolOutputBudgetClass.SHELL
     if tool_name == "Skill":
         return ToolOutputBudgetClass.INSTRUCTION

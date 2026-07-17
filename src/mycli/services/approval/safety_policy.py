@@ -64,6 +64,7 @@ class SafetyPolicy:
             "Skill",
             "Task",
             "ShellOutput",
+            "WriteStdin",
             "SendMessage",
             "SubagentOutput",
         }:
@@ -95,6 +96,7 @@ class SafetyPolicy:
             "Skill",
             "Task",
             "ShellOutput",
+            "WriteStdin",
             "SendMessage",
             "SubagentOutput",
         }:

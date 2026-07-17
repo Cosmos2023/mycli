@@ -65,6 +65,7 @@ def test_tool_exposure_planner_hides_legacy_builtin_tools_by_default() -> None:
                 "Edit",
                 "Patch",
                 "Shell",
+                "WriteStdin",
                 "ShellOutput",
                 "Bash",
                 "BashOutput",
@@ -112,7 +113,9 @@ def test_tool_exposure_planner_filters_default_registry_without_unregistering_to
     assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.isdisjoint(visible_names)
     assert HIDDEN_BY_DEFAULT_BUILTIN_TOOLS.issubset(registered_names)
     assert "Shell" in visible_names
-    assert "ShellOutput" in visible_names
+    assert "WriteStdin" in visible_names
+    assert "ShellOutput" not in visible_names
+    assert "KillShell" not in visible_names
     assert "Bash" not in visible_names
     assert "BashOutput" not in visible_names
 

@@ -25,6 +25,10 @@ def test_build_system_prompt_loads_fixed_english_template() -> None:
     assert "explicit `offset` and `limit`" in prompt
     assert "Patch" in prompt
     assert "Use `Shell`" in prompt
+    assert "use `WriteStdin` with empty `chars`" in prompt
+    assert "ShellOutput" not in prompt
+    assert "KillShell" not in prompt
+    assert "run_in_background" not in prompt
     assert "through `Bash`" not in prompt
     assert "Grep" not in prompt
     assert "Glob" not in prompt
@@ -43,7 +47,7 @@ def test_build_system_prompt_loads_fixed_english_template() -> None:
 def test_build_system_prompt_guides_bounded_read_usage() -> None:
     prompt = build_system_prompt()
 
-    assert SYSTEM_PROMPT_VERSION == "2026-07-codex-style-base-v2"
+    assert SYSTEM_PROMPT_VERSION == "2026-07-codex-style-base-v3"
     assert "Use `Read` for file contents" in prompt
     assert "`Read` calls must include explicit `offset` and `limit` arguments" in prompt
     assert "Do not use Shell `cat` or broad shell output to read files" in prompt

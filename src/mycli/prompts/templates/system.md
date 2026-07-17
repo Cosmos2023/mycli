@@ -44,6 +44,7 @@ Use tools to close concrete information gaps, not to perform ritual exploration.
 - Read files with `Read`, using explicit `offset` and `limit`.
 - Use `Edit`, `Patch`, or `Write` for file changes.
 - Use `Shell` for git, tests, lint, type checks, builds, and read-only inspection.
+- Shell waits briefly for completion. If it returns a session ID, use `WriteStdin` with empty `chars` to wait for more output, or non-empty `chars` only for a Shell started with `tty=true`.
 - Do not use `sed`, `awk`, `perl`, Python scripts, or shell redirection to edit files directly.
 - Do not repeat the same tool call with the same arguments.
 - Do not expose tool schemas, raw protocol details, internal call IDs, or private runtime mechanics in user-facing answers.

@@ -57,3 +57,22 @@ def test_projector_infers_success_when_typed_output_omits_it() -> None:
     projection = ToolModelOutputProjector().project("Anything", result)
 
     assert projection.success is False
+
+
+def test_projector_classifies_write_stdin_as_shell_output() -> None:
+    result = ToolResult(
+        success=True,
+        summary="continued",
+        raw_payload={
+            "shell_id": "shell_123",
+            "status": "running",
+            "process_state": "running_background",
+            "output": "HEAD" + "x" * 3000 + "TAIL",
+        },
+    )
+    projector = ToolModelOutputProjector(shell_max_chars=200, default_max_chars=1600)
+
+    projection = projector.project("WriteStdin", result)
+
+    assert len(projection.text_content()) <= 200
+    assert "Shell ID: shell_123" in projection.text_content()

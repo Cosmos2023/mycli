@@ -261,7 +261,7 @@ def _duration_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
 
-_SHELL_PARAMETERS = (
+_LEGACY_SHELL_PARAMETERS = (
     ToolParameter(
         name="command",
         type="string",
@@ -286,10 +286,31 @@ _SHELL_PARAMETERS = (
     ToolParameter(name="run_in_background", type="boolean", required=False),
 )
 
+_CODEX_SHELL_PARAMETERS = (
+    ToolParameter(
+        name="command",
+        type="string",
+        required=True,
+        description="Shell command to execute in the active user shell.",
+    ),
+    ToolParameter(
+        name="cwd",
+        type="string",
+        required=False,
+        description=(
+            "Working directory for the command. Defaults to the workspace root."
+        ),
+    ),
+    ToolParameter(name="tty", type="boolean", required=False),
+    ToolParameter(name="yield_time_ms", type="integer", required=False),
+    ToolParameter(name="max_output_tokens", type="integer", required=False),
+)
+
 
 class _ShellToolBase:
     name: str
     spec: ToolSpec
+    uses_yield_semantics = False
 
     def __init__(self, workspace_root: Path, shell_backend: ShellBackend | None = None) -> None:
         self._workspace_root = workspace_root
@@ -392,27 +413,57 @@ class _ShellToolBase:
         timeout_value = arguments.get("timeout", 120)
         timeout, timeout_capped = shell_options.effective_timeout(timeout_value)
         env = _shell_env(shell_options)
-        background_output_file = (
-            self._next_background_output_file()
-            if bool(arguments.get("run_in_background", False))
-            else None
-        )
+        legacy_background: bool | None
+        tty = False
+        yield_time_ms = 10_000
+        max_output_tokens = 10_000
+        if self.uses_yield_semantics:
+            tty_value = arguments.get("tty", False)
+            if not isinstance(tty_value, bool):
+                return _invalid_shell_parameter("tty", "a boolean")
+            tty = tty_value
+            yield_value = arguments.get("yield_time_ms", 10_000)
+            if not _is_positive_int(yield_value):
+                return _invalid_shell_parameter(
+                    "yield_time_ms",
+                    "a positive integer",
+                )
+            yield_time_ms = min(30_000, max(250, yield_value))
+            output_budget = arguments.get("max_output_tokens", 10_000)
+            if not _is_positive_int(output_budget):
+                return _invalid_shell_parameter(
+                    "max_output_tokens",
+                    "a positive integer",
+                )
+            max_output_tokens = output_budget
+            legacy_background = None
+            background_output_file = self._next_background_output_file()
+            notification_sink = self._notification_sink
+        else:
+            legacy_background = bool(arguments.get("run_in_background", False))
+            background_output_file = (
+                self._next_background_output_file() if legacy_background else None
+            )
+            notification_sink = (
+                self._notification_sink if background_output_file is not None else None
+            )
         payload = self._shell_backend.execute(
             ShellBackendRequest(
                 command=command_value,
                 timeout_seconds=timeout,
                 cwd=str(cwd_result),
                 owner_session_id=self._owner_session_id,
-                run_in_background=bool(arguments.get("run_in_background", False)),
-                legacy_background=bool(arguments.get("run_in_background", False)),
+                run_in_background=legacy_background is True,
+                tty=tty,
+                yield_time_ms=yield_time_ms,
+                max_output_tokens=max_output_tokens,
+                legacy_background=legacy_background,
                 shell_path=shell_options.shell_path,
                 shell_profile=shell_options.shell_profile,
                 env=env,
                 command_pattern=analysis.command_pattern,
                 output_file=background_output_file,
-                notification_sink=(
-                    self._notification_sink if background_output_file is not None else None
-                ),
+                notification_sink=notification_sink,
                 call_id=arguments.get("_runtime_tool_call_id")
                 if isinstance(arguments.get("_runtime_tool_call_id"), str)
                 else None,
@@ -492,15 +543,17 @@ class _ShellToolBase:
 
 class ShellTool(_ShellToolBase):
     name = "Shell"
+    uses_yield_semantics = True
     spec = ToolSpec(
         name=name,
         description=(
             "Execute a command in the active user shell when dedicated tools "
-            "cannot handle the task. Supports timeout and background execution. "
+            "cannot handle the task. Waits briefly, then returns a resumable session "
+            "when the command is still running. "
             "Always set the `cwd` parameter when using this tool. Do not use `cd` "
             "unless absolutely necessary."
         ),
-        parameters=_SHELL_PARAMETERS,
+        parameters=_CODEX_SHELL_PARAMETERS,
         risk_level="high",
         model_output_adapter=shell_model_output,
     )
@@ -514,7 +567,7 @@ class BashTool(_ShellToolBase):
             "Compatibility alias for the Shell tool. Always set the `cwd` parameter "
             "when using this tool. Do not use `cd` unless absolutely necessary."
         ),
-        parameters=_SHELL_PARAMETERS,
+        parameters=_LEGACY_SHELL_PARAMETERS,
         risk_level="high",
         model_output_adapter=shell_model_output,
     )
@@ -524,6 +577,19 @@ def _shell_execution_options(value: object) -> ShellExecutionOptions:
     if isinstance(value, ShellExecutionOptions):
         return value
     return ShellExecutionOptions(workspace_root=Path.cwd())
+
+
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _invalid_shell_parameter(name: str, expected: str) -> ToolResult:
+    return ToolResult(
+        success=False,
+        summary=f"Invalid Shell {name}",
+        error=f"Shell {name} must be {expected}.",
+        raw_payload={"error_kind": f"invalid_{name}"},
+    )
 
 
 def _shell_env(options: ShellExecutionOptions) -> dict[str, str]:

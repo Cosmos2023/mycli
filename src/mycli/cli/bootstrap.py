@@ -47,6 +47,7 @@ from mycli.tools.send_message import SendMessageTool
 from mycli.tools.subagent_output import SubagentOutputTool
 from mycli.tools.web_fetch import WebFetchTool
 from mycli.tools.web_search import WebSearchTool
+from mycli.tools.write_stdin import WriteStdinTool
 from mycli.tools.write import WriteTool
 from mycli.utils.workspace_logger import WorkspaceLogService
 
@@ -142,6 +143,7 @@ def build_turn_service(
                 unrestricted=unrestricted_filesystem,
             ),
             ShellTool(workspace_root),
+            WriteStdinTool(),
             ShellOutputTool(),
             BashTool(workspace_root),
             BashOutputTool(),
