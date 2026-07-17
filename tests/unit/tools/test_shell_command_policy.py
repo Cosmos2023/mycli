@@ -2,7 +2,9 @@ import pytest
 
 from mycli.domain.runtime import ShellKind
 from mycli.tools.shell_command_policy import (
+    ShellCommandDecision,
     ShellParseKind,
+    classify_shell_command,
     parse_shell_argv,
     parse_shell_command,
 )
@@ -62,3 +64,101 @@ def test_posix_parser_marks_unsupported_syntax_complex(
 
     assert parsed.kind is ShellParseKind.COMPLEX
     assert parsed.reason == reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat README.md",
+        "head -n 20 README.md",
+        "tail -n +10 README.md",
+        "ls -la",
+        "pwd",
+        "rg -n approval src",
+        "sed -n 10,20p app.py",
+        "git status --short",
+        "git -C repo diff --stat",
+        "find src -name '*.py'",
+    ],
+)
+def test_posix_known_read_commands_are_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.BASH)
+
+    assert result.decision is ShellCommandDecision.SAFE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python script.py",
+        "npm install",
+        "base64 -o output.txt input.txt",
+        "find . -delete",
+        "find . -exec rm {} ';'",
+        "rg --pre processor pattern",
+        "rg --search-zip pattern archive.zip",
+        "sed -i s/a/b/ file.txt",
+        "git branch new-branch",
+    ],
+)
+def test_unknown_or_mutating_posix_commands_are_not_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.BASH)
+
+    assert result.decision is not ShellCommandDecision.SAFE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd src && cat app.py",
+        "rg -n approval src | head -n 20",
+        "false || git status --short",
+        "pwd; ls -la",
+        "bash -lc 'cd src && sed -n 1,20p app.py'",
+        "zsh -lc 'pwd; git status --short'",
+        "sh -lc 'cat README.md | tail -n 5'",
+    ],
+)
+def test_all_safe_segments_and_plain_wrappers_are_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.BASH)
+
+    assert result.decision is ShellCommandDecision.SAFE
+
+
+def test_one_unknown_segment_makes_composed_command_unknown() -> None:
+    result = classify_shell_command(
+        "cat README.md && python script.py",
+        shell_kind=ShellKind.BASH,
+    )
+
+    assert result.decision is ShellCommandDecision.UNKNOWN
+    assert result.command_pattern == "python script.py"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch",
+        "git branch --list 'feature/*'",
+        "git branch --show-current",
+    ],
+)
+def test_read_only_git_branch_forms_are_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.BASH)
+
+    assert result.decision is ShellCommandDecision.SAFE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch feature/new",
+        "git branch -D feature/old",
+        "git -c core.pager=cat status",
+        "git diff --output=changes.patch",
+    ],
+)
+def test_mutating_or_externalized_git_forms_are_unknown(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.BASH)
+
+    assert result.decision is ShellCommandDecision.UNKNOWN

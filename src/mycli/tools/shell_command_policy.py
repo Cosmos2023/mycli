@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import posixpath
+from pathlib import PurePath
 import re
+import sys
 
 from mycli.domain.runtime import ShellKind
 
@@ -30,10 +32,46 @@ _SHELL_KEYWORDS = frozenset(
     }
 )
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_SED_PRINT_RE = re.compile(r"[0-9]+(?:,[0-9]+)?p")
+_POSIX_DIRECT_SAFE = frozenset(
+    {
+        "cat",
+        "cd",
+        "cut",
+        "echo",
+        "expr",
+        "false",
+        "grep",
+        "head",
+        "id",
+        "ls",
+        "nl",
+        "paste",
+        "pwd",
+        "rev",
+        "seq",
+        "stat",
+        "tail",
+        "tr",
+        "true",
+        "uname",
+        "uniq",
+        "wc",
+        "which",
+        "whoami",
+    }
+)
 
 
 class ShellParseKind(StrEnum):
     PLAIN = "plain"
+    COMPLEX = "complex"
+    INVALID = "invalid"
+
+
+class ShellCommandDecision(StrEnum):
+    SAFE = "safe"
+    UNKNOWN = "unknown"
     COMPLEX = "complex"
     INVALID = "invalid"
 
@@ -50,6 +88,14 @@ class ShellParseResult:
     kind: ShellParseKind
     segments: tuple[ShellCommandSegment, ...] = ()
     reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ShellCommandClassification:
+    decision: ShellCommandDecision
+    reason: str
+    segments: tuple[ShellCommandSegment, ...]
+    command_pattern: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -82,7 +128,187 @@ def parse_shell_argv(
     )
 
 
-def _parse_posix(command: str) -> ShellParseResult:
+def classify_shell_command(
+    command: str,
+    *,
+    shell_kind: ShellKind,
+    platform: str | None = None,
+) -> ShellCommandClassification:
+    parsed = parse_shell_command(command, shell_kind=shell_kind)
+    return _classify_parsed(parsed, shell_kind=shell_kind, platform=platform)
+
+
+def classify_shell_argv(
+    args: tuple[str, ...],
+    *,
+    shell_kind: ShellKind,
+    platform: str | None = None,
+) -> ShellCommandClassification:
+    parsed = parse_shell_argv(args, shell_kind=shell_kind)
+    return _classify_parsed(parsed, shell_kind=shell_kind, platform=platform)
+
+
+def is_known_safe_segment(
+    segment: ShellCommandSegment,
+    *,
+    shell_kind: ShellKind,
+    platform: str | None = None,
+) -> bool:
+    if shell_kind not in {ShellKind.BASH, ShellKind.ZSH, ShellKind.SH}:
+        return False
+    words = segment.words
+    if not words:
+        return False
+    executable = PurePath(words[0]).name
+    if executable in _POSIX_DIRECT_SAFE:
+        return True
+    if (platform or sys.platform).startswith("linux") and executable in {"numfmt", "tac"}:
+        return True
+    validators = {
+        "base64": _safe_base64,
+        "find": _safe_find,
+        "git": _safe_git,
+        "rg": _safe_rg,
+        "sed": _safe_sed,
+    }
+    validator = validators.get(executable)
+    return validator(words) if validator is not None else False
+
+
+def _classify_parsed(
+    parsed: ShellParseResult,
+    *,
+    shell_kind: ShellKind,
+    platform: str | None,
+) -> ShellCommandClassification:
+    if parsed.kind is ShellParseKind.INVALID:
+        return ShellCommandClassification(
+            ShellCommandDecision.INVALID,
+            parsed.reason or "invalid shell command",
+            parsed.segments,
+        )
+    if parsed.kind is ShellParseKind.COMPLEX:
+        return ShellCommandClassification(
+            ShellCommandDecision.COMPLEX,
+            parsed.reason or "complex shell syntax requires approval",
+            parsed.segments,
+        )
+    for segment in parsed.segments:
+        if not is_known_safe_segment(
+            segment,
+            shell_kind=shell_kind,
+            platform=platform,
+        ):
+            return ShellCommandClassification(
+                ShellCommandDecision.UNKNOWN,
+                f"Unknown command {segment.words[0]} requires approval",
+                parsed.segments,
+                command_pattern=" ".join(segment.words[:3]),
+            )
+    return ShellCommandClassification(
+        ShellCommandDecision.SAFE,
+        "Command allowed",
+        parsed.segments,
+    )
+
+
+def _safe_base64(words: tuple[str, ...]) -> bool:
+    return not any(
+        arg in {"-o", "--output"}
+        or arg.startswith("--output=")
+        or (arg.startswith("-o") and arg != "-o")
+        for arg in words[1:]
+    )
+
+
+def _safe_find(words: tuple[str, ...]) -> bool:
+    forbidden = {
+        "-delete",
+        "-exec",
+        "-execdir",
+        "-fls",
+        "-fprint",
+        "-fprint0",
+        "-fprintf",
+        "-ok",
+        "-okdir",
+    }
+    return not any(arg in forbidden for arg in words[1:])
+
+
+def _safe_rg(words: tuple[str, ...]) -> bool:
+    unsafe_without_value = {"--search-zip", "-z"}
+    unsafe_with_value = {"--hostname-bin", "--pre"}
+    return not any(
+        arg in unsafe_without_value
+        or any(
+            arg == option or arg.startswith(f"{option}=")
+            for option in unsafe_with_value
+        )
+        for arg in words[1:]
+    )
+
+
+def _safe_sed(words: tuple[str, ...]) -> bool:
+    return (
+        3 <= len(words) <= 4
+        and words[1] == "-n"
+        and _SED_PRINT_RE.fullmatch(words[2]) is not None
+    )
+
+
+def _safe_git(words: tuple[str, ...]) -> bool:
+    index = 1
+    while index < len(words):
+        if words[index] == "-C" and index + 1 < len(words):
+            index += 2
+            continue
+        if words[index] == "--no-pager":
+            index += 1
+            continue
+        break
+    if index >= len(words):
+        return False
+    subcommand = words[index]
+    args = words[index + 1 :]
+    if any(
+        arg in {"--ext-diff", "--output", "--textconv"}
+        or arg.startswith("--output=")
+        for arg in args
+    ):
+        return False
+    if subcommand in {"status", "log", "diff", "show"}:
+        return True
+    if subcommand != "branch":
+        return False
+    if not args:
+        return True
+    saw_list_form = False
+    for arg in args:
+        if arg in {
+            "--all",
+            "--list",
+            "--remotes",
+            "--show-current",
+            "--verbose",
+            "-a",
+            "-l",
+            "-r",
+            "-v",
+            "-vv",
+        }:
+            saw_list_form = True
+            continue
+        if arg.startswith("--format="):
+            saw_list_form = True
+            continue
+        if saw_list_form and not arg.startswith("-"):
+            continue
+        return False
+    return saw_list_form
+
+
+def _parse_posix(command: str, *, allow_wrapper: bool = True) -> ShellParseResult:
     tokens, error = _tokenize_posix(command)
     if error is not None:
         return error
@@ -132,7 +358,17 @@ def _parse_posix(command: str) -> ShellParseResult:
     if final_segment.words[0] in _SHELL_KEYWORDS:
         return ShellParseResult(ShellParseKind.COMPLEX, reason="shell keyword")
     segments.append(final_segment)
-    return ShellParseResult(ShellParseKind.PLAIN, segments=tuple(segments))
+    result = ShellParseResult(ShellParseKind.PLAIN, segments=tuple(segments))
+    if not allow_wrapper or len(result.segments) != 1:
+        return result
+    wrapper_words = result.segments[0].words
+    if (
+        len(wrapper_words) == 3
+        and PurePath(wrapper_words[0]).name in {"bash", "sh", "zsh"}
+        and wrapper_words[1] == "-lc"
+    ):
+        return _parse_posix(wrapper_words[2], allow_wrapper=False)
+    return result
 
 
 def _tokenize_posix(
@@ -249,9 +485,14 @@ def _join_posix_cwd(current: str | None, target: str) -> str:
 
 
 __all__ = [
+    "ShellCommandClassification",
+    "ShellCommandDecision",
     "ShellCommandSegment",
     "ShellParseKind",
     "ShellParseResult",
+    "classify_shell_argv",
+    "classify_shell_command",
+    "is_known_safe_segment",
     "parse_shell_argv",
     "parse_shell_command",
 ]
