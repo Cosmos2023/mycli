@@ -11,12 +11,14 @@ from mycli.domain.runtime import (
     DecisionKind,
     ModelTurnResult,
     ModelDecision,
+    PendingApproval,
     PendingDecision,
     RuntimeBlock,
     RuntimeItem,
     ShellLifecycleEvent,
     SessionCommandAllowance,
     StopReason,
+    SuspendedTurn,
     TurnResponse,
     TurnStatus,
 )
@@ -148,6 +150,11 @@ class PersistentPushTwiceModel:
         return ModelDecision(assistant_message="Done", done=True)
 
 
+class DoneModel:
+    def decide(self, *_args: object, **_kwargs: object) -> ModelDecision:
+        return ModelDecision(assistant_message="Done", done=True)
+
+
 class SpyToolRegistry:
     def __init__(self) -> None:
         self.calls: list[ToolCall] = []
@@ -158,6 +165,11 @@ class SpyToolRegistry:
 
     def list_names(self) -> list[str]:
         return ["LS", "Read", "Shell", "Grep", "Edit"]
+
+
+class LegacyBashSpyRegistry(SpyToolRegistry):
+    def list_names(self) -> list[str]:
+        return ["LS", "Read", "Shell", "Bash", "Grep", "Edit"]
 
 
 class FakeRuntime:
@@ -685,6 +697,160 @@ def test_turn_service_persists_and_immediately_uses_always_allow(
         and event.payload.get("execpolicy_decision") == "allow"
     ]
     assert policy_events
+
+
+def test_provider_without_prefix_rule_keeps_existing_approval_choices(tmp_path: Path) -> None:
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PushThenDoneModel(),
+        tool_registry=SpyToolRegistry(),
+        config=AgentConfig(workspace_root=tmp_path, session_id="demo"),
+        home_dir=tmp_path / "home",
+    )
+
+    response = service.handle_user_turn("push the branch")
+
+    assert response.pending_decision is not None
+    assert response.pending_decision.proposed_execpolicy_pattern is None
+    assert response.pending_decision.options == (
+        DecisionAction.APPROVE_ONCE,
+        DecisionAction.REJECT,
+        DecisionAction.ALLOW_SESSION,
+    )
+
+
+def test_legacy_bash_replay_never_offers_always_allow_and_still_executes(
+    tmp_path: Path,
+) -> None:
+    registry = LegacyBashSpyRegistry()
+    service = make_turn_service(
+        tmp_path=tmp_path,
+        model=DoneModel(),
+        tool_registry=registry,
+        config=AgentConfig(workspace_root=tmp_path, session_id="legacy"),
+        home_dir=tmp_path / "home",
+    )
+    call = ToolCall(
+        name="Bash",
+        arguments={
+            "command": "git push origin main",
+            "prefix_rule": ["git", "push"],
+        },
+        reason="legacy publish",
+        call_id="call_legacy_bash_1",
+    )
+    decision = PendingDecision(
+        tool_call=call,
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push origin main",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    service._session_service.save_pending_decision("legacy", decision)
+    service._session_service.save_suspended_turn(
+        "legacy",
+        SuspendedTurn(
+            user_message="replay the old call",
+            conversation=(Message(role="user", content="replay the old call"),),
+            pending_approval=PendingApproval(
+                tool_call=call,
+                reason=decision.reason,
+                preview=decision.preview,
+            ),
+        ),
+    )
+
+    response = service._session_service.load_pending_decision("legacy")
+
+    assert response is not None
+    assert response.proposed_execpolicy_pattern is None
+    assert DecisionAction.ALWAYS_ALLOW not in response.options
+
+    resolved = service.resolve_pending_decision("1")
+
+    assert resolved.pending_decision is None
+    assert [call.name for call in registry.calls] == ["Shell"]
+    assert registry.calls[0].arguments["command"] == "git push origin main"
+    assert "prefix_rule" not in registry.calls[0].arguments
+
+
+def test_resumed_persistent_approval_can_write_and_execute_once(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    first_service = make_turn_service(
+        tmp_path=tmp_path,
+        model=PersistentPushTwiceModel(),
+        tool_registry=SpyToolRegistry(),
+        config=AgentConfig(workspace_root=tmp_path, session_id="resume"),
+        home_dir=home_dir,
+    )
+    first = first_service.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+    assert first.pending_decision.options[-1] is DecisionAction.ALWAYS_ALLOW
+
+    resumed_registry = SpyToolRegistry()
+    resumed_service = make_turn_service(
+        tmp_path=tmp_path,
+        model=DoneModel(),
+        tool_registry=resumed_registry,
+        config=AgentConfig(workspace_root=tmp_path, session_id="resume"),
+        home_dir=home_dir,
+    )
+
+    resolved = resumed_service.resolve_pending_decision("4")
+
+    assert resolved.pending_decision is None
+    assert len(resumed_registry.calls) == 1
+    assert resumed_registry.calls[0].name == "Shell"
+    rules_text = (home_dir / ".mycli" / "rules" / "default.rules").read_text(
+        encoding="utf-8"
+    )
+    assert 'pattern=["git", "push"]' in rules_text
+
+
+def test_project_execpolicy_rules_suppress_and_override_persistent_approval(
+    tmp_path: Path,
+) -> None:
+    for project_decision in ("ask", "deny"):
+        workspace = tmp_path / project_decision
+        rules_dir = workspace / ".mycli" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "default.rules").write_text(
+            f'prefix_rule(pattern=["git", "push"], decision="{project_decision}")\n',
+            encoding="utf-8",
+        )
+        home_dir = tmp_path / f"home-{project_decision}"
+        user_rules_dir = home_dir / ".mycli" / "rules"
+        user_rules_dir.mkdir(parents=True)
+        (user_rules_dir / "default.rules").write_text(
+            'prefix_rule(pattern=["git", "push"], decision="allow")\n',
+            encoding="utf-8",
+        )
+        registry = SpyToolRegistry()
+        service = make_turn_service(
+            tmp_path=workspace,
+            model=PersistentPushTwiceModel(),
+            tool_registry=registry,
+            config=AgentConfig(workspace_root=workspace, session_id=project_decision),
+            home_dir=home_dir,
+        )
+
+        response = service.handle_user_turn("push the branch")
+
+        if project_decision == "ask":
+            assert response.pending_decision is not None
+            assert response.pending_decision.proposed_execpolicy_pattern is None
+            assert DecisionAction.ALWAYS_ALLOW not in response.pending_decision.options
+        else:
+            assert response.pending_decision is None
+            assert response.assistant_message.startswith("Denied:")
+        assert registry.calls == []
+        policy_event = next(
+            event
+            for event in service._trace_service.load(project_decision)
+            if event.kind == "runtime_policy_decision"
+        )
+        assert policy_event.payload["execpolicy_rule_source"] == "project"
+        assert "git push" not in str(policy_event.payload)
 
 
 def test_always_allow_write_failure_keeps_command_pending(tmp_path: Path) -> None:

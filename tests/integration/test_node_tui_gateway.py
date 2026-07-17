@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Event, Lock
 import time
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
 from mycli.application.turn_service import TurnService
@@ -1647,6 +1647,77 @@ def test_run_node_tui_gateway_scripted_resume_tip_then_approval_response(
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
     assert [item["text"] for item in assistant_items] == ["approval resumed on branch"]
+
+
+def test_gateway_resume_projects_legacy_and_persistent_approval_shapes(
+    tmp_path: Path,
+) -> None:
+    legacy = PendingDecision(
+        tool_call=ToolCall(
+            name="Bash",
+            arguments={"command": "git push"},
+            reason="legacy approval",
+            call_id="call_legacy_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="git push requires confirmation.",
+        preview="git push",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    persistent = PendingDecision(
+        tool_call=ToolCall(
+            name="Shell",
+            arguments={"command": "python -m pytest -q"},
+            reason="persistent approval",
+            call_id="call_persistent_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="Unknown command requires approval.",
+        preview="python -m pytest -q",
+        command_pattern="python -m pytest",
+        options=(
+            DecisionAction.APPROVE_ONCE,
+            DecisionAction.REJECT,
+            DecisionAction.ALLOW_SESSION,
+            DecisionAction.ALWAYS_ALLOW,
+        ),
+        proposed_execpolicy_pattern=("python", "-m", "x" * 200),
+    )
+
+    for decision, expected_choices in (
+        (legacy, ["approve_once", "reject"]),
+        (
+            persistent,
+            ["approve_once", "reject", "allow_session", "always_allow"],
+        ),
+    ):
+        events: list[tuple[str, dict[str, object]]] = []
+        service = E2EResumeTipService(tmp_path, pending_decision=decision)
+        gateway = NodeTuiGateway(
+            service=cast(Any, service),
+            emit=lambda method, params: events.append((method, params)),
+        )
+
+        response = gateway.handle_request(
+            RpcRequest(
+                id=f"resume-{decision.tool_call.call_id}",
+                method="session.resume",
+                params={"session_id": "root"},
+            )
+        )
+
+        assert response.error is None
+        approval = next(params for method, params in events if method == "approval.request")
+        options = cast(list[dict[str, object]], approval["options"])
+        assert [option["choice"] for option in options] == expected_choices
+        assert "proposed_execpolicy_pattern" not in approval
+        assert "command_pattern" not in approval
+        if decision is legacy:
+            assert "persistent_rule_preview" not in approval
+        else:
+            preview = str(approval["persistent_rule_preview"])
+            assert len(preview) == 160
+            assert preview.endswith("...")
 
 
 def test_run_node_tui_gateway_scripted_resume_tip_then_clarification_response(

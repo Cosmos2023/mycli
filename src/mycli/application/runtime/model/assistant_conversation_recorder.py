@@ -16,6 +16,8 @@ LEGACY_TOOL_NAMES = {
     "search_text": "Grep",
     "list_directory": "LS",
     "run_shell": "Shell",
+    "Bash": "Shell",
+    "BashOutput": "ShellOutput",
     "update_plan": "Plan",
 }
 
@@ -24,6 +26,8 @@ class AssistantConversationRecorder:
     def normalize_tool_call(self, call: ToolCall) -> ToolCall:
         tool_name = LEGACY_TOOL_NAMES.get(call.name, call.name)
         arguments = _normalize_tool_arguments(tool_name, call.arguments)
+        if call.name == "Bash":
+            arguments.pop("prefix_rule", None)
         if call.call_id:
             if tool_name == call.name and arguments is call.arguments:
                 return call

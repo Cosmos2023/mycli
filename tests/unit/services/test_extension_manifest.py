@@ -194,11 +194,13 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "approve_once",
         "reject",
         "allow_session",
+        "always_allow",
     ]
     assert schemas["approval.request"]["properties"]["options"]["items"]["properties"]["choice"]["enum"] == [
         "approve_once",
         "reject",
         "allow_session",
+        "always_allow",
     ]
     assert schemas["runtime.event"]["required"] == [
         "version",

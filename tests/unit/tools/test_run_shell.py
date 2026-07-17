@@ -120,10 +120,12 @@ def test_shell_schema_exposes_codex_style_parameters() -> None:
         "tty",
         "yield_time_ms",
         "max_output_tokens",
+        "prefix_rule",
     }
     assert parameters["cwd"].required is False
     assert parameters["cwd"].description is not None
     assert "working directory" in parameters["cwd"].description.lower()
+    assert parameters["prefix_rule"].required is False
     for spec in (ShellTool.spec, BashTool.spec):
         assert "always set the `cwd`" in spec.description.lower()
         assert "do not use `cd` unless absolutely necessary" in spec.description.lower()

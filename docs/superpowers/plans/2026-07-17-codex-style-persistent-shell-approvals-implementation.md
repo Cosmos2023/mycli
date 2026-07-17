@@ -1048,14 +1048,22 @@ git commit -m "test: verify persistent shell approvals end to end"
 
 ## Final Verification Evidence
 
-- [ ] Shell exposes optional `prefix_rule`; legacy `Bash` does not.
-- [ ] Only a validated narrow, non-sensitive, non-destructive prefix enables `Always allow`.
-- [ ] Stable choices remain `1` once, `2` reject, `3` session, `4` always.
-- [ ] Global writes target only `~/.mycli/rules/default.rules` and use a dedicated lock plus atomic replace.
-- [ ] Existing comments and rules are preserved; duplicate `allow` rules are not appended.
-- [ ] Write or refresh failures keep the suspended call pending and unexecuted.
-- [ ] A successful rule becomes effective in the current runtime before the call resumes once.
-- [ ] Project `ask`/`deny`, sandbox restrictions, and plan-mode precedence remain authoritative.
-- [ ] Old sessions, providers without proposals, and hidden legacy Shell aliases remain compatible.
-- [ ] Approval audit data contains only bounded metadata, never raw command or proposal tokens.
-- [ ] Full Python, Ruff, Mypy, Node test, and TypeScript gates pass.
+- [x] Shell exposes optional `prefix_rule`; legacy `Bash` does not.
+- [x] Only a validated narrow, non-sensitive, non-destructive prefix enables `Always allow`.
+- [x] Stable choices remain `1` once, `2` reject, `3` session, `4` always.
+- [x] Global writes target only `~/.mycli/rules/default.rules` and use a dedicated lock plus atomic replace.
+- [x] Existing comments and rules are preserved; duplicate `allow` rules are not appended.
+- [x] Write or refresh failures keep the suspended call pending and unexecuted.
+- [x] A successful rule becomes effective in the current runtime before the call resumes once.
+- [x] Project `ask`/`deny`, sandbox restrictions, and plan-mode precedence remain authoritative.
+- [x] Old sessions, providers without proposals, and hidden legacy Shell aliases remain compatible.
+- [x] Approval audit data contains only bounded metadata, never raw command or proposal tokens.
+- [x] Full Python, Ruff, Mypy, Node test, and TypeScript gates pass.
+
+Observed on 2026-07-17:
+
+- `uv run pytest -q`: 2221 passed, 29 skipped.
+- `uv run ruff check .`: passed.
+- `uv run mypy src/mycli`: 338 source files passed.
+- `npm --prefix tui/mycli-shell test`: 208 passed.
+- `npm --prefix tui/mycli-shell run typecheck`: passed.
