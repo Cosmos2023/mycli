@@ -152,9 +152,21 @@ def test_safety_policy_redacts_sensitive_shell_args() -> None:
             reason="deploy",
         )
     )
-    assert decision.kind is DecisionKind.AUTO_ALLOW
+    assert decision.kind is DecisionKind.NEEDS_CHOICE
     assert "<redacted>" in decision.preview
     assert "supersecret" not in decision.preview
+
+
+def test_safety_policy_allows_composed_known_safe_commands() -> None:
+    decision = SafetyPolicy().evaluate(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "cd src && cat app.py | head -n 20"},
+            reason="inspect",
+        )
+    )
+
+    assert decision.kind is DecisionKind.AUTO_ALLOW
 
 
 def test_safety_policy_denies_rm_rf_root() -> None:

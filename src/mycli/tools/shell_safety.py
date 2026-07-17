@@ -5,6 +5,14 @@ from enum import StrEnum
 import shlex
 import unicodedata
 
+from mycli.domain.runtime import ShellKind
+from mycli.tools.shell_command_policy import (
+    ShellCommandClassification,
+    ShellCommandDecision,
+    classify_shell_argv,
+    classify_shell_command,
+)
+
 
 _SENSITIVE_VALUE_FLAGS = {
     "--token",
@@ -48,7 +56,6 @@ _DEDICATED_TOOL_HINTS = {
 }
 _SHELL_INTERPRETERS = {"sh", "bash", "zsh"}
 _REDIRECTION_TOKENS = {">", ">>", "2>"}
-_CHAIN_TOKENS = {"&&", "||", ";"}
 
 
 class ShellRiskLevel(StrEnum):
@@ -144,6 +151,15 @@ def analyze_shell_command(command: str) -> ShellSafetyAnalysis:
             reroute_reason=reroute_reason,
         )
 
+    classification = classify_shell_command(stripped, shell_kind=ShellKind.BASH)
+    if classification.decision is not ShellCommandDecision.SAFE:
+        return _confirmation_from_classification(
+            classification,
+            preview=preview,
+            reroute_tool=reroute_tool,
+            reroute_reason=reroute_reason,
+        )
+
     return ShellSafetyAnalysis(
         risk_level=ShellRiskLevel.ALLOW,
         reason="Command allowed",
@@ -152,6 +168,92 @@ def analyze_shell_command(command: str) -> ShellSafetyAnalysis:
         reroute_tool=reroute_tool,
         reroute_reason=reroute_reason,
     )
+
+
+def analyze_shell_argv(args: tuple[str, ...]) -> ShellSafetyAnalysis:
+    if not args or not args[0]:
+        return ShellSafetyAnalysis(
+            risk_level=ShellRiskLevel.DENY,
+            reason="Shell command cannot be empty",
+            preview="",
+            command_pattern="empty command",
+        )
+    argv = list(args)
+    preview = redact_shell_preview(argv)
+    pattern = derive_command_pattern(argv)
+    reroute_tool = dedicated_tool_for_command(argv)
+    reroute_reason = (
+        f"Use the dedicated {reroute_tool} tool instead of Bash for this command."
+        if reroute_tool is not None
+        else None
+    )
+    if _is_rm_rf_root(argv):
+        return ShellSafetyAnalysis(
+            risk_level=ShellRiskLevel.DENY,
+            reason="rm -rf / is forbidden",
+            preview=preview,
+            command_pattern="rm -rf",
+            reroute_tool=reroute_tool,
+            reroute_reason=reroute_reason,
+        )
+    confirm_reason = _confirm_argv_reason(argv)
+    if confirm_reason is not None:
+        return ShellSafetyAnalysis(
+            risk_level=ShellRiskLevel.CONFIRM,
+            reason=confirm_reason,
+            preview=preview,
+            command_pattern=_redact_command_pattern(pattern),
+            reroute_tool=reroute_tool,
+            reroute_reason=reroute_reason,
+        )
+    classification = classify_shell_argv(args, shell_kind=ShellKind.BASH)
+    if classification.decision is not ShellCommandDecision.SAFE:
+        return _confirmation_from_classification(
+            classification,
+            preview=preview,
+            reroute_tool=reroute_tool,
+            reroute_reason=reroute_reason,
+        )
+    return ShellSafetyAnalysis(
+        risk_level=ShellRiskLevel.ALLOW,
+        reason="Command allowed",
+        preview=preview,
+        command_pattern=pattern,
+        reroute_tool=reroute_tool,
+        reroute_reason=reroute_reason,
+    )
+
+
+def _confirmation_from_classification(
+    classification: ShellCommandClassification,
+    *,
+    preview: str,
+    reroute_tool: str | None,
+    reroute_reason: str | None,
+) -> ShellSafetyAnalysis:
+    command_pattern = (
+        _redact_command_pattern(classification.command_pattern)
+        if classification.decision is ShellCommandDecision.UNKNOWN
+        else None
+    )
+    return ShellSafetyAnalysis(
+        risk_level=ShellRiskLevel.CONFIRM,
+        reason=classification.reason,
+        preview=preview,
+        command_pattern=command_pattern,
+        reroute_tool=reroute_tool,
+        reroute_reason=reroute_reason,
+    )
+
+
+def _redact_command_pattern(pattern: str | None) -> str | None:
+    if pattern is None:
+        return None
+    try:
+        words = shlex.split(pattern)
+    except ValueError:
+        return None
+    return redact_shell_preview(words)
 
 
 def derive_command_pattern(args: list[str], command: str | None = None) -> str:
@@ -281,11 +383,6 @@ def _command_has_compact_redirection(command: str) -> bool:
     return "2>" in compact or ">>" in compact or ">" in compact
 
 
-def _command_has_compact_chaining(command: str) -> bool:
-    compact = "".join(_unquoted_shell_text(command).split())
-    return "&&" in compact or "||" in compact or ";" in compact
-
-
 def _unquoted_shell_text(command: str) -> str:
     result: list[str] = []
     quote: str | None = None
@@ -332,8 +429,24 @@ def _confirm_reason(args: list[str], command: str) -> str | None:
         return "git push --force requires confirmation"
     if args[:2] == ["git", "push"]:
         return "git push requires confirmation."
-    if any(token in _CHAIN_TOKENS for token in args) or _command_has_compact_chaining(command):
-        return "shell command chaining requires confirmation"
+    return None
+
+
+def _confirm_argv_reason(args: list[str]) -> str | None:
+    if len(args) >= 2 and args[0] in {"chmod", "chown"} and args[1] == "-R":
+        return f"{args[0]} -R requires confirmation"
+    if args[0] == "sudo":
+        return "sudo requires confirmation"
+    if args[0] == "dd":
+        return "dd requires confirmation"
+    if _is_recursive_rm(args):
+        return "recursive rm requires confirmation"
+    if args[:3] == ["git", "reset", "--hard"]:
+        return "git reset --hard requires confirmation"
+    if _is_force_push(args):
+        return "git push --force requires confirmation"
+    if args[:2] == ["git", "push"]:
+        return "git push requires confirmation."
     return None
 
 

@@ -4,9 +4,16 @@ import re
 from typing import Protocol
 
 from mycli.domain.runtime import ShellKind, ShellProfile
+from mycli.tools.shell_command_policy import (
+    ShellCommandClassification,
+    ShellCommandDecision,
+    classify_shell_argv,
+    classify_shell_command,
+)
 from mycli.tools.shell_safety import (
     ShellRiskLevel,
     ShellSafetyAnalysis,
+    analyze_shell_argv,
     analyze_shell_command,
 )
 
@@ -37,18 +44,11 @@ class PowerShellSafetyAdapter:
     }
 
     def analyze(self, command: str) -> ShellSafetyAnalysis:
-        parsed = _parse_windows_command(command, shell_kind=ShellKind.POWERSHELL)
-        if isinstance(parsed, ShellSafetyAnalysis):
-            return parsed
-        words, has_operator = parsed
-        if _has_powershell_expansion(command) or has_operator:
-            return _confirm_ambiguous(command, "PowerShell expansion or composition requires confirmation")
-        return _analyze_words(
+        return _analysis_from_classification(
             command,
-            words,
-            safe_heads=self._safe_heads,
-            destructive_heads=self._destructive_heads,
+            classify_shell_command(command, shell_kind=ShellKind.POWERSHELL),
             shell_label="PowerShell",
+            destructive_heads=self._destructive_heads,
         )
 
 
@@ -69,18 +69,11 @@ class CmdSafetyAdapter:
     }
 
     def analyze(self, command: str) -> ShellSafetyAnalysis:
-        parsed = _parse_windows_command(command, shell_kind=ShellKind.CMD)
-        if isinstance(parsed, ShellSafetyAnalysis):
-            return parsed
-        words, has_operator = parsed
-        if "%" in command or has_operator:
-            return _confirm_ambiguous(command, "CMD expansion or composition requires confirmation")
-        return _analyze_words(
+        return _analysis_from_classification(
             command,
-            words,
-            safe_heads=self._safe_heads,
-            destructive_heads=self._destructive_heads,
+            classify_shell_command(command, shell_kind=ShellKind.CMD),
             shell_label="CMD",
+            destructive_heads=self._destructive_heads,
         )
 
 
@@ -93,6 +86,84 @@ def analyze_shell_for_profile(
     if profile.kind is ShellKind.POWERSHELL:
         return PowerShellSafetyAdapter().analyze(command)
     return CmdSafetyAdapter().analyze(command)
+
+
+def analyze_shell_argv_for_profile(
+    profile: ShellProfile,
+    args: tuple[str, ...],
+) -> ShellSafetyAnalysis:
+    if profile.kind in {ShellKind.ZSH, ShellKind.BASH, ShellKind.SH}:
+        return analyze_shell_argv(args)
+    classification = classify_shell_argv(args, shell_kind=profile.kind)
+    return _analysis_from_classification(
+        " ".join(args),
+        classification,
+        shell_label="PowerShell" if profile.kind is ShellKind.POWERSHELL else "CMD",
+        destructive_heads=(
+            PowerShellSafetyAdapter._destructive_heads
+            if profile.kind is ShellKind.POWERSHELL
+            else CmdSafetyAdapter._destructive_heads
+        ),
+    )
+
+
+def _analysis_from_classification(
+    command: str,
+    classification: ShellCommandClassification,
+    *,
+    shell_label: str,
+    destructive_heads: set[str],
+) -> ShellSafetyAnalysis:
+    preview = _redact_preview(command)
+    if classification.decision is ShellCommandDecision.SAFE:
+        return ShellSafetyAnalysis(
+            risk_level=ShellRiskLevel.ALLOW,
+            reason="Command allowed",
+            preview=preview,
+            command_pattern=_classification_pattern(classification),
+        )
+    destructive = next(
+        (
+            segment.words[0]
+            for segment in classification.segments
+            if segment.words and segment.words[0].casefold() in destructive_heads
+        ),
+        None,
+    )
+    if destructive is not None:
+        return ShellSafetyAnalysis(
+            risk_level=ShellRiskLevel.CONFIRM,
+            reason=f"{shell_label} command {destructive} requires confirmation",
+            preview=preview,
+            command_pattern=None,
+        )
+    return ShellSafetyAnalysis(
+        risk_level=(
+            ShellRiskLevel.DENY
+            if classification.decision is ShellCommandDecision.INVALID
+            and not classification.segments
+            and not command.strip()
+            else ShellRiskLevel.CONFIRM
+        ),
+        reason=f"{shell_label}: {classification.reason}",
+        preview=preview,
+        command_pattern=(
+            classification.command_pattern
+            if classification.decision is ShellCommandDecision.UNKNOWN
+            else None
+        ),
+    )
+
+
+def _classification_pattern(classification: ShellCommandClassification) -> str | None:
+    if not classification.segments:
+        return None
+    words = classification.segments[0].words
+    if not words:
+        return None
+    if words[0].casefold() == "git" and len(words) > 1:
+        return f"git {words[1]}"
+    return words[0]
 
 
 def _parse_windows_command(
@@ -224,5 +295,6 @@ __all__ = [
     "PosixShellSafetyAdapter",
     "PowerShellSafetyAdapter",
     "ShellSafetyAdapter",
+    "analyze_shell_argv_for_profile",
     "analyze_shell_for_profile",
 ]

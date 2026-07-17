@@ -49,6 +49,15 @@ def test_powershell_read_only_commands_are_allowed(command: str, pattern: str) -
     assert analysis.command_pattern == pattern
 
 
+def test_powershell_read_only_pipeline_is_allowed() -> None:
+    analysis = analyze_shell_for_profile(
+        _powershell(),
+        "Get-ChildItem -Force | Select-Object Name",
+    )
+
+    assert analysis.risk_level is ShellRiskLevel.ALLOW
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -80,6 +89,12 @@ def test_cmd_read_only_commands_are_allowed(command: str, pattern: str) -> None:
 
     assert analysis.risk_level is ShellRiskLevel.ALLOW
     assert analysis.command_pattern == pattern
+
+
+def test_cmd_read_only_composition_is_allowed() -> None:
+    analysis = analyze_shell_for_profile(_cmd(), "cd src && dir | findstr py")
+
+    assert analysis.risk_level is ShellRiskLevel.ALLOW
 
 
 @pytest.mark.parametrize(

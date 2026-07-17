@@ -59,10 +59,17 @@ def test_shell_safety_requires_choice_for_recursive_permission_change() -> None:
     assert result.command_pattern == "chmod -R"
 
 
-def test_shell_safety_requires_choice_for_compact_chaining() -> None:
+def test_shell_safety_allows_compact_safe_chaining() -> None:
     result = analyze_shell_command("echo a&&echo b")
 
+    assert result.risk_level is ShellRiskLevel.ALLOW
+
+
+def test_shell_safety_requires_choice_when_chain_contains_unknown_command() -> None:
+    result = analyze_shell_command("cat README.md && python script.py")
+
     assert result.risk_level is ShellRiskLevel.CONFIRM
+    assert result.command_pattern == "python script.py"
 
 
 def test_shell_safety_requires_choice_for_semicolon_chaining() -> None:

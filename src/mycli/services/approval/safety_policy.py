@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-import shlex
 
 from mycli.domain.runtime import DecisionKind, RiskLevel, ShellKind, ShellProfile
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.path_utils import resolve_workspace_path
-from mycli.tools.shell_safety import ShellRiskLevel, analyze_shell_command
-from mycli.tools.shell_safety_adapters import analyze_shell_for_profile
+from mycli.tools.shell_safety import (
+    ShellRiskLevel,
+    analyze_shell_argv,
+    analyze_shell_command,
+)
+from mycli.tools.shell_safety_adapters import (
+    analyze_shell_argv_for_profile,
+    analyze_shell_for_profile,
+)
 
 MAX_APPROVAL_CONTENT_PREVIEW_CHARS = 12_000
 
@@ -140,11 +146,20 @@ class SafetyPolicy:
             command_value = call.arguments.get("command")
             args_value = call.arguments.get("args")
             if isinstance(command_value, str) and command_value:
-                command = command_value
+                analysis = (
+                    analyze_shell_command(command_value)
+                    if self._shell_profile is None
+                    else analyze_shell_for_profile(self._shell_profile, command_value)
+                )
             elif isinstance(args_value, list) and args_value and all(
                 isinstance(item, str) for item in args_value
             ):
-                command = shlex.join(args_value)
+                argv = tuple(args_value)
+                analysis = (
+                    analyze_shell_argv(argv)
+                    if self._shell_profile is None
+                    else analyze_shell_argv_for_profile(self._shell_profile, argv)
+                )
             else:
                 return ToolSafetyDecision(
                     kind=DecisionKind.DENY,
@@ -158,11 +173,6 @@ class SafetyPolicy:
                         policy="invalid_shell_call",
                     ),
                 )
-            analysis = (
-                analyze_shell_command(command)
-                if self._shell_profile is None
-                else analyze_shell_for_profile(self._shell_profile, command)
-            )
             shell_metadata = _shell_profile_metadata(self._shell_profile)
             if analysis.risk_level is ShellRiskLevel.DENY:
                 return ToolSafetyDecision(
