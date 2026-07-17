@@ -19,6 +19,7 @@ def test_all_tools_importable():
     from mycli.tools.web_fetch import WebFetchTool
     from mycli.tools.web_search import WebSearchTool
     from mycli.tools.write import WriteTool
+    from mycli.tools.write_stdin import WriteStdinTool
 
     assert all(
         tool is not None
@@ -31,6 +32,7 @@ def test_all_tools_importable():
             LSTool,
             BashTool,
             ShellTool,
+            WriteStdinTool,
             BashOutputTool,
             ShellOutputTool,
             KillShellTool,
@@ -63,6 +65,7 @@ def test_all_tools_registered():
         "Bash",
         "BashOutput",
         "Shell",
+        "WriteStdin",
         "ShellOutput",
         "KillShell",
         "WebSearch",

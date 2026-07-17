@@ -15,6 +15,8 @@ runtime shape exists.
 
 ## Roadmap And Architecture Context
 
+- `2026-07-17-codex-style-unified-shell-runtime-design.md`
+- [`../plans/2026-07-17-codex-style-unified-shell-runtime-implementation.md`](../plans/2026-07-17-codex-style-unified-shell-runtime-implementation.md)
 - `2026-07-13-cross-platform-runtime-design.md`
 - [`../plans/2026-07-13-cross-platform-runtime-implementation.md`](../plans/2026-07-13-cross-platform-runtime-implementation.md)
 - `2026-07-13-codex-style-multi-shell-runtime-design.md`

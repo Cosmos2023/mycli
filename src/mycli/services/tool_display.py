@@ -58,7 +58,15 @@ MUTATION_TOOLS = frozenset(
     {"write", "writefile", "edit", "editfile", "patch", "patchfile", "gitdiff"}
 )
 SHELL_TOOLS = frozenset(
-    {"shell", "bash", "runshell", "shelloutput", "bashoutput", "killshell"}
+    {
+        "shell",
+        "bash",
+        "runshell",
+        "writestdin",
+        "shelloutput",
+        "bashoutput",
+        "killshell",
+    }
 )
 WEB_TOOLS = frozenset({"websearch", "webfetch"})
 DIAGNOSTIC_TOOLS = frozenset({"lint"})

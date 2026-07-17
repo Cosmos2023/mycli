@@ -401,6 +401,7 @@ def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> No
         "WebFetch",
         "WebSearch",
         "Write",
+        "WriteStdin",
         "enter_plan_mode",
         "exit_plan_mode",
     ]

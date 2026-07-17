@@ -2441,13 +2441,12 @@ def test_agent_runtime_enqueues_background_bash_task_notification(
     tmp_path: Path,
 ) -> None:
     adapter = SteeringNotificationCaptureAdapter()
-    runtime = AgentRuntime.for_tests(
-        workspace_root=tmp_path,
-        home_dir=tmp_path / "home",
+    bash_tool = BashTool(tmp_path)
+    runtime = AgentRuntime(
         model_adapter=adapter,
-    )
-    bash_tool = next(
-        tool for tool in runtime._tool_registry.list_all() if tool.spec.name == "Shell"
+        tool_registry=ToolRegistry.from_tools([bash_tool]),
+        config=AgentConfig(workspace_root=tmp_path),
+        home_dir=tmp_path / "home",
     )
 
     result = bash_tool.execute(
