@@ -298,6 +298,7 @@ class TurnService:
             "1": DecisionAction.APPROVE_ONCE,
             "2": DecisionAction.REJECT,
             "3": DecisionAction.ALLOW_SESSION,
+            "4": DecisionAction.ALWAYS_ALLOW,
         }
         allowed_choices = tuple(
             key for key, action in choice_to_action.items()

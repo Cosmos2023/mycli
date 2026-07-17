@@ -19,6 +19,8 @@ class RuntimeApprovalDecisions:
         options = [DecisionAction.APPROVE_ONCE, DecisionAction.REJECT]
         if approval.command_pattern:
             options.append(DecisionAction.ALLOW_SESSION)
+        if approval.proposed_execpolicy_pattern:
+            options.append(DecisionAction.ALWAYS_ALLOW)
         return PendingDecision(
             tool_call=approval.tool_call,
             kind=self._approval_service._safety_policy.evaluate(approval.tool_call).kind,
@@ -26,6 +28,7 @@ class RuntimeApprovalDecisions:
             preview=approval.preview,
             options=tuple(options),
             command_pattern=approval.command_pattern,
+            proposed_execpolicy_pattern=approval.proposed_execpolicy_pattern,
             metadata=dict(approval.metadata),
         )
 
@@ -34,6 +37,7 @@ class RuntimeApprovalDecisions:
             "1": DecisionAction.APPROVE_ONCE,
             "2": DecisionAction.REJECT,
             "3": DecisionAction.ALLOW_SESSION,
+            "4": DecisionAction.ALWAYS_ALLOW,
         }
         allowed_choices = tuple(
             key for key, action in choice_to_action.items() if action in options

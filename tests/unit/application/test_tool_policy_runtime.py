@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mycli.application.runtime.tools.tool_policy_runtime import ToolPolicyRuntime
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
+from mycli.application.runtime.approval_decisions import RuntimeApprovalDecisions
 from mycli.domain.runtime import (
     ExecPolicyDecision,
     ExecPolicyRule,
@@ -192,6 +193,107 @@ def test_ask_rule_for_second_segment_uses_execpolicy_approval(tmp_path: Path) ->
 
     assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
     assert decision.policy == "execpolicy_prefix_rule"
+
+
+def test_runtime_policy_gate_attaches_validated_execpolicy_proposal(tmp_path: Path) -> None:
+    approval_service = ApprovalService(SafetyPolicy(workspace_root=tmp_path))
+    gate = RuntimePolicyGate(
+        approval_service=approval_service,
+        workspace_root=tmp_path,
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Shell",
+            arguments={
+                "command": "python -m pytest -q",
+                "prefix_rule": ["python", "-m", "pytest"],
+            },
+            reason="run tests",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+    assert decision.pending_approval is not None
+    assert decision.pending_approval.proposed_execpolicy_pattern == (
+        "python",
+        "-m",
+        "pytest",
+    )
+    pending = RuntimeApprovalDecisions(approval_service).pending_decision_from_approval(
+        decision.pending_approval
+    )
+    assert pending.options[-1].value == "always_allow"
+    assert RuntimeApprovalDecisions(approval_service).format_allowed_choices(pending.options).endswith(
+        "or 4"
+    )
+
+
+def test_runtime_policy_gate_omits_unvalidated_execpolicy_proposals(tmp_path: Path) -> None:
+    approval_service = ApprovalService(SafetyPolicy(workspace_root=tmp_path))
+    gate = RuntimePolicyGate(
+        approval_service=approval_service,
+        workspace_root=tmp_path,
+    )
+
+    calls = (
+        ToolCall(
+            name="Shell",
+            arguments={"command": "python -m pytest -q"},
+            reason="missing proposal",
+        ),
+        ToolCall(
+            name="Bash",
+            arguments={
+                "command": "python -m pytest -q",
+                "prefix_rule": ["python", "-m", "pytest"],
+            },
+            reason="legacy alias",
+        ),
+        ToolCall(
+            name="Shell",
+            arguments={
+                "command": "git push --force origin main",
+                "prefix_rule": ["git", "push", "--force"],
+            },
+            reason="destructive command",
+        ),
+    )
+
+    for call in calls:
+        decision = gate.decide(call, effect_profile=ToolEffectProfile(process=True))
+        assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+        assert decision.pending_approval is not None
+        assert decision.pending_approval.proposed_execpolicy_pattern is None
+
+
+def test_explicit_ask_rule_never_attaches_model_proposal(tmp_path: Path) -> None:
+    gate = _shell_gate(
+        tmp_path,
+        rule=ExecPolicyRule(
+            source=ExecPolicySource.PROJECT,
+            index=0,
+            pattern=("python", "-m", "pytest"),
+            decision=ExecPolicyDecision.ASK,
+        ),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Shell",
+            arguments={
+                "command": "python -m pytest -q",
+                "prefix_rule": ["python", "-m", "pytest"],
+            },
+            reason="run tests",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+    assert decision.pending_approval is not None
+    assert decision.pending_approval.proposed_execpolicy_pattern is None
 
 
 def test_tool_policy_runtime_records_decision_and_builds_policy_result(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from mycli.domain.runtime import (
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.services.approval import ApprovalService
+from mycli.services.execpolicy_proposals import ExecPolicyProposalValidator
 from mycli.tools.base import ToolEffectProfile
 from mycli.tools.shell_command_policy import (
     ShellParseKind,
@@ -66,6 +68,7 @@ class RuntimePolicyGate:
         self._shell_path = shell_path
         self._shell_profile = shell_profile
         self._shell_environment_policy = shell_environment_policy
+        self._execpolicy_proposal_validator = ExecPolicyProposalValidator()
 
     def default_policy(self) -> ExecutionPolicy:
         root = self._workspace_root or Path.cwd()
@@ -192,12 +195,29 @@ class RuntimePolicyGate:
                 effect=runtime_effect,
             )
         if outcome.pending_approval is not None:
+            pending_approval = outcome.pending_approval
+            shell_kind = (
+                self._shell_profile.kind
+                if self._shell_profile is not None
+                else ShellKind.BASH
+            )
+            proposal = self._execpolicy_proposal_validator.validate(
+                call=call,
+                shell_kind=shell_kind,
+                rules=self._execpolicy_rules,
+                approval_policy=policy_name,
+            )
+            if proposal.pattern is not None:
+                pending_approval = replace(
+                    pending_approval,
+                    proposed_execpolicy_pattern=proposal.pattern,
+                )
             return ToolRuntimeDecision.needs_approval(
                 tool_call=call,
                 policy=policy_name,
                 risk_level=risk_level,
                 reason_code=decision_kind or "needs_choice",
-                pending_approval=outcome.pending_approval,
+                pending_approval=pending_approval,
                 sandbox=resolved_policy.sandbox,
                 effect=runtime_effect,
             )

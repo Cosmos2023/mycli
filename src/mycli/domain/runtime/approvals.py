@@ -19,4 +19,5 @@ class PendingApproval:
     reason: str
     preview: str
     command_pattern: str | None = None
+    proposed_execpolicy_pattern: tuple[str, ...] | None = None
     metadata: dict[str, object] = field(default_factory=dict)

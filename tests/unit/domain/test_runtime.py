@@ -276,6 +276,43 @@ def test_pending_decision_defends_against_invalid_states(tmp_path: Path) -> None
         )
 
 
+def test_pending_decision_requires_validated_pattern_for_always_allow() -> None:
+    with pytest.raises(ValueError, match="proposed_execpolicy_pattern"):
+        PendingDecision(
+            tool_call=ToolCall(
+                name="Shell",
+                arguments={"command": "python -m pytest"},
+                reason="test",
+            ),
+            kind=DecisionKind.NEEDS_CHOICE,
+            reason="unknown command",
+            preview="python -m pytest",
+            options=(DecisionAction.APPROVE_ONCE, DecisionAction.ALWAYS_ALLOW),
+        )
+
+
+def test_pending_decision_accepts_validated_always_allow_pattern() -> None:
+    decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Shell",
+            arguments={"command": "python -m pytest"},
+            reason="test",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="unknown command",
+        preview="python -m pytest",
+        options=(
+            DecisionAction.APPROVE_ONCE,
+            DecisionAction.REJECT,
+            DecisionAction.ALWAYS_ALLOW,
+        ),
+        proposed_execpolicy_pattern=("python", "-m", "pytest"),
+    )
+
+    assert decision.options[-1] is DecisionAction.ALWAYS_ALLOW
+    assert decision.proposed_execpolicy_pattern == ("python", "-m", "pytest")
+
+
 def test_session_command_allowance_requires_non_blank_pattern() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         SessionCommandAllowance(command_pattern="   ")

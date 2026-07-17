@@ -183,6 +183,7 @@ class DecisionAction(StrEnum):
     APPROVE_ONCE = "approve_once"
     REJECT = "reject"
     ALLOW_SESSION = "allow_session"
+    ALWAYS_ALLOW = "always_allow"
 
 
 @dataclass(slots=True, frozen=True)
@@ -255,6 +256,7 @@ class PendingDecision:
     preview: str
     options: tuple[DecisionAction, ...]
     command_pattern: str | None = None
+    proposed_execpolicy_pattern: tuple[str, ...] | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -271,6 +273,22 @@ class PendingDecision:
         elif pattern:
             raise ValueError(
                 "PendingDecision without ALLOW_SESSION cannot hold a non-empty command_pattern."
+            )
+        proposal = self.proposed_execpolicy_pattern
+        if proposal is not None and (
+            not proposal or any(not token or not token.strip() for token in proposal)
+        ):
+            raise ValueError(
+                "proposed_execpolicy_pattern must contain non-empty tokens."
+            )
+        if DecisionAction.ALWAYS_ALLOW in self.options:
+            if proposal is None:
+                raise ValueError(
+                    "ALWAYS_ALLOW requires proposed_execpolicy_pattern."
+                )
+        elif proposal is not None:
+            raise ValueError(
+                "proposed_execpolicy_pattern requires ALWAYS_ALLOW."
             )
 
 
