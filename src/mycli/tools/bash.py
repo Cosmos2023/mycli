@@ -123,6 +123,70 @@ class ShellCommandRuntime:
             payload["error_kind"] = "nonzero_exit"
         return payload
 
+    def execute_new(
+        self,
+        command: str,
+        timeout: int = 120,
+        workdir: str | None = None,
+        *,
+        tty: bool = False,
+        yield_time_ms: int = 10_000,
+        max_output_tokens: int = 10_000,
+        shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
+        env: dict[str, str] | None = None,
+        command_pattern: str | None = None,
+        output_file: Path | None = None,
+        notification_sink: Callable[[TaskNotification], None] | None = None,
+        call_id: str | None = None,
+        lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> dict[str, Any]:
+        effective_cwd = workdir or os.getcwd()
+        started = time.monotonic()
+        payload = SHELL_REGISTRY.execute_new(
+            command,
+            owner_session_id=self._owner_session_id,
+            timeout_seconds=timeout,
+            workdir=effective_cwd,
+            tty=tty,
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=max_output_tokens,
+            shell_path=shell_path,
+            shell_profile=shell_profile,
+            env=env,
+            command_pattern=command_pattern,
+            output_file=output_file,
+            notification_sink=notification_sink,
+            call_id=call_id,
+            lifecycle_sink=lifecycle_sink,
+            interrupt_token=interrupt_token,
+        )
+        payload["cwd"] = effective_cwd
+        payload["duration_ms"] = _duration_ms(started)
+        if payload.get("background") is True:
+            _background_processes.clear()
+            _background_processes.update(SHELL_REGISTRY.processes())
+        if "error" in payload:
+            return payload
+        stdout = str(payload.get("stdout") or "")
+        stderr = str(payload.get("stderr") or "")
+        payload["output"] = _combine_output(stdout, stderr)
+        terminal_state = payload.get("terminal_state")
+        if terminal_state == "interrupted":
+            payload.update(
+                {
+                    "exit_code": 130,
+                    "interrupted": True,
+                    "error_kind": "interrupted",
+                }
+            )
+        elif terminal_state == "timed_out":
+            payload.update({"exit_code": 143, "error_kind": "timeout"})
+        elif terminal_state is not None and payload.get("exit_code") != 0:
+            payload["error_kind"] = "nonzero_exit"
+        return payload
+
 
 DEFAULT_SHELL_COMMAND_RUNTIME = ShellCommandRuntime()
 
@@ -153,6 +217,7 @@ def execute_bash(
                 cwd=workdir or os.getcwd(),
                 owner_session_id=owner_session_id,
                 run_in_background=run_in_background,
+                legacy_background=run_in_background,
                 shell_path=shell_path,
                 shell_profile=effective_profile,
                 env=env,
@@ -339,6 +404,7 @@ class _ShellToolBase:
                 cwd=str(cwd_result),
                 owner_session_id=self._owner_session_id,
                 run_in_background=bool(arguments.get("run_in_background", False)),
+                legacy_background=bool(arguments.get("run_in_background", False)),
                 shell_path=shell_options.shell_path,
                 shell_profile=shell_options.shell_profile,
                 env=env,

@@ -44,8 +44,9 @@ class ShellStartRequest:
     command: str
     cwd: Path
     timeout_seconds: int
-    background: bool
+    background: bool | None = None
     tty: bool = False
+    yield_time_ms: int = 10_000
     shell_path: str | None = None
     shell_profile: ShellProfile | None = None
     env: dict[str, str] | None = None
@@ -81,6 +82,7 @@ class ShellSessionSnapshot:
     cleanup_result: str | None
     transport: str | None = None
     tty: bool = False
+    yielded: bool = False
     decode_replacement_count: int = 0
     shell_kind: str | None = None
     shell_edition: str | None = None
@@ -118,6 +120,7 @@ class _ShellSession:
     decoder: ShellOutputDecoder
     transport_kind: str
     tty: bool
+    yielded: bool
     started_at: str
     started_monotonic: float
     last_observed_at: str
@@ -232,7 +235,7 @@ class ShellSessionManager:
         session = _ShellSession(
             shell_id=uuid4().hex[:8],
             owner_session_id=request.owner_session_id,
-            background=request.background,
+            background=request.background is True,
             command=request.command,
             command_hash=_hash_command(request.command),
             command_length=len(request.command),
@@ -242,6 +245,7 @@ class ShellSessionManager:
             decoder=ShellOutputDecoder(),
             transport_kind=transport.kind,
             tty=transport.tty,
+            yielded=False,
             started_at=now,
             started_monotonic=started_monotonic,
             last_observed_at=now,
@@ -299,8 +303,11 @@ class ShellSessionManager:
                 )
             )
 
-        if not request.background:
-            self._wait_for_terminal(session.shell_id)
+        self._wait_for_initial_result(
+            session,
+            legacy_background=request.background,
+            yield_time_ms=request.yield_time_ms,
+        )
         return self._snapshot(session, cursor=0, advance_cursor=False)
 
     def poll(
@@ -564,6 +571,39 @@ class ShellSessionManager:
             return
         with session.state_changed:
             session.state_changed.wait_for(lambda: session.terminal_state is not None)
+
+    def _wait_for_initial_result(
+        self,
+        session: _ShellSession,
+        *,
+        legacy_background: bool | None,
+        yield_time_ms: int,
+    ) -> None:
+        if legacy_background is True:
+            return
+        if legacy_background is False:
+            self._wait_for_terminal(session.shell_id)
+            return
+
+        timeout_seconds = min(30_000, max(250, yield_time_ms)) / 1000
+        with session.state_changed:
+            session.state_changed.wait_for(
+                lambda: session.terminal_state is not None,
+                timeout=timeout_seconds,
+            )
+        with self._lock:
+            if session.terminal_state is not None:
+                return
+            session.background = True
+            session.yielded = True
+            list_event = self._next_event_locked(
+                session,
+                kind="shell.list.updated",
+                active_background_count=self._active_background_count_locked(
+                    session.owner_session_id
+                ),
+            )
+        self._deliver_lifecycle_event(session, list_event)
 
     def _terminate(
         self,
@@ -847,6 +887,7 @@ class ShellSessionManager:
                 cleanup_result=session.cleanup_result,
                 transport=session.transport_kind,
                 tty=session.tty,
+                yielded=session.yielded,
                 decode_replacement_count=session.decoder.replacement_count,
                 shell_kind=session.shell_profile.kind.value,
                 shell_edition=(

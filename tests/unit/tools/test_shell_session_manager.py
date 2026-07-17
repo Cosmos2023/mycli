@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, Timer
 import time
 
 import pytest
@@ -31,8 +31,9 @@ def _request(
     *,
     owner: str = "session-a",
     timeout_seconds: int = 30,
-    background: bool = True,
+    background: bool | None = True,
     tty: bool = False,
+    yield_time_ms: int = 10_000,
     lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
 ) -> ShellStartRequest:
     return ShellStartRequest(
@@ -42,6 +43,7 @@ def _request(
         timeout_seconds=timeout_seconds,
         background=background,
         tty=tty,
+        yield_time_ms=yield_time_ms,
         lifecycle_sink=lifecycle_sink,
     )
 
@@ -88,6 +90,47 @@ def test_manager_flushes_decoder_before_completed_event(tmp_path: Path) -> None:
         event.kind == "shell.output" and "\ufffd" in event.output_delta
         for event in events
     )
+
+
+def test_new_session_yields_to_background_after_deadline(tmp_path: Path) -> None:
+    transport = FakeShellTransport()
+    events: list[ShellLifecycleEvent] = []
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+
+    snapshot = manager.start(
+        _request(
+            tmp_path,
+            "ignored",
+            background=None,
+            yield_time_ms=25,
+            lifecycle_sink=events.append,
+        )
+    )
+
+    assert snapshot.background is True
+    assert snapshot.process_state == "running_background"
+    assert snapshot.yielded is True
+    assert any(
+        event.kind == "shell.list.updated" and event.active_background_count == 1
+        for event in events
+    )
+    transport.finish(0)
+
+
+def test_completion_wins_race_with_yield(tmp_path: Path) -> None:
+    transport = FakeShellTransport()
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+    timer = Timer(0.01, lambda: transport.finish(0))
+    timer.start()
+
+    snapshot = manager.start(
+        _request(tmp_path, "ignored", background=None, yield_time_ms=25)
+    )
+    timer.join(timeout=1)
+
+    assert snapshot.terminal_state == "completed"
+    assert snapshot.background is False
+    assert snapshot.yielded is False
 
 
 def _wait_for_terminal(

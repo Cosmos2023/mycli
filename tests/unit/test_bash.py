@@ -56,11 +56,11 @@ class TestBashExecution:
         assert result["exit_code"] == 0
         assert "hello" in result["output"]
 
-    def test_output_truncation(self):
+    def test_output_below_session_limit_is_retained(self):
         result = execute_bash(python_shell_command("print('x' * 20000)"))
 
-        assert result["truncated"] is True
-        assert "[... chars omitted]" in result["output"]
+        assert result["truncated"] is False
+        assert "[... chars omitted]" not in result["output"]
 
     def test_stderr_captured(self):
         result = execute_bash("echo error >&2")

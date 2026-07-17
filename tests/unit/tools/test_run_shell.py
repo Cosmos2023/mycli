@@ -42,6 +42,28 @@ def test_execute_bash_forwards_configured_shell_path(tmp_path: Path) -> None:
     assert captured[0].shell_path == "/configured/bash"
 
 
+def test_execute_bash_forwards_legacy_background_to_backend(tmp_path: Path) -> None:
+    captured: list[ShellBackendRequest] = []
+
+    class CapturingBackend:
+        @property
+        def profile(self) -> ShellBackendProfile:
+            return ShellBackendProfile()
+
+        def execute(self, request: ShellBackendRequest) -> dict[str, object]:
+            captured.append(request)
+            return {"success": True, "status": "running", "output": ""}
+
+    execute_bash(
+        "sleep 30",
+        workdir=str(tmp_path),
+        run_in_background=True,
+        backend=CapturingBackend(),
+    )
+
+    assert captured[0].legacy_background is True
+
+
 def test_execute_bash_reports_explicit_shell_profile(tmp_path: Path) -> None:
     profile = ShellProfile(ShellKind.BASH, Path("/bin/bash"))
 
@@ -208,6 +230,10 @@ def test_shell_tool_executes_through_backend_contract(tmp_path: Path) -> None:
     assert request.command == "python3 -c 'print(1)'"
     assert request.cwd == str(tmp_path)
     assert request.command_pattern is not None
+    assert request.tty is False
+    assert request.yield_time_ms == 10_000
+    assert request.max_output_tokens == 10_000
+    assert request.legacy_background is False
     backend_payload = result.raw_payload["runtime_enforcement"]["backend"]
     assert backend_payload["backend"] == "local"
     assert backend_payload["isolation"] == "host_subprocess"
@@ -396,15 +422,15 @@ def test_execute_bash_interrupt_token_stops_foreground_process() -> None:
     assert result["exit_code"] == 130
 
 
-def test_execute_bash_reports_truncation_metadata() -> None:
+def test_execute_bash_retains_output_below_session_limit() -> None:
     result = execute_bash(python_shell_command("print('x' * 20000)"))
 
-    assert result["truncated"] is True
+    assert result["truncated"] is False
     assert result["output_chars"] > 10_000
     assert result["stdout_chars"] > 10_000
-    assert result["stdout_truncated"] is True
+    assert result["stdout_truncated"] is False
     assert result["stderr_truncated"] is False
-    assert result["truncated_chars"] > 0
+    assert result["truncated_chars"] == 0
 
 
 def test_shell_tool_returns_error_when_args_are_missing(tmp_path: Path) -> None:

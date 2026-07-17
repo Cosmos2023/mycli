@@ -62,6 +62,50 @@ class ShellProcessRegistry:
         )
         return _snapshot_payload(snapshot)
 
+    def execute_new(
+        self,
+        command: str,
+        *,
+        owner_session_id: str = LEGACY_SHELL_OWNER,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int = 120,
+        tty: bool = False,
+        yield_time_ms: int = 10_000,
+        max_output_tokens: int = 10_000,
+        shell_path: str | None = None,
+        shell_profile: ShellProfile | None = None,
+        command_pattern: str | None = None,
+        output_file: Path | None = None,
+        notification_sink: Callable[[TaskNotification], None] | None = None,
+        call_id: str | None = None,
+        lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> dict[str, object]:
+        snapshot = self._manager.start(
+            ShellStartRequest(
+                owner_session_id=owner_session_id,
+                command=command,
+                cwd=Path(workdir or ".").resolve(),
+                timeout_seconds=timeout_seconds,
+                background=None,
+                tty=tty,
+                yield_time_ms=yield_time_ms,
+                shell_path=shell_path,
+                shell_profile=shell_profile,
+                env=env,
+                command_pattern=command_pattern,
+                output_file=output_file,
+                notification_sink=notification_sink,
+                call_id=call_id,
+                lifecycle_sink=lifecycle_sink,
+                interrupt_token=interrupt_token,
+            )
+        )
+        payload = _snapshot_payload(snapshot)
+        payload["max_output_tokens"] = max_output_tokens
+        return payload
+
     def start(
         self,
         command: str,
@@ -200,6 +244,7 @@ def _snapshot_payload(snapshot: ShellSessionSnapshot) -> dict[str, object]:
         "cleanup_result": _compat_cleanup_result(snapshot.cleanup_result),
         "transport": snapshot.transport,
         "tty": snapshot.tty,
+        "yielded": snapshot.yielded,
         "decode_replacement_count": snapshot.decode_replacement_count,
         "shell_kind": snapshot.shell_kind,
         "shell_edition": snapshot.shell_edition,
