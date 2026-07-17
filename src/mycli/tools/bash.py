@@ -304,6 +304,16 @@ _CODEX_SHELL_PARAMETERS = (
     ToolParameter(name="tty", type="boolean", required=False),
     ToolParameter(name="yield_time_ms", type="integer", required=False),
     ToolParameter(name="max_output_tokens", type="integer", required=False),
+    ToolParameter(
+        name="prefix_rule",
+        type="array",
+        required=False,
+        items_schema={"type": "string"},
+        description=(
+            "Optional narrow executable prefix proposed for persistent user approval. "
+            "It is policy metadata and is never executed."
+        ),
+    ),
 )
 
 

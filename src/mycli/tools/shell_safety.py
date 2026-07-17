@@ -323,6 +323,22 @@ def redact_shell_preview(args: list[str]) -> str:
     return " ".join(redacted)
 
 
+def shell_tokens_contain_sensitive_values(args: tuple[str, ...]) -> bool:
+    mask_next = False
+    for arg in args:
+        lowered = arg.casefold()
+        if mask_next or arg == "<redacted>":
+            return True
+        if lowered in _SENSITIVE_VALUE_FLAGS:
+            mask_next = True
+            continue
+        if "=" in arg:
+            key, _, _value = arg.partition("=")
+            if _contains_sensitive_hint(key) or _looks_like_env_secret_assignment(arg):
+                return True
+    return mask_next
+
+
 def _find_unicode_control(command: str) -> str | None:
     for char in command:
         if char in _BIDI_AND_CONTROL_CODEPOINTS:
