@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import posixpath
-from pathlib import PurePath
+from pathlib import PurePath, PureWindowsPath
 import re
 import sys
+import ntpath
 
 from mycli.domain.runtime import ShellKind
 
@@ -61,6 +62,22 @@ _POSIX_DIRECT_SAFE = frozenset(
         "whoami",
     }
 )
+_POWERSHELL_DIRECT_SAFE = frozenset(
+    {
+        "get-childitem",
+        "get-command",
+        "get-content",
+        "get-date",
+        "get-location",
+        "test-path",
+    }
+)
+_POWERSHELL_LITERAL_PIPELINE_SAFE = frozenset(
+    {"measure-object", "select-object", "sort-object"}
+)
+_CMD_DIRECT_SAFE = frozenset(
+    {"cd", "dir", "echo", "find", "findstr", "type", "where"}
+)
 
 
 class ShellParseKind(StrEnum):
@@ -108,10 +125,7 @@ class _ShellToken:
 def parse_shell_command(command: str, *, shell_kind: ShellKind) -> ShellParseResult:
     if shell_kind in {ShellKind.BASH, ShellKind.ZSH, ShellKind.SH}:
         return _parse_posix(command)
-    return ShellParseResult(
-        ShellParseKind.COMPLEX,
-        reason=f"{shell_kind.value} parsing is not available",
-    )
+    return _parse_windows(command, shell_kind=shell_kind)
 
 
 def parse_shell_argv(
@@ -154,11 +168,11 @@ def is_known_safe_segment(
     shell_kind: ShellKind,
     platform: str | None = None,
 ) -> bool:
-    if shell_kind not in {ShellKind.BASH, ShellKind.ZSH, ShellKind.SH}:
-        return False
     words = segment.words
     if not words:
         return False
+    if shell_kind in {ShellKind.POWERSHELL, ShellKind.CMD}:
+        return _is_known_safe_windows_segment(segment, shell_kind=shell_kind)
     executable = PurePath(words[0]).name
     if executable in _POSIX_DIRECT_SAFE:
         return True
@@ -173,6 +187,28 @@ def is_known_safe_segment(
     }
     validator = validators.get(executable)
     return validator(words) if validator is not None else False
+
+
+def _is_known_safe_windows_segment(
+    segment: ShellCommandSegment,
+    *,
+    shell_kind: ShellKind,
+) -> bool:
+    executable = PureWindowsPath(segment.words[0]).name.casefold()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    if executable == "git":
+        return _safe_git(("git", *segment.words[1:]))
+    if executable == "rg":
+        return _safe_rg(("rg", *segment.words[1:]))
+    if shell_kind is ShellKind.POWERSHELL:
+        if executable in _POWERSHELL_DIRECT_SAFE:
+            return True
+        return (
+            executable in _POWERSHELL_LITERAL_PIPELINE_SAFE
+            and segment.operator_before == "|"
+        )
+    return executable in _CMD_DIRECT_SAFE
 
 
 def _classify_parsed(
@@ -269,7 +305,7 @@ def _safe_git(words: tuple[str, ...]) -> bool:
         break
     if index >= len(words):
         return False
-    subcommand = words[index]
+    subcommand = words[index].casefold()
     args = words[index + 1 :]
     if any(
         arg in {"--ext-diff", "--output", "--textconv"}
@@ -369,6 +405,152 @@ def _parse_posix(command: str, *, allow_wrapper: bool = True) -> ShellParseResul
     ):
         return _parse_posix(wrapper_words[2], allow_wrapper=False)
     return result
+
+
+def _parse_windows(command: str, *, shell_kind: ShellKind) -> ShellParseResult:
+    tokens, error = _tokenize_windows(command, shell_kind=shell_kind)
+    if error is not None:
+        return error
+    if not tokens:
+        return ShellParseResult(ShellParseKind.INVALID, reason="empty command")
+
+    allowed_operators = {"&&", "||", "|"}
+    if shell_kind is ShellKind.POWERSHELL:
+        allowed_operators.add(";")
+    else:
+        allowed_operators.add("&")
+
+    segments: list[ShellCommandSegment] = []
+    words: list[str] = []
+    operator_before: str | None = None
+    effective_cwd: str | None = None
+    leading_cd_chain = True
+
+    for token in tokens:
+        if not token.operator:
+            words.append(token.value)
+            continue
+        if token.value not in allowed_operators:
+            return ShellParseResult(ShellParseKind.COMPLEX, reason="unsupported operator")
+        if not words:
+            return ShellParseResult(ShellParseKind.INVALID, reason="empty command segment")
+        segment = ShellCommandSegment(
+            words=tuple(words),
+            operator_before=operator_before,
+            effective_cwd=effective_cwd,
+        )
+        segments.append(segment)
+        if leading_cd_chain and token.value == "&&" and _is_literal_cd(segment.words):
+            effective_cwd = _join_windows_cwd(effective_cwd, segment.words[1])
+        else:
+            leading_cd_chain = False
+        words = []
+        operator_before = token.value
+
+    if not words:
+        return ShellParseResult(ShellParseKind.INVALID, reason="empty command segment")
+    segments.append(
+        ShellCommandSegment(
+            words=tuple(words),
+            operator_before=operator_before,
+            effective_cwd=effective_cwd,
+        )
+    )
+    return ShellParseResult(ShellParseKind.PLAIN, segments=tuple(segments))
+
+
+def _tokenize_windows(
+    command: str,
+    *,
+    shell_kind: ShellKind,
+) -> tuple[tuple[_ShellToken, ...], ShellParseResult | None]:
+    stripped = command.strip()
+    if not stripped:
+        return (), ShellParseResult(ShellParseKind.INVALID, reason="empty command")
+
+    tokens: list[_ShellToken] = []
+    current: list[str] = []
+    current_started = False
+    current_quoted = False
+    quote: str | None = None
+    escaped = False
+    escape_char = "`" if shell_kind is ShellKind.POWERSHELL else "^"
+    index = 0
+
+    def flush_word() -> None:
+        nonlocal current_started, current_quoted
+        if current_started:
+            tokens.append(_ShellToken("".join(current), quoted=current_quoted))
+            current.clear()
+            current_started = False
+            current_quoted = False
+
+    while index < len(stripped):
+        char = stripped[index]
+        if escaped:
+            current.append(char)
+            current_started = True
+            current_quoted = True
+            escaped = False
+            index += 1
+            continue
+        if char == escape_char:
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            elif shell_kind is ShellKind.POWERSHELL and quote == '"' and char == "$":
+                return (), ShellParseResult(ShellParseKind.COMPLEX, reason="expansion")
+            elif shell_kind is ShellKind.CMD and char in {"%", "!"}:
+                return (), ShellParseResult(ShellParseKind.COMPLEX, reason="expansion")
+            else:
+                current.append(char)
+                current_started = True
+                current_quoted = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current_started = True
+            current_quoted = True
+            index += 1
+            continue
+        if shell_kind is ShellKind.POWERSHELL and char in {"$", "@"}:
+            return (), ShellParseResult(ShellParseKind.COMPLEX, reason="expansion")
+        if shell_kind is ShellKind.CMD and char in {"%", "!"}:
+            return (), ShellParseResult(ShellParseKind.COMPLEX, reason="expansion")
+        if char.isspace():
+            flush_word()
+            index += 1
+            continue
+        if char in {"<", ">"}:
+            return (), ShellParseResult(ShellParseKind.COMPLEX, reason="redirection")
+        if char in {"(", ")", "{", "}"}:
+            return (), ShellParseResult(ShellParseKind.COMPLEX, reason="grouping")
+        if char in {"&", "|"}:
+            flush_word()
+            doubled = index + 1 < len(stripped) and stripped[index + 1] == char
+            value = char * 2 if doubled else char
+            if shell_kind is ShellKind.POWERSHELL and value == "&":
+                return (), ShellParseResult(ShellParseKind.COMPLEX, reason="invocation")
+            tokens.append(_ShellToken(value, operator=True))
+            index += 2 if doubled else 1
+            continue
+        if char == ";" and shell_kind is ShellKind.POWERSHELL:
+            flush_word()
+            tokens.append(_ShellToken(char, operator=True))
+            index += 1
+            continue
+        current.append(char)
+        current_started = True
+        index += 1
+
+    if quote is not None or escaped:
+        return (), ShellParseResult(ShellParseKind.INVALID, reason="malformed quoting")
+    flush_word()
+    return tuple(tokens), None
 
 
 def _tokenize_posix(
@@ -482,6 +664,12 @@ def _join_posix_cwd(current: str | None, target: str) -> str:
     if posixpath.isabs(target) or current is None:
         return posixpath.normpath(target)
     return posixpath.normpath(posixpath.join(current, target))
+
+
+def _join_windows_cwd(current: str | None, target: str) -> str:
+    if ntpath.isabs(target) or current is None:
+        return ntpath.normpath(target)
+    return ntpath.normpath(ntpath.join(current, target))
 
 
 __all__ = [

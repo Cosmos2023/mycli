@@ -162,3 +162,55 @@ def test_mutating_or_externalized_git_forms_are_unknown(command: str) -> None:
     result = classify_shell_command(command, shell_kind=ShellKind.BASH)
 
     assert result.decision is ShellCommandDecision.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Get-ChildItem -Force | Select-Object Name",
+        "Get-Content README.md | Measure-Object -Line",
+        "Get-Location; git status --short",
+    ],
+)
+def test_powershell_plain_read_composition_is_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.POWERSHELL)
+
+    assert result.decision is ShellCommandDecision.SAFE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "$env:TEMP",
+        "Get-Date > date.txt",
+        "Get-ChildItem | Where-Object { $_.Length -gt 0 }",
+        "Get-ChildItem | ForEach-Object { Remove-Item $_ }",
+    ],
+)
+def test_powershell_dynamic_or_mutating_composition_is_not_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.POWERSHELL)
+
+    assert result.decision is not ShellCommandDecision.SAFE
+
+
+def test_cmd_plain_read_composition_is_safe() -> None:
+    result = classify_shell_command(
+        "cd src && dir | findstr py",
+        shell_kind=ShellKind.CMD,
+    )
+
+    assert result.decision is ShellCommandDecision.SAFE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo %PATH%",
+        "dir > files.txt",
+        "dir & del /q output.txt",
+    ],
+)
+def test_cmd_expansion_redirection_and_unknown_segments_are_not_safe(command: str) -> None:
+    result = classify_shell_command(command, shell_kind=ShellKind.CMD)
+
+    assert result.decision is not ShellCommandDecision.SAFE
