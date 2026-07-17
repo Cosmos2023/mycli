@@ -10,6 +10,20 @@ export interface ApprovalSelectorOptions {
 	onCancel: () => void;
 }
 
+const approvalShortcuts: Record<string, string> = {
+	approve_once: "1",
+	reject: "2",
+	allow_session: "3",
+	always_allow: "4",
+};
+
+const approvalShortcutLabels: Record<string, string> = {
+	approve_once: "allow",
+	reject: "reject",
+	allow_session: "session",
+	always_allow: "always",
+};
+
 export class ApprovalSelectorComponent extends Container {
 	private selectedIndex = 0;
 	private readonly listContainer: Container;
@@ -40,6 +54,11 @@ export class ApprovalSelectorComponent extends Container {
 		if (this.approval.risk || this.approval.riskReason) {
 			this.addChild(new Text(theme.fg("warning", this.riskText()), 3, 0));
 		}
+		if (this.approval.persistentRulePreview) {
+			this.addChild(
+				new Text(theme.fg("muted", `Always allow: ${this.approval.persistentRulePreview}`), 3, 0),
+			);
+		}
 		const changePreview = this.changePreviewText();
 		if (changePreview) {
 			this.addChild(new Spacer(1));
@@ -48,21 +67,7 @@ export class ApprovalSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
 		this.addChild(this.responseContainer);
-		this.addChild(
-			new Text(
-				rawKeyHint("1", "allow") +
-					"  " +
-					rawKeyHint("2", "reject") +
-					"  " +
-					rawKeyHint("↑↓", "navigate") +
-					"  " +
-					keyHint("tui.select.confirm", "confirm") +
-					"  " +
-					keyHint("tui.select.cancel", "reject"),
-				1,
-				0,
-			),
-		);
+		this.addChild(new Text(this.footerHints(), 1, 0));
 		this.updateList();
 	}
 
@@ -106,21 +111,18 @@ export class ApprovalSelectorComponent extends Container {
 	}
 
 	private shortcutChoice(keyData: string): string | undefined {
-		if (keyData === "1" || keyData.toLowerCase() === "a" || keyData.toLowerCase() === "y") {
-			return this.allowChoice();
+		const normalized = keyData.toLowerCase();
+		if (normalized === "a" || normalized === "y") {
+			return this.choiceByName("approve_once");
 		}
-		if (keyData === "2" || keyData.toLowerCase() === "r" || keyData.toLowerCase() === "n") {
-			return this.rejectChoice();
+		if (normalized === "r" || normalized === "n") {
+			return this.choiceByName("reject");
 		}
-		return undefined;
+		return this.approval.options.find((option) => approvalShortcuts[option.choice] === keyData)?.choice;
 	}
 
-	private allowChoice(): string | undefined {
-		return this.approval.options.find((option) => option.choice !== "reject")?.choice;
-	}
-
-	private rejectChoice(): string | undefined {
-		return this.approval.options.find((option) => option.choice === "reject")?.choice;
+	private choiceByName(choice: string): string | undefined {
+		return this.approval.options.find((option) => option.choice === choice)?.choice;
 	}
 
 	private respond(choice: string): void {
@@ -142,9 +144,27 @@ export class ApprovalSelectorComponent extends Container {
 			}
 			const isSelected = index === this.selectedIndex;
 			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
-			const label = isSelected ? theme.fg("accent", option.label) : theme.fg("text", option.label);
+			const shortcut = approvalShortcuts[option.choice];
+			const optionText = shortcut ? `${shortcut}. ${option.label}` : option.label;
+			const label = isSelected ? theme.fg("accent", optionText) : theme.fg("text", optionText);
 			this.listContainer.addChild(new Text(`${prefix}${label}`, 1, 0));
 		}
+	}
+
+	private footerHints(): string {
+		const optionHints = this.approval.options
+			.map((option) => {
+				const shortcut = approvalShortcuts[option.choice];
+				const label = approvalShortcutLabels[option.choice];
+				return shortcut && label ? rawKeyHint(shortcut, label) : undefined;
+			})
+			.filter((hint): hint is string => hint !== undefined);
+		return [
+			...optionHints,
+			rawKeyHint("↑↓", "navigate"),
+			keyHint("tui.select.confirm", "confirm"),
+			keyHint("tui.select.cancel", "reject"),
+		].join("  ");
 	}
 
 	private updateResponse(): void {

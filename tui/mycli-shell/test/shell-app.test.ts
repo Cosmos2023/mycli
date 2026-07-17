@@ -1799,7 +1799,7 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 	assert.match(output, /Permission required · Bash · @explore/);
 	assert.match(output, /demo:sub:turn_1:abcd1234/);
 	assert.match(output, /⎿ file \/tmp\/image\.jpg 2>&1/);
-	assert.match(output, /→ Allow once/);
+	assert.match(output, /→ 1\. Allow once/);
 	assert.match(output, /1 allow\s+2 reject\s+↑↓ navigate\s+enter confirm\s+esc reject/);
 	assert.doesNotMatch(output, /Approval required:/);
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
@@ -1808,7 +1808,7 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 	terminal.input?.("\x1b[B");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /→ Reject/);
+	assert.match(output, /→ 2\. Reject/);
 
 	terminal.input?.("\r");
 	await setTimeout(25);
@@ -1847,6 +1847,78 @@ test("mycli shell approval selector supports numeric and mnemonic shortcuts", as
 
 	assert.deepEqual(approvals, [["decision-3", "approve_once"]]);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Approved\./);
+});
+
+test("mycli shell approval selector uses stable shortcuts for session and always allow", async () => {
+	for (const [key, expected] of [
+		["3", "allow_session"],
+		["4", "always_allow"],
+	] as const) {
+		const terminal = new TestTerminal();
+		const approvals: Array<[string, string]> = [];
+		const runtime = new MycliShellRuntime({
+			initialState: {
+				...sampleState(),
+				pendingApproval: {
+					decisionId: `decision-${key}`,
+					preview: "python -m pytest -q",
+					persistentRulePreview: '["python", "-m", "pytest"]',
+					options: [
+						{ choice: "approve_once", label: "Allow once" },
+						{ choice: "reject", label: "Reject" },
+						{ choice: "allow_session", label: "Allow for session" },
+						{ choice: "always_allow", label: "Always allow" },
+					],
+				},
+				footer: { ...sampleState().footer, liveState: "Waiting approval" },
+			},
+			terminal,
+			onApprovalRespond: (decisionId, choice) => {
+				approvals.push([decisionId, choice]);
+			},
+		});
+
+		runtime.start();
+		await setTimeout(25);
+		const output = stripAnsi(runtime.ui.render(100).join("\n"));
+		assert.match(output, /4\. Always allow/);
+		assert.match(output, /Always allow: \["python", "-m", "pytest"\]/);
+
+		terminal.input?.(key);
+		await setTimeout(25);
+		assert.deepEqual(approvals, [[`decision-${key}`, expected]]);
+	}
+});
+
+test("mycli shell approval selector does not derive shortcut four from option order", async () => {
+	const terminal = new TestTerminal();
+	const approvals: Array<[string, string]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingApproval: {
+				decisionId: "decision-4",
+				preview: "python -m pytest",
+				options: [
+					{ choice: "approve_once", label: "Allow once" },
+					{ choice: "reject", label: "Reject" },
+					{ choice: "always_allow", label: "Always allow" },
+				],
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting approval" },
+		},
+		terminal,
+		onApprovalRespond: (decisionId, choice) => {
+			approvals.push([decisionId, choice]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("4");
+	await setTimeout(25);
+
+	assert.deepEqual(approvals, [["decision-4", "always_allow"]]);
 });
 
 test("mycli shell approval selector maps escape to reject and stays mounted until backend clears it", async () => {

@@ -12,6 +12,7 @@ from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.gateway import (
     NodeTuiGateway,
     _SerializedGatewayWriter,
+    _approval_request_payload,
     supported_event_streams,
     supported_rpc_methods,
 )
@@ -2565,6 +2566,73 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         "kind": "waiting_approval",
         "text": "Waiting approval",
     } in [params for method, params in events if method == "status.update"]
+
+
+def test_gateway_approval_payload_exposes_always_allow_and_bounded_preview() -> None:
+    decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Shell",
+            arguments={"command": "python -m pytest -q"},
+            reason="run tests",
+            call_id="call_pytest_1",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="Unknown command requires approval.",
+        preview="python -m pytest -q",
+        options=(
+            DecisionAction.APPROVE_ONCE,
+            DecisionAction.REJECT,
+            DecisionAction.ALWAYS_ALLOW,
+        ),
+        proposed_execpolicy_pattern=("python", "-m", "x" * 200),
+    )
+
+    payload = _approval_request_payload("client_1", decision)
+
+    assert payload["options"][-1] == {
+        "choice": "always_allow",
+        "label": "Always allow",
+    }
+    preview = str(payload["persistent_rule_preview"])
+    assert len(preview) == 160
+    assert preview.startswith('["python", "-m", "')
+    assert preview.endswith("...")
+
+
+def test_gateway_maps_always_allow_to_stable_choice_four(tmp_path: Path) -> None:
+    service = FakeTurnService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Shell",
+            arguments={"command": "python -m pytest"},
+            reason="run tests",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="Unknown command requires approval.",
+        preview="python -m pytest",
+        options=(
+            DecisionAction.APPROVE_ONCE,
+            DecisionAction.REJECT,
+            DecisionAction.ALWAYS_ALLOW,
+        ),
+        proposed_execpolicy_pattern=("python", "-m", "pytest"),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_always",
+            method="approval.respond",
+            params={
+                "decision_id": "decision_current",
+                "choice": "always_allow",
+            },
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    assert response.error is None
+    assert service.resolved_choices == ["4"]
 
 
 def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) -> None:

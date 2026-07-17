@@ -576,6 +576,7 @@ test("runtime adapter projects approval requests into shell approval state", () 
 		child_session_id: "demo:sub:turn_1:abcd1234",
 		risk: "medium",
 		risk_reason: "External command execution",
+		persistent_rule_preview: '["python", "-m", "pytest"]',
 		content_preview: "line 1\nline 2",
 		content_line_count: 2,
 		content_truncated: false,
@@ -583,6 +584,8 @@ test("runtime adapter projects approval requests into shell approval state", () 
 		options: [
 			{ choice: "approve_once", label: "Allow once" },
 			{ choice: "reject", label: "Reject" },
+			{ choice: "allow_session", label: "Allow for session" },
+			{ choice: "always_allow", label: "Always allow" },
 		],
 	});
 
@@ -594,12 +597,15 @@ test("runtime adapter projects approval requests into shell approval state", () 
 	assert.equal(shell.pendingApproval?.workerName, "explore");
 	assert.equal(shell.pendingApproval?.childSessionId, "demo:sub:turn_1:abcd1234");
 	assert.equal(shell.pendingApproval?.riskReason, "External command execution");
+	assert.equal(shell.pendingApproval?.persistentRulePreview, '["python", "-m", "pytest"]');
 	assert.equal(shell.pendingApproval?.contentPreview, "line 1\nline 2");
 	assert.equal(shell.pendingApproval?.contentLineCount, 2);
 	assert.equal(shell.pendingApproval?.diffPreview, "@@ -1 +1 @@\n-old\n+new");
 	assert.deepEqual(shell.pendingApproval?.options, [
 		{ choice: "approve_once", label: "Allow once" },
 		{ choice: "reject", label: "Reject" },
+		{ choice: "allow_session", label: "Allow for session" },
+		{ choice: "always_allow", label: "Always allow" },
 	]);
 	assert.match(shell.pendingNotice ?? "", /Approval required/);
 	assert.equal(shell.footer.liveState, "Waiting approval");

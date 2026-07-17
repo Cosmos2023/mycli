@@ -277,6 +277,7 @@ export type MycliShellPendingApproval = {
 	options: MycliShellApprovalOption[];
 	risk?: string;
 	riskReason?: string;
+	persistentRulePreview?: string;
 	contentPreview?: string;
 	contentLineCount?: number;
 	diffPreview?: string;

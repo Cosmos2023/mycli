@@ -35,6 +35,7 @@ def test_approval_respond_schema_exposes_stable_decision_choice_taxonomy() -> No
         "approve_once",
         "reject",
         "allow_session",
+        "always_allow",
     ]
 
 
@@ -54,6 +55,12 @@ def test_approval_request_schema_exposes_file_change_previews() -> None:
     assert schema["properties"]["content_truncated"] == {"type": "boolean"}
     assert schema["properties"]["diff"] == {"type": "string"}
     assert schema["properties"]["diff_truncated"] == {"type": "boolean"}
+
+
+def test_approval_request_schema_exposes_bounded_persistent_rule_preview() -> None:
+    schema = gateway_event_payload_schemas()["approval.request"]
+
+    assert schema["properties"]["persistent_rule_preview"] == {"type": "string"}
 
 
 def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:

@@ -138,6 +138,7 @@ APPROVAL_DECISION_CHOICES = (
     "approve_once",
     "reject",
     "allow_session",
+    "always_allow",
 )
 _APPROVAL_DECISION_CHOICE = {"type": "string", "enum": list(APPROVAL_DECISION_CHOICES)}
 _APPROVAL_OPTIONS = {
@@ -251,6 +252,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "cwd": _STRING,
                 "risk": _STRING,
                 "risk_reason": _STRING,
+                "persistent_rule_preview": _STRING,
                 "content_preview": _STRING,
                 "content_line_count": _INTEGER,
                 "content_chars": _INTEGER,

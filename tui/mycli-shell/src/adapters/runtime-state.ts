@@ -1211,6 +1211,8 @@ function pendingApprovalFromRecord(value: Record<string, unknown> | null): Mycli
 		options: options.length > 0 ? options : defaultApprovalOptions(),
 		risk: stringValue(value.risk) ?? undefined,
 		riskReason: stringValue(value.risk_reason) ?? stringValue(value.riskReason) ?? undefined,
+		persistentRulePreview:
+			stringValue(value.persistent_rule_preview) ?? stringValue(value.persistentRulePreview) ?? undefined,
 		contentPreview: stringValue(value.content_preview) ?? stringValue(value.contentPreview) ?? undefined,
 		contentLineCount: numberValue(value.content_line_count) ?? numberValue(value.contentLineCount) ?? undefined,
 		diffPreview: diffPreviewForTool(value),

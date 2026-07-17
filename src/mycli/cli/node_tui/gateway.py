@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import inspect
+import json
 from pathlib import Path
 import sqlite3
 from threading import Lock, Thread
@@ -76,12 +77,14 @@ DECISION_CHOICE_MAP = {
     "approve_once": "1",
     "reject": "2",
     "allow_session": "3",
+    "always_allow": "4",
 }
 DECISION_CURRENT_ALIAS = "decision_current"
 DECISION_OPTION_LABELS = {
     DecisionAction.APPROVE_ONCE: "Allow once",
     DecisionAction.REJECT: "Reject",
     DecisionAction.ALLOW_SESSION: "Allow for session",
+    DecisionAction.ALWAYS_ALLOW: "Always allow",
 }
 
 
@@ -2086,8 +2089,21 @@ def _approval_request_payload(
     else:
         payload["risk"] = decision.kind.value
         payload["risk_reason"] = decision.reason
+    if decision.proposed_execpolicy_pattern is not None:
+        payload["persistent_rule_preview"] = _persistent_rule_preview(
+            decision.proposed_execpolicy_pattern
+        )
     payload.update(_approval_preview_payload(decision.metadata))
     return payload
+
+
+def _persistent_rule_preview(
+    pattern: tuple[str, ...],
+    *,
+    max_chars: int = 160,
+) -> str:
+    rendered = json.dumps(list(pattern), ensure_ascii=True)
+    return rendered if len(rendered) <= max_chars else f"{rendered[: max_chars - 3]}..."
 
 
 def _approval_preview_payload(metadata: dict[str, object]) -> dict[str, object]:
