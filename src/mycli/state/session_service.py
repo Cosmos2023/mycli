@@ -348,6 +348,11 @@ class SessionService:
                 "preview": decision.preview,
                 "options": [option.value for option in decision.options],
                 "command_pattern": decision.command_pattern,
+                "proposed_execpolicy_pattern": (
+                    None
+                    if decision.proposed_execpolicy_pattern is None
+                    else list(decision.proposed_execpolicy_pattern)
+                ),
                 "metadata": decision.metadata,
             },
         )
@@ -368,6 +373,9 @@ class SessionService:
             preview=str(payload["preview"]),
             options=tuple(DecisionAction(str(option)) for option in payload["options"]),
             command_pattern=optional_str(payload.get("command_pattern")),
+            proposed_execpolicy_pattern=_optional_string_tuple(
+                payload.get("proposed_execpolicy_pattern")
+            ),
             metadata=dict(payload.get("metadata") or {}),
         )
 
@@ -549,6 +557,11 @@ class SessionService:
                     "reason": turn.pending_approval.reason,
                     "preview": turn.pending_approval.preview,
                     "command_pattern": turn.pending_approval.command_pattern,
+                    "proposed_execpolicy_pattern": (
+                        None
+                        if turn.pending_approval.proposed_execpolicy_pattern is None
+                        else list(turn.pending_approval.proposed_execpolicy_pattern)
+                    ),
                     "metadata": turn.pending_approval.metadata,
                 },
                 "pending_clarification": None
@@ -590,6 +603,9 @@ class SessionService:
                 reason=str(pending_payload["reason"]),
                 preview=str(pending_payload["preview"]),
                 command_pattern=optional_str(pending_payload.get("command_pattern")),
+                proposed_execpolicy_pattern=_optional_string_tuple(
+                    pending_payload.get("proposed_execpolicy_pattern")
+                ),
                 metadata=dict(pending_payload.get("metadata") or {}),
             )
 
@@ -698,6 +714,7 @@ class SessionService:
             reason=decision.reason,
             preview=decision.preview,
             command_pattern=decision.command_pattern,
+            proposed_execpolicy_pattern=decision.proposed_execpolicy_pattern,
             metadata=dict(decision.metadata),
         )
         return SuspendedTurn(
@@ -1005,6 +1022,18 @@ class SessionService:
         if not isinstance(payload, list):
             raise ValueError(f"{state_key} must serialize to a list.")
         return payload
+
+
+def _optional_string_tuple(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item.strip() for item in value)
+    ):
+        raise ValueError("Expected a non-empty string list.")
+    return tuple(value)
 
 
 def _serialize_command_allowance(

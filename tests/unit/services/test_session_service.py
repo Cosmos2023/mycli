@@ -1293,8 +1293,10 @@ def test_session_service_round_trips_pending_decision(tmp_path: Path) -> None:
             DecisionAction.APPROVE_ONCE,
             DecisionAction.REJECT,
             DecisionAction.ALLOW_SESSION,
+            DecisionAction.ALWAYS_ALLOW,
         ),
         command_pattern="git push",
+        proposed_execpolicy_pattern=("git", "push"),
         metadata={"risk_reason": "remote mutation", "content_preview": "unused"},
     )
 
@@ -1311,7 +1313,38 @@ def test_session_service_round_trips_pending_decision(tmp_path: Path) -> None:
     assert loaded.preview == decision.preview
     assert loaded.options == decision.options
     assert loaded.command_pattern == decision.command_pattern
+    assert loaded.proposed_execpolicy_pattern == ("git", "push")
     assert loaded.metadata == decision.metadata
+
+
+def test_session_service_loads_legacy_pending_decision_without_execpolicy_proposal(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    service._save_state(
+        session_id="legacy",
+        thread_id="legacy",
+        state_key="pending_decision",
+        payload={
+            "tool_call": {
+                "name": "Shell",
+                "arguments": {"command": "python script.py"},
+                "reason": "run script",
+                "call_id": "call_shell_legacy",
+            },
+            "kind": "needs_choice",
+            "reason": "Unknown command requires approval.",
+            "preview": "python script.py",
+            "options": ["approve_once", "reject"],
+            "command_pattern": None,
+            "metadata": {},
+        },
+    )
+
+    loaded = service.load_pending_decision("legacy")
+
+    assert loaded is not None
+    assert loaded.proposed_execpolicy_pattern is None
 
 
 def test_session_service_clears_pending_decision(tmp_path: Path) -> None:
@@ -1540,6 +1573,7 @@ def test_session_service_round_trips_suspended_pending_approval_call_id(tmp_path
             reason="Push modifies remote state.",
             preview="git push origin main",
             command_pattern="git push",
+            proposed_execpolicy_pattern=("git", "push"),
             metadata={"content_preview": "hello", "content_line_count": 1},
         ),
     )
@@ -1550,6 +1584,7 @@ def test_session_service_round_trips_suspended_pending_approval_call_id(tmp_path
     assert loaded is not None
     assert loaded.pending_approval is not None
     assert loaded.pending_approval.tool_call.call_id == "call_run_shell_2"
+    assert loaded.pending_approval.proposed_execpolicy_pattern == ("git", "push")
     assert loaded.pending_approval.metadata == suspended.pending_approval.metadata
 
 
@@ -2157,8 +2192,10 @@ def test_session_service_reconstructs_suspended_turn_from_runtime_snapshot(
             DecisionAction.APPROVE_ONCE,
             DecisionAction.REJECT,
             DecisionAction.ALLOW_SESSION,
+            DecisionAction.ALWAYS_ALLOW,
         ),
         command_pattern="git push",
+        proposed_execpolicy_pattern=("git", "push"),
     )
 
     reconstructed = service.reconstruct_suspended_turn("demo", pending_decision)
@@ -2167,4 +2204,5 @@ def test_session_service_reconstructs_suspended_turn_from_runtime_snapshot(
     assert reconstructed.user_message == "push the branch"
     assert reconstructed.pending_approval is not None
     assert reconstructed.pending_approval.tool_call.call_id == "call_push_1"
+    assert reconstructed.pending_approval.proposed_execpolicy_pattern == ("git", "push")
     assert reconstructed.plan_state.items[0].status is PlanStatus.IN_PROGRESS
