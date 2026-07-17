@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 from pathlib import Path
 import signal
@@ -19,7 +20,9 @@ from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.tools.process_controller import ProcessTerminationOutcome
 from mycli.tools.shell_resolver import ShellCommandConfig, ShellResolutionError
 from mycli.tools.shell_session_manager import ShellSessionManager, ShellStartRequest
+from mycli.tools.shell_transport import ShellTransportRequest
 from tests.support.shell_commands import python_shell_command
+from tests.support.shell_transports import FakeShellTransport
 
 
 def _request(
@@ -28,13 +31,62 @@ def _request(
     *,
     owner: str = "session-a",
     timeout_seconds: int = 30,
+    background: bool = True,
+    tty: bool = False,
+    lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
 ) -> ShellStartRequest:
     return ShellStartRequest(
         owner_session_id=owner,
         command=command,
         cwd=tmp_path,
         timeout_seconds=timeout_seconds,
-        background=True,
+        background=background,
+        tty=tty,
+        lifecycle_sink=lifecycle_sink,
+    )
+
+
+def test_manager_decodes_partial_binary_chunks_without_line_wait(tmp_path: Path) -> None:
+    transport = FakeShellTransport()
+    transport.publish(b"rea")
+    transport.publish(b"dy")
+    transport.finish(0)
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+
+    snapshot = manager.start(_request(tmp_path, "ignored", background=False))
+
+    assert snapshot.output == "ready"
+    assert snapshot.stdout == "ready"
+    assert snapshot.stderr == ""
+    assert snapshot.transport == "pipe"
+    assert snapshot.tty is False
+
+
+def test_manager_flushes_decoder_before_completed_event(tmp_path: Path) -> None:
+    events: list[ShellLifecycleEvent] = []
+    transport = FakeShellTransport()
+    transport.publish(b"\xe4")
+    transport.finish(0)
+    manager = ShellSessionManager(
+        transport_factory=lambda _request: transport,
+        output_event_interval_seconds=0,
+    )
+
+    snapshot = manager.start(
+        _request(
+            tmp_path,
+            "ignored",
+            background=False,
+            lifecycle_sink=events.append,
+        )
+    )
+
+    assert snapshot.output == "\ufffd"
+    assert snapshot.decode_replacement_count == 1
+    assert [event.kind for event in events][-1] == "shell.completed"
+    assert any(
+        event.kind == "shell.output" and "\ufffd" in event.output_delta
+        for event in events
     )
 
 
@@ -68,16 +120,16 @@ def _wait_for_output(
     return snapshot
 
 
-def test_manager_spawns_resolved_shell_without_shell_true(tmp_path: Path) -> None:
-    captured: list[tuple[object, dict[str, object]]] = []
+def test_manager_builds_transport_request_from_resolved_shell(tmp_path: Path) -> None:
+    captured: list[ShellTransportRequest] = []
 
-    def failing_factory(command: object, **kwargs: object):
-        captured.append((command, kwargs))
+    def failing_factory(request: ShellTransportRequest):
+        captured.append(request)
         raise OSError("stop after capture")
 
     manager = ShellSessionManager(
         shell_resolver=lambda _path: ShellCommandConfig(Path("/custom/bash")),
-        process_factory=failing_factory,
+        transport_factory=failing_factory,
     )
 
     result = manager.start(
@@ -92,10 +144,10 @@ def test_manager_spawns_resolved_shell_without_shell_true(tmp_path: Path) -> Non
     )
 
     assert result.error_kind == "shell_spawn_failed"
-    command, kwargs = captured[0]
-    assert command == ["/custom/bash", "-c", "printf ok"]
-    assert "shell" not in kwargs
-    assert "executable" not in kwargs
+    request = captured[0]
+    assert request.argv == ("/custom/bash", "-c", "printf ok")
+    assert request.cwd == tmp_path
+    assert request.tty is False
 
 
 @pytest.mark.parametrize(
@@ -146,13 +198,13 @@ def test_manager_spawns_profile_derived_argv(
     profile: ShellProfile,
     expected: list[str],
 ) -> None:
-    captured: list[object] = []
+    captured: list[ShellTransportRequest] = []
 
-    def failing_factory(command: object, **_kwargs: object):
-        captured.append(command)
+    def failing_factory(request: ShellTransportRequest):
+        captured.append(request)
         raise OSError("stop after capture")
 
-    manager = ShellSessionManager(process_factory=failing_factory)
+    manager = ShellSessionManager(transport_factory=failing_factory)
     result = manager.start(
         ShellStartRequest(
             owner_session_id="session-a",
@@ -165,7 +217,7 @@ def test_manager_spawns_profile_derived_argv(
     )
 
     assert result.error_kind == "shell_spawn_failed"
-    assert captured == [expected]
+    assert [request.argv for request in captured] == [tuple(expected)]
 
 
 def test_manager_does_not_register_failed_shell_resolution(tmp_path: Path) -> None:
@@ -181,34 +233,34 @@ def test_manager_does_not_register_failed_shell_resolution(tmp_path: Path) -> No
     assert manager.list_sessions("session-a") == ()
 
 
-def test_manager_uses_process_terminator_result(tmp_path: Path) -> None:
-    calls: list[bool] = []
+def test_manager_uses_transport_termination_result(tmp_path: Path) -> None:
+    class ControlledTransport(FakeShellTransport):
+        def terminate(self) -> ProcessTerminationOutcome:
+            self.finish(143)
+            return ProcessTerminationOutcome("controller_terminated", terminal=True)
 
-    def terminate(_process: subprocess.Popen[str], prefer_interrupt: bool):
-        calls.append(prefer_interrupt)
-        _process.terminate()
-        _process.wait(timeout=2)
-        return ProcessTerminationOutcome("controller_terminated", terminal=True)
-
-    manager = ShellSessionManager(process_terminator=terminate)
+    transport = ControlledTransport()
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
     started = manager.start(_request(tmp_path, "sleep 30"))
 
     snapshot = manager.terminate("session-a", started.shell_id)
 
-    assert calls == [False]
     assert snapshot.cleanup_result == "controller_terminated"
 
 
 def test_manager_keeps_running_state_when_process_termination_fails(
     tmp_path: Path,
 ) -> None:
-    manager = ShellSessionManager(
-        process_terminator=lambda _process, _prefer_interrupt: ProcessTerminationOutcome(
-            "taskkill_failed",
-            terminal=False,
-            error="access denied",
-        )
-    )
+    class FailingTransport(FakeShellTransport):
+        def terminate(self) -> ProcessTerminationOutcome:
+            return ProcessTerminationOutcome(
+                "taskkill_failed",
+                terminal=False,
+                error="access denied",
+            )
+
+    transport = FailingTransport()
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
     started = manager.start(_request(tmp_path, "sleep 30"))
 
     snapshot = manager.terminate("session-a", started.shell_id)
@@ -216,9 +268,7 @@ def test_manager_keeps_running_state_when_process_termination_fails(
     assert snapshot.status == "running"
     assert snapshot.terminal_state is None
     assert snapshot.cleanup_result == "taskkill_failed"
-    process = manager.processes()[started.shell_id]
-    process.terminate()
-    process.wait(timeout=2)
+    transport.finish(0)
 
 
 def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:

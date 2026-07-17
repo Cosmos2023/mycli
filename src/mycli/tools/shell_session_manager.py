@@ -6,10 +6,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 from pathlib import Path
-import subprocess
-from threading import Lock, Thread
+from threading import Condition, Lock, Thread
 import time
-from typing import Any, cast
 from uuid import uuid4
 
 from mycli.domain.runtime import (
@@ -20,22 +18,24 @@ from mycli.domain.runtime import (
     ShellProfile,
 )
 from mycli.domain.runtime.task_notifications import TaskNotification
-from mycli.tools.process_controller import (
-    ProcessTerminationOutcome,
-    process_spawn_options,
-    terminate_process_tree,
-)
+from mycli.tools.shell_output_decoder import ShellOutputDecoder
 from mycli.tools.shell_output_buffer import ShellOutputBuffer
 from mycli.tools.shell_resolver import (
     ShellCommandConfig,
     ShellResolutionError,
     resolve_shell,
 )
+from mycli.tools.shell_transport import (
+    ShellProcessTransport,
+    ShellStream,
+    ShellTransportRequest,
+    ShellTransportUnavailable,
+    create_shell_transport,
+)
 
 
 ShellResolver = Callable[[str | None], ShellCommandConfig]
-ProcessFactory = Callable[..., subprocess.Popen[str]]
-ProcessTerminator = Callable[[subprocess.Popen[str], bool], ProcessTerminationOutcome]
+ShellTransportFactory = Callable[[ShellTransportRequest], ShellProcessTransport]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +45,7 @@ class ShellStartRequest:
     cwd: Path
     timeout_seconds: int
     background: bool
+    tty: bool = False
     shell_path: str | None = None
     shell_profile: ShellProfile | None = None
     env: dict[str, str] | None = None
@@ -78,6 +79,9 @@ class ShellSessionSnapshot:
     stderr_omitted_chars: int
     cursor_was_evicted: bool
     cleanup_result: str | None
+    transport: str | None = None
+    tty: bool = False
+    decode_replacement_count: int = 0
     shell_kind: str | None = None
     shell_edition: str | None = None
     call_id: str | None = None
@@ -110,7 +114,10 @@ class _ShellSession:
     command_length: int
     command_pattern: str | None
     shell_profile: ShellProfile
-    process: subprocess.Popen[str]
+    transport: ShellProcessTransport
+    decoder: ShellOutputDecoder
+    transport_kind: str
+    tty: bool
     started_at: str
     started_monotonic: float
     last_observed_at: str
@@ -131,6 +138,7 @@ class _ShellSession:
     output_event_scheduled: bool = False
     lifecycle_terminal_emitted: bool = False
     lifecycle_delivery_lock: Lock = field(default_factory=Lock)
+    state_changed: Condition = field(default_factory=Condition)
     terminal_state: str | None = None
     cleanup_result: str | None = None
     completed_at: str | None = None
@@ -149,8 +157,7 @@ class ShellSessionManager:
         output_event_interval_seconds: float = 0.05,
         output_event_max_chars: int = 4096,
         shell_resolver: ShellResolver | None = None,
-        process_factory: ProcessFactory | None = None,
-        process_terminator: ProcessTerminator | None = None,
+        transport_factory: ShellTransportFactory | None = None,
     ) -> None:
         if max_sessions <= 0:
             raise ValueError("max_sessions must be positive")
@@ -165,8 +172,7 @@ class ShellSessionManager:
         self._output_event_interval_seconds = output_event_interval_seconds
         self._output_event_max_chars = output_event_max_chars
         self._shell_resolver = shell_resolver or resolve_shell
-        self._process_factory = process_factory or _spawn_process
-        self._process_terminator = process_terminator or _terminate_process
+        self._transport_factory = transport_factory or create_shell_transport
         self._sessions: dict[str, _ShellSession] = {}
         self._pending_starts = 0
         self._lock = Lock()
@@ -191,22 +197,26 @@ class ShellSessionManager:
                 shell_profile = ShellProfile(ShellKind.BASH, legacy_shell.executable)
             else:
                 shell_profile = request.shell_profile
-            process = self._process_factory(
-                shell_profile.exec_argv(request.command),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                errors="replace",
-                cwd=request.cwd,
-                env=request.env,
-                bufsize=1,
-                **process_spawn_options(),
+            transport = self._transport_factory(
+                ShellTransportRequest(
+                    argv=tuple(shell_profile.exec_argv(request.command)),
+                    cwd=request.cwd,
+                    env=request.env,
+                    tty=request.tty,
+                )
             )
         except ShellResolutionError as exc:
             self._release_capacity_reservation()
             return self._error_snapshot(
                 owner_session_id=request.owner_session_id,
                 error_kind="shell_resolution_failed",
+                error=str(exc),
+            )
+        except ShellTransportUnavailable as exc:
+            self._release_capacity_reservation()
+            return self._error_snapshot(
+                owner_session_id=request.owner_session_id,
+                error_kind=exc.error_kind,
                 error=str(exc),
             )
         except OSError as exc:
@@ -228,7 +238,10 @@ class ShellSessionManager:
             command_length=len(request.command),
             command_pattern=request.command_pattern,
             shell_profile=shell_profile,
-            process=process,
+            transport=transport,
+            decoder=ShellOutputDecoder(),
+            transport_kind=transport.kind,
+            tty=transport.tty,
             started_at=now,
             started_monotonic=started_monotonic,
             last_observed_at=now,
@@ -263,21 +276,15 @@ class ShellSessionManager:
         self._deliver_lifecycle_event(session, started_event)
         self._deliver_lifecycle_event(session, list_event)
 
-        stdout_thread = Thread(
-            target=self._drain_stream,
-            args=(session.shell_id, "stdout"),
+        reader_thread = Thread(
+            target=self._drain_transport,
+            args=(session.shell_id,),
             daemon=True,
         )
-        stderr_thread = Thread(
-            target=self._drain_stream,
-            args=(session.shell_id, "stderr"),
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
+        reader_thread.start()
         Thread(
             target=self._watch_process,
-            args=(session.shell_id, stdout_thread, stderr_thread),
+            args=(session.shell_id, reader_thread),
             daemon=True,
         ).start()
         Thread(target=self._watch_timeout, args=(session.shell_id,), daemon=True).start()
@@ -332,7 +339,7 @@ class ShellSessionManager:
                 shell_id
                 for shell_id, session in self._sessions.items()
                 if session.owner_session_id == owner_session_id
-                and session.process.poll() is None
+                and session.transport.poll() is None
             ]
         return tuple(self.terminate(owner_session_id, shell_id) for shell_id in shell_ids)
 
@@ -346,13 +353,14 @@ class ShellSessionManager:
             sessions.sort(key=lambda item: item.started_monotonic)
         return tuple(self._snapshot_full(session) for session in sessions)
 
-    def processes(self) -> dict[str, subprocess.Popen[str]]:
+    def processes(self) -> dict[str, object]:
         with self._lock:
-            return {
-                shell_id: session.process
-                for shell_id, session in self._sessions.items()
-                if session.process.poll() is None
-            }
+            processes: dict[str, object] = {}
+            for shell_id, session in self._sessions.items():
+                process = session.transport.compatibility_process()
+                if process is not None and session.transport.poll() is None:
+                    processes[shell_id] = process
+            return processes
 
     def _reserve_capacity(
         self,
@@ -368,7 +376,7 @@ class ShellSessionManager:
             completed = [
                 session
                 for session in self._sessions.values()
-                if session.process.poll() is not None
+                if session.transport.poll() is not None
                 and session.terminal_state is not None
                 and (
                     session.lifecycle_sink is None
@@ -417,51 +425,74 @@ class ShellSessionManager:
                 )
             return session, None
 
-    def _drain_stream(self, shell_id: str, stream_name: str) -> None:
+    def _drain_transport(self, shell_id: str) -> None:
         with self._lock:
             session = self._sessions.get(shell_id)
         if session is None:
             return
-        stream = session.process.stdout if stream_name == "stdout" else session.process.stderr
-        target = session.stdout if stream_name == "stdout" else session.stderr
-        if stream is not None:
-            for text in stream:
-                target.append(text)
-                session.output.append(text)
-                self._append_output_file(session, text)
-                schedule_output = False
-                with self._lock:
-                    session.last_observed_at = _now_iso()
-                    if (
-                        session.lifecycle_sink is not None
-                        and not session.lifecycle_terminal_emitted
-                        and not session.output_event_scheduled
-                    ):
-                        session.output_event_scheduled = True
-                        schedule_output = True
-                if schedule_output:
-                    Thread(
-                        target=self._flush_output_after_delay,
-                        args=(session.shell_id,),
-                        daemon=True,
-                    ).start()
+        with contextlib.suppress(Exception):
+            for chunk in session.transport.read_chunks():
+                self._append_decoded_output(
+                    session,
+                    chunk.stream,
+                    session.decoder.feed(chunk.stream, chunk.data),
+                )
 
     def _watch_process(
         self,
         shell_id: str,
-        stdout_thread: Thread,
-        stderr_thread: Thread,
+        reader_thread: Thread,
     ) -> None:
         with self._lock:
             session = self._sessions.get(shell_id)
         if session is None:
             return
         with contextlib.suppress(Exception):
-            session.process.wait()
-        stdout_thread.join()
-        stderr_thread.join()
+            session.transport.wait()
+        reader_thread.join()
+        self._flush_decoder(session)
         self._finalize_natural(session)
         self._finalize_lifecycle(session)
+        session.transport.close()
+
+    def _flush_decoder(self, session: _ShellSession) -> None:
+        for stream in ("stdout", "stderr", "terminal"):
+            self._append_decoded_output(session, stream, session.decoder.flush(stream))
+
+    def _append_decoded_output(
+        self,
+        session: _ShellSession,
+        stream: ShellStream,
+        text: str,
+    ) -> None:
+        if not text:
+            return
+        if stream == "stdout":
+            session.stdout.append(text)
+        elif stream == "stderr":
+            session.stderr.append(text)
+        else:
+            session.stdout.append(text)
+        session.output.append(text)
+        self._append_output_file(session, text)
+        schedule_output = False
+        with self._lock:
+            session.last_observed_at = _now_iso()
+            if (
+                session.lifecycle_sink is not None
+                and not session.lifecycle_terminal_emitted
+                and not session.output_event_scheduled
+            ):
+                session.output_event_scheduled = True
+                schedule_output = True
+        with session.state_changed:
+            session.state_changed.notify_all()
+        if schedule_output:
+            Thread(
+                target=self._flush_output_after_delay,
+                args=(session.shell_id,),
+                daemon=True,
+            ).start()
 
     def _flush_output_after_delay(self, shell_id: str) -> None:
         time.sleep(self._output_event_interval_seconds)
@@ -513,9 +544,12 @@ class ShellSessionManager:
             session = self._sessions.get(shell_id)
         if session is None:
             return
-        try:
-            session.process.wait(timeout=max(0, session.timeout_seconds))
-        except subprocess.TimeoutExpired:
+        with session.state_changed:
+            completed = session.state_changed.wait_for(
+                lambda: session.terminal_state is not None,
+                timeout=max(0, session.timeout_seconds),
+            )
+        if not completed:
             self._terminate(
                 session.owner_session_id,
                 shell_id,
@@ -524,12 +558,12 @@ class ShellSessionManager:
             )
 
     def _wait_for_terminal(self, shell_id: str) -> None:
-        while True:
-            with self._lock:
-                session = self._sessions.get(shell_id)
-                if session is None or session.terminal_state is not None:
-                    return
-            time.sleep(0.01)
+        with self._lock:
+            session = self._sessions.get(shell_id)
+        if session is None:
+            return
+        with session.state_changed:
+            session.state_changed.wait_for(lambda: session.terminal_state is not None)
 
     def _terminate(
         self,
@@ -548,28 +582,38 @@ class ShellSessionManager:
             session.terminal_state = terminal_state
             session.last_observed_at = _now_iso()
 
-        outcome = self._process_terminator(session.process, prefer_interrupt)
+        outcome = (
+            session.transport.interrupt()
+            if prefer_interrupt
+            else session.transport.terminate()
+        )
         with self._lock:
             session.cleanup_result = outcome.cleanup_result
             if not outcome.terminal:
                 session.terminal_state = None
                 session.last_observed_at = _now_iso()
+                with session.state_changed:
+                    session.state_changed.notify_all()
                 return
             session.completed_at = _now_iso()
             session.last_observed_at = session.completed_at
             notification = self._notification_for_locked(session)
+        with session.state_changed:
+            session.state_changed.notify_all()
         self._deliver_notification(session, notification)
 
     def _finalize_natural(self, session: _ShellSession) -> None:
         with self._lock:
             if session.terminal_state is not None:
                 return
-            exit_code = session.process.poll()
+            exit_code = session.transport.poll()
             session.terminal_state = "completed" if exit_code == 0 else "failed"
             session.cleanup_result = "not_needed"
             session.completed_at = _now_iso()
             session.last_observed_at = session.completed_at
             notification = self._notification_for_locked(session)
+        with session.state_changed:
+            session.state_changed.notify_all()
         self._deliver_notification(session, notification)
 
     def _active_background_count_locked(self, owner_session_id: str) -> int:
@@ -627,7 +671,7 @@ class ShellSessionManager:
             background=session.background,
             process_state=process_state,
             terminal_state=session.terminal_state,
-            exit_code=session.process.poll(),
+            exit_code=session.transport.poll(),
             output_delta=output_delta,
             next_cursor=output.total_chars if next_cursor is None else next_cursor,
             output_chars=output.total_chars,
@@ -694,13 +738,13 @@ class ShellSessionManager:
             status=session.terminal_state,
             summary=_shell_summary(
                 status=session.terminal_state,
-                exit_code=session.process.poll(),
+                exit_code=session.transport.poll(),
             ),
             output_file=session.output_file,
             completed_at=session.completed_at,
             metadata={
                 "shell_id": session.shell_id,
-                "exit_code": session.process.poll(),
+                "exit_code": session.transport.poll(),
                 "command_hash": session.command_hash,
                 "output_chars": snapshot.total_chars,
                 "omitted_output_chars": snapshot.omitted_chars,
@@ -773,7 +817,7 @@ class ShellSessionManager:
         stderr = session.stderr.snapshot()
         with self._lock:
             terminal_state = session.terminal_state
-            exit_code = session.process.poll()
+            exit_code = session.transport.poll()
             session.last_used_monotonic = time.monotonic()
             return ShellSessionSnapshot(
                 shell_id=session.shell_id,
@@ -801,6 +845,9 @@ class ShellSessionManager:
                 stderr_omitted_chars=stderr.omitted_chars,
                 cursor_was_evicted=cursor_was_evicted,
                 cleanup_result=session.cleanup_result,
+                transport=session.transport_kind,
+                tty=session.tty,
+                decode_replacement_count=session.decoder.replacement_count,
                 shell_kind=session.shell_profile.kind.value,
                 shell_edition=(
                     session.shell_profile.powershell_edition.value
@@ -853,17 +900,6 @@ class ShellSessionManager:
             error_kind=error_kind,
             error=error,
         )
-
-
-def _spawn_process(command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
-    return cast("subprocess.Popen[str]", subprocess.Popen(command, **kwargs))
-
-
-def _terminate_process(
-    process: subprocess.Popen[str],
-    prefer_interrupt: bool,
-) -> ProcessTerminationOutcome:
-    return terminate_process_tree(process, prefer_interrupt=prefer_interrupt)
 
 
 def _now_iso() -> str:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-import subprocess
 import time
 
 from mycli.domain.runtime import RuntimeInterruptToken, ShellLifecycleEvent, ShellProfile
@@ -16,7 +15,7 @@ from mycli.tools.shell_session_manager import (
 
 
 LEGACY_SHELL_OWNER = "legacy"
-SHELL_SESSION_MANAGER = ShellSessionManager(output_max_chars=10_000)
+SHELL_SESSION_MANAGER = ShellSessionManager()
 
 
 class ShellProcessRegistry:
@@ -137,7 +136,7 @@ class ShellProcessRegistry:
             for snapshot in self._manager.terminate_owner(owner_session_id)
         )
 
-    def processes(self) -> dict[str, subprocess.Popen[str]]:
+    def processes(self) -> dict[str, object]:
         return self._manager.processes()
 
     def background_jobs(self) -> tuple[BackgroundJobSummary, ...]:
@@ -199,6 +198,9 @@ def _snapshot_payload(snapshot: ShellSessionSnapshot) -> dict[str, object]:
         "command_pattern": snapshot.command_pattern,
         "terminal_state": snapshot.terminal_state,
         "cleanup_result": _compat_cleanup_result(snapshot.cleanup_result),
+        "transport": snapshot.transport,
+        "tty": snapshot.tty,
+        "decode_replacement_count": snapshot.decode_replacement_count,
         "shell_kind": snapshot.shell_kind,
         "shell_edition": snapshot.shell_edition,
         "output_file": snapshot.output_file,
