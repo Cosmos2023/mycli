@@ -6,6 +6,8 @@ from mycli.tools.shell_transport.base import (
     ShellTransportRequest,
     ShellTransportUnavailable,
 )
+from mycli.tools.shell_transport.factory import create_shell_transport
+from mycli.tools.shell_transport.pipe import PipeTransport
 
 __all__ = [
     "ShellOutputChunk",
@@ -14,4 +16,6 @@ __all__ = [
     "ShellTransportKind",
     "ShellTransportRequest",
     "ShellTransportUnavailable",
+    "PipeTransport",
+    "create_shell_transport",
 ]
