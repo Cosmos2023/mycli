@@ -1757,6 +1757,52 @@ test("ShellOutput updates the original Shell card without creating a polling car
 	assert.equal(shell.bash[0]?.terminalState, "completed");
 });
 
+test("WriteStdin poll merges into yielded Shell without a second card", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "shell.started", {
+		shell_id: "shell-1",
+		call_id: "call-shell",
+		sequence: 1,
+		command_preview: "pytest -q",
+		background: false,
+		process_state: "running_foreground",
+		transport: "pipe",
+		tty: false,
+	});
+	state = reduceRuntimeEvent(state, "shell.list.updated", {
+		shell_id: "shell-1",
+		sequence: 2,
+		background: true,
+		yielded: true,
+		process_state: "running_background",
+		active_background_count: 1,
+	});
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		name: "WriteStdin",
+		call_id: "call-poll",
+		raw_payload: {
+			session_id: "shell-1",
+			output: "50% complete",
+			transport: "pipe",
+			tty: false,
+			background: true,
+			yielded: true,
+			process_state: "running_background",
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+	const bashBlocks = shell.transcript?.filter((block) => block.kind === "bash") ?? [];
+
+	assert.equal(bashBlocks.length, 1);
+	assert.equal(bashBlocks[0]?.bash.background, true);
+	assert.equal(bashBlocks[0]?.bash.yielded, true);
+	assert.equal(bashBlocks[0]?.bash.transport, "pipe");
+	assert.equal(bashBlocks[0]?.bash.tty, false);
+	assert.match(bashBlocks[0]?.bash.outputPreview ?? "", /50% complete/);
+	assert.equal(shell.tools.some((tool) => tool.name === "WriteStdin"), false);
+});
+
 test("terminal shell state rejects later running events", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "shell.completed", {

@@ -1373,6 +1373,23 @@ test("Codex-style background Bash omits active-turn interrupt hint", () => {
 	assert.doesNotMatch(output, /esc to interrupt/);
 });
 
+test("yielded Shell omits active-turn interrupt hint", () => {
+	const yielded = new BashExecutionComponent(
+		{
+			id: "shell-yielded",
+			command: "uv run pytest -q",
+			status: "running",
+			background: false,
+			yielded: true,
+		},
+		() => Date.parse("2026-07-11T12:00:08Z"),
+	);
+
+	const output = stripAnsi(yielded.render(100).join("\n"));
+	assert.match(output, /• Running uv run pytest -q/);
+	assert.doesNotMatch(output, /esc to interrupt/);
+});
+
 test("Codex-style failed Bash uses Ran title and exit detail", () => {
 	const failed = new BashExecutionComponent(
 		{

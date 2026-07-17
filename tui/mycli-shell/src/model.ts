@@ -51,6 +51,9 @@ export type MycliShellBash = {
 	callId?: string;
 	background?: boolean;
 	processState?: string;
+	transport?: string;
+	tty?: boolean;
+	yielded?: boolean;
 	terminalState?: string;
 	exitCode?: number;
 	sequence?: number;

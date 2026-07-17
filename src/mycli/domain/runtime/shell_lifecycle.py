@@ -23,6 +23,9 @@ class ShellLifecycleEvent:
     command_preview: str
     background: bool
     process_state: str
+    transport: str | None = None
+    tty: bool = False
+    yielded: bool = False
     terminal_state: str | None = None
     exit_code: int | None = None
     output_delta: str = ""
@@ -44,6 +47,9 @@ class ShellLifecycleEvent:
             "command_preview": self.command_preview,
             "background": self.background,
             "process_state": self.process_state,
+            "transport": self.transport,
+            "tty": self.tty,
+            "yielded": self.yielded,
             "terminal_state": self.terminal_state,
             "exit_code": self.exit_code,
             "output_delta": self.output_delta,

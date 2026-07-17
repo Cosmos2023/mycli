@@ -102,7 +102,7 @@ export class BashExecutionComponent extends Container {
 			if (elapsed !== undefined) {
 				details.push(`${elapsed}s`);
 			}
-			if (this.bash.background !== true) {
+			if (this.bash.background !== true && this.bash.yielded !== true) {
 				details.push("esc to interrupt");
 			}
 			const suffix = details.length > 0 ? ` (${details.join(" · ")})` : "";

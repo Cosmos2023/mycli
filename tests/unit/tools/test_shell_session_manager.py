@@ -110,10 +110,14 @@ def test_new_session_yields_to_background_after_deadline(tmp_path: Path) -> None
     assert snapshot.background is True
     assert snapshot.process_state == "running_background"
     assert snapshot.yielded is True
-    assert any(
-        event.kind == "shell.list.updated" and event.active_background_count == 1
+    yielded_event = next(
+        event
         for event in events
+        if event.kind == "shell.list.updated" and event.active_background_count == 1
     )
+    assert yielded_event.transport == "pipe"
+    assert yielded_event.tty is False
+    assert yielded_event.yielded is True
     transport.finish(0)
 
 
@@ -350,6 +354,9 @@ def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
         next_cursor=0,
         output_chars=0,
         omitted_output_chars=0,
+        transport="windows_conpty",
+        tty=True,
+        yielded=True,
         shell_kind="powershell",
         shell_edition="core",
     )
@@ -360,6 +367,9 @@ def test_shell_lifecycle_event_projects_safe_tui_payload() -> None:
     assert payload["call_id"] == "call-1"
     assert payload["sequence"] == 1
     assert payload["command_preview"] == "python3 -m http.server"
+    assert payload["transport"] == "windows_conpty"
+    assert payload["tty"] is True
+    assert payload["yielded"] is True
     assert payload["shell_kind"] == "powershell"
     assert payload["shell_edition"] == "core"
     assert "shell_path" not in payload

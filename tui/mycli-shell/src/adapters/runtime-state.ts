@@ -36,6 +36,9 @@ export type RuntimeShellProcess = {
 	commandPreview: string;
 	background: boolean;
 	processState: string;
+	transport?: string;
+	tty?: boolean;
+	yielded?: boolean;
 	terminalState?: string;
 	exitCode?: number;
 	sequence: number;
@@ -192,6 +195,9 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 					callId: stringValue(metadata.call_id) ?? undefined,
 					background: booleanValue(metadata.background) ?? undefined,
 					processState: stringValue(metadata.process_state) ?? undefined,
+					transport: stringValue(metadata.transport) ?? undefined,
+					tty: booleanValue(metadata.tty) ?? undefined,
+					yielded: booleanValue(metadata.yielded) ?? undefined,
 					terminalState: stringValue(metadata.terminal_state) ?? undefined,
 					exitCode: numberValue(metadata.exit_code) ?? numberValue(displayMetrics.exit_code) ?? undefined,
 					sequence: numberValue(metadata.shell_sequence) ?? undefined,
@@ -1802,34 +1808,38 @@ function applyShellLifecycle(
 	if (previousSequence !== undefined && sequence <= previousSequence) return state;
 
 	const shellEventSequences = { ...state.shellEventSequences, [shellId]: sequence };
+	let lifecycleState = { ...state, shellEventSequences };
+	let activeBackgroundCount: number | null = null;
 	if (method === "shell.list.updated") {
-		const activeCount = numberValue(params.active_background_count);
-		return {
-			...state,
-			shellEventSequences,
+		activeBackgroundCount = numberValue(params.active_background_count);
+		lifecycleState = {
+			...lifecycleState,
 			backgroundShellCount:
-				activeCount !== null && Number.isInteger(activeCount) && activeCount >= 0
-					? activeCount
+				activeBackgroundCount !== null && Number.isInteger(activeBackgroundCount) && activeBackgroundCount >= 0
+					? activeBackgroundCount
 					: state.backgroundShellCount,
 		};
+		const updatesProcess = ["background", "process_state", "transport", "tty", "yielded"]
+			.some((key) => Object.prototype.hasOwnProperty.call(params, key));
+		if (!updatesProcess) return lifecycleState;
 	}
 	if (method === "shell.removed") {
-		const backgroundShells = { ...state.backgroundShells };
+		const backgroundShells = { ...lifecycleState.backgroundShells };
 		delete backgroundShells[shellId];
-		return { ...state, shellEventSequences, backgroundShells };
+		return { ...lifecycleState, backgroundShells };
 	}
 
 	const callId = stringValue(params.call_id) ?? undefined;
-	const transcriptIndex = findShellTranscriptIndex(state.transcript, shellId, callId);
-	const existingItem = transcriptIndex >= 0 ? state.transcript[transcriptIndex] : undefined;
+	const transcriptIndex = findShellTranscriptIndex(lifecycleState.transcript, shellId, callId);
+	const existingItem = transcriptIndex >= 0 ? lifecycleState.transcript[transcriptIndex] : undefined;
 	const existingMetadata = recordValue(existingItem?.metadata);
 	const existingTerminalState = stringValue(existingMetadata.terminal_state);
 	const incomingTerminalState = stringValue(params.terminal_state) ?? undefined;
 	if (existingTerminalState && !incomingTerminalState) {
-		return { ...state, shellEventSequences };
+		return lifecycleState;
 	}
 
-	const existingProcess = state.backgroundShells[shellId];
+	const existingProcess = lifecycleState.backgroundShells[shellId];
 	const commandPreview =
 		stringValue(params.command_preview) ??
 		existingProcess?.commandPreview ??
@@ -1843,6 +1853,9 @@ function applyShellLifecycle(
 		(incomingTerminalState ? incomingTerminalState : background ? "running_background" : "running_foreground");
 	const shellKind = stringValue(params.shell_kind) ?? existingProcess?.shellKind ?? stringValue(existingMetadata.shell_kind) ?? undefined;
 	const shellEdition = stringValue(params.shell_edition) ?? existingProcess?.shellEdition ?? stringValue(existingMetadata.shell_edition) ?? undefined;
+	const transport = stringValue(params.transport) ?? existingProcess?.transport ?? stringValue(existingMetadata.transport) ?? undefined;
+	const tty = booleanValue(params.tty) ?? existingProcess?.tty ?? booleanValue(existingMetadata.tty) ?? undefined;
+	const yielded = booleanValue(params.yielded) ?? existingProcess?.yielded ?? booleanValue(existingMetadata.yielded) ?? undefined;
 	const existingOutput =
 		existingProcess?.outputPreview ??
 		textValue(existingMetadata.output_preview) ??
@@ -1859,6 +1872,9 @@ function applyShellLifecycle(
 		commandPreview,
 		background,
 		processState,
+		...(transport ? { transport } : {}),
+		...(tty !== undefined ? { tty } : {}),
+		...(yielded !== undefined ? { yielded } : {}),
 		...(incomingTerminalState ? { terminalState: incomingTerminalState } : {}),
 		...(numberValue(params.exit_code) !== null ? { exitCode: numberValue(params.exit_code)! } : {}),
 		sequence,
@@ -1873,7 +1889,7 @@ function applyShellLifecycle(
 		...(shellEdition ? { shellEdition } : {}),
 	};
 
-	const backgroundShells = { ...state.backgroundShells };
+	const backgroundShells = { ...lifecycleState.backgroundShells };
 	if (background && !incomingTerminalState) {
 		backgroundShells[shellId] = process;
 	} else {
@@ -1890,6 +1906,9 @@ function applyShellLifecycle(
 		command: stringValue(existingMetadata.command) ?? commandPreview,
 		background,
 		process_state: processState,
+		transport: process.transport,
+		tty: process.tty,
+		yielded: process.yielded,
 		terminal_state: incomingTerminalState,
 		exit_code: process.exitCode,
 		shell_sequence: sequence,
@@ -1922,13 +1941,16 @@ function applyShellLifecycle(
 	};
 	const transcript =
 		transcriptIndex >= 0
-			? [...state.transcript.slice(0, transcriptIndex), item, ...state.transcript.slice(transcriptIndex + 1)]
-			: [...state.transcript, item];
+			? [...lifecycleState.transcript.slice(0, transcriptIndex), item, ...lifecycleState.transcript.slice(transcriptIndex + 1)]
+			: [...lifecycleState.transcript, item];
 	return {
-		...state,
+		...lifecycleState,
 		transcript,
 		backgroundShells,
-		backgroundShellCount: Object.keys(backgroundShells).length,
+		backgroundShellCount:
+			activeBackgroundCount !== null && Number.isInteger(activeBackgroundCount) && activeBackgroundCount >= 0
+				? activeBackgroundCount
+				: Object.keys(backgroundShells).length,
 		shellEventSequences,
 	};
 }
@@ -2025,7 +2047,7 @@ function removeTransientClarificationItems(items: RuntimeTranscriptItem[], reque
 function isShellOutputLifecycle(params: Record<string, unknown>): boolean {
 	const name = stringValue(params.name) ?? stringValue(params.tool_name) ?? "";
 	const normalized = name.trim().toLowerCase().replace(/[_-]/g, "");
-	return normalized === "shelloutput" || normalized === "bashoutput";
+	return normalized === "shelloutput" || normalized === "bashoutput" || normalized === "writestdin";
 }
 
 function removeToolLifecycleItem(items: RuntimeTranscriptItem[], params: Record<string, unknown>): RuntimeTranscriptItem[] {
@@ -2042,10 +2064,13 @@ function mergeShellOutputIntoExecution(
 	const incomingMetrics = recordValue(incomingDisplay.metrics);
 	const shellId =
 		stringValue(rawPayload.shell_id) ??
+		stringValue(rawPayload.session_id) ??
 		stringValue(rawPayload.bash_id) ??
 		stringValue(params.shell_id) ??
+		stringValue(params.session_id) ??
 		stringValue(params.bash_id) ??
-		stringValue(incomingMetrics.shell_id);
+		stringValue(incomingMetrics.shell_id) ??
+		stringValue(incomingMetrics.session_id);
 	if (!shellId) return null;
 
 	const index = findShellTranscriptIndex(items, shellId, undefined);
@@ -2075,6 +2100,16 @@ function mergeShellOutputIntoExecution(
 	const nextMetadata: Record<string, unknown> = {
 		...metadata,
 		shell_id: shellId,
+		transport:
+			stringValue(rawPayload.transport) ??
+			stringValue(params.transport) ??
+			stringValue(incomingMetrics.transport) ??
+			stringValue(metadata.transport),
+		tty:
+			booleanValue(rawPayload.tty) ??
+			booleanValue(params.tty) ??
+			booleanValue(incomingMetrics.tty) ??
+			booleanValue(metadata.tty),
 		background:
 			booleanValue(rawPayload.background) ??
 			booleanValue(params.background) ??
@@ -2083,6 +2118,11 @@ function mergeShellOutputIntoExecution(
 			stringValue(rawPayload.process_state) ??
 			stringValue(params.process_state) ??
 			stringValue(metadata.process_state),
+		yielded:
+			booleanValue(rawPayload.yielded) ??
+			booleanValue(params.yielded) ??
+			booleanValue(incomingMetrics.yielded) ??
+			booleanValue(metadata.yielded),
 		terminal_state: terminalState ?? stringValue(metadata.terminal_state),
 		exit_code: exitCode ?? numberValue(metadata.exit_code) ?? undefined,
 		output_chars:
