@@ -82,6 +82,7 @@ class ShellProcessRegistry:
         lifecycle_sink: Callable[[ShellLifecycleEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> dict[str, object]:
+        started = time.monotonic()
         snapshot = self._manager.start(
             ShellStartRequest(
                 owner_session_id=owner_session_id,
@@ -104,6 +105,7 @@ class ShellProcessRegistry:
         )
         payload = _snapshot_payload(snapshot)
         payload["max_output_tokens"] = max_output_tokens
+        payload["wall_time_seconds"] = max(0.0, time.monotonic() - started)
         return payload
 
     def start(
@@ -135,6 +137,28 @@ class ShellProcessRegistry:
                 lifecycle_sink=lifecycle_sink,
             )
         )
+
+    def interact(
+        self,
+        shell_id: str,
+        *,
+        owner_session_id: str = LEGACY_SHELL_OWNER,
+        chars: str = "",
+        yield_time_ms: int = 250,
+        max_output_tokens: int = 10_000,
+    ) -> dict[str, object]:
+        started = time.monotonic()
+        snapshot = self._manager.interact(
+            owner_session_id,
+            shell_id,
+            chars=chars,
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=max_output_tokens,
+        )
+        payload = _snapshot_payload(snapshot)
+        payload["max_output_tokens"] = max_output_tokens
+        payload["wall_time_seconds"] = max(0.0, time.monotonic() - started)
+        return payload
 
     def read(
         self,

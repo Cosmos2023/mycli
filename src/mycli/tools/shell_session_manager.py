@@ -141,7 +141,9 @@ class _ShellSession:
     output_event_scheduled: bool = False
     lifecycle_terminal_emitted: bool = False
     lifecycle_delivery_lock: Lock = field(default_factory=Lock)
+    interaction_lock: Lock = field(default_factory=Lock)
     state_changed: Condition = field(default_factory=Condition)
+    model_cursor: int = 0
     terminal_state: str | None = None
     cleanup_result: str | None = None
     completed_at: str | None = None
@@ -308,7 +310,11 @@ class ShellSessionManager:
             legacy_background=request.background,
             yield_time_ms=request.yield_time_ms,
         )
-        return self._snapshot(session, cursor=0, advance_cursor=False)
+        snapshot = self._snapshot(session, cursor=0, advance_cursor=False)
+        if request.background is None:
+            with self._lock:
+                session.model_cursor = snapshot.next_cursor
+        return snapshot
 
     def poll(
         self,
@@ -326,6 +332,75 @@ class ShellSessionManager:
             session.last_observed_at = _now_iso()
             session.last_used_monotonic = time.monotonic()
         return self._snapshot(session, cursor=effective_cursor, advance_cursor=cursor is None)
+
+    def interact(
+        self,
+        owner_session_id: str,
+        shell_id: str,
+        *,
+        chars: str,
+        yield_time_ms: int,
+        max_output_tokens: int,
+    ) -> ShellSessionSnapshot:
+        del max_output_tokens
+        session, error = self._owned_session(owner_session_id, shell_id)
+        if error is not None:
+            return error
+        assert session is not None
+
+        with session.interaction_lock:
+            if chars:
+                if not session.tty:
+                    if chars == "\x03":
+                        self._terminate(
+                            owner_session_id,
+                            shell_id,
+                            terminal_state="interrupted",
+                            prefer_interrupt=True,
+                        )
+                    else:
+                        return self._error_snapshot(
+                            owner_session_id=owner_session_id,
+                            shell_id=shell_id,
+                            error_kind="stdin_closed",
+                            error=(
+                                "Shell stdin is closed; rerun Shell with tty=true "
+                                "to send input."
+                            ),
+                        )
+                else:
+                    try:
+                        session.transport.write(chars.encode("utf-8"))
+                    except ShellTransportUnavailable as exc:
+                        return self._error_snapshot(
+                            owner_session_id=owner_session_id,
+                            shell_id=shell_id,
+                            error_kind=exc.error_kind,
+                            error=str(exc),
+                        )
+                    except (OSError, RuntimeError) as exc:
+                        return self._error_snapshot(
+                            owner_session_id=owner_session_id,
+                            shell_id=shell_id,
+                            error_kind="stdin_closed",
+                            error=str(exc),
+                        )
+
+            with self._lock:
+                cursor = session.model_cursor
+            timeout_seconds = min(30_000, max(250, yield_time_ms)) / 1000
+            with session.state_changed:
+                session.state_changed.wait_for(
+                    lambda: (
+                        session.output.snapshot().total_chars > cursor
+                        or session.terminal_state is not None
+                    ),
+                    timeout=timeout_seconds,
+                )
+            snapshot = self._snapshot(session, cursor=cursor, advance_cursor=False)
+            with self._lock:
+                session.model_cursor = snapshot.next_cursor
+            return snapshot
 
     def terminate(self, owner_session_id: str, shell_id: str) -> ShellSessionSnapshot:
         session, error = self._owned_session(owner_session_id, shell_id)

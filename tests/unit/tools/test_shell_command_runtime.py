@@ -48,4 +48,6 @@ def test_registry_execute_new_uses_yield_contract(tmp_path) -> None:
     assert result["yielded"] is True
     assert result["tty"] is True
     assert result["max_output_tokens"] == 123
+    assert isinstance(result["wall_time_seconds"], float)
+    assert result["wall_time_seconds"] >= 0
     transport.finish(0)
