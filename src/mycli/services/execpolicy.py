@@ -22,13 +22,7 @@ class ExecPolicyLoader:
     workspace_root: Path
 
     def load(self) -> ExecPolicyRuleSet:
-        rules: list[ExecPolicyRule] = []
-        rules.extend(
-            _parse_rules_file(
-                self.home_dir / ".mycli" / "rules" / "default.rules",
-                source=ExecPolicySource.USER,
-            )
-        )
+        rules = list(self.load_user_rules().rules)
         rules.extend(
             _parse_rules_file(
                 self.workspace_root / ".mycli" / "rules" / "default.rules",
@@ -36,6 +30,14 @@ class ExecPolicyLoader:
             )
         )
         return ExecPolicyRuleSet(rules=tuple(rules))
+
+    def load_user_rules(self) -> ExecPolicyRuleSet:
+        return ExecPolicyRuleSet(
+            rules=_parse_rules_file(
+                self.home_dir / ".mycli" / "rules" / "default.rules",
+                source=ExecPolicySource.USER,
+            )
+        )
 
 
 def _parse_rules_file(path: Path, *, source: ExecPolicySource) -> tuple[ExecPolicyRule, ...]:
