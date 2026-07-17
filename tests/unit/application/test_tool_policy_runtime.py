@@ -5,6 +5,10 @@ from pathlib import Path
 from mycli.application.runtime.tools.tool_policy_runtime import ToolPolicyRuntime
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.domain.runtime import (
+    ExecPolicyDecision,
+    ExecPolicyRule,
+    ExecPolicyRuleSet,
+    ExecPolicySource,
     ExecutionPolicy,
     PowerShellEdition,
     SandboxProfile,
@@ -83,6 +87,111 @@ def _read_only_gate(workspace_root: Path) -> RuntimePolicyGate:
         )
     )
     return gate
+
+
+def _shell_gate(workspace_root: Path, *, rule: ExecPolicyRule) -> RuntimePolicyGate:
+    return RuntimePolicyGate(
+        approval_service=ApprovalService(SafetyPolicy(workspace_root=workspace_root)),
+        workspace_root=workspace_root,
+        execpolicy_rules=ExecPolicyRuleSet(rules=(rule,)),
+    )
+
+
+def test_allow_rule_for_first_segment_does_not_allow_unknown_second_segment(
+    tmp_path: Path,
+) -> None:
+    gate = _shell_gate(
+        tmp_path,
+        rule=ExecPolicyRule(
+            source=ExecPolicySource.PROJECT,
+            index=0,
+            pattern=("cat",),
+            decision=ExecPolicyDecision.ALLOW,
+        ),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "cat README.md && python script.py"},
+            reason="inspect then run",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+
+
+def test_allow_rule_and_safe_fallback_allow_every_segment(tmp_path: Path) -> None:
+    gate = _shell_gate(
+        tmp_path,
+        rule=ExecPolicyRule(
+            source=ExecPolicySource.PROJECT,
+            index=0,
+            pattern=("python", "-m", "pytest"),
+            decision=ExecPolicyDecision.ALLOW,
+        ),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "python -m pytest -q && git status --short"},
+            reason="test then inspect",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind is ToolRuntimeDecisionKind.ALLOWED
+    assert decision.policy == "execpolicy_prefix_rule"
+
+
+def test_deny_rule_for_second_segment_denies_whole_shell_call(tmp_path: Path) -> None:
+    gate = _shell_gate(
+        tmp_path,
+        rule=ExecPolicyRule(
+            source=ExecPolicySource.PROJECT,
+            index=0,
+            pattern=("npm", "publish"),
+            decision=ExecPolicyDecision.DENY,
+        ),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "cat README.md && npm publish"},
+            reason="inspect then publish",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind is ToolRuntimeDecisionKind.DENIED
+    assert decision.policy == "execpolicy_prefix_rule"
+
+
+def test_ask_rule_for_second_segment_uses_execpolicy_approval(tmp_path: Path) -> None:
+    gate = _shell_gate(
+        tmp_path,
+        rule=ExecPolicyRule(
+            source=ExecPolicySource.PROJECT,
+            index=0,
+            pattern=("npm", "publish"),
+            decision=ExecPolicyDecision.ASK,
+        ),
+    )
+
+    decision = gate.decide(
+        ToolCall(
+            name="Shell",
+            arguments={"command": "cat README.md && npm publish"},
+            reason="inspect then publish",
+        ),
+        effect_profile=ToolEffectProfile(process=True),
+    )
+
+    assert decision.kind is ToolRuntimeDecisionKind.NEEDS_APPROVAL
+    assert decision.policy == "execpolicy_prefix_rule"
 
 
 def test_tool_policy_runtime_records_decision_and_builds_policy_result(tmp_path: Path) -> None:

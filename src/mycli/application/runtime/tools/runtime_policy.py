@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from fnmatch import fnmatch
 from pathlib import Path
-import shlex
 
 from mycli.domain.runtime import (
     CollaborationMode,
+    ExecPolicyDecision,
+    ExecPolicyMatch,
     ExecPolicyRuleSet,
     ExecutionPolicy,
     SandboxMode,
     SandboxProfile,
     ShellEnvironmentPolicy,
     ShellExecutionOptions,
+    ShellKind,
     ShellProfile,
     ToolRuntimeDecision,
     ToolRuntimeEffect,
@@ -20,6 +22,13 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import ToolExposure, ToolRouteSource
 from mycli.services.approval import ApprovalService
 from mycli.tools.base import ToolEffectProfile
+from mycli.tools.shell_command_policy import (
+    ShellParseKind,
+    ShellParseResult,
+    is_known_safe_segment,
+    parse_shell_argv,
+    parse_shell_command,
+)
 
 
 SHELL_TOOL_NAMES = frozenset({"Shell", "Bash", "run_shell"})
@@ -243,18 +252,43 @@ class RuntimePolicyGate:
     ) -> ToolRuntimeDecision | None:
         if call.name not in SHELL_TOOL_NAMES:
             return None
-        command_args = _shell_command_args(call)
-        if not command_args:
+        parsed = self._parse_shell_call(call)
+        if parsed.kind is not ShellParseKind.PLAIN:
             return None
-        match = self._execpolicy_rules.match(command_args)
-        if match is None:
+        shell_kind = self._shell_profile.kind if self._shell_profile else ShellKind.BASH
+        first_allow: ExecPolicyMatch | None = None
+        for segment in parsed.segments:
+            match = self._execpolicy_rules.match(segment.words)
+            if match is None:
+                if not is_known_safe_segment(segment, shell_kind=shell_kind):
+                    return None
+                continue
+            if match.rule.decision in {ExecPolicyDecision.DENY, ExecPolicyDecision.ASK}:
+                return ToolRuntimeDecision.from_execpolicy_match(
+                    tool_call=call,
+                    match=match,
+                    sandbox=sandbox,
+                    effect=effect,
+                )
+            first_allow = first_allow or match
+        if first_allow is None:
             return None
         return ToolRuntimeDecision.from_execpolicy_match(
             tool_call=call,
-            match=match,
+            match=first_allow,
             sandbox=sandbox,
             effect=effect,
         )
+
+    def _parse_shell_call(self, call: ToolCall) -> ShellParseResult:
+        shell_kind = self._shell_profile.kind if self._shell_profile else ShellKind.BASH
+        args = call.arguments.get("args")
+        if isinstance(args, list) and args and all(isinstance(item, str) for item in args):
+            return parse_shell_argv(tuple(args), shell_kind=shell_kind)
+        command = call.arguments.get("command")
+        if isinstance(command, str) and command:
+            return parse_shell_command(command, shell_kind=shell_kind)
+        return ShellParseResult(ShellParseKind.INVALID, reason="empty command")
 
     def _sandbox_decision(
         self,
@@ -350,21 +384,6 @@ def _metadata_string(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
-
-
-def _shell_command_args(call: ToolCall) -> tuple[str, ...]:
-    args_value = call.arguments.get("args")
-    if isinstance(args_value, list) and args_value and all(
-        isinstance(item, str) for item in args_value
-    ):
-        return tuple(args_value)
-    command_value = call.arguments.get("command")
-    if not isinstance(command_value, str) or not command_value:
-        return ()
-    try:
-        return tuple(shlex.split(command_value))
-    except ValueError:
-        return ()
 
 
 def _denied_read_reason(
