@@ -9,7 +9,7 @@ import { BackgroundTerminalsComponent } from "./components/background-terminals.
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { FooterComponent } from "./components/footer.ts";
-import { PlanPanelComponent } from "./components/plan-panel.ts";
+import { PlanUpdateComponent } from "./components/plan-update.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
@@ -31,10 +31,6 @@ export class MycliShellApp extends Container {
 		if (this.state.pendingNotice) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
-		}
-		if (this.state.activePlan?.length) {
-			this.addChild(new Spacer(1));
-			this.addChild(new PlanPanelComponent(this.state.activePlan));
 		}
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.composerHint(), 1, 0));
@@ -82,6 +78,8 @@ class TranscriptBlocksComponent extends Container {
 				this.addMessageBlock(block.message);
 			} else if (block.kind === "plan") {
 				this.addChild(new ProposedPlanComponent(block.plan));
+			} else if (block.kind === "plan_update") {
+				this.addChild(new PlanUpdateComponent(block.planUpdate));
 			} else if (block.kind === "tool") {
 				this.addChild(new ToolExecutionComponent(block.tool));
 			} else if (block.kind === "bash") {

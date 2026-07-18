@@ -556,92 +556,103 @@ test("mycli shell x stops the selected running background subagent", async () =>
 	assert.match(output, /Stopping @explore \(child-session-bg\)\./);
 });
 
-test("mycli shell renders active plan panel above the composer", () => {
+test("mycli shell renders complete Plan updates in transcript order", () => {
 	const state: MycliShellState = {
 		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
 		pendingNotice: undefined,
-		activePlan: [
-			{ id: "step-1", status: "completed", text: "Inspect runtime state" },
-			{ id: "step-2", status: "in_progress", text: "Render active plan" },
-			{ id: "step-3", status: "pending", text: "Verify shell tests" },
+		transcript: [
+			{
+				id: "plan-1",
+				kind: "plan_update",
+				planUpdate: {
+					id: "plan-1",
+					title: "Updated Plan",
+					source: "Plan",
+					completed: 1,
+					total: 3,
+					steps: [
+						{ id: "inspect", text: "Inspect runtime", status: "completed" },
+						{ id: "render", text: "Render Plan history", status: "in_progress" },
+						{ id: "verify", text: "Verify resume", status: "pending" },
+					],
+				},
+			},
 		],
 	};
 
-	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
-	const planIndex = output.indexOf("[plan] 1/3");
+	const output = stripAnsi(renderMycliShell(state, 72).join("\n"));
+	const planIndex = output.indexOf("• Updated Plan");
 	const composerIndex = output.indexOf("Message mycli");
 
 	assert.ok(planIndex >= 0, output);
 	assert.ok(composerIndex > planIndex, output);
-	assert.match(output, /✓ Inspect runtime state/);
-	assert.match(output, /● Render active plan/);
-	assert.match(output, /next: Verify shell tests/);
+	assert.match(output, /✔ Inspect runtime/);
+	assert.match(output, /□ Render Plan history/);
+	assert.match(output, /□ Verify resume/);
+	assert.doesNotMatch(output, /\[plan\]/);
 });
 
-test("mycli shell renders active plan compactly with current evidence", () => {
+test("mycli shell renders an empty Plan update in history", () => {
 	const state: MycliShellState = {
 		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
 		pendingNotice: undefined,
-		activePlan: [
-			{ id: "step-1", status: "completed", text: "Inspect runtime state" },
+		transcript: [
 			{
-				id: "step-2",
-				status: "in_progress",
-				text: "Run focused tests",
-				evidence: ["pytest targeted tests passed"],
+				id: "plan-empty",
+				kind: "plan_update",
+				planUpdate: {
+					id: "plan-empty",
+					title: "Updated Plan",
+					completed: 0,
+					total: 0,
+					steps: [],
+				},
 			},
-			{ id: "step-3", status: "pending", text: "Summarize changes" },
-			{ id: "step-4", status: "pending", text: "Update docs" },
-			{ id: "step-5", status: "pending", text: "Run full verification" },
 		],
 	};
 
-	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
-	const planLines = stripAnsi(renderMycliShell(state, 100).join("\n"))
-		.split("\n")
-		.filter((line) => /\[plan\]|Run focused tests|evidence:|next:/.test(line));
-
-	assert.equal(planLines.length, 4, planLines.join("\n"));
-	assert.match(output, /● Run focused tests/);
-	assert.match(output, /evidence: pytest targeted tests passed/);
-	assert.match(output, /next: Summarize changes \+2/);
-	assert.doesNotMatch(output, /○ Update docs/);
+	const output = stripAnsi(renderMycliShell(state, 60).join("\n"));
+	assert.match(output, /• Updated Plan/);
+	assert.match(output, /\(no steps provided\)/);
 });
 
-test("mycli shell keeps long active plans compact", () => {
+test("Plan history remains width safe for CJK and long tokens", () => {
+	const width = 36;
 	const state: MycliShellState = {
 		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
 		pendingNotice: undefined,
-		activePlan: Array.from({ length: 12 }, (_, index) => ({
-			id: `step-${index + 1}`,
-			status: index === 4 ? "in_progress" : index < 4 ? "completed" : "pending",
-			text: `Plan item ${index + 1}`,
-		})),
+		transcript: [
+			{
+				id: "plan-wide",
+				kind: "plan_update",
+				planUpdate: {
+					id: "plan-wide",
+					title: "Updated Plan",
+					completed: 0,
+					total: 2,
+					steps: [
+						{ id: "cjk", text: "检查终端中的中文内容是否能够正确换行", status: "in_progress" },
+						{ id: "token", text: "averyveryveryveryveryverylongtoken", status: "pending" },
+					],
+				},
+			},
+		],
 	};
 
-	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
-	const planLines = output
-		.split("\n")
-		.filter((line) => /\[plan\]|Plan item|next:/.test(line));
-
-	assert.equal(planLines.length, 4, planLines.join("\n"));
-	assert.match(output, /\[plan\] 4\/12/);
-	assert.match(output, /✓ Plan item 4/);
-	assert.match(output, /● Plan item 5/);
-	assert.match(output, /next: Plan item 6 \+6/);
-	assert.doesNotMatch(output, /Plan item 12/);
-});
-
-test("mycli shell omits completed active plan panel", () => {
-	const state: MycliShellState = {
-		...sampleState(),
-		pendingNotice: undefined,
-		activePlan: undefined,
-	};
-
-	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
-
-	assert.doesNotMatch(output, /\[plan\] 2\/2/);
+	const lines = renderMycliShell(state, width);
+	assert.match(stripAnsi(lines.join("\n")), /检查终端/);
+	for (const line of lines) {
+		assert.ok(visibleWidth(line) <= width, `line too wide: ${stripAnsi(line)}`);
+	}
 });
 
 test("mycli shell renders transcript blocks in event order", () => {

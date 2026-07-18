@@ -36,7 +36,7 @@ export { CustomEditor } from "./components/custom-editor.ts";
 export { FooterComponent } from "./components/footer.ts";
 export { LoginFlowComponent } from "./components/login-flow.ts";
 export { ModelSelectorComponent } from "./components/model-selector.ts";
-export { PlanPanelComponent } from "./components/plan-panel.ts";
+export { PlanUpdateComponent } from "./components/plan-update.ts";
 export { PendingInputPreviewComponent } from "./components/pending-input-preview.ts";
 export { ProposedPlanComponent } from "./components/proposed-plan.ts";
 export { ResourceSelectorComponent } from "./components/resource-selector.ts";

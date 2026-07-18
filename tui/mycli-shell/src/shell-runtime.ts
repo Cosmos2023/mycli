@@ -32,7 +32,7 @@ import { FooterComponent } from "./components/footer.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginFlowComponent } from "./components/login-flow.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
-import { PlanPanelComponent } from "./components/plan-panel.ts";
+import { PlanUpdateComponent } from "./components/plan-update.ts";
 import { PendingInputPreviewComponent } from "./components/pending-input-preview.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { ResourceSelectorComponent } from "./components/resource-selector.ts";
@@ -133,6 +133,7 @@ const BACKEND_COMMANDS: MycliShellCommand[] = [
 type ChatBlockComponent =
 	| { kind: "message"; signature: string; role: MycliShellMessage["role"]; component: Component }
 	| { kind: "plan"; signature: string; component: ProposedPlanComponent }
+	| { kind: "plan_update"; signature: string; component: PlanUpdateComponent }
 	| { kind: "tool"; signature: string; component: ToolExecutionComponent }
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
 	| { kind: "background_terminals"; signature: string; component: BackgroundTerminalsComponent }
@@ -746,8 +747,7 @@ export class MycliShellRuntime {
 		}
 		if (
 			previousState.pendingNotice !== nextState.pendingNotice ||
-			this.approvalSignature(previousState) !== this.approvalSignature(nextState) ||
-			this.activePlanSignature(previousState) !== this.activePlanSignature(nextState)
+			this.approvalSignature(previousState) !== this.approvalSignature(nextState)
 		) {
 			this.rebuildPending();
 		}
@@ -782,10 +782,6 @@ export class MycliShellRuntime {
 
 	private footerSignature(state: MycliShellState): string {
 		return JSON.stringify(state.footer);
-	}
-
-	private activePlanSignature(state: MycliShellState): string {
-		return JSON.stringify(state.activePlan ?? []);
 	}
 
 	private approvalSignature(state: MycliShellState): string {
@@ -982,6 +978,9 @@ export class MycliShellRuntime {
 		if (block.kind === "plan") {
 			return { kind: "plan", signature, component: new ProposedPlanComponent(block.plan) };
 		}
+		if (block.kind === "plan_update") {
+			return { kind: "plan_update", signature, component: new PlanUpdateComponent(block.planUpdate) };
+		}
 		if (block.kind === "tool_group") {
 			return { kind: "tool_group", signature, component: new CollapsedToolGroupComponent(block.group) };
 		}
@@ -1023,10 +1022,6 @@ export class MycliShellRuntime {
 		if (pendingInput && (pendingInput.steering.length > 0 || pendingInput.followUps.length > 0)) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
 			this.pendingMessagesContainer.addChild(new PendingInputPreviewComponent(pendingInput));
-		}
-		if (this.state.activePlan?.length) {
-			this.pendingMessagesContainer.addChild(new Spacer(1));
-			this.pendingMessagesContainer.addChild(new PlanPanelComponent(this.state.activePlan));
 		}
 	}
 
