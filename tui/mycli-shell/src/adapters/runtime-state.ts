@@ -10,6 +10,7 @@ import type {
 	MycliShellModel,
 	MycliShellPendingApproval,
 	MycliShellResource,
+	MycliShellPlanUpdate,
 	MycliShellPlanStep,
 	MycliShellSession,
 	MycliShellSessionTree,
@@ -83,7 +84,7 @@ export type RuntimeShellState = {
 	settings: MycliShellVisualSettings;
 	pendingApproval: Record<string, unknown> | null;
 	pendingClarification: Record<string, unknown> | null;
-	activePlan: MycliShellPlanStep[];
+	taskProgress: { completed: number; total: number } | null;
 	authProviders: MycliShellAuthProvider[];
 	resources: MycliShellResource[];
 	backgroundShells: Record<string, RuntimeShellProcess>;
@@ -117,7 +118,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		settings: defaultVisualSettings(),
 		pendingApproval: null,
 		pendingClarification: null,
-		activePlan: [],
+		taskProgress: null,
 		authProviders: [],
 		resources: [],
 		backgroundShells: {},
@@ -180,6 +181,11 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 					status: planStatus(item.metadata),
 				},
 			});
+		} else if (item.type === "plan_update") {
+			const planUpdate = planUpdateFromTranscriptItem(item);
+			if (planUpdate) {
+				transcript.push({ id: item.id, kind: "plan_update", planUpdate });
+			}
 		} else if (item.type === "tool_summary" || item.type === "tool_detail") {
 			const tool = toolFromTranscriptItem(item, state.workspace, state.viewMode, state.settings.toolDetailsDefault);
 			if (isShellTool(tool.name)) {
@@ -244,7 +250,6 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		tools,
 		bash,
 		transcript,
-		activePlan: state.activePlan.length > 0 ? state.activePlan : undefined,
 		pendingInput:
 			steering.length > 0 || followUps.length > 0
 				? { steering, followUps }
@@ -265,6 +270,7 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			collaborationMode: state.collaborationMode,
 			liveState: footerLiveState(state),
 			backgroundShellCount: state.backgroundShellCount,
+			taskProgress: state.taskProgress ?? undefined,
 			autoCompact: true,
 		},
 		pendingNotice: pendingNotice(state),
@@ -354,16 +360,26 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 }
 
 export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
-	const items = Array.isArray(payload.items)
+	const rawItems = Array.isArray(payload.items)
 		? payload.items
 				.filter(isTranscriptItem)
 				.map((item) => ({ ...item, metadata: recordValue(item.metadata) }))
 		: [];
+	const items = rawItems.flatMap((item) => {
+		if (item.type !== "plan_update") return [item];
+		const normalized = planUpdateFromPayload(recordValue(item.metadata), item.id, item.text);
+		return normalized ? [normalized] : [];
+	});
 	const transcript = coalesceResumedShellOutputItems(
 		coalesceLegacyToolItems([...state.transcript, ...items]),
 	)
 		.filter((item) => !shouldSuppressSuccessfulTaskItem(item));
-	return { ...state, transcript };
+	const latestPlanUpdate = [...transcript].reverse().find((item) => item.type === "plan_update");
+	return {
+		...state,
+		transcript,
+		taskProgress: latestPlanUpdate ? taskProgressFromPlanUpdate(latestPlanUpdate) : state.taskProgress,
+	};
 }
 
 function coalesceResumedShellOutputItems(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
@@ -489,8 +505,17 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		};
 	}
 	if (method === "plan.updated") {
-		const planSteps = planStepsFromEvent(params);
-		return planSteps.length > 0 ? { ...state, activePlan: planSteps } : state;
+		const item = planUpdateFromPayload(params, nextId("plan-update"));
+		if (!item) return state;
+		return {
+			...state,
+			activeAssistantItemId: null,
+			transcript: [
+				...sealActiveAssistantStream(state.transcript, state.activeAssistantItemId),
+				item,
+			],
+			taskProgress: taskProgressFromPlanUpdate(item),
+		};
 	}
 	if (method === "subagent.updated") {
 		const subagent = recordValue(params.subagent);
@@ -539,10 +564,8 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		};
 	}
 	if (method === "turn.completed") {
-		const planSteps = planStepsFromEvent(params);
 		const turnState = stringValue(params.turn_state);
 		const assistantMessage = stringValue(params.assistant_message);
-		const nextActivePlan = planSteps.length > 0 ? planSteps : state.activePlan;
 		const failedTranscript =
 			turnState === "failed" && assistantMessage
 				? [...state.transcript, { id: nextId("error"), type: "error", text: assistantMessage, folded: false, metadata: params }]
@@ -556,7 +579,6 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 				turnState === "failed" && assistantMessage
 					? { state: "failed", kind: "failed", text: assistantMessage, message: assistantMessage }
 					: { state: "completed", kind: "completed", text: "Completed" },
-			activePlan: shouldClearCompletedPlan(turnState, nextActivePlan) ? [] : nextActivePlan,
 			pendingApproval: params.pending_decision === true || params.turn_state === "waiting_approval" ? state.pendingApproval : null,
 			pendingClarification: params.turn_state === "waiting_clarification" ? state.pendingClarification : null,
 			transcript: failedTranscript,
@@ -778,13 +800,6 @@ function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedIn
 function isInternalTaskNotification(text: string): boolean {
 	const trimmed = text.trimStart();
 	return trimmed.startsWith("<task-notification>") || trimmed.startsWith("<task-notification ");
-}
-
-function shouldClearCompletedPlan(turnState: string | null, planSteps: MycliShellPlanStep[] | undefined): boolean {
-	if (turnState !== "completed" || !planSteps?.length) {
-		return false;
-	}
-	return planSteps.every((step) => step.status === "completed");
 }
 
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
@@ -1573,28 +1588,73 @@ function planStatus(metadata: unknown): "proposed" | "accepted" | "stale" {
 	return status === "accepted" || status === "stale" ? status : "proposed";
 }
 
-function planStepsFromEvent(params: Record<string, unknown>): MycliShellPlanStep[] {
-	const richSteps = planStepsFromPlanObject(params.plan);
-	if (richSteps.length > 0) {
-		return richSteps;
-	}
-	return planStepsFromPayload(params.plan_steps);
-}
-
-function planStepsFromPlanObject(value: unknown): MycliShellPlanStep[] {
-	const record = recordValue(value);
-	const items = record.items;
-	if (!Array.isArray(items)) return [];
-	return items
-		.map((item, index) => planStepFromRecord(recordValue(item), index))
-		.filter((item): item is MycliShellPlanStep => item !== null);
-}
-
 function planStepsFromPayload(value: unknown): MycliShellPlanStep[] {
 	if (!Array.isArray(value)) return [];
 	return value
 		.map((item, index) => planStepFromString(String(item), index))
 		.filter((item): item is MycliShellPlanStep => item !== null);
+}
+
+function planUpdateFromPayload(
+	payload: Record<string, unknown>,
+	id: string,
+	text = "Updated Plan",
+): RuntimeTranscriptItem | null {
+	const plan = recordValue(payload.plan);
+	const rawItems = Array.isArray(plan.items)
+		? plan.items
+		: Array.isArray(payload.items)
+			? payload.items
+			: null;
+	const steps = rawItems !== null
+		? rawItems
+				.map((item, index) => planStepFromRecord(recordValue(item), index))
+				.filter((item): item is MycliShellPlanStep => item !== null)
+		: Array.isArray(payload.plan_steps)
+			? planStepsFromPayload(payload.plan_steps)
+			: null;
+	if (steps === null || (rawItems !== null && steps.length !== rawItems.length)) {
+		return null;
+	}
+	const completed = steps.filter((step) => step.status === "completed").length;
+	return {
+		id,
+		type: "plan_update",
+		text: text.trim() || "Updated Plan",
+		folded: false,
+		metadata: {
+			source: stringValue(payload.source) ?? "Plan",
+			completed,
+			total: steps.length,
+			items: steps,
+		},
+	};
+}
+
+function planUpdateFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellPlanUpdate | null {
+	const metadata = recordValue(item.metadata);
+	const rawItems = metadata.items;
+	if (!Array.isArray(rawItems)) return null;
+	const steps = rawItems
+		.map((entry, index) => planStepFromRecord(recordValue(entry), index))
+		.filter((step): step is MycliShellPlanStep => step !== null);
+	if (steps.length !== rawItems.length) return null;
+	return {
+		id: item.id,
+		title: item.text.trim() || "Updated Plan",
+		source: stringValue(metadata.source) ?? undefined,
+		steps,
+		completed: steps.filter((step) => step.status === "completed").length,
+		total: steps.length,
+	};
+}
+
+function taskProgressFromPlanUpdate(
+	item: RuntimeTranscriptItem,
+): { completed: number; total: number } | null {
+	const update = planUpdateFromTranscriptItem(item);
+	if (!update || update.total === 0) return null;
+	return { completed: update.completed, total: update.total };
 }
 
 function planStepFromRecord(record: Record<string, unknown>, index: number): MycliShellPlanStep | null {

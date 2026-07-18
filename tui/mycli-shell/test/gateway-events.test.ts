@@ -41,6 +41,26 @@ test("gateway event deduper still allows standalone runtime events", () => {
 	assert.equal(projectRuntimeState(state).footer.liveState, "Thinking");
 });
 
+test("gateway event deduper renders direct and mirrored Plan updates once", () => {
+	const deduper = new GatewayEventDeduper();
+	let state = initialRuntimeState();
+	const payload = {
+		client_turn_id: "c1",
+		plan: { items: [{ id: "inspect", text: "Inspect runtime", status: "in_progress" }] },
+		source: "Plan",
+		completed: 0,
+		total: 1,
+	};
+
+	for (const item of [event("plan.updated", payload), runtimeEvent("plan.updated", payload)]) {
+		if (deduper.shouldConsume(item)) {
+			state = reduceRuntimeEvent(state, item.method, item.params);
+		}
+	}
+
+	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["plan_update"]);
+});
+
 function event(method: string, params: Record<string, unknown>): GatewayEvent {
 	return { jsonrpc: "2.0", method, params };
 }

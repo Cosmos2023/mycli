@@ -997,7 +997,7 @@ test("runtime adapter projects proposed plan as a dedicated transcript block", (
 	assert.equal(plan?.kind === "plan" ? plan.plan.status : "", "proposed");
 });
 
-test("runtime adapter projects turn plan steps into active plan panel state", () => {
+test("runtime adapter does not synthesize Plan history from turn completion", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "turn.completed", {
 		client_turn_id: "c1",
@@ -1016,116 +1016,128 @@ test("runtime adapter projects turn plan steps into active plan panel state", ()
 
 	const shell = projectRuntimeState(state);
 
-	assert.deepEqual(shell.activePlan, [
-		{ id: "step-1", status: "completed", text: "Inspect runtime state" },
-		{ id: "step-2", status: "in_progress", text: "Render active plan" },
-		{ id: "step-3", status: "pending", text: "Verify shell tests" },
-	]);
+	assert.deepEqual(shell.transcript, []);
+	assert.equal(shell.footer.taskProgress, undefined);
 });
 
-test("runtime adapter clears active plan when terminal turn completes every step", () => {
-	let state = initialRuntimeState();
-	state = reduceRuntimeEvent(state, "plan.updated", {
-		client_turn_id: "c1",
-		plan_steps: [
-			"completed: Inspect runtime state",
-			"in_progress: Render active plan",
-		],
-		source: "Plan",
-	});
-	state = reduceRuntimeEvent(state, "turn.completed", {
-		client_turn_id: "c1",
-		assistant_message: "done",
-		activity_events: [],
-		progress_updates: [],
-		plan_steps: [
-			"completed: Inspect runtime state",
-			"completed: Render active plan",
-		],
-		pending_decision: false,
-		turn_state: "completed",
-		usage: {},
-	});
-
-	const shell = projectRuntimeState(state);
-
-	assert.equal(shell.activePlan, undefined);
-});
-
-test("runtime adapter keeps active plan when terminal turn still has pending work", () => {
-	let state = initialRuntimeState();
-	state = reduceRuntimeEvent(state, "turn.completed", {
-		client_turn_id: "c1",
-		assistant_message: "done",
-		activity_events: [],
-		progress_updates: [],
-		plan_steps: [
-			"completed: Inspect runtime state",
-			"pending: Verify shell tests",
-		],
-		pending_decision: false,
-		turn_state: "completed",
-		usage: {},
-	});
-
-	const shell = projectRuntimeState(state);
-
-	assert.deepEqual(shell.activePlan, [
-		{ id: "step-1", status: "completed", text: "Inspect runtime state" },
-		{ id: "step-2", status: "pending", text: "Verify shell tests" },
-	]);
-});
-
-test("runtime adapter updates active plan immediately from plan updated event", () => {
-	let state = initialRuntimeState();
-	state = reduceRuntimeEvent(state, "plan.updated", {
-		client_turn_id: "c1",
-		plan_steps: [
-			"completed: Inspect runtime state",
-			"in_progress: Render active plan",
-			"pending: Verify shell tests",
-		],
-		source: "Plan",
-	});
-
-	const shell = projectRuntimeState(state);
-
-	assert.deepEqual(shell.activePlan, [
-		{ id: "step-1", status: "completed", text: "Inspect runtime state" },
-		{ id: "step-2", status: "in_progress", text: "Render active plan" },
-		{ id: "step-3", status: "pending", text: "Verify shell tests" },
-	]);
-});
-
-test("runtime adapter preserves rich active plan evidence from plan updated event", () => {
+test("runtime adapter appends every live Plan update", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "plan.updated", {
 		client_turn_id: "c1",
 		plan: {
 			items: [
-				{ id: "inspect", status: "completed", text: "Inspect runtime state" },
-				{
-					id: "verify",
-					status: "in_progress",
-					text: "Run focused tests",
-					evidence: ["pytest targeted tests passed"],
-				},
+				{ id: "inspect", text: "Inspect runtime", status: "in_progress" },
 			],
 		},
+		source: "Plan",
+		completed: 0,
+		total: 1,
+	});
+	state = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "c1",
+		plan: {
+			items: [
+				{ id: "inspect", text: "Inspect runtime", status: "completed" },
+			],
+		},
+		source: "Plan",
+		completed: 1,
+		total: 1,
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.transcript?.map((block) => block.kind), ["plan_update", "plan_update"]);
+	assert.deepEqual(shell.footer.taskProgress, { completed: 1, total: 1 });
+});
+
+test("runtime adapter accepts compatibility Plan strings and preserves evidence", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "c1",
+		plan_steps: [
+			"completed: Inspect runtime state",
+			"in_progress: Run focused tests",
+		],
+		source: "Plan",
+	});
+
+	const shell = projectRuntimeState(state);
+	const update = shell.transcript?.[0];
+
+	assert.equal(update?.kind, "plan_update");
+	assert.deepEqual(update?.kind === "plan_update" ? update.planUpdate.steps : [], [
+		{ id: "step-1", status: "completed", text: "Inspect runtime state" },
+		{ id: "step-2", status: "in_progress", text: "Run focused tests" },
+	]);
+});
+
+test("runtime adapter restores all Plan updates and latest progress from transcript", () => {
+	let state = initialRuntimeState();
+	state = runtimeStateFromTranscript(state, {
+		items: [
+			{
+				id: "plan-1",
+				type: "plan_update",
+				text: "Updated Plan",
+				metadata: {
+					source: "Plan",
+					completed: 0,
+					total: 1,
+					items: [{ id: "inspect", text: "Inspect runtime", status: "in_progress" }],
+				},
+			},
+			{
+				id: "plan-2",
+				type: "plan_update",
+				text: "Updated Plan",
+				metadata: {
+					source: "Plan",
+					completed: 1,
+					total: 1,
+					items: [{ id: "inspect", text: "Inspect runtime", status: "completed" }],
+				},
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.transcript?.map((block) => block.kind), ["plan_update", "plan_update"]);
+	assert.deepEqual(shell.footer.taskProgress, { completed: 1, total: 1 });
+});
+
+test("runtime adapter clears task progress for a valid empty Plan update", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "c1",
+		plan: {
+			items: [
+				{ id: "inspect", status: "in_progress", text: "Inspect runtime state" },
+			],
+		},
+		source: "Plan",
+	});
+	state = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "c1",
+		plan: { items: [] },
 		source: "Plan",
 	});
 
 	const shell = projectRuntimeState(state);
 
-	assert.deepEqual(shell.activePlan, [
-		{ id: "inspect", status: "completed", text: "Inspect runtime state" },
-		{
-			id: "verify",
-			status: "in_progress",
-			text: "Run focused tests",
-			evidence: ["pytest targeted tests passed"],
-		},
-	]);
+	assert.deepEqual(shell.transcript?.map((block) => block.kind), ["plan_update", "plan_update"]);
+	assert.equal(shell.footer.taskProgress, undefined);
+});
+
+test("runtime adapter ignores malformed Plan update payloads", () => {
+	const state = initialRuntimeState();
+	const next = reduceRuntimeEvent(state, "plan.updated", {
+		client_turn_id: "c1",
+		plan: { items: [{ id: "missing-text", status: "in_progress" }] },
+	});
+
+	assert.deepEqual(next, state);
 });
 
 test("runtime adapter appends only final assistant suffix after a tool boundary", () => {

@@ -18,6 +18,20 @@ export type MycliShellPlanStep = {
 	evidence?: string[];
 };
 
+export type MycliShellPlanUpdate = {
+	id: string;
+	title: string;
+	source?: string;
+	steps: MycliShellPlanStep[];
+	completed: number;
+	total: number;
+};
+
+export type MycliShellTaskProgress = {
+	completed: number;
+	total: number;
+};
+
 export type MycliShellToolStatus = "running" | "success" | "error" | "cancelled";
 
 export type MycliShellTool = {
@@ -133,6 +147,7 @@ export type MycliShellBackgroundTerminals = {
 export type MycliShellTranscriptBlock =
 	| { id: string; kind: "message"; message: MycliShellMessage }
 	| { id: string; kind: "plan"; plan: MycliShellPlan }
+	| { id: string; kind: "plan_update"; planUpdate: MycliShellPlanUpdate }
 	| { id: string; kind: "tool"; tool: MycliShellTool }
 	| { id: string; kind: "bash"; bash: MycliShellBash }
 	| { id: string; kind: "subagent"; subagent: MycliShellSubagent }
@@ -165,6 +180,7 @@ export type MycliShellFooterData = {
 	collaborationMode?: "default" | "plan";
 	liveState?: string;
 	backgroundShellCount?: number;
+	taskProgress?: MycliShellTaskProgress;
 	extensionStatuses?: string[];
 };
 
@@ -289,7 +305,6 @@ export type MycliShellState = {
 	tools: MycliShellTool[];
 	bash: MycliShellBash[];
 	transcript?: MycliShellTranscriptBlock[];
-	activePlan?: MycliShellPlanStep[];
 	footer: MycliShellFooterData;
 	pendingInput?: MycliShellPendingInput;
 	pendingNotice?: string;
