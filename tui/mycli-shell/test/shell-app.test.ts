@@ -2085,6 +2085,54 @@ test("mycli shell executes stable local client actions", async () => {
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /unknown action unknown_action/);
 });
 
+test("mycli shell dispatches every remaining local client action", async () => {
+	const paletteRuntime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		commands: [slashCommand("usage", "/usage", "Show usage")],
+	});
+	await paletteRuntime.handleClientAction("open_command_palette", "");
+	assert.notEqual(paletteRuntime.editorContainer.children[0], paletteRuntime.editor);
+	assert.match(stripAnsi(paletteRuntime.ui.render(100).join("\n")), /\/usage/);
+
+	const sessionRuntime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+	});
+	await sessionRuntime.handleClientAction("start_new_session", "");
+	assert.equal(sessionRuntime.getState().messages.length, 0);
+	assert.equal(sessionRuntime.getState().footer.liveState, "New session");
+
+	const detailsRuntime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+	});
+	const wasExpanded = detailsRuntime.getState().tools[0]?.expanded ?? false;
+	await detailsRuntime.handleClientAction("toggle_details", "");
+	assert.equal(detailsRuntime.getState().tools[0]?.expanded, !wasExpanded);
+
+	const trustRuntime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+	});
+	await trustRuntime.handleClientAction("open_trust", "");
+	assert.notEqual(trustRuntime.editorContainer.children[0], trustRuntime.editor);
+	assert.match(stripAnsi(trustRuntime.ui.render(100).join("\n")), /Project trust/);
+
+	let exited = false;
+	const quitRuntime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		onExit: () => {
+			exited = true;
+		},
+	});
+	quitRuntime.start();
+	await quitRuntime.handleClientAction("quit", "");
+	assert.equal(quitRuntime.isStarted(), false);
+	assert.equal(exited, true);
+});
+
 test("mycli shell slash autocomplete accepts selected command with tab", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
