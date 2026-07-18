@@ -41,6 +41,9 @@ export class FooterComponent implements Component {
 		].filter(Boolean);
 		const cwdLine = truncateToWidth(theme.fg("dim", cwdParts.join(" ")), width, theme.fg("dim", "..."));
 
+		const taskText = this.data.taskProgress && this.data.taskProgress.total > 0
+			? `Tasks ${this.data.taskProgress.completed}/${this.data.taskProgress.total}`
+			: undefined;
 		const statsParts: string[] = [
 			this.data.totalInputTokens ? `↑${formatTokens(this.data.totalInputTokens)}` : undefined,
 			this.data.totalOutputTokens ? `↓${formatTokens(this.data.totalOutputTokens)}` : undefined,
@@ -52,6 +55,7 @@ export class FooterComponent implements Component {
 			this.data.trust ? `trust ${this.data.trust}` : undefined,
 			this.data.collaborationMode ? `mode ${this.data.collaborationMode}` : undefined,
 			this.backgroundShellText(),
+			taskText,
 			this.data.liveState,
 		].filter((part): part is string => Boolean(part));
 
@@ -59,15 +63,18 @@ export class FooterComponent implements Component {
 		if (!left) {
 			left = "ready";
 		}
-		if (visibleWidth(left) > width) {
-			left = truncateToWidth(left, width, "...");
-		}
 
 		const rightWithoutProvider = [this.data.model ?? "no-model", this.data.reasoningLevel ? `• ${this.data.reasoningLevel}` : ""]
 			.filter(Boolean)
 			.join(" ");
 		let right = this.data.provider ? `(${this.data.provider}) ${rightWithoutProvider}` : rightWithoutProvider;
 		const minPadding = 2;
+		if (taskText && visibleWidth(left) + minPadding + visibleWidth(right) > width) {
+			left = statsParts.filter((part) => part !== taskText).join(" ") || "ready";
+		}
+		if (visibleWidth(left) > width) {
+			left = truncateToWidth(left, width, "...");
+		}
 		let leftWidth = visibleWidth(left);
 		if (leftWidth + minPadding + visibleWidth(right) > width && this.data.provider) {
 			right = rightWithoutProvider;

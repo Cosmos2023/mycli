@@ -912,6 +912,28 @@ test("footer omits queue counts at wide widths", () => {
 	assert.doesNotMatch(output, /steer 2|follow-up 3|queue 5/);
 });
 
+test("footer renders latest task progress when space allows", () => {
+	const output = stripAnsi(new FooterComponent({
+		cwd: "/repo",
+		model: "gpt-5.4",
+		taskProgress: { completed: 2, total: 5 },
+	}).render(80).join("\n"));
+
+	assert.match(output, /Tasks 2\/5/);
+});
+
+test("footer drops task progress before live status at narrow widths", () => {
+	const output = stripAnsi(new FooterComponent({
+		cwd: "/repo",
+		model: "gpt-5.4-with-long-name",
+		taskProgress: { completed: 2, total: 5 },
+		liveState: "Running",
+	}).render(32).join("\n"));
+
+	assert.match(output, /Running/);
+	assert.doesNotMatch(output, /Tasks 2\/5/);
+});
+
 test("pending input preview renders steering before follow-ups", () => {
 	const rendered = new PendingInputPreviewComponent({
 		steering: [{ text: "inspect current output", hasImages: false }],
