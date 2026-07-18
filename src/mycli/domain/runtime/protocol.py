@@ -48,6 +48,7 @@ class TurnItemType(StrEnum):
     CLARIFICATION_RESPONSE = "clarification_response"
     MODEL_USAGE = "model_usage"
     WARNING = "warning"
+    PLAN_UPDATE = "plan_update"
 
 
 @dataclass(slots=True, frozen=True)

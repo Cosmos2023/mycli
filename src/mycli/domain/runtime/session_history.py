@@ -24,6 +24,7 @@ class HistoryItemType(StrEnum):
     CONTEXT_BASELINE_UPDATE = "context_baseline_update"
     COMPACTION = "compaction"
     FILE_CHANGE = "file_change"
+    PLAN_UPDATE = "plan_update"
 
 
 @dataclass(slots=True, frozen=True)

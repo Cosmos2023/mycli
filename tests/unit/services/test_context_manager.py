@@ -287,6 +287,23 @@ def test_context_manager_reconstructs_block_aware_messages_from_history_items() 
     assert messages[3].blocks[0].type == "text"
 
 
+def test_context_manager_ignores_tui_only_plan_update_history() -> None:
+    messages = ContextManager().messages_from_history(
+        (
+            HistoryItem(
+                id="plan-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.PLAN_UPDATE,
+                text="Updated Plan",
+                metadata={"model_visible": False, "items": []},
+            ),
+        )
+    )
+
+    assert messages == ()
+
+
 def test_context_manager_replays_context_baseline_updates_as_user_messages() -> None:
     manager = ContextManager()
 

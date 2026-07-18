@@ -4,6 +4,7 @@ from mycli.application.runtime.ledger.runtime_event_ledger import RuntimeEventLe
 from mycli.domain.runtime import (
     BaselineFragment,
     HistoryItem,
+    HistoryItemType,
     InstructionContract,
     InstructionFragment,
     RuntimeTraceEvent,
@@ -100,6 +101,59 @@ def test_tool_display_survives_ledger_history_and_snapshot_projection() -> None:
     assert display["status"] == "success"
     assert display["detail"] == "1\tline"
     assert "raw_payload" not in str(snapshot[0].to_dict())
+
+
+def test_runtime_event_ledger_persists_plan_update_but_excludes_it_from_provider_history() -> None:
+    turn = TurnRecord(
+        thread_id="demo",
+        turn_id="turn-1",
+        status=TurnStatus.COMPLETED,
+        started_at="2026-07-18T10:00:00Z",
+        items=(
+            TurnItem(
+                type=TurnItemType.TOOL_CALL,
+                text="Update plan",
+                tool_name="Plan",
+                call_id="call-plan-1",
+            ),
+            TurnItem(
+                type=TurnItemType.PLAN_UPDATE,
+                text="Updated Plan",
+                metadata={
+                    "source": "Plan",
+                    "completed": 0,
+                    "total": 1,
+                    "items": [
+                        {
+                            "id": "inspect",
+                            "text": "Inspect runtime",
+                            "status": "in_progress",
+                        }
+                    ],
+                    "model_visible": False,
+                },
+            ),
+            TurnItem(
+                type=TurnItemType.TOOL_RESULT,
+                text="Plan updated",
+                tool_name="Plan",
+                call_id="call-plan-1",
+            ),
+        ),
+    )
+
+    durable = _ledger().history_items_from_turn(turn)
+    provider = _ledger().provider_history_items_from_turn(turn)
+
+    assert [item.type for item in durable] == [
+        HistoryItemType.TOOL_CALL,
+        HistoryItemType.PLAN_UPDATE,
+        HistoryItemType.TOOL_RESULT,
+    ]
+    assert [item.type for item in provider] == [
+        HistoryItemType.TOOL_CALL,
+        HistoryItemType.TOOL_RESULT,
+    ]
 
 
 def test_runtime_event_ledger_baseline_keeps_replayable_memory_and_plan() -> None:

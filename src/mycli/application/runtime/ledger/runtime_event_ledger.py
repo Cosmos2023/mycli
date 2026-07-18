@@ -106,13 +106,13 @@ class RuntimeEventLedger:
         )
         return turn
 
-    def provider_history_items_from_turn(
+    def history_items_from_turn(
         self,
         turn: TurnRecord,
     ) -> tuple[HistoryItem, ...]:
         history_items: list[HistoryItem] = []
         for index, item in enumerate(turn.items, start=1):
-            history_item_type = self._provider_transcript_type_for_turn_item(item)
+            history_item_type = self._history_type_for_turn_item(item)
             if history_item_type is None:
                 continue
             history_items.append(
@@ -128,6 +128,16 @@ class RuntimeEventLedger:
                 )
             )
         return tuple(history_items)
+
+    def provider_history_items_from_turn(
+        self,
+        turn: TurnRecord,
+    ) -> tuple[HistoryItem, ...]:
+        return tuple(
+            item
+            for item in self.history_items_from_turn(turn)
+            if item.type is not HistoryItemType.PLAN_UPDATE
+        )
 
     def context_baseline_from_contract(
         self,
@@ -184,7 +194,7 @@ class RuntimeEventLedger:
                 turn,
                 context_baseline=context_baseline,
             ),
-            *self.provider_history_items_from_turn(turn),
+            *self.history_items_from_turn(turn),
         )
         if history_items:
             self._session_service.append_history_items(
@@ -317,6 +327,14 @@ class RuntimeEventLedger:
         if item.type is TurnItemType.SKILL_INSTRUCTIONS:
             return HistoryItemType.SKILL_INSTRUCTIONS
         return HistoryItemType(item.type.value)
+
+    def _history_type_for_turn_item(
+        self,
+        item: TurnItem,
+    ) -> HistoryItemType | None:
+        if item.type is TurnItemType.PLAN_UPDATE:
+            return HistoryItemType.PLAN_UPDATE
+        return self._provider_transcript_type_for_turn_item(item)
 
     def _continuation_state_payload(self) -> dict[str, object]:
         state = self._continuation_state_provider()
