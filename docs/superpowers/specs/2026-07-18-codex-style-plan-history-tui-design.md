@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-18
 
-**Status:** Design approved; pending written-spec review
+**Status:** Approved
 
 ## Summary
 
