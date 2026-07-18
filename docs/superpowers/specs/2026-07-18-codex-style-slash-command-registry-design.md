@@ -164,8 +164,8 @@ TUI 命令面板展示以下正式命令：
 
 1. 去除输入两端空白，但不修改参数内部内容。
 2. 确认输入以 `/` 开头。
-3. 优先匹配正式命令名。
-4. 对隐藏别名执行最长前缀匹配，避免 `/session` 抢先匹配 `/session fork`。
+3. 收集所有匹配的正式命令名、隐藏别名和 legacy route。
+4. 选择最长前缀；长度相同时正式名称优先于别名。这样 `/status usage` 会解析为 `/usage`，而不是带参数的 `/status`，`/session fork` 也不会被较短的 `/session` 抢先匹配。
 5. 根据 `argument_policy` 校验是否允许或要求参数。
 6. 根据是否存在参数选择 `bare_owner` 或 `inline_owner`。
 7. 检查 surface、feature、平台和 turn 状态。
