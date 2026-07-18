@@ -192,6 +192,68 @@ def test_history_append_refreshes_snapshot_with_visible_transcript(tmp_path: Pat
     ]
 
 
+def test_history_append_preserves_plan_update_in_visible_transcript(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+
+    service.append_history_items(
+        "demo",
+        (
+            HistoryItem(
+                id="user-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="inspect repo",
+            ),
+            HistoryItem(
+                id="plan-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.PLAN_UPDATE,
+                text="Updated Plan",
+                metadata={
+                    "source": "Plan",
+                    "completed": 0,
+                    "total": 1,
+                    "items": [
+                        {
+                            "id": "inspect",
+                            "text": "Inspect repo",
+                            "status": "in_progress",
+                        }
+                    ],
+                    "model_visible": False,
+                },
+            ),
+            HistoryItem(
+                id="assistant-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="Working on it",
+            ),
+        ),
+    )
+
+    payload = json.loads(
+        (home_dir / ".mycli" / "sessions" / "demo" / "session.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert [item["type"] for item in payload["transcript"]] == [
+        "user_message",
+        "plan_update",
+        "assistant_message",
+    ]
+    assert payload["transcript"][1]["metadata"]["items"][0] == {
+        "id": "inspect",
+        "text": "Inspect repo",
+        "status": "in_progress",
+    }
+
+
 def test_conversation_save_writes_snapshot_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

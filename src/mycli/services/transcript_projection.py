@@ -22,6 +22,7 @@ _VISIBLE_HISTORY_TYPES = frozenset(
         HistoryItemType.WARNING,
         HistoryItemType.COMPACTION,
         HistoryItemType.FILE_CHANGE,
+        HistoryItemType.PLAN_UPDATE,
     }
 )
 _TUI_METADATA_KEYS = frozenset(
@@ -120,6 +121,9 @@ def project_history_items_for_snapshot(
     for item in items:
         if item.type not in _VISIBLE_HISTORY_TYPES:
             continue
+        if item.type is HistoryItemType.PLAN_UPDATE:
+            projected.append(_plan_update_snapshot_item(item))
+            continue
         if item.type is HistoryItemType.TOOL_CALL:
             snapshot_item = _tool_call_snapshot_item(item)
             projected.append(snapshot_item)
@@ -203,6 +207,11 @@ def project_history_items_for_tui(
 
 
 def project_history_item_for_tui(item: HistoryItem) -> dict[str, object]:
+    if item.type is HistoryItemType.PLAN_UPDATE:
+        projected = snapshot_item_to_tui_items(
+            _plan_update_snapshot_item(item).to_dict()
+        )
+        return projected[0]
     item_type = {
         HistoryItemType.USER_MESSAGE: "user",
         HistoryItemType.ASSISTANT_MESSAGE: "assistant_final",
@@ -263,6 +272,7 @@ def snapshot_item_to_tui_items(
         "web_search": "tool_summary",
         "image": "tool_summary",
         "subagent": "subagent",
+        "plan_update": "plan_update",
     }.get(item_type)
     if tui_type is None:
         return ()
@@ -297,6 +307,58 @@ def _history_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
         created_at=_optional_str(item.metadata.get("created_at")),
         metadata=_visible_snapshot_metadata(item.metadata),
     )
+
+
+def _plan_update_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
+    return TranscriptSnapshotItem(
+        id=item.id,
+        type="plan_update",
+        text=item.text or "Updated Plan",
+        created_at=_optional_str(item.metadata.get("created_at")),
+        metadata=_visible_plan_update_metadata(item.metadata),
+    )
+
+
+def _visible_plan_update_metadata(metadata: dict[str, Any]) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    raw_items = metadata.get("items")
+    if isinstance(raw_items, list):
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            item_id = _optional_str(raw_item.get("id"))
+            text = _optional_str(raw_item.get("text"))
+            if item_id is None or text is None:
+                continue
+            raw_status = _optional_str(raw_item.get("status"))
+            status = (
+                raw_status
+                if raw_status in {"pending", "in_progress", "completed"}
+                else "pending"
+            )
+            projected_item: dict[str, object] = {
+                "id": item_id,
+                "text": text,
+                "status": status,
+            }
+            evidence = raw_item.get("evidence")
+            if isinstance(evidence, list):
+                visible_evidence = [
+                    entry
+                    for entry in evidence
+                    if isinstance(entry, str) and entry
+                ]
+                if visible_evidence:
+                    projected_item["evidence"] = visible_evidence
+            items.append(projected_item)
+    completed = _optional_int(metadata.get("completed"))
+    total = _optional_int(metadata.get("total"))
+    return {
+        "source": _optional_str(metadata.get("source")) or "Plan",
+        "completed": completed if completed is not None else 0,
+        "total": total if total is not None else len(items),
+        "items": items,
+    }
 
 
 def _tool_call_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:

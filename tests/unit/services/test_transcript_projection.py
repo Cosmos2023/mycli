@@ -386,3 +386,65 @@ def test_file_change_history_uses_tui_supported_system_notice_type() -> None:
     assert project_history_item_for_tui(item)["type"] == "system_notice"
     snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
     assert snapshot_item_to_tui_items(snapshot)[0]["type"] == "system_notice"
+
+
+def test_plan_update_history_projects_to_structured_tui_item() -> None:
+    item = HistoryItem(
+        id="turn-1:item:2",
+        thread_id="demo",
+        turn_id="turn-1",
+        type=HistoryItemType.PLAN_UPDATE,
+        text="Updated Plan",
+        metadata={
+            "source": "Plan",
+            "completed": 1,
+            "total": 2,
+            "items": [
+                {
+                    "id": "inspect",
+                    "text": "Inspect runtime",
+                    "status": "completed",
+                },
+                {
+                    "id": "verify",
+                    "text": "Run tests",
+                    "status": "in_progress",
+                    "evidence": ["focused tests passed"],
+                    "private": "drop me",
+                },
+            ],
+            "model_visible": False,
+            "provider_blob": "do-not-project",
+        },
+    )
+
+    snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
+    tui_item = snapshot_item_to_tui_items(snapshot)[0]
+
+    assert snapshot == {
+        "id": "turn-1:item:2",
+        "type": "plan_update",
+        "text": "Updated Plan",
+        "metadata": {
+            "source": "Plan",
+            "completed": 1,
+            "total": 2,
+            "items": [
+                {
+                    "id": "inspect",
+                    "text": "Inspect runtime",
+                    "status": "completed",
+                },
+                {
+                    "id": "verify",
+                    "text": "Run tests",
+                    "status": "in_progress",
+                    "evidence": ["focused tests passed"],
+                },
+            ],
+        },
+    }
+    assert tui_item["type"] == "plan_update"
+    assert "provider_blob" not in str(tui_item)
+    assert "model_visible" not in str(tui_item)
+    assert "private" not in str(tui_item)
