@@ -1021,6 +1021,67 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
     }
 
 
+def test_gateway_transcript_load_projects_plan_updates_in_order(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.history_items = (
+        HistoryItem(
+            id="hist_user",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="Inspect runtime",
+        ),
+        HistoryItem(
+            id="hist_plan",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.PLAN_UPDATE,
+            text="Updated Plan",
+            metadata={
+                "source": "Plan",
+                "completed": 0,
+                "total": 1,
+                "items": [
+                    {
+                        "id": "inspect",
+                        "text": "Inspect runtime",
+                        "status": "in_progress",
+                    }
+                ],
+                "model_visible": False,
+            },
+        ),
+        HistoryItem(
+            id="hist_assistant",
+            thread_id="demo",
+            turn_id="turn_1",
+            type=HistoryItemType.ASSISTANT_MESSAGE,
+            text="Working on it",
+        ),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_plan_history",
+            method="transcript.load",
+            params={"session_id": "demo", "before": None},
+        )
+    )
+
+    assert response.result is not None
+    assert [item["type"] for item in response.result["items"]] == [
+        "user",
+        "plan_update",
+        "assistant_final",
+    ]
+    assert response.result["items"][1]["metadata"]["items"][0] == {
+        "id": "inspect",
+        "text": "Inspect runtime",
+        "status": "in_progress",
+    }
+
+
 def test_gateway_transcript_load_limit_returns_tail_with_cursor(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     service.fake_session_service.history_items = tuple(
@@ -2184,7 +2245,28 @@ def test_gateway_forwards_plan_updated_stream_event(tmp_path: Path) -> None:
                             "in_progress: Render active plan",
                             "pending: Verify shell tests",
                         ],
+                        "plan": {
+                            "items": [
+                                {
+                                    "id": "inspect",
+                                    "text": "Inspect runtime state",
+                                    "status": "completed",
+                                },
+                                {
+                                    "id": "render",
+                                    "text": "Render active plan",
+                                    "status": "in_progress",
+                                },
+                                {
+                                    "id": "verify",
+                                    "text": "Verify shell tests",
+                                    "status": "pending",
+                                },
+                            ]
+                        },
                         "source": "Plan",
+                        "completed": 1,
+                        "total": 3,
                     },
                 )
             )
@@ -2215,7 +2297,28 @@ def test_gateway_forwards_plan_updated_stream_event(tmp_path: Path) -> None:
             "in_progress: Render active plan",
             "pending: Verify shell tests",
         ],
+        "plan": {
+            "items": [
+                {
+                    "id": "inspect",
+                    "text": "Inspect runtime state",
+                    "status": "completed",
+                },
+                {
+                    "id": "render",
+                    "text": "Render active plan",
+                    "status": "in_progress",
+                },
+                {
+                    "id": "verify",
+                    "text": "Verify shell tests",
+                    "status": "pending",
+                },
+            ]
+        },
         "source": "Plan",
+        "completed": 1,
+        "total": 3,
     }
 
 

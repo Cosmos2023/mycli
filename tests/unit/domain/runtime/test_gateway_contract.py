@@ -173,6 +173,15 @@ def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:
     ]
 
 
+def test_plan_updated_schema_exposes_structured_plan_payload() -> None:
+    schema = gateway_event_payload_schemas()["plan.updated"]
+
+    assert schema["required"] == ["client_turn_id", "plan_steps"]
+    assert schema["properties"]["plan"] == {"type": "object"}
+    assert schema["properties"]["completed"] == {"type": "integer"}
+    assert schema["properties"]["total"] == {"type": "integer"}
+
+
 def test_turn_status_schema_exposes_terminal_routing_contract() -> None:
     schema = gateway_event_payload_schemas()["turn.status"]
 

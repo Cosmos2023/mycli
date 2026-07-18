@@ -344,7 +344,15 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     "plan.updated": _schema(
         "plan.updated",
         required=("client_turn_id", "plan_steps"),
-        properties=_with_client_turn({"plan_steps": _ARRAY, "source": _STRING}),
+        properties=_with_client_turn(
+            {
+                "plan_steps": _ARRAY,
+                "plan": _OBJECT,
+                "source": _STRING,
+                "completed": _INTEGER,
+                "total": _INTEGER,
+            }
+        ),
     ),
     "reasoning.delta": _schema(
         "reasoning.delta",
