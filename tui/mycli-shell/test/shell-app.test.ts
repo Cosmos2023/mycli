@@ -7,7 +7,7 @@ import type { Terminal } from "../src/tui-core/terminal.ts";
 import { Editor } from "../src/tui-core/components/editor.ts";
 import { visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
-import { BashExecutionComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellState } from "../src/index.ts";
+import { BashExecutionComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
 
 function stripAnsi(text: string): string {
@@ -111,6 +111,20 @@ function sampleState(): MycliShellState {
 			},
 		],
 		pendingNotice: "Waiting for approval",
+	};
+}
+
+function slashCommand(
+	id: string,
+	name: string,
+	description: string,
+): MycliShellCommandSpec {
+	return {
+		id,
+		name,
+		description,
+		argumentPolicy: "none",
+		availableDuringTurn: true,
 	};
 }
 
@@ -353,8 +367,7 @@ test("mycli shell opens Claude Code-like background subagent dialog from tasks",
 	assert.match(output, /◇ 1 local agent · \/tasks view/);
 	assert.doesNotMatch(output, /Background tasks/);
 
-	runtime.editor.setText("/tasks");
-	await runtime.editor.onSubmit?.("/tasks");
+	await runtime.handleClientAction("open_tasks", "");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /explore › Inspect auth bug/);
@@ -465,8 +478,7 @@ test("mycli shell clears max-turns agents from the active UI", async () => {
 	assert.doesNotMatch(output, /Running agent/);
 	assert.doesNotMatch(output, /\/tasks view/);
 
-	runtime.editor.setText("/tasks");
-	await runtime.editor.onSubmit?.("/tasks");
+	await runtime.handleClientAction("open_tasks", "");
 	await setTimeout(25);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /No background agents currently running/);
@@ -503,8 +515,7 @@ test("mycli shell clears completed background subagents from tasks", async () =>
 
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/tasks");
-	await runtime.editor.onSubmit?.("/tasks");
+	await runtime.handleClientAction("open_tasks", "");
 	await setTimeout(25);
 
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
@@ -545,8 +556,7 @@ test("mycli shell x stops the selected running background subagent", async () =>
 
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/tasks");
-	await runtime.editor.onSubmit?.("/tasks");
+	await runtime.handleClientAction("open_tasks", "");
 	await setTimeout(25);
 	terminal.input?.("x");
 	await setTimeout(25);
@@ -1784,6 +1794,7 @@ test("mycli shell command palette replaces editor like coding-agent selector", a
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
+		commands: [slashCommand("trust", "/trust", "Review trust")],
 	});
 
 	runtime.start();
@@ -1997,6 +2008,7 @@ test("mycli shell keeps slash editable and opens commands from question key", as
 	const slashRuntime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal: slashTerminal,
+		commands: [slashCommand("settings", "/settings", "Open settings")],
 	});
 
 	slashRuntime.start();
@@ -2011,6 +2023,7 @@ test("mycli shell keeps slash editable and opens commands from question key", as
 	const questionRuntime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal: questionTerminal,
+		commands: [slashCommand("settings", "/settings", "Open settings")],
 	});
 
 	questionRuntime.start();
@@ -2021,11 +2034,63 @@ test("mycli shell keeps slash editable and opens commands from question key", as
 	assert.match(stripAnsi(questionRuntime.ui.render(100).join("\n")), /\/settings/);
 });
 
+test("mycli shell palette uses only gateway command metadata", () => {
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		commands: [
+			slashCommand("usage", "/usage", "Show usage"),
+			slashCommand("ps", "/ps", "Show terminals"),
+		],
+	});
+
+	runtime.showCommandPalette();
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+
+	assert.match(output, /\/usage/);
+	assert.match(output, /\/ps/);
+	assert.doesNotMatch(output, /\/status usage/);
+	assert.doesNotMatch(output, /\/settings/);
+});
+
+test("mycli shell sends every registered or legacy slash input to gateway", async () => {
+	const submitted: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		commands: [slashCommand("settings", "/settings", "Open settings")],
+		onCommandSubmit: async (command) => {
+			submitted.push(command);
+		},
+	});
+
+	await runtime.editor.onSubmit?.("/settings");
+	await runtime.editor.onSubmit?.("/status usage");
+	await runtime.editor.onSubmit?.("/does-not-exist");
+
+	assert.deepEqual(submitted, ["/settings", "/status usage", "/does-not-exist"]);
+});
+
+test("mycli shell executes stable local client actions", async () => {
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		commands: [slashCommand("settings", "/settings", "Open settings")],
+	});
+
+	await runtime.handleClientAction("open_settings", "");
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+
+	await runtime.handleClientAction("unknown_action", "");
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /unknown action unknown_action/);
+});
+
 test("mycli shell slash autocomplete accepts selected command with tab", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
+		commands: [slashCommand("settings", "/settings", "Open settings")],
 	});
 
 	runtime.start();
@@ -2049,6 +2114,7 @@ test("mycli shell slash autocomplete wins over tab follow-up while running", asy
 			footer: { ...sampleState().footer, liveState: "Running" },
 		},
 		terminal,
+		commands: [slashCommand("settings", "/settings", "Open settings")],
 		onFollowUp: (text) => {
 			followUps.push(text);
 		},
@@ -2073,6 +2139,7 @@ test("mycli shell slash autocomplete filters and submits with enter", async () =
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
+		commands: [slashCommand("status", "/status", "Show status")],
 		onCommandSubmit: (command) => {
 			commands.push(command);
 		},
@@ -2120,8 +2187,7 @@ test("mycli shell model selector opens from slash command and selects model", as
 
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/model");
-	await runtime.editor.onSubmit?.("/model");
+	await runtime.handleClientAction("open_model_selector", "");
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
 
@@ -2154,7 +2220,7 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 
 	runtime.start();
 	await setTimeout(25);
-	await runtime.editor.onSubmit?.("/login");
+	await runtime.handleClientAction("open_login", "");
 
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
@@ -2209,7 +2275,7 @@ test("mycli shell model selector can change thinking effort with model selection
 
 	runtime.start();
 	await setTimeout(25);
-	await runtime.editor.onSubmit?.("/model");
+	await runtime.handleClientAction("open_model_selector", "");
 	const initialOutput = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(initialOutput, /Thinking/);
 	assert.match(initialOutput, /medium/);
@@ -2253,8 +2319,7 @@ test("mycli shell settings selector persists visual settings through runtime cal
 
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/settings");
-	await runtime.editor.onSubmit?.("/settings");
+	await runtime.handleClientAction("open_settings", "");
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Settings/);
 	assert.match(output, /Statusbar/);
@@ -2292,8 +2357,7 @@ test("mycli shell session selector handles empty state and selection", async () 
 	});
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/session");
-	await runtime.editor.onSubmit?.("/session");
+	await runtime.handleClientAction("open_session_selector", "");
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Session A/);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Scope: current/);
 	terminal.input?.("cache");
@@ -2323,8 +2387,7 @@ test("mycli shell resource selector loads resources and opens runtime inspect co
 
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/resources");
-	await runtime.editor.onSubmit?.("/resources");
+	await runtime.handleClientAction("open_resources", "");
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Resources/);
 	assert.match(output, /configured:repo:post-tool/);
@@ -2389,8 +2452,7 @@ test("mycli shell session tree selector filters folds and selects nodes", async 
 
 	runtime.start();
 	await setTimeout(25);
-	runtime.editor.setText("/session tree");
-	await runtime.editor.onSubmit?.("/session tree");
+	await runtime.showSessionTreeSelector();
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Conversation Tree/);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Session A/);
 
@@ -2443,8 +2505,7 @@ test("mycli shell session tree selection jumps to matching transcript anchor", a
 	await setTimeout(25);
 	assert.match(stripAnsi(terminal.output), /message 19/);
 
-	runtime.editor.setText("/session tree");
-	await runtime.editor.onSubmit?.("/session tree");
+	await runtime.showSessionTreeSelector();
 	terminal.input?.("\r");
 	await setTimeout(25);
 
@@ -2472,8 +2533,7 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.deepEqual(submitted, ["hello"]);
 	assert.equal(runtime.editor.getText(), "");
 
-	runtime.editor.setText("/clear");
-	await runtime.editor.onSubmit?.("/clear");
+	await runtime.handleClientAction("clear_transcript", "");
 	assert.equal(runtime.getState().messages.length, 0);
 	assert.equal(runtime.getState().tools.length, 0);
 	assert.equal(runtime.getState().transcript?.length, 0);
@@ -3026,6 +3086,13 @@ test("mycli shell command palette includes backend-supported commands", async ()
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
+		commands: [
+			slashCommand("tasks", "/tasks", "Inspect tasks"),
+			slashCommand("changes", "/changes", "Inspect changes"),
+			slashCommand("trace", "/trace", "Inspect trace"),
+			slashCommand("sandbox", "/sandbox", "Inspect sandbox"),
+			slashCommand("permissions", "/permissions", "Inspect permissions"),
+		],
 	});
 
 	runtime.start();
@@ -3043,12 +3110,12 @@ test("mycli shell command palette includes backend-supported commands", async ()
 		assert.match(stripAnsi(runtime.ui.render(100).join("\n")), pattern);
 	};
 
-	await assertCommandVisible(/\/tasks agents/);
+	await assertCommandVisible(/\/tasks/);
 	await assertCommandVisible(/\/changes/);
 	await assertCommandVisible(/\/trace/);
-	await assertCommandVisible(/\/session maintenance/);
 	await assertCommandVisible(/\/sandbox/);
 	await assertCommandVisible(/\/permissions/);
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /\/tasks agents/);
 });
 
 test("mycli shell local view command switches tool visibility", async () => {
@@ -3057,7 +3124,7 @@ test("mycli shell local view command switches tool visibility", async () => {
 		terminal: new TestTerminal(),
 	});
 
-	await runtime.editor.onSubmit?.("/view focus");
+	await runtime.handleClientAction("set_view_mode", "focus");
 
 	assert.equal(runtime.getState().settings?.viewMode, "focus");
 	assert.equal(runtime.getState().tools.find((tool) => tool.name === "Read")?.hidden, true);
@@ -3070,8 +3137,8 @@ test("mycli shell local copy and hotkeys commands render useful feedback", async
 		terminal: new TestTerminal(),
 	});
 
-	await runtime.editor.onSubmit?.("/copy");
-	await runtime.editor.onSubmit?.("/hotkeys");
+	await runtime.handleClientAction("copy_last_response", "");
+	await runtime.handleClientAction("open_hotkeys", "");
 
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Copied last assistant message|Clipboard unavailable/);

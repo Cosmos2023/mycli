@@ -524,7 +524,8 @@ function isInternalTaskNotification(text: string): boolean {
 async function runCommand(command: string): Promise<void> {
 	const result = await send("command.run", { command, surface: commandSurface });
 	const clientAction = clientActionFromResult(result);
-	if (clientAction) {
+	if (clientAction && runtime) {
+		await runtime.handleClientAction(clientAction.action, clientAction.args);
 		return;
 	}
 	setRuntimeState(runtimeStateWithCommandResult(runtimeState, command, result));
@@ -641,12 +642,7 @@ async function main(): Promise<void> {
 		onSessionTreeLoad: loadSessionTree,
 		onSettingsChange: saveSettings,
 		onResourceLoad: loadResources,
-		commands: slashCommands.map((command) => ({
-			id: command.id,
-			label: command.name,
-			description: command.description,
-			run: () => runCommand(command.name),
-		})),
+		commands: slashCommands,
 	});
 	runtime.start();
 }

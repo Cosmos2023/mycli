@@ -9,7 +9,7 @@ import { CombinedAutocompleteProvider, type SlashCommand } from "./tui-core/auto
 import { installMycliKeybindings } from "./keybindings.ts";
 import type {
 	MycliShellAuthProvider,
-	MycliShellCommand,
+	MycliShellCommandSpec,
 	MycliShellMessage,
 	MycliShellModel,
 	MycliShellPendingApproval,
@@ -67,7 +67,7 @@ export type MycliShellRuntimeOptions = {
 	onSettingsChange?: (settings: MycliShellVisualSettings) => MycliShellVisualSettings | Promise<MycliShellVisualSettings>;
 	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
 	onApprovalRespond?: (decisionId: string, choice: string) => void | Promise<void>;
-	commands?: MycliShellCommand[];
+	commands?: MycliShellCommandSpec[];
 	now?: () => number;
 };
 
@@ -84,51 +84,6 @@ export type MycliShellQueuedInput = {
 	text: string;
 	localImages?: MycliShellLocalImageAttachment[];
 };
-
-const BACKEND_COMMANDS: MycliShellCommand[] = [
-	{ id: "status", label: "/status", description: "Inspect runtime status", run: () => undefined },
-	{ id: "status-usage", label: "/status usage", description: "Inspect token usage", run: () => undefined },
-	{ id: "status-context", label: "/status context", description: "Inspect context window diagnostics", run: () => undefined },
-	{ id: "status-stats", label: "/status stats", description: "Inspect aggregate runtime stats", run: () => undefined },
-	{ id: "session-list", label: "/session list", description: "List resumable sessions", run: () => undefined },
-	{ id: "session-search", label: "/session search", description: "Search saved sessions", run: () => undefined },
-	{ id: "session-fork", label: "/session fork", description: "Fork a saved session", run: () => undefined },
-	{ id: "plan", label: "/plan", description: "Switch to Plan mode", run: () => undefined },
-	{ id: "mode", label: "/mode", description: "Inspect or switch collaboration mode", run: () => undefined },
-	{ id: "sandbox", label: "/sandbox", description: "Inspect sandbox permissions", run: () => undefined },
-	{ id: "sandbox-next", label: "/sandbox next", description: "Cycle sandbox permissions", run: () => undefined },
-	{ id: "agents", label: "/agents", description: "Manage agent profiles", run: () => undefined },
-	{ id: "agents-list", label: "/agents list", description: "List agent profiles", run: () => undefined },
-	{ id: "agents-runs", label: "/agents runs", description: "Inspect agent runs", run: () => undefined },
-	{ id: "agents-kill", label: "/agents kill", description: "Stop background agents", run: () => undefined },
-	{ id: "tasks", label: "/tasks", description: "Inspect background tasks", run: () => undefined },
-	{ id: "tasks-agents", label: "/tasks agents", description: "Inspect background agents", run: () => undefined },
-	{ id: "tasks-bashes", label: "/tasks bashes", description: "Inspect background shells", run: () => undefined },
-	{ id: "ps", label: "/ps", description: "Inspect background terminals", run: () => undefined },
-	{ id: "stop", label: "/stop", description: "Stop background terminals", run: () => undefined },
-	{ id: "tasks-agents-kill", label: "/tasks agents kill", description: "Stop a background agent", run: () => undefined },
-	{ id: "tasks-kill-agents", label: "/tasks kill-agents", description: "Stop background agents", run: () => undefined },
-	{ id: "tools", label: "/tools", description: "Inspect backend tools", run: () => undefined },
-	{ id: "tools-permissions", label: "/tools permissions", description: "Inspect approvals and command allowances", run: () => undefined },
-	{ id: "permissions", label: "/permissions", description: "Inspect permission allowlist", run: () => undefined },
-	{ id: "permissions-allow", label: "/permissions allow", description: "Allow a shell command pattern for this session", run: () => undefined },
-	{ id: "permissions-revoke", label: "/permissions revoke", description: "Remove a session command allowance", run: () => undefined },
-	{ id: "permissions-clear", label: "/permissions clear", description: "Clear session command allowances", run: () => undefined },
-	{ id: "tools-sets", label: "/tools sets", description: "Inspect backend toolsets", run: () => undefined },
-	{ id: "tools-hooks", label: "/tools hooks", description: "Inspect configured hooks", run: () => undefined },
-	{ id: "tools-extensions", label: "/tools extensions", description: "Inspect extension runtime", run: () => undefined },
-	{ id: "tools-plugins", label: "/tools plugins", description: "Inspect or run plugin commands", run: () => undefined },
-	{ id: "tools-skills", label: "/tools skills", description: "Inspect available skills", run: () => undefined },
-	{ id: "skills", label: "/skills", description: "Inspect available skills", run: () => undefined },
-	{ id: "resources", label: "/resources", description: "Browse runtime resources", run: () => undefined },
-	{ id: "memory", label: "/memory", description: "Inspect session memory", run: () => undefined },
-	{ id: "changes", label: "/changes", description: "Inspect file changes", run: () => undefined },
-	{ id: "changes-undo", label: "/changes undo", description: "Undo last recoverable file change", run: () => undefined },
-	{ id: "trace", label: "/trace", description: "Inspect runtime trace", run: () => undefined },
-	{ id: "trace-export", label: "/trace export", description: "Export runtime trace JSONL", run: () => undefined },
-	{ id: "trace-logs", label: "/trace logs", description: "Inspect workspace logs", run: () => undefined },
-	{ id: "session-maintenance", label: "/session maintenance", description: "Inspect session storage maintenance", run: () => undefined },
-];
 
 type ChatBlockComponent =
 	| { kind: "message"; signature: string; role: MycliShellMessage["role"]; component: Component }
@@ -529,7 +484,7 @@ export class MycliShellRuntime {
 			const list = new SelectList(
 				commands.map((command) => ({
 					value: command.id,
-					label: command.label,
+					label: command.name,
 					description: command.description,
 				})),
 				Math.min(10, Math.max(4, commands.length)),
@@ -539,11 +494,37 @@ export class MycliShellRuntime {
 			list.onSelect = (item: SelectItem) => {
 				done();
 				const command = commands.find((candidate) => candidate.id === item.value);
-				void command?.run();
+				if (command) void this.submitCommand(command.name);
 			};
 			list.onCancel = () => done();
 			return { component: list, focus: list };
 		});
+	}
+
+	async handleClientAction(action: string, args: string): Promise<void> {
+		const handlers: Record<string, () => void | Promise<void>> = {
+			open_command_palette: () => this.showCommandPalette(),
+			open_model_selector: () => this.showModelSelector(args || undefined),
+			open_settings: () => this.showSettingsSelector(),
+			open_session_selector: () => this.showSessionSelector(),
+			start_new_session: () => this.startNewLocalSession(),
+			open_resources: () => this.showResourceSelector(),
+			open_tasks: () => this.showBackgroundSubagents(),
+			toggle_details: () => this.toggleToolDetails(),
+			set_view_mode: () => this.setViewMode(args),
+			open_hotkeys: () => this.showHotkeys(),
+			copy_last_response: () => this.copyLastAssistantMessage(),
+			clear_transcript: () => this.clearTranscript(),
+			open_login: () => this.showLoginFlow(),
+			open_trust: () => this.showTrustGate(),
+			quit: () => this.shutdown(),
+		};
+		const handler = handlers[action];
+		if (!handler) {
+			this.addSystemNotice(`Internal command configuration error: unknown action ${action}`);
+			return;
+		}
+		await handler();
 	}
 
 	showModelSelector(initialSearchInput?: string): void {
@@ -1110,99 +1091,16 @@ export class MycliShellRuntime {
 		if (!input) {
 			return;
 		}
-		if (input === "/help") {
-			this.editor.setText("");
-			this.showCommandPalette();
-			return;
-		}
 		if (input === "/") {
 			this.editor.setText("");
 			this.showCommandPalette();
 			return;
 		}
 		if (input.startsWith("/")) {
-			const commandId = input.slice(1).split(/\s+/, 1)[0] ?? "";
-			if (commandId === "settings") {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				this.showSettingsSelector();
-				return;
-			}
-			if (commandId === "resources") {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				await this.showResourceSelector();
-				return;
-			}
-			if (commandId === "tasks" && input.trim() === "/tasks") {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				this.showBackgroundSubagents();
-				return;
-			}
-			const exactCommand = this.commands().find((candidate) => candidate.label === input);
-			if (exactCommand) {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				await exactCommand.run();
-				return;
-			}
-			if (input.trim() === "/session tree") {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				await this.showSessionTreeSelector();
-				return;
-			}
-			if (commandId === "session" || commandId === "resume") {
-				if (commandId === "resume" && input.trim().includes(" ")) {
-					this.editor.addToHistory(input);
-					this.editor.setText("");
-					await this.submitCommand(input);
-					return;
-				}
-				if (commandId === "session" && input.trim().includes(" ")) {
-					this.editor.addToHistory(input);
-					this.editor.setText("");
-					await this.submitCommand(input);
-					return;
-				}
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				this.showSessionSelector();
-				return;
-			}
-			if (commandId === "model") {
-				const searchTerm = input.startsWith("/model ") ? input.slice(7).trim() : undefined;
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				this.showModelSelector(searchTerm);
-				return;
-			}
-			if (commandId === "login") {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				this.showLoginFlow();
-				return;
-			}
-			if (commandId === "view") {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				this.setViewMode(input.slice("/view".length).trim());
-				return;
-			}
-			if (this.isBackendCommand(commandId)) {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				await this.submitCommand(input);
-				return;
-			}
-			const command = this.commands().find((candidate) => candidate.id === commandId);
-			if (command) {
-				this.editor.addToHistory(input);
-				this.editor.setText("");
-				await command.run();
-				return;
-			}
+			this.editor.addToHistory(input);
+			this.editor.setText("");
+			await this.submitCommand(input);
+			return;
 		}
 		const submitted = this.extractLocalImageAttachments(input);
 		this.editor.addToHistory(input);
@@ -1349,117 +1247,13 @@ export class MycliShellRuntime {
 		return ["running", "thinking", "streaming", "waiting approval", "waiting clarification"].includes(liveState);
 	}
 
-	private commands(): MycliShellCommand[] {
-		const commands: MycliShellCommand[] = [
-			...(this.options.commands ?? []),
-			{
-				id: "settings",
-				label: "/settings",
-				description: "Open settings",
-				run: () => this.showSettingsSelector(),
-			},
-			{
-				id: "session",
-				label: "/session",
-				description: "Resume session",
-				run: () => this.showSessionSelector(),
-			},
-			{
-				id: "session-tree",
-				label: "/session tree",
-				description: "Inspect conversation tree",
-				run: () => void this.showSessionTreeSelector(),
-			},
-			{
-				id: "model",
-				label: "/model",
-				description: "Select model",
-				run: () => this.showModelSelector(),
-			},
-			{
-				id: "login",
-				label: "/login",
-				description: "Configure provider credentials",
-				run: () => this.showLoginFlow(),
-			},
-			{
-				id: "trust",
-				label: "/trust",
-				description: "Review workspace trust",
-				run: () => this.showTrustGate(),
-			},
-			{
-				id: "tasks",
-				label: "/tasks",
-				description: "Open background tasks",
-				run: () => this.showBackgroundSubagents(),
-			},
-			{
-				id: "tools",
-				label: "/tools",
-				description: "Inspect backend tools",
-				run: () => this.submitCommand("/tools"),
-			},
-			{
-				id: "details",
-				label: "/details",
-				description: "Toggle compact tool details",
-				run: () => this.toggleToolDetails(),
-			},
-			{
-				id: "view",
-				label: "/view",
-				description: "Switch tool visibility: default, verbose, focus",
-				run: () => this.addSystemNotice("Usage: /view default | /view verbose | /view focus"),
-			},
-			{
-				id: "hotkeys",
-				label: "/hotkeys",
-				description: "Show keyboard shortcuts",
-				run: () => this.showHotkeys(),
-			},
-			{
-				id: "copy",
-				label: "/copy",
-				description: "Copy last assistant message",
-				run: () => this.copyLastAssistantMessage(),
-			},
-			{
-				id: "new",
-				label: "/new",
-				description: "Start a fresh local transcript",
-				run: () => this.startNewLocalSession(),
-			},
-			{
-				id: "clear",
-				label: "/clear",
-				description: "Clear local transcript view",
-				run: () => this.setState({ ...this.state, messages: [], tools: [], bash: [], transcript: [], pendingNotice: undefined }),
-			},
-			{
-				id: "quit",
-				label: "/quit",
-				description: "Exit mycli",
-				run: () => this.shutdown(),
-			},
-		];
-		const commandIds = new Set(commands.map((command) => command.id));
-		for (const command of BACKEND_COMMANDS) {
-			if (this.localCommandIds().has(command.id) || commandIds.has(command.id)) {
-				continue;
-			}
-			commands.push({
-				...command,
-				run: () => this.submitCommand(command.label),
-			});
-			commandIds.add(command.id);
-		}
-		return commands;
+	private commands(): MycliShellCommandSpec[] {
+		return this.options.commands ?? [];
 	}
 
 	private refreshAutocompleteProvider(): void {
 		const slashCommands: SlashCommand[] = this.commands().map((command) => ({
-			name: command.label.replace(/^\//, ""),
+			name: command.name.replace(/^\//, ""),
 			description: command.description,
 		}));
 		this.editor.setAutocompleteProvider(
@@ -1473,29 +1267,6 @@ export class MycliShellRuntime {
 			return process.cwd();
 		}
 		return cwd;
-	}
-
-	private localCommandIds(): Set<string> {
-		return new Set([
-			"settings",
-			"session",
-			"resume",
-			"model",
-			"trust",
-			"jobs",
-			"tools",
-			"details",
-			"view",
-			"hotkeys",
-			"copy",
-			"new",
-			"clear",
-			"quit",
-		]);
-	}
-
-	private isBackendCommand(commandId: string): boolean {
-		return BACKEND_COMMANDS.some((command) => command.id === commandId || command.label === `/${commandId}`);
 	}
 
 	private async submitCommand(command: string): Promise<void> {
@@ -1536,6 +1307,17 @@ export class MycliShellRuntime {
 				}
 				return block;
 			}),
+		});
+	}
+
+	private clearTranscript(): void {
+		this.setState({
+			...this.state,
+			messages: [],
+			tools: [],
+			bash: [],
+			transcript: [],
+			pendingNotice: undefined,
 		});
 	}
 
