@@ -8,6 +8,7 @@ SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
         "approval.respond",
         "auth.api_key.save",
         "clarify.respond",
+        "command.list",
         "command.run",
         "completion.path",
         "completion.slash",

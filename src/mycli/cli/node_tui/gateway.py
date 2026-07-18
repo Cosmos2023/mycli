@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import asdict, replace
 import inspect
 import json
 from pathlib import Path
@@ -11,6 +12,14 @@ from typing import Any, Protocol, TypedDict, cast
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
+from mycli.cli.slash_command_dispatch import dispatch_backend_slash_command
+from mycli.cli.slash_command_registry import (
+    SlashCommandContext,
+    SlashCommandOwner,
+    SlashCommandSurface,
+    command_manifest,
+    resolve_slash_command,
+)
 from mycli.config.auth_store import AuthStore
 from mycli.config.settings import default_user_config_path
 from mycli.config.shell_settings import load_shell_settings, save_shell_settings
@@ -25,8 +34,6 @@ from mycli.cli.node_tui.protocol import (
     notification,
     result_response,
 )
-from mycli.cli.repl import canonical_slash_command, build_command_handler, handle_slash_command
-from mycli.cli.slash_commands import slash_command_candidates
 from mycli.cli.startup_marks import startup_mark
 from mycli.domain.runtime import (
     DecisionAction,
@@ -51,23 +58,6 @@ from mycli.infrastructure.providers import profile_for_provider
 from mycli.services.transcript_projection import project_history_items_for_tui
 
 PROTOCOL_VERSION = 1
-COMMAND_OVERLAYS = {
-    "/help",
-    "/status",
-    "/status usage",
-    "/status context",
-    "/status stats",
-    "/sandbox",
-    "/tools permissions",
-    "/permissions",
-    "/changes",
-    "/session list",
-    "/session maintenance",
-    "/session maintenance --apply-empty",
-    "/session maintenance --apply-orphans",
-    "/session maintenance --apply-vacuum",
-    "/release-notes",
-}
 MESSAGE_COMPLETE_TEXT_LIMIT = 16_000
 PROPOSED_PLAN_OPEN_TAG = "<proposed_plan>"
 PROPOSED_PLAN_CLOSE_TAG = "</proposed_plan>"
@@ -257,7 +247,6 @@ class NodeTuiGateway:
     ) -> None:
         self.service = service
         self._emit = emit
-        self._command_handler = build_command_handler(cast(TurnService, service))
         self._turn_lock = Lock()
         self._turn_thread: Thread | None = None
         self._turn_running = False
@@ -310,6 +299,8 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_turn_queue_clear())
             if request.method == "turn.interrupt":
                 return result_response(request.id, self._handle_turn_interrupt())
+            if request.method == "command.list":
+                return result_response(request.id, self._handle_command_list(request.params))
             if request.method == "command.run":
                 return result_response(request.id, self._handle_command_run(request.params))
             if request.method == "transcript.load":
@@ -1129,58 +1120,32 @@ class NodeTuiGateway:
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
-        if not command.startswith("/"):
-            raise ValueError("command must start with '/'.")
-        canonical_command = canonical_slash_command(command)
-        command_name = canonical_command.split(maxsplit=1)[0]
-        if command == "/stop":
-            builtin = ""
-            lines = list(self.service.stop_background_shells())
-        else:
-            builtin = handle_slash_command(command)
-            if builtin == "quit":
-                lines = ["Bye."]
-            elif builtin.startswith("Unknown command:"):
-                lines = list(self._command_handler(command))
-            else:
-                lines = builtin.splitlines()
-        mutated_session = command.startswith(("/resume", "/fork"))
-        if mutated_session and self._emit is not None:
+        invocation = resolve_slash_command(command, self._command_context(params))
+        if invocation.owner is SlashCommandOwner.TUI:
+            return {
+                "execution": "tui",
+                "client_action": invocation.client_action,
+                "args": invocation.args,
+                "command_id": invocation.command_id.value,
+            }
+        result = dispatch_backend_slash_command(cast(TurnService, self.service), invocation)
+        if result.mutated_session and self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
-        mutated_model = command == "/model" or command.startswith("/model ")
-        if mutated_model:
+        if result.mutated_model or result.mutated_mode:
             self._emit_event("status.changed", self._status_payload())
-        mutated_mode = (
-            command == "/plan"
-            or command == "/mode"
-            or command.startswith("/mode ")
-            or command == "/sandbox"
-            or command.startswith("/sandbox ")
-        )
-        if mutated_mode:
-            self._emit_event("status.changed", self._status_payload())
-        result: dict[str, object] = {
-            "lines": lines,
-            "mutated_session": mutated_session,
-            "mutated_model": mutated_model,
-            "mutated_mode": mutated_mode,
-            "presentation": "overlay" if canonical_command in COMMAND_OVERLAYS else "transcript",
-            "exit_requested": builtin == "quit",
-        }
-        if command_name in {"/changes", "/diff"}:
-            result["presentation_hint"] = "file changes"
-        if command == "/ps":
-            result["command_kind"] = "background_shells"
-            result["processes"] = self._active_background_shells()
-        elif command == "/stop":
-            result["command_kind"] = "shell_stop"
-        view_mode = _view_mode_from_command(command)
-        if view_mode is not None:
-            result["view_mode"] = view_mode
-        collaboration_mode = _collaboration_mode_from_command(command)
-        if collaboration_mode is not None:
-            result["collaboration_mode"] = collaboration_mode
-        return result
+        return result.to_payload()
+
+    def _command_context(self, params: dict[str, object]) -> SlashCommandContext:
+        raw_surface = str(params.get("surface", SlashCommandSurface.TUI.value))
+        try:
+            surface = SlashCommandSurface(raw_surface)
+        except ValueError as exc:
+            raise ValueError("surface must be 'tui' or 'cli'.") from exc
+        return SlashCommandContext(surface=surface, turn_running=self._turn_running)
+
+    def _handle_command_list(self, params: dict[str, object]) -> dict[str, object]:
+        context = replace(self._command_context(params), turn_running=False)
+        return {"commands": [asdict(item) for item in command_manifest(context)]}
 
     def _handle_transcript_load(self, params: dict[str, object]) -> dict[str, object]:
         session_id = _optional_str(params.get("session_id")) or self.service._config.session_id
@@ -1504,13 +1469,23 @@ class NodeTuiGateway:
 
     def _handle_completion_slash(self, params: dict[str, object]) -> dict[str, object]:
         prefix = _optional_str(params.get("prefix")) or "/"
-        return {
-            "items": [
-                {"value": command, "description": _slash_description(command)}
-                for command in slash_command_candidates()
-                if command.startswith(prefix)
-            ]
-        }
+        raw_commands = self._handle_command_list(params)["commands"]
+        items: list[dict[str, object]] = []
+        if not isinstance(raw_commands, list):
+            return {"items": items}
+        for raw_command in raw_commands:
+            if not isinstance(raw_command, dict):
+                continue
+            name = raw_command.get("name")
+            description = raw_command.get("description")
+            if isinstance(name, str) and name.startswith(prefix):
+                items.append(
+                    {
+                        "value": name,
+                        "description": description if isinstance(description, str) else "",
+                    }
+                )
+        return {"items": items}
 
     def _handle_completion_path(self, params: dict[str, object]) -> dict[str, object]:
         prefix = _optional_str(params.get("prefix")) or "@"
@@ -1961,22 +1936,6 @@ def _bounded_text(value: str, *, max_chars: int = 500) -> str:
     return compact[: max_chars - 3] + "..."
 
 
-def _view_mode_from_command(command: str) -> str | None:
-    parts = command.split(maxsplit=1)
-    if len(parts) == 2 and parts[0] == "/view" and parts[1] in {"default", "verbose", "focus"}:
-        return parts[1]
-    return None
-
-
-def _collaboration_mode_from_command(command: str) -> str | None:
-    if command == "/plan":
-        return "plan"
-    parts = command.split(maxsplit=1)
-    if len(parts) == 2 and parts[0] == "/mode" and parts[1] in {"default", "plan"}:
-        return parts[1]
-    return None
-
-
 def _resources_from_lines(
     resource_type: str,
     command: str,
@@ -2307,23 +2266,6 @@ def _message_summary(message: Message) -> str:
     if text:
         return _bounded_text(text, max_chars=120)
     return message.role
-
-
-def _slash_description(command: str) -> str:
-    descriptions = {
-        "/status": "Show runtime status",
-        "/status stats": "Show aggregate stats",
-        "/status usage": "Show usage for the current session",
-        "/status context": "Show context-window diagnostics",
-        "/session resume <session>": "Resume a saved session",
-        "/session list": "List saved sessions",
-        "/session maintenance": "Show session storage maintenance dry-run",
-        "/session maintenance --apply-empty": "Delete empty session maintenance candidates",
-        "/session maintenance --apply-orphans": "Delete orphan session child rows",
-        "/session maintenance --apply-vacuum": "Run explicit SQLite vacuum for session storage",
-        "/quit": "Exit mycli",
-    }
-    return descriptions.get(command, "")
 
 
 def _phase_for_stream_event(event: RuntimeStreamEvent) -> str:

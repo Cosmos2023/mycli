@@ -641,14 +641,85 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
         RpcRequest(id="req_1", method="command.run", params={"command": "/usage"})
     )
     help_response = gateway.handle_request(
-        RpcRequest(id="req_2", method="command.run", params={"command": "/help"})
+        RpcRequest(
+            id="req_2",
+            method="command.run",
+            params={"command": "/help", "surface": "cli"},
+        )
     )
 
     assert response.result is not None
+    assert response.result["execution"] == "backend"
     assert response.result["lines"] == ["[usage] session=demo", "[usage] turns=1"]
     assert response.result["mutated_session"] is False
     assert help_response.result is not None
     assert any("/status" in line for line in help_response.result["lines"])
+
+
+def test_gateway_command_list_returns_only_canonical_tui_commands(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="list", method="command.list", params={"surface": "tui"})
+    )
+
+    assert response.result is not None
+    commands = response.result["commands"]
+    names = [item["name"] for item in commands]
+    assert names[:3] == ["/model", "/plan", "/mode"]
+    assert len(names) == 33
+    assert "/usage" in names
+    assert "/status usage" not in names
+    assert "/theme" not in names
+
+
+def test_gateway_command_list_filters_tui_only_commands_for_cli(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="list", method="command.list", params={"surface": "cli"})
+    )
+
+    assert response.result is not None
+    names = [item["name"] for item in response.result["commands"]]
+    assert "/usage" in names
+    assert "/settings" not in names
+    assert "/copy" not in names
+
+
+def test_gateway_command_run_returns_tui_action_for_bare_model(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="model",
+            method="command.run",
+            params={"command": "/model", "surface": "tui"},
+        )
+    )
+
+    assert response.result == {
+        "execution": "tui",
+        "client_action": "open_model_selector",
+        "args": "",
+        "command_id": "model",
+    }
+
+
+def test_gateway_command_run_executes_inline_model_on_backend(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="model",
+            method="command.run",
+            params={"command": "/model gpt-test", "surface": "tui"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["execution"] == "backend"
+    assert response.result["mutated_model"] is True
 
 
 def test_gateway_command_run_returns_structured_background_shells_and_stop(
@@ -681,7 +752,7 @@ def test_gateway_command_run_returns_structured_background_shells_and_stop(
     assert processes.result["processes"][0]["output"] == "ready\n"
     assert stopped.result is not None
     assert stopped.result["command_kind"] == "shell_stop"
-    assert stopped.result["lines"] == ["Stopping all background terminals."]
+    assert stopped.result["lines"] == ["[bash] Stopping all background terminals."]
     gateway.close()
 
 
@@ -719,20 +790,16 @@ def test_gateway_command_run_can_cancel_one_background_subagent(tmp_path: Path) 
     ]
 
 
-def test_gateway_command_run_session_displays_title_not_raw_session_id(tmp_path: Path) -> None:
-    service = FakeService(tmp_path)
-    service._config.session_title = "Boss reply follow-up"
-    gateway = NodeTuiGateway(service=service)
+def test_gateway_command_run_legacy_session_alias_opens_resume_picker(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
 
     response = gateway.handle_request(
         RpcRequest(id="req_1", method="command.run", params={"command": "/session"})
     )
 
     assert response.result is not None
-    assert response.result["lines"][:2] == [
-        "[session] session=Boss reply follow-up",
-        "[session] messages=3",
-    ]
+    assert response.result["execution"] == "tui"
+    assert response.result["client_action"] == "open_session_selector"
 
 
 def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) -> None:
@@ -742,10 +809,18 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
         RpcRequest(id="req_1", method="command.run", params={"command": "/usage"})
     )
     view = gateway.handle_request(
-        RpcRequest(id="req_2", method="command.run", params={"command": "/view verbose"})
+        RpcRequest(
+            id="req_2",
+            method="command.run",
+            params={"command": "/view verbose", "surface": "cli"},
+        )
     )
     quit_response = gateway.handle_request(
-        RpcRequest(id="req_3", method="command.run", params={"command": "/quit"})
+        RpcRequest(
+            id="req_3",
+            method="command.run",
+            params={"command": "/quit", "surface": "cli"},
+        )
     )
     changes = gateway.handle_request(
         RpcRequest(id="req_4", method="command.run", params={"command": "/changes"})
@@ -1251,32 +1326,14 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
     assert response.result is not None
     values = [item["value"] for item in response.result["items"]]
     assert "/status" in values
-    assert "/status stats" in values
+    assert "/stats" in values
+    assert "/status stats" not in values
 
     maintenance_response = gateway.handle_request(
         RpcRequest(id="req_2", method="completion.slash", params={"prefix": "/session m"})
     )
 
-    assert maintenance_response.result is not None
-    maintenance_items = maintenance_response.result["items"]
-    assert maintenance_items == [
-        {
-            "value": "/session maintenance",
-            "description": "Show session storage maintenance dry-run",
-        },
-        {
-            "value": "/session maintenance --apply-empty",
-            "description": "Delete empty session maintenance candidates",
-        },
-        {
-            "value": "/session maintenance --apply-orphans",
-            "description": "Delete orphan session child rows",
-        },
-        {
-            "value": "/session maintenance --apply-vacuum",
-            "description": "Run explicit SQLite vacuum for session storage",
-        },
-    ]
+    assert maintenance_response.result == {"items": []}
 
 
 def test_gateway_path_completion_stays_inside_workspace(tmp_path: Path) -> None:

@@ -67,10 +67,11 @@ def _result(
     processes: tuple[dict[str, object], ...] = (),
     view_mode: str | None = None,
     collaboration_mode: str | None = None,
+    presentation: SlashCommandPresentation | None = None,
 ) -> SlashCommandResult:
     return SlashCommandResult(
         lines=lines,
-        presentation=invocation.presentation,
+        presentation=presentation or invocation.presentation,
         mutated_session=mutated_session,
         mutated_model=mutated_model,
         mutated_mode=mutated_mode,
@@ -173,6 +174,7 @@ def dispatch_backend_slash_command(
             invocation,
             _lines("view", values),
             view_mode=args if args in {"default", "verbose", "focus"} else None,
+            presentation=SlashCommandPresentation.TRANSCRIPT,
         )
     if command_id is SlashCommandId.TRACE:
         if not args:

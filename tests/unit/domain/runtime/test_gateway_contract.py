@@ -5,8 +5,13 @@ from mycli.domain.runtime.gateway_contract import (
     APPROVAL_DECISION_CHOICES,
     GATEWAY_ERROR_CODES,
     TERMINAL_TURN_STATES,
+    SUPPORTED_GATEWAY_RPC_METHODS,
     gateway_event_payload_schemas,
 )
+
+
+def test_gateway_contract_exposes_command_manifest_method() -> None:
+    assert "command.list" in SUPPORTED_GATEWAY_RPC_METHODS
 
 
 def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
