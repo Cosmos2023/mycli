@@ -323,3 +323,18 @@ export type MycliShellCommand = {
 	description?: string;
 	run: () => void | Promise<void>;
 };
+
+export type MycliShellCommandSpec = {
+	id: string;
+	name: string;
+	description: string;
+	argumentHint?: string;
+	argumentPolicy: "none" | "optional" | "required";
+	availableDuringTurn: boolean;
+};
+
+export type MycliShellClientAction = {
+	action: string;
+	args: string;
+	commandId: string;
+};

@@ -28,6 +28,8 @@ import type {
 import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
+import { clientActionFromResult, slashCommandsFromResult } from "./adapters/slash-commands.ts";
+import type { MycliShellCommandSpec } from "./model.ts";
 
 type QueueKind = "steer" | "followUp";
 type QueuedTurnInput = {
@@ -39,6 +41,8 @@ type QueuedTurnInput = {
 };
 type SubmitTurnOptions = { fromQueue?: QueueKind; attachments?: MycliShellSubmitAttachments };
 
+const commandSurface = process.env.MYCLI_TUI_NATIVE === "1" ? "cli" : "tui";
+
 const client = new GatewayClient({
 	input: process.stdin,
 	output: process.stdout,
@@ -47,6 +51,7 @@ const client = new GatewayClient({
 
 let runtimeState: RuntimeShellState = initialRuntimeState();
 let sessions: MycliShellSession[] = [];
+let slashCommands: MycliShellCommandSpec[] = [];
 let runtime: MycliShellRuntime | null = null;
 let nativeRuntime: NativeChatRuntime | null = null;
 let ttyStreams: TtyStreams | null = null;
@@ -139,6 +144,8 @@ async function bootstrap(): Promise<void> {
 		before: null,
 	});
 	setRuntimeState(runtimeStateFromTranscript(runtimeState, transcriptPayload));
+	const commandPayload = await send("command.list", { surface: commandSurface });
+	slashCommands = slashCommandsFromResult(commandPayload);
 	await loadSettings();
 	await loadSessions();
 	bootstrapped = true;
@@ -515,7 +522,11 @@ function isInternalTaskNotification(text: string): boolean {
 }
 
 async function runCommand(command: string): Promise<void> {
-	const result = await send("command.run", { command });
+	const result = await send("command.run", { command, surface: commandSurface });
+	const clientAction = clientActionFromResult(result);
+	if (clientAction) {
+		return;
+	}
 	setRuntimeState(runtimeStateWithCommandResult(runtimeState, command, result));
 	if (result.exit_requested === true) {
 		await shutdown(0);
@@ -630,26 +641,12 @@ async function main(): Promise<void> {
 		onSessionTreeLoad: loadSessionTree,
 		onSettingsChange: saveSettings,
 		onResourceLoad: loadResources,
-		commands: [
-			{
-				id: "status",
-				label: "/status",
-				description: "Inspect runtime status",
-				run: () => runCommand("/status"),
-			},
-			{
-				id: "usage",
-				label: "/usage",
-				description: "Inspect token usage",
-				run: () => runCommand("/usage"),
-			},
-			{
-				id: "context",
-				label: "/context",
-				description: "Inspect context window",
-				run: () => runCommand("/context"),
-			},
-		],
+		commands: slashCommands.map((command) => ({
+			id: command.id,
+			label: command.name,
+			description: command.description,
+			run: () => runCommand(command.name),
+		})),
 	});
 	runtime.start();
 }

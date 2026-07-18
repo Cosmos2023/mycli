@@ -4,6 +4,7 @@ export type {
 	MycliShellBackgroundProcess,
 	MycliShellBackgroundTerminals,
 	MycliShellCommand,
+	MycliShellCommandSpec,
 	MycliShellCommandDiagnostic,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
