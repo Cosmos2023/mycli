@@ -21,6 +21,7 @@ from mycli.domain.runtime import (
     PendingClarification,
     PlanItem,
     PlanState,
+    PlanStatus,
     RuntimeBlock,
     RuntimeInterruptToken,
     RuntimeStreamEvent,
@@ -761,15 +762,27 @@ class ToolExecutionService:
             plan_state=plan_state,
         )
         if next_plan_state != plan_state:
+            plan_update_metadata = _plan_update_metadata(
+                next_plan_state,
+                source=normalized_call.name,
+            )
+            self._append_turn_item(
+                turn_id=turn_id,
+                turn_items=turn_items,
+                item=TurnItem(
+                    type=TurnItemType.PLAN_UPDATE,
+                    text="Updated Plan",
+                    metadata=plan_update_metadata,
+                ),
+            )
             self._notify_lifecycle_sink(
                 lifecycle_sink,
                 RuntimeStreamEvent(
                     kind="plan_updated",
-                    metadata={
-                        "plan_steps": _render_plan_steps(next_plan_state),
-                        "plan": _plan_payload(next_plan_state),
-                        "source": normalized_call.name,
-                    },
+                    metadata=_live_plan_update_payload(
+                        next_plan_state,
+                        metadata=plan_update_metadata,
+                    ),
                 ),
             )
         model_output = self._tool_model_output_projector.project(
@@ -1929,6 +1942,37 @@ def _plan_payload(plan_state: PlanState) -> dict[str, object]:
             _plan_item_payload(item)
             for item in plan_state.items
         ],
+    }
+
+
+def _plan_update_metadata(
+    plan_state: PlanState,
+    *,
+    source: str,
+) -> dict[str, object]:
+    return {
+        "source": source,
+        "completed": sum(
+            item.status is PlanStatus.COMPLETED for item in plan_state.items
+        ),
+        "total": len(plan_state.items),
+        "items": [_plan_item_payload(item) for item in plan_state.items],
+        "model_visible": False,
+    }
+
+
+def _live_plan_update_payload(
+    plan_state: PlanState,
+    *,
+    metadata: dict[str, object],
+) -> dict[str, object]:
+    raw_items = metadata["items"]
+    return {
+        "plan_steps": _render_plan_steps(plan_state),
+        "plan": {"items": raw_items},
+        "source": metadata["source"],
+        "completed": metadata["completed"],
+        "total": metadata["total"],
     }
 
 

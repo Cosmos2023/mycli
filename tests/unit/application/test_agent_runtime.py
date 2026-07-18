@@ -3806,6 +3806,48 @@ class PartialPlanUpdateThenDoneAdapter:
         )()
 
 
+class NoOpPlanThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def next_action(self, *, messages, tools):
+        del messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return type(
+                "Action",
+                (),
+                {
+                    "assistant_message": None,
+                    "progress_message": "Keeping the existing plan",
+                    "tool_call": ToolCall(
+                        name="Plan",
+                        arguments={
+                            "plan": [
+                                {
+                                    "id": "inspect",
+                                    "content": "Inspect runtime",
+                                    "status": "in_progress",
+                                }
+                            ]
+                        },
+                        reason="confirm current plan",
+                    ),
+                    "done": False,
+                },
+            )()
+        return type(
+            "Action",
+            (),
+            {
+                "assistant_message": "Plan unchanged",
+                "progress_message": None,
+                "tool_call": None,
+                "done": True,
+            },
+        )()
+
+
 def test_agent_runtime_applies_update_plan_tool_and_returns_plan_steps(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
@@ -3844,7 +3886,65 @@ def test_agent_runtime_applies_update_plan_tool_and_returns_plan_steps(tmp_path:
             ],
         },
         "source": "Plan",
+        "completed": 0,
+        "total": 2,
     }
+    assert response.turn is not None
+    plan_updates = [
+        item for item in response.turn.items if item.type is TurnItemType.PLAN_UPDATE
+    ]
+    assert len(plan_updates) == 1
+    assert plan_updates[0].text == "Updated Plan"
+    assert plan_updates[0].metadata == {
+        "source": "Plan",
+        "completed": 0,
+        "total": 2,
+        "items": [
+            {
+                "id": "inspect",
+                "text": "Inspect the repository layout",
+                "status": "in_progress",
+            },
+            {
+                "id": "summarize",
+                "text": "Summarize the findings",
+                "status": "pending",
+            },
+        ],
+        "model_visible": False,
+    }
+
+
+def test_agent_runtime_does_not_record_unchanged_plan(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=NoOpPlanThenDoneAdapter(),
+    )
+    runtime._session_service.save_plan_state(
+        runtime._config.session_id,
+        PlanState(
+            items=(
+                PlanItem(
+                    id="inspect",
+                    content="Inspect runtime",
+                    status=PlanStatus.IN_PROGRESS,
+                ),
+            )
+        ),
+    )
+    events: list[RuntimeStreamEvent] = []
+
+    response = runtime.handle_user_turn(
+        "keep the current plan",
+        stream_sink=events.append,
+    )
+
+    assert response.turn is not None
+    assert all(
+        item.type is not TurnItemType.PLAN_UPDATE for item in response.turn.items
+    )
+    assert all(event.kind != "plan_updated" for event in events)
 
 
 def test_agent_runtime_does_not_recover_plan_anchor_for_new_session(tmp_path: Path) -> None:
