@@ -71,6 +71,14 @@ class SlashCommandId(StrEnum):
 
 
 @dataclass(frozen=True)
+class SlashDispatchPolicy:
+    bare_owner: SlashCommandOwner
+    inline_owner: SlashCommandOwner | None
+    bare_client_action: str | None
+    inline_client_action: str | None
+
+
+@dataclass(frozen=True)
 class SlashCommandSpec:
     id: SlashCommandId
     name: str
@@ -78,10 +86,7 @@ class SlashCommandSpec:
     argument_hint: str | None
     aliases: tuple[str, ...]
     argument_policy: SlashArgumentPolicy
-    bare_owner: SlashCommandOwner
-    inline_owner: SlashCommandOwner | None
-    bare_client_action: str | None
-    inline_client_action: str | None
+    dispatch_by_surface: Mapping[SlashCommandSurface, SlashDispatchPolicy]
     presentation: SlashCommandPresentation
     available_during_turn: bool
     surfaces: frozenset[SlashCommandSurface]
@@ -90,13 +95,15 @@ class SlashCommandSpec:
     order: int
 ```
 
-`bare_owner` 和 `inline_owner` 分开声明是必要的，因为部分命令具有混合行为：
+每个 surface 的 `bare_owner` 和 `inline_owner` 分开声明，因为部分命令具有混合行为：
 
 - 裸 `/model` 由 TUI 打开 model selector，`/model <name>` 由 backend 修改模型。
 - 裸 `/resume` 由 TUI 打开 session selector，`/resume <session-id>` 由 backend 直接恢复指定 session。
 - 裸 `/tasks` 由 TUI 打开 background task view，带参数的 `/tasks ...` 由 backend 查询或停止具体任务。
 
-纯后端命令的两个 owner 都是 backend；不支持参数的 TUI 命令只设置 `bare_owner=tui`，并令 `inline_owner=None`。
+部分命令还需要按 surface 使用不同 policy。例如裸 `/model` 在 TUI 中打开 selector，在纯 CLI 中由 backend 展示或修改模型配置；`/help` 在 TUI 中打开 command palette，在纯 CLI 中输出 registry 生成的帮助文本。这个差异必须由 `dispatch_by_surface` 声明，不能重新散落成调用方的命令名特殊判断。
+
+纯后端命令在两个 surface 的 owner 都是 backend；不支持参数的 TUI 命令只在 TUI surface 声明 `bare_owner=tui`，并令 `inline_owner=None`。
 
 当 owner 是 TUI 时，对应的 `bare_client_action` 或 `inline_client_action` 必须存在；backend owner 对应的 client action 必须为空。`platforms=None` 表示支持所有平台，否则只在声明的平台上进入 manifest。
 
@@ -282,6 +289,7 @@ feature 或平台不可用的命令不显示在 manifest 中。用户手动输�
 - command ID 唯一；
 - alias 唯一，且不能与其他正式名称冲突；
 - `order` 唯一且稳定；
+- 每个可见 surface 都有对应的 dispatch policy；
 - 每个 backend owner 都有 backend handler；
 - 每个 TUI owner 都有有效的 bare 或 inline `client_action`；
 - backend owner 不能携带 `client_action`；
