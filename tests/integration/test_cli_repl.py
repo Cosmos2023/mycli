@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from mycli.cli.autocomplete import path_completion_candidates
 from mycli.cli.main import build_turn_service, handle_slash_command, main, run_repl
-from mycli.cli.repl import build_command_handler, canonical_slash_command
+from mycli.cli.repl import build_command_handler
 from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.domain.runtime import ActivityEvent, RuntimeStreamEvent, TurnResponse, ViewMode
 from mycli.llms.adapters.anthropic_messages_adapter import (
@@ -19,15 +19,16 @@ def test_help_lists_approval_and_memory_controls() -> None:
     output = handle_slash_command("/help")
     assert "/memory" in output
     assert "/undo" in output
-    assert "/session [show|list|resume|fork|search|maintenance]" in output
-    assert "/status [usage|context|stats]" in output
-    assert "/agents [list|inspect <profile_id>|runs [child_session_id]|kill]" in output
-    assert "/tasks [agents [child_session_id]|agents kill <child_session_id>|bashes|kill-agents]" in output
-    assert "/trace [export|logs]" in output
+    assert "/resume" in output
+    assert "/usage" in output
+    assert "/context" in output
+    assert "/stats" in output
+    assert "/tasks" in output
     assert "/ps" in output
     assert "/stop" in output
-    assert "Aliases:" in output
-    assert "/resume" in output
+    assert "/status usage" not in output
+    assert "/session list" not in output
+    assert "Aliases:" not in output
     assert "/confirm" not in output
     assert "/reject" not in output
 
@@ -39,8 +40,8 @@ def test_shell_process_aliases_route_to_read_and_stop_commands() -> None:
     )
     handler = build_command_handler(service)
 
-    assert canonical_slash_command("/ps") == "/tasks bashes"
     assert list(handler("/ps")) == ["[bash] shell-1 running"]
+    assert list(handler("/tasks bashes")) == ["[bash] shell-1 running"]
     assert list(handler("/stop")) == ["[bash] Stopping all background terminals."]
 
 

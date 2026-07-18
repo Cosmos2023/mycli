@@ -340,17 +340,15 @@ def test_main_runs_doctor_without_leaking_api_key(tmp_path: Path) -> None:
 
 def test_help_lists_sessions_command() -> None:
     output = handle_slash_command("/help")
-    assert "/status [usage|context|stats]" in output
-    assert "/session [show|list|resume|fork|search|maintenance]" in output
-    assert "/sessions" in output
-    assert "/session-maintenance" in output
+    assert "/status" in output
+    assert "/resume" in output
+    assert "/usage" in output
     assert "/context" in output
-    assert "/bashes" in output
-    assert "/changes [undo]" in output
-    assert "/extensions" in output
-    assert "/trace-jsonl" in output
-    assert "/logs" in output
-    assert "/hooks" in output
+    assert "/ps" in output
+    assert "/undo" in output
+    assert "/session list" not in output
+    assert "/status usage" not in output
+    assert "Aliases:" not in output
 
 
 def test_build_turn_service_uses_cli_and_env_configuration(tmp_path: Path) -> None:
@@ -1860,14 +1858,20 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
         "[log] agent_log=/tmp/mycli/logs/agent.log",
         "[log] tail: INFO [demo] turn_started",
     ]
-    assert list(handler("/session")) == ["[session] session=demo", "[session] messages=3"]
+    assert list(handler("/session")) == [
+        "[session] resumed demo",
+        "[session] messages=3",
+    ]
     assert list(handler("/sessions")) == [
-        "[session] * demo active messages=3",
-        "[session]   backlog active messages=1",
+        "[session] resumed demo",
+        "[session] messages=3",
     ]
     assert list(handler("/session list")) == [
-        "[session] * demo active messages=3",
-        "[session]   backlog active messages=1",
+        "[session] resumed demo",
+        "[session] messages=3",
+    ]
+    assert list(handler("/session show")) == [
+        "[status] session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no",
     ]
     assert list(handler("/session-maintenance")) == [
         "[session] dry_run=true",
