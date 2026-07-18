@@ -364,7 +364,7 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
         args=node_scripted_client_args(repo_root),
         env={
             **os.environ,
-            "MYCLI_NODE_TUI_SCRIPT": json.dumps(["/help", "/theme mono", "hello"]),
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(["/help", "/usage", "hello"]),
             "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
         },
         cwd=repo_root,
@@ -376,11 +376,17 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
     assert exit_code == 0
     assert service.messages == ["hello"]
     state = json.loads(dump_path.read_text(encoding="utf-8"))
-    command_items = [item for item in state["transcript"] if item["type"] == "command_output"]
+    command_items = [
+        item
+        for item in state["transcript"]
+        if item["type"] in {"command_output", "command_diagnostic"}
+    ]
     assert len(command_items) == 2
-    assert "Enter send message" in command_items[0]["text"]
-    assert "Approval:" in command_items[0]["text"]
-    assert command_items[1]["text"] == "Theme changed to mono."
+    assert "/usage" in command_items[0]["text"]
+    assert "/status usage" not in command_items[0]["text"]
+    assert command_items[1]["type"] == "command_diagnostic"
+    assert command_items[1]["text"] == "Usage"
+    assert command_items[1]["metadata"]["command"] == "/usage"
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]

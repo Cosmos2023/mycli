@@ -84,6 +84,30 @@ test("native chat runtime submits readline input", async () => {
 	await runtime.stop({ notifyExit: false });
 });
 
+test("native chat runtime delegates every slash command including quit", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const commands: string[] = [];
+	const runtime = new NativeChatRuntime({
+		initialState: stateWithMessages(0),
+		streams: { input, output },
+		columns: () => 100,
+		onCommandSubmit: (command) => {
+			commands.push(command);
+		},
+	});
+
+	runtime.start();
+	input.write("/help\n");
+	input.write("/status usage\n");
+	input.write("/quit\n");
+	await setTimeout(10);
+
+	assert.deepEqual(commands, ["/help", "/status usage", "/quit"]);
+	assert.equal(runtime.isStarted(), true);
+	await runtime.stop({ notifyExit: false });
+});
+
 test("native chat runtime treats Ctrl+C as local interrupt exit", async () => {
 	const input = new PassThrough();
 	const output = new PassThrough();

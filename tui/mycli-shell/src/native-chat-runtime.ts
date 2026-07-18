@@ -145,10 +145,6 @@ export class NativeChatRuntime {
 			this.readline?.prompt();
 			return;
 		}
-		if (text === "/quit" || text === "/exit") {
-			await this.stop();
-			return;
-		}
 		if (text.startsWith("/")) {
 			await this.options.onCommandSubmit?.(text);
 		} else {

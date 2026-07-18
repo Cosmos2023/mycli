@@ -48,15 +48,6 @@ type ScriptedAction =
 	| { type: "turn.queue.clear" }
 	| { type: "turn.submit_interrupt"; message: string };
 
-const LOCAL_HELP_LINES = [
-	"mycli shell commands",
-	"Enter send message",
-	"Approval: choose Allow once or Reject when prompted",
-	"/model select model",
-	"/session resume session",
-	"/settings local visual settings",
-];
-
 let state: RuntimeShellState = initialRuntimeState();
 let sessions: unknown[] = [];
 const eventDeduper = new GatewayEventDeduper();
@@ -143,49 +134,7 @@ async function loadSessions(): Promise<void> {
 }
 
 async function runScriptedCommand(command: string): Promise<void> {
-	if (command === "/help") {
-		state = {
-			...state,
-			transcript: [
-				...state.transcript,
-				{
-					id: `command:${Date.now()}:help`,
-					type: "command_output",
-					text: LOCAL_HELP_LINES.join("\n"),
-					folded: false,
-					metadata: { command },
-				},
-			],
-		};
-		return;
-	}
-	if (command === "/theme mono") {
-		state = {
-			...state,
-			transcript: [
-				...state.transcript,
-				{
-					id: `command:${Date.now()}:theme`,
-					type: "command_output",
-					text: "Theme changed to mono.",
-					folded: false,
-					metadata: { command, theme: "mono" },
-				},
-			],
-		};
-		return;
-	}
-
-	if (command === "/sessions" || command === "/session") {
-		const result = await send("session.list", {});
-		sessions = sessionsFromResult(result);
-		state = runtimeStateWithCommandResult(state, command, {
-			lines: sessions.length > 0 ? sessions.map((session) => String((session as { id?: unknown }).id ?? "")) : ["No sessions found."],
-		});
-		return;
-	}
-
-	const result = await send("command.run", { command });
+	const result = await send("command.run", { command, surface: "cli" });
 	state = runtimeStateWithCommandResult(state, command, result);
 	if (result.exit_requested === true) {
 		await send("shutdown", {});

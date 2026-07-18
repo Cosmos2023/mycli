@@ -3,7 +3,6 @@ export type {
 	MycliShellAuthProvider,
 	MycliShellBackgroundProcess,
 	MycliShellBackgroundTerminals,
-	MycliShellCommand,
 	MycliShellCommandSpec,
 	MycliShellCommandDiagnostic,
 	MycliShellDiagnosticMetric,

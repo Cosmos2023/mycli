@@ -317,13 +317,6 @@ export type MycliShellState = {
 	resources?: MycliShellResource[];
 };
 
-export type MycliShellCommand = {
-	id: string;
-	label: string;
-	description?: string;
-	run: () => void | Promise<void>;
-};
-
 export type MycliShellCommandSpec = {
 	id: string;
 	name: string;

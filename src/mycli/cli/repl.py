@@ -45,17 +45,6 @@ def build_command_handler(
     return handle
 
 
-def canonical_slash_command(command: str) -> str:
-    context = SlashCommandContext(surface=SlashCommandSurface.CLI)
-    try:
-        invocation = resolve_slash_command(command, context)
-    except SlashCommandError:
-        return command.strip()
-    return " ".join(
-        part for part in (invocation.canonical_name, invocation.args) if part
-    )
-
-
 def run_repl(
     turn_handler: Callable[[str], str | Iterable[str]],
     input_func: Callable[[str], str] = input,
