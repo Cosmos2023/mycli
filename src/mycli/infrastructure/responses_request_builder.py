@@ -33,7 +33,6 @@ class ResponsesRequestBuilder:
         input_items: list[dict[str, object]],
         tools: list[dict[str, object]],
         instructions: str | None = None,
-        max_output_tokens: int,
         reasoning_effort: str | None,
         thinking_enabled: bool = True,
         stream: bool,
@@ -47,7 +46,6 @@ class ResponsesRequestBuilder:
         request_signature = self._build_signature(
             model=model,
             tools=tools,
-            max_output_tokens=max_output_tokens,
             reasoning_effort=effective_reasoning_effort,
             stream=stream,
             parallel_tool_calls=parallel_tool_calls,
@@ -56,7 +54,6 @@ class ResponsesRequestBuilder:
             "model": model,
             "input": [dict(item) for item in normalized_input],
             "tools": tools,
-            "max_output_tokens": max_output_tokens,
         }
         if instructions:
             payload_body["instructions"] = instructions
@@ -166,7 +163,6 @@ class ResponsesRequestBuilder:
         *,
         model: str,
         tools: list[dict[str, object]],
-        max_output_tokens: int,
         reasoning_effort: str | None,
         stream: bool,
         parallel_tool_calls: bool,
@@ -175,7 +171,6 @@ class ResponsesRequestBuilder:
         payload: dict[str, object] = {
             "model": model,
             "tools": tools,
-            "max_output_tokens": max_output_tokens,
             "stream": stream,
         }
         if self._capability_profile.supports_parallel_tool_calls:

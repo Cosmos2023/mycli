@@ -33,7 +33,6 @@ class OpenAIResponsesClient:
         api_key: str,
         base_url: str,
         model: str,
-        max_output_tokens: int,
         capability_profile: ResponsesCapabilityProfile | None = None,
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
@@ -42,7 +41,6 @@ class OpenAIResponsesClient:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._max_output_tokens = max_output_tokens
         self._sdk_client = _build_openai_sdk_client(api_key=api_key, base_url=base_url)
         self._thinking_enabled = True
         self._reasoning_effort: str | None = None
@@ -89,9 +87,6 @@ class OpenAIResponsesClient:
     def set_model(self, model: str) -> None:
         self._model = model
         self._logger.set_model(model)
-
-    def set_max_output_tokens(self, value: int) -> None:
-        self._max_output_tokens = value
 
     def set_thinking_config(
         self,
@@ -241,7 +236,6 @@ class OpenAIResponsesClient:
                 input_items=input_items,
                 tools=normalized_tools,
                 instructions=instructions,
-                max_output_tokens=self._max_output_tokens,
                 reasoning_effort=self._reasoning_effort,
                 thinking_enabled=self._thinking_enabled,
                 stream=False,
@@ -450,7 +444,6 @@ class OpenAIResponsesClient:
                 input_items=input_items,
                 tools=normalized_tools,
                 instructions=instructions,
-                max_output_tokens=self._max_output_tokens,
                 reasoning_effort=self._reasoning_effort,
                 thinking_enabled=self._thinking_enabled,
                 stream=True,

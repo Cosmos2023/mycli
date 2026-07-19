@@ -4,13 +4,32 @@ from mycli.infrastructure.responses_request_builder import ResponsesRequestBuild
 from mycli.schemas.responses_protocol import ResponsesCapabilityProfile, ResponsesContinuationState
 
 
+def test_responses_request_builder_omits_model_output_limit() -> None:
+    builder = ResponsesRequestBuilder(
+        capability_profile=ResponsesCapabilityProfile()
+    )
+
+    result = builder.build(
+        model="gpt-test",
+        input_items=[{"role": "user", "content": "inspect"}],
+        tools=[],
+        reasoning_effort=None,
+        stream=True,
+    )
+
+    assert "max_output_tokens" not in result.payload_body
+    assert result.request_signature == (
+        '{"model":"gpt-test","stream":true,"tools":[]}'
+    )
+
+
 def test_responses_request_builder_uses_previous_response_id_when_input_is_strict_extension() -> None:
     builder = ResponsesRequestBuilder(
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True)
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "user",
@@ -44,7 +63,6 @@ def test_responses_request_builder_uses_previous_response_id_when_input_is_stric
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -76,7 +94,6 @@ def test_responses_request_builder_adds_prompt_cache_key_to_request_body() -> No
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         prompt_cache_key="mycli:openai:responses:stable",
@@ -101,7 +118,6 @@ def test_responses_request_builder_adds_instructions_to_request_body() -> None:
         ],
         tools=[],
         instructions="You are mycli.",
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
     )
@@ -124,7 +140,6 @@ def test_responses_request_builder_adds_parallel_tool_calls_when_supported() -> 
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         parallel_tool_calls=True,
@@ -146,7 +161,6 @@ def test_responses_request_builder_omits_parallel_tool_calls_when_unsupported() 
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         parallel_tool_calls=True,
@@ -162,7 +176,7 @@ def test_responses_request_builder_falls_back_to_full_create_when_signature_chan
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(),
         response_output=(),
         eligible=True,
@@ -179,7 +193,6 @@ def test_responses_request_builder_falls_back_to_full_create_when_signature_chan
                 "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
             }
         ],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -199,7 +212,7 @@ def test_responses_request_builder_uses_previous_response_id_for_tool_results_ev
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "user",
@@ -225,7 +238,6 @@ def test_responses_request_builder_uses_previous_response_id_for_tool_results_ev
                 "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
             }
         ],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -262,7 +274,6 @@ def test_responses_request_builder_normalizes_dashscope_compatibility_fields() -
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort=None,
         stream=True,
     )
@@ -294,7 +305,6 @@ def test_responses_request_builder_normalizes_assistant_content_by_default() -> 
             }
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort=None,
         stream=True,
     )
@@ -315,7 +325,7 @@ def test_responses_request_builder_uses_previous_response_id_for_dashscope_profi
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "user",
@@ -349,7 +359,6 @@ def test_responses_request_builder_uses_previous_response_id_for_dashscope_profi
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -372,7 +381,7 @@ def test_responses_request_builder_reports_prefix_mismatch_when_input_is_not_str
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "user",
@@ -405,7 +414,6 @@ def test_responses_request_builder_reports_prefix_mismatch_when_input_is_not_str
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -421,7 +429,7 @@ def test_responses_request_builder_sets_store_when_using_previous_response_id() 
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {"role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
         ),
@@ -439,7 +447,6 @@ def test_responses_request_builder_sets_store_when_using_previous_response_id() 
             {"type": "function_call_output", "call_id": "call_1", "output": "README.md"},
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -454,7 +461,7 @@ def test_responses_request_builder_ignores_reasoning_effort_drift_for_continuati
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "user",
@@ -488,7 +495,6 @@ def test_responses_request_builder_ignores_reasoning_effort_drift_for_continuati
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="high",
         stream=True,
         continuation_state=state,
@@ -511,7 +517,7 @@ def test_responses_request_builder_uses_response_output_tail_when_seed_context_d
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "system",
@@ -557,7 +563,6 @@ def test_responses_request_builder_uses_response_output_tail_when_seed_context_d
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,
@@ -582,7 +587,7 @@ def test_responses_request_builder_normalizes_state_response_output_for_cross_tu
     )
     state = ResponsesContinuationState(
         response_id="resp_prev_1",
-        request_signature='{"max_output_tokens":128,"model":"gpt-test","stream":true,"tools":[]}',
+        request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
         request_input=(
             {
                 "role": "system",
@@ -618,7 +623,6 @@ def test_responses_request_builder_normalizes_state_response_output_for_cross_tu
             },
         ],
         tools=[],
-        max_output_tokens=128,
         reasoning_effort="medium",
         stream=True,
         continuation_state=state,

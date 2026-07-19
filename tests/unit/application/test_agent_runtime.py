@@ -3459,7 +3459,6 @@ def test_agent_runtime_passes_session_and_turn_context_to_model_logging(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=log_service,
     )
     runtime = AgentRuntime(

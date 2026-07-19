@@ -101,11 +101,6 @@ class ResponsesModelAdapter:
     def supports_tool_choice(self) -> bool:
         return callable(getattr(self._client, "set_tool_choice", None))
 
-    def set_max_output_tokens(self, value: int) -> None:
-        setter = getattr(self._client, "set_max_output_tokens", None)
-        if callable(setter):
-            setter(value)
-
     def set_model(self, model: str) -> None:
         setter = getattr(self._client, "set_model", None)
         if callable(setter):

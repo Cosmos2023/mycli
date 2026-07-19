@@ -89,7 +89,6 @@ def build_turn_service(
             api_key=config.api_key,
             base_url=config.api_base_url,
             model=config.model,
-            max_output_tokens=config.max_output_tokens,
             log_service=workspace_log_service,
             provider_adapter=provider_adapter,
         )
@@ -105,7 +104,6 @@ def build_turn_service(
             api_key=config.api_key,
             base_url=config.api_base_url,
             model=config.model,
-            max_output_tokens=config.max_output_tokens,
             capability_profile=ResponsesCapabilityProfile.for_provider(
                 provider=config.provider,
                 base_url=config.api_base_url,

@@ -167,7 +167,6 @@ def test_openai_responses_client_posts_request_and_preserves_id_and_output(monke
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(
             requires_assistant_output_text=True,
         ),
@@ -212,7 +211,6 @@ def test_openai_responses_client_posts_request_and_preserves_id_and_output(monke
                 },
             }
         ],
-        "max_output_tokens": 2048,
     }]
     assert payload["id"] == "resp_123"
     assert payload["output"] == [
@@ -237,7 +235,6 @@ def test_openai_responses_client_sends_instructions_as_top_level_payload(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     client.create_response(
@@ -282,7 +279,6 @@ def test_openai_responses_client_maps_output_payload_to_model_events(monkeypatch
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -315,7 +311,6 @@ def test_openai_responses_client_uses_openai_sdk_transport(monkeypatch) -> None:
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -329,7 +324,6 @@ def test_openai_responses_client_uses_openai_sdk_transport(monkeypatch) -> None:
             "model": "gpt-test",
             "input": [{"role": "user", "content": "inspect the repo"}],
             "tools": [],
-            "max_output_tokens": 2048,
         }
     ]
     assert payload["id"] == "resp_sdk_1"
@@ -348,7 +342,6 @@ def test_openai_responses_client_normalizes_assistant_input_text_to_output_text(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(
             requires_assistant_output_text=True,
         ),
@@ -385,7 +378,6 @@ def test_openai_responses_client_normalizes_empty_function_call_output(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(
             disallows_empty_function_call_output=True,
         ),
@@ -431,13 +423,12 @@ def test_openai_responses_client_uses_previous_response_id_when_continuation_mat
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
             response_id="resp_123",
-            request_signature='{"max_output_tokens":2048,"model":"gpt-test","stream":true,"tools":[]}',
+            request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
             request_input=(
                 {
                     "role": "user",
@@ -496,7 +487,6 @@ def test_openai_responses_client_includes_reasoning_effort_when_configured(monke
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_reasoning_effort("high")
@@ -522,7 +512,6 @@ def test_openai_responses_client_enables_parallel_tool_calls_when_supported(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_parallel_tool_calls=True),
     )
 
@@ -547,7 +536,6 @@ def test_openai_responses_client_omits_parallel_tool_calls_when_unsupported(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_parallel_tool_calls=False),
     )
 
@@ -572,7 +560,6 @@ def test_openai_responses_client_omits_reasoning_payload_when_thinking_disabled(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_thinking_config(enabled=False, effort=None)
@@ -596,7 +583,6 @@ def test_openai_responses_client_serializes_update_plan_array_item_schema(monkey
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -669,7 +655,6 @@ def test_openai_responses_client_serializes_run_shell_string_array_schema(monkey
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -710,7 +695,6 @@ def test_openai_responses_client_logs_request_and_response_payloads(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_1"),
     )
@@ -755,7 +739,6 @@ def test_openai_responses_client_maps_unsupported_provider_error(monkeypatch) ->
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -781,7 +764,6 @@ def test_openai_responses_client_maps_invalid_json_response_to_model_response_er
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -805,7 +787,6 @@ def test_openai_responses_client_logs_transport_errors(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_2"),
     )
@@ -840,7 +821,6 @@ def test_openai_responses_client_logs_invalid_json_errors(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_3"),
     )
@@ -900,7 +880,6 @@ def test_openai_responses_client_streams_provider_events(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_stream_1"),
     )
@@ -951,7 +930,6 @@ def test_openai_responses_client_closes_stream_when_interrupt_token_is_requested
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     events = list(
@@ -985,7 +963,6 @@ def test_openai_responses_client_closes_sdk_client_when_interrupted_before_strea
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
     first_client = sdk_clients[0]
     result_holder: dict[str, object] = {}
@@ -1031,7 +1008,6 @@ def test_openai_responses_client_logs_stream_parse_errors(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_stream_error_1"),
     )
@@ -1065,7 +1041,6 @@ def test_openai_responses_client_surfaces_provider_name_in_http_error(monkeypatc
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -1088,7 +1063,6 @@ def test_openai_responses_client_maps_transport_error_to_model_response_error(mo
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -1123,7 +1097,6 @@ def test_openai_responses_client_retries_stream_transport_failures(monkeypatch) 
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(stream_max_retries=1),
     )
 
@@ -1150,7 +1123,6 @@ def test_openai_responses_client_marks_retry_exhausted_when_stream_retry_budget_
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(
             stream_max_retries=1,
             supports_stream_fallback_to_create=False,
@@ -1206,7 +1178,6 @@ def test_openai_responses_client_falls_back_to_create_after_stream_retry_exhaust
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(stream_max_retries=0),
     )
 
@@ -1252,13 +1223,12 @@ def test_openai_responses_client_stream_retries_without_previous_response_id_whe
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
             response_id="resp_prev_1",
-            request_signature='{"max_output_tokens":2048,"model":"gpt-test","stream":true,"tools":[]}',
+            request_signature='{"model":"gpt-test","stream":true,"tools":[]}',
             request_input=(
                 {
                     "role": "user",
@@ -1335,7 +1305,6 @@ def test_openai_responses_client_maps_context_window_failures_to_structured_stop
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
 
@@ -1373,13 +1342,12 @@ def test_openai_responses_client_retries_without_previous_response_id_when_provi
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
             response_id="resp_prev_1",
-            request_signature='{"max_output_tokens":2048,"model":"gpt-test","stream":false,"tools":[]}',
+            request_signature='{"model":"gpt-test","stream":false,"tools":[]}',
             request_input=(
                 {
                     "role": "user",
@@ -1440,13 +1408,12 @@ def test_openai_responses_client_retries_without_previous_response_id_when_provi
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         capability_profile=ResponsesCapabilityProfile(supports_previous_response_id=True),
     )
     client.set_continuation_state(
         ResponsesContinuationState(
             response_id="resp_prev_1",
-            request_signature='{"max_output_tokens":2048,"model":"gpt-test","stream":false,"tools":[]}',
+            request_signature='{"model":"gpt-test","stream":false,"tools":[]}',
             request_input=(
                 {
                     "role": "user",
@@ -1507,12 +1474,11 @@ def test_openai_responses_client_preserves_previous_continuation_state_when_tool
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
     client.set_continuation_state(
         ResponsesContinuationState(
             response_id="resp_prev_1",
-            request_signature='{"max_output_tokens":2048,"model":"gpt-test","stream":false,"tools":[]}',
+            request_signature='{"model":"gpt-test","stream":false,"tools":[]}',
             request_input=(
                 {"role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
             ),
@@ -1540,7 +1506,6 @@ def test_openai_responses_client_marks_pending_continuation_ineligible_when_fail
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
     client._pending_request_signature = "pending_sig"
     client._pending_request_input = (
