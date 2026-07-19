@@ -552,7 +552,6 @@ def handle_evaluation_command(
     eval_env["MYCLI_MODEL"] = root_config.model
     eval_env["MYCLI_PROTOCOL"] = str(root_config.protocol)
     eval_env["MYCLI_MAX_PROMPT_TOKENS"] = str(root_config.max_prompt_tokens)
-    eval_env["MYCLI_MAX_OUTPUT_TOKENS"] = str(root_config.max_output_tokens)
     eval_env["MYCLI_COMPRESSION_THRESHOLD_TOKENS"] = str(root_config.compression_threshold_tokens)
     eval_env["MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS"] = str(
         getattr(root_config, "memory_extraction_interval_turns", 5)

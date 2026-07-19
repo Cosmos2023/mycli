@@ -125,7 +125,7 @@ class ThinkingAwareSummarizingAdapter(ModelAdapter):
     def __init__(self) -> None:
         self.current_thinking: tuple[bool, object] | None = None
         self.current_model = "deepseek-v4-flash"
-        self.current_max_output_tokens = 2048
+        self.current_max_output_tokens = 8192
         self.summarizer_requests: list[
             tuple[tuple[bool, object] | None, int, str, int]
         ] = []
@@ -139,6 +139,9 @@ class ThinkingAwareSummarizingAdapter(ModelAdapter):
 
     def set_max_output_tokens(self, value: int) -> None:
         self.current_max_output_tokens = value
+
+    def reset_max_output_tokens(self) -> None:
+        self.current_max_output_tokens = 8192
 
     def next_action(
         self,
@@ -634,4 +637,4 @@ def test_agent_runtime_l4_summarizer_disables_thinking_and_tools(
     assert main_thinking[0] is True
     assert main_tool_count > 0
     assert main_model == "deepseek-v4-flash"
-    assert main_max_output_tokens == 2048
+    assert main_max_output_tokens == 8192

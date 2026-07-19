@@ -476,13 +476,6 @@ def resolve_config(
         or legacy_user_config.get("max_prompt_tokens")
         or 12000
     )
-    max_output_tokens_value = (
-        env.get("MYCLI_MAX_OUTPUT_TOKENS")
-        or user_config.get("max_output_tokens")
-        or project_config.get("max_output_tokens")
-        or legacy_user_config.get("max_output_tokens")
-        or 2048
-    )
     fallback_model_value = (
         env.get("MYCLI_FALLBACK_MODEL")
         or user_config.get("fallback_model")
@@ -495,20 +488,6 @@ def resolve_config(
         or project_config.get("transport_retry_limit")
         or legacy_user_config.get("transport_retry_limit")
         or 2
-    )
-    output_limit_escalation_max_tokens_value = (
-        env.get("MYCLI_OUTPUT_LIMIT_ESCALATION_MAX_TOKENS")
-        or user_config.get("output_limit_escalation_max_tokens")
-        or project_config.get("output_limit_escalation_max_tokens")
-        or legacy_user_config.get("output_limit_escalation_max_tokens")
-        or 65_536
-    )
-    output_recovery_retry_limit_value = (
-        env.get("MYCLI_OUTPUT_RECOVERY_RETRY_LIMIT")
-        or user_config.get("output_recovery_retry_limit")
-        or project_config.get("output_recovery_retry_limit")
-        or legacy_user_config.get("output_recovery_retry_limit")
-        or 3
     )
     heartbeat_enabled_raw: object | None = env.get("MYCLI_HEARTBEAT_ENABLED")
     if heartbeat_enabled_raw is None:
@@ -817,13 +796,8 @@ def resolve_config(
         session_id=session_id,
         cache_policy_capability=cache_policy_capability,
         max_prompt_tokens=int(str(max_prompt_tokens_value)),
-        max_output_tokens=int(str(max_output_tokens_value)),
         fallback_model=str(fallback_model_value) if fallback_model_value else None,
         transport_retry_limit=int(str(transport_retry_limit_value)),
-        output_limit_escalation_max_tokens=int(
-            str(output_limit_escalation_max_tokens_value)
-        ),
-        output_recovery_retry_limit=int(str(output_recovery_retry_limit_value)),
         heartbeat_enabled=True if heartbeat_enabled_value is None else heartbeat_enabled_value,
         heartbeat_interval_seconds=float(str(heartbeat_interval_seconds_value)),
         view_mode=_parse_view_mode(view_mode_value),

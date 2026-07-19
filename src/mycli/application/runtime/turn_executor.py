@@ -14,7 +14,6 @@ from mycli.application.runtime.recovery import (
     RetryBackoffPolicy,
     fallback_metadata,
     is_transient_recovery_failure,
-    output_limit_metadata,
     recovery_diagnostic_metadata,
     retry_metadata,
 )
@@ -741,7 +740,6 @@ class TurnExecutor:
         loop_state = LoopState()
         carryover_runtime_reminders: tuple[str, ...] = tuple(initial_runtime_reminders)
         fallback_model_active = False
-        output_tokens_escalated = False
 
         while True:
             _raise_if_interrupted(interrupt_token)
@@ -1113,9 +1111,6 @@ class TurnExecutor:
                         interrupt_token=interrupt_token,
                     )
                 finally:
-                    if output_tokens_escalated:
-                        runtime._restore_model_max_output_tokens()
-                        output_tokens_escalated = False
                     if fallback_model_active:
                         runtime._restore_model()
                         fallback_model_active = False
@@ -1186,12 +1181,6 @@ class TurnExecutor:
                 if recovery_action.should_retry:
                     loop_state = recovery_action.next_state
                     carryover_runtime_reminders = recovery_action.runtime_reminders
-                    if recovery_action.escalated_max_output_tokens is not None:
-                        _set_max_output_tokens(
-                            runtime._model_adapter,
-                            recovery_action.escalated_max_output_tokens,
-                        )
-                        output_tokens_escalated = True
                     if recovery_action.fallback_model is not None:
                         runtime._set_model(recovery_action.fallback_model)
                         fallback_model_active = True
@@ -1257,7 +1246,6 @@ class TurnExecutor:
                             loop_state = LoopState(
                                 context_window_retries=loop_state.context_window_retries,
                                 transport_retries=loop_state.transport_retries,
-                                output_token_retries=loop_state.output_token_retries,
                                 context_recovery_stage="reactive_compact",
                                 reactive_compact_attempted=True,
                                 fallback_model_attempted=loop_state.fallback_model_attempted,
@@ -1635,7 +1623,6 @@ class TurnExecutor:
                 next_state=LoopState(
                     context_window_retries=loop_state.context_window_retries,
                     transport_retries=loop_state.transport_retries,
-                    output_token_retries=loop_state.output_token_retries,
                     context_recovery_stage=loop_state.context_recovery_stage,
                     reactive_compact_attempted=loop_state.reactive_compact_attempted,
                     fallback_model_attempted=loop_state.fallback_model_attempted,
@@ -1664,7 +1651,6 @@ class TurnExecutor:
                     next_state=LoopState(
                         context_window_retries=1,
                         transport_retries=loop_state.transport_retries,
-                        output_token_retries=loop_state.output_token_retries,
                         context_recovery_stage="collapse_drain",
                         reactive_compact_attempted=loop_state.reactive_compact_attempted,
                         fallback_model_attempted=loop_state.fallback_model_attempted,
@@ -1699,7 +1685,6 @@ class TurnExecutor:
                     next_state=LoopState(
                         context_window_retries=2,
                         transport_retries=loop_state.transport_retries,
-                        output_token_retries=loop_state.output_token_retries,
                         context_recovery_stage="reactive_compact",
                         reactive_compact_attempted=False,
                         fallback_model_attempted=loop_state.fallback_model_attempted,
@@ -1730,63 +1715,6 @@ class TurnExecutor:
                     },
                 )
 
-        if failure_kind in {"output_token_limit", "max_output_tokens", "output_tokens_exceeded"}:
-            max_attempts = max(0, self._runtime._config.output_recovery_retry_limit)
-            if loop_state.output_token_retries >= max_attempts:
-                return TurnRecoveryAction(next_state=loop_state)
-            if loop_state.output_token_retries == 0:
-                warning_text = (
-                    "Model output hit the token limit. Retrying with an escalated output budget."
-                )
-                return TurnRecoveryAction(
-                    should_retry=True,
-                    warning_text=warning_text,
-                    runtime_reminders=runtime_reminders,
-                    next_state=LoopState(
-                        context_window_retries=loop_state.context_window_retries,
-                        transport_retries=loop_state.transport_retries,
-                        output_token_retries=1,
-                        context_recovery_stage=loop_state.context_recovery_stage,
-                        reactive_compact_attempted=loop_state.reactive_compact_attempted,
-                        fallback_model_attempted=loop_state.fallback_model_attempted,
-                        encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
-                    ),
-                    escalated_max_output_tokens=(
-                        self._runtime._config.output_limit_escalation_max_tokens
-                    ),
-                    metadata=output_limit_metadata(
-                        attempt=1,
-                        max_attempts=max_attempts,
-                        failure_kind=failure_kind,
-                        original_max_output_tokens=self._runtime._config.max_output_tokens,
-                        escalated_max_output_tokens=(
-                            self._runtime._config.output_limit_escalation_max_tokens
-                        ),
-                    ),
-                )
-            warning_text = (
-                f"Model output hit the token limit again. Retrying recovery message ({loop_state.output_token_retries + 1}/{max_attempts})."
-            )
-            return TurnRecoveryAction(
-                should_retry=True,
-                warning_text=warning_text,
-                runtime_reminders=runtime_reminders,
-                next_state=LoopState(
-                    context_window_retries=loop_state.context_window_retries,
-                    transport_retries=loop_state.transport_retries,
-                    output_token_retries=loop_state.output_token_retries + 1,
-                    context_recovery_stage=loop_state.context_recovery_stage,
-                    reactive_compact_attempted=loop_state.reactive_compact_attempted,
-                    fallback_model_attempted=loop_state.fallback_model_attempted,
-                    encrypted_reasoning_retries=loop_state.encrypted_reasoning_retries,
-                ),
-                metadata=output_limit_metadata(
-                    attempt=loop_state.output_token_retries + 1,
-                    max_attempts=max_attempts,
-                    failure_kind=failure_kind,
-                ),
-            )
-
         if is_transient_recovery_failure(
             failure_kind=failure_kind,
             is_retryable=exc.is_retryable or stop_reason is StopReason.TRANSPORT_FAILED,
@@ -1806,7 +1734,6 @@ class TurnExecutor:
                         next_state=LoopState(
                             context_window_retries=loop_state.context_window_retries,
                             transport_retries=loop_state.transport_retries,
-                            output_token_retries=loop_state.output_token_retries,
                             context_recovery_stage=loop_state.context_recovery_stage,
                             reactive_compact_attempted=loop_state.reactive_compact_attempted,
                             fallback_model_attempted=True,
@@ -1840,7 +1767,6 @@ class TurnExecutor:
                 next_state=LoopState(
                     context_window_retries=loop_state.context_window_retries,
                     transport_retries=loop_state.transport_retries + 1,
-                    output_token_retries=loop_state.output_token_retries,
                     context_recovery_stage=loop_state.context_recovery_stage,
                     reactive_compact_attempted=loop_state.reactive_compact_attempted,
                     fallback_model_attempted=loop_state.fallback_model_attempted,
@@ -2028,7 +1954,6 @@ class TurnExecutor:
 class LoopState:
     context_window_retries: int = 0
     transport_retries: int = 0
-    output_token_retries: int = 0
     context_recovery_stage: str | None = None
     reactive_compact_attempted: bool = False
     fallback_model_attempted: bool = False
@@ -2042,7 +1967,6 @@ class TurnRecoveryAction:
     runtime_reminders: tuple[str, ...] = ()
     next_state: LoopState = LoopState()
     invoke_pre_compact_hook: bool = False
-    escalated_max_output_tokens: int | None = None
     fallback_model: str | None = None
     delay_seconds: float = 0.0
     metadata: dict[str, object] = field(default_factory=dict)
@@ -2447,12 +2371,6 @@ class BudgetNudge:
                 reminders.append(warning)
 
         return tuple(reminders)
-
-
-def _set_max_output_tokens(model_adapter: object, value: int) -> None:
-    setter = getattr(model_adapter, "set_max_output_tokens", None)
-    if callable(setter):
-        setter(value)
 
 
 def _hook_additional_contexts(results: tuple[HookResult, ...]) -> tuple[str, ...]:

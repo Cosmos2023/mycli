@@ -197,12 +197,9 @@ class AgentConfig:
     supports_images: bool = True
     session_id: str = "default"
     max_prompt_tokens: int = 12000
-    max_output_tokens: int = 2048
     fallback_model: str | None = None
     cache_policy_capability: ProviderCachePolicyCapability | None = None
     transport_retry_limit: int = 2
-    output_limit_escalation_max_tokens: int = 65_536
-    output_recovery_retry_limit: int = 3
     heartbeat_enabled: bool = True
     heartbeat_interval_seconds: float = 30.0
     view_mode: ViewMode = ViewMode.DEFAULT

@@ -718,7 +718,9 @@ class AgentRuntime:
             setter(max_output_tokens)
 
     def _restore_model_max_output_tokens(self) -> None:
-        self._set_model_max_output_tokens(self._config.max_output_tokens)
+        resetter = getattr(self._model_adapter, "reset_max_output_tokens", None)
+        if callable(resetter):
+            resetter()
 
     def _disable_model_thinking(self) -> None:
         setter = getattr(self._model_adapter, "set_thinking_config", None)

@@ -221,27 +221,6 @@ def fallback_metadata(
     }
 
 
-def output_limit_metadata(
-    *,
-    attempt: int,
-    max_attempts: int,
-    failure_kind: str,
-    original_max_output_tokens: int | None = None,
-    escalated_max_output_tokens: int | None = None,
-) -> dict[str, object]:
-    metadata: dict[str, object] = {
-        "recovery_kind": "output_token_recovery",
-        "attempt": attempt,
-        "max_attempts": max_attempts,
-        "failure_kind": failure_kind,
-    }
-    if original_max_output_tokens is not None:
-        metadata["original_max_output_tokens"] = original_max_output_tokens
-    if escalated_max_output_tokens is not None:
-        metadata["escalated_max_output_tokens"] = escalated_max_output_tokens
-    return metadata
-
-
 def recovery_diagnostic_metadata(
     *,
     classification: ErrorClassification,

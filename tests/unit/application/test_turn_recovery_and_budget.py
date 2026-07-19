@@ -78,32 +78,17 @@ class ContextWindowDrainCompactThenDoneAdapter:
         )
 
 
-class OutputTokenEscalateThenDoneAdapter:
+class AlwaysOutputTokenLimitAdapter:
     def __init__(self) -> None:
         self.calls = 0
-        self.output_token_budgets: list[int] = []
-        self.seen_items: list[list[RuntimeItem]] = []
-
-    def set_max_output_tokens(self, value: int) -> None:
-        self.output_token_budgets.append(value)
 
     def next_turn(self, *, items, tools):
-        del tools
+        del items, tools
         self.calls += 1
-        self.seen_items.append(items)
-        if self.calls == 1:
-            raise ModelResponseError(
-                "output token limit",
-                failure_kind="output_token_limit",
-            )
-        return ModelTurnResult(
-            items=(
-                RuntimeItem(
-                    role="assistant",
-                    blocks=(RuntimeBlock(type="text", text="Recovered with more output budget"),),
-                ),
-            ),
-            done=True,
+        raise ModelResponseError(
+            "output token limit",
+            stop_reason=StopReason.MODEL_ERROR,
+            failure_kind="output_token_limit",
         )
 
 
@@ -552,35 +537,22 @@ def test_turn_executor_retries_context_window_drain_and_compact_before_final_fai
     )
 
 
-def test_turn_executor_output_token_limit_escalates_and_recovers(
+def test_turn_executor_output_token_limit_fails_without_budget_retry(
     tmp_path: Path,
 ) -> None:
-    adapter = OutputTokenEscalateThenDoneAdapter()
+    adapter = AlwaysOutputTokenLimitAdapter()
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
         model_adapter=adapter,
     )
-    runtime._config = AgentConfig(
-        workspace_root=tmp_path,
-        max_output_tokens=2048,
-        output_limit_escalation_max_tokens=32_768,
-        output_recovery_retry_limit=2,
-    )
 
     response = runtime.handle_user_turn("write a long answer")
 
-    assert response.assistant_message == "Recovered with more output budget"
-    assert adapter.output_token_budgets == [32_768, 2048]
-    assert len(adapter.seen_items) == 2
-    assert "output budget" not in _runtime_reminder_text(adapter.seen_items[1]).lower()
     assert response.turn is not None
-    assert any(
-        item.type is TurnItemType.WARNING
-        and item.metadata.get("recovery_kind") == "output_token_recovery"
-        and item.metadata.get("escalated_max_output_tokens") == 32_768
-        for item in response.turn.items
-    )
+    assert response.turn.status is TurnStatus.FAILED
+    assert response.turn.stop_reason is StopReason.MODEL_ERROR
+    assert adapter.calls == 1
 
 
 def test_turn_executor_emits_heartbeat_without_model_visible_context(tmp_path: Path) -> None:

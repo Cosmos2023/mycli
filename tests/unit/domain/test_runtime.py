@@ -52,8 +52,6 @@ def test_agent_config_exposes_recovery_defaults(tmp_path: Path) -> None:
 
     assert config.fallback_model is None
     assert config.transport_retry_limit == 2
-    assert config.output_limit_escalation_max_tokens == 65_536
-    assert config.output_recovery_retry_limit == 3
     assert config.heartbeat_enabled is True
     assert config.heartbeat_interval_seconds == 30.0
 

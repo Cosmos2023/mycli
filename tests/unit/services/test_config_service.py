@@ -83,7 +83,6 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
             "MYCLI_MODEL": "env-model",
             "MYCLI_BASE_URL": "https://example.invalid/v1",
             "MYCLI_API_KEY": "test-token",
-            "MYCLI_MAX_OUTPUT_TOKENS": "1500",
         },
         cwd=workspace,
         home=home_dir,
@@ -95,7 +94,6 @@ def test_resolve_config_prefers_cli_over_env_and_files(tmp_path: Path) -> None:
     assert config.api_key == "test-token"
     assert config.max_prompt_tokens == 6000
     assert config.compression_threshold_tokens == 3200
-    assert config.max_output_tokens == 1500
 
 
 def test_resolve_config_prefers_home_mycli_config_over_workspace_config(
@@ -706,7 +704,7 @@ def test_resolve_config_env_cache_policy_overrides_project_file(
     )
 
 
-def test_config_service_reads_recovery_settings(tmp_path: Path) -> None:
+def test_config_service_ignores_legacy_model_output_limit_settings(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
@@ -731,15 +729,16 @@ def test_config_service_reads_recovery_settings(tmp_path: Path) -> None:
 
     config = resolve_config(
         cli_args={"session": "demo"},
-        env={},
+        env={"MYCLI_MAX_OUTPUT_TOKENS": "1024"},
         cwd=workspace,
         home=home_dir,
     )
 
     assert config.fallback_model == "fallback-model"
     assert config.transport_retry_limit == 4
-    assert config.output_limit_escalation_max_tokens == 32_768
-    assert config.output_recovery_retry_limit == 2
+    assert not hasattr(config, "max_output_tokens")
+    assert not hasattr(config, "output_limit_escalation_max_tokens")
+    assert not hasattr(config, "output_recovery_retry_limit")
     assert config.heartbeat_enabled is False
     assert config.heartbeat_interval_seconds == 12.5
 

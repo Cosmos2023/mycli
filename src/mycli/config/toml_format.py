@@ -19,14 +19,8 @@ CONFIG_SECTIONS: tuple[ConfigSection, ...] = (
         "request",
         (
             ("max_prompt_tokens", "max_prompt_tokens"),
-            ("max_output_tokens", "max_output_tokens"),
             ("fallback_model", "fallback_model"),
             ("transport_retry_limit", "transport_retry_limit"),
-            (
-                "output_limit_escalation_max_tokens",
-                "output_limit_escalation_max_tokens",
-            ),
-            ("output_recovery_retry_limit", "output_recovery_retry_limit"),
             ("cache_control_enabled", "cache_control_enabled"),
             ("prompt_cache_key_enabled", "prompt_cache_key_enabled"),
         ),

@@ -176,7 +176,6 @@ def test_handle_evaluation_command_reuses_root_config_for_eval_workspace(
                 "model": "demo-model",
                 "protocol": ProtocolId.CHAT_COMPLETIONS,
                 "max_prompt_tokens": 5000,
-                "max_output_tokens": 1500,
                 "compression_threshold_tokens": 3200,
                 "recent_message_count": 6,
             },
