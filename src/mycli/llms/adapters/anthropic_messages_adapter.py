@@ -63,6 +63,11 @@ class AnthropicMessagesModelAdapter:
         if callable(setter):
             setter(value)
 
+    def reset_max_output_tokens(self) -> None:
+        resetter = getattr(self._client, "reset_max_output_tokens", None)
+        if callable(resetter):
+            resetter()
+
     def set_model(self, model: str) -> None:
         setter = getattr(self._client, "set_model", None)
         if callable(setter):

@@ -104,6 +104,39 @@ class FakeAnthropicStreamingSdkClient:
         self.closed = True
 
 
+class TruncatedMessagesStreamResource(FakeMessagesResource):
+    def __init__(self) -> None:
+        super().__init__({"id": "unused", "content": []})
+
+    def stream(self, **kwargs: object):
+        self.kwargs = dict(kwargs)
+        return iter(
+            [
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "partial"},
+                },
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "max_tokens"},
+                },
+                {
+                    "type": "message_stop",
+                    "message": {"id": "msg_truncated"},
+                },
+            ]
+        )
+
+
+class TruncatedAnthropicStreamingSdkClient:
+    def __init__(self) -> None:
+        self.messages = TruncatedMessagesStreamResource()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class BlockingMessagesStreamResource(FakeMessagesResource):
     def __init__(self) -> None:
         super().__init__({"id": "unused", "content": []})
@@ -183,6 +216,77 @@ def test_anthropic_client_builds_messages_request_with_thinking(
     }
     assert list((tmp_path / "log" / "model-raw").glob("*/*-request.json"))
     assert list((tmp_path / "log" / "model-raw").glob("*/*-response.json"))
+
+
+def test_anthropic_client_uses_internal_default_max_tokens() -> None:
+    sdk_client = FakeAnthropicSdkClient(
+        {
+            "id": "msg_default",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+        }
+    )
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        sdk_client=sdk_client,
+    )
+
+    client.create_message(
+        system=None,
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=[],
+    )
+
+    assert sdk_client.messages.kwargs["max_tokens"] == 8192
+
+
+def test_anthropic_client_rejects_non_streaming_max_tokens_stop_reason() -> None:
+    sdk_client = FakeAnthropicSdkClient(
+        {
+            "id": "msg_truncated",
+            "content": [{"type": "text", "text": "partial"}],
+            "stop_reason": "max_tokens",
+        }
+    )
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        max_output_tokens=8192,
+        sdk_client=sdk_client,
+    )
+
+    with pytest.raises(ModelResponseError) as exc_info:
+        client.create_message(
+            system=None,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+        )
+
+    assert exc_info.value.failure_kind == "output_token_limit"
+
+
+def test_anthropic_stream_rejects_max_tokens_stop_reason() -> None:
+    client = AnthropicMessagesClient(
+        api_key="test-key",
+        base_url="https://api.anthropic.com",
+        model="claude-sonnet-4-6",
+        max_output_tokens=8192,
+        sdk_client=TruncatedAnthropicStreamingSdkClient(),
+    )
+
+    with pytest.raises(ModelResponseError) as exc_info:
+        list(
+            client.stream_message(
+                system=None,
+                messages=[{"role": "user", "content": "Hi"}],
+                tools=[],
+            )
+        )
+
+    assert exc_info.value.failure_kind == "output_token_limit"
 
 
 def test_anthropic_client_stream_message_normalizes_events(tmp_path: Path) -> None:

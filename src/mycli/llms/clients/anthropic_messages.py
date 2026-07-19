@@ -21,6 +21,7 @@ from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
 from mycli.utils.workspace_logger import WorkspaceLogService
 
 DEFAULT_ANTHROPIC_SDK_TIMEOUT_SECONDS = 60.0
+DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
 
 _THINKING_BUDGETS: dict[str, int] = {
     "low": 1024,
@@ -89,7 +90,7 @@ class AnthropicMessagesClient:
         api_key: str,
         base_url: str,
         model: str,
-        max_output_tokens: int,
+        max_output_tokens: int = DEFAULT_ANTHROPIC_MAX_TOKENS,
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
         sdk_client: object | None = None,
@@ -125,6 +126,9 @@ class AnthropicMessagesClient:
 
     def set_max_output_tokens(self, value: int) -> None:
         self._max_output_tokens = value
+
+    def reset_max_output_tokens(self) -> None:
+        self._max_output_tokens = DEFAULT_ANTHROPIC_MAX_TOKENS
 
     def create_message(
         self,
@@ -186,6 +190,7 @@ class AnthropicMessagesClient:
             request_path=request_path,
             response_path=self._log_response(payload),
         )
+        self._raise_for_stop_reason(payload.get("stop_reason"))
         return payload
 
     def stream_message(
@@ -390,6 +395,11 @@ class AnthropicMessagesClient:
                         ),
                     }
                 continue
+            if event_type == "message_delta":
+                delta = payload.get("delta")
+                if isinstance(delta, dict):
+                    self._raise_for_stop_reason(delta.get("stop_reason"))
+                continue
             if event_type == "message_stop":
                 message = payload.get("message")
                 if isinstance(message, dict):
@@ -405,6 +415,16 @@ class AnthropicMessagesClient:
             "response_id": response_id,
             "metadata": {"usage": usage} if usage is not None else {},
         }
+
+    @staticmethod
+    def _raise_for_stop_reason(stop_reason: object) -> None:
+        if stop_reason != "max_tokens":
+            return
+        raise ModelResponseError(
+            "Model output reached the provider token limit.",
+            stop_reason=StopReason.MODEL_ERROR,
+            failure_kind="output_token_limit",
+        )
 
     def _iter_stream_payloads(self, stream: object) -> Iterator[object]:
         enter = getattr(stream, "__enter__", None)
