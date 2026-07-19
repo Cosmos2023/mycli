@@ -5,6 +5,11 @@ export type {
 	MycliShellBackgroundTerminals,
 	MycliShellCommandSpec,
 	MycliShellCommandDiagnostic,
+	MycliShellCommandDisplay,
+	MycliShellCommandField,
+	MycliShellCommandResult,
+	MycliShellCommandRow,
+	MycliShellCommandSection,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
 	MycliShellFooterData,
@@ -32,6 +37,7 @@ export { AssistantMessageComponent } from "./components/assistant-message.ts";
 export { BashExecutionComponent } from "./components/bash-execution.ts";
 export { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 export { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
+export { CommandResultComponent } from "./components/command-result.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { FooterComponent } from "./components/footer.ts";
 export { LoginFlowComponent } from "./components/login-flow.ts";

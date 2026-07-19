@@ -35,8 +35,7 @@ export class CommandDiagnosticComponent extends Container {
 	}
 
 	private headerText(): string {
-		const icon = this.diagnostic.kind === "context" ? "CTX" : this.diagnostic.kind === "usage" ? "USE" : "CMD";
-		return `${theme.fg("accent", theme.bold(icon))} ${theme.fg("accent", theme.bold(this.diagnostic.title))} ${theme.fg("dim", this.diagnostic.command)}`;
+		return `${theme.fg("accent", theme.bold(this.diagnostic.title))} ${theme.fg("dim", this.diagnostic.command)}`;
 	}
 
 	private metricLine(metrics: MycliShellDiagnosticMetric[]): string {

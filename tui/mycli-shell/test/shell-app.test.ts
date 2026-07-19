@@ -1143,6 +1143,43 @@ test("mycli shell renders command diagnostics as structured panels", () => {
 	assert.doesNotMatch(plain, /\[usage\] cumulative_usage/);
 });
 
+test("mycli shell routes structured command results to semantic rendering", () => {
+	const output = renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		pendingNotice: undefined,
+		transcript: [
+			{
+				id: "command-undo",
+				kind: "command_result",
+				commandResult: {
+					id: "command-undo",
+					display: {
+						version: 1,
+						kind: "notice",
+						command: "/undo",
+						title: "Undo complete",
+						severity: "success",
+						summary: "Restored app.py",
+						fields: [],
+						rows: [],
+						sections: [],
+						suggestions: [],
+						omittedRows: 0,
+						omittedChars: 0,
+					},
+					fallbackLines: ["Restored app.py"],
+					folded: false,
+				},
+			},
+		],
+	}, 80);
+
+	assert.match(stripAnsi(output.join("\n")), /✓ Restored app\.py/);
+});
+
 test("tool rendering stays collapsed until expanded and marks failure", () => {
 	const longOutput = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join("\n");
 	const collapsed = new ToolExecutionComponent({

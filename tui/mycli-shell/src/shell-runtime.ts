@@ -27,6 +27,7 @@ import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
+import { CommandResultComponent } from "./components/command-result.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
@@ -93,7 +94,7 @@ type ChatBlockComponent =
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
 	| { kind: "background_terminals"; signature: string; component: BackgroundTerminalsComponent }
 	| { kind: "diagnostic"; signature: string; component: CommandDiagnosticComponent }
-	| { kind: "command_result"; signature: string; component: Component }
+	| { kind: "command_result"; signature: string; component: CommandResultComponent }
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
 class TurnActivityComponent implements Component {
@@ -940,6 +941,14 @@ export class MycliShellRuntime {
 				return cached;
 			}
 			if (
+				block.kind === "command_result" &&
+				cached.component instanceof CommandResultComponent
+			) {
+				cached.component.updateResult(block.commandResult);
+				cached.signature = signature;
+				return cached;
+			}
+			if (
 				block.kind === "message" &&
 				block.message.role === "assistant" &&
 				cached.kind === "message" &&
@@ -977,11 +986,10 @@ export class MycliShellRuntime {
 			};
 		}
 		if (block.kind === "command_result") {
-			const text = block.commandResult.fallbackLines.join("\n") || block.commandResult.display.title;
 			return {
 				kind: "command_result",
 				signature,
-				component: new Text(theme.fg("muted", text), 1, 0),
+				component: new CommandResultComponent(block.commandResult),
 			};
 		}
 		return { kind: "message", signature, role: block.message.role, component: this.createMessageComponent(block.message) };
@@ -1313,6 +1321,15 @@ export class MycliShellRuntime {
 				}
 				if (block.kind === "bash") {
 					return { ...block, bash: bashById.get(block.bash.id) ?? { ...block.bash, expanded: !block.bash.expanded } };
+				}
+				if (block.kind === "command_result" && block.commandResult.display.kind === "list") {
+					return {
+						...block,
+						commandResult: {
+							...block.commandResult,
+							folded: !block.commandResult.folded,
+						},
+					};
 				}
 				return block;
 			}),

@@ -8,6 +8,7 @@ import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BackgroundTerminalsComponent } from "./components/background-terminals.ts";
 import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
+import { CommandResultComponent } from "./components/command-result.ts";
 import { FooterComponent } from "./components/footer.ts";
 import { PlanUpdateComponent } from "./components/plan-update.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
@@ -89,8 +90,7 @@ class TranscriptBlocksComponent extends Container {
 			} else if (block.kind === "background_terminals") {
 				this.addChild(new BackgroundTerminalsComponent(block.backgroundTerminals));
 			} else if (block.kind === "command_result") {
-				const text = block.commandResult.fallbackLines.join("\n") || block.commandResult.display.title;
-				this.addChild(new Text(theme.fg("muted", text), 1, 0));
+				this.addChild(new CommandResultComponent(block.commandResult));
 			} else if (block.kind === "tool_group") {
 				this.addChild(new CollapsedToolGroupComponent(block.group));
 			}
