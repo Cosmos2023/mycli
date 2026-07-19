@@ -7,9 +7,11 @@ from mycli.cli.slash_command_registry import (
     SlashCommandError,
     SlashCommandId,
     SlashCommandOwner,
+    SlashCommandPresentation,
     SlashCommandSurface,
     command_manifest,
     resolve_slash_command,
+    slash_command_suggestions,
     slash_command_help,
     validate_slash_command_registry,
 )
@@ -176,6 +178,24 @@ def test_help_uses_canonical_names_without_aliases() -> None:
     assert "/status usage" not in help_text
     assert "/settings" not in help_text
     assert "Aliases:" not in help_text
+
+
+def test_slash_command_suggestions_use_visible_canonical_names() -> None:
+    assert slash_command_suggestions("/memroy", cli_context()) == ("/memory",)
+    assert "/status usage" not in slash_command_suggestions("/usag", cli_context())
+
+
+def test_backend_results_use_transcript_presentation() -> None:
+    for command in ("/status", "/usage", "/context", "/stats", "/permissions"):
+        assert (
+            resolve_slash_command(command, cli_context()).presentation
+            is SlashCommandPresentation.TRANSCRIPT
+        )
+
+    assert (
+        resolve_slash_command("/quit", cli_context()).presentation
+        is SlashCommandPresentation.NONE
+    )
 
 
 def test_registry_integrity_passes() -> None:

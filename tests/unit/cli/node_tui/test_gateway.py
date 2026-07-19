@@ -650,7 +650,8 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
 
     assert response.result is not None
     assert response.result["execution"] == "backend"
-    assert response.result["lines"] == ["[usage] session=demo", "[usage] turns=1"]
+    assert response.result["display"]["kind"] == "diagnostic"
+    assert response.result["lines"] == ["Usage", "Session: demo", "Turns: 1"]
     assert response.result["mutated_session"] is False
     assert help_response.result is not None
     assert any("/status" in line for line in help_response.result["lines"])
@@ -752,7 +753,8 @@ def test_gateway_command_run_returns_structured_background_shells_and_stop(
     assert processes.result["processes"][0]["output"] == "ready\n"
     assert stopped.result is not None
     assert stopped.result["command_kind"] == "shell_stop"
-    assert stopped.result["lines"] == ["[bash] Stopping all background terminals."]
+    assert stopped.result["display"]["kind"] == "notice"
+    assert stopped.result["lines"] == ["Stopping all background terminals."]
     gateway.close()
 
 
@@ -768,8 +770,9 @@ def test_gateway_command_run_can_cancel_background_subagents(tmp_path: Path) -> 
     )
 
     assert response.result is not None
+    assert response.result["display"]["kind"] == "notice"
     assert response.result["lines"] == [
-        "[subagent] cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1"
+        "cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1"
     ]
 
 
@@ -785,8 +788,9 @@ def test_gateway_command_run_can_cancel_one_background_subagent(tmp_path: Path) 
     )
 
     assert response.result is not None
+    assert response.result["display"]["kind"] == "notice"
     assert response.result["lines"] == [
-        "[subagent] cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1"
+        "cancelled subagent:demo:sub:turn_1:abcd owner_turn=turn_1"
     ]
 
 
@@ -830,7 +834,7 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     )
 
     assert usage.result is not None
-    assert usage.result["presentation"] == "overlay"
+    assert usage.result["presentation"] == "transcript"
     assert usage.result["exit_requested"] is False
     assert view.result is not None
     assert view.result["view_mode"] == "verbose"
@@ -838,15 +842,17 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     assert quit_response.result is not None
     assert quit_response.result["exit_requested"] is True
     assert changes.result is not None
-    assert changes.result["presentation"] == "overlay"
+    assert changes.result["presentation"] == "transcript"
     assert changes.result["presentation_hint"] == "file changes"
     assert permissions.result is not None
-    assert permissions.result["presentation"] == "overlay"
+    assert permissions.result["presentation"] == "transcript"
+    assert permissions.result["display"]["kind"] == "list"
     assert permissions.result["lines"] == [
-        "[permission] session_allowances=1",
-        "[permission] allow_session pattern=git push",
-        "[permission] execpolicy_rules=1",
-        "[permission] execpolicy source=project decision=allow pattern_length=2",
+        "Permissions - 4 items",
+        "Session allowances  1",
+        "Allow session  git push",
+        "Execpolicy rules  1",
+        "Execpolicy  project  allow  2",
     ]
 
 
@@ -967,10 +973,8 @@ def test_gateway_command_run_updates_model_and_thinking_effort(tmp_path: Path) -
     )
 
     assert response.result is not None
-    assert response.result["lines"] == [
-        "[model] model=gpt-5.4",
-        "[model] thinking_effort=high",
-    ]
+    assert response.result["display"]["kind"] == "notice"
+    assert response.result["lines"] == ["model=gpt-5.4; thinking_effort=high"]
     assert service._config.model == "gpt-5.4"
     assert service._config.reasoning_effort == ReasoningEffort.HIGH
     assert service._config.thinking_effort == ReasoningEffort.HIGH
@@ -994,7 +998,8 @@ def test_gateway_command_run_updates_collaboration_mode(tmp_path: Path) -> None:
     )
 
     assert response.result is not None
-    assert response.result["lines"] == ["[mode] collaboration_mode=plan"]
+    assert response.result["display"]["kind"] == "notice"
+    assert response.result["lines"] == ["collaboration_mode=plan"]
     assert response.result["mutated_mode"] is True
     assert response.result["collaboration_mode"] == "plan"
     assert service._config.collaboration_mode == CollaborationMode.PLAN

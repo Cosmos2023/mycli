@@ -262,7 +262,8 @@ def test_run_node_tui_gateway_processes_fake_node_requests(tmp_path: Path) -> No
     assert '"method":"turn.started"' in output
     assert '"method":"turn.event"' in output
     assert '"method":"turn.completed"' in output
-    assert '"[usage] session=demo"' in output
+    assert '"Session: demo"' in output
+    assert '"kind":"diagnostic"' in output
 
 
 def test_run_node_tui_gateway_handles_node_broken_pipe(tmp_path: Path) -> None:

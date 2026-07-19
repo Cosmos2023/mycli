@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from difflib import get_close_matches
 from enum import StrEnum
 import sys
 
@@ -234,7 +235,6 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         argument_hint="[allow|revoke|clear]",
         aliases=("/tools permissions",),
         argument_policy=SlashArgumentPolicy.OPTIONAL,
-        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.SANDBOX,
@@ -242,7 +242,6 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect or switch sandbox mode",
         argument_hint="[read-only|workspace-write|danger-full-access|next]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
-        presentation=SlashCommandPresentation.OVERLAY,
         available_during_turn=False,
     ),
     _spec(
@@ -286,28 +285,24 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "/status",
         "Show runtime status",
         aliases=("/session show",),
-        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.USAGE,
         "/usage",
         "Show token usage",
         aliases=("/status usage",),
-        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.CONTEXT,
         "/context",
         "Show context-window diagnostics",
         aliases=("/status context",),
-        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.STATS,
         "/stats",
         "Show aggregate runtime stats",
         aliases=("/status stats",),
-        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.SKILLS,
@@ -363,7 +358,6 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         SlashCommandId.CHANGES,
         "/changes",
         "Inspect file changes",
-        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.UNDO,
@@ -466,7 +460,6 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         argument_hint="[--apply-empty|--apply-orphans|--apply-vacuum]",
         aliases=("/session-maintenance",),
         argument_policy=SlashArgumentPolicy.OPTIONAL,
-        presentation=SlashCommandPresentation.OVERLAY,
         visible=False,
     ),
 )
@@ -604,6 +597,15 @@ def slash_command_help(context: SlashCommandContext) -> str:
         f"{item.name}{f' {item.argument_hint}' if item.argument_hint else ''}  {item.description}"
         for item in command_manifest(context)
     )
+
+
+def slash_command_suggestions(
+    text: str,
+    context: SlashCommandContext,
+) -> tuple[str, ...]:
+    command = text.strip().split(maxsplit=1)[0]
+    names = tuple(item.name for item in command_manifest(context))
+    return tuple(get_close_matches(command, names, n=3, cutoff=0.6))
 
 
 def validate_slash_command_registry() -> None:

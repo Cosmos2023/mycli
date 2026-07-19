@@ -5,6 +5,7 @@ from typing import Any
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.slash_command_dispatch import dispatch_backend_slash_command
+from mycli.cli.slash_command_presenters import present_error
 from mycli.cli.slash_command_registry import (
     SlashCommandContext,
     SlashCommandError,
@@ -13,7 +14,9 @@ from mycli.cli.slash_command_registry import (
     SlashCommandSurface,
     resolve_slash_command,
     slash_command_help,
+    slash_command_suggestions,
 )
+from mycli.cli.slash_command_result import render_slash_command_text
 
 
 def handle_slash_command(command: str) -> str:
@@ -37,7 +40,18 @@ def build_command_handler(
         try:
             invocation = resolve_slash_command(command, context)
         except SlashCommandError as exc:
-            return (str(exc),)
+            return render_slash_command_text(
+                present_error(
+                    command=command,
+                    reason=str(exc),
+                    usage=(
+                        str(exc).removeprefix("Usage: ")
+                        if exc.code == "invalid_arguments"
+                        else None
+                    ),
+                    suggestions=slash_command_suggestions(command, context),
+                )
+            )
         if invocation.owner is not SlashCommandOwner.BACKEND:
             return (f"{invocation.canonical_name} is unavailable on this interface.",)
         return dispatch_backend_slash_command(service, invocation).lines

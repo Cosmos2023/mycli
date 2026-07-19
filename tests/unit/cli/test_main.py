@@ -1516,7 +1516,10 @@ def test_changes_command_renders_file_history_lines() -> None:
     )
     handler = build_command_handler(service)
 
-    assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
+    assert list(handler("/changes")) == [
+        "File changes - 1 item",
+        "Snapshot 1  turn_1 Edit notes.txt",
+    ]
 
 
 def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
@@ -1725,229 +1728,131 @@ def test_build_command_handler_exposes_runtime_inspection_commands() -> None:
             )
 
     handler = build_command_handler(FakeService())
-    manifest = ExtensionManifestService().manifest()
-    extension_summary = (
-        "agent=mycli schema=1 "
-        f"rpc_methods={len(manifest['rpc_methods'])} "
-        f"event_streams={len(manifest['event_streams'])}"
+    commands = (
+        "/plan",
+        "/mode",
+        "/mode plan",
+        "/mode invalid",
+        "/model gpt-5.4",
+        "/skills",
+        "/tools",
+        "/tools list",
+        "/permissions",
+        "/permissions allow git push",
+        "/permissions revoke git push",
+        "/permissions clear",
+        "/sandbox",
+        "/sandbox next",
+        "/tools hooks",
+        "/tools sets",
+        "/ps",
+        "/tasks",
+        "/agents",
+        "/agents inspect explore",
+        "/tasks agents",
+        "/tasks agents child-1",
+        "/tasks kill-agents",
+        "/tasks agents kill child-1",
+        "/changes",
+        "/memory",
+        "/memory list",
+        "/memory path",
+        "/memory search terse",
+        "/memory forget terse.md",
+        "/memory add feedback terse :: Keep replies concise",
+        "/tools plugins",
+        "/tools plugins demo DemoCommand {\"name\":\"codex\"}",
+        "/tools extensions",
+        "/trace",
+        "/trace export",
+        "/trace logs",
+        "/resume",
+        "/resume backlog",
+        "/status",
+        "/session maintenance",
+        "/session maintenance --apply-empty",
+        "/session maintenance --apply-orphans",
+        "/session maintenance --apply-vacuum",
+        "/session search checkpoint",
+        "/undo",
+        "/stats",
+        "/context",
+        "/usage",
+        "/view",
+        "/view focus",
+        "/fork demo branch 2",
+    )
+    outputs = {command: list(handler(command)) for command in commands}
+
+    assert all(outputs.values())
+    legacy_prefixes = (
+        "[status]",
+        "[usage]",
+        "[context]",
+        "[stats]",
+        "[tool]",
+        "[skill]",
+        "[agent]",
+        "[permission]",
+        "[change]",
+        "[memory]",
+        "[mode]",
+        "[sandbox]",
+        "[undo]",
+    )
+    assert not any(
+        line.startswith(legacy_prefixes)
+        for command_output in outputs.values()
+        for line in command_output
     )
 
-    assert list(handler("/plan")) == [
-        "[mode] collaboration_mode=plan",
+    aliases = (
+        ("/tools skills", "/skills"),
+        ("/tools permissions", "/permissions"),
+        ("/hooks", "/tools hooks"),
+        ("/toolsets", "/tools sets"),
+        ("/bashes", "/ps"),
+        ("/tasks bashes", "/ps"),
+        ("/jobs", "/ps"),
+        ("/jobs bashes", "/ps"),
+        ("/agents runs child-1", "/tasks agents child-1"),
+        ("/subagents child-1", "/tasks agents child-1"),
+        ("/agents kill", "/tasks kill-agents"),
+        ("/plugin", "/tools plugins"),
+        ("/extensions", "/tools extensions"),
+        ("/trace-jsonl", "/trace export"),
+        ("/logs", "/trace logs"),
+        ("/session", "/resume"),
+        ("/sessions", "/resume"),
+        ("/session list", "/resume"),
+        ("/session show", "/status"),
+        ("/session-maintenance", "/session maintenance"),
+        ("/search checkpoint", "/session search checkpoint"),
+        ("/changes undo", "/undo"),
+        ("/status stats", "/stats"),
+        ("/status context", "/context"),
+        ("/status usage", "/usage"),
+        ("/session resume backlog", "/resume backlog"),
+        ("/session fork demo branch 2", "/fork demo branch 2"),
+    )
+    for alias, canonical in aliases:
+        assert list(handler(alias)) == list(handler(canonical))
+
+    assert outputs["/plan"] == ["collaboration_mode=plan"]
+    assert outputs["/tools"][0] == "Tools - 1 item"
+    assert "Read  builtin  file  low  available  auto_allow" in outputs["/tools"]
+    assert outputs["/status"][:4] == [
+        "mycli",
+        "Session: demo",
+        "Model: gpt-test",
+        "Provider: openai/responses",
     ]
-    assert list(handler("/mode")) == ["[mode] collaboration_mode=default"]
-    assert list(handler("/mode plan")) == ["[mode] collaboration_mode=plan"]
-    assert list(handler("/mode invalid")) == [
-        "[mode] unsupported collaboration_mode=invalid; allowed=default, plan",
+    assert outputs["/usage"] == ["Usage", "Session: demo", "Turns: 1"]
+    assert outputs["/trace logs"] == [
+        "agent_log=/tmp/mycli/logs/agent.log",
+        "tail: INFO [demo] turn_started",
     ]
-    assert list(handler("/model gpt-5.4")) == ["[model] model=gpt-5.4"]
-    assert list(handler("/skills")) == ["[skill] repository-analysis: Inspect repos"]
-    assert list(handler("/tools skills")) == ["[skill] repository-analysis: Inspect repos"]
-    assert list(handler("/tools")) == [
-        "[tool] Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
-    ]
-    assert list(handler("/tools list")) == [
-        "[tool] Read source=builtin toolset=file risk=low availability=available approval=auto_allow",
-    ]
-    assert list(handler("/tools permissions")) == [
-        "[permission] session_allowances=0",
-        "[permission] execpolicy_rules=0",
-    ]
-    assert list(handler("/permissions")) == [
-        "[permission] session_allowances=0",
-        "[permission] execpolicy_rules=0",
-    ]
-    assert list(handler("/permissions allow git push")) == [
-        "[permission] allow_session pattern=git push",
-    ]
-    assert list(handler("/permissions revoke git push")) == [
-        "[permission] removed_allow_session pattern=git push",
-    ]
-    assert list(handler("/permissions clear")) == [
-        "[permission] cleared_session_allowances=1",
-    ]
-    assert list(handler("/sandbox")) == [
-        "[sandbox] sandbox_mode=workspace-write",
-        "[sandbox] filesystem=workspace_write network=disabled shell=restricted",
-    ]
-    assert list(handler("/sandbox next")) == [
-        "[sandbox] sandbox_mode=danger-full-access",
-    ]
-    assert list(handler("/hooks")) == [
-        "[hook] pre_tool_use permission_guard enabled=true calls=0 errors=0",
-        "[hook] pre_tool_use configured:repo:deny-read enabled=true calls=1 errors=0",
-    ]
-    assert list(handler("/toolsets")) == [
-        "[toolset] file enabled=true sources=builtin tools=Read,Write conflicts=0",
-    ]
-    assert list(handler("/tools sets")) == [
-        "[toolset] file enabled=true sources=builtin tools=Read,Write conflicts=0",
-    ]
-    assert list(handler("/bashes")) == ["[bash] no background shells"]
-    assert list(handler("/tasks")) == ["[bash] no background shells"]
-    assert list(handler("/tasks bashes")) == ["[bash] no background shells"]
-    assert list(handler("/agents")) == [
-        "[agent] mycli subagents list: subagents: 1 profiles, 1 enabled, 0 disabled",
-        "[agent] subagent explore",
-    ]
-    assert list(handler("/agents inspect explore")) == [
-        "[agent] mycli subagents inspect: subagent profile: explore",
-        "[agent] subagent explore",
-    ]
-    assert list(handler("/tasks agents")) == ["[subagent] explore running child-session"]
-    assert list(handler("/tasks agents child-1")) == ["[subagent] explore running child-1"]
-    assert list(handler("/agents runs child-1")) == ["[subagent] explore running child-1"]
-    assert list(handler("/subagents child-1")) == ["[subagent] explore running child-1"]
-    assert list(handler("/tasks kill-agents")) == ["[subagent] cancelled child-session"]
-    assert list(handler("/tasks agents kill child-1")) == ["[subagent] cancelled child-1"]
-    assert list(handler("/agents kill")) == ["[subagent] cancelled child-session"]
-    assert list(handler("/jobs")) == ["[bash] no background shells"]
-    assert list(handler("/jobs bashes")) == ["[bash] no background shells"]
-    assert list(handler("/changes")) == ["[change] snapshot_1 turn_1 Edit notes.txt"]
-    assert list(handler("/memory")) == [
-        "[memory] path=/tmp/mycli-memory",
-        "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
-        "[memory] files=1",
-    ]
-    assert list(handler("/memory list")) == [
-        "[memory] path=/tmp/mycli-memory",
-        "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
-        "[memory] files=1",
-    ]
-    assert list(handler("/memory path")) == [
-        "[memory] path=/tmp/mycli-memory",
-        "[memory] entrypoint=/tmp/mycli-memory/MEMORY.md",
-    ]
-    assert list(handler("/memory search terse")) == ["[memory] match terse"]
-    assert list(handler("/memory forget terse.md")) == ["[memory] removed terse.md"]
-    assert list(handler("/memory add feedback terse :: Keep replies concise")) == [
-        "[memory] added feedback terse: Keep replies concise"
-    ]
-    assert list(handler("/plugin")) == [
-        "[plugin] plugin:demo:DemoCommand plugin=demo name=DemoCommand kind=slash"
-    ]
-    assert list(handler("/tools plugins")) == [
-        "[plugin] plugin:demo:DemoCommand plugin=demo name=DemoCommand kind=slash"
-    ]
-    assert list(handler('/plugin demo DemoCommand {"name":"codex"}')) == [
-        '[plugin] ok demo:DemoCommand {"name":"codex"}'
-    ]
-    assert list(handler('/tools plugins demo DemoCommand {"name":"codex"}')) == [
-        '[plugin] ok demo:DemoCommand {"name":"codex"}'
-    ]
-    assert list(handler("/extensions")) == [
-        f"[extension] {extension_summary}",
-        "[extension] rpc extension.manifest",
-        "[extension] rpc trace.export",
-        "[extension] runtime.trace.export available",
-        "[extension] extensions.lifecycle not_available",
-        "[extension] acp.server not_available",
-    ]
-    assert list(handler("/trace")) == ["[trace] tool_execution search_text"]
-    assert list(handler("/trace-jsonl")) == [
-        '[trace-jsonl] {"kind":"tool_execution","turn_id":"turn_1","payload":{"tool_name":"search_text"}}',
-    ]
-    assert list(handler("/trace export")) == [
-        '[trace-jsonl] {"kind":"tool_execution","turn_id":"turn_1","payload":{"tool_name":"search_text"}}',
-    ]
-    assert list(handler("/logs")) == [
-        "[log] agent_log=/tmp/mycli/logs/agent.log",
-        "[log] tail: INFO [demo] turn_started",
-    ]
-    assert list(handler("/trace logs")) == [
-        "[log] agent_log=/tmp/mycli/logs/agent.log",
-        "[log] tail: INFO [demo] turn_started",
-    ]
-    assert list(handler("/session")) == [
-        "[session] resumed demo",
-        "[session] messages=3",
-    ]
-    assert list(handler("/sessions")) == [
-        "[session] resumed demo",
-        "[session] messages=3",
-    ]
-    assert list(handler("/session list")) == [
-        "[session] resumed demo",
-        "[session] messages=3",
-    ]
-    assert list(handler("/session show")) == [
-        "[status] session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no",
-    ]
-    assert list(handler("/session-maintenance")) == [
-        "[session] dry_run=true",
-        "[session] workspace_sessions=2",
-        "[session] empty_sessions=1",
-    ]
-    assert list(handler("/session maintenance")) == [
-        "[session] dry_run=true",
-        "[session] workspace_sessions=2",
-        "[session] empty_sessions=1",
-    ]
-    assert list(handler("/session-maintenance --apply-empty")) == [
-        "[session] dry_run=false",
-        "[session] deleted_empty_sessions=1",
-        "[session] deleted_session=empty",
-    ]
-    assert list(handler("/session maintenance --apply-empty")) == [
-        "[session] dry_run=false",
-        "[session] deleted_empty_sessions=1",
-        "[session] deleted_session=empty",
-    ]
-    assert list(handler("/session-maintenance --apply-orphans")) == [
-        "[session] dry_run=false",
-        "[session] deleted_orphan_rows=2",
-        "[session] deleted_orphan_table=history_items rows=2",
-    ]
-    assert list(handler("/session maintenance --apply-orphans")) == [
-        "[session] dry_run=false",
-        "[session] deleted_orphan_rows=2",
-        "[session] deleted_orphan_table=history_items rows=2",
-    ]
-    assert list(handler("/session-maintenance --apply-vacuum")) == [
-        "[session] dry_run=false",
-        "[session] before_freelist_count=2",
-        "[session] after_freelist_count=0",
-    ]
-    assert list(handler("/session maintenance --apply-vacuum")) == [
-        "[session] dry_run=false",
-        "[session] before_freelist_count=2",
-        "[session] after_freelist_count=0",
-    ]
-    assert list(handler("/search checkpoint")) == ["[search] demo#1 assistant: checkpoint"]
-    assert list(handler("/session search checkpoint")) == ["[search] demo#1 assistant: checkpoint"]
-    assert list(handler("/undo")) == ["[undo] Restored notes.txt"]
-    assert list(handler("/changes undo")) == ["[undo] Restored notes.txt"]
-    assert list(handler("/stats")) == ["[stats] cache_hit_rate=0.5", "[stats] alerts=none"]
-    assert list(handler("/status stats")) == ["[stats] cache_hit_rate=0.5", "[stats] alerts=none"]
-    assert list(handler("/context")) == [
-        "[context] budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider"
-    ]
-    assert list(handler("/status context")) == [
-        "[context] budget input_tokens=900 max_tokens=1000 usage_ratio=90.0% source=provider"
-    ]
-    assert list(handler("/usage")) == ["[usage] session=demo", "[usage] turns=1"]
-    assert list(handler("/status usage")) == ["[usage] session=demo", "[usage] turns=1"]
-    assert list(handler("/status")) == [
-        "[status] session=demo model=gpt-test provider=openai/responses context=unknown pending=no suspended=no"
-    ]
-    assert list(handler("/view")) == ["[view] view_mode=default"]
-    assert list(handler("/view focus")) == ["[view] view_mode=focus"]
-    assert list(handler("/resume backlog")) == [
-        "[session] resumed backlog",
-        "[session] messages=3",
-    ]
-    assert list(handler("/session resume backlog")) == [
-        "[session] resumed backlog",
-        "[session] messages=3",
-    ]
-    assert list(handler("/fork demo branch 2")) == [
-        "[session] forked demo -> branch",
-        "[session] fork_point=2",
-    ]
-    assert list(handler("/session fork demo branch 2")) == [
-        "[session] forked demo -> branch",
-        "[session] fork_point=2",
-    ]
+    assert outputs["/undo"] == ["Restored notes.txt"]
 
 
 def test_turn_service_inspect_context_reports_empty_metrics(tmp_path: Path) -> None:

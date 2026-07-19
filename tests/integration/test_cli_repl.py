@@ -40,9 +40,21 @@ def test_shell_process_aliases_route_to_read_and_stop_commands() -> None:
     )
     handler = build_command_handler(service)
 
-    assert list(handler("/ps")) == ["[bash] shell-1 running"]
-    assert list(handler("/tasks bashes")) == ["[bash] shell-1 running"]
-    assert list(handler("/stop")) == ["[bash] Stopping all background terminals."]
+    assert list(handler("/ps")) == [
+        "Background terminals - 1 item",
+        "Shell 1  running",
+    ]
+    assert list(handler("/tasks bashes")) == list(handler("/ps"))
+    assert list(handler("/stop")) == ["Stopping all background terminals."]
+
+
+def test_command_handler_projects_unknown_command_with_canonical_suggestion() -> None:
+    handler = build_command_handler(SimpleNamespace())
+
+    assert list(handler("/memroy")) == [
+        "Error: Unknown command: /memroy",
+        "Did you mean: /memory",
+    ]
 
 
 def test_run_repl_prints_help_and_stops_on_quit() -> None:
