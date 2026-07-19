@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from mycli.cli.slash_command_dispatch import dispatch_backend_slash_command
 from mycli.cli.slash_command_result import render_slash_command_text
 from mycli.cli.slash_command_registry import (
@@ -26,7 +28,14 @@ def fake_service() -> Any:
         inspect_status=lambda: (
             "session=demo model=gpt-test provider=test context=unknown pending=no suspended=no",
         ),
+        inspect_context=lambda: ("budget input_tokens=100 max_tokens=1000 usage_ratio=10%",),
+        inspect_stats=lambda: ("turns=3 tool_calls=2",),
         inspect_tools=lambda: ("Read source=builtin toolset=file",),
+        inspect_skills=lambda: ("code-review source=builtin status=available",),
+        inspect_subagent_profiles=lambda: ("explore status=available",),
+        inspect_permissions=lambda: ("allow_session pattern=git status",),
+        inspect_file_changes=lambda: ("modified path=src/app.py",),
+        inspect_memory=lambda: ("project key=architecture value=layered",),
         inspect_logs=lambda: ("gateway ready",),
         inspect_bashes=lambda: ("shell-1 running",),
         active_background_shells=lambda: (
@@ -35,6 +44,40 @@ def fake_service() -> Any:
         stop_background_shells=lambda: ("Stopping all background terminals.",),
         undo_last_file_change=lambda: "restored",
     )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_kind"),
+    (
+        ("/status", "status"),
+        ("/usage", "diagnostic"),
+        ("/context", "diagnostic"),
+        ("/stats", "diagnostic"),
+        ("/tools", "list"),
+        ("/skills", "list"),
+        ("/agents", "list"),
+        ("/permissions", "list"),
+        ("/changes", "list"),
+        ("/memory", "list"),
+        ("/undo", "notice"),
+        ("/stop", "notice"),
+        ("/trace logs", "preformatted"),
+    ),
+)
+def test_backend_command_surface_matrix_uses_versioned_display_projection(
+    command: str,
+    expected_kind: str,
+) -> None:
+    result = dispatch_backend_slash_command(fake_service(), resolve_cli(command))
+    text = "\n".join(result.lines)
+
+    assert result.display.version == 1
+    assert result.display.kind.value == expected_kind
+    assert result.lines == render_slash_command_text(result.display)
+    assert "[status]" not in text
+    assert "[usage]" not in text
+    assert "[context]" not in text
+    assert "[tool]" not in text
 
 
 def test_short_canonical_commands_and_hidden_aliases_share_display() -> None:

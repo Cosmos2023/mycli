@@ -188,6 +188,7 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "decision_not_pending",
         "clarification_not_pending",
         "incompatible_protocol",
+        "command_result_persistence_failed",
     ]
     assert schemas["gateway.error"]["properties"]["code"]["enum"] == list(GATEWAY_ERROR_CODES)
     assert schemas["approval.respond"]["properties"]["choice"]["enum"] == [
