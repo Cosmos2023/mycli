@@ -221,7 +221,6 @@ def test_openai_chat_client_decodes_json_decision(monkeypatch) -> None:
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     decision = client.decide("Inspect the repo")
@@ -229,7 +228,6 @@ def test_openai_chat_client_decodes_json_decision(monkeypatch) -> None:
     assert sdk_client.chat_completions.calls == [{
         "model": "gpt-test",
         "messages": [{"role": "user", "content": "Inspect the repo"}],
-        "max_tokens": 2048,
         "temperature": 0,
     }]
     assert decision.progress_message == "Inspecting the repository"
@@ -270,7 +268,6 @@ def test_openai_chat_client_uses_openai_sdk_transport(monkeypatch) -> None:
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     payload = client.complete([{"role": "user", "content": "Inspect the repo"}])
@@ -279,7 +276,6 @@ def test_openai_chat_client_uses_openai_sdk_transport(monkeypatch) -> None:
         {
             "model": "gpt-test",
             "messages": [{"role": "user", "content": "Inspect the repo"}],
-            "max_tokens": 2048,
             "temperature": 0,
         }
     ]
@@ -299,7 +295,6 @@ def test_openai_chat_client_uses_prompt_cache_key_request_option(monkeypatch) ->
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     client.complete(
@@ -342,7 +337,6 @@ def test_openai_chat_client_serializes_image_blocks(monkeypatch, tmp_path: Path)
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     client.complete(
@@ -377,7 +371,6 @@ def test_openai_chat_client_strips_runtime_blocks_for_deepseek(monkeypatch) -> N
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="deepseek-test",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -410,7 +403,6 @@ def test_openai_chat_client_sends_tool_choice_none_with_stable_tools(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
     client.set_tool_choice("none")
 
@@ -445,13 +437,99 @@ def test_openai_chat_client_accepts_thinking_config_without_request_failure(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
     client.set_thinking_config(enabled=True, effort="high")
 
     payload = client.complete([{"role": "user", "content": "inspect the repo"}])
 
     assert payload["assistant_message"] == "done"
+
+
+def test_openai_chat_client_omits_model_output_limit(monkeypatch) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "done"},
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+    )
+
+    client.complete(messages=[{"role": "user", "content": "inspect"}])
+
+    assert "max_tokens" not in sdk_client.chat_completions.calls[-1]
+
+
+def test_openai_chat_client_rejects_non_streaming_length_finish_reason(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeOpenAISdkClient(
+        chat_payload={
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": "partial"},
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+    )
+
+    with pytest.raises(ModelResponseError) as exc_info:
+        client.complete(messages=[{"role": "user", "content": "inspect"}])
+
+    assert exc_info.value.failure_kind == "output_token_limit"
+
+
+def test_openai_chat_client_rejects_streaming_length_finish_reason(
+    monkeypatch,
+) -> None:
+    sdk_client = _FakeStreamingOpenAISdkClient(
+        chunks=[
+            {
+                "id": "chatcmpl_stream",
+                "choices": [{"delta": {"content": "partial"}}],
+            },
+            {
+                "id": "chatcmpl_stream",
+                "choices": [{"delta": {}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2048},
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_chat._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIChatClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+    )
+
+    with pytest.raises(ModelResponseError) as exc_info:
+        list(client.stream_events(input_items=[{"role": "user", "content": "inspect"}]))
+
+    assert exc_info.value.failure_kind == "output_token_limit"
 
 
 def test_openai_chat_client_create_events_preserves_usage_metadata(monkeypatch) -> None:
@@ -472,7 +550,6 @@ def test_openai_chat_client_create_events_preserves_usage_metadata(monkeypatch) 
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     events = client.create_events(input_items=[{"role": "user", "content": "inspect"}])
@@ -525,7 +602,6 @@ def test_openai_chat_client_stream_events_normalizes_chat_chunks(monkeypatch) ->
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     events = list(
@@ -584,7 +660,6 @@ def test_openai_chat_client_stream_events_decodes_dsml_tool_calls(monkeypatch) -
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -632,7 +707,6 @@ def test_openai_chat_client_complete_decodes_dsml_tool_calls(monkeypatch) -> Non
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -670,7 +744,6 @@ def test_openai_chat_client_closes_stream_when_interrupt_token_is_requested(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     events = list(
@@ -705,7 +778,6 @@ def test_openai_chat_client_closes_sdk_client_when_interrupted_before_stream_exi
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
     first_client = sdk_clients[0]
     result_holder: dict[str, object] = {}
@@ -750,7 +822,6 @@ def test_openai_chat_client_uses_provider_adapter_for_request_body(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
     client.set_thinking_config(enabled=False, effort=None)
@@ -776,7 +847,6 @@ def test_openai_chat_client_enables_deepseek_thinking_with_supported_effort(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -803,7 +873,6 @@ def test_openai_chat_client_uses_provider_adapter_for_message_roles(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -854,7 +923,6 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_tool_call(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -934,7 +1002,6 @@ def test_openai_chat_client_emits_all_tool_calls_with_deepseek_reasoning_content
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -1013,7 +1080,6 @@ def test_openai_chat_client_marks_missing_deepseek_reasoning_on_tool_call(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -1063,7 +1129,6 @@ def test_openai_chat_client_preserves_deepseek_reasoning_content_on_text(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
         provider_adapter=DeepSeekChatProviderAdapter(),
     )
 
@@ -1113,7 +1178,6 @@ def test_openai_chat_client_maps_tool_call_payload_to_model_events(monkeypatch) 
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     events = client.create_events(
@@ -1187,7 +1251,6 @@ def test_openai_chat_client_logs_request_and_response_payloads(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_chat_1"),
     )
@@ -1226,7 +1289,6 @@ def test_openai_chat_client_falls_back_to_plain_assistant_message_for_non_json_c
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     payload = client.complete([{"role": "user", "content": "你好"}])
@@ -1256,7 +1318,6 @@ def test_openai_chat_client_surfaces_http_error_body(monkeypatch) -> None:
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     with pytest.raises(ModelResponseError, match="unsupported model"):
@@ -1281,7 +1342,6 @@ def test_openai_chat_client_logs_http_errors(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
         log_service=_build_log_service(tmp_path),
         log_context_provider=lambda: ModelLogContext(session_id="demo", turn_id="turn_chat_2"),
     )
@@ -1328,7 +1388,6 @@ def test_openai_chat_client_serializes_native_tool_request_and_parses_tool_call(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     payload = client.complete(
@@ -1372,7 +1431,6 @@ def test_openai_chat_client_serializes_native_tool_request_and_parses_tool_call(
                 },
             }
         ],
-        "max_tokens": 2048,
         "temperature": 0,
     }]
     assert payload["tool_call"] == {
@@ -1416,7 +1474,6 @@ def test_openai_chat_client_uses_wire_safe_tool_names_and_restores_canonical_nam
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
     )
 
     payload = client.complete(
@@ -1463,7 +1520,6 @@ def test_openai_chat_client_disambiguates_colliding_wire_safe_tool_names(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     client.complete(
@@ -1514,7 +1570,6 @@ def test_openai_chat_client_rewrites_replayed_assistant_tool_call_names(
         api_key="test-key",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        max_output_tokens=2048,
     )
 
     client.complete(
@@ -1580,7 +1635,6 @@ def test_openai_chat_client_repairs_python_literal_native_tool_arguments(
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     payload = client.complete(
@@ -1635,7 +1689,6 @@ def test_openai_chat_client_preserves_unrepairable_native_tool_call_as_invalid_a
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     payload = client.complete(
@@ -1684,7 +1737,6 @@ def test_openai_chat_client_omits_null_parameter_descriptions_in_native_tool_sch
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     client.complete(
@@ -1726,7 +1778,6 @@ def test_openai_chat_client_omits_null_parameter_descriptions_in_native_tool_sch
                 },
             }
         ],
-        "max_tokens": 2048,
         "temperature": 0,
     }]
 
@@ -1746,7 +1797,6 @@ def test_openai_chat_client_maps_sdk_connection_errors(monkeypatch) -> None:
         api_key="test-key",
         base_url="https://example.invalid/v1",
         model="gpt-test",
-        max_output_tokens=2048,
     )
 
     with pytest.raises(ModelResponseError, match="Failed to reach model provider"):
@@ -1770,7 +1820,6 @@ def test_openai_chat_status_error_sets_model_response_recovery_fields(tmp_path: 
         api_key="test",
         base_url="https://api.test/v1",
         model="test-model",
-        max_output_tokens=128,
         log_service=WorkspaceLogService(workspace_root=tmp_path),
     )
     exc = _status_error(status_code=429, body={"error": {"message": "rate limit exceeded"}})

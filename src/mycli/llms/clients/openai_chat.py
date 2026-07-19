@@ -12,7 +12,7 @@ from openai import APIConnectionError, APIResponseValidationError, APIStatusErro
 
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.model_events import ModelEvent, ModelEventType, ToolExecutionSource
-from mycli.domain.runtime import ModelDecision, RuntimeInterruptToken
+from mycli.domain.runtime import ModelDecision, RuntimeInterruptToken, StopReason
 from mycli.domain.runtime.images import image_block_to_provider_content
 from mycli.domain.tooling.calls import ToolCall
 from mycli.infrastructure.providers.chat import (
@@ -160,7 +160,6 @@ class OpenAIChatClient:
         api_key: str,
         base_url: str,
         model: str,
-        max_output_tokens: int,
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
         provider_adapter: ChatProviderAdapter | None = None,
@@ -169,7 +168,6 @@ class OpenAIChatClient:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._max_output_tokens = max_output_tokens
         self._sdk_client = _build_openai_sdk_client(api_key=api_key, base_url=base_url)
         self._thinking_enabled = True
         self._thinking_effort: str | None = None
@@ -199,9 +197,6 @@ class OpenAIChatClient:
 
     def set_model(self, model: str) -> None:
         self._model = model
-
-    def set_max_output_tokens(self, value: int) -> None:
-        self._max_output_tokens = value
 
     def _normalize_tool_definitions(
         self,
@@ -277,7 +272,6 @@ class OpenAIChatClient:
         payload_body: dict[str, object] = {
             "model": self._model,
             "messages": adapted_messages,
-            "max_tokens": self._max_output_tokens,
             "temperature": 0,
         }
         if prompt_cache_key:
@@ -498,6 +492,7 @@ class OpenAIChatClient:
         first_choice = raw_choices[0]
         if not isinstance(first_choice, dict):
             raise ModelResponseError("Model provider response choice was not an object.")
+        self._raise_for_finish_reason(first_choice.get("finish_reason"))
         raw_message = first_choice.get("message", {})
         if not isinstance(raw_message, dict):
             raise ModelResponseError("Model provider response message was not an object.")
@@ -706,6 +701,7 @@ class OpenAIChatClient:
         tool_call_states: dict[int, dict[str, str]] = {}
         emitted_tool_calls = False
         pending_content = ""
+        finish_reason: object = None
 
         for raw_chunk in cast(Iterable[object], stream):
             if interrupt_token is not None and interrupt_token.interrupted:
@@ -725,6 +721,8 @@ class OpenAIChatClient:
             for raw_choice in raw_choices:
                 if not isinstance(raw_choice, dict):
                     continue
+                if raw_choice.get("finish_reason") is not None:
+                    finish_reason = raw_choice["finish_reason"]
                 raw_delta = raw_choice.get("delta", {})
                 delta = raw_delta if isinstance(raw_delta, dict) else {}
                 reasoning = delta.get("reasoning_content")
@@ -797,10 +795,21 @@ class OpenAIChatClient:
                 response_id=response_id,
                 aliases=aliases,
             )
+        self._raise_for_finish_reason(finish_reason)
         yield ModelEvent(
             type=ModelEventType.TURN_COMPLETED,
             response_id=response_id,
             usage=usage,
+        )
+
+    @staticmethod
+    def _raise_for_finish_reason(finish_reason: object) -> None:
+        if finish_reason != "length":
+            return
+        raise ModelResponseError(
+            "Model output reached the provider token limit.",
+            stop_reason=StopReason.MODEL_ERROR,
+            failure_kind="output_token_limit",
         )
 
     def _content_tool_call_payloads(
