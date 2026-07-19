@@ -304,6 +304,43 @@ def test_context_manager_ignores_tui_only_plan_update_history() -> None:
     assert messages == ()
 
 
+def test_context_manager_ignores_tui_only_command_result_history() -> None:
+    messages = ContextManager().messages_from_history(
+        (
+            HistoryItem(
+                id="user-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="inspect tools",
+            ),
+            HistoryItem(
+                id="command-1",
+                thread_id="demo",
+                turn_id="command-1",
+                type=HistoryItemType.COMMAND_RESULT,
+                text="Tools - 1 available",
+                metadata={
+                    "model_visible": False,
+                    "display": {"title": "Tools should stay out of context"},
+                },
+            ),
+            HistoryItem(
+                id="assistant-1",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="Inspection complete.",
+            ),
+        )
+    )
+
+    assert [(message.role, message.content) for message in messages] == [
+        ("user", "inspect tools"),
+        ("assistant", "Inspection complete."),
+    ]
+
+
 def test_context_manager_replays_context_baseline_updates_as_user_messages() -> None:
     manager = ContextManager()
 

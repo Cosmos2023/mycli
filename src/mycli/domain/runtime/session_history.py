@@ -25,6 +25,7 @@ class HistoryItemType(StrEnum):
     COMPACTION = "compaction"
     FILE_CHANGE = "file_change"
     PLAN_UPDATE = "plan_update"
+    COMMAND_RESULT = "command_result"
 
 
 @dataclass(slots=True, frozen=True)

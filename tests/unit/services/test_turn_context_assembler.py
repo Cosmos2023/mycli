@@ -764,6 +764,46 @@ def test_turn_context_assembler_disables_memory_when_all_records_are_replay_dupl
     assert memory_section.content == ""
 
 
+def test_turn_context_assembler_does_not_treat_command_results_as_model_history() -> None:
+    command_text = "Tools should remain visible only in the TUI."
+    turn_context = TurnContextAssembler().assemble(
+        user_message="continue",
+        context=ExecutionContext(
+            config=AgentConfig(workspace_root=Path("/tmp/workspace")),
+            history_items=(
+                HistoryItem(
+                    id="command-1",
+                    thread_id="demo",
+                    turn_id="command-1",
+                    type=HistoryItemType.COMMAND_RESULT,
+                    text=command_text,
+                    metadata={
+                        "model_visible": False,
+                        "display": {"title": "Private display metadata"},
+                    },
+                ),
+            ),
+            memory_records=(
+                MemoryRecord(
+                    kind=MemoryKind.SESSION_SUMMARY,
+                    key="command-result-check",
+                    value=command_text,
+                ),
+            ),
+        ),
+    )
+
+    memory_section = next(
+        section
+        for section in turn_context.sections
+        if section.type is TurnContextSectionType.MEMORY
+    )
+
+    assert memory_section.enabled is True
+    assert command_text in memory_section.content
+    assert "Private display metadata" not in str(turn_context)
+
+
 def test_turn_context_assembler_fences_compaction_rehydration() -> None:
     turn_context = TurnContextAssembler().assemble(
         user_message="continue",

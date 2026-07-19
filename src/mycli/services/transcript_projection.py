@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from mycli.cli.slash_command_result import SlashCommandDisplay
 from mycli.domain.conversation import Message
 from mycli.domain.runtime import HistoryItem, HistoryItemType
 from mycli.services.tool_display import ToolDisplayEnvelope
@@ -23,6 +24,7 @@ _VISIBLE_HISTORY_TYPES = frozenset(
         HistoryItemType.COMPACTION,
         HistoryItemType.FILE_CHANGE,
         HistoryItemType.PLAN_UPDATE,
+        HistoryItemType.COMMAND_RESULT,
     }
 )
 _TUI_METADATA_KEYS = frozenset(
@@ -121,6 +123,9 @@ def project_history_items_for_snapshot(
     for item in items:
         if item.type not in _VISIBLE_HISTORY_TYPES:
             continue
+        if item.type is HistoryItemType.COMMAND_RESULT:
+            projected.append(_command_result_snapshot_item(item))
+            continue
         if item.type is HistoryItemType.PLAN_UPDATE:
             projected.append(_plan_update_snapshot_item(item))
             continue
@@ -207,6 +212,16 @@ def project_history_items_for_tui(
 
 
 def project_history_item_for_tui(item: HistoryItem) -> dict[str, object]:
+    if item.type is HistoryItemType.COMMAND_RESULT:
+        metadata = _visible_command_result_metadata(item.metadata)
+        return {
+            "id": item.id,
+            "type": "command_result",
+            "text": item.text or "",
+            "created_at": _optional_str(item.metadata.get("created_at")) or "",
+            "folded": bool(metadata.get("folded", False)),
+            "metadata": metadata,
+        }
     if item.type is HistoryItemType.PLAN_UPDATE:
         projected = snapshot_item_to_tui_items(
             _plan_update_snapshot_item(item).to_dict()
@@ -249,6 +264,23 @@ def snapshot_item_to_tui_items(
         return ()
     text = _optional_str(payload.get("text")) or ""
     created_at = _optional_str(payload.get("created_at")) or ""
+    if item_type == "command_result":
+        raw_metadata = payload.get("metadata")
+        metadata = (
+            _visible_command_result_metadata(dict(raw_metadata))
+            if isinstance(raw_metadata, dict)
+            else {}
+        )
+        return (
+            {
+                "id": item_id,
+                "type": "command_result",
+                "text": text,
+                "created_at": created_at,
+                "folded": bool(metadata.get("folded", False)),
+                "metadata": metadata,
+            },
+        )
     if item_type in {"command", "tool"}:
         metadata = _snapshot_tool_metadata(payload)
         summary = {
@@ -309,6 +341,16 @@ def _history_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
     )
 
 
+def _command_result_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
+    return TranscriptSnapshotItem(
+        id=item.id,
+        type="command_result",
+        text=item.text or "",
+        created_at=_optional_str(item.metadata.get("created_at")),
+        metadata=_visible_command_result_metadata(item.metadata),
+    )
+
+
 def _plan_update_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
     return TranscriptSnapshotItem(
         id=item.id,
@@ -359,6 +401,29 @@ def _visible_plan_update_metadata(metadata: dict[str, Any]) -> dict[str, object]
         "total": total if total is not None else len(items),
         "items": items,
     }
+
+
+def _visible_command_result_metadata(metadata: dict[str, Any]) -> dict[str, object]:
+    visible: dict[str, object] = {}
+    command = _optional_str(metadata.get("command"))
+    if command is not None:
+        visible["command"] = command
+    try:
+        display = SlashCommandDisplay.from_payload(metadata.get("display"))
+    except ValueError:
+        display = None
+    if display is not None:
+        visible["display"] = display.to_payload()
+    model_visible = metadata.get("model_visible")
+    if isinstance(model_visible, bool):
+        visible["model_visible"] = model_visible
+    created_at = _optional_str(metadata.get("created_at"))
+    if created_at is not None:
+        visible["created_at"] = created_at
+    folded = metadata.get("folded")
+    if isinstance(folded, bool):
+        visible["folded"] = folded
+    return visible
 
 
 def _tool_call_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:

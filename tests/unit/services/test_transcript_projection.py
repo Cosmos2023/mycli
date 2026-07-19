@@ -45,6 +45,74 @@ def test_snapshot_projection_keeps_only_tui_visible_history() -> None:
     assert "provider_blob" not in str(projected)
 
 
+def test_command_result_is_visible_to_tui_but_not_rewritten() -> None:
+    item = HistoryItem(
+        id="command-1",
+        thread_id="demo",
+        turn_id="command-1",
+        type=HistoryItemType.COMMAND_RESULT,
+        text="Tools - 1 available",
+        metadata={
+            "command": "/tools",
+            "model_visible": False,
+            "display": {
+                "version": 1,
+                "kind": "list",
+                "command": "/tools",
+                "title": "Tools",
+                "severity": "info",
+                "rows": [
+                    {"key": "Read", "label": "Read", "values": ["file"]}
+                ],
+            },
+            "provider_blob": "private",
+        },
+    )
+
+    snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
+    assert snapshot == {
+        "id": "command-1",
+        "type": "command_result",
+        "text": "Tools - 1 available",
+        "metadata": {
+            "command": "/tools",
+            "display": {
+                "version": 1,
+                "kind": "list",
+                "command": "/tools",
+                "title": "Tools",
+                "severity": "info",
+                "rows": [
+                    {"key": "Read", "label": "Read", "values": ["file"]}
+                ],
+            },
+            "model_visible": False,
+        },
+    }
+    assert project_history_item_for_tui(item)["type"] == "command_result"
+
+
+def test_command_result_projection_drops_invalid_display() -> None:
+    item = HistoryItem(
+        id="command-invalid",
+        thread_id="demo",
+        turn_id="command-invalid",
+        type=HistoryItemType.COMMAND_RESULT,
+        text="Invalid display",
+        metadata={
+            "command": "/tools",
+            "display": {"version": 1, "kind": "list"},
+            "model_visible": False,
+        },
+    )
+
+    snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
+    assert snapshot["metadata"] == {
+        "command": "/tools",
+        "model_visible": False,
+    }
+
+
 def test_snapshot_projection_coalesces_tool_call_and_result() -> None:
     items = (
         HistoryItem(

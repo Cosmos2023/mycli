@@ -254,6 +254,55 @@ def test_history_append_preserves_plan_update_in_visible_transcript(tmp_path: Pa
     }
 
 
+def test_append_command_result_updates_history_and_formatted_snapshot(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+    display = {
+        "version": 1,
+        "kind": "list",
+        "command": "/tools",
+        "title": "Tools",
+        "severity": "info",
+        "rows": [{"key": "Read", "label": "Read", "values": ["file"]}],
+    }
+
+    service.append_command_result(
+        session_id="demo",
+        result_id="command-1",
+        command="/tools",
+        text="Tools - 1 available\nRead  file",
+        display=display,
+    )
+
+    stored = service.load_history_items("demo")
+    assert len(stored) == 1
+    assert stored[0].type is HistoryItemType.COMMAND_RESULT
+    assert stored[0].metadata == {
+        "command": "/tools",
+        "display": display,
+        "model_visible": False,
+    }
+
+    snapshot_path = home_dir / ".mycli" / "sessions" / "demo" / "session.json"
+    raw_snapshot = snapshot_path.read_text(encoding="utf-8")
+    assert raw_snapshot.startswith("{\n  ")
+    payload = json.loads(raw_snapshot)
+    assert payload["transcript"] == [
+        {
+            "id": "command-1",
+            "type": "command_result",
+            "text": "Tools - 1 available\nRead  file",
+            "metadata": {
+                "command": "/tools",
+                "display": display,
+                "model_visible": False,
+            },
+        }
+    ]
+
+
 def test_conversation_save_writes_snapshot_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
