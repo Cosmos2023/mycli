@@ -93,6 +93,7 @@ type ChatBlockComponent =
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
 	| { kind: "background_terminals"; signature: string; component: BackgroundTerminalsComponent }
 	| { kind: "diagnostic"; signature: string; component: CommandDiagnosticComponent }
+	| { kind: "command_result"; signature: string; component: Component }
 	| { kind: "tool_group"; signature: string; component: CollapsedToolGroupComponent };
 
 class TurnActivityComponent implements Component {
@@ -973,6 +974,14 @@ export class MycliShellRuntime {
 				kind: "background_terminals",
 				signature,
 				component: new BackgroundTerminalsComponent(block.backgroundTerminals),
+			};
+		}
+		if (block.kind === "command_result") {
+			const text = block.commandResult.fallbackLines.join("\n") || block.commandResult.display.title;
+			return {
+				kind: "command_result",
+				signature,
+				component: new Text(theme.fg("muted", text), 1, 0),
 			};
 		}
 		return { kind: "message", signature, role: block.message.role, component: this.createMessageComponent(block.message) };

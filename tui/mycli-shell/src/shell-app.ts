@@ -88,6 +88,9 @@ class TranscriptBlocksComponent extends Container {
 				this.addChild(new CommandDiagnosticComponent(block.diagnostic));
 			} else if (block.kind === "background_terminals") {
 				this.addChild(new BackgroundTerminalsComponent(block.backgroundTerminals));
+			} else if (block.kind === "command_result") {
+				const text = block.commandResult.fallbackLines.join("\n") || block.commandResult.display.title;
+				this.addChild(new Text(theme.fg("muted", text), 1, 0));
 			} else if (block.kind === "tool_group") {
 				this.addChild(new CollapsedToolGroupComponent(block.group));
 			}

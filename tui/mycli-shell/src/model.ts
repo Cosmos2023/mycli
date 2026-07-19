@@ -133,6 +133,51 @@ export type MycliShellCommandDiagnostic = {
 	rawLines?: string[];
 };
 
+export type MycliShellCommandField = {
+	label: string;
+	value: string;
+	tone?: string;
+};
+
+export type MycliShellCommandRow = {
+	key: string;
+	label: string;
+	values: string[];
+	status?: string;
+	detail?: string;
+};
+
+export type MycliShellCommandSection = {
+	title: string;
+	fields: MycliShellCommandField[];
+	rows: MycliShellCommandRow[];
+};
+
+export type MycliShellCommandDisplay = {
+	version: 1;
+	kind: "status" | "diagnostic" | "list" | "notice" | "error" | "preformatted";
+	command: string;
+	title: string;
+	severity: "info" | "success" | "warning" | "error";
+	summary?: string;
+	fields: MycliShellCommandField[];
+	rows: MycliShellCommandRow[];
+	sections: MycliShellCommandSection[];
+	usage?: string;
+	suggestions: string[];
+	preformatted?: string;
+	totalRows?: number;
+	omittedRows: number;
+	omittedChars: number;
+};
+
+export type MycliShellCommandResult = {
+	id: string;
+	display: MycliShellCommandDisplay;
+	fallbackLines: string[];
+	folded: boolean;
+};
+
 export type MycliShellBackgroundProcess = {
 	shellId: string;
 	commandPreview: string;
@@ -152,7 +197,8 @@ export type MycliShellTranscriptBlock =
 	| { id: string; kind: "bash"; bash: MycliShellBash }
 	| { id: string; kind: "subagent"; subagent: MycliShellSubagent }
 	| { id: string; kind: "background_terminals"; backgroundTerminals: MycliShellBackgroundTerminals }
-	| { id: string; kind: "diagnostic"; diagnostic: MycliShellCommandDiagnostic };
+	| { id: string; kind: "diagnostic"; diagnostic: MycliShellCommandDiagnostic }
+	| { id: string; kind: "command_result"; commandResult: MycliShellCommandResult };
 
 export type MycliShellFooterData = {
 	cwd: string;

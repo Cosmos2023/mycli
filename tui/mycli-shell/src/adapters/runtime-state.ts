@@ -4,6 +4,7 @@ import type {
 	MycliShellBackgroundTerminals,
 	MycliShellBash,
 	MycliShellCommandDiagnostic,
+	MycliShellCommandResult,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
 	MycliShellMessage,
@@ -22,6 +23,10 @@ import type {
 	MycliShellToolStatus,
 	MycliShellVisualSettings,
 } from "../model.ts";
+import {
+	commandResultFromGateway,
+	commandResultFromTranscriptItem,
+} from "./command-results.ts";
 
 export type RuntimeTranscriptItem = {
 	id: string;
@@ -171,6 +176,15 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			const message: MycliShellMessage = { id: item.id, role: "system", text: item.text };
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });
+		} else if (item.type === "command_result") {
+			const commandResult = commandResultFromTranscriptItem(item);
+			if (commandResult) {
+				transcript.push({ id: item.id, kind: "command_result", commandResult });
+			} else {
+				const message: MycliShellMessage = { id: item.id, role: "system", text: item.text };
+				messages.push(message);
+				transcript.push({ id: item.id, kind: "message", message });
+			}
 		} else if (item.type === "proposed_plan") {
 			transcript.push({
 				id: item.id,
@@ -809,12 +823,12 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 		const backgroundTerminals: Omit<MycliShellBackgroundTerminals, "id"> = {
 			processes: backgroundProcessesFromUnknown(result.processes),
 		};
-		const id = nextId("command");
+		const id = stringValue(result.result_id) ?? nextId("command");
 		return {
 			...state,
 			collaborationMode: collaborationMode ?? state.collaborationMode,
-			transcript: [
-				...state.transcript,
+			transcript: upsertTranscriptItem(
+				state.transcript,
 				{
 					id,
 					type: "background_terminals",
@@ -822,24 +836,83 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 					folded: false,
 					metadata: { command, backgroundTerminals },
 				},
-			],
+			),
+		};
+	}
+	const commandResult = commandResultFromGateway(result);
+	if (commandResult) {
+		return {
+			...state,
+			collaborationMode: collaborationMode ?? state.collaborationMode,
+			transcript: upsertTranscriptItem(
+				state.transcript,
+				commandResultTranscriptItem(commandResult),
+			),
 		};
 	}
 	const diagnostic = commandDiagnosticFromLines(command, lines);
+	const fallbackId = stringValue(result.result_id) ?? nextId("command");
 	const item = diagnostic
 		? {
-				id: nextId("command"),
+				id: fallbackId,
 				type: "command_diagnostic",
 				text: diagnostic.title,
 				folded: false,
 				metadata: { command, diagnostic },
 			}
-		: { id: nextId("command"), type: "command_output", text: lines.join("\n"), folded: false, metadata: { command } };
+		: { id: fallbackId, type: "command_output", text: lines.join("\n"), folded: false, metadata: { command } };
 	return {
 		...state,
 		collaborationMode: collaborationMode ?? state.collaborationMode,
-		transcript: [...state.transcript, item],
+		transcript: upsertTranscriptItem(state.transcript, item),
 	};
+}
+
+function commandResultTranscriptItem(commandResult: MycliShellCommandResult): RuntimeTranscriptItem {
+	return {
+		id: commandResult.id,
+		type: "command_result",
+		text: commandResult.fallbackLines.join("\n"),
+		folded: commandResult.folded,
+		metadata: {
+			command: commandResult.display.command,
+			display: commandResultDisplayPayload(commandResult),
+			fallback_lines: commandResult.fallbackLines,
+			model_visible: false,
+		},
+	};
+}
+
+function commandResultDisplayPayload(commandResult: MycliShellCommandResult): Record<string, unknown> {
+	const display = commandResult.display;
+	return {
+		version: display.version,
+		kind: display.kind,
+		command: display.command,
+		title: display.title,
+		severity: display.severity,
+		...(display.summary !== undefined ? { summary: display.summary } : {}),
+		...(display.fields.length > 0 ? { fields: display.fields } : {}),
+		...(display.rows.length > 0 ? { rows: display.rows } : {}),
+		...(display.sections.length > 0 ? { sections: display.sections } : {}),
+		...(display.usage !== undefined ? { usage: display.usage } : {}),
+		...(display.suggestions.length > 0 ? { suggestions: display.suggestions } : {}),
+		...(display.preformatted !== undefined ? { preformatted: display.preformatted } : {}),
+		...(display.totalRows !== undefined ? { total_rows: display.totalRows } : {}),
+		...(display.omittedRows > 0 ? { omitted_rows: display.omittedRows } : {}),
+		...(display.omittedChars > 0 ? { omitted_chars: display.omittedChars } : {}),
+	};
+}
+
+function upsertTranscriptItem(
+	items: RuntimeTranscriptItem[],
+	item: RuntimeTranscriptItem,
+): RuntimeTranscriptItem[] {
+	const index = items.findIndex((existing) => existing.id === item.id);
+	if (index < 0) return [...items, item];
+	const updated = [...items];
+	updated[index] = item;
+	return updated;
 }
 
 function backgroundTerminalsFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellBackgroundTerminals | null {

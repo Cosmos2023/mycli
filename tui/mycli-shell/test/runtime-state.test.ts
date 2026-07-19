@@ -1458,6 +1458,64 @@ test("runtime adapter handles command results and session lists", () => {
 	assert.equal(shell.sessions?.[0]?.current, false);
 });
 
+test("runtime adapter upserts structured command results by stable id", () => {
+	const result = {
+		result_id: "command:stable",
+		display: {
+			version: 1,
+			kind: "list",
+			command: "/tools",
+			title: "Tools",
+			severity: "info",
+			rows: [{ key: "Read", label: "Read", values: ["file"] }],
+		},
+		lines: ["Tools", "Read  file"],
+	};
+	let state = runtimeStateWithCommandResult(initialRuntimeState(), "/tools", result);
+	state = runtimeStateWithCommandResult(state, "/tools", {
+		...result,
+		lines: ["Tools", "Read  file", "Shell  shell"],
+	});
+
+	assert.equal(state.transcript.filter((item) => item.id === "command:stable").length, 1);
+	const block = projectRuntimeState(state).transcript?.[0];
+	assert.equal(block?.kind, "command_result");
+	assert.equal(
+		block?.kind === "command_result" ? block.commandResult.display.rows[0]?.label : "",
+		"Read",
+	);
+});
+
+test("runtime adapter upserts a live command result over resumed history", () => {
+	const display = {
+		version: 1,
+		kind: "notice",
+		command: "/undo",
+		title: "Undo complete",
+		severity: "success",
+		summary: "Restored app.py",
+	};
+	let state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "command:resume",
+				type: "command_result",
+				text: "Restored app.py",
+				folded: false,
+				metadata: { command: "/undo", display, model_visible: false },
+			},
+		],
+	});
+	state = runtimeStateWithCommandResult(state, "/undo", {
+		result_id: "command:resume",
+		display,
+		lines: ["Restored app.py"],
+	});
+
+	assert.equal(state.transcript.filter((item) => item.id === "command:resume").length, 1);
+	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["command_result"]);
+});
+
 test("runtime adapter projects ps history into a background terminals block", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithCommandResult(state, "/ps", {
