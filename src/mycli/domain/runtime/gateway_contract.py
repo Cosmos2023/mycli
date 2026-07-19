@@ -133,6 +133,7 @@ GATEWAY_ERROR_CODES = (
     "decision_not_pending",
     "clarification_not_pending",
     "incompatible_protocol",
+    "command_result_persistence_failed",
 )
 _GATEWAY_ERROR_CODE = {"type": "string", "enum": list(GATEWAY_ERROR_CODES)}
 APPROVAL_DECISION_CHOICES = (

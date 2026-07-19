@@ -62,6 +62,7 @@ class FakeSessionService:
         self.pending_decision: object | None = None
         self.suspended_turn: object | None = None
         self.include_child_session = False
+        self.append_command_result_error: Exception | None = None
         self.conversations: dict[str, Conversation] = {
             "demo": Conversation(
                 session_id="demo",
@@ -97,6 +98,33 @@ class FakeSessionService:
     def load_replay_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
         history_items = self.load_history_items(session_id)
         return self.replay_history_items or history_items
+
+    def append_command_result(
+        self,
+        *,
+        session_id: str,
+        result_id: str,
+        command: str,
+        text: str,
+        display: dict[str, object],
+    ) -> None:
+        if self.append_command_result_error is not None:
+            raise self.append_command_result_error
+        self.history_items = (
+            *self.history_items,
+            HistoryItem(
+                id=result_id,
+                thread_id=session_id,
+                turn_id=result_id,
+                type=HistoryItemType.COMMAND_RESULT,
+                text=text,
+                metadata={
+                    "command": command,
+                    "display": display,
+                    "model_visible": False,
+                },
+            ),
+        )
 
     def load_snapshot_tui_items(
         self,
@@ -655,6 +683,113 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
     assert response.result["mutated_session"] is False
     assert help_response.result is not None
     assert any("/status" in line for line in help_response.result["lines"])
+
+
+def test_gateway_command_run_returns_and_persists_one_stable_result(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(id="cmd", method="command.run", params={"command": "/tools"})
+    )
+
+    assert response.result is not None
+    result_id = str(response.result["result_id"])
+    assert result_id.startswith("command:")
+    assert response.result["display"]["kind"] == "list"
+    saved = service.fake_session_service.load_history_items("demo")
+    assert [
+        item.id for item in saved if item.type is HistoryItemType.COMMAND_RESULT
+    ] == [result_id]
+
+
+def test_unknown_command_returns_compact_error_display(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="bad", method="command.run", params={"command": "/memroy"})
+    )
+
+    assert response.error is None
+    assert response.result is not None
+    assert response.result["result_id"].startswith("command:")
+    assert response.result["display"]["kind"] == "error"
+    assert response.result["display"]["suggestions"] == ["/memory"]
+
+
+def test_command_result_persistence_failure_returns_display_and_warning(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.append_command_result_error = sqlite3.OperationalError(
+        "x" * 2_000
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(id="cmd", method="command.run", params={"command": "/tools"})
+    )
+
+    assert response.error is None
+    assert response.result is not None
+    assert response.result["display"]["kind"] == "list"
+    warnings = [
+        payload
+        for method, payload in events
+        if method == "gateway.error"
+        and payload.get("code") == "command_result_persistence_failed"
+    ]
+    assert len(warnings) == 1
+    assert len(str(warnings[0]["detail"])) <= 1_000
+
+
+def test_non_transcript_commands_do_not_persist_results(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+
+    tui_action = gateway.handle_request(
+        RpcRequest(id="model", method="command.run", params={"command": "/model"})
+    )
+    quit_response = gateway.handle_request(
+        RpcRequest(
+            id="quit",
+            method="command.run",
+            params={"command": "/quit", "surface": "cli"},
+        )
+    )
+
+    assert tui_action.result is not None
+    assert "result_id" not in tui_action.result
+    assert quit_response.result is not None
+    assert "result_id" not in quit_response.result
+    assert service.fake_session_service.history_items == ()
+
+
+def test_session_mutation_returns_destination_session_without_persisting_notice(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="resume",
+            method="command.run",
+            params={"command": "/resume target", "surface": "cli"},
+        )
+    )
+
+    assert response.result is not None
+    assert response.result["mutated_session"] is True
+    assert response.result["session_id"] == "target"
+    assert "result_id" not in response.result
+    assert service.fake_session_service.history_items == ()
 
 
 def test_gateway_command_list_returns_only_canonical_tui_commands(tmp_path: Path) -> None:

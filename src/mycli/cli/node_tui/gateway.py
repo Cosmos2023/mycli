@@ -9,16 +9,24 @@ import sqlite3
 from threading import Lock, Thread
 import time
 from typing import Any, Protocol, TypedDict, cast
+from uuid import uuid4
 
 from mycli.application.turn_service import TurnService
 from mycli.cli.autocomplete import path_completion_candidates
-from mycli.cli.slash_command_dispatch import dispatch_backend_slash_command
+from mycli.cli.slash_command_dispatch import (
+    SlashCommandResult,
+    dispatch_backend_slash_command,
+)
+from mycli.cli.slash_command_presenters import present_error
 from mycli.cli.slash_command_registry import (
     SlashCommandContext,
+    SlashCommandError,
     SlashCommandOwner,
+    SlashCommandPresentation,
     SlashCommandSurface,
     command_manifest,
     resolve_slash_command,
+    slash_command_suggestions,
 )
 from mycli.config.auth_store import AuthStore
 from mycli.config.settings import default_user_config_path
@@ -1120,7 +1128,31 @@ class NodeTuiGateway:
 
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
-        invocation = resolve_slash_command(command, self._command_context(params))
+        context = self._command_context(params)
+        origin_session_id = str(self.service._config.session_id)
+        try:
+            invocation = resolve_slash_command(command, context)
+        except SlashCommandError as exc:
+            usage = str(exc) if str(exc).startswith("Usage: ") else None
+            reason = "Invalid command arguments." if usage else str(exc)
+            suggestions = (
+                slash_command_suggestions(command, context)
+                if exc.code == "unknown_command"
+                else ()
+            )
+            result = SlashCommandResult(
+                display=present_error(
+                    command=command,
+                    reason=reason,
+                    usage=usage,
+                    suggestions=suggestions,
+                )
+            )
+            return self._command_result_payload(
+                result=result,
+                session_id=origin_session_id,
+                command=command,
+            )
         if invocation.owner is SlashCommandOwner.TUI:
             return {
                 "execution": "tui",
@@ -1129,11 +1161,54 @@ class NodeTuiGateway:
                 "command_id": invocation.command_id.value,
             }
         result = dispatch_backend_slash_command(cast(TurnService, self.service), invocation)
+        command_text = " ".join(
+            part for part in (invocation.canonical_name, invocation.args) if part
+        )
+        payload = self._command_result_payload(
+            result=result,
+            session_id=origin_session_id,
+            command=command_text,
+        )
         if result.mutated_session and self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
+        if result.mutated_session:
+            payload["session_id"] = str(self.service._config.session_id)
         if result.mutated_model or result.mutated_mode:
             self._emit_event("status.changed", self._status_payload())
-        return result.to_payload()
+        return payload
+
+    def _command_result_payload(
+        self,
+        *,
+        result: SlashCommandResult,
+        session_id: str,
+        command: str,
+    ) -> dict[str, object]:
+        if (
+            result.presentation is not SlashCommandPresentation.TRANSCRIPT
+            or result.mutated_session
+        ):
+            return result.to_payload()
+        result_id = f"command:{uuid4().hex}"
+        try:
+            self.service._session_service.append_command_result(
+                session_id=session_id,
+                result_id=result_id,
+                command=command,
+                text="\n".join(result.lines),
+                display=result.display.to_payload(),
+            )
+        except (OSError, sqlite3.Error) as exc:
+            self._emit_gateway_error(
+                code="command_result_persistence_failed",
+                message=(
+                    "Command result could not be saved; "
+                    "it remains visible in this session."
+                ),
+                detail=str(exc),
+                method="command.run",
+            )
+        return result.to_payload(result_id=result_id)
 
     def _command_context(self, params: dict[str, object]) -> SlashCommandContext:
         raw_surface = str(params.get("surface", SlashCommandSurface.TUI.value))

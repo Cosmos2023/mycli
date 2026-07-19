@@ -27,6 +27,7 @@ def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
         "decision_not_pending",
         "clarification_not_pending",
         "incompatible_protocol",
+        "command_result_persistence_failed",
     ]
 
 
