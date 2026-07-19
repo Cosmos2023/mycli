@@ -1,0 +1,421 @@
+# Codex-Style Slash Command Results Design
+
+## Summary
+
+mycli has a unified slash command registry, but most backend slash commands still
+return tagged text such as `[status] key=value`. The Node TUI renders that text as
+an ordinary system message. Only `/usage`, `/context`, and `/ps` currently receive
+specialized treatment, and those special cases are implemented by parsing command
+lines in TypeScript.
+
+This design replaces tagged text as the primary contract with a versioned,
+structured command result. The Gateway returns that result to every client, the
+TUI chooses a Codex-style semantic presentation, and CLI clients receive a plain
+text projection of the same data. Transcript-visible command results are stored as
+UI-only history so live execution and resumed sessions render identically without
+adding content to the model context.
+
+## Goals
+
+- Give every backend slash command a stable, typed result contract.
+- Use Codex-style semantic presentation rather than one visual container for every
+  result.
+- Keep status information rich, lists easy to scan, and action feedback compact.
+- Make TUI, native chat, scripted clients, and the Python CLI consume the same
+  command semantics.
+- Preserve all transcript-visible command results across session resume.
+- Upgrade recognizable legacy tagged output when old sessions are loaded.
+- Keep command results out of provider requests and context token accounting.
+- Preserve a bounded plain text fallback for malformed or unsupported displays.
+
+## Non-Goals
+
+- Replacing the typed slash command registry or changing command names and aliases.
+- Turning overlay commands such as bare `/model` and `/settings` into transcript
+  output.
+- Building interactive tables with sorting or filtering in the transcript.
+- Rewriting plugin-defined free-form output into a rigid schema.
+- Rewriting old session files during load.
+- Adding slash command results to the model-visible conversation.
+
+## Current Problems
+
+`SlashCommandResult.lines` is currently the command result data model. Dispatchers
+prefix service strings with tags, the Gateway serializes those lines, and the TUI
+either prints them or recognizes a small set of commands by name and reparses the
+text. This creates several failures:
+
+- layout semantics are coupled to string prefixes;
+- fields are difficult to align, color, truncate, or group safely;
+- new commands default to raw debug-like output;
+- malformed or reordered fields silently degrade specialized displays;
+- native, CLI, live TUI, and resumed TUI can present different content;
+- command output has no stable history identity;
+- adding another rich command requires another TypeScript line parser.
+
+The desired direction follows Codex's semantic history cells: status is a bounded
+card, inventory is rendered as dense rows, mutations receive short confirmation,
+and invalid input includes the correct usage without creating a large panel.
+
+## Result Contract
+
+### Domain Types
+
+Introduce immutable Python command result types owned by the CLI command domain:
+
+```python
+class SlashCommandDisplayKind(StrEnum):
+    STATUS = "status"
+    DIAGNOSTIC = "diagnostic"
+    LIST = "list"
+    NOTICE = "notice"
+    ERROR = "error"
+    PREFORMATTED = "preformatted"
+
+
+class SlashCommandSeverity(StrEnum):
+    INFO = "info"
+    SUCCESS = "success"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class SlashCommandField:
+    label: str
+    value: str
+    tone: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SlashCommandRow:
+    key: str
+    label: str
+    values: tuple[str, ...] = ()
+    status: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SlashCommandSection:
+    title: str
+    fields: tuple[SlashCommandField, ...] = ()
+    rows: tuple[SlashCommandRow, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SlashCommandDisplay:
+    version: int
+    kind: SlashCommandDisplayKind
+    command: str
+    title: str
+    severity: SlashCommandSeverity = SlashCommandSeverity.INFO
+    summary: str | None = None
+    fields: tuple[SlashCommandField, ...] = ()
+    rows: tuple[SlashCommandRow, ...] = ()
+    sections: tuple[SlashCommandSection, ...] = ()
+    usage: str | None = None
+    suggestions: tuple[str, ...] = ()
+    preformatted: str | None = None
+    total_rows: int | None = None
+    omitted_rows: int = 0
+```
+
+`SlashCommandResult` gains a required `display` for transcript-presented backend
+commands. Existing mutation and control fields remain outside the display because
+they drive runtime behavior rather than rendering:
+
+```text
+SlashCommandResult
+├── display
+├── presentation
+├── mutated_session
+├── mutated_model
+├── mutated_mode
+├── exit_requested
+├── view_mode
+└── collaboration_mode
+```
+
+During migration, Gateway payloads also include `lines`, generated by the plain
+text projector. `lines` is not authored independently and cannot disagree with
+`display`.
+
+### Validation And Bounds
+
+The Python serializer validates the display before it crosses the Gateway:
+
+- `version` is currently `1`;
+- command, title, labels, values, summaries, and details are bounded;
+- rows and sections have fixed maximum counts;
+- preformatted output uses the existing bounded head/tail strategy;
+- omitted row and character counts are explicit;
+- unsupported tone and status values fall back to neutral semantics;
+- `ERROR` displays cannot use success severity.
+
+The TypeScript parser performs independent structural validation. Unsupported
+versions or malformed displays fall back to `lines` or `text` without crashing the
+TUI.
+
+## Command Presentation Families
+
+The TUI uses one semantic result component with specialized renderers. It does not
+put every command inside a card.
+
+### Status
+
+`/status` uses a bounded Codex-style status card. It includes available session,
+model, provider, directory, collaboration mode, sandbox, permission, pending turn,
+and context information. Missing fields are omitted rather than shown as
+`unknown` unless absence itself is important.
+
+The card is the only general slash result that uses a full border. It has a
+reasonable maximum width, truncates individual values by terminal cell width, and
+remains readable in monochrome.
+
+### Diagnostic
+
+`/usage`, `/context`, and `/stats` use a borderless diagnostic layout:
+
+- title and command;
+- high-value metrics on the first line;
+- named sections for cumulative tokens, context composition, compaction, cache,
+  and alerts;
+- semantic color paired with explicit labels and values.
+
+The current `USE`, `CTX`, and `CMD` abbreviations are removed.
+
+### List
+
+Inventory and inspection commands use a dense list with a title, optional summary,
+aligned columns, and per-row status:
+
+- `/tools` and its supported subcommands;
+- `/skills`;
+- `/agents`;
+- `/permissions`;
+- `/changes`;
+- `/memory`;
+- session search and maintenance results;
+- compact trace summaries;
+- `/help`, grouped by command family.
+
+Lists show at most eight rows by default. The display contract retains the complete
+bounded row set, and the existing detail expansion action reveals it. A collapsed
+list shows `... N more`. Empty lists render a specific empty-state sentence rather
+than a blank block.
+
+### Notice
+
+Mutations and short state transitions use one or two compact lines:
+
+- `/plan` and `/mode` changes;
+- `/sandbox` changes;
+- `/undo`;
+- `/stop`;
+- inline `/model` updates;
+- successful memory and permission mutations;
+- session operations that do not replace the active transcript.
+
+Success, warning, and failure are represented by both a symbol or word and a
+semantic tone. The affected object, such as a file path or mode, is primary text.
+
+### Error
+
+Unknown commands, invalid arguments, and failed operations use a compact error
+result containing:
+
+- the reason;
+- canonical usage when available;
+- up to three command suggestions from the registry;
+- a stable error severity.
+
+Errors do not masquerade as successful command output and do not require users to
+search help text for the corrected form.
+
+### Preformatted And Dedicated Surfaces
+
+Plugin free-form output, `/trace logs`, and `/trace export` use bounded
+`preformatted` displays. `/ps` continues to use the dedicated background terminal
+component. Bare TUI-owned commands continue to open their existing overlay or
+selector and do not create transcript output. `/quit` performs shutdown without
+leaving a transcript result.
+
+## Backend Presentation Pipeline
+
+The backend owns command semantics. The TUI never parses current command output.
+
+```text
+TurnService operation
+  -> command-family presenter
+  -> SlashCommandDisplay
+  -> SlashCommandResult
+  -> Gateway JSON
+```
+
+Command-family presenters live beside slash dispatch, not in `TurnService` and not
+in TUI code. They convert existing service inspection values into typed fields and
+rows. A shared tokenizer handles the current `key=value` service format during the
+initial migration, with command-specific allowlists for known fields. It is an
+internal migration adapter, not a public protocol. New command work must construct
+typed fields directly.
+
+The plain text projector consumes `SlashCommandDisplay` and produces deterministic,
+ANSI-free output for the Python CLI, native chat, scripted clients, and the
+temporary `lines` compatibility field.
+
+## Gateway And Client Flow
+
+`command.run` continues to return request-response data. Backend-owned transcript
+results include a stable `result_id` allocated before persistence. The response and
+the stored history item use that same ID.
+
+The Node client appends or replaces command output by `result_id`. A later
+`transcript.load` therefore cannot duplicate a result already visible in the live
+state. TUI-owned actions continue to return `client_action` and do not fabricate a
+backend result.
+
+Session-switching commands require special ordering:
+
+1. complete the backend session mutation;
+2. load the destination transcript;
+3. update session chrome;
+4. show a transient success or failure notice;
+5. do not persist the switch notice into the source or destination transcript.
+
+This prevents `/resume` and `/fork` output from being attached to the wrong
+session.
+
+## Persistence
+
+Add `HistoryItemType.COMMAND_RESULT`. A transcript-visible command result stores:
+
+```json
+{
+  "type": "command_result",
+  "text": "Tools: 18 available",
+  "metadata": {
+    "command": "/tools",
+    "model_visible": false,
+    "display": {
+      "version": 1,
+      "kind": "list",
+      "title": "Tools"
+    }
+  }
+}
+```
+
+The full display is stored in `metadata.display`; `text` is a concise plain text
+fallback. Command results are included in TUI history and readable session
+snapshots but excluded from:
+
+- provider transcript reconstruction;
+- context assembly;
+- compaction inputs and summaries;
+- cache-prefix calculations;
+- model token usage.
+
+Only commands with `presentation=transcript` are persisted. Overlay and transient
+notices are not. Session snapshots preserve display version, command, timestamps,
+folded state where relevant, and bounded presentation data.
+
+## Legacy Session Compatibility
+
+Legacy conversion occurs only when loading existing transcript or snapshot items.
+The adapter recognizes bounded forms of current tags including:
+
+```text
+[status] [usage] [context] [stats] [tool] [skill] [agent]
+[permission] [change] [memory] [mode] [sandbox] [undo] [bash]
+```
+
+Recognized values become a version 1 display in memory. Unknown fields are retained
+as row details rather than discarded. If a line cannot be parsed safely, the whole
+item remains a plain command output. Conversion does not rewrite old files.
+
+The live `command.run` path cannot call the legacy adapter. Tests enforce that new
+results already contain `display` and that no TypeScript command-name parser is
+used for them.
+
+## TUI Components
+
+Add a `CommandResultComponent` that routes validated displays to:
+
+- `StatusCommandComponent`;
+- `CommandDiagnosticComponent` after adapting it to the shared display model;
+- `CommandListComponent`;
+- `CommandNoticeComponent`;
+- `CommandErrorComponent`;
+- `PreformattedCommandComponent`.
+
+The runtime transcript model gains a `command_result` block. The component uses
+semantic theme tokens and terminal cell width for alignment and truncation. Color
+is never the only status indicator. Layout tests cover 60, 100, and 160 columns,
+CJK labels, long paths, empty data, and omitted rows.
+
+The existing background terminal component remains separate because it owns live
+process state and streaming output rather than static command result data.
+
+## Failure Handling
+
+- Backend operation failures return an error display when the command request was
+  valid and the failure is part of command semantics.
+- Gateway protocol or transport failures continue through `gateway.error`.
+- Invalid display payloads are logged and rendered through bounded fallback text.
+- Unsupported display versions do not partially render.
+- Empty results render a command-specific empty state.
+- Persistence failure does not discard the command response; the TUI shows it and
+  Gateway emits a bounded warning.
+- Legacy parsing failure preserves the original text exactly.
+
+## Testing Strategy
+
+### Python
+
+- domain serialization and validation for every display kind;
+- deterministic plain text projection;
+- command-family presenter tests;
+- all canonical backend commands return an appropriate display kind;
+- aliases resolve to the same command semantics without appearing in manifests;
+- Gateway contract and stable result ID tests;
+- command result persistence and snapshot projection tests;
+- command result exclusion from provider and context reconstruction;
+- legacy tagged output conversion and fallback fixtures;
+- persistence failure behavior.
+
+### TypeScript
+
+- strict display parser tests, including unknown versions and malformed data;
+- runtime reducer upsert and resume deduplication tests;
+- component tests for all display kinds;
+- width safety at 60, 100, and 160 columns;
+- CJK, long path, empty list, long list, and preformatted truncation cases;
+- session switch ordering tests;
+- native and scripted client text behavior.
+
+### Visual Acceptance Cases
+
+Four examples anchor the desired presentation:
+
+1. `/status`: bordered Codex-style session card.
+2. `/tools`: borderless aligned list with count and row status.
+3. `/undo`: compact success notice naming the restored path.
+4. invalid `/memory add`: compact error with the correct canonical usage.
+
+Live execution and resume must produce equivalent projected transcript blocks for
+all four examples.
+
+## Migration Sequence
+
+1. Add typed Python display models, validation, and text projection.
+2. Add presenters and migrate backend command dispatch family by family.
+3. Extend Gateway payloads while retaining generated `lines` compatibility.
+4. Add `COMMAND_RESULT` history and snapshot support with model-context exclusion.
+5. Add TypeScript parsing, transcript upsert, and semantic components.
+6. Add legacy session conversion at transcript-load boundaries.
+7. Remove command-name and tagged-line parsing from the new TUI live path.
+8. Run cross-client, persistence, context, and visual verification.
+
+Each migration step keeps plain text clients functional. The final removal applies
+only to duplicate live-path parsing; the isolated legacy loader remains supported.
