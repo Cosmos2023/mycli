@@ -1545,7 +1545,7 @@ test("runtime adapter projects ps history into a background terminals block", ()
 	);
 });
 
-test("runtime adapter projects usage and context commands as diagnostics", () => {
+test("runtime adapter leaves unstructured legacy command lines as plain messages", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithCommandResult(state, "/usage", {
 		lines: [
@@ -1565,31 +1565,29 @@ test("runtime adapter projects usage and context commands as diagnostics", () =>
 	});
 
 	const shell = projectRuntimeState(state);
-	const usage = shell.transcript?.[0];
-	const context = shell.transcript?.[1];
 
-	assert.equal(usage?.kind, "diagnostic");
-	assert.equal(usage?.kind === "diagnostic" ? usage.diagnostic.title : "", "Usage");
-	assert.equal(
-		usage?.kind === "diagnostic"
-			? usage.diagnostic.metrics.some((metric) => metric.label === "Estimated cost" && metric.value === "0.123")
-			: false,
-		true,
-	);
-	assert.equal(context?.kind, "diagnostic");
-	assert.equal(context?.kind === "diagnostic" ? context.diagnostic.title : "", "Context");
-	assert.equal(
-		context?.kind === "diagnostic"
-			? context.diagnostic.metrics.some((metric) => metric.label === "Used" && metric.value === "71.1%")
-			: false,
-		true,
-	);
-	assert.equal(
-		context?.kind === "diagnostic"
-			? context.diagnostic.sections.some((section) => section.title === "Context composition")
-			: false,
-		true,
-	);
+	assert.deepEqual(shell.transcript?.map((block) => block.kind), ["message", "message"]);
+	assert.match(shell.messages[0]?.text ?? "", /^\[usage\] session=session-a/);
+	assert.match(shell.messages[1]?.text ?? "", /^\[context\] budget/);
+});
+
+test("runtime adapter keeps malformed resumed legacy output exact", () => {
+	const text = '[tool] Read description="unterminated';
+	const state = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "legacy-malformed",
+				type: "system_notice",
+				text,
+				folded: false,
+				metadata: { command: "/tools" },
+			},
+		],
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.deepEqual(shell.transcript?.map((block) => block.kind), ["message"]);
+	assert.equal(shell.messages[0]?.text, text);
 });
 
 test("runtime adapter projects session tree payload", () => {

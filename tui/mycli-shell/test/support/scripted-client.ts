@@ -6,7 +6,7 @@ import {
 	reduceRuntimeEvent,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
-	runtimeStateWithCommandResult,
+	runtimeStateAfterCommandResult,
 	runtimeStateWithUserMessage,
 	sessionsFromResult,
 	type RuntimeShellState,
@@ -135,7 +135,13 @@ async function loadSessions(): Promise<void> {
 
 async function runScriptedCommand(command: string): Promise<void> {
 	const result = await send("command.run", { command, surface: "cli" });
-	state = runtimeStateWithCommandResult(state, command, result);
+	state = await runtimeStateAfterCommandResult(
+		state,
+		command,
+		result,
+		async (sessionId) =>
+			await send("transcript.load", { session_id: sessionId, before: null }),
+	);
 	if (result.exit_requested === true) {
 		await send("shutdown", {});
 		await dumpStateIfRequested();
@@ -208,12 +214,13 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 
 	if (action.type === "session.resume") {
 		const result = await send("session.resume", { session_id: action.session_id });
-		state = runtimeStateWithCommandResult(state, `/resume ${action.session_id}`, result);
-		state = {
-			...state,
-			sessionId: stringValue(result.session_id) ?? state.sessionId,
-			status: { ...state.status, session_id: stringValue(result.session_id) ?? state.sessionId },
-		};
+		state = await runtimeStateAfterCommandResult(
+			state,
+			`/resume ${action.session_id}`,
+			{ ...result, mutated_session: true },
+			async (sessionId) =>
+				await send("transcript.load", { session_id: sessionId, before: null }),
+		);
 		return;
 	}
 

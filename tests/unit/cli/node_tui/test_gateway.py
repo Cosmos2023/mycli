@@ -1236,6 +1236,96 @@ def test_gateway_transcript_load_projects_history_items(tmp_path: Path) -> None:
     }
 
 
+def test_gateway_transcript_load_upgrades_legacy_tagged_command_output(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.history_items = (
+        HistoryItem(
+            id="legacy-usage",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.WARNING,
+            text=(
+                "[usage] session=demo turns=3\n"
+                "[usage] cumulative_usage input_tokens=100 cache_read_tokens=80"
+            ),
+            metadata={"command": "/usage", "model_visible": False},
+        ),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="legacy",
+            method="transcript.load",
+            params={"session_id": "demo"},
+        )
+    )
+
+    assert response.result is not None
+    item = response.result["items"][0]
+    assert item["id"] == "legacy-usage"
+    assert item["type"] == "command_result"
+    assert item["metadata"]["display"]["version"] == 1
+    assert item["metadata"]["display"]["kind"] == "diagnostic"
+    assert service.fake_session_service.history_items[0].type is HistoryItemType.WARNING
+
+
+def test_gateway_transcript_load_keeps_malformed_legacy_text_exact(
+    tmp_path: Path,
+) -> None:
+    text = '[tool] Read description="unterminated'
+    service = FakeService(tmp_path)
+    service.fake_session_service.history_items = (
+        HistoryItem(
+            id="legacy-malformed",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.WARNING,
+            text=text,
+            metadata={"command": "/tools", "model_visible": False},
+        ),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(id="legacy", method="transcript.load", params={"session_id": "demo"})
+    )
+
+    assert response.result is not None
+    assert response.result["items"][0]["type"] == "warning"
+    assert response.result["items"][0]["text"] == text
+
+
+def test_gateway_snapshot_fallback_upgrades_legacy_tagged_command_output(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    service.fake_session_service.snapshot_tui_items = (
+        {
+            "id": "legacy-undo",
+            "type": "system_notice",
+            "text": "[undo] Restored app.py",
+            "created_at": "",
+            "folded": False,
+            "metadata": {"command": "/undo"},
+        },
+    )
+    service.fake_session_service.load_history_error = sqlite3.DatabaseError(
+        "database unavailable"
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    response = gateway.handle_request(
+        RpcRequest(id="legacy", method="transcript.load", params={"session_id": "demo"})
+    )
+
+    assert response.result is not None
+    assert response.result["items"][1]["type"] == "command_result"
+    assert response.result["items"][1]["metadata"]["display"]["kind"] == "notice"
+
+
 def test_gateway_transcript_load_projects_plan_updates_in_order(tmp_path: Path) -> None:
     service = FakeService(tmp_path)
     service.fake_session_service.history_items = (

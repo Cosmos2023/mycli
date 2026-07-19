@@ -3,6 +3,10 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { GatewayClient, GatewayRequestError } from "../src/adapters/gateway-client.ts";
+import {
+	initialRuntimeState,
+	runtimeStateAfterCommandResult,
+} from "../src/adapters/runtime-state.ts";
 
 test("gateway client rejects pending requests when output pipe closes", async () => {
 	const input = new PassThrough();
@@ -41,4 +45,71 @@ test("gateway client ignores input after closure", async () => {
 
 	assert.deepEqual(events, []);
 	client.stop();
+});
+
+test("inline resume loads the destination before adding one transient notice", async () => {
+	const calls = ["command.run"];
+	const source = {
+		...initialRuntimeState(),
+		sessionId: "demo-1",
+		transcript: [
+			{ id: "source-message", type: "user", text: "source", folded: false },
+		],
+	};
+
+	const state = await runtimeStateAfterCommandResult(
+		source,
+		"/resume demo-2",
+		{
+			mutated_session: true,
+			session_id: "demo-2",
+			lines: ["Resumed session demo-2"],
+		},
+		async (sessionId) => {
+			calls.push(`transcript.load:${sessionId}`);
+			return {
+				session_id: sessionId,
+				items: [
+					{ id: "destination-message", type: "assistant_final", text: "destination", folded: false },
+				],
+			};
+		},
+	);
+
+	assert.deepEqual(calls, ["command.run", "transcript.load:demo-2"]);
+	assert.equal(state.sessionId, "demo-2");
+	assert.deepEqual(state.transcript.map((item) => item.id), [
+		"destination-message",
+		state.transcript[1]?.id,
+	]);
+	assert.equal(state.transcript[1]?.type, "system_notice");
+	assert.equal(state.transcript[1]?.text, "Resumed session demo-2");
+	assert.equal(state.transcript.some((item) => item.id === "source-message"), false);
+});
+
+test("same-session mutation keeps transcript and uses normal command projection", async () => {
+	const source = {
+		...initialRuntimeState(),
+		sessionId: "demo",
+		transcript: [{ id: "existing", type: "user", text: "keep", folded: false }],
+	};
+	let loads = 0;
+
+	const state = await runtimeStateAfterCommandResult(
+		source,
+		"/resume demo",
+		{
+			mutated_session: true,
+			session_id: "demo",
+			lines: ["Already using demo"],
+		},
+		async () => {
+			loads += 1;
+			return { items: [] };
+		},
+	);
+
+	assert.equal(loads, 0);
+	assert.equal(state.transcript[0]?.id, "existing");
+	assert.equal(state.transcript[1]?.text, "Already using demo");
 });

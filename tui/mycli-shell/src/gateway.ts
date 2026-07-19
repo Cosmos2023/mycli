@@ -6,7 +6,7 @@ import {
 	reduceRuntimeEvent,
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
-	runtimeStateWithCommandResult,
+	runtimeStateAfterCommandResult,
 	runtimeStateWithMessageQueues,
 	runtimeStateWithSettings,
 	runtimeStateWithUserMessage,
@@ -528,7 +528,15 @@ async function runCommand(command: string): Promise<void> {
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
 		return;
 	}
-	setRuntimeState(runtimeStateWithCommandResult(runtimeState, command, result));
+	setRuntimeState(
+		await runtimeStateAfterCommandResult(
+			runtimeState,
+			command,
+			result,
+			async (sessionId) =>
+				await send("transcript.load", { session_id: sessionId, before: null }),
+		),
+	);
 	if (result.exit_requested === true) {
 		await shutdown(0);
 	}

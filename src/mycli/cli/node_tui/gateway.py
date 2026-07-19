@@ -63,6 +63,7 @@ from mycli.domain.runtime.gateway_contract import (
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.providers import ProviderId, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
+from mycli.services.legacy_slash_output import legacy_slash_display
 from mycli.services.transcript_projection import project_history_items_for_tui
 
 PROTOCOL_VERSION = 1
@@ -1252,11 +1253,15 @@ class NodeTuiGateway:
             }
             return {
                 "session_id": session_id,
-                "items": [warning, *fallback],
+                "items": [warning, *_upgrade_legacy_command_items(fallback)],
                 "next_before": None,
                 "read_only": True,
             }
-        projected = list(project_history_items_for_tui(tuple(items)))
+        projected = list(
+            _upgrade_legacy_command_items(
+                list(project_history_items_for_tui(tuple(items)))
+            )
+        )
         if before is not None:
             before_index = next(
                 (
@@ -2009,6 +2014,47 @@ def _bounded_text(value: str, *, max_chars: int = 500) -> str:
     if len(compact) <= max_chars:
         return compact
     return compact[: max_chars - 3] + "..."
+
+
+def _upgrade_legacy_command_items(
+    items: list[dict[str, object]],
+) -> tuple[dict[str, object], ...]:
+    upgraded: list[dict[str, object]] = []
+    for item in items:
+        if item.get("type") not in {"command_output", "system_notice", "warning"}:
+            upgraded.append(item)
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            upgraded.append(item)
+            continue
+        raw_metadata = item.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        existing_display = metadata.get("display")
+        if isinstance(existing_display, dict) and existing_display.get("version") == 1:
+            upgraded.append(item)
+            continue
+        command = metadata.get("command")
+        display = legacy_slash_display(
+            command=command if isinstance(command, str) else "",
+            lines=tuple(text.splitlines()),
+        )
+        if display is None:
+            upgraded.append(item)
+            continue
+        upgraded.append(
+            {
+                **item,
+                "type": "command_result",
+                "folded": bool(item.get("folded", False)),
+                "metadata": {
+                    "command": display.command,
+                    "display": display.to_payload(),
+                    "model_visible": False,
+                },
+            }
+        )
+    return tuple(upgraded)
 
 
 def _resources_from_lines(

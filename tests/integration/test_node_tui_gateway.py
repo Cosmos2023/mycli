@@ -111,6 +111,7 @@ class FakeService:
             load_pending_decision=lambda _session_id: None,
             load_suspended_turn=lambda _session_id: None,
             list_sessions=lambda limit=20: (),
+            append_command_result=lambda **_kwargs: None,
         )
 
     def current_context_window_metrics(self) -> dict[str, object]:
@@ -302,6 +303,9 @@ def test_run_node_tui_gateway_reports_non_request_messages_with_declared_error_c
 
 
 class E2ESessionService:
+    def append_command_result(self, **_kwargs: object) -> None:
+        return None
+
     def load_pending_decision(self, _session_id: str) -> object | None:
         return None
 
@@ -380,14 +384,15 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
     command_items = [
         item
         for item in state["transcript"]
-        if item["type"] in {"command_output", "command_diagnostic"}
+        if item["type"] in {"command_output", "command_result"}
     ]
     assert len(command_items) == 2
     assert "/usage" in command_items[0]["text"]
     assert "/status usage" not in command_items[0]["text"]
-    assert command_items[1]["type"] == "command_diagnostic"
-    assert command_items[1]["text"] == "Usage"
+    assert command_items[1]["type"] == "command_result"
+    assert command_items[1]["text"] == "Usage\nSession: typed-smoke"
     assert command_items[1]["metadata"]["command"] == "/usage"
+    assert command_items[1]["metadata"]["display"]["kind"] == "diagnostic"
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
@@ -400,6 +405,9 @@ class E2EWaitingSessionService:
     def __init__(self) -> None:
         self.pending_decision: PendingDecision | None = None
         self.suspended_turn: TurnRecord | None = None
+
+    def append_command_result(self, **_kwargs: object) -> None:
+        return None
 
     def load_pending_decision(self, _session_id: str) -> object | None:
         return self.pending_decision
@@ -1529,6 +1537,9 @@ class E2EResumeTipSessionService:
     ) -> None:
         self.pending_decision = pending_decision
         self.suspended_turn = suspended_turn
+
+    def append_command_result(self, **_kwargs: object) -> None:
+        return None
 
     def load_pending_decision(self, session_id: str) -> object | None:
         return self.pending_decision if session_id == "branch" else None
