@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Lock
 import time
@@ -14,6 +15,7 @@ from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.process import NodeTuiProcess
 from mycli.cli.node_tui.gateway import NodeTuiGateway, run_node_tui_gateway
 from mycli.cli.node_tui.protocol import RpcRequest
+from mycli.domain.conversation import Conversation
 from mycli.domain.runtime import (
     AgentConfig,
     CollaborationMode,
@@ -1820,6 +1822,7 @@ def test_gateway_queue_pop_and_interrupt_preserve_pending_steering(
         config=config,
         home_dir=tmp_path / "home",
     )
+    service.queue_drain_blocked = lambda: True  # type: ignore[method-assign]
     runtime.queue_steering_message("keep steering")
     runtime.queue_follow_up_message("first")
     runtime.queue_follow_up_message("second")
@@ -1837,3 +1840,156 @@ def test_gateway_queue_pop_and_interrupt_preserve_pending_steering(
     assert runtime.queued_messages() == (("keep steering",), ("first",))
     assert interrupted.result == {"interrupted": False}
     assert runtime.queued_messages() == (("keep steering",), ("first",))
+    gateway.close()
+
+
+def test_gateway_queue_retry_is_idempotent_with_real_runtime(tmp_path: Path) -> None:
+    class BlockingAdapter:
+        def __init__(self) -> None:
+            self.started = Event()
+            self.release = Event()
+
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            self.started.set()
+            assert self.release.wait(timeout=2.0)
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(RuntimeBlock(type="text", text="done"),),
+                    ),
+                ),
+                done=True,
+            )
+
+    adapter = BlockingAdapter()
+    config = AgentConfig(workspace_root=tmp_path, session_id="queue-retry")
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools([]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    service = TurnService(runtime=runtime, config=config, home_dir=tmp_path / "home")
+    gateway = NodeTuiGateway(service=service)
+    try:
+        submitted = gateway.handle_request(
+            RpcRequest(
+                id="submit",
+                method="turn.submit",
+                params={"message": "start", "client_turn_id": "client-start"},
+            )
+        )
+        assert adapter.started.wait(timeout=2.0)
+        assert submitted.result is not None
+        turn_id = str(submitted.result["turn_id"])
+        params = {
+            "message": "inspect",
+            "client_turn_id": "client-steer",
+            "expected_turn_id": turn_id,
+        }
+
+        first = gateway.handle_request(
+            RpcRequest(id="steer-1", method="turn.steer", params=params)
+        )
+        retry = gateway.handle_request(
+            RpcRequest(id="steer-2", method="turn.steer", params=params)
+        )
+
+        assert first.result is not None
+        assert retry.result is not None
+        assert first.result["disposition"] == "accepted_for_turn"
+        assert retry.result["disposition"] == "duplicate"
+        assert len(runtime.queue_snapshot().pending_steers) == 1
+    finally:
+        service.queue_drain_blocked = lambda: True  # type: ignore[method-assign]
+        adapter.release.set()
+        gateway.wait_for_current_turn(timeout=2.0)
+        gateway.close()
+
+
+def test_runtime_restart_normalizes_historical_pending_steer(tmp_path: Path) -> None:
+    class NoModelRequestsAdapter:
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            raise AssertionError("restart recovery must not request the model")
+
+    config = AgentConfig(workspace_root=tmp_path, session_id="queue-restart")
+    first = AgentRuntime(
+        model_adapter=NoModelRequestsAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+    first.queue_steering_input(
+        "inspect",
+        client_turn_id="client-steer",
+        expected_turn_id="turn-gone",
+        active_turn_id="turn-gone",
+        steerable=True,
+    )
+
+    restored = AgentRuntime(
+        model_adapter=NoModelRequestsAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=config,
+        home_dir=tmp_path / "home",
+    )
+
+    assert restored.queue_snapshot().pending_steers == ()
+    assert [item.text for item in restored.queue_snapshot().rejected_steers] == [
+        "inspect"
+    ]
+
+
+def test_gateway_resume_projects_only_destination_session_queue(tmp_path: Path) -> None:
+    class NoModelRequestsAdapter:
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            raise AssertionError("resume projection must not request the model")
+
+    home_dir = tmp_path / "home"
+    first_config = AgentConfig(workspace_root=tmp_path, session_id="queue-first")
+    runtime = AgentRuntime(
+        model_adapter=NoModelRequestsAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=first_config,
+        home_dir=home_dir,
+    )
+    runtime._session_service.save_conversation(Conversation(session_id="queue-first"))
+    runtime.queue_follow_up_input("first only", client_turn_id="client-first")
+    second_config = replace(first_config, session_id="queue-second")
+    runtime.rebind_session(second_config)
+    runtime._session_service.save_conversation(Conversation(session_id="queue-second"))
+    runtime.queue_follow_up_input("second only", client_turn_id="client-second")
+    service = TurnService(runtime=runtime, config=second_config, home_dir=home_dir)
+    service.queue_drain_blocked = lambda: True  # type: ignore[method-assign]
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+    try:
+        before = gateway._status_payload()
+        assert before["queue_items"]["follow_ups"][0]["message"] == "second only"
+
+        response = gateway.handle_request(
+            RpcRequest(
+                id="resume",
+                method="session.resume",
+                params={"session_id": "queue-first"},
+            )
+        )
+
+        assert response.result is not None
+        assert response.result["session_id"] == "queue-first"
+        status = gateway._status_payload()
+        assert [item["message"] for item in status["queue_items"]["follow_ups"]] == [
+            "first only"
+        ]
+        assert "second only" not in json.dumps(status)
+        direct_methods = [method for method, _params in events if method != "runtime.event"]
+        assert direct_methods.index("session.changed") < direct_methods.index("status.changed")
+    finally:
+        gateway.close()

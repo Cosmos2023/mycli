@@ -1901,10 +1901,12 @@ class NodeTuiGateway:
             raise ValueError("session_id is required.")
         lines = [f"[session] {line}" for line in self.service.resume_session(session_id)]
         self._bind_shell_lifecycle_listener()
+        self._bind_queue_listener()
         if self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
             self._emit_event("status.changed", self._status_payload())
             self._emit_resume_pending_state()
+        self._queue_scheduler_event.set()
         return {"session_id": self.service._config.session_id, "lines": lines}
 
     def _handle_session_tree(self, params: dict[str, object]) -> dict[str, object]:
