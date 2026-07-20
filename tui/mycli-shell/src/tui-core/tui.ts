@@ -1139,19 +1139,20 @@ export class TUI extends Container {
 		cursorPos: { row: number; col: number } | null,
 		width: number,
 		height: number,
-		prevViewportTop: number,
-		hardwareCursorRow: number,
 	): void {
 		this.fullRedrawCount += 1;
-		const currentScreenRow = Math.max(
-			0,
-			Math.min(height - 1, hardwareCursorRow - prevViewportTop),
-		);
 		let buffer = "\x1b[?2026h";
-		if (currentScreenRow > 0) {
-			buffer += `\x1b[${currentScreenRow}A`;
+
+		// Clear the live viewport without line feeds so none of the mutable frame
+		// can be pushed into terminal scrollback while history is inserted.
+		buffer += "\x1b[H";
+		for (let row = 0; row < height; row++) {
+			buffer += "\x1b[2K";
+			if (row < height - 1) {
+				buffer += "\x1b[1B";
+			}
 		}
-		buffer += "\r";
+		buffer += "\x1b[H";
 
 		if (historyLines.length === 0) {
 			buffer += "\x1b[2K";
@@ -1231,8 +1232,6 @@ export class TUI extends Container {
 				cursorPos,
 				width,
 				height,
-				prevViewportTop,
-				hardwareCursorRow,
 			);
 			return;
 		}

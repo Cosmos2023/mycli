@@ -3516,6 +3516,27 @@ test("native TUI appends history deltas queued before one frame", async () => {
 	assert.ok(frame > second);
 });
 
+test("native TUI clears the live viewport before scrolling history", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 4;
+	const ui = new TUI(terminal);
+	ui.addChild(new Text(["old frame 0", "old frame 1", "old frame 2", "old frame 3"].join("\n")));
+	ui.start();
+	await setTimeout(25);
+	terminal.output = "";
+
+	ui.insertHistoryBeforeNextFrame(["committed history"]);
+	ui.requestRender();
+	await setTimeout(25);
+
+	const clearViewport = `\x1b[H${Array.from(
+		{ length: terminal.rows },
+		(_, index) => `\x1b[2K${index < terminal.rows - 1 ? "\x1b[1B" : ""}`,
+	).join("")}\x1b[H`;
+	assert.ok(terminal.output.startsWith(`\x1b[?2026h${clearViewport}`));
+});
+
 test("native history watermark resets after terminal width changes", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
