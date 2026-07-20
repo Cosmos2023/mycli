@@ -62,6 +62,7 @@ export type RuntimeShellProcess = {
 export type RuntimeQueuedInputPreview = {
 	message: string;
 	hasImages: boolean;
+	source?: string;
 };
 
 export type RuntimeShellState = {
@@ -76,9 +77,12 @@ export type RuntimeShellState = {
 	status: Record<string, unknown>;
 	transcript: RuntimeTranscriptItem[];
 	turnRunning: boolean;
+	activeTurnId: string | null;
 	activeAssistantItemId: string | null;
 	queuedInputs: string[];
-	queuedSteeringInputs: RuntimeQueuedInputPreview[];
+	queueRevision: number;
+	queuedPendingSteers: RuntimeQueuedInputPreview[];
+	queuedRejectedSteers: RuntimeQueuedInputPreview[];
 	queuedFollowUpInputs: RuntimeQueuedInputPreview[];
 	hasPendingInput: boolean;
 	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
@@ -110,9 +114,12 @@ export function initialRuntimeState(): RuntimeShellState {
 		status: {},
 		transcript: [],
 		turnRunning: false,
+		activeTurnId: null,
 		activeAssistantItemId: null,
 		queuedInputs: [],
-		queuedSteeringInputs: [],
+		queueRevision: 0,
+		queuedPendingSteers: [],
+		queuedRejectedSteers: [],
 		queuedFollowUpInputs: [],
 		hasPendingInput: false,
 		queueActivity: null,
@@ -137,11 +144,11 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 	const tools: MycliShellTool[] = [];
 	const bash: MycliShellBash[] = [];
 	const transcript: MycliShellTranscriptBlock[] = [];
-	const steering = state.queuedSteeringInputs.map((item) => ({
+	const steering = state.queuedPendingSteers.map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
 	}));
-	const followUps = state.queuedFollowUpInputs.map((item) => ({
+	const followUps = [...state.queuedRejectedSteers, ...state.queuedFollowUpInputs].map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
 	}));
@@ -276,8 +283,8 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			reasoningLevel: reasoningLevelFromStatus(state.status),
 			...usageFooterData(state.status),
 			queueCount: queuedInputCount(state),
-			steeringQueueCount: state.queuedSteeringInputs.length,
-			followUpQueueCount: state.queuedFollowUpInputs.length,
+			steeringQueueCount: state.queuedPendingSteers.length,
+			followUpQueueCount: state.queuedRejectedSteers.length + state.queuedFollowUpInputs.length,
 			hasPendingInput: state.hasPendingInput,
 			queueActivity: state.queueActivity?.kind,
 			trust: state.trust.state ?? "unknown",
@@ -350,7 +357,7 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 	const welcomeText = welcome
 		? `${String(startupMark.text ?? "mycli")}\n${String(welcome.workspace ?? payload.workspace ?? "")}`.trim()
 		: "mycli";
-	const nextState = {
+	const nextState = applyQueuePayload({
 		...state,
 		sessionId: stringValue(payload.session_id) ?? state.sessionId,
 		sessionTitle: stringValue(payload.session_title) ?? state.sessionTitle,
@@ -362,11 +369,12 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 		status,
 		trust,
 		trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
+		activeTurnId: stringValue(status.turn_id),
 		transcript: [
 			...state.transcript,
 			{ id: "welcome", type: "system_notice", text: welcomeText, folded: false, metadata: welcome },
 		],
-	};
+	}, status, "status");
 	return applyShellBootstrap(
 		nextState,
 		Array.isArray(payload.background_shells) ? payload.background_shells : status.background_shells,
@@ -489,6 +497,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		return {
 			...state,
 			turnRunning: true,
+			activeTurnId: stringValue(params.turn_id) ?? state.activeTurnId,
 			activeAssistantItemId: nextId("assistant"),
 			liveStatus: { state: "running", kind: "running", text: "Running" },
 			pendingApproval: null,
@@ -592,6 +601,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		return {
 			...state,
 			turnRunning: false,
+			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
 			liveStatus:
@@ -625,6 +635,8 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		return {
 			...state,
 			turnRunning: previousWaitingStatus ? state.turnRunning : false,
+			activeTurnId:
+				method === "turn.failed" ? activeTurnIdAfterTerminal(state, params) : state.activeTurnId,
 			activeAssistantItemId: null,
 			liveReasoning: null,
 			liveStatus: previousWaitingStatus ?? { state: "failed", kind: "failed", text: message, message },
@@ -680,33 +692,20 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 	if (method === "status.changed") {
 		const trust = trustFromPayload(params.trust, state.workspace);
 		const turnRunning = booleanValue(params.turn_running);
-		const queuedSteering = queuedInputPreviews(
-			params.queued_steering_items,
-			params.queued_steering,
-		);
-		const queuedFollowUp = queuedInputPreviews(
-			params.queued_follow_up_items,
-			params.queued_follow_up,
-		);
-		const queueActivity = queueActivityFromPayload(params.queue_activity, queuedSteering, queuedFollowUp);
-		const nextState = {
+		const nextState = applyQueuePayload({
 			...state,
 			status: params,
 			turnRunning: turnRunning ?? state.turnRunning,
+			activeTurnId: stringValue(params.turn_id) ?? state.activeTurnId,
 			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
 			liveReasoning: turnRunning === false ? null : state.liveReasoning,
-			queuedSteeringInputs: queuedSteering,
-			queuedFollowUpInputs: queuedFollowUp,
-			queuedInputs: [...queuedSteering, ...queuedFollowUp].map((item) => item.message),
-			hasPendingInput: queuedSteering.length > 0 || queuedFollowUp.length > 0,
-			queueActivity,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			model: stringValue(params.model) ?? state.model,
 			collaborationMode: collaborationModeValue(params.collaboration_mode) ?? state.collaborationMode,
 			provider: stringValue(params.provider) ?? state.provider,
 			trust,
 			trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown",
-		};
+		}, params, "status");
 		return applyShellBootstrap(nextState, params.background_shells);
 	}
 	if (method === "workspace.trust.changed") {
@@ -714,20 +713,22 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		return { ...state, trust, trustGateDismissed: state.trustGateDismissed || trust.state !== "unknown" };
 	}
 	if (method === "turn.queue.updated") {
-		const steering = queuedInputPreviews(params.steering_items, params.steering);
-		const followUp = queuedInputPreviews(params.follow_up_items, params.follow_up);
-		return runtimeStateWithMessageQueues(state, {
-			steering,
-			followUp,
-			hasPendingInput: booleanValue(params.has_pending_input) ?? undefined,
-			activity: params.activity,
-		});
+		return applyQueuePayload(state, params, "event");
 	}
 	if (method === "session.changed") {
 		return {
 			...state,
 			sessionId: stringValue(params.session_id) ?? state.sessionId,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
+			turnRunning: false,
+			activeTurnId: null,
+			queueRevision: 0,
+			queuedInputs: [],
+			queuedPendingSteers: [],
+			queuedRejectedSteers: [],
+			queuedFollowUpInputs: [],
+			hasPendingInput: false,
+			queueActivity: null,
 			backgroundShells: {},
 			backgroundShellCount: 0,
 			shellEventSequences: {},
@@ -752,25 +753,90 @@ export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInp
 	};
 }
 
+function applyQueuePayload(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+	legacyShape: "event" | "status",
+): RuntimeShellState {
+	const queueItems = recordValue(payload.queue_items);
+	const hasStructuredItems =
+		"pending_steers" in queueItems ||
+		"rejected_steers" in queueItems ||
+		"follow_ups" in queueItems;
+	const revision = numberValue(payload.queue_revision);
+	if (hasStructuredItems) {
+		if (revision !== null && revision < state.queueRevision) {
+			return state;
+		}
+		return runtimeStateWithMessageQueues(state, {
+			pendingSteers: queuedInputPreviews(queueItems.pending_steers, []),
+			rejectedSteers: queuedInputPreviews(queueItems.rejected_steers, []),
+			followUps: queuedInputPreviews(queueItems.follow_ups, []),
+			revision: revision ?? state.queueRevision,
+			activity: payload.activity ?? payload.queue_activity,
+		});
+	}
+
+	const itemPrefix = legacyShape === "status" ? "queued_" : "";
+	return runtimeStateWithMessageQueues(state, {
+		pendingSteers: queuedInputPreviews(
+			payload[`${itemPrefix}steering_items`],
+			payload[`${itemPrefix}steering`],
+		),
+		rejectedSteers: [],
+		followUps: queuedInputPreviews(
+			payload[`${itemPrefix}follow_up_items`],
+			payload[`${itemPrefix}follow_up`],
+		),
+		activity: payload.activity ?? payload.queue_activity,
+	});
+}
+
+function activeTurnIdAfterTerminal(
+	state: RuntimeShellState,
+	params: Record<string, unknown>,
+): string | null {
+	const terminalTurnId = stringValue(params.turn_id);
+	return terminalTurnId !== null && terminalTurnId === state.activeTurnId
+		? null
+		: state.activeTurnId;
+}
+
 export function runtimeStateWithMessageQueues(
 	state: RuntimeShellState,
-	queues: { steering: RuntimeQueuedInputPreview[]; followUp: RuntimeQueuedInputPreview[]; hasPendingInput?: boolean; activity?: unknown },
+	queues: {
+		pendingSteers: RuntimeQueuedInputPreview[];
+		rejectedSteers: RuntimeQueuedInputPreview[];
+		followUps: RuntimeQueuedInputPreview[];
+		revision?: number;
+		activity?: unknown;
+	},
 ): RuntimeShellState {
-	const steering = visibleQueuedPreviews(queues.steering);
-	const followUp = visibleQueuedPreviews(queues.followUp);
-	const queueActivity = queueActivityFromPayload(queues.activity, steering, followUp);
+	const pendingSteers = visibleQueuedPreviews(queues.pendingSteers);
+	const rejectedSteers = visibleQueuedPreviews(queues.rejectedSteers);
+	const followUps = visibleQueuedPreviews(queues.followUps);
+	const queueActivity = queueActivityFromPayload(
+		queues.activity,
+		pendingSteers,
+		[...rejectedSteers, ...followUps],
+	);
 	return {
 		...state,
-		queuedSteeringInputs: steering,
-		queuedFollowUpInputs: followUp,
-		queuedInputs: [...steering, ...followUp].map((item) => item.message),
-		hasPendingInput: steering.length > 0 || followUp.length > 0,
+		queueRevision: queues.revision ?? state.queueRevision,
+		queuedPendingSteers: pendingSteers,
+		queuedRejectedSteers: rejectedSteers,
+		queuedFollowUpInputs: followUps,
+		queuedInputs: [...pendingSteers, ...rejectedSteers, ...followUps].map((item) => item.message),
+		hasPendingInput: pendingSteers.length > 0 || rejectedSteers.length > 0 || followUps.length > 0,
 		queueActivity,
 	};
 }
 
 function queuedInputCount(state: RuntimeShellState): number {
-	const splitQueueCount = state.queuedSteeringInputs.length + state.queuedFollowUpInputs.length;
+	const splitQueueCount =
+		state.queuedPendingSteers.length +
+		state.queuedRejectedSteers.length +
+		state.queuedFollowUpInputs.length;
 	return splitQueueCount > 0 ? splitQueueCount : state.queuedInputs.length;
 }
 
@@ -794,7 +860,9 @@ function visibleQueuedMessages(messages: string[]): string[] {
 }
 
 function visibleQueuedPreviews(items: RuntimeQueuedInputPreview[]): RuntimeQueuedInputPreview[] {
-	return items.filter((item) => !isInternalTaskNotification(item.message));
+	return items.filter(
+		(item) => item.source !== "task_notification" && !isInternalTaskNotification(item.message),
+	);
 }
 
 function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedInputPreview[] {
@@ -810,6 +878,7 @@ function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedIn
 			return {
 				message: message.trim(),
 				hasImages: Array.isArray(record.local_images) && record.local_images.length > 0,
+				...(stringValue(record.source) ? { source: stringValue(record.source)! } : {}),
 			};
 		})
 		.filter((item): item is RuntimeQueuedInputPreview => item !== null)

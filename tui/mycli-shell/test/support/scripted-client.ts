@@ -267,7 +267,14 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 }
 
 async function queueMessage(method: "turn.steer" | "turn.follow_up", message: string, queueKey: "steering" | "follow_up"): Promise<void> {
-	const result = await send(method, { message });
+	const expectedTurnId = state.activeTurnId;
+	if (method === "turn.steer" && !expectedTurnId) {
+		throw new Error("turn.steer requires an active server turn.");
+	}
+	const result = await send(method, {
+		message,
+		...(method === "turn.steer" ? { expected_turn_id: expectedTurnId } : {}),
+	});
 	if (result.accepted !== true) {
 		throw new Error(`${method} was not accepted.`);
 	}

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
 	initialRuntimeState,
@@ -1324,6 +1325,99 @@ test("runtime adapter syncs backend message queues", () => {
 	assert.equal(shell.footer.steeringQueueCount, 0);
 	assert.equal(shell.footer.followUpQueueCount, 0);
 	assert.equal(shell.footer.liveState, "Idle");
+});
+
+test("runtime adapter ignores stale queue revisions", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 4,
+		queue_items: {
+			pending_steers: [{ message: "new" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 3,
+		queue_items: {
+			pending_steers: [{ message: "old" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+
+	assert.equal(state.queueRevision, 4);
+	assert.deepEqual(state.queuedPendingSteers.map((item) => item.message), ["new"]);
+});
+
+test("session changes reset queue revision and hide internal notifications", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 9,
+		queue_items: {
+			pending_steers: [{ message: "old", source: "user" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-2" });
+	state = reduceRuntimeEvent(state, "status.changed", {
+		session_id: "session-2",
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [
+				{ message: "internal", source: "task_notification" },
+				{ message: "visible", source: "user" },
+			],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+
+	assert.equal(state.queueRevision, 1);
+	assert.deepEqual(state.queuedPendingSteers.map((item) => item.message), ["visible"]);
+});
+
+test("runtime adapter tracks the active server turn until its matching terminal event", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "turn.completed", { turn_id: "turn-other" });
+	assert.equal(state.activeTurnId, "turn-1");
+
+	state = reduceRuntimeEvent(state, "turn.completed", { turn_id: "turn-1" });
+	assert.equal(state.activeTurnId, null);
+});
+
+test("runtime adapter restores structured queue state from bootstrap", () => {
+	const state = runtimeStateFromBootstrap(initialRuntimeState(), {
+		session_id: "session-1",
+		status: {
+			turn_running: true,
+			turn_id: "turn-1",
+			queue_revision: 3,
+			queue_items: {
+				pending_steers: [{ message: "inspect" }],
+				rejected_steers: [{ message: "after turn" }],
+				follow_ups: [{ message: "later" }],
+			},
+		},
+	});
+
+	assert.equal(state.activeTurnId, "turn-1");
+	assert.equal(state.queueRevision, 3);
+	assert.deepEqual(state.queuedPendingSteers.map((item) => item.message), ["inspect"]);
+	assert.deepEqual(state.queuedRejectedSteers.map((item) => item.message), ["after turn"]);
+	assert.deepEqual(state.queuedFollowUpInputs.map((item) => item.message), ["later"]);
+});
+
+test("gateway steering uses the active server turn without local durable fallback", () => {
+	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
+	const steeringBody = source.match(/async function queueSteeringTurn\([\s\S]*?\n\}/)?.[0] ?? "";
+
+	assert.match(steeringBody, /expected_turn_id:\s*runtimeState\.activeTurnId/);
+	assert.match(source, /activeTurnId:\s*turnId \?\? runtimeState\.activeTurnId/);
+	assert.doesNotMatch(source, /queuedSteeringTurns|queuedFollowUpTurns/);
+	assert.doesNotMatch(steeringBody, /catch[\s\S]*enqueueSteeringTurn/);
 });
 
 test("runtime adapter syncs typed backend message queues", () => {

@@ -7,14 +7,12 @@ import {
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateAfterCommandResult,
-	runtimeStateWithMessageQueues,
 	runtimeStateWithSettings,
 	runtimeStateWithUserMessage,
 	resourcesFromResult,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
-	type RuntimeQueuedInputPreview,
 	type RuntimeShellState,
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
@@ -39,7 +37,6 @@ type QueuedTurnInput = {
 	clientTurnId?: string;
 	source?: string;
 };
-type SubmitTurnOptions = { fromQueue?: QueueKind; attachments?: MycliShellSubmitAttachments };
 
 const commandSurface = process.env.MYCLI_TUI_NATIVE === "1" ? "cli" : "tui";
 
@@ -57,10 +54,6 @@ let nativeRuntime: NativeChatRuntime | null = null;
 let ttyStreams: TtyStreams | null = null;
 let bootstrapped = false;
 const eventDeduper = new GatewayEventDeduper();
-const queuedSteeringTurns: QueuedTurnInput[] = [];
-const queuedFollowUpTurns: QueuedTurnInput[] = [];
-let queueDrainTimer: NodeJS.Timeout | null = null;
-let queueDraining = false;
 let backendTurnBusy = false;
 let clientTurnSequence = 0;
 
@@ -94,13 +87,6 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	if (event.method === "status.changed" && backendTurnBusy && event.params.turn_running === false) {
 		backendTurnBusy = false;
 	}
-	if (event.method === "turn.queue.updated") {
-		queuedSteeringTurns.length = 0;
-		queuedSteeringTurns.push(...queuedItemsValue(event.params.steering_items, "steer", event.params.steering));
-		queuedFollowUpTurns.length = 0;
-		queuedFollowUpTurns.push(...queuedItemsValue(event.params.follow_up_items, "followUp", event.params.follow_up));
-	}
-	scheduleQueuedTurnDrain();
 }
 
 async function send(
@@ -171,29 +157,20 @@ async function loadSessions(): Promise<void> {
 }
 
 async function submitTurn(
-	messageOrQueued: string | QueuedTurnInput,
-	optionsOrAttachments: SubmitTurnOptions | MycliShellSubmitAttachments = {},
+	message: string,
+	attachments: MycliShellSubmitAttachments = {},
 ): Promise<void> {
-	const options = normalizeSubmitOptions(optionsOrAttachments);
-	const queuedInput = typeof messageOrQueued === "string" ? null : messageOrQueued;
-	let rawText: string;
-	if (queuedInput) {
-		rawText = queuedInput.message;
-	} else {
-		rawText = messageOrQueued as string;
-	}
-	const text = rawText.trim();
-	const attachments = queuedInput?.attachments ?? options.attachments;
+	const text = message.trim();
 	if (!text) {
 		return;
 	}
-	if (!options.fromQueue && runtimeState.turnRunning) {
+	if (runtimeState.turnRunning || runtimeState.activeTurnId) {
 		await queueSteeringTurn({ kind: "steer", message: text, attachments });
 		return;
 	}
-	const clientTurnId = queuedInput?.clientTurnId ?? nextClientTurnId(options.fromQueue ?? "ui");
+	const clientTurnId = nextClientTurnId("ui");
 	try {
-		await send(
+		const result = await send(
 			"turn.submit",
 			{
 				message: text,
@@ -203,21 +180,19 @@ async function submitTurn(
 			{ recordErrors: false },
 		);
 		backendTurnBusy = true;
-		if (options.fromQueue === "steer") {
-			queuedSteeringTurns.shift();
-			syncQueuedInputs();
-		} else if (options.fromQueue === "followUp") {
-			queuedFollowUpTurns.shift();
-			syncQueuedInputs();
-		}
-		setRuntimeState(runtimeStateWithUserMessage(runtimeState, text));
+		const turnId = typeof result.turn_id === "string" ? result.turn_id : null;
+		setRuntimeState(runtimeStateWithUserMessage({
+			...runtimeState,
+			turnRunning: true,
+			activeTurnId: turnId ?? runtimeState.activeTurnId,
+		}, text));
 	} catch (error) {
 		if (error instanceof GatewayRequestError && error.code === "turn_in_progress") {
 			backendTurnBusy = true;
-			if (!options.fromQueue) {
-				enqueueSteeringTurn({ kind: "steer", message: text, attachments, clientTurnId });
+			if (runtimeState.activeTurnId) {
+				await queueSteeringTurn({ kind: "steer", message: text, attachments, clientTurnId });
+				return;
 			}
-			return;
 		}
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "gateway.error", {
@@ -231,26 +206,9 @@ async function submitTurn(
 	}
 }
 
-function normalizeSubmitOptions(
-	value: SubmitTurnOptions | MycliShellSubmitAttachments,
-): SubmitTurnOptions {
-	if ("localImages" in value) {
-		return { attachments: value };
-	}
-	if ("fromQueue" in value || "attachments" in value) {
-		return value;
-	}
-	return {};
-}
-
 function nextClientTurnId(prefix: string): string {
 	clientTurnSequence += 1;
 	return `${prefix}_${Date.now()}_${clientTurnSequence}`;
-}
-
-function enqueueSteeringTurn(input: QueuedTurnInput): void {
-	queuedSteeringTurns.push(input);
-	syncQueuedInputs();
 }
 
 async function submitFollowUp(message: string, attachments?: MycliShellSubmitAttachments): Promise<void> {
@@ -264,75 +222,46 @@ async function submitFollowUp(message: string, attachments?: MycliShellSubmitAtt
 		attachments,
 		clientTurnId: nextClientTurnId("followUp"),
 	};
-	if (runtimeState.turnRunning || backendTurnBusy) {
+	if (runtimeState.turnRunning || runtimeState.activeTurnId || backendTurnBusy) {
 		await queueFollowUpTurn(input);
 		return;
 	}
-	await submitTurn(input);
+	await submitTurn(input.message, input.attachments);
 }
 
 async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 	try {
-		const result = await send("turn.steer", queueRpcPayload(input), { recordErrors: false });
-		syncQueuedInputsFromResult(result);
-		if (result.accepted === false) {
-			enqueueSteeringTurn(input);
-		}
-	} catch {
-		enqueueSteeringTurn(input);
+		const result = await send("turn.steer", {
+			...queueRpcPayload(input),
+			expected_turn_id: runtimeState.activeTurnId,
+		}, { recordErrors: false });
+		setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", result));
+	} catch (error) {
+		setRuntimeState(reduceRuntimeEvent(runtimeState, "gateway.error", {
+			code: error instanceof GatewayRequestError ? error.code : "request_failed",
+			message: error instanceof Error ? error.message : "Request failed.",
+			method: "turn.steer",
+		}));
 	}
 }
 
 async function queueFollowUpTurn(input: QueuedTurnInput): Promise<void> {
 	try {
 		const result = await send("turn.follow_up", queueRpcPayload(input), { recordErrors: false });
-		syncQueuedInputsFromResult(result);
-		if (result.accepted === false) {
-			queuedFollowUpTurns.push(input);
-			syncQueuedInputs();
-		}
-	} catch {
-		queuedFollowUpTurns.push(input);
-		syncQueuedInputs();
+		setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", result));
+	} catch (error) {
+		setRuntimeState(reduceRuntimeEvent(runtimeState, "gateway.error", {
+			code: error instanceof GatewayRequestError ? error.code : "request_failed",
+			message: error instanceof Error ? error.message : "Request failed.",
+			method: "turn.follow_up",
+		}));
 	}
-}
-
-function queuedTurns(): QueuedTurnInput[] {
-	return [...queuedSteeringTurns, ...queuedFollowUpTurns];
-}
-
-function visibleQueuedTurns(): string[] {
-	return queuedTurns().map((input) => input.message).filter((message) => !isInternalTaskNotification(message));
-}
-
-function nextQueuedTurn(): QueuedTurnInput | null {
-	const steering = queuedSteeringTurns[0];
-	if (steering !== undefined) {
-		return steering;
-	}
-	const followUp = queuedFollowUpTurns[0];
-	if (followUp !== undefined) {
-		return followUp;
-	}
-	return null;
-}
-
-function syncQueuedInputs(): void {
-	setRuntimeState(runtimeStateWithMessageQueues(runtimeState, { steering: queuePreviews(queuedSteeringTurns), followUp: queuePreviews(queuedFollowUpTurns) }));
-}
-
-function syncQueuedInputsFromResult(result: Record<string, unknown>): void {
-	queuedSteeringTurns.length = 0;
-	queuedSteeringTurns.push(...queuedItemsValue(result.steering_items, "steer", result.steering));
-	queuedFollowUpTurns.length = 0;
-	queuedFollowUpTurns.push(...queuedItemsValue(result.follow_up_items, "followUp", result.follow_up));
-	syncQueuedInputs();
 }
 
 async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 	try {
 		const result = await send("turn.queue.pop", {}, { recordErrors: false });
-		syncQueuedInputsFromResult(result);
+		setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", result));
 		const popped = queuedItemsValue(
 			result.item === null || result.item === undefined ? [] : [result.item],
 			"followUp",
@@ -342,44 +271,6 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 	} catch {
 		return null;
 	}
-}
-
-function scheduleQueuedTurnDrain(): void {
-	if (queueDrainTimer || queueDraining || !canDrainQueuedTurns()) {
-		return;
-	}
-	queueDrainTimer = setTimeout(() => {
-		queueDrainTimer = null;
-		void drainQueuedTurns();
-	}, 25);
-	queueDrainTimer.unref?.();
-}
-
-async function drainQueuedTurns(): Promise<void> {
-	if (queueDraining || !canDrainQueuedTurns()) {
-		return;
-	}
-	const next = nextQueuedTurn();
-	if (!next) {
-		return;
-	}
-	queueDraining = true;
-	try {
-		await submitTurn(next, { fromQueue: next.kind });
-	} finally {
-		queueDraining = false;
-		scheduleQueuedTurnDrain();
-	}
-}
-
-function canDrainQueuedTurns(): boolean {
-	return (
-		queuedTurns().length > 0 &&
-		!backendTurnBusy &&
-		!runtimeState.turnRunning &&
-		!runtimeState.pendingApproval &&
-		!runtimeState.pendingClarification
-	);
 }
 
 async function interruptTurn(): Promise<void> {
@@ -408,13 +299,6 @@ function queueRpcPayload(input: QueuedTurnInput): Record<string, unknown> {
 		client_turn_id: input.clientTurnId ?? nextClientTurnId(input.kind),
 		...(input.attachments?.localImages?.length ? { local_images: input.attachments.localImages } : {}),
 	};
-}
-
-function queuePreviews(items: QueuedTurnInput[]): RuntimeQueuedInputPreview[] {
-	return items.map((item) => ({
-		message: item.message,
-		hasImages: Boolean(item.attachments?.localImages?.length),
-	}));
 }
 
 function queuedItemsValue(value: unknown, kind: QueueKind, fallback: unknown): QueuedTurnInput[] {
@@ -516,11 +400,6 @@ function stringArrayValue(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
-function isInternalTaskNotification(text: string): boolean {
-	const trimmed = text.trimStart();
-	return trimmed.startsWith("<task-notification>") || trimmed.startsWith("<task-notification ");
-}
-
 async function runCommand(command: string): Promise<void> {
 	const result = await send("command.run", { command, surface: commandSurface });
 	const clientAction = clientActionFromResult(result);
@@ -545,10 +424,12 @@ async function runCommand(command: string): Promise<void> {
 async function selectSession(sessionId: string): Promise<void> {
 	const result = await send("session.resume", { session_id: sessionId });
 	const session = sessions.find((candidate) => candidate.id === sessionId);
+	runtimeState = reduceRuntimeEvent(runtimeState, "session.changed", {
+		session_id: sessionId,
+		session_title: session?.title ?? sessionId,
+	});
 	runtimeState = {
 		...runtimeState,
-		sessionId,
-		sessionTitle: session?.title ?? sessionId,
 		transcript: [],
 	};
 	const transcriptPayload = await send("transcript.load", {
