@@ -1303,10 +1303,13 @@ class NodeTuiGateway:
                 user_message=message,
             ),
         )
-        self._emit_event(
-            "turn.completed",
-            self._turn_completed_payload(client_turn_id=client_turn_id, response=response),
+        payload = self._turn_completed_payload(
+            client_turn_id=client_turn_id,
+            response=response,
         )
+        if self._current_turn_id is not None:
+            payload["turn_id"] = self._current_turn_id
+        self._emit_event("turn.completed", payload)
 
     def _turn_completed_payload(
         self,
@@ -1610,6 +1613,7 @@ class NodeTuiGateway:
                 method=request.method,
             )
         client_turn_id = f"approval_{request.id}"
+        turn_id = f"turn_{uuid4().hex}"
         with self._turn_lock:
             if self._turn_running:
                 return self._gateway_error_response(
@@ -1619,22 +1623,39 @@ class NodeTuiGateway:
                     method=request.method,
                 )
             self._turn_running = True
-            self._turn_thread = Thread(
+            self._current_client_turn_id = client_turn_id
+            self._current_turn_id = turn_id
+            self._turn_thread = self._turn_thread_factory(
                 target=self._run_decision_worker,
                 kwargs={
                     "choice": mapped,
                     "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
                     "decision_id": active_decision_id,
                 },
                 daemon=True,
             )
-            self._turn_thread.start()
+            try:
+                self._turn_thread.start()
+            except Exception as exc:
+                self._turn_running = False
+                self._current_client_turn_id = None
+                self._current_turn_id = None
+                self._turn_thread = None
+                return self._gateway_error_response(
+                    request.id,
+                    code="internal_error",
+                    message="Turn worker could not start.",
+                    method=request.method,
+                    detail=str(exc),
+                )
         return result_response(
             request.id,
             {
                 "accepted": True,
                 "decision_id": active_decision_id,
                 "client_turn_id": client_turn_id,
+                "turn_id": turn_id,
             },
         )
 
@@ -1643,9 +1664,13 @@ class NodeTuiGateway:
         *,
         choice: str,
         client_turn_id: str,
+        turn_id: str,
         decision_id: str,
     ) -> None:
-        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_event(
+            "turn.started",
+            {"client_turn_id": client_turn_id, "turn_id": turn_id},
+        )
         self._emit_status_update(
             client_turn_id=client_turn_id,
             state="running",
@@ -1656,6 +1681,7 @@ class NodeTuiGateway:
             "approval.respond",
             {
                 "client_turn_id": client_turn_id,
+                "turn_id": turn_id,
                 "decision_id": decision_id,
                 "choice": _choice_for_resolved_value(choice),
             },
@@ -1668,7 +1694,11 @@ class NodeTuiGateway:
         except Exception as exc:
             self._emit_event(
                 "turn.failed",
-                {"client_turn_id": client_turn_id, "message": str(exc)},
+                {
+                    "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
+                    "message": str(exc),
+                },
             )
             self._emit_turn_status(
                 client_turn_id=client_turn_id,
@@ -1699,11 +1729,14 @@ class NodeTuiGateway:
                 )
             self._emit_event(
                 "turn.completed",
-                self._turn_completed_payload(
-                    client_turn_id=client_turn_id,
-                    response=response,
-                    assistant_message=assistant_message,
-                ),
+                {
+                    "turn_id": turn_id,
+                    **self._turn_completed_payload(
+                        client_turn_id=client_turn_id,
+                        response=response,
+                        assistant_message=assistant_message,
+                    ),
+                },
             )
             turn_state = _turn_state_for_response(response)
             self._emit_turn_status(
@@ -1722,7 +1755,10 @@ class NodeTuiGateway:
             )
         finally:
             with self._turn_lock:
-                self._turn_running = False
+                if self._current_turn_id == turn_id:
+                    self._turn_running = False
+                    self._current_client_turn_id = None
+                    self._current_turn_id = None
             self._emit_event("status.changed", self._status_payload())
             self._queue_scheduler_event.set()
 
@@ -1744,6 +1780,7 @@ class NodeTuiGateway:
                 method=request.method,
             )
         client_turn_id = f"clarify_{request.id}"
+        turn_id = f"turn_{uuid4().hex}"
         with self._turn_lock:
             if self._turn_running:
                 return self._gateway_error_response(
@@ -1753,19 +1790,40 @@ class NodeTuiGateway:
                     method=request.method,
                 )
             self._turn_running = True
-            self._turn_thread = Thread(
+            self._current_client_turn_id = client_turn_id
+            self._current_turn_id = turn_id
+            self._turn_thread = self._turn_thread_factory(
                 target=self._run_clarification_worker,
                 kwargs={
                     "request_id": request_id,
                     "response": response,
                     "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
                 },
                 daemon=True,
             )
-            self._turn_thread.start()
+            try:
+                self._turn_thread.start()
+            except Exception as exc:
+                self._turn_running = False
+                self._current_client_turn_id = None
+                self._current_turn_id = None
+                self._turn_thread = None
+                return self._gateway_error_response(
+                    request.id,
+                    code="internal_error",
+                    message="Turn worker could not start.",
+                    method=request.method,
+                    detail=str(exc),
+                )
         return result_response(
             request.id,
-            {"accepted": True, "request_id": request_id, "client_turn_id": client_turn_id},
+            {
+                "accepted": True,
+                "request_id": request_id,
+                "client_turn_id": client_turn_id,
+                "turn_id": turn_id,
+            },
         )
 
     def _run_clarification_worker(
@@ -1774,8 +1832,12 @@ class NodeTuiGateway:
         request_id: str,
         response: str,
         client_turn_id: str,
+        turn_id: str,
     ) -> None:
-        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_event(
+            "turn.started",
+            {"client_turn_id": client_turn_id, "turn_id": turn_id},
+        )
         self._emit_status_update(
             client_turn_id=client_turn_id,
             state="running",
@@ -1787,7 +1849,11 @@ class NodeTuiGateway:
         except Exception as exc:
             self._emit_event(
                 "turn.failed",
-                {"client_turn_id": client_turn_id, "message": str(exc)},
+                {
+                    "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
+                    "message": str(exc),
+                },
             )
             self._emit_turn_status(
                 client_turn_id=client_turn_id,
@@ -1805,6 +1871,7 @@ class NodeTuiGateway:
                 "clarify.respond",
                 {
                     "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
                     "request_id": request_id,
                     "response": _bounded_text(response),
                 },
@@ -1821,11 +1888,14 @@ class NodeTuiGateway:
                 )
             self._emit_event(
                 "turn.completed",
-                self._turn_completed_payload(
-                    client_turn_id=client_turn_id,
-                    response=turn_response,
-                    assistant_message=assistant_message,
-                ),
+                {
+                    "turn_id": turn_id,
+                    **self._turn_completed_payload(
+                        client_turn_id=client_turn_id,
+                        response=turn_response,
+                        assistant_message=assistant_message,
+                    ),
+                },
             )
             turn_state = _turn_state_for_response(turn_response)
             self._emit_turn_status(
@@ -1844,7 +1914,10 @@ class NodeTuiGateway:
             )
         finally:
             with self._turn_lock:
-                self._turn_running = False
+                if self._current_turn_id == turn_id:
+                    self._turn_running = False
+                    self._current_client_turn_id = None
+                    self._current_turn_id = None
             self._emit_event("status.changed", self._status_payload())
             self._queue_scheduler_event.set()
 

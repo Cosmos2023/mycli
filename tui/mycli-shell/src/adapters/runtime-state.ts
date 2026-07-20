@@ -629,6 +629,22 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			},
 		};
 	}
+	if (method === "turn.interrupted") {
+		const message = stringValue(params.message) ?? "Interrupt requested";
+		return {
+			...state,
+			turnRunning: false,
+			activeTurnId: activeTurnIdAfterTerminal(state, params),
+			activeAssistantItemId: null,
+			liveReasoning: null,
+			liveStatus: {
+				state: "interrupted",
+				kind: "interrupted",
+				text: "Interrupted",
+				message,
+			},
+		};
+	}
 	if (method === "turn.failed" || method === "gateway.error") {
 		const message = String(params.message ?? "Request failed");
 		const previousWaitingStatus =

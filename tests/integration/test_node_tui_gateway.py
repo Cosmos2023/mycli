@@ -1442,7 +1442,8 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_running_turn_queue(
     assert state["turnRunning"] is False
     assert state["currentTurnId"] is None
     assert state["queuedInputs"] == []
-    assert state["queuedSteeringInputs"] == []
+    assert state["queuedPendingSteers"] == []
+    assert state["queuedRejectedSteers"] == []
     assert state["queuedFollowUpInputs"] == []
     assert state["liveStatus"]["state"] == "completed"
     assistant_items = [

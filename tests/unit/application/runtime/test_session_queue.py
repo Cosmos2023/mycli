@@ -162,3 +162,15 @@ def test_mark_started_only_removes_current_priority_record(tmp_path: Path) -> No
         queue.mark_started(second.queue_id)
 
     assert queue.next_end_of_turn() == first
+
+
+def test_queue_state_has_one_backend_owner() -> None:
+    runtime_source = Path("src/mycli/application/runtime/agent_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    gateway_source = Path("tui/mycli-shell/src/gateway.ts").read_text(encoding="utf-8")
+
+    assert "_steering_messages" not in runtime_source
+    assert "_follow_up_messages" not in runtime_source
+    assert "queuedSteeringTurns" not in gateway_source
+    assert "queuedFollowUpTurns" not in gateway_source

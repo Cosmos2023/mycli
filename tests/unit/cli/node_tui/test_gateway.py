@@ -3364,12 +3364,13 @@ def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path)
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
-    _assert_accepted_turn(accepted, "client_1")
+    turn_id = _assert_accepted_turn(accepted, "client_1")
     assert interrupted.result == {"interrupted": True}
     assert service.seen_token.interrupted is True
     assert service.seen_token.reason == "interrupt"
     assert {
         "client_turn_id": "client_1",
+        "turn_id": turn_id,
         "turn_state": "interrupted",
         "assistant_message": "Interrupt requested",
         "activity_events": [],
@@ -3776,12 +3777,21 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
         )
     )
     gateway.wait_for_current_turn(timeout=2.0)
+    turn_id = response.result["turn_id"]
 
     assert response.result == {
         "accepted": True,
         "decision_id": "decision_current",
         "client_turn_id": "approval_req_1",
+        "turn_id": turn_id,
     }
+    assert isinstance(turn_id, str) and turn_id.startswith("turn_")
+    assert next(params for method, params in events if method == "turn.started")[
+        "turn_id"
+    ] == turn_id
+    assert next(params for method, params in events if method == "turn.completed")[
+        "turn_id"
+    ] == turn_id
     assert service.resolved_choices == ["1"]
     methods = [method for method, _params in events if method != "runtime.event"]
     assert methods[:3] == ["turn.started", "status.update", "approval.respond"]
@@ -3821,11 +3831,8 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {
-        "accepted": True,
-        "decision_id": "decision_current",
-        "client_turn_id": "approval_req_1",
-    }
+    _assert_accepted_turn(response, "approval_req_1")
+    assert response.result["decision_id"] == "decision_current"
     assert service.resolved_choices == ["2"]
 
 
@@ -3854,11 +3861,8 @@ def test_gateway_approval_respond_accepts_stable_decision_id(tmp_path: Path) -> 
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {
-        "accepted": True,
-        "decision_id": "call_push_1",
-        "client_turn_id": "approval_req_1",
-    }
+    _assert_accepted_turn(response, "approval_req_1")
+    assert response.result["decision_id"] == "call_push_1"
     assert service.resolved_choices == ["1"]
 
 
@@ -3913,11 +3917,8 @@ def test_gateway_approval_resume_emits_followup_approval_request(
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {
-        "accepted": True,
-        "decision_id": "call_lsof_1",
-        "client_turn_id": "approval_req_1",
-    }
+    _assert_accepted_turn(response, "approval_req_1")
+    assert response.result["decision_id"] == "call_lsof_1"
     approval_requests = [
         params for method, params in events if method == "approval.request"
     ]
@@ -4006,13 +4007,11 @@ def test_gateway_approval_resume_forwards_stream_events(tmp_path: Path) -> None:
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {
-        "accepted": True,
-        "decision_id": "call_lsof_1",
-        "client_turn_id": "approval_req_1",
-    }
+    turn_id = _assert_accepted_turn(response, "approval_req_1")
+    assert response.result["decision_id"] == "call_lsof_1"
     assert ("approval.respond", {
         "client_turn_id": "approval_req_1",
+        "turn_id": turn_id,
         "decision_id": "call_lsof_1",
         "choice": "approve_once",
     }) in events
@@ -4165,13 +4164,11 @@ def test_gateway_approval_reject_emits_rejected_terminal_status(tmp_path: Path) 
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {
-        "accepted": True,
-        "decision_id": "decision_current",
-        "client_turn_id": "approval_req_1",
-    }
+    turn_id = _assert_accepted_turn(response, "approval_req_1")
+    assert response.result["decision_id"] == "decision_current"
     assert {
         "client_turn_id": "approval_req_1",
+        "turn_id": turn_id,
         "state": "rejected",
         "kind": "rejected",
         "text": "Rejected",
@@ -4180,6 +4177,7 @@ def test_gateway_approval_reject_emits_rejected_terminal_status(tmp_path: Path) 
     } in [params for method, params in events if method == "turn.status"]
     assert {
         "client_turn_id": "approval_req_1",
+        "turn_id": turn_id,
         "state": "rejected",
         "kind": "rejected",
         "text": "Rejected",
@@ -4203,12 +4201,21 @@ def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_pat
         )
     )
     gateway.wait_for_current_turn(timeout=2.0)
+    turn_id = response.result["turn_id"]
 
     assert response.result == {
         "accepted": True,
         "request_id": "call_question_1",
         "client_turn_id": "clarify_req_1",
+        "turn_id": turn_id,
     }
+    assert isinstance(turn_id, str) and turn_id.startswith("turn_")
+    assert next(params for method, params in events if method == "turn.started")[
+        "turn_id"
+    ] == turn_id
+    assert next(params for method, params in events if method == "turn.completed")[
+        "turn_id"
+    ] == turn_id
     assert service.clarification_responses == [("call_question_1", "Runtime")]
     assert [method for method, _params in events if method != "runtime.event"] == [
         "turn.started",
@@ -4223,6 +4230,7 @@ def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_pat
     clarify = next(params for method, params in events if method == "clarify.respond")
     assert clarify == {
         "client_turn_id": "clarify_req_1",
+        "turn_id": turn_id,
         "request_id": "call_question_1",
         "response": "Runtime",
     }
@@ -4286,13 +4294,11 @@ def test_gateway_decision_resolve_emits_turn_status_for_failures(tmp_path: Path)
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {
-        "accepted": True,
-        "decision_id": "decision_current",
-        "client_turn_id": "approval_req_1",
-    }
+    turn_id = _assert_accepted_turn(response, "approval_req_1")
+    assert response.result["decision_id"] == "decision_current"
     assert {
         "client_turn_id": "approval_req_1",
+        "turn_id": turn_id,
         "state": "failed",
         "kind": "failed",
         "text": "Failed",

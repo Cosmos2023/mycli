@@ -1388,6 +1388,20 @@ test("runtime adapter tracks the active server turn until its matching terminal 
 	assert.equal(state.activeTurnId, null);
 });
 
+test("runtime adapter clears the matching interrupted server turn", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "turn.interrupted", {
+		turn_id: "turn-1",
+		message: "Interrupt requested",
+	});
+
+	assert.equal(state.activeTurnId, null);
+	assert.equal(state.turnRunning, false);
+	assert.equal(state.liveStatus?.state, "interrupted");
+});
+
 test("runtime adapter restores structured queue state from bootstrap", () => {
 	const state = runtimeStateFromBootstrap(initialRuntimeState(), {
 		session_id: "session-1",

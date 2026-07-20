@@ -189,6 +189,10 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "clarification_not_pending",
         "incompatible_protocol",
         "command_result_persistence_failed",
+        "stale_turn",
+        "queue_conflict",
+        "queue_capacity",
+        "queue_worker_start_failed",
     ]
     assert schemas["gateway.error"]["properties"]["code"]["enum"] == list(GATEWAY_ERROR_CODES)
     assert schemas["approval.respond"]["properties"]["choice"]["enum"] == [
