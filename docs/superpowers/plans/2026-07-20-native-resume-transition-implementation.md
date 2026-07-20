@@ -315,7 +315,251 @@ render interval.
 
 Run the Task 1 command. Expected: all three focused tests pass.
 
-### Task 5: Verify and Commit
+### Task 5: Commit Rows That Leave the Live Viewport
+
+**Files:**
+- Modify: `tui/mycli-shell/src/shell-runtime.ts:155-220`
+- Modify: `tui/mycli-shell/src/shell-runtime.ts:328-338`
+- Modify: `tui/mycli-shell/src/tui-core/tui.ts:308-315`
+- Test: `tui/mycli-shell/test/shell-app.test.ts`
+
+- [ ] **Step 1: Add a Resume-followed-by-streaming regression test**
+
+Resume a long transcript, submit a new user message, clear captured output, then
+grow a multiline assistant response until the user row leaves the live tail:
+
+```ts
+test("mycli shell commits a resumed user message before a long streamed tail", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 16;
+	const history = Array.from({ length: 20 }, (_, index) => ({
+		id: `resumed-${index}`,
+		role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+		text: `resumed history ${index}`,
+	}));
+	let runtime: MycliShellRuntime;
+	runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSessionSelect: async (sessionId) => {
+			runtime.setState({
+				...runtime.getState(),
+				messages: history,
+				tools: [],
+				bash: [],
+				transcript: undefined,
+				footer: { ...runtime.getState().footer, sessionName: sessionId },
+			});
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.showSessionSelector();
+	await setTimeout(25);
+	terminal.input?.("\r");
+	await setTimeout(50);
+
+	const resumed = runtime.getState();
+	const user = { id: "new-user", role: "user" as const, text: "train a small model from scratch" };
+	runtime.setState({
+		...resumed,
+		messages: [...history, user],
+		footer: { ...resumed.footer, liveState: "Running" },
+	});
+	await setTimeout(25);
+	terminal.output = "";
+
+	const assistant = {
+		id: "new-assistant",
+		role: "assistant" as const,
+		text: Array.from({ length: 40 }, (_, index) => `streamed answer ${index}`).join("\n"),
+	};
+	runtime.setState({
+		...runtime.getState(),
+		messages: [...history, user, assistant],
+	});
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	const userRow = output.indexOf(user.text);
+	const header = output.indexOf("mycli ctrl+p commands");
+	const liveTail = output.indexOf("streamed answer 39");
+	assert.ok(userRow >= 0);
+	assert.ok(header > userRow);
+	assert.ok(liveTail > header);
+	assert.equal(output.match(/train a small model from scratch/g)?.length, 1);
+	assertNativeScrollbackSafeOutput(terminal.output);
+});
+```
+
+- [ ] **Step 2: Add a pending-delta ordering test**
+
+Import `TUI` and `Text`, then queue two history batches before the first frame:
+
+```ts
+test("native TUI appends history deltas queued before one frame", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 4;
+	const ui = new TUI(terminal);
+	ui.addChild(new Text("live frame"));
+	ui.insertHistoryBeforeNextFrame(["first history delta"]);
+	ui.insertHistoryBeforeNextFrame(["second history delta"]);
+	ui.start();
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	const first = output.indexOf("first history delta");
+	const second = output.indexOf("second history delta");
+	const frame = output.indexOf("live frame");
+	assert.ok(first >= 0);
+	assert.ok(second > first);
+	assert.ok(frame > second);
+});
+```
+
+- [ ] **Step 3: Add a width-change watermark test**
+
+Start at width 100, resize to a narrower width, clear resize output, and project
+the same state once more:
+
+```ts
+test("native history watermark resets after terminal width changes", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	terminal.columns = 100;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 18 }, (_, index) => ({
+				id: `history-${index}`,
+				role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+				text: `history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.columns = 60;
+	terminal.resize?.();
+	await setTimeout(25);
+	terminal.output = "";
+	runtime.setState({ ...runtime.getState() });
+	await setTimeout(25);
+
+	assert.doesNotMatch(stripAnsi(terminal.output), /history message/);
+});
+```
+
+- [ ] **Step 4: Run focused tests and verify RED**
+
+```bash
+cd tui/mycli-shell
+node --import ./node_modules/tsx/dist/esm/index.mjs \
+  --test \
+  --test-name-pattern="commits a resumed user message|appends history deltas|watermark resets" \
+  --test-reporter=dot \
+  test/shell-app.test.ts
+```
+
+Expected: the user message test fails because no post-Resume prefix delta is
+queued; the queue test fails because the second call replaces the first batch.
+The width test passes before the watermark exists because no continuous commit is
+attempted yet, then guards the new implementation against duplicate reflow rows.
+
+- [ ] **Step 5: Add the transcript commit watermark**
+
+Add these fields to `TranscriptViewportComponent`:
+
+```ts
+	private committedPrefixLength = 0;
+	private committedPrefixBoundary: string | undefined;
+	private committedWidth: number | undefined;
+```
+
+Add a helper:
+
+```ts
+	private recordCommittedPrefix(lines: string[], start: number, width: number): void {
+		this.committedPrefixLength = start;
+		this.committedPrefixBoundary = start > 0 ? lines[start - 1] : undefined;
+		this.committedWidth = width;
+	}
+```
+
+Update `scrollbackPrefix()` to call `recordCommittedPrefix()` before returning its
+prefix. Then add the incremental method:
+
+```ts
+	takeNewScrollbackLines(width: number): string[] {
+		if (this.scrollOffset !== 0) return [];
+		const height = Math.max(1, this.heightForWidth(width));
+		const lines = this.content.render(width);
+		this.lastLineCount = lines.length;
+		const start = this.visibleStart(lines, height);
+		const boundaryChanged =
+			this.committedPrefixLength > 0 &&
+			lines[this.committedPrefixLength - 1] !== this.committedPrefixBoundary;
+		if (
+			this.committedWidth !== width ||
+			start < this.committedPrefixLength ||
+			boundaryChanged
+		) {
+			this.recordCommittedPrefix(lines, start, width);
+			return [];
+		}
+		const delta = lines.slice(this.committedPrefixLength, start);
+		this.recordCommittedPrefix(lines, start, width);
+		return delta;
+	}
+```
+
+- [ ] **Step 6: Queue deltas after each state projection**
+
+After `maybeResetTranscriptScroll()` in `setState()`, call a new helper:
+
+```ts
+	private queueNativeTranscriptDelta(): void {
+		if (!this.ui.terminal.nativeScrollback || !this.mainMounted) return;
+		const delta = this.transcriptViewport.takeNewScrollbackLines(this.ui.terminal.columns);
+		if (delta.length > 0) {
+			this.ui.insertHistoryBeforeNextFrame(delta);
+		}
+	}
+```
+
+This runs after changed chat components have been rebuilt. Manual transcript
+scrolling returns no delta because `scrollOffset !== 0`.
+
+- [ ] **Step 7: Append pending renderer batches**
+
+Change `insertHistoryBeforeNextFrame()` to preserve every batch queued before the
+next render:
+
+```ts
+	insertHistoryBeforeNextFrame(lines: string[]): void {
+		this.pendingHistoryLines = [
+			...(this.pendingHistoryLines ?? []),
+			...lines,
+		];
+		this.requestRender();
+	}
+```
+
+- [ ] **Step 8: Run focused tests and verify GREEN**
+
+Run the Step 4 command. Expected: all three tests pass.
+
+### Task 6: Verify and Commit
 
 **Files:**
 - Modify: `tui/mycli-shell/src/shell-runtime.ts`
@@ -356,5 +600,5 @@ git add \
   tui/mycli-shell/src/shell-runtime.ts \
   tui/mycli-shell/src/tui-core/tui.ts \
   tui/mycli-shell/test/shell-app.test.ts
-git commit -m "fix: replay native history above live viewport"
+git commit -m "fix: commit native history during streaming"
 ```
