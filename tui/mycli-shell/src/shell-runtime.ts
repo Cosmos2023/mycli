@@ -152,7 +152,6 @@ class TurnCompletedComponent implements Component {
 class TranscriptViewportComponent implements Component {
 	private scrollOffset = 0;
 	private lastLineCount = 0;
-	private renderFullOnce = false;
 
 	constructor(
 		private readonly content: Container,
@@ -179,8 +178,12 @@ class TranscriptViewportComponent implements Component {
 		this.scrollOffset = Math.max(0, lines.length - height - target);
 	}
 
-	renderFullNext(): void {
-		this.renderFullOnce = true;
+	scrollbackPrefix(width: number): string[] {
+		const height = Math.max(1, this.heightForWidth(width));
+		const lines = this.content.render(width);
+		this.scrollOffset = 0;
+		this.lastLineCount = lines.length;
+		return lines.slice(0, this.visibleStart(lines, height));
 	}
 
 	invalidate(): void {
@@ -194,24 +197,24 @@ class TranscriptViewportComponent implements Component {
 			this.scrollOffset = 0;
 		}
 		this.lastLineCount = lines.length;
-		if (this.renderFullOnce) {
-			this.renderFullOnce = false;
-			this.scrollOffset = 0;
-			return lines;
-		}
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
+		const start = this.visibleStart(lines, height);
+		const visible = lines.slice(start, start + height);
+		while (visible.length < height) {
+			visible.push("");
+		}
+		return visible;
+	}
+
+	private visibleStart(lines: string[], height: number): number {
 		let start = Math.max(0, lines.length - height - this.scrollOffset);
 		if (this.scrollOffset === 0) {
 			while (start > 0 && lines.slice(start, start + height).every(isVisuallyBlankLine)) {
 				start -= 1;
 			}
 		}
-		const visible = lines.slice(start, start + height);
-		while (visible.length < height) {
-			visible.push("");
-		}
-		return visible;
+		return start;
 	}
 }
 
@@ -251,9 +254,6 @@ export class MycliShellRuntime {
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
 		this.transcriptViewport = new TranscriptViewportComponent(this.chatContainer, (width) => this.transcriptHeight(width));
-		if (this.ui.terminal.nativeScrollback) {
-			this.transcriptViewport.renderFullNext();
-		}
 		const keybindings = installMycliKeybindings();
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, {
 			paddingX: 1,
@@ -591,8 +591,7 @@ export class MycliShellRuntime {
 				sessions: this.state.sessions ?? [],
 				currentWorkspace: this.state.footer.cwd,
 				onSelect: (session) => {
-					done();
-					void this.selectSession(session.id);
+					void this.selectSession(session.id).finally(done);
 				},
 				onCancel: () => done(),
 			});
@@ -682,6 +681,13 @@ export class MycliShellRuntime {
 		this.ui.addChild(this.subagentTaskContainer);
 		this.ui.addChild(this.footerContainer);
 		this.rebuildAll();
+		this.queueNativeTranscriptHistory();
+	}
+
+	private queueNativeTranscriptHistory(): void {
+		if (!this.ui.terminal.nativeScrollback) return;
+		const prefix = this.transcriptViewport.scrollbackPrefix(this.ui.terminal.columns);
+		this.ui.insertHistoryBeforeNextFrame(prefix);
 	}
 
 	private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
@@ -1552,6 +1558,7 @@ export class MycliShellRuntime {
 			},
 		});
 		await this.options.onSessionSelect?.(sessionId);
+		this.queueNativeTranscriptHistory();
 	}
 
 	private async inspectResource(resource: MycliShellResource): Promise<void> {

@@ -2458,6 +2458,79 @@ test("mycli shell session selector handles empty state and selection", async () 
 	assert.equal(runtime.getState().footer.sessionName, "session-b");
 });
 
+test("mycli shell session selection inserts loaded history once into native scrollback", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 16;
+	let runtime: MycliShellRuntime;
+	runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSessionSelect: async (sessionId) => {
+			const messages = Array.from({ length: 30 }, (_, index) => ({
+				id: `resumed-${index}`,
+				role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+				text: `resumed history ${index}`,
+			}));
+			runtime.setState({
+				...runtime.getState(),
+				messages,
+				tools: [],
+				bash: [],
+				transcript: undefined,
+				footer: { ...runtime.getState().footer, sessionName: sessionId },
+			});
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.showSessionSelector();
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(terminal.columns).join("\n")), /Resume Session/);
+	terminal.output = "";
+
+	terminal.input?.("\r");
+	await setTimeout(50);
+
+	const output = stripAnsi(terminal.output);
+	const oldestHistory = output.indexOf("resumed history 0");
+	const header = output.indexOf("mycli ctrl+p commands");
+	const visibleTail = output.indexOf("resumed history 29");
+	assert.ok(oldestHistory >= 0);
+	assert.ok(header > oldestHistory);
+	assert.ok(visibleTail > header);
+	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
+	assert.equal(output.match(/resumed history 0/g)?.length, 1);
+	assert.doesNotMatch(output, /Resume Session/);
+	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
+test("mycli shell keeps the session selector mounted until resume history is ready", async () => {
+	const terminal = new TestTerminal();
+	let releaseLoad: (() => void) | undefined;
+	const load = new Promise<void>((resolve) => {
+		releaseLoad = resolve;
+	});
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSessionSelect: async () => load,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.showSessionSelector();
+	await setTimeout(25);
+	terminal.input?.("\r");
+	await setTimeout(25);
+	assert.match(stripAnsi(runtime.ui.render(terminal.columns).join("\n")), /Resume Session/);
+
+	releaseLoad?.();
+	await setTimeout(25);
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(terminal.columns).join("\n")), /Resume Session/);
+});
+
 test("mycli shell resource selector loads resources and opens runtime inspect command", async () => {
 	const terminal = new TestTerminal();
 	const commands: string[] = [];
@@ -3311,7 +3384,11 @@ test("mycli shell writes full initial history when terminal has native scrollbac
 	await setTimeout(25);
 
 	const output = stripAnsi(terminal.output);
-	assert.match(output, /history message 0/);
+	const oldestHistory = output.indexOf("history message 0");
+	const header = output.indexOf("mycli ctrl+p commands");
+	assert.ok(oldestHistory >= 0);
+	assert.ok(header > oldestHistory);
+	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
 	assert.match(output, /history message 17/);
 });
 
@@ -3465,6 +3542,11 @@ test("mycli shell does not clear native scrollback terminal across full redraws"
 	await setTimeout(25);
 
 	assertNativeScrollbackSafeOutput(terminal.output);
+	const synchronizedOutput = terminal.output.indexOf("\x1b[?2026h");
+	const firstHeader = terminal.output.indexOf("mycli", synchronizedOutput);
+	assert.ok(synchronizedOutput >= 0);
+	assert.ok(firstHeader > synchronizedOutput);
+	assert.match(terminal.output.slice(synchronizedOutput, firstHeader), /\r\x1b\[2K$/);
 });
 
 test("mycli shell runtime scrolls only transcript and keeps chrome visible", async () => {

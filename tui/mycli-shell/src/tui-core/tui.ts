@@ -284,6 +284,7 @@ export class TUI extends Container {
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
+	private pendingHistoryLines: string[] | null = null;
 	private stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -305,6 +306,11 @@ export class TUI extends Container {
 
 	getShowHardwareCursor(): boolean {
 		return this.showHardwareCursor;
+	}
+
+	insertHistoryBeforeNextFrame(lines: string[]): void {
+		this.pendingHistoryLines = lines;
+		this.requestRender();
 	}
 
 	setShowHardwareCursor(enabled: boolean): void {
@@ -1124,6 +1130,66 @@ export class TUI extends Container {
 		return null;
 	}
 
+	private renderHistoryAndFrame(
+		historyLines: string[],
+		frameLines: string[],
+		cursorPos: { row: number; col: number } | null,
+		width: number,
+		height: number,
+		prevViewportTop: number,
+		hardwareCursorRow: number,
+	): void {
+		this.fullRedrawCount += 1;
+		const currentScreenRow = Math.max(
+			0,
+			Math.min(height - 1, hardwareCursorRow - prevViewportTop),
+		);
+		let buffer = "\x1b[?2026h";
+		if (currentScreenRow > 0) {
+			buffer += `\x1b[${currentScreenRow}A`;
+		}
+		buffer += "\r";
+
+		if (historyLines.length === 0) {
+			buffer += "\x1b[2K";
+			for (let row = 1; row < height; row++) {
+				buffer += "\r\n\x1b[2K";
+			}
+		} else {
+			for (let index = 0; index < historyLines.length; index++) {
+				if (index > 0) buffer += "\r\n";
+				buffer += `\x1b[2K${historyLines[index]}`;
+			}
+			for (let row = 0; row < height; row++) {
+				buffer += "\r\n\x1b[2K";
+			}
+		}
+
+		if (height > 1) {
+			buffer += `\x1b[${height - 1}A`;
+		}
+		buffer += "\r";
+		for (let row = 0; row < height; row++) {
+			if (row > 0) buffer += "\r\n";
+			buffer += "\x1b[2K";
+			if (row < frameLines.length) {
+				buffer += frameLines[row] ?? "";
+			}
+		}
+		buffer += "\x1b[?2026l";
+		this.terminal.write(buffer);
+
+		this.cursorRow = Math.max(0, frameLines.length - 1);
+		this.hardwareCursorRow = Math.max(0, height - 1);
+		this.maxLinesRendered = Math.max(height, frameLines.length);
+		this.previousViewportTop = 0;
+		this.previousLines = frameLines;
+		this.previousKittyImageIds = this.collectKittyImageIds(frameLines);
+		this.previousWidth = width;
+		this.previousHeight = height;
+		this.positionHardwareCursor(cursorPos, frameLines.length);
+	}
+
 	private doRender(): void {
 		if (this.stopped) return;
 		const width = this.terminal.columns;
@@ -1153,17 +1219,39 @@ export class TUI extends Container {
 		const cursorPos = this.extractCursorPosition(newLines, height);
 
 		newLines = this.applyLineResets(newLines);
+		const pendingHistoryLines = this.pendingHistoryLines;
+		this.pendingHistoryLines = null;
+		if (pendingHistoryLines && this.terminal.nativeScrollback) {
+			this.renderHistoryAndFrame(
+				this.applyLineResets([...pendingHistoryLines]),
+				newLines,
+				cursorPos,
+				width,
+				height,
+				prevViewportTop,
+				hardwareCursorRow,
+			);
+			return;
+		}
 
 		// Helper to clear scrollback and viewport and render all new lines.
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			const replaceNativeViewport = clear && this.terminal.nativeScrollback;
 			if (clear && !this.terminal.nativeScrollback) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
 				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback.
+			} else if (replaceNativeViewport) {
+				const currentScreenRow = Math.max(0, hardwareCursorRow - prevViewportTop);
+				if (currentScreenRow > 0) {
+					buffer += `\x1b[${currentScreenRow}A`;
+				}
+				buffer += "\r";
 			}
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
+				if (replaceNativeViewport) buffer += "\x1b[2K";
 				buffer += newLines[i];
 			}
 			buffer += "\x1b[?2026l"; // End synchronized output
