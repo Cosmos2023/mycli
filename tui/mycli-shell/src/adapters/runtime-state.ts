@@ -144,11 +144,15 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 	const tools: MycliShellTool[] = [];
 	const bash: MycliShellBash[] = [];
 	const transcript: MycliShellTranscriptBlock[] = [];
-	const steering = state.queuedPendingSteers.map((item) => ({
+	const pendingSteers = state.queuedPendingSteers.map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
 	}));
-	const followUps = [...state.queuedRejectedSteers, ...state.queuedFollowUpInputs].map((item) => ({
+	const rejectedSteers = state.queuedRejectedSteers.map((item) => ({
+		text: item.message,
+		hasImages: item.hasImages,
+	}));
+	const followUps = state.queuedFollowUpInputs.map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
 	}));
@@ -272,8 +276,8 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 		bash,
 		transcript,
 		pendingInput:
-			steering.length > 0 || followUps.length > 0
-				? { steering, followUps }
+			pendingSteers.length > 0 || rejectedSteers.length > 0 || followUps.length > 0
+				? { pendingSteers, rejectedSteers, followUps }
 				: undefined,
 		footer: {
 			cwd: state.workspace || process.cwd(),

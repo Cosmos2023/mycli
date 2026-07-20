@@ -1410,6 +1410,42 @@ test("runtime adapter restores structured queue state from bootstrap", () => {
 	assert.deepEqual(state.queuedFollowUpInputs.map((item) => item.message), ["later"]);
 });
 
+test("runtime adapter projects pending steering through rejection and removal", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.queue.updated", {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{ message: "redirect" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+	assert.deepEqual(projectRuntimeState(state).pendingInput, {
+		pendingSteers: [{ text: "redirect", hasImages: false }],
+		rejectedSteers: [],
+		followUps: [],
+	});
+
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 2,
+		queue_items: {
+			pending_steers: [],
+			rejected_steers: [{ message: "redirect" }],
+			follow_ups: [],
+		},
+	});
+	assert.deepEqual(projectRuntimeState(state).pendingInput, {
+		pendingSteers: [],
+		rejectedSteers: [{ text: "redirect", hasImages: false }],
+		followUps: [],
+	});
+
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 3,
+		queue_items: { pending_steers: [], rejected_steers: [], follow_ups: [] },
+	});
+	assert.equal(projectRuntimeState(state).pendingInput, undefined);
+});
+
 test("gateway steering uses the active server turn without local durable fallback", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const steeringBody = source.match(/async function queueSteeringTurn\([\s\S]*?\n\}/)?.[0] ?? "";
@@ -1442,7 +1478,8 @@ test("runtime adapter syncs typed backend message queues", () => {
 	assert.equal(shell.footer.hasPendingInput, true);
 	assert.equal(shell.footer.queueActivity, "pending_input");
 	assert.deepEqual(shell.pendingInput, {
-		steering: [{ text: "steer with image", hasImages: true }],
+		pendingSteers: [{ text: "steer with image", hasImages: true }],
+		rejectedSteers: [],
 		followUps: [{ text: "follow later", hasImages: false }],
 	});
 });
@@ -1465,7 +1502,8 @@ test("runtime adapter projects typed queue items from status bootstrap", () => {
 	const shell = projectRuntimeState(state);
 
 	assert.deepEqual(shell.pendingInput, {
-		steering: [{ text: "inspect current output", hasImages: true }],
+		pendingSteers: [{ text: "inspect current output", hasImages: true }],
+		rejectedSteers: [],
 		followUps: [{ text: "summarize afterward", hasImages: false }],
 	});
 });
@@ -1499,7 +1537,8 @@ test("runtime adapter hides internal task notifications from visible queues and 
 	assert.equal(shell.footer.steeringQueueCount, 0);
 	assert.equal(shell.footer.followUpQueueCount, 1);
 	assert.deepEqual(shell.pendingInput, {
-		steering: [],
+		pendingSteers: [],
+		rejectedSteers: [],
 		followUps: [{ text: "visible follow-up", hasImages: false }],
 	});
 });

@@ -947,7 +947,8 @@ test("footer drops task progress before live status at narrow widths", () => {
 
 test("pending input preview renders steering before follow-ups", () => {
 	const rendered = new PendingInputPreviewComponent({
-		steering: [{ text: "inspect current output", hasImages: false }],
+		pendingSteers: [{ text: "inspect current output", hasImages: false }],
+		rejectedSteers: [],
 		followUps: [{ text: "summarize afterward", hasImages: true }],
 	});
 	const output = stripAnsi(rendered.render(80).join("\n"));
@@ -963,7 +964,8 @@ test("pending input preview renders steering before follow-ups", () => {
 
 test("pending input preview bounds multiline CJK messages at narrow widths", () => {
 	const rendered = new PendingInputPreviewComponent({
-		steering: [],
+		pendingSteers: [],
+		rejectedSteers: [],
 		followUps: [
 			{
 				text: "第一行中文内容需要自动换行\nsecond line with emoji ✓ and more words\nthird line\nfourth line",
@@ -983,6 +985,46 @@ test("pending input preview bounds multiline CJK messages at narrow widths", () 
 	for (const line of lines) {
 		assert.ok(visibleWidth(line) <= 48, `line too wide: ${stripAnsi(line)}`);
 	}
+});
+
+test("pending preview renders three queue classes within its height budget", () => {
+	const preview = new PendingInputPreviewComponent({
+		pendingSteers: [{ text: "pending", hasImages: true }],
+		rejectedSteers: [{ text: "rejected", hasImages: false }],
+		followUps: Array.from({ length: 8 }, (_, index) => ({
+			text: `later ${index}`,
+			hasImages: false,
+		})),
+	}, { interruptHint: "f12", editHint: "shift+left", maxHeight: 12 });
+	const lines = preview.render(52);
+	const output = stripAnsi(lines.join("\n"));
+
+	assert.match(output, /Messages to be submitted after next tool call/);
+	assert.match(output, /attachment/);
+	assert.match(output, /Messages to be submitted at end of turn/);
+	assert.match(output, /Queued follow-up inputs/);
+	assert.match(output, /f12 to interrupt/);
+	assert.match(output, /shift\+left edit last queued message/);
+	assert.match(output, /\.\.\. \+\d+ more/);
+	assert.ok(lines.length <= 12);
+});
+
+test("pending preview bounds CJK and multiline input by visual width", () => {
+	const width = 24;
+	const preview = new PendingInputPreviewComponent({
+		pendingSteers: [{
+			text: "检查最新命令输出\n然后继续处理这个很长的任务",
+			hasImages: false,
+		}],
+		rejectedSteers: [],
+		followUps: [],
+	}, { interruptHint: "esc", editHint: "alt+up", maxHeight: 8 });
+	const lines = preview.render(width);
+
+	for (const line of lines) {
+		assert.ok(visibleWidth(line) <= width, `line too wide: ${stripAnsi(line)}`);
+	}
+	assert.ok(lines.length <= 8);
 });
 
 test("footer renders collaboration mode when space allows", () => {
@@ -1635,7 +1677,8 @@ test("mycli shell runtime renders pending queued input previews", () => {
 		initialState: {
 			...sampleState(),
 			pendingInput: {
-				steering: [{ text: "inspect current output", hasImages: false }],
+				pendingSteers: [{ text: "inspect current output", hasImages: false }],
+				rejectedSteers: [],
 				followUps: [{ text: "summarize afterward", hasImages: false }],
 			},
 		},
@@ -1649,6 +1692,31 @@ test("mycli shell runtime renders pending queued input previews", () => {
 	assert.match(output, /Queued follow-up inputs/);
 	assert.match(output, /↳ summarize afterward/);
 	assert.doesNotMatch(output, /Pending input: steer/);
+});
+
+test("mycli shell runtime refreshes pending input previews when queues change", () => {
+	const terminal = new TestTerminal();
+	const initial: MycliShellState = { ...sampleState(), pendingNotice: undefined };
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+
+	runtime.setState({
+		...initial,
+		pendingInput: {
+			pendingSteers: [{ text: "inspect the latest output", hasImages: false }],
+			rejectedSteers: [],
+			followUps: [{ text: "summarize after completion", hasImages: false }],
+		},
+	});
+
+	const queuedOutput = stripAnsi(runtime.pendingMessagesContainer.render(100).join("\n"));
+	assert.match(queuedOutput, /Messages to be submitted after next tool call/);
+	assert.match(queuedOutput, /inspect the latest output/);
+	assert.match(queuedOutput, /Queued follow-up inputs/);
+	assert.match(queuedOutput, /summarize after completion/);
+
+	runtime.setState(initial);
+
+	assert.equal(runtime.pendingMessagesContainer.render(100).length, 0);
 });
 
 test("mycli shell runtime does not rebuild stable chrome during assistant streaming", () => {
@@ -3014,7 +3082,8 @@ test("mycli shell runtime restores queued messages with alt up", async () => {
 		initialState: {
 			...sampleState(),
 			pendingInput: {
-				steering: [{ text: "keep steering", hasImages: false }],
+				pendingSteers: [{ text: "keep steering", hasImages: false }],
+				rejectedSteers: [],
 				followUps: [{ text: "older follow-up", hasImages: false }],
 			},
 		},
@@ -3041,7 +3110,8 @@ test("mycli shell runtime restores queued messages with shift left", async () =>
 		initialState: {
 			...sampleState(),
 			pendingInput: {
-				steering: [{ text: "keep steering", hasImages: false }],
+				pendingSteers: [{ text: "keep steering", hasImages: false }],
+				rejectedSteers: [],
 				followUps: [{ text: "older follow-up", hasImages: false }],
 			},
 		},
@@ -3068,7 +3138,8 @@ test("mycli shell runtime restores queued image attachments with alt up", async 
 		initialState: {
 			...sampleState(),
 			pendingInput: {
-				steering: [{ text: "keep steering", hasImages: false }],
+				pendingSteers: [{ text: "keep steering", hasImages: false }],
+				rejectedSteers: [],
 				followUps: [{ text: "older image follow-up", hasImages: true }],
 			},
 		},
@@ -3159,7 +3230,8 @@ test("mycli shell runtime interrupts running turns with escape", async () => {
 			...sampleState(),
 			footer: { ...sampleState().footer, liveState: "Running" },
 			pendingInput: {
-				steering: [{ text: "keep steering", hasImages: false }],
+				pendingSteers: [{ text: "keep steering", hasImages: false }],
+				rejectedSteers: [],
 				followUps: [{ text: "keep follow-up", hasImages: false }],
 			},
 		},

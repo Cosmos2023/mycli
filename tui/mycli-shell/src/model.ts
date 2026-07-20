@@ -236,7 +236,8 @@ export type MycliShellQueuedInputPreview = {
 };
 
 export type MycliShellPendingInput = {
-	steering: MycliShellQueuedInputPreview[];
+	pendingSteers: MycliShellQueuedInputPreview[];
+	rejectedSteers: MycliShellQueuedInputPreview[];
 	followUps: MycliShellQueuedInputPreview[];
 };
 

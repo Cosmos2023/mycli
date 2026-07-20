@@ -783,10 +783,10 @@ export class MycliShellRuntime {
 	private rebuildAll(): void {
 		this.rebuildHeader();
 		this.rebuildChat();
-		this.rebuildPending();
 		this.rebuildStatus();
 		this.rebuildSubagentTasks();
 		this.rebuildFooter();
+		this.rebuildPending();
 		this.syncApprovalSurface(null, this.state);
 	}
 
@@ -799,6 +799,7 @@ export class MycliShellRuntime {
 		}
 		if (
 			previousState.pendingNotice !== nextState.pendingNotice ||
+			this.pendingInputSignature(previousState) !== this.pendingInputSignature(nextState) ||
 			this.approvalSignature(previousState) !== this.approvalSignature(nextState)
 		) {
 			this.rebuildPending();
@@ -838,6 +839,10 @@ export class MycliShellRuntime {
 
 	private approvalSignature(state: MycliShellState): string {
 		return JSON.stringify(state.pendingApproval ?? null);
+	}
+
+	private pendingInputSignature(state: MycliShellState): string {
+		return JSON.stringify(state.pendingInput ?? null);
 	}
 
 	private subagentTaskSignature(state: MycliShellState): string {
@@ -1087,10 +1092,34 @@ export class MycliShellRuntime {
 			this.pendingMessagesContainer.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
 		}
 		const pendingInput = this.state.pendingInput;
-		if (pendingInput && (pendingInput.steering.length > 0 || pendingInput.followUps.length > 0)) {
+		if (
+			pendingInput &&
+			(
+				pendingInput.pendingSteers.length > 0 ||
+				pendingInput.rejectedSteers.length > 0 ||
+				pendingInput.followUps.length > 0
+			)
+		) {
 			this.pendingMessagesContainer.addChild(new Spacer(1));
-			this.pendingMessagesContainer.addChild(new PendingInputPreviewComponent(pendingInput));
+			this.pendingMessagesContainer.addChild(new PendingInputPreviewComponent(pendingInput, {
+				maxHeight: () => this.pendingInputMaxHeight(this.ui.terminal.columns),
+			}));
 		}
+	}
+
+	private pendingInputMaxHeight(width: number): number {
+		const noticeHeight = this.state.pendingNotice && !this.state.pendingApproval
+			? 1 + new Text(theme.fg("warning", this.state.pendingNotice), 1, 0).render(width).length
+			: 0;
+		const fixedChromeHeight =
+			this.statusContainer.render(width).length +
+			this.editorContainer.render(width).length +
+			this.subagentTaskContainer.render(width).length +
+			this.footerContainer.render(width).length;
+		return Math.max(
+			1,
+			this.ui.terminal.rows - fixedChromeHeight - noticeHeight - 2,
+		);
 	}
 
 	private rebuildStatus(): void {
