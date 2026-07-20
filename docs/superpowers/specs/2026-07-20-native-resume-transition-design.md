@@ -1,35 +1,68 @@
-# Native Resume Transition Design
+# Codex-Style Native History Replay Design
 
 ## Problem
 
-Selecting a saved session replaces most of the inline TUI at once. When the
-differential renderer falls back to a full redraw on a native-scrollback terminal,
-it writes the new frame from the current cursor position instead of the tracked
-viewport origin. The old footer and new header can therefore join as
-`mediummycli`, and the selector may be pushed into scrollback as stale UI.
+The first native Resume fix replayed the complete component tree as
+`header + full transcript + footer`, then stabilized back to a bounded live frame.
+The stabilization pass painted the fixed header over a transcript row near the
+top of the visible terminal. As a result, `mycli ctrl+p...` appeared inside an
+assistant answer. The full-tree replay could also commit selector or footer chrome
+to terminal scrollback.
 
-The selected session's complete transcript is loaded into memory, but the
-transcript viewport's one-time full-history mode was consumed during startup, so
-resume does not deliberately insert the newly loaded history into scrollback.
+Codex treats committed history and the mutable viewport as separate rendering
+channels. mycli needs the same boundary: terminal scrollback receives transcript
+rows only, while the header, editor, status, and footer remain in the live frame.
 
 ## Design
 
-After a session selection callback finishes loading state, the shell runtime marks
-the transcript for one full render and requests a frame. The complete selected
-history is inserted once, then the existing native-scrollback stabilization path
-returns rendering to the bounded live viewport.
+### Transcript Split
 
-For a non-initial full redraw on a native-scrollback terminal, the renderer moves
-from the tracked hardware cursor to the top row of the current viewport, returns
-to column zero, and clears each row before writing it. It does not clear the
-screen or terminal scrollback. This replaces the selector in place and prevents
-the old footer from joining the new header.
+`TranscriptViewportComponent` computes the same bottom-aligned visible range for
+both normal rendering and replay. It exposes the transcript prefix before that
+range as committed history rows. The live frame continues to render only the
+visible transcript tail.
+
+The prefix plus the visible tail represents the complete transcript exactly once.
+No tool, message, or plan row is duplicated.
+
+### Atomic History Replay
+
+The TUI accepts transcript rows for insertion before the next native frame. On
+that frame it performs one synchronized terminal write:
+
+1. Move from the tracked hardware cursor to viewport row zero and column zero.
+2. Replace the current selector or old frame with committed transcript prefix
+   rows.
+3. Advance and clear one viewport height so all committed rows enter terminal
+   scrollback and the current viewport becomes blank.
+4. Move back to viewport row zero and draw the bounded live frame, clearing every
+   row before writing it.
+5. Store the bounded frame as the differential-render baseline.
+
+The operation does not emit clear-screen, clear-scrollback, alternate-screen, or
+mouse-capture sequences. Because history insertion and the final frame share one
+synchronized write, users do not see an intermediate blank screen.
+
+### Runtime Coordination
+
+Initial startup and session Resume both queue the transcript prefix instead of
+calling `renderFullNext()`. A Resume selector remains mounted while the session
+and transcript load; after loading, mycli queues replay and restores the editor.
+This avoids briefly showing the previous session during the asynchronous load.
+
+Non-native terminals retain their existing full-screen behavior. Ordinary live
+streaming and incremental transcript growth continue through the differential
+renderer and do not replay committed history.
 
 ## Testing
 
-- Resume through the session selector and verify the oldest loaded history item is
-  written once, the selector is absent from the replacement output, and no
-  clear-screen sequence is emitted.
-- Force a native full redraw from a cursor below the viewport origin and verify the
-  output moves upward and returns to column zero before writing the first new row.
-
+- Verify initial startup writes the transcript prefix once and leaves the header
+  only in the final bounded frame.
+- Resume through the session selector and verify transcript prefix ordering,
+  complete-history coverage without duplication, and no selector/header/footer
+  chrome among committed history rows.
+- Verify Resume loading keeps the selector mounted until the asynchronous callback
+  completes.
+- Verify native replay uses synchronized output and emits no clear-screen,
+  clear-scrollback, alternate-screen, or mouse-capture sequence.
+- Keep existing streaming, resize, and non-native renderer tests passing.
