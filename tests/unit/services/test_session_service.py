@@ -20,6 +20,9 @@ from mycli.domain.runtime import (
     PlanItem,
     PlanState,
     PlanStatus,
+    QueueItemKind,
+    QueueSnapshot,
+    QueuedInputRecord,
     RuntimeBlock,
     SessionCommandAllowance,
     ShellKind,
@@ -35,6 +38,58 @@ from mycli.domain.runtime import (
 from mycli.domain.tools import ToolCall
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.session_service import SessionService
+from mycli.services.storage_layout import MycliStorageLayout
+
+
+def _queued_record(*, kind: QueueItemKind, queue_id: str) -> QueuedInputRecord:
+    return QueuedInputRecord.create(
+        queue_id=queue_id,
+        session_id="demo",
+        client_turn_id=f"client-{queue_id}",
+        target_turn_id="turn-1" if kind == "pending_steer" else None,
+        kind=kind,
+        text=queue_id,
+        now=datetime(2026, 7, 20, tzinfo=UTC),
+    )
+
+
+def test_session_service_persists_queue_snapshot(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path)
+    snapshot = QueueSnapshot(
+        session_id="demo",
+        revision=1,
+        follow_ups=(_queued_record(kind="follow_up", queue_id="queue-1"),),
+    )
+
+    service.save_queue_snapshot("demo", snapshot)
+
+    assert service.load_queue_snapshot("demo") == snapshot
+    runtime_snapshot = service.load_runtime_snapshot("demo")
+    assert runtime_snapshot is not None
+    assert runtime_snapshot.queue_snapshot == snapshot
+    service.clear_queue_snapshot("demo")
+    assert service.load_queue_snapshot("demo") == QueueSnapshot(session_id="demo")
+
+
+def test_session_service_records_queue_restore_issues(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path)
+    service._save_state(
+        session_id="demo",
+        thread_id="demo",
+        state_key=service._KEY_INPUT_QUEUE,
+        payload={
+            "session_id": "demo",
+            "revision": 1,
+            "pending_steers": [],
+            "rejected_steers": [],
+            "follow_ups": [{"queue_id": "broken"}],
+        },
+    )
+
+    assert service.load_queue_snapshot("demo").active_records() == ()
+    events_path = MycliStorageLayout.from_home_dir(tmp_path).session_events_path("demo")
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert any(event["type"] == "queue.restore_issue" for event in events)
 
 
 def test_session_service_persists_conversation(tmp_path: Path) -> None:

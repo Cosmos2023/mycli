@@ -19,6 +19,7 @@ from mycli.domain.runtime import (
     PlanItem,
     PlanState,
     PlanStatus,
+    QueueSnapshot,
     SessionCommandAllowance,
     ShellKind,
     SessionRuntimeSnapshot,
@@ -62,6 +63,7 @@ class SessionService:
     _KEY_CONTRIBUTED_TOOL_STATE = "contributed_tool_state"
     _KEY_INSTRUCTION_SNAPSHOT = "instruction_snapshot"
     _KEY_INVOKED_SKILLS = "invoked_skills"
+    _KEY_INPUT_QUEUE = "input_queue"
     _KEY_PENDING_DECISION = "pending_decision"
     _KEY_PLAN_STATE = "plan_state"
     _KEY_RESPONSES_CONTINUATION = "responses_continuation_state"
@@ -305,12 +307,14 @@ class SessionService:
         turn_rollouts = self.load_turn_rollouts(session_id)
         continuation_state = self.load_responses_continuation_state(session_id)
         invoked_skills = self.load_invoked_skill_snapshots(session_id)
+        queue_snapshot = self.load_queue_snapshot(session_id)
         if (
             not history_items
             and context_baseline is None
             and not turn_rollouts
             and continuation_state is None
             and not invoked_skills
+            and not queue_snapshot.active_records()
         ):
             return None
         thread_id = (
@@ -330,7 +334,35 @@ class SessionService:
             turn_rollouts=turn_rollouts,
             continuation_state={} if continuation_state is None else continuation_state.to_dict(),
             invoked_skills=invoked_skills,
+            queue_snapshot=queue_snapshot,
         )
+
+    def save_queue_snapshot(self, session_id: str, snapshot: QueueSnapshot) -> None:
+        if snapshot.session_id != session_id:
+            raise ValueError("queue snapshot session does not match state session")
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_INPUT_QUEUE,
+            payload=snapshot.to_dict(),
+        )
+
+    def load_queue_snapshot(self, session_id: str) -> QueueSnapshot:
+        payload = self._load_state_object(session_id, self._KEY_INPUT_QUEUE)
+        if payload is None:
+            return QueueSnapshot(session_id=session_id)
+        snapshot, issues = QueueSnapshot.restore(payload)
+        for issue in issues:
+            logger.warning("queue restore issue session_id=%s: %s", session_id, issue)
+            self._snapshot_service.append_event(
+                session_id=session_id,
+                event_type="queue.restore_issue",
+                payload={"issue": issue},
+            )
+        return snapshot
+
+    def clear_queue_snapshot(self, session_id: str) -> None:
+        self._store.delete_state(session_id, self._KEY_INPUT_QUEUE)
 
     def load_or_create_instruction_snapshot(
         self,
