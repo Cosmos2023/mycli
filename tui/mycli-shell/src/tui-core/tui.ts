@@ -1143,16 +1143,9 @@ export class TUI extends Container {
 		this.fullRedrawCount += 1;
 		let buffer = "\x1b[?2026h";
 
-		// Clear the live viewport without line feeds so none of the mutable frame
-		// can be pushed into terminal scrollback while history is inserted.
-		buffer += "\x1b[H";
-		for (let row = 0; row < height; row++) {
-			buffer += "\x1b[2K";
-			if (row < height - 1) {
-				buffer += "\x1b[1B";
-			}
-		}
-		buffer += "\x1b[H";
+		// Clear the live viewport in one operation without touching scrollback or
+		// emitting line feeds that could commit mutable frame rows as history.
+		buffer += "\x1b[H\x1b[J";
 
 		if (historyLines.length === 0) {
 			buffer += "\x1b[2K";
