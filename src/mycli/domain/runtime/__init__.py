@@ -89,6 +89,12 @@ from mycli.domain.runtime.interrupts import RuntimeInterruptToken as RuntimeInte
 from mycli.domain.runtime.message_queue import (
     QueueActivity as QueueActivity,
     QueueActivityKind as QueueActivityKind,
+    QueueCapacity as QueueCapacity,
+    QueueDeliveryState as QueueDeliveryState,
+    QueueDisposition as QueueDisposition,
+    QueueItemKind as QueueItemKind,
+    QueueSnapshot as QueueSnapshot,
+    QueuedInputRecord as QueuedInputRecord,
     QueuedInputKind as QueuedInputKind,
     QueuedTurnInput as QueuedTurnInput,
     QueuedTurnSnapshot as QueuedTurnSnapshot,
