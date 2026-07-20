@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { Terminal } from "../src/tui-core/terminal.ts";
 import { Editor } from "../src/tui-core/components/editor.ts";
-import { visibleWidth } from "../src/tui-core/tui.ts";
+import { Text } from "../src/tui-core/components/text.ts";
+import { TUI, visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
 import { BashExecutionComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
@@ -3429,6 +3430,123 @@ test("mycli shell bounds native scrollback after initial history during assistan
 	assert.doesNotMatch(stripAnsi(terminal.output), /history message 0/);
 	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
 	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
+test("mycli shell commits a resumed user message before a long streamed tail", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 16;
+	const history = Array.from({ length: 20 }, (_, index) => ({
+		id: `resumed-${index}`,
+		role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+		text: `resumed history ${index}`,
+	}));
+	let runtime: MycliShellRuntime;
+	runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSessionSelect: async (sessionId) => {
+			runtime.setState({
+				...runtime.getState(),
+				messages: history,
+				tools: [],
+				bash: [],
+				transcript: undefined,
+				footer: { ...runtime.getState().footer, sessionName: sessionId },
+			});
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.showSessionSelector();
+	await setTimeout(25);
+	terminal.input?.("\r");
+	await setTimeout(50);
+
+	const resumed = runtime.getState();
+	const user = { id: "new-user", role: "user" as const, text: "train a small model from scratch" };
+	runtime.setState({
+		...resumed,
+		messages: [...history, user],
+		footer: { ...resumed.footer, liveState: "Running" },
+	});
+	await setTimeout(25);
+	terminal.output = "";
+
+	const assistant = {
+		id: "new-assistant",
+		role: "assistant" as const,
+		text: Array.from({ length: 40 }, (_, index) => `streamed answer ${index}`).join("\n"),
+	};
+	runtime.setState({
+		...runtime.getState(),
+		messages: [...history, user, assistant],
+	});
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	const userRow = output.indexOf(user.text);
+	const header = output.indexOf("mycli ctrl+p commands");
+	const liveTail = output.indexOf("streamed answer 39");
+	assert.ok(userRow >= 0);
+	assert.ok(header > userRow);
+	assert.ok(liveTail > header);
+	assert.equal(output.match(/train a small model from scratch/g)?.length, 1);
+	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
+test("native TUI appends history deltas queued before one frame", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 4;
+	const ui = new TUI(terminal);
+	ui.addChild(new Text("live frame"));
+	ui.insertHistoryBeforeNextFrame(["first history delta"]);
+	ui.insertHistoryBeforeNextFrame(["second history delta"]);
+	ui.start();
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	const first = output.indexOf("first history delta");
+	const second = output.indexOf("second history delta");
+	const frame = output.indexOf("live frame");
+	assert.ok(first >= 0);
+	assert.ok(second > first);
+	assert.ok(frame > second);
+});
+
+test("native history watermark resets after terminal width changes", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	terminal.columns = 100;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 18 }, (_, index) => ({
+				id: `history-${index}`,
+				role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+				text: `history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.columns = 60;
+	terminal.resize?.();
+	await setTimeout(25);
+	terminal.output = "";
+	runtime.setState({ ...runtime.getState() });
+	await setTimeout(25);
+
+	assert.doesNotMatch(stripAnsi(terminal.output), /history message/);
 });
 
 test("mycli shell appends new history into native scrollback without mouse capture", async () => {

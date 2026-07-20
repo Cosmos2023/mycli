@@ -152,6 +152,9 @@ class TurnCompletedComponent implements Component {
 class TranscriptViewportComponent implements Component {
 	private scrollOffset = 0;
 	private lastLineCount = 0;
+	private committedPrefixLength = 0;
+	private committedPrefixBoundary: string | undefined;
+	private committedWidth: number | undefined;
 
 	constructor(
 		private readonly content: Container,
@@ -183,7 +186,31 @@ class TranscriptViewportComponent implements Component {
 		const lines = this.content.render(width);
 		this.scrollOffset = 0;
 		this.lastLineCount = lines.length;
-		return lines.slice(0, this.visibleStart(lines, height));
+		const start = this.visibleStart(lines, height);
+		this.recordCommittedPrefix(lines, start, width);
+		return lines.slice(0, start);
+	}
+
+	takeNewScrollbackLines(width: number): string[] {
+		if (this.scrollOffset !== 0) return [];
+		const height = Math.max(1, this.heightForWidth(width));
+		const lines = this.content.render(width);
+		this.lastLineCount = lines.length;
+		const start = this.visibleStart(lines, height);
+		const boundaryChanged =
+			this.committedPrefixLength > 0 &&
+			lines[this.committedPrefixLength - 1] !== this.committedPrefixBoundary;
+		if (
+			this.committedWidth !== width ||
+			start < this.committedPrefixLength ||
+			boundaryChanged
+		) {
+			this.recordCommittedPrefix(lines, start, width);
+			return [];
+		}
+		const delta = lines.slice(this.committedPrefixLength, start);
+		this.recordCommittedPrefix(lines, start, width);
+		return delta;
 	}
 
 	invalidate(): void {
@@ -215,6 +242,12 @@ class TranscriptViewportComponent implements Component {
 			}
 		}
 		return start;
+	}
+
+	private recordCommittedPrefix(lines: string[], start: number, width: number): void {
+		this.committedPrefixLength = start;
+		this.committedPrefixBoundary = start > 0 ? lines[start - 1] : undefined;
+		this.committedWidth = width;
 	}
 }
 
@@ -333,6 +366,7 @@ export class MycliShellRuntime {
 			this.rebuildChangedSections(previousState, nextState);
 		}
 		this.maybeResetTranscriptScroll(previousState, nextState);
+		this.queueNativeTranscriptDelta();
 		this.ui.requestRender();
 	}
 
@@ -688,6 +722,14 @@ export class MycliShellRuntime {
 		if (!this.ui.terminal.nativeScrollback) return;
 		const prefix = this.transcriptViewport.scrollbackPrefix(this.ui.terminal.columns);
 		this.ui.insertHistoryBeforeNextFrame(prefix);
+	}
+
+	private queueNativeTranscriptDelta(): void {
+		if (!this.ui.terminal.nativeScrollback || !this.mainMounted) return;
+		const delta = this.transcriptViewport.takeNewScrollbackLines(this.ui.terminal.columns);
+		if (delta.length > 0) {
+			this.ui.insertHistoryBeforeNextFrame(delta);
+		}
 	}
 
 	private showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {

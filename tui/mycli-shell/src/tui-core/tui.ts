@@ -309,7 +309,10 @@ export class TUI extends Container {
 	}
 
 	insertHistoryBeforeNextFrame(lines: string[]): void {
-		this.pendingHistoryLines = lines;
+		this.pendingHistoryLines = [
+			...(this.pendingHistoryLines ?? []),
+			...lines,
+		];
 		this.requestRender();
 	}
 
