@@ -16,7 +16,9 @@ from mycli.domain.runtime import (
     DecisionAction,
     HistoryItem,
     HistoryItemType,
+    QueueSnapshot,
     ReasoningEffort,
+    QueuedInputRecord,
     QueuedTurnInput,
     RuntimeTraceEvent,
     RuntimeInterruptToken,
@@ -27,10 +29,12 @@ from mycli.domain.runtime import (
     ShellKind,
     ExecutionPolicy,
     SandboxProfile,
+    SuspendedTurn,
     TurnItemType,
     TurnResponse,
     ViewMode,
 )
+from mycli.application.runtime.session_queue import QueueMutationResult
 from mycli.domain.subagents import SubAgentRunSummary
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
@@ -261,6 +265,71 @@ class TurnService:
         return cast(
             tuple[tuple[str, ...], tuple[str, ...]],
             queue(message, image_paths=image_paths, client_turn_id=client_turn_id),
+        )
+
+    def queue_steering_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str,
+        expected_turn_id: str,
+        active_turn_id: str | None,
+        steerable: bool,
+    ) -> QueueMutationResult:
+        return cast(
+            QueueMutationResult,
+            self._runtime.queue_steering_input(
+                message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+                expected_turn_id=expected_turn_id,
+                active_turn_id=active_turn_id,
+                steerable=steerable,
+            ),
+        )
+
+    def queue_follow_up_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str,
+        source: str = "user",
+    ) -> QueueMutationResult:
+        return cast(
+            QueueMutationResult,
+            self._runtime.queue_follow_up_input(
+                message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+                source=source,
+            ),
+        )
+
+    def queue_snapshot(self) -> QueueSnapshot:
+        return cast(QueueSnapshot, self._runtime.queue_snapshot())
+
+    def next_queued_turn(self) -> QueuedInputRecord | None:
+        return cast(QueuedInputRecord | None, self._runtime.next_queued_turn())
+
+    def mark_queued_turn_started(self, queue_id: str) -> QueueSnapshot:
+        return cast(QueueSnapshot, self._runtime.mark_queued_turn_started(queue_id))
+
+    def subscribe_queue(
+        self,
+        listener: Callable[[QueueSnapshot], None],
+    ) -> Callable[[], None]:
+        return cast(Callable[[], None], self._runtime.subscribe_queue(listener))
+
+    def queue_drain_blocked(self) -> bool:
+        pending_decision = self._session_service.load_pending_decision(
+            self._config.session_id,
+        )
+        suspended = self._session_service.load_suspended_turn(self._config.session_id)
+        return pending_decision is not None or (
+            isinstance(suspended, SuspendedTurn)
+            and suspended.pending_clarification is not None
         )
 
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:

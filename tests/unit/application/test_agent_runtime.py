@@ -1549,6 +1549,41 @@ class SteeringNotificationCaptureAdapter:
         )
 
 
+def test_agent_runtime_queue_snapshot_is_session_scoped(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=FollowUpCaptureAdapter(),
+    )
+    runtime.rebind_session(replace(runtime._config, session_id="first"))
+    runtime.queue_follow_up_message("first message", client_turn_id="client-1")
+    runtime.rebind_session(replace(runtime._config, session_id="second"))
+
+    assert runtime.queue_snapshot().session_id == "second"
+    assert runtime.queued_messages() == ((), ())
+
+    runtime.rebind_session(replace(runtime._config, session_id="first"))
+    assert runtime.queued_messages() == ((), ("first message",))
+
+
+def test_legacy_projection_keeps_rejected_before_follow_up(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=FollowUpCaptureAdapter(),
+    )
+    runtime.queue_steering_message(
+        "rejected",
+        client_turn_id="client-1",
+        expected_turn_id="stale",
+        active_turn_id="current",
+        steerable=True,
+    )
+    runtime.queue_follow_up_message("later", client_turn_id="client-2")
+
+    assert runtime.queued_messages() == ((), ("rejected", "later"))
+
+
 class PushThenResumedReasoningUnsupportedAdapter:
     def __init__(self) -> None:
         self.calls = 0

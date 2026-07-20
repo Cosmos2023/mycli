@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from threading import Lock
 import time
+from uuid import uuid4
 
 from mycli.domain.conversation import Conversation, Message, Role
 from mycli.domain.tooling.contributed_tools import (
@@ -26,7 +27,9 @@ from mycli.domain.runtime import (
     PendingClarification,
     PendingDecision,
     PlanState,
+    QueueSnapshot,
     QueuedInputKind,
+    QueuedInputRecord,
     QueuedTurnInput,
     QueuedTurnSnapshot,
     RuntimeBlock,
@@ -122,6 +125,10 @@ from mycli.tools.registry import ToolRegistry
 from mycli.tools.shell_resolver import detect_shell_profile_with_diagnostics
 from mycli.tools.skill import SkillTool
 from mycli.application.runtime.context import RuntimeContextBuilder
+from mycli.application.runtime.session_queue import (
+    QueueMutationResult,
+    SessionQueueCoordinator,
+)
 from mycli.application.runtime.approval_decisions import RuntimeApprovalDecisions
 from mycli.application.runtime.ledger import RuntimeEventLedger
 from mycli.application.runtime.model import (
@@ -265,9 +272,6 @@ class AgentRuntime:
         self._shell_resolution = detect_shell_profile_with_diagnostics(config.shell_path)
         self._home_dir = home_dir
         self._storage_layout = MycliStorageLayout.from_home_dir(home_dir)
-        self._message_queue_lock = Lock()
-        self._steering_messages: list[QueuedTurnInput] = []
-        self._follow_up_messages: list[QueuedTurnInput] = []
         self._shell_lifecycle_lock = Lock()
         self._shell_lifecycle_listeners: dict[
             int,
@@ -331,6 +335,7 @@ class AgentRuntime:
             workspace_root=config.workspace_root,
             session_store=self._session_store,
         )
+        self._session_queue = self._restore_session_queue(config.session_id)
         memory_selector = ModelFileMemorySelector(
             client=_SummarizerClientAdapter(
                 self._model_turn_requester,
@@ -907,15 +912,42 @@ class AgentRuntime:
         image_paths: tuple[str, ...] = (),
         client_turn_id: str | None = None,
         source: str = "user",
+        expected_turn_id: str | None = None,
+        active_turn_id: str | None = None,
+        steerable: bool = True,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return queue_snapshot_texts(
-            self.queue_input(
-                kind="steering",
-                message=message,
-                image_paths=image_paths,
-                client_turn_id=client_turn_id,
-                source=source,
-            )
+        current_turn_id = active_turn_id or getattr(self, "_current_turn_id", None)
+        target_turn_id = expected_turn_id or current_turn_id or "turn_pending"
+        self.queue_steering_input(
+            message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id or f"client_queue_{uuid4().hex}",
+            expected_turn_id=target_turn_id,
+            active_turn_id=current_turn_id or target_turn_id,
+            steerable=steerable,
+            source=source,
+        )
+        return self.queued_messages()
+
+    def queue_steering_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str,
+        expected_turn_id: str,
+        active_turn_id: str | None,
+        steerable: bool,
+        source: str = "user",
+    ) -> QueueMutationResult:
+        return self._session_queue.enqueue_steer(
+            text=message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+            expected_turn_id=expected_turn_id,
+            active_turn_id=active_turn_id,
+            steerable=steerable,
+            source=source,
         )
 
     def queue_input(
@@ -930,19 +962,21 @@ class AgentRuntime:
         text = message.strip()
         if not text:
             return self.queued_input_items()
-        item = QueuedTurnInput(
-            kind=kind,
-            text=text,
-            image_paths=image_paths,
-            client_turn_id=client_turn_id,
-            source=source,
-        )
-        with self._message_queue_lock:
-            if kind == "steering":
-                self._steering_messages.append(item)
-            else:
-                self._follow_up_messages.append(item)
-            return tuple(self._steering_messages), tuple(self._follow_up_messages)
+        if kind == "steering":
+            self.queue_steering_message(
+                text,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+                source=source,
+            )
+        else:
+            self.queue_follow_up_message(
+                text,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+                source=source,
+            )
+        return self.queued_input_items()
 
     def queue_task_notification(
         self,
@@ -982,51 +1016,125 @@ class AgentRuntime:
         client_turn_id: str | None = None,
         source: str = "user",
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return queue_snapshot_texts(
-            self.queue_input(
-                kind="follow_up",
-                message=message,
-                image_paths=image_paths,
-                client_turn_id=client_turn_id,
-                source=source,
-            )
+        self.queue_follow_up_input(
+            message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id or f"client_queue_{uuid4().hex}",
+            source=source,
         )
+        return self.queued_messages()
+
+    def queue_follow_up_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str,
+        source: str = "user",
+    ) -> QueueMutationResult:
+        return self._session_queue.enqueue_follow_up(
+            text=message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+            source=source,
+        )
+
+    def queue_snapshot(self) -> QueueSnapshot:
+        return self._session_queue.snapshot()
+
+    def subscribe_queue(
+        self,
+        listener: Callable[[QueueSnapshot], None],
+    ) -> Callable[[], None]:
+        return self._session_queue.subscribe(listener)
 
     def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return queue_snapshot_texts(self.queued_input_items())
 
     def queued_input_items(self) -> QueuedTurnSnapshot:
-        with self._message_queue_lock:
-            return tuple(self._steering_messages), tuple(self._follow_up_messages)
+        snapshot = self.queue_snapshot()
+        return (
+            tuple(self._legacy_queue_item(record) for record in snapshot.pending_steers),
+            tuple(
+                self._legacy_queue_item(record)
+                for record in (*snapshot.rejected_steers, *snapshot.follow_ups)
+            ),
+        )
 
     def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return queue_snapshot_texts(self.clear_queued_input_items())
 
     def clear_queued_input_items(self) -> QueuedTurnSnapshot:
-        with self._message_queue_lock:
-            steering = tuple(self._steering_messages)
-            follow_up = tuple(self._follow_up_messages)
-            self._steering_messages.clear()
-            self._follow_up_messages.clear()
-        return steering, follow_up
+        records = self._session_queue.clear()
+        return (
+            tuple(
+                self._legacy_queue_item(record)
+                for record in records
+                if record.kind == "pending_steer"
+            ),
+            tuple(
+                self._legacy_queue_item(record)
+                for record in records
+                if record.kind != "pending_steer"
+            ),
+        )
 
     def pop_next_steering_message(self) -> QueuedTurnInput | None:
-        with self._message_queue_lock:
-            if not self._steering_messages:
-                return None
-            return self._steering_messages.pop(0)
+        snapshot = self.queue_snapshot()
+        if not snapshot.pending_steers:
+            return None
+        record = snapshot.pending_steers[0]
+        self._session_queue.commit((record.queue_id,))
+        return self._legacy_queue_item(record)
 
     def pop_next_follow_up_message(self) -> QueuedTurnInput | None:
-        with self._message_queue_lock:
-            if not self._follow_up_messages:
-                return None
-            return self._follow_up_messages.pop(0)
+        record = self._session_queue.next_end_of_turn()
+        if record is None:
+            return None
+        self._session_queue.mark_started(record.queue_id)
+        return self._legacy_queue_item(record)
 
     def pop_last_follow_up_input(self) -> QueuedTurnInput | None:
-        with self._message_queue_lock:
-            if not self._follow_up_messages:
-                return None
-            return self._follow_up_messages.pop()
+        record = self._session_queue.pop_last_follow_up()
+        return None if record is None else self._legacy_queue_item(record)
+
+    def claim_pending_steers(self, turn_id: str) -> tuple[QueuedInputRecord, ...]:
+        return self._session_queue.claim_pending_steers(turn_id)
+
+    def commit_queue_items(self, queue_ids: tuple[str, ...]) -> QueueSnapshot:
+        return self._session_queue.commit(queue_ids)
+
+    def reject_pending_for_turn(self, turn_id: str) -> QueueSnapshot:
+        return self._session_queue.reject_pending_for_turn(turn_id)
+
+    def next_queued_turn(self) -> QueuedInputRecord | None:
+        return self._session_queue.next_end_of_turn()
+
+    def mark_queued_turn_started(self, queue_id: str) -> QueueSnapshot:
+        return self._session_queue.mark_started(queue_id)
+
+    def _legacy_queue_item(self, record: QueuedInputRecord) -> QueuedTurnInput:
+        return QueuedTurnInput(
+            kind="steering" if record.kind == "pending_steer" else "follow_up",
+            text=record.text,
+            image_paths=record.image_paths,
+            client_turn_id=record.client_turn_id,
+            source=record.source,
+        )
+
+    def _restore_session_queue(self, session_id: str) -> SessionQueueCoordinator:
+        committed_queue_ids = {
+            queue_id
+            for item in self._session_service.load_history_items(session_id)
+            if isinstance((queue_id := item.metadata.get("queue_id")), str)
+            and queue_id
+        }
+        return SessionQueueCoordinator.restore(
+            session_id=session_id,
+            session_service=self._session_service,
+            committed_queue_ids=committed_queue_ids,
+            active_turn_id=None,
+        )
 
     def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
         return self._sub_agent_service.recent_runs()
@@ -2157,7 +2265,9 @@ class AgentRuntime:
         return self._approval_decisions.format_allowed_choices(options)
 
     def rebind_session(self, config: AgentConfig) -> None:
+        session_queue = self._restore_session_queue(config.session_id)
         self._config = config
+        self._session_queue = session_queue
         self._shell_resolution = detect_shell_profile_with_diagnostics(config.shell_path)
         self._execpolicy_rules = self._load_execpolicy_rules(
             home_dir=self._home_dir,
