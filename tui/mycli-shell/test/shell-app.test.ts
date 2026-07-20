@@ -1712,6 +1712,44 @@ test("mycli shell runtime uses diff rendering for streaming state updates", asyn
 	assert.equal(runtime.ui.fullRedraws, 1);
 });
 
+test("stream deltas do not synchronously rerender the full transcript", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [{ id: "assistant-1", role: "assistant", text: "hello" }],
+		tools: [],
+		bash: [],
+		transcript: [
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello" } },
+		],
+		pendingNotice: undefined,
+		footer: { ...sampleState().footer, liveState: "Running" },
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	runtime.start();
+	await setTimeout(25);
+
+	const renderTranscript = runtime.transcriptContainer.render.bind(runtime.transcriptContainer);
+	let transcriptRenders = 0;
+	runtime.transcriptContainer.render = (width) => {
+		transcriptRenders += 1;
+		return renderTranscript(width);
+	};
+
+	runtime.setState({
+		...initial,
+		messages: [{ id: "assistant-1", role: "assistant", text: "hello world" }],
+		transcript: [
+			{ id: "assistant-1", kind: "message", message: { id: "assistant-1", role: "assistant", text: "hello world" } },
+		],
+	});
+
+	assert.equal(transcriptRenders, 0);
+	await setTimeout(25);
+	assert.ok(transcriptRenders > 0);
+});
+
 test("mycli shell runtime renders thinking elapsed and completion duration with the active turn", async () => {
 	const terminal = new TestTerminal();
 	let now = 10_000;
@@ -3527,12 +3565,17 @@ test("mycli shell commits a resumed user message before a long streamed tail", a
 		messages: [...history, user, assistant],
 	});
 	await setTimeout(25);
+	const nextAssistant = { ...assistant, text: `${assistant.text}\nstreamed answer 40` };
+	runtime.setState({
+		...runtime.getState(),
+		messages: [...history, user, nextAssistant],
+	});
+	await setTimeout(25);
 
 	const output = stripAnsi(terminal.output);
 	const userRow = output.indexOf(user.text);
-	const liveTail = output.indexOf("streamed answer 39");
 	assert.ok(userRow >= 0);
-	assert.ok(liveTail > userRow);
+	assert.match(output, /streamed answer 40/);
 	assert.doesNotMatch(output, /mycli ctrl\+p commands/);
 	assert.doesNotMatch(terminal.output, /\x1b\[J/);
 	assert.equal(output.match(/train a small model from scratch/g)?.length, 1);

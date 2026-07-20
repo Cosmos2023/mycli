@@ -152,6 +152,8 @@ class TurnCompletedComponent implements Component {
 class TranscriptViewportComponent implements Component {
 	private scrollOffset = 0;
 	private lastLineCount = 0;
+	private lastRenderedLines: string[] = [];
+	private lastRenderedWidth: number | undefined;
 	private committedPrefixLength = 0;
 	private committedPrefixBoundary: string | undefined;
 	private committedWidth: number | undefined;
@@ -174,7 +176,7 @@ class TranscriptViewportComponent implements Component {
 	}
 
 	scrollToLine(lineIndex: number, width: number): void {
-		const lines = this.content.render(width);
+		const lines = this.renderContent(width);
 		const height = Math.max(1, this.heightForWidth(width));
 		this.lastLineCount = lines.length;
 		const target = Math.max(0, Math.min(lineIndex, Math.max(0, lines.length - 1)));
@@ -183,7 +185,7 @@ class TranscriptViewportComponent implements Component {
 
 	scrollbackPrefix(width: number): string[] {
 		const height = Math.max(1, this.heightForWidth(width));
-		const lines = this.content.render(width);
+		const lines = this.renderContent(width);
 		this.scrollOffset = 0;
 		this.lastLineCount = lines.length;
 		const start = this.visibleStart(lines, height);
@@ -192,9 +194,9 @@ class TranscriptViewportComponent implements Component {
 	}
 
 	takeNewScrollbackLines(width: number): string[] {
-		if (this.scrollOffset !== 0) return [];
+		if (this.scrollOffset !== 0 || this.lastRenderedWidth !== width) return [];
 		const height = Math.max(1, this.heightForWidth(width));
-		const lines = this.content.render(width);
+		const lines = this.lastRenderedLines;
 		this.lastLineCount = lines.length;
 		const start = this.visibleStart(lines, height);
 		const boundaryChanged =
@@ -219,7 +221,7 @@ class TranscriptViewportComponent implements Component {
 
 	render(width: number): string[] {
 		const height = Math.max(1, this.heightForWidth(width));
-		const lines = this.content.render(width);
+		const lines = this.renderContent(width);
 		if (lines.length > this.lastLineCount) {
 			this.scrollOffset = 0;
 		}
@@ -242,6 +244,13 @@ class TranscriptViewportComponent implements Component {
 			}
 		}
 		return start;
+	}
+
+	private renderContent(width: number): string[] {
+		const lines = this.content.render(width);
+		this.lastRenderedLines = lines;
+		this.lastRenderedWidth = width;
+		return lines;
 	}
 
 	private recordCommittedPrefix(lines: string[], start: number, width: number): void {
