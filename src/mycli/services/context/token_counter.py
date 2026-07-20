@@ -11,7 +11,7 @@ from mycli.domain.conversation import Message
 
 
 class _TokenEncoder(Protocol):
-    def encode(self, text: str) -> list[int]: ...
+    def encode_ordinary(self, text: str) -> list[int]: ...
 
 
 class FragmentKind(StrEnum):
@@ -87,7 +87,7 @@ class TokenCounter:
 
     def _do_count(self, text: str) -> int:
         if self._encoder is not None:
-            return len(self._encoder.encode(text))
+            return len(self._encoder.encode_ordinary(text))
 
         ascii_chars = sum(1 for char in text if ord(char) <= 127)
         non_ascii_chars = len(text) - ascii_chars

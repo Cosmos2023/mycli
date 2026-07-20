@@ -26,6 +26,11 @@ class TestTokenCounter:
         tokens = counter.count(code)
         assert 8 <= tokens <= 25
 
+    def test_literal_special_token_is_counted_as_ordinary_text(self) -> None:
+        counter = TokenCounter()
+        tokens = counter.count("文件结尾加 <|endoftext|>")
+        assert tokens > 0
+
     def test_empty_string(self) -> None:
         counter = TokenCounter()
         assert counter.count("") == 0
