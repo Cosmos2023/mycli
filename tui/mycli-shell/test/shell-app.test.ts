@@ -1524,13 +1524,14 @@ test("mycli shell runtime assembles mounted containers", () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal });
 
-	assert.equal(runtime.ui.children[0], runtime.headerContainer);
-	assert.equal(runtime.ui.children[1], runtime.transcriptViewport);
-	assert.equal(runtime.ui.children[2], runtime.pendingMessagesContainer);
-	assert.equal(runtime.ui.children[3], runtime.statusContainer);
-	assert.equal(runtime.ui.children[4], runtime.editorContainer);
-	assert.equal(runtime.ui.children[5], runtime.subagentTaskContainer);
-	assert.equal(runtime.ui.children[6], runtime.footerContainer);
+	assert.equal(runtime.transcriptContainer.children[0], runtime.headerContainer);
+	assert.equal(runtime.transcriptContainer.children[1], runtime.chatContainer);
+	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
+	assert.equal(runtime.ui.children[1], runtime.pendingMessagesContainer);
+	assert.equal(runtime.ui.children[2], runtime.statusContainer);
+	assert.equal(runtime.ui.children[3], runtime.editorContainer);
+	assert.equal(runtime.ui.children[4], runtime.subagentTaskContainer);
+	assert.equal(runtime.ui.children[5], runtime.footerContainer);
 
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /mycli/);
@@ -1822,9 +1823,9 @@ test("mycli shell runtime enters main UI only after trust selection", async () =
 	assert.match(output, /Message mycli/);
 	assert.match(output, /deepseek-v4-flash/);
 	assert.equal(runtime.getState().footer.trust, "trusted");
-	assert.equal(runtime.ui.children[0], runtime.headerContainer);
-	assert.equal(runtime.ui.children[4], runtime.editorContainer);
-	assert.equal(runtime.ui.children.length, 7);
+	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
+	assert.equal(runtime.ui.children[3], runtime.editorContainer);
+	assert.equal(runtime.ui.children.length, 6);
 });
 
 test("mycli shell command palette replaces editor like coding-agent selector", async () => {
@@ -1838,7 +1839,7 @@ test("mycli shell command palette replaces editor like coding-agent selector", a
 	runtime.start();
 	await setTimeout(25);
 	runtime.showCommandPalette();
-	assert.equal(runtime.ui.children[4], runtime.editorContainer);
+	assert.equal(runtime.ui.children[3], runtime.editorContainer);
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /\/trust/);
 
@@ -2499,8 +2500,9 @@ test("mycli shell session selection inserts loaded history once into native scro
 	const header = output.indexOf("mycli ctrl+p commands");
 	const visibleTail = output.indexOf("resumed history 29");
 	assert.ok(oldestHistory >= 0);
-	assert.ok(header > oldestHistory);
-	assert.ok(visibleTail > header);
+	assert.ok(header >= 0);
+	assert.ok(oldestHistory > header);
+	assert.ok(visibleTail > oldestHistory);
 	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
 	assert.equal(output.match(/resumed history 0/g)?.length, 1);
 	assert.doesNotMatch(output, /Resume Session/);
@@ -3388,9 +3390,50 @@ test("mycli shell writes full initial history when terminal has native scrollbac
 	const oldestHistory = output.indexOf("history message 0");
 	const header = output.indexOf("mycli ctrl+p commands");
 	assert.ok(oldestHistory >= 0);
-	assert.ok(header > oldestHistory);
+	assert.ok(header >= 0);
+	assert.ok(oldestHistory > header);
 	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
 	assert.match(output, /history message 17/);
+});
+
+test("mycli shell keeps the session header before a long markdown table", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 10;
+	const tableRows = Array.from({ length: 12 }, (_, index) => `| ${index + 1} | change ${index + 1} | effect ${index + 1} |`);
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [
+				{
+					id: "table-answer",
+					role: "assistant",
+					text: [
+						"Path to production:",
+						"",
+						"| Stage | Change | Effect |",
+						"| --- | --- | --- |",
+						...tableRows,
+					].join("\n"),
+				},
+			],
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	const header = output.indexOf("mycli ctrl+p commands");
+	const tableHeader = output.indexOf("Stage");
+	assert.ok(header >= 0);
+	assert.ok(tableHeader > header);
+	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
 });
 
 test("mycli shell bounds native scrollback after initial history during assistant streaming", async () => {
@@ -3487,11 +3530,10 @@ test("mycli shell commits a resumed user message before a long streamed tail", a
 
 	const output = stripAnsi(terminal.output);
 	const userRow = output.indexOf(user.text);
-	const header = output.indexOf("mycli ctrl+p commands");
 	const liveTail = output.indexOf("streamed answer 39");
 	assert.ok(userRow >= 0);
-	assert.ok(header > userRow);
-	assert.ok(liveTail > header);
+	assert.ok(liveTail > userRow);
+	assert.doesNotMatch(output, /mycli ctrl\+p commands/);
 	assert.equal(output.match(/train a small model from scratch/g)?.length, 1);
 	assertNativeScrollbackSafeOutput(terminal.output);
 });
@@ -3682,10 +3724,13 @@ test("mycli shell does not clear native scrollback terminal across full redraws"
 
 	assertNativeScrollbackSafeOutput(terminal.output);
 	const synchronizedOutput = terminal.output.indexOf("\x1b[?2026h");
-	const firstHeader = terminal.output.indexOf("mycli", synchronizedOutput);
+	const firstLiveLine = terminal.output.indexOf("history message 11", synchronizedOutput);
 	assert.ok(synchronizedOutput >= 0);
-	assert.ok(firstHeader > synchronizedOutput);
-	assert.match(terminal.output.slice(synchronizedOutput, firstHeader), /\r\x1b\[2K$/);
+	assert.ok(firstLiveLine > synchronizedOutput);
+	const liveLinePrefix = terminal.output.slice(synchronizedOutput, firstLiveLine);
+	const clearLine = liveLinePrefix.lastIndexOf("\r\x1b[2K");
+	assert.ok(clearLine >= 0);
+	assert.doesNotMatch(liveLinePrefix.slice(clearLine), /\r\n/);
 });
 
 test("mycli shell runtime scrolls only transcript and keeps chrome visible", async () => {

@@ -259,6 +259,7 @@ export class MycliShellRuntime {
 	readonly ui: TUI;
 	readonly headerContainer = new Container();
 	readonly chatContainer = new Container();
+	readonly transcriptContainer = new Container();
 	readonly transcriptViewport: TranscriptViewportComponent;
 	readonly pendingMessagesContainer = new Container();
 	readonly statusContainer = new Container();
@@ -286,7 +287,9 @@ export class MycliShellRuntime {
 		this.state = options.initialState;
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
-		this.transcriptViewport = new TranscriptViewportComponent(this.chatContainer, (width) => this.transcriptHeight(width));
+		this.transcriptContainer.addChild(this.headerContainer);
+		this.transcriptContainer.addChild(this.chatContainer);
+		this.transcriptViewport = new TranscriptViewportComponent(this.transcriptContainer, (width) => this.transcriptHeight(width));
 		const keybindings = installMycliKeybindings();
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), keybindings, {
 			paddingX: 1,
@@ -467,7 +470,6 @@ export class MycliShellRuntime {
 			return this.ui.terminal.rows;
 		}
 		const chromeHeight =
-			this.headerContainer.render(width).length +
 			this.pendingMessagesContainer.render(width).length +
 			this.statusContainer.render(width).length +
 			this.editorContainer.render(width).length +
@@ -707,7 +709,6 @@ export class MycliShellRuntime {
 		}
 		this.replaceSelectorHostWithMain();
 		this.mainMounted = true;
-		this.ui.addChild(this.headerContainer);
 		this.ui.addChild(this.transcriptViewport);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
@@ -955,7 +956,7 @@ export class MycliShellRuntime {
 	}
 
 	private lineIndexForTranscriptBlock(blockId: string): number | null {
-		let lineIndex = 0;
+		let lineIndex = this.headerContainer.render(this.ui.terminal.columns).length;
 		for (const child of this.chatContainer.children) {
 			const matched = this.chatBlocks.get(blockId);
 			if (matched?.component === child) {
