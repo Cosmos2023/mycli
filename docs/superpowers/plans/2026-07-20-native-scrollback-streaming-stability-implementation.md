@@ -17,13 +17,13 @@
 
 - [ ] **Step 1: Write the failing regression test**
 
-Add a test that starts `MycliShellRuntime` with `nativeScrollback = true`, an eight-row terminal, a transcript longer than eight rows, and a final assistant stream item. Verify the initial terminal output contains the oldest history item. Then verify a subsequent logical render is bounded to the terminal height, stream one update into the assistant item, and assert that the update neither replays the oldest history item nor increments `runtime.ui.fullRedraws`.
+Add a test that starts `MycliShellRuntime` with `nativeScrollback = true`, a 16-row terminal, a transcript longer than the terminal, and a final assistant stream item. Verify the initial terminal output contains the oldest history item. Then verify the live frame excludes that oldest item, stream one update into the assistant item, and assert that the update neither replays the oldest history item nor increments `runtime.ui.fullRedraws`.
 
 ```typescript
 test("mycli shell bounds native scrollback after initial history during assistant streaming", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
-	terminal.rows = 8;
+	terminal.rows = 16;
 	const history = Array.from({ length: 20 }, (_, index) => ({
 		id: `history-${index}`,
 		role: index % 2 === 0 ? "user" as const : "assistant" as const,
@@ -42,7 +42,9 @@ test("mycli shell bounds native scrollback after initial history during assistan
 	runtime.start();
 	await setTimeout(25);
 	assert.match(stripAnsi(terminal.output), /history message 0/);
-	assert.equal(runtime.ui.render(terminal.columns).length, terminal.rows);
+	const liveFrame = stripAnsi(runtime.ui.render(terminal.columns).join("\n"));
+	assert.doesNotMatch(liveFrame, /history message 0/);
+	assert.match(liveFrame, /streaming/);
 
 	const redrawsAfterStart = runtime.ui.fullRedraws;
 	terminal.output = "";
@@ -70,7 +72,7 @@ cd tui/mycli-shell
 npm test -- --test-name-pattern="bounds native scrollback after initial history"
 ```
 
-Expected: FAIL because `runtime.ui.render(terminal.columns).length` remains greater than `terminal.rows`.
+Expected: FAIL because the live frame still contains the oldest history item.
 
 ### Task 2: Consume Full History and Rebase Differential State
 
@@ -93,7 +95,7 @@ if (this.renderFullOnce) {
 
 - [ ] **Step 2: Rebase native full renders onto their visible tail**
 
-After `fullRender()` writes and positions the cursor, detect a native-scrollback frame taller than the terminal. Slice `newLines` to its final `height` rows for `previousLines`, translate cursor rows by the same start offset, reset `previousViewportTop` to zero, and collect Kitty image IDs only from the visible baseline. Preserve the existing state updates for all other frames.
+After `fullRender()` writes and positions the cursor, detect a native-scrollback frame taller than the terminal. Slice `newLines` to its final `height` rows for `previousLines`, translate cursor rows by the same start offset, reset `previousViewportTop` to zero, collect Kitty image IDs only from the visible baseline, and request one normal render to stabilize the bounded live frame. Preserve the existing state updates for all other frames.
 
 ```typescript
 const baselineStart = this.terminal.nativeScrollback
@@ -108,9 +110,19 @@ if (baselineStart > 0) {
 }
 this.previousLines = baselineLines;
 this.previousKittyImageIds = this.collectKittyImageIds(baselineLines);
+if (baselineStart > 0) {
+	this.requestRender();
+}
 ```
 
-- [ ] **Step 3: Run the focused test and verify GREEN**
+- [ ] **Step 3: Preserve transcript visibility in one-row viewports**
+
+When the auto-following transcript slice contains only visually blank padding,
+move the slice upward to the nearest visible line. If a one-row transcript already
+contains messages, omit the turn activity spinner so it cannot replace the latest
+message.
+
+- [ ] **Step 4: Run the focused test and verify GREEN**
 
 Run:
 
@@ -121,7 +133,7 @@ npm test -- --test-name-pattern="bounds native scrollback after initial history"
 
 Expected: PASS.
 
-- [ ] **Step 4: Run TUI verification**
+- [ ] **Step 5: Run TUI verification**
 
 Run:
 
@@ -133,7 +145,7 @@ npm run typecheck
 
 Expected: all tests pass and TypeScript reports no errors.
 
-- [ ] **Step 5: Run repository verification**
+- [ ] **Step 6: Run repository verification**
 
 Run:
 
@@ -145,7 +157,7 @@ uv run mypy src
 
 Expected: all Python tests pass, Ruff reports no issues, and mypy reports no issues.
 
-- [ ] **Step 6: Commit the fix**
+- [ ] **Step 7: Commit the fix**
 
 ```bash
 git add tui/mycli-shell/src/shell-runtime.ts tui/mycli-shell/src/tui-core/tui.ts tui/mycli-shell/test/shell-app.test.ts

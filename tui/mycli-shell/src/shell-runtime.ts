@@ -5,6 +5,7 @@ import { Text } from "./tui-core/components/text.ts";
 import { ProcessTerminal, type Terminal } from "./tui-core/terminal.ts";
 import { Container, TUI, type Component } from "./tui-core/tui.ts";
 import { matchesKey } from "./tui-core/keys.ts";
+import { visibleWidth } from "./tui-core/utils.ts";
 import { CombinedAutocompleteProvider, type SlashCommand } from "./tui-core/autocomplete.ts";
 import { installMycliKeybindings } from "./keybindings.ts";
 import type {
@@ -194,18 +195,28 @@ class TranscriptViewportComponent implements Component {
 		}
 		this.lastLineCount = lines.length;
 		if (this.renderFullOnce) {
+			this.renderFullOnce = false;
 			this.scrollOffset = 0;
 			return lines;
 		}
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
-		const start = Math.max(0, lines.length - height - this.scrollOffset);
+		let start = Math.max(0, lines.length - height - this.scrollOffset);
+		if (this.scrollOffset === 0) {
+			while (start > 0 && lines.slice(start, start + height).every(isVisuallyBlankLine)) {
+				start -= 1;
+			}
+		}
 		const visible = lines.slice(start, start + height);
 		while (visible.length < height) {
 			visible.push("");
 		}
 		return visible;
 	}
+}
+
+function isVisuallyBlankLine(line: string): boolean {
+	return visibleWidth(line.replace(/\s/g, "")) === 0;
 }
 
 export class MycliShellRuntime {
@@ -865,7 +876,8 @@ export class MycliShellRuntime {
 			nextBlocks.set(block.id, next);
 			children.push(next.component);
 		}
-		const turnStatus = this.createTurnStatusComponent();
+		const hasRoomForTurnStatus = children.length === 0 || this.transcriptHeight(this.ui.terminal.columns) > 1;
+		const turnStatus = hasRoomForTurnStatus ? this.createTurnStatusComponent() : null;
 		if (turnStatus) {
 			children.push(turnStatus);
 		}

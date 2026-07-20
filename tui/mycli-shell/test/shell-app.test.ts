@@ -3315,6 +3315,45 @@ test("mycli shell writes full initial history when terminal has native scrollbac
 	assert.match(output, /history message 17/);
 });
 
+test("mycli shell bounds native scrollback after initial history during assistant streaming", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 16;
+	const history = Array.from({ length: 20 }, (_, index) => ({
+		id: `history-${index}`,
+		role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+		text: `history message ${index}`,
+	}));
+	const initial = {
+		...sampleState(),
+		messages: [...history, { id: "assistant-stream", role: "assistant" as const, text: "streaming" }],
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+
+	runtime.start();
+	await setTimeout(25);
+	assert.match(stripAnsi(terminal.output), /history message 0/);
+	const liveFrame = stripAnsi(runtime.ui.render(terminal.columns).join("\n"));
+	assert.doesNotMatch(liveFrame, /history message 0/);
+	assert.match(liveFrame, /streaming/);
+
+	const redrawsAfterStart = runtime.ui.fullRedraws;
+	terminal.output = "";
+	runtime.setState({
+		...initial,
+		messages: [...history, { id: "assistant-stream", role: "assistant", text: "streaming token" }],
+	});
+	await setTimeout(25);
+
+	assert.doesNotMatch(stripAnsi(terminal.output), /history message 0/);
+	assert.equal(runtime.ui.fullRedraws, redrawsAfterStart);
+	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
 test("mycli shell appends new history into native scrollback without mouse capture", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;

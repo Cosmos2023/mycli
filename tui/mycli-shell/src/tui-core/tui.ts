@@ -1179,10 +1179,23 @@ export class TUI extends Container {
 			const bufferLength = Math.max(height, newLines.length);
 			this.previousViewportTop = Math.max(0, bufferLength - height);
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			const baselineStart = this.terminal.nativeScrollback
+				? Math.max(0, newLines.length - height)
+				: 0;
+			const baselineLines = baselineStart > 0 ? newLines.slice(baselineStart) : newLines;
+			if (baselineStart > 0) {
+				this.cursorRow = Math.max(0, this.cursorRow - baselineStart);
+				this.hardwareCursorRow = Math.max(0, this.hardwareCursorRow - baselineStart);
+				this.maxLinesRendered = baselineLines.length;
+				this.previousViewportTop = 0;
+			}
+			this.previousLines = baselineLines;
+			this.previousKittyImageIds = this.collectKittyImageIds(baselineLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
+			if (baselineStart > 0) {
+				this.requestRender();
+			}
 		};
 
 		const debugRedraw = process.env.MYCLI_TUI_DEBUG_REDRAW === "1";
