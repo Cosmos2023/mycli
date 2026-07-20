@@ -9,6 +9,10 @@ from types import SimpleNamespace
 
 from mycli.config.auth_store import AuthStore
 from mycli.application.turn_service import TurnService
+from mycli.application.runtime.session_queue import (
+    QueueMutationResult,
+    SessionQueueCoordinator,
+)
 from mycli.cli.node_tui.gateway import (
     NodeTuiGateway,
     _SerializedGatewayWriter,
@@ -19,6 +23,7 @@ from mycli.cli.node_tui.gateway import (
 from mycli.cli.node_tui.protocol import (
     RpcNotification,
     RpcRequest,
+    RpcResponse,
     decode_message,
     notification,
 )
@@ -30,6 +35,8 @@ from mycli.domain.runtime import (
     ReasoningEffort,
     PendingDecision,
     PendingClarification,
+    QueueSnapshot,
+    QueuedInputRecord,
     QueuedTurnInput,
     RuntimeStreamEvent,
     RuntimeInterruptToken,
@@ -42,6 +49,7 @@ from mycli.domain.runtime import (
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 from mycli.domain.tooling.calls import ToolCall
+from mycli.services.session_service import SessionService
 
 
 StreamSink = Callable[[RuntimeStreamEvent], None]
@@ -51,6 +59,28 @@ def _gateway_error_events(
     events: list[tuple[str, dict[str, object]]],
 ) -> list[dict[str, object]]:
     return [params for method, params in events if method == "gateway.error"]
+
+
+def _assert_accepted_turn(response: RpcResponse, client_turn_id: str) -> str:
+    assert response.result is not None
+    assert response.result["accepted"] is True
+    assert response.result["client_turn_id"] == client_turn_id
+    turn_id = response.result["turn_id"]
+    assert isinstance(turn_id, str)
+    assert turn_id.startswith("turn_")
+    return turn_id
+
+
+def _has_event(
+    events: list[tuple[str, dict[str, object]]],
+    method: str,
+    expected: dict[str, object],
+) -> bool:
+    return any(
+        expected.items() <= params.items()
+        for event_method, params in events
+        if event_method == method
+    )
 
 
 class FakeSessionService:
@@ -2142,6 +2172,95 @@ class BlockingTurnService(FakeTurnService):
         return TurnResponse(assistant_message="")
 
 
+class QueueSchedulingTurnService(FakeTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.started = Event()
+        self.second_started = Event()
+        self.release = Event()
+        self.blocker_checked = Event()
+        self.queue_blocked = False
+        self.user_messages: list[str] = []
+        self.server_turn_ids: list[str] = []
+        self._queue = SessionQueueCoordinator(
+            session_id="demo",
+            session_service=SessionService(home_dir=workspace_root / "home"),
+        )
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+        *,
+        turn_id: str | None = None,
+    ) -> TurnResponse:
+        del stream_sink
+        if turn_id is None:
+            raise AssertionError("gateway did not pass a server turn id")
+        self.user_messages.append(message)
+        self.server_turn_ids.append(turn_id)
+        if len(self.user_messages) == 1:
+            self.started.set()
+            if not self.release.wait(timeout=2.0):
+                raise AssertionError("first turn was not released")
+        else:
+            self.second_started.set()
+        return TurnResponse(assistant_message=f"response {len(self.user_messages)}")
+
+    def queue_steering_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str,
+        expected_turn_id: str,
+        active_turn_id: str | None,
+        steerable: bool,
+    ) -> QueueMutationResult:
+        return self._queue.enqueue_steer(
+            text=message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+            expected_turn_id=expected_turn_id,
+            active_turn_id=active_turn_id,
+            steerable=steerable,
+        )
+
+    def queue_snapshot(self) -> QueueSnapshot:
+        return self._queue.snapshot()
+
+    def queue_follow_up_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...] = (),
+        client_turn_id: str,
+        source: str = "user",
+    ) -> QueueMutationResult:
+        return self._queue.enqueue_follow_up(
+            text=message,
+            image_paths=image_paths,
+            client_turn_id=client_turn_id,
+            source=source,
+        )
+
+    def next_queued_turn(self) -> QueuedInputRecord | None:
+        return self._queue.next_end_of_turn()
+
+    def mark_queued_turn_started(self, queue_id: str) -> QueueSnapshot:
+        return self._queue.mark_started(queue_id)
+
+    def subscribe_queue(
+        self,
+        listener: Callable[[QueueSnapshot], None],
+    ) -> Callable[[], None]:
+        return self._queue.subscribe(listener)
+
+    def queue_drain_blocked(self) -> bool:
+        self.blocker_checked.set()
+        return self.queue_blocked
+
+
 class BlockingLateCompletionTurnService(BlockingTurnService):
     def handle_user_turn(
         self,
@@ -2388,7 +2507,7 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     direct_events = [(method, params) for method, params in events if method != "runtime.event"]
     methods = [method for method, _params in direct_events]
     assert methods[:2] == ["turn.started", "status.update"]
@@ -2404,36 +2523,38 @@ def test_gateway_turn_submit_emits_ordered_events(tmp_path: Path) -> None:
         "status.update",
         "status.changed",
     ]
-    assert direct_events[1][1] == {
+    assert {
         "client_turn_id": "client_1",
         "state": "running",
         "kind": "running",
         "text": "Running",
-    }
+    }.items() <= direct_events[1][1].items()
     completed = next(params for method, params in events if method == "turn.completed")
     assert completed["assistant_message"] == "hello world"
     assert completed["progress_updates"] == ["[progress] done"]
     assert completed["plan_steps"] == ["completed: smoke"]
     assert completed["turn_state"] == "completed"
-    assert next(params for method, params in direct_events if method == "turn.status") == {
+    assert {
         "client_turn_id": "client_1",
         "state": "completed",
         "kind": "completed",
         "text": "Completed",
         "terminal": True,
-    }
+    }.items() <= next(
+        params for method, params in direct_events if method == "turn.status"
+    ).items()
     assert direct_events[-3][1] == {
         "client_turn_id": "client_1",
         "text": "hello world",
         "final": True,
         "source": "turn_response",
     }
-    assert direct_events[-2][1] == {
+    assert {
         "client_turn_id": "client_1",
         "state": "completed",
         "kind": "completed",
         "text": "Completed",
-    }
+    }.items() <= direct_events[-2][1].items()
 
 
 def test_gateway_turn_submit_forwards_local_image_paths(tmp_path: Path) -> None:
@@ -2457,7 +2578,7 @@ def test_gateway_turn_submit_forwards_local_image_paths(tmp_path: Path) -> None:
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     assert service.messages == ["describe [image #1]"]
     assert service.image_paths == [("/tmp/screenshot.png", "/tmp/second.jpg")]
 
@@ -2478,7 +2599,7 @@ def test_gateway_forwards_message_and_reasoning_typed_stream_events(tmp_path: Pa
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     methods = [method for method, _params in events]
     assert "reasoning.delta" in methods
     assert "thinking.delta" in methods
@@ -2574,7 +2695,7 @@ def test_gateway_forwards_plan_updated_stream_event(tmp_path: Path) -> None:
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     direct_events = [(method, params) for method, params in events if method != "runtime.event"]
     assert ("plan.updated",) in [(method,) for method, _params in direct_events]
     assert next(params for method, params in direct_events if method == "plan.updated") == {
@@ -2636,7 +2757,7 @@ def test_gateway_bounds_final_message_complete_text(tmp_path: Path) -> None:
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     final_complete = next(params for method, params in events if method == "message.complete")
     assert final_complete == {
         "client_turn_id": "client_1",
@@ -2683,7 +2804,7 @@ def test_gateway_emits_proposed_plan_as_special_event(tmp_path: Path) -> None:
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     direct_events = [(method, params) for method, params in events if method != "runtime.event"]
     methods = [method for method, _params in direct_events]
     assert "plan.proposed" in methods
@@ -2719,7 +2840,7 @@ def test_gateway_mirrors_runtime_notifications_with_versioned_envelopes(tmp_path
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     envelopes = [params for method, params in events if method == "runtime.event"]
     direct_events = [(method, params) for method, params in events if method != "runtime.event"]
     assert envelopes
@@ -2761,7 +2882,7 @@ def test_gateway_forwards_tool_lifecycle_events_as_tool_notifications(tmp_path: 
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     methods = [method for method, _params in events]
     assert "tool.start" in methods
     assert "tool.progress" in methods
@@ -2828,7 +2949,7 @@ def test_gateway_forwards_clarify_request_and_runtime_event_mirror(tmp_path: Pat
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     clarify = next(params for method, params in events if method == "clarify.request")
     assert clarify == {
         "client_turn_id": "client_1",
@@ -2852,19 +2973,19 @@ def test_gateway_forwards_clarify_request_and_runtime_event_mirror(tmp_path: Pat
         for method, params in events
         if method == "runtime.event" and params["type"] == "clarify.request"
     ).items()
-    assert {
+    assert _has_event(events, "turn.status", {
         "client_turn_id": "client_1",
         "state": "waiting_clarification",
         "kind": "waiting_clarification",
         "text": "Waiting clarification",
         "terminal": False,
-    } in [params for method, params in events if method == "turn.status"]
-    assert {
+    })
+    assert _has_event(events, "status.update", {
         "client_turn_id": "client_1",
         "state": "waiting_clarification",
         "kind": "waiting_clarification",
         "text": "Waiting clarification",
-    } in [params for method, params in events if method == "status.update"]
+    })
     final_completes = [
         params
         for method, params in events
@@ -2914,7 +3035,7 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(response, "client_1")
     assert "approval.request" in [method for method, _params in events]
     approval = next(params for method, params in events if method == "approval.request")
     assert approval == {
@@ -2943,19 +3064,19 @@ def test_gateway_turn_submit_emits_approval_request_when_waiting(tmp_path: Path)
         if method == "message.complete" and params.get("final") is True
     ]
     assert final_completes == []
-    assert {
+    assert _has_event(events, "turn.status", {
         "client_turn_id": "client_1",
         "state": "waiting_approval",
         "kind": "waiting_approval",
         "text": "Waiting approval",
         "terminal": False,
-    } in [params for method, params in events if method == "turn.status"]
-    assert {
+    })
+    assert _has_event(events, "status.update", {
         "client_turn_id": "client_1",
         "state": "waiting_approval",
         "kind": "waiting_approval",
         "text": "Waiting approval",
-    } in [params for method, params in events if method == "status.update"]
+    })
 
 
 def test_gateway_approval_payload_exposes_always_allow_and_bounded_preview() -> None:
@@ -3047,7 +3168,7 @@ def test_gateway_turn_submit_rejects_empty_and_concurrent_turns(tmp_path: Path) 
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert empty.error == {"code": "invalid_params", "message": "message is required."}
-    assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
+    _assert_accepted_turn(accepted, "req_2")
     assert concurrent.error == {"code": "turn_in_progress", "message": "A turn is already running."}
     assert {
         "code": "invalid_params",
@@ -3077,15 +3198,15 @@ def test_gateway_turn_submit_emits_turn_status_for_failures(tmp_path: Path) -> N
     )
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert response.result == {"accepted": True, "client_turn_id": "client_1"}
-    assert {
+    _assert_accepted_turn(response, "client_1")
+    assert _has_event(events, "turn.status", {
         "client_turn_id": "client_1",
         "state": "failed",
         "kind": "failed",
         "text": "Failed",
         "terminal": True,
         "message": "model unavailable",
-    } in [params for method, params in events if method == "turn.status"]
+    })
 
 
 def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
@@ -3105,24 +3226,24 @@ def test_gateway_turn_interrupt_reports_running_state(tmp_path: Path) -> None:
     gateway.wait_for_current_turn(timeout=2.0)
 
     assert idle.result == {"interrupted": False}
-    assert accepted.result == {"accepted": True, "client_turn_id": "req_2"}
+    _assert_accepted_turn(accepted, "req_2")
     assert running.result == {"interrupted": True}
     assert service.interrupt_requests == ["req_2"]
-    assert {
+    assert _has_event(events, "turn.status", {
         "client_turn_id": "req_2",
         "state": "interrupted",
         "kind": "interrupted",
         "text": "Interrupted",
         "terminal": True,
         "message": "Interrupt requested",
-    } in [params for method, params in events if method == "turn.status"]
-    assert {
+    })
+    assert _has_event(events, "status.update", {
         "client_turn_id": "req_2",
         "state": "interrupted",
         "kind": "interrupted",
         "text": "Interrupted",
         "message": "Interrupt requested",
-    } in [params for method, params in events if method == "status.update"]
+    })
 
 
 def test_gateway_turn_interrupt_suppresses_late_normal_completion(tmp_path: Path) -> None:
@@ -3146,7 +3267,7 @@ def test_gateway_turn_interrupt_suppresses_late_normal_completion(tmp_path: Path
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert accepted.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(accepted, "client_1")
     assert interrupted.result == {"interrupted": True}
     assert service.interrupt_requests == ["client_1"]
 
@@ -3169,14 +3290,14 @@ def test_gateway_turn_interrupt_suppresses_late_normal_completion(tmp_path: Path
         method == "status.update" and params.get("state") == "completed"
         for method, params in terminal_events
     )
-    assert {
+    assert _has_event(events, "turn.status", {
         "client_turn_id": "client_1",
         "state": "interrupted",
         "kind": "interrupted",
         "text": "Interrupted",
         "terminal": True,
         "message": "Interrupt requested",
-    } in [params for method, params in events if method == "turn.status"]
+    })
     assert {
         "client_turn_id": "client_1",
         "reason": "interrupt_requested",
@@ -3205,21 +3326,21 @@ def test_gateway_turn_interrupt_raises_on_later_stream_events(tmp_path: Path) ->
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert accepted.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(accepted, "client_1")
     assert interrupted.result == {"interrupted": True}
     assert service.interrupted is True
     assert not any(
         method == "message.delta" and params.get("text") == "after interrupt"
         for method, params in events
     )
-    assert {
+    assert _has_event(events, "turn.status", {
         "client_turn_id": "client_1",
         "state": "interrupted",
         "kind": "interrupted",
         "text": "Interrupted",
         "terminal": True,
         "message": "Interrupt requested",
-    } in [params for method, params in events if method == "turn.status"]
+    })
 
 
 def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path) -> None:
@@ -3243,7 +3364,7 @@ def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path)
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert accepted.result == {"accepted": True, "client_turn_id": "client_1"}
+    _assert_accepted_turn(accepted, "client_1")
     assert interrupted.result == {"interrupted": True}
     assert service.seen_token.interrupted is True
     assert service.seen_token.reason == "interrupt"
@@ -3273,7 +3394,7 @@ def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_comp
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
+    _assert_accepted_turn(accepted, "req_1")
     assert interrupted.result == {"interrupted": True}
 
 
@@ -3352,6 +3473,193 @@ def test_gateway_queue_pop_returns_latest_follow_up_and_remaining_snapshot(
     assert status["queued_follow_up_items"] == []
 
 
+def test_gateway_exposes_server_turn_id_and_rejects_stale_steer(tmp_path: Path) -> None:
+    service = QueueSchedulingTurnService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+    try:
+        started = gateway.handle_request(
+            RpcRequest(
+                id="submit",
+                method="turn.submit",
+                params={"message": "start", "client_turn_id": "client-start"},
+            )
+        )
+        assert service.started.wait(timeout=2.0)
+        assert started.result is not None
+        turn_id = str(started.result["turn_id"])
+
+        response = gateway.handle_request(
+            RpcRequest(
+                id="steer",
+                method="turn.steer",
+                params={
+                    "message": "inspect",
+                    "client_turn_id": "client-steer",
+                    "expected_turn_id": f"{turn_id}-stale",
+                },
+            )
+        )
+
+        assert started.result == {
+            "accepted": True,
+            "client_turn_id": "client-start",
+            "turn_id": turn_id,
+        }
+        assert response.result is not None
+        assert response.result["disposition"] == "deferred_to_end_of_turn"
+        assert response.result["queue_items"]["rejected_steers"][0]["message"] == "inspect"
+    finally:
+        service.release.set()
+        gateway.wait_for_current_turn(timeout=2.0)
+        gateway.close()
+
+
+def test_gateway_starts_rejected_steer_as_a_new_server_turn(tmp_path: Path) -> None:
+    service = QueueSchedulingTurnService(tmp_path)
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+    try:
+        first = gateway.handle_request(
+            RpcRequest(
+                id="submit",
+                method="turn.submit",
+                params={"message": "start", "client_turn_id": "client-start"},
+            )
+        )
+        assert service.started.wait(timeout=2.0)
+        assert first.result is not None
+        gateway.handle_request(
+            RpcRequest(
+                id="steer",
+                method="turn.steer",
+                params={
+                    "message": "retry",
+                    "client_turn_id": "client-steer",
+                    "expected_turn_id": f"{first.result['turn_id']}-stale",
+                },
+            )
+        )
+        service.release.set()
+        assert service.second_started.wait(timeout=2.0)
+        gateway.wait_for_current_turn(timeout=2.0)
+
+        started_ids = [
+            str(params["turn_id"])
+            for method, params in events
+            if method == "turn.started"
+        ]
+        assert len(started_ids) == 2
+        assert started_ids[0] != started_ids[1]
+        assert service.server_turn_ids == started_ids
+        assert service.user_messages == ["start", "retry"]
+    finally:
+        service.release.set()
+        gateway.close()
+
+
+def test_gateway_retains_queue_while_interaction_is_pending(tmp_path: Path) -> None:
+    service = QueueSchedulingTurnService(tmp_path)
+    service.queue_blocked = True
+    gateway = NodeTuiGateway(service=service)
+    try:
+        gateway.handle_request(
+            RpcRequest(
+                id="submit",
+                method="turn.submit",
+                params={"message": "start", "client_turn_id": "client-start"},
+            )
+        )
+        assert service.started.wait(timeout=2.0)
+        queued = gateway.handle_request(
+            RpcRequest(
+                id="follow",
+                method="turn.follow_up",
+                params={"message": "later", "client_turn_id": "client-follow"},
+            )
+        )
+        service.release.set()
+        gateway.wait_for_current_turn(timeout=2.0)
+        assert service.blocker_checked.wait(timeout=2.0)
+
+        assert service.user_messages == ["start"]
+        assert queued.result is not None
+        assert queued.result["queue_items"]["follow_ups"][0]["message"] == "later"
+        assert [item.text for item in service.queue_snapshot().follow_ups] == ["later"]
+    finally:
+        service.release.set()
+        gateway.close()
+
+
+class StartFailingThread(Thread):
+    def start(self) -> None:
+        raise RuntimeError("worker start failed")
+
+
+class FailSecondThreadFactory:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(
+        self,
+        *,
+        target: Callable[..., object],
+        kwargs: dict[str, object],
+        daemon: bool,
+    ) -> Thread:
+        self.calls += 1
+        thread_type = Thread if self.calls == 1 else StartFailingThread
+        return thread_type(target=target, kwargs=kwargs, daemon=daemon)
+
+
+def test_gateway_keeps_record_when_next_worker_cannot_start(tmp_path: Path) -> None:
+    service = QueueSchedulingTurnService(tmp_path)
+    failure_seen = Event()
+
+    def emit(method: str, params: dict[str, object]) -> None:
+        if method == "gateway.error" and params.get("code") == "queue_worker_start_failed":
+            failure_seen.set()
+
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=emit,
+        turn_thread_factory=FailSecondThreadFactory(),
+    )
+    try:
+        first = gateway.handle_request(
+            RpcRequest(
+                id="submit",
+                method="turn.submit",
+                params={"message": "start", "client_turn_id": "client-start"},
+            )
+        )
+        assert service.started.wait(timeout=2.0)
+        assert first.result is not None
+        gateway.handle_request(
+            RpcRequest(
+                id="steer",
+                method="turn.steer",
+                params={
+                    "message": "retry",
+                    "client_turn_id": "client-steer",
+                    "expected_turn_id": f"{first.result['turn_id']}-stale",
+                },
+            )
+        )
+        service.release.set()
+        assert failure_seen.wait(timeout=2.0)
+
+        assert service.user_messages == ["start"]
+        assert [item.text for item in service.queue_snapshot().rejected_steers] == [
+            "retry"
+        ]
+    finally:
+        service.release.set()
+        gateway.close()
+
+
 def test_gateway_queues_steering_and_follow_up_while_turn_runs(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = BlockingTurnService(tmp_path)
@@ -3390,7 +3698,7 @@ def test_gateway_queues_steering_and_follow_up_while_turn_runs(tmp_path: Path) -
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
-    assert accepted.result == {"accepted": True, "client_turn_id": "req_1"}
+    _assert_accepted_turn(accepted, "req_1")
     assert steering.result == {
         "accepted": True,
         "steering": ["steer now [image #1]"],

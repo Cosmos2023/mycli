@@ -6,12 +6,17 @@ import inspect
 import json
 from pathlib import Path
 import sqlite3
-from threading import Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 import time
 from typing import Any, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from mycli.application.turn_service import TurnService
+from mycli.application.runtime.session_queue import (
+    QueueCapacityError,
+    QueueConflictError,
+    QueueMutationResult,
+)
 from mycli.cli.autocomplete import path_completion_candidates
 from mycli.cli.slash_command_dispatch import (
     SlashCommandResult,
@@ -46,6 +51,8 @@ from mycli.cli.startup_marks import startup_mark
 from mycli.domain.runtime import (
     DecisionAction,
     PendingDecision,
+    QueueSnapshot,
+    QueuedInputRecord,
     RuntimeEventEnvelope,
     RuntimeInterruptToken,
     ShellLifecycleEvent,
@@ -139,6 +146,7 @@ class NodeTuiServiceLike(Protocol):
         image_paths: tuple[str, ...] = (),
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        turn_id: str | None = None,
     ) -> TurnResponse: ...
 
     def resolve_pending_decision(
@@ -189,6 +197,39 @@ class NodeTuiServiceLike(Protocol):
 
     def clear_queued_input_items(self) -> object: ...
 
+    def queue_steering_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...],
+        client_turn_id: str,
+        expected_turn_id: str,
+        active_turn_id: str | None,
+        steerable: bool,
+    ) -> QueueMutationResult: ...
+
+    def queue_follow_up_input(
+        self,
+        message: str,
+        *,
+        image_paths: tuple[str, ...],
+        client_turn_id: str,
+        source: str = "user",
+    ) -> QueueMutationResult: ...
+
+    def queue_snapshot(self) -> QueueSnapshot: ...
+
+    def next_queued_turn(self) -> QueuedInputRecord | None: ...
+
+    def mark_queued_turn_started(self, queue_id: str) -> QueueSnapshot: ...
+
+    def subscribe_queue(
+        self,
+        listener: Callable[[QueueSnapshot], None],
+    ) -> Callable[[], None]: ...
+
+    def queue_drain_blocked(self) -> bool: ...
+
     def pop_last_follow_up_input(self) -> object | None: ...
 
     def register_shell_lifecycle_listener(
@@ -205,6 +246,7 @@ class _HandleUserTurnKwargs(TypedDict, total=False):
     stream_sink: Callable[[RuntimeStreamEvent], None]
     interrupt_token: RuntimeInterruptToken
     image_paths: tuple[str, ...]
+    turn_id: str
 
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
@@ -253,19 +295,33 @@ class NodeTuiGateway:
         *,
         service: NodeTuiServiceLike,
         emit: Callable[[str, dict[str, object]], None] | None = None,
+        turn_thread_factory: Callable[..., Thread] = Thread,
     ) -> None:
         self.service = service
         self._emit = emit
         self._turn_lock = Lock()
         self._turn_thread: Thread | None = None
+        self._turn_thread_factory = turn_thread_factory
         self._turn_running = False
         self._current_client_turn_id: str | None = None
+        self._current_turn_id: str | None = None
         self._current_interrupt_token: RuntimeInterruptToken | None = None
         self._interrupt_requested = False
         self._event_sequence = 0
         self._fallback_trust_state = "unknown"
         self._shell_unsubscribe: Callable[[], None] | None = None
+        self._queue_unsubscribe: Callable[[], None] | None = None
+        self._queue_scheduler_event = Event()
+        self._queue_scheduler_stop = Event()
         self._bind_shell_lifecycle_listener()
+        self._bind_queue_listener()
+        self._queue_scheduler_thread = Thread(
+            target=self._queue_scheduler_loop,
+            daemon=True,
+            name="mycli-queue-scheduler",
+        )
+        self._queue_scheduler_thread.start()
+        self._queue_scheduler_event.set()
 
     def _bind_shell_lifecycle_listener(self) -> None:
         if self._shell_unsubscribe is not None:
@@ -285,12 +341,100 @@ class NodeTuiGateway:
 
         self._shell_unsubscribe = cast(Callable[[], None], register(listener))
 
-    def close(self) -> None:
-        if self._shell_unsubscribe is None:
+    def _bind_queue_listener(self) -> None:
+        if self._queue_unsubscribe is not None:
+            self._queue_unsubscribe()
+            self._queue_unsubscribe = None
+        subscribe = getattr(self.service, "subscribe_queue", None)
+        if not callable(subscribe):
             return
-        unsubscribe = self._shell_unsubscribe
-        self._shell_unsubscribe = None
-        unsubscribe()
+
+        def listener(snapshot: QueueSnapshot) -> None:
+            self._emit_queue_update(self._queue_payload(snapshot=snapshot))
+            self._queue_scheduler_event.set()
+
+        try:
+            self._queue_unsubscribe = cast(Callable[[], None], subscribe(listener))
+        except (AttributeError, TypeError):
+            self._queue_unsubscribe = None
+
+    def _queue_scheduler_loop(self) -> None:
+        while not self._queue_scheduler_stop.is_set():
+            self._queue_scheduler_event.wait()
+            self._queue_scheduler_event.clear()
+            if self._queue_scheduler_stop.is_set():
+                return
+            self._schedule_next_queued_turn()
+
+    def _schedule_next_queued_turn(self) -> None:
+        next_record: QueuedInputRecord | None = None
+        turn_id: str | None = None
+        client_turn_id: str | None = None
+        thread: Thread | None = None
+        with self._turn_lock:
+            if self._turn_running:
+                return
+            blocked = getattr(self.service, "queue_drain_blocked", None)
+            try:
+                if callable(blocked) and blocked():
+                    return
+                next_turn = getattr(self.service, "next_queued_turn", None)
+                next_record = next_turn() if callable(next_turn) else None
+            except (AttributeError, TypeError):
+                return
+            if not isinstance(next_record, QueuedInputRecord):
+                return
+            turn_id = f"turn_{uuid4().hex}"
+            client_turn_id = f"queued_{uuid4().hex}"
+            interrupt_token = RuntimeInterruptToken(source="node_tui_gateway")
+            thread = self._turn_thread_factory(
+                target=self._run_turn_worker,
+                kwargs={
+                    "message": next_record.text,
+                    "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
+                    "image_paths": next_record.image_paths,
+                },
+                daemon=True,
+            )
+            self._turn_running = True
+            self._current_client_turn_id = client_turn_id
+            self._current_turn_id = turn_id
+            self._current_interrupt_token = interrupt_token
+            self._interrupt_requested = False
+            self._turn_thread = thread
+            try:
+                thread.start()
+            except Exception as exc:
+                self._turn_running = False
+                self._current_client_turn_id = None
+                self._current_turn_id = None
+                self._current_interrupt_token = None
+                self._turn_thread = None
+                self._emit_gateway_error(
+                    code="queue_worker_start_failed",
+                    message="Queued turn worker could not start.",
+                    detail=str(exc),
+                    method="turn.submit",
+                )
+                return
+        marker = getattr(self.service, "mark_queued_turn_started", None)
+        if callable(marker) and next_record is not None:
+            marker(next_record.queue_id)
+
+    def close(self) -> None:
+        if self._shell_unsubscribe is not None:
+            unsubscribe = self._shell_unsubscribe
+            self._shell_unsubscribe = None
+            unsubscribe()
+        if self._queue_unsubscribe is not None:
+            unsubscribe = self._queue_unsubscribe
+            self._queue_unsubscribe = None
+            unsubscribe()
+        self._queue_scheduler_stop.set()
+        self._queue_scheduler_event.set()
+        if self._queue_scheduler_thread is not current_thread():
+            self._queue_scheduler_thread.join(timeout=1.0)
 
     def handle_request(self, request: RpcRequest) -> RpcResponse:
         try:
@@ -361,6 +505,20 @@ class NodeTuiGateway:
                 request.id,
                 code=exc.code,
                 message=exc.message,
+                method=request.method,
+            )
+        except QueueConflictError as exc:
+            return self._gateway_error_response(
+                request.id,
+                code="queue_conflict",
+                message=str(exc),
+                method=request.method,
+            )
+        except QueueCapacityError as exc:
+            return self._gateway_error_response(
+                request.id,
+                code="queue_capacity",
+                message=str(exc),
                 method=request.method,
             )
         except ValueError as exc:
@@ -551,6 +709,7 @@ class NodeTuiGateway:
             )
         image_paths = _local_image_paths(request.params.get("local_images"))
         client_turn_id = _optional_str(request.params.get("client_turn_id")) or str(request.id)
+        turn_id = f"turn_{uuid4().hex}"
         with self._turn_lock:
             if self._turn_running:
                 return self._gateway_error_response(
@@ -561,26 +720,68 @@ class NodeTuiGateway:
                 )
             self._turn_running = True
             self._current_client_turn_id = client_turn_id
+            self._current_turn_id = turn_id
             self._current_interrupt_token = RuntimeInterruptToken(source="node_tui_gateway")
             self._interrupt_requested = False
-            self._turn_thread = Thread(
+            self._turn_thread = self._turn_thread_factory(
                 target=self._run_turn_worker,
                 kwargs={
                     "message": message,
                     "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
                     "image_paths": image_paths,
                 },
                 daemon=True,
             )
-            self._turn_thread.start()
-        return result_response(request.id, {"accepted": True, "client_turn_id": client_turn_id})
+            try:
+                self._turn_thread.start()
+            except Exception as exc:
+                self._turn_running = False
+                self._current_client_turn_id = None
+                self._current_turn_id = None
+                self._current_interrupt_token = None
+                self._turn_thread = None
+                return self._gateway_error_response(
+                    request.id,
+                    code="internal_error",
+                    message="Turn worker could not start.",
+                    method=request.method,
+                    detail=str(exc),
+                )
+        return result_response(
+            request.id,
+            {"accepted": True, "client_turn_id": client_turn_id, "turn_id": turn_id},
+        )
 
     def _handle_turn_steer(self, params: dict[str, object]) -> dict[str, object]:
         message = _required_str(params, "message").strip()
         if not message:
             raise ValueError("message is required.")
         image_paths = _local_image_paths(params.get("local_images"))
-        client_turn_id = _optional_str(params.get("client_turn_id"))
+        client_turn_id = _optional_str(params.get("client_turn_id")) or f"steer_{uuid4().hex}"
+        structured_snapshot = self._structured_queue_snapshot()
+        if structured_snapshot is not None:
+            expected_turn_id = _required_str(params, "expected_turn_id").strip()
+            if not expected_turn_id:
+                raise ValueError("expected_turn_id is required.")
+            queue = getattr(self.service, "queue_steering_input")
+            with self._turn_lock:
+                running = self._turn_running
+                active_turn_id = self._current_turn_id if running else None
+                result = queue(
+                    message,
+                    image_paths=image_paths,
+                    client_turn_id=client_turn_id,
+                    expected_turn_id=expected_turn_id,
+                    active_turn_id=active_turn_id,
+                    steerable=running,
+                )
+            payload = self._queue_payload(snapshot=result.snapshot)
+            return {
+                "accepted": True,
+                "disposition": result.disposition.value,
+                **payload,
+            }
         with self._turn_lock:
             running = self._turn_running
         if not running:
@@ -603,7 +804,21 @@ class NodeTuiGateway:
         if not message:
             raise ValueError("message is required.")
         image_paths = _local_image_paths(params.get("local_images"))
-        client_turn_id = _optional_str(params.get("client_turn_id"))
+        client_turn_id = _optional_str(params.get("client_turn_id")) or f"follow_{uuid4().hex}"
+        structured_snapshot = self._structured_queue_snapshot()
+        if structured_snapshot is not None:
+            queue = getattr(self.service, "queue_follow_up_input")
+            result = queue(
+                message,
+                image_paths=image_paths,
+                client_turn_id=client_turn_id,
+            )
+            payload = self._queue_payload(snapshot=result.snapshot)
+            return {
+                "accepted": True,
+                "disposition": result.disposition.value,
+                **payload,
+            }
         with self._turn_lock:
             running = self._turn_running
         if not running:
@@ -667,6 +882,7 @@ class NodeTuiGateway:
         with self._turn_lock:
             running = self._turn_running
             client_turn_id = self._current_client_turn_id
+            turn_id = self._current_turn_id
             if running:
                 self._interrupt_requested = True
                 if self._current_interrupt_token is not None:
@@ -679,6 +895,7 @@ class NodeTuiGateway:
                 {
                     "requested": True,
                     **({"client_turn_id": client_turn_id} if client_turn_id is not None else {}),
+                    **({"turn_id": turn_id} if turn_id is not None else {}),
                 },
             )
             self._emit_turn_status(
@@ -698,11 +915,55 @@ class NodeTuiGateway:
     def _queue_payload(
         self,
         *,
+        snapshot: QueueSnapshot | None = None,
         steering: tuple[str, ...] | None = None,
         follow_up: tuple[str, ...] | None = None,
         steering_items: object | None = None,
         follow_up_items: object | None = None,
     ) -> dict[str, object]:
+        snapshot = snapshot or self._structured_queue_snapshot()
+        if snapshot is not None:
+            pending = snapshot.pending_steers
+            rejected = snapshot.rejected_steers
+            follow_ups = snapshot.follow_ups
+            visible_pending = tuple(
+                record for record in pending if record.source != "task_notification"
+            )
+            visible_follow_ups = tuple(
+                record
+                for record in (*rejected, *follow_ups)
+                if record.source != "task_notification"
+            )
+            has_pending = bool(visible_pending or visible_follow_ups)
+            return {
+                "steering": [record.text for record in visible_pending],
+                "follow_up": [record.text for record in visible_follow_ups],
+                "steering_items": [
+                    _queued_record_payload(record) for record in visible_pending
+                ],
+                "follow_up_items": [
+                    _queued_record_payload(record) for record in visible_follow_ups
+                ],
+                "queue_revision": snapshot.revision,
+                "queue_items": {
+                    "pending_steers": [
+                        _queued_record_payload(record) for record in pending
+                    ],
+                    "rejected_steers": [
+                        _queued_record_payload(record) for record in rejected
+                    ],
+                    "follow_ups": [
+                        _queued_record_payload(record) for record in follow_ups
+                    ],
+                },
+                "has_pending_input": has_pending,
+                "activity": {
+                    "kind": "pending_input" if has_pending else "idle",
+                    "has_pending_input": has_pending,
+                    "steering_count": len(visible_pending),
+                    "follow_up_count": len(visible_follow_ups),
+                },
+            }
         if steering is None or follow_up is None:
             queued = getattr(self.service, "queued_messages", None)
             if callable(queued):
@@ -730,6 +991,16 @@ class NodeTuiGateway:
         payload.update(_queue_activity_payload(payload["steering"], payload["follow_up"]))
         return payload
 
+    def _structured_queue_snapshot(self) -> QueueSnapshot | None:
+        snapshot = getattr(self.service, "queue_snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            value = snapshot()
+        except (AttributeError, TypeError):
+            return None
+        return value if isinstance(value, QueueSnapshot) else None
+
     def _emit_queue_update(
         self,
         payload: dict[str, object],
@@ -752,9 +1023,13 @@ class NodeTuiGateway:
         *,
         message: str,
         client_turn_id: str,
+        turn_id: str,
         image_paths: tuple[str, ...] = (),
     ) -> None:
-        self._emit_event("turn.started", {"client_turn_id": client_turn_id})
+        self._emit_event(
+            "turn.started",
+            {"client_turn_id": client_turn_id, "turn_id": turn_id},
+        )
         self._emit_status_update(
             client_turn_id=client_turn_id,
             state="running",
@@ -769,13 +1044,18 @@ class NodeTuiGateway:
                     stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
                     interrupt_token=self._current_interrupt_token,
                     image_paths=image_paths,
+                    turn_id=turn_id,
                 ),
             )
         except KeyboardInterrupt:
             self._emit_interrupted_turn_completed(client_turn_id=client_turn_id, message=message)
             self._emit_event(
                 "turn.interrupted",
-                {"requested": True, "client_turn_id": client_turn_id},
+                {
+                    "requested": True,
+                    "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
+                },
             )
             self._emit_turn_status(
                 client_turn_id=client_turn_id,
@@ -792,7 +1072,11 @@ class NodeTuiGateway:
         except Exception as exc:
             self._emit_event(
                 "turn.failed",
-                {"client_turn_id": client_turn_id, "message": str(exc)},
+                {
+                    "client_turn_id": client_turn_id,
+                    "turn_id": turn_id,
+                    "message": str(exc),
+                },
             )
             self._emit_turn_status(
                 client_turn_id=client_turn_id,
@@ -826,11 +1110,14 @@ class NodeTuiGateway:
                 )
             self._emit_event(
                 "turn.completed",
-                self._turn_completed_payload(
-                    client_turn_id=client_turn_id,
-                    response=response,
-                    assistant_message=assistant_message,
-                ),
+                {
+                    "turn_id": turn_id,
+                    **self._turn_completed_payload(
+                        client_turn_id=client_turn_id,
+                        response=response,
+                        assistant_message=assistant_message,
+                    ),
+                },
             )
             turn_state = _turn_state_for_response(response)
             self._emit_turn_status(
@@ -849,10 +1136,13 @@ class NodeTuiGateway:
             )
         finally:
             with self._turn_lock:
-                self._turn_running = False
-                self._current_client_turn_id = None
-                self._current_interrupt_token = None
+                if self._current_turn_id == turn_id:
+                    self._turn_running = False
+                    self._current_client_turn_id = None
+                    self._current_turn_id = None
+                    self._current_interrupt_token = None
             self._emit_event("status.changed", self._status_payload())
+            self._queue_scheduler_event.set()
 
     def _should_suppress_late_completion(
         self,
@@ -1080,6 +1370,8 @@ class NodeTuiGateway:
         }
         if client_turn_id is not None:
             payload["client_turn_id"] = client_turn_id
+        if self._current_turn_id is not None:
+            payload["turn_id"] = self._current_turn_id
         if message:
             payload["message"] = message
         self._emit_event("status.update", payload)
@@ -1091,9 +1383,16 @@ class NodeTuiGateway:
         state: str,
         message: str | None = None,
     ) -> None:
+        payload = _turn_status_payload(
+            client_turn_id=client_turn_id,
+            state=state,
+            message=message,
+        )
+        if self._current_turn_id is not None:
+            payload["turn_id"] = self._current_turn_id
         self._emit_event(
             "turn.status",
-            _turn_status_payload(client_turn_id=client_turn_id, state=state, message=message),
+            payload,
         )
 
     def _emit_gateway_error(
@@ -1425,6 +1724,7 @@ class NodeTuiGateway:
             with self._turn_lock:
                 self._turn_running = False
             self._emit_event("status.changed", self._status_payload())
+            self._queue_scheduler_event.set()
 
     def _handle_clarification_response(self, request: RpcRequest) -> RpcResponse:
         request_id = _required_str(request.params, "request_id").strip()
@@ -1546,6 +1846,7 @@ class NodeTuiGateway:
             with self._turn_lock:
                 self._turn_running = False
             self._emit_event("status.changed", self._status_payload())
+            self._queue_scheduler_event.set()
 
     def _handle_completion_slash(self, params: dict[str, object]) -> dict[str, object]:
         prefix = _optional_str(params.get("prefix")) or "/"
@@ -1714,6 +2015,7 @@ class NodeTuiGateway:
             "pending_decision": pending is not None,
             "suspended_turn": suspended is not None,
             "turn_running": self._turn_running,
+            "turn_id": self._current_turn_id,
             "queued_steering": queue_payload["steering"],
             "queued_follow_up": queue_payload["follow_up"],
             "background_shells": self._active_background_shells(),
@@ -1721,6 +2023,9 @@ class NodeTuiGateway:
             "queue_activity": queue_payload["activity"],
             "trust": self._trust_status_payload(),
         }
+        if "queue_revision" in queue_payload:
+            payload["queue_revision"] = queue_payload["queue_revision"]
+            payload["queue_items"] = queue_payload["queue_items"]
         if "steering_items" in queue_payload or "follow_up_items" in queue_payload:
             payload["queued_steering_items"] = queue_payload.get("steering_items", [])
             payload["queued_follow_up_items"] = queue_payload.get("follow_up_items", [])
@@ -1839,6 +2144,28 @@ def _local_image_paths(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(paths))
 
 
+def _queued_record_payload(record: QueuedInputRecord) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "queue_id": record.queue_id,
+        "session_id": record.session_id,
+        "client_turn_id": record.client_turn_id,
+        "target_turn_id": record.target_turn_id,
+        "kind": record.kind,
+        "state": record.state,
+        "message": record.text,
+        "text": record.text,
+        "source": record.source,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+    if record.image_paths:
+        payload["local_images"] = [
+            {"path": path, "placeholder": f"[image #{index}]"}
+            for index, path in enumerate(record.image_paths, start=1)
+        ]
+    return payload
+
+
 def _queued_items_payload(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list | tuple):
         return []
@@ -1924,6 +2251,7 @@ def _handle_user_turn_kwargs(
     stream_sink: Callable[[RuntimeStreamEvent], None],
     interrupt_token: RuntimeInterruptToken | None,
     image_paths: tuple[str, ...] = (),
+    turn_id: str | None = None,
 ) -> _HandleUserTurnKwargs:
     # The gateway is used directly in tests with small fake services. Keep the
     # new cancellation channel optional so old service fakes remain valid.
@@ -1935,6 +2263,8 @@ def _handle_user_turn_kwargs(
         kwargs["interrupt_token"] = interrupt_token
     if image_paths and _callable_accepts_keyword(handle_user_turn, "image_paths"):
         kwargs["image_paths"] = image_paths
+    if turn_id is not None and _callable_accepts_keyword(handle_user_turn, "turn_id"):
+        kwargs["turn_id"] = turn_id
     return kwargs
 
 

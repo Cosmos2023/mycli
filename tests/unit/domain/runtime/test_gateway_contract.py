@@ -26,8 +26,12 @@ def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
         "turn_in_progress",
         "decision_not_pending",
         "clarification_not_pending",
-        "incompatible_protocol",
-        "command_result_persistence_failed",
+            "incompatible_protocol",
+            "command_result_persistence_failed",
+            "stale_turn",
+            "queue_conflict",
+            "queue_capacity",
+            "queue_worker_start_failed",
     ]
 
 
@@ -81,10 +85,13 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "pending_decision",
         "suspended_turn",
         "turn_running",
+        "turn_id",
         "queued_steering",
         "queued_follow_up",
         "has_pending_input",
         "queue_activity",
+        "queue_revision",
+        "queue_items",
     ]
     assert sorted(schema["properties"]) == [
         "context_window",
@@ -93,6 +100,8 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "pending_decision",
         "provider",
         "queue_activity",
+        "queue_items",
+        "queue_revision",
         "queued_follow_up",
         "queued_follow_up_items",
         "queued_steering",
@@ -100,6 +109,7 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
         "session_id",
         "suspended_turn",
         "trust",
+        "turn_id",
         "turn_running",
         "workspace",
     ]
@@ -123,7 +133,12 @@ def test_status_changed_schema_exposes_runtime_snapshot_shape() -> None:
 def test_turn_queue_updated_schema_exposes_split_queue_snapshot() -> None:
     schema = gateway_event_payload_schemas()["turn.queue.updated"]
 
-    assert schema["required"] == ["steering", "follow_up"]
+    assert schema["required"] == [
+        "queue_revision",
+        "queue_items",
+        "steering",
+        "follow_up",
+    ]
     assert schema["properties"]["steering"] == {"type": "array"}
     assert schema["properties"]["follow_up"] == {"type": "array"}
     assert schema["properties"]["has_pending_input"] == {"type": "boolean"}
@@ -144,11 +159,44 @@ def test_turn_queue_updated_schema_exposes_split_queue_snapshot() -> None:
     assert local_images["items"]["properties"]["placeholder"] == {"type": "string"}
 
 
+def test_gateway_contract_exposes_server_turn_and_revisioned_queue_fields() -> None:
+    schemas = gateway_event_payload_schemas()
+
+    assert "turn_id" in schemas["turn.started"]["required"]
+    assert "turn_id" in schemas["turn.completed"]["required"]
+    assert schemas["turn.queue.updated"]["required"] == [
+        "queue_revision",
+        "queue_items",
+        "steering",
+        "follow_up",
+    ]
+    queue_items = schemas["turn.queue.updated"]["properties"]["queue_items"]
+    assert sorted(queue_items["properties"]) == [
+        "follow_ups",
+        "pending_steers",
+        "rejected_steers",
+    ]
+    queued_record = queue_items["properties"]["pending_steers"]["items"]
+    assert queued_record["properties"]["target_turn_id"] == {
+        "type": ["string", "null"]
+    }
+    assert queued_record["properties"]["kind"]["enum"] == [
+        "pending_steer",
+        "rejected_steer",
+        "follow_up",
+    ]
+    assert "stale_turn" in GATEWAY_ERROR_CODES
+    assert "queue_conflict" in GATEWAY_ERROR_CODES
+    assert "queue_capacity" in GATEWAY_ERROR_CODES
+    assert "queue_worker_start_failed" in GATEWAY_ERROR_CODES
+
+
 def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:
     schema = gateway_event_payload_schemas()["turn.completed"]
 
     assert schema["required"] == [
         "client_turn_id",
+        "turn_id",
         "assistant_message",
         "activity_events",
         "progress_updates",
@@ -164,6 +212,7 @@ def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:
         "pending_decision",
         "plan_steps",
         "progress_updates",
+        "turn_id",
         "turn_state",
         "usage",
     ]
@@ -199,6 +248,7 @@ def test_turn_status_schema_exposes_terminal_routing_contract() -> None:
         "state",
         "terminal",
         "text",
+        "turn_id",
     ]
     assert schema["properties"]["state"]["enum"] == list(TERMINAL_TURN_STATES)
     assert schema["properties"]["terminal"] == {"type": "boolean"}

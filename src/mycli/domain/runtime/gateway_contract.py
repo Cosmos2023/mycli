@@ -116,6 +116,49 @@ _QUEUED_TURN_INPUTS = {
     "type": "array",
     "items": _QUEUED_TURN_INPUT,
 }
+_QUEUE_RECORD_KIND = {
+    "type": "string",
+    "enum": ["pending_steer", "rejected_steer", "follow_up"],
+}
+_QUEUE_DELIVERY_STATE = {
+    "type": "string",
+    "enum": ["queued", "accepted", "committed"],
+}
+_QUEUED_INPUT_RECORD = {
+    "type": "object",
+    "properties": {
+        "queue_id": _STRING,
+        "session_id": _STRING,
+        "client_turn_id": _STRING,
+        "target_turn_id": _OPTIONAL_STRING,
+        "kind": _QUEUE_RECORD_KIND,
+        "state": _QUEUE_DELIVERY_STATE,
+        "message": _STRING,
+        "text": _STRING,
+        "source": _STRING,
+        "created_at": _STRING,
+        "updated_at": _STRING,
+        "local_images": _LOCAL_IMAGE_ATTACHMENTS,
+    },
+}
+_QUEUED_INPUT_RECORDS = {"type": "array", "items": _QUEUED_INPUT_RECORD}
+_QUEUE_ITEMS = {
+    "type": "object",
+    "properties": {
+        "pending_steers": _QUEUED_INPUT_RECORDS,
+        "rejected_steers": _QUEUED_INPUT_RECORDS,
+        "follow_ups": _QUEUED_INPUT_RECORDS,
+    },
+}
+_QUEUE_DISPOSITION = {
+    "type": "string",
+    "enum": [
+        "accepted_for_turn",
+        "deferred_to_end_of_turn",
+        "queued_follow_up",
+        "duplicate",
+    ],
+}
 _QUEUE_ACTIVITY = {
     "type": "object",
     "properties": {
@@ -134,6 +177,10 @@ GATEWAY_ERROR_CODES = (
     "clarification_not_pending",
     "incompatible_protocol",
     "command_result_persistence_failed",
+    "stale_turn",
+    "queue_conflict",
+    "queue_capacity",
+    "queue_worker_start_failed",
 )
 _GATEWAY_ERROR_CODE = {"type": "string", "enum": list(GATEWAY_ERROR_CODES)}
 APPROVAL_DECISION_CHOICES = (
@@ -388,10 +435,13 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "pending_decision",
             "suspended_turn",
             "turn_running",
+            "turn_id",
             "queued_steering",
             "queued_follow_up",
             "has_pending_input",
             "queue_activity",
+            "queue_revision",
+            "queue_items",
         ),
         properties={
             "session_id": _STRING,
@@ -402,12 +452,15 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "pending_decision": _BOOLEAN,
             "suspended_turn": _BOOLEAN,
             "turn_running": _BOOLEAN,
+            "turn_id": _OPTIONAL_STRING,
             "queued_steering": _ARRAY,
             "queued_follow_up": _ARRAY,
             "queued_steering_items": _QUEUED_TURN_INPUTS,
             "queued_follow_up_items": _QUEUED_TURN_INPUTS,
             "has_pending_input": _BOOLEAN,
             "queue_activity": _QUEUE_ACTIVITY,
+            "queue_revision": _INTEGER,
+            "queue_items": _QUEUE_ITEMS,
             "trust": _OBJECT,
         },
     ),
@@ -463,6 +516,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         "turn.completed",
         required=(
             "client_turn_id",
+            "turn_id",
             "assistant_message",
             "activity_events",
             "progress_updates",
@@ -473,6 +527,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         ),
         properties=_with_client_turn(
             {
+                "turn_id": _STRING,
                 "assistant_message": _STRING,
                 "turn_state": _TURN_STATE,
                 "pending_decision": _BOOLEAN,
@@ -508,12 +563,15 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "turn.failed": _schema(
         "turn.failed",
-        properties=_with_client_turn({"message": _STRING}),
+        properties=_with_client_turn({"turn_id": _STRING, "message": _STRING}),
     ),
     "turn.queue.updated": _schema(
         "turn.queue.updated",
-        required=("steering", "follow_up"),
+        required=("queue_revision", "queue_items", "steering", "follow_up"),
         properties={
+            "queue_revision": _INTEGER,
+            "queue_items": _QUEUE_ITEMS,
+            "disposition": _QUEUE_DISPOSITION,
             "steering": _ARRAY,
             "follow_up": _ARRAY,
             "has_pending_input": _BOOLEAN,
@@ -524,12 +582,12 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "turn.interrupted": _schema(
         "turn.interrupted",
-        properties=_with_client_turn({"requested": _BOOLEAN}),
+        properties=_with_client_turn({"turn_id": _STRING, "requested": _BOOLEAN}),
     ),
     "turn.started": _schema(
         "turn.started",
-        required=("client_turn_id",),
-        properties={"client_turn_id": _STRING},
+        required=("client_turn_id", "turn_id"),
+        properties={"client_turn_id": _STRING, "turn_id": _STRING},
     ),
     "turn.status": _schema(
         "turn.status",
@@ -537,6 +595,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         properties=_with_client_turn(
             {
                 "state": _TERMINAL_TURN_STATE,
+                "turn_id": _STRING,
                 "kind": _STRING,
                 "text": _STRING,
                 "terminal": _BOOLEAN,
