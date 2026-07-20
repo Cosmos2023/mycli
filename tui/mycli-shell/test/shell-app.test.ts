@@ -3534,6 +3534,7 @@ test("mycli shell commits a resumed user message before a long streamed tail", a
 	assert.ok(userRow >= 0);
 	assert.ok(liveTail > userRow);
 	assert.doesNotMatch(output, /mycli ctrl\+p commands/);
+	assert.doesNotMatch(terminal.output, /\x1b\[J/);
 	assert.equal(output.match(/train a small model from scratch/g)?.length, 1);
 	assertNativeScrollbackSafeOutput(terminal.output);
 });
@@ -3568,7 +3569,7 @@ test("native TUI clears the live viewport before scrolling history", async () =>
 	await setTimeout(25);
 	terminal.output = "";
 
-	ui.insertHistoryBeforeNextFrame(["committed history"]);
+	ui.insertHistoryBeforeNextFrame(["committed history"], { clearViewport: true });
 	ui.requestRender();
 	await setTimeout(25);
 

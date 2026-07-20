@@ -285,6 +285,7 @@ export class TUI extends Container {
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
 	private pendingHistoryLines: string[] | null = null;
+	private pendingHistoryClearsViewport = false;
 	private stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -308,11 +309,12 @@ export class TUI extends Container {
 		return this.showHardwareCursor;
 	}
 
-	insertHistoryBeforeNextFrame(lines: string[]): void {
+	insertHistoryBeforeNextFrame(lines: string[], options: { clearViewport?: boolean } = {}): void {
 		this.pendingHistoryLines = [
 			...(this.pendingHistoryLines ?? []),
 			...lines,
 		];
+		this.pendingHistoryClearsViewport ||= options.clearViewport === true;
 		this.requestRender();
 	}
 
@@ -1139,13 +1141,27 @@ export class TUI extends Container {
 		cursorPos: { row: number; col: number } | null,
 		width: number,
 		height: number,
+		clearViewport: boolean,
+		prevViewportTop: number,
+		hardwareCursorRow: number,
 	): void {
 		this.fullRedrawCount += 1;
 		let buffer = "\x1b[?2026h";
 
-		// Clear the live viewport in one operation without touching scrollback or
-		// emitting line feeds that could commit mutable frame rows as history.
-		buffer += "\x1b[H\x1b[J";
+		if (clearViewport) {
+			// Stable surface transitions clear the live viewport without touching
+			// scrollback so mutable frame rows cannot be committed as history.
+			buffer += "\x1b[H\x1b[J";
+		} else {
+			const currentScreenRow = Math.max(
+				0,
+				Math.min(height - 1, hardwareCursorRow - prevViewportTop),
+			);
+			if (currentScreenRow > 0) {
+				buffer += `\x1b[${currentScreenRow}A`;
+			}
+			buffer += "\r";
+		}
 
 		if (historyLines.length === 0) {
 			buffer += "\x1b[2K";
@@ -1217,7 +1233,9 @@ export class TUI extends Container {
 
 		newLines = this.applyLineResets(newLines);
 		const pendingHistoryLines = this.pendingHistoryLines;
+		const pendingHistoryClearsViewport = this.pendingHistoryClearsViewport;
 		this.pendingHistoryLines = null;
+		this.pendingHistoryClearsViewport = false;
 		if (pendingHistoryLines && this.terminal.nativeScrollback) {
 			this.renderHistoryAndFrame(
 				this.applyLineResets([...pendingHistoryLines]),
@@ -1225,6 +1243,9 @@ export class TUI extends Container {
 				cursorPos,
 				width,
 				height,
+				pendingHistoryClearsViewport,
+				prevViewportTop,
+				hardwareCursorRow,
 			);
 			return;
 		}

@@ -722,14 +722,14 @@ export class MycliShellRuntime {
 	private queueNativeTranscriptHistory(): void {
 		if (!this.ui.terminal.nativeScrollback) return;
 		const prefix = this.transcriptViewport.scrollbackPrefix(this.ui.terminal.columns);
-		this.ui.insertHistoryBeforeNextFrame(prefix);
+		this.ui.insertHistoryBeforeNextFrame(prefix, { clearViewport: true });
 	}
 
 	private queueNativeTranscriptDelta(): void {
 		if (!this.ui.terminal.nativeScrollback || !this.mainMounted) return;
 		const delta = this.transcriptViewport.takeNewScrollbackLines(this.ui.terminal.columns);
 		if (delta.length > 0) {
-			this.ui.insertHistoryBeforeNextFrame(delta);
+			this.ui.insertHistoryBeforeNextFrame(delta, { clearViewport: !this.isTurnRunning() });
 		}
 	}
 
