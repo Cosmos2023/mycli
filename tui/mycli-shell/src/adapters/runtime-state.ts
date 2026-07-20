@@ -384,8 +384,13 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 		const normalized = planUpdateFromPayload(recordValue(item.metadata), item.id, item.text);
 		return normalized ? [normalized] : [];
 	});
+	const resumedItems = items.map((item) =>
+		isToolTranscriptItem(item) && item.folded === undefined
+			? { ...item, folded: true }
+			: item,
+	);
 	const transcript = coalesceResumedShellOutputItems(
-		coalesceLegacyToolItems([...state.transcript, ...items]),
+		coalesceLegacyToolItems([...state.transcript, ...resumedItems]),
 	)
 		.filter((item) => !shouldSuppressSuccessfulTaskItem(item));
 	const latestPlanUpdate = [...transcript].reverse().find((item) => item.type === "plan_update");

@@ -262,7 +262,7 @@ test("runtime adapter projects runtime-backed visual settings", () => {
 	});
 });
 
-test("runtime adapter applies tool detail default setting", () => {
+test("runtime adapter collapses resumed tools without overriding explicit fold state", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithSettings(state, { toolDetailsDefault: "expanded" });
 	state = runtimeStateFromTranscript(state, {
@@ -279,13 +279,38 @@ test("runtime adapter applies tool detail default setting", () => {
 				text: "pytest -q\n1 passed",
 				metadata: { tool_name: "Bash", command: "pytest -q", success: true },
 			},
+			{
+				id: "t2",
+				type: "tool_summary",
+				text: "Read README.md",
+				folded: false,
+				metadata: { tool_name: "Read", path: "README.md", success: true },
+			},
 		],
 	});
 
 	const shell = projectRuntimeState(state);
 
-	assert.equal(shell.tools[0]?.expanded, true);
-	assert.equal(shell.bash[0]?.expanded, true);
+	assert.equal(shell.tools[0]?.expanded, false);
+	assert.equal(shell.bash[0]?.expanded, false);
+	assert.equal(shell.tools[1]?.expanded, true);
+});
+
+test("runtime adapter keeps expanded defaults for non-resumed tool items", () => {
+	let state = runtimeStateWithSettings(initialRuntimeState(), { toolDetailsDefault: "expanded" });
+	state = {
+		...state,
+		transcript: [
+			{
+				id: "live-tool",
+				type: "tool_summary",
+				text: "Read live.txt",
+				metadata: { tool_name: "Read", path: "live.txt", success: true },
+			},
+		],
+	};
+
+	assert.equal(projectRuntimeState(state).tools[0]?.expanded, true);
 });
 
 test("runtime adapter keeps bash python source out of output preview", () => {
