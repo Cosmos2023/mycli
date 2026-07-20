@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 import json
 import sys
 from threading import Lock
 import time
 from dataclasses import replace
+from unittest.mock import Mock
+
+import pytest
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
+from mycli.application.runtime.turn_executor import TurnExecutor
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.contributed_tools import (
     ToolContributionDescriptor,
@@ -1584,6 +1589,108 @@ def test_legacy_projection_keeps_rejected_before_follow_up(tmp_path: Path) -> No
     assert runtime.queued_messages() == ((), ("rejected", "later"))
 
 
+def test_pending_steer_is_removed_only_after_history_commit(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=FollowUpCaptureAdapter(),
+    )
+    runtime.queue_steering_message(
+        "inspect",
+        client_turn_id="client-steer",
+        expected_turn_id="turn-fixed",
+        active_turn_id="turn-fixed",
+        steerable=True,
+    )
+    runtime._session_service.append_history_items = Mock(side_effect=OSError("disk full"))
+
+    with pytest.raises(OSError, match="disk full"):
+        TurnExecutor(runtime).execute_user_turn("start", turn_id="turn-fixed")
+
+    assert [item.text for item in runtime.queue_snapshot().pending_steers] == ["inspect"]
+
+
+def test_committed_steer_history_carries_queue_id_once_and_uses_server_turn_id(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=FollowUpCaptureAdapter(),
+    )
+    queued = runtime.queue_steering_input(
+        "inspect",
+        client_turn_id="client-steer",
+        expected_turn_id="turn-fixed",
+        active_turn_id="turn-fixed",
+        steerable=True,
+    ).record
+
+    response = TurnExecutor(runtime).execute_user_turn("start", turn_id="turn-fixed")
+
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    committed = [item for item in history if item.metadata.get("queue_id") == queued.queue_id]
+    assert len(committed) == 1
+    assert committed[0].turn_id == "turn-fixed"
+    assert response.turn is not None
+    assert response.turn.turn_id == "turn-fixed"
+    assert runtime.queue_snapshot().pending_steers == ()
+
+
+class TerminalQueueingAdapter:
+    def __init__(self) -> None:
+        self.before_return: Callable[[], None] | None = None
+        self.call_count = 0
+
+    def next_turn(self, *, items: list[RuntimeItem], tools: object) -> ModelTurnResult:
+        del items, tools
+        self.call_count += 1
+        callback = self.before_return
+        self.before_return = None
+        if callback is not None:
+            callback()
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="first"),),
+                ),
+            ),
+            done=True,
+        )
+
+
+def test_terminal_turn_reclassifies_pending_and_leaves_next_input_for_host(
+    tmp_path: Path,
+) -> None:
+    adapter = TerminalQueueingAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    def queue_during_in_flight_response() -> None:
+        runtime.queue_steering_message(
+            "retry first",
+            client_turn_id="client-rejected",
+            expected_turn_id="turn-fixed",
+            active_turn_id="turn-fixed",
+            steerable=True,
+        )
+
+    adapter.before_return = queue_during_in_flight_response
+    runtime.queue_follow_up_message("ordinary later", client_turn_id="client-follow")
+
+    TurnExecutor(runtime).execute_user_turn("start", turn_id="turn-fixed")
+
+    snapshot = runtime.queue_snapshot()
+    assert adapter.call_count == 1
+    assert [item.text for item in snapshot.rejected_steers] == ["retry first"]
+    assert [item.text for item in snapshot.follow_ups] == ["ordinary later"]
+    assert runtime.next_queued_turn().text == "retry first"
+
+
 class PushThenResumedReasoningUnsupportedAdapter:
     def __init__(self) -> None:
         self.calls = 0
@@ -2407,7 +2514,7 @@ def test_agent_runtime_preserves_queued_steering_images_in_next_request(
     assert [block.metadata["path"] for block in second_request_images] == [str(image_path)]
 
 
-def test_agent_runtime_consumes_follow_up_after_answer_completion(
+def test_agent_runtime_leaves_follow_up_for_a_new_host_turn(
     tmp_path: Path,
 ) -> None:
     adapter = FollowUpCaptureAdapter()
@@ -2421,7 +2528,19 @@ def test_agent_runtime_consumes_follow_up_after_answer_completion(
 
     response = runtime.handle_user_turn("answer first")
 
-    assert response.assistant_message == "follow-up answer"
+    assert response.assistant_message == "first answer"
+    assert adapter.calls == 1
+    queued = runtime.next_queued_turn()
+    assert queued is not None
+    assert queued.text == "now summarize risks"
+
+    runtime.mark_queued_turn_started(queued.queue_id)
+    follow_up_response = runtime.handle_user_turn(
+        queued.text,
+        image_paths=queued.image_paths,
+    )
+
+    assert follow_up_response.assistant_message == "follow-up answer"
     assert adapter.calls == 2
     second_request_user_texts = [
         block.text
@@ -2434,7 +2553,7 @@ def test_agent_runtime_consumes_follow_up_after_answer_completion(
     assert runtime.queued_messages() == ((), ())
 
 
-def test_agent_runtime_preserves_queued_follow_up_images_in_next_request(
+def test_agent_runtime_preserves_queued_follow_up_images_in_new_host_turn(
     tmp_path: Path,
 ) -> None:
     image_path = tmp_path / "follow.png"
@@ -2456,6 +2575,10 @@ def test_agent_runtime_preserves_queued_follow_up_images_in_next_request(
     )
 
     runtime.handle_user_turn("answer first")
+    queued = runtime.next_queued_turn()
+    assert queued is not None
+    runtime.mark_queued_turn_started(queued.queue_id)
+    runtime.handle_user_turn(queued.text, image_paths=queued.image_paths)
 
     second_request_images = [
         block

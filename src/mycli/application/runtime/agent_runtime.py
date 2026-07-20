@@ -2176,6 +2176,12 @@ class AgentRuntime:
         turn_items: list[TurnItem],
         context_baseline: ContextBaseline | None = None,
     ) -> TurnResponse:
+        if status not in {
+            TurnStatus.IN_PROGRESS,
+            TurnStatus.WAITING_APPROVAL,
+            TurnStatus.WAITING_CLARIFICATION,
+        }:
+            self.reject_pending_for_turn(turn_id)
         self._response_finalizer.set_config(self._config)
         return self._response_finalizer.finalize_response(
             response=response,
@@ -2331,6 +2337,7 @@ class AgentRuntime:
         image_paths: tuple[str, ...] = (),
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        turn_id: str | None = None,
     ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
@@ -2341,6 +2348,7 @@ class AgentRuntime:
             image_paths=image_paths,
             stream_sink=stream_sink,
             interrupt_token=interrupt_token,
+            turn_id=turn_id,
         )
 
     def resolve_pending_approval(

@@ -23,10 +23,12 @@ from mycli.domain.runtime import (
     CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
+    HistoryItem,
+    HistoryItemType,
     PendingClarification,
     PendingDecision,
     PlanState,
-    QueuedTurnInput,
+    QueuedInputRecord,
     RuntimeBlock,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
@@ -79,6 +81,7 @@ class TurnExecutor:
         image_paths: tuple[str, ...] = (),
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
+        turn_id: str | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         _raise_if_interrupted(interrupt_token)
@@ -113,18 +116,18 @@ class TurnExecutor:
         conversation = runtime._session_service.load_conversation(runtime._config.session_id)
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
         initial_in_progress_item_id = current_plan_state.current_in_progress_item_id()
-        turn_id = f"turn_{uuid4().hex}"
-        runtime._set_current_turn_id(turn_id)
+        resolved_turn_id = turn_id or f"turn_{uuid4().hex}"
+        runtime._set_current_turn_id(resolved_turn_id)
         started_at = runtime._timestamp()
         turn_items: list[TurnItem] = []
-        runtime._load_model_continuation_state(turn_id=turn_id)
+        runtime._load_model_continuation_state(turn_id=resolved_turn_id)
         prompt_hook_execution = runtime._hook_manager.execute_with_summary(
             HookPoint.USER_PROMPT_SUBMIT,
             HookContext(
                 hook_point=HookPoint.USER_PROMPT_SUBMIT,
                 session_id=runtime._config.session_id,
                 metadata={
-                    "turn_id": turn_id,
+                    "turn_id": resolved_turn_id,
                     "prompt_chars": len(user_message),
                     "prompt": user_message,
                 },
@@ -134,7 +137,7 @@ class TurnExecutor:
             if hook_result.action is HookAction.DENY:
                 assistant_message = hook_result.message or "User prompt blocked by hook."
                 runtime._append_turn_item(
-                    turn_id=turn_id,
+                    turn_id=resolved_turn_id,
                     turn_items=turn_items,
                     item=TurnItem(
                         type=TurnItemType.WARNING,
@@ -152,7 +155,7 @@ class TurnExecutor:
                             ),
                         ),
                     ),
-                    turn_id=turn_id,
+                    turn_id=resolved_turn_id,
                     user_message=user_message,
                     started_at=started_at,
                     status=TurnStatus.REJECTED,
@@ -162,7 +165,7 @@ class TurnExecutor:
         unsupported_image_response = self._unsupported_image_response(
             user_message=user_message,
             image_paths=image_paths,
-            turn_id=turn_id,
+            turn_id=resolved_turn_id,
             started_at=started_at,
             turn_items=turn_items,
         )
@@ -177,7 +180,7 @@ class TurnExecutor:
         )
         conversation.append(Message(role="user", content=user_message, blocks=user_blocks))
         runtime._append_turn_item(
-            turn_id=turn_id,
+            turn_id=resolved_turn_id,
             turn_items=turn_items,
             item=TurnItem(type=TurnItemType.USER_MESSAGE, text=user_message),
         )
@@ -186,7 +189,7 @@ class TurnExecutor:
             conversation=conversation,
             current_plan_state=current_plan_state,
             initial_in_progress_item_id=initial_in_progress_item_id,
-            turn_id=turn_id,
+            turn_id=resolved_turn_id,
             started_at=started_at,
             turn_items=turn_items,
             progress_updates=[],
@@ -1372,34 +1375,6 @@ class TurnExecutor:
                     current_plan_state,
                     initial_in_progress_item_id,
                 )
-                follow_up_input = runtime.pop_next_follow_up_message()
-                if follow_up_input:
-                    conversation.append(
-                        Message(
-                            role="user",
-                            content=follow_up_input.text,
-                            blocks=self._user_message_blocks(
-                                user_message=follow_up_input.text,
-                                image_paths=follow_up_input.image_paths,
-                            ),
-                        )
-                    )
-                    runtime._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.USER_MESSAGE,
-                            text=follow_up_input.text,
-                            metadata=self._queued_input_metadata(follow_up_input),
-                        ),
-                    )
-                    progress_updates.append("[queue] follow-up")
-                    activity_events.append(
-                        ActivityEvent(kind="queued_message", message="processing follow-up")
-                    )
-                    self._emit_queue_update(stream_sink=stream_sink)
-                    step_index += 1
-                    continue
                 if runtime._hook_manager.has_hooks(HookPoint.STOP):
                     stop_hook_execution = runtime._hook_manager.execute_with_summary(
                         HookPoint.STOP,
@@ -1500,11 +1475,9 @@ class TurnExecutor:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None,
     ) -> None:
         runtime = self._runtime
-        drained = 0
-        while True:
-            queued_input = runtime.pop_next_steering_message()
-            if queued_input is None:
-                break
+        queued_inputs = runtime.claim_pending_steers(turn_id)
+        for queued_input in queued_inputs:
+            metadata = self._queued_input_metadata(queued_input)
             conversation.append(
                 Message(
                     role="user",
@@ -1521,10 +1494,28 @@ class TurnExecutor:
                 item=TurnItem(
                     type=TurnItemType.USER_MESSAGE,
                     text=queued_input.text,
-                    metadata=self._queued_input_metadata(queued_input),
+                    metadata={**metadata, "history_committed": True},
                 ),
             )
-            drained += 1
+        if queued_inputs:
+            runtime._session_service.append_history_items(
+                runtime._config.session_id,
+                tuple(
+                    HistoryItem(
+                        id=f"{turn_id}:queue:{queued_input.queue_id}",
+                        thread_id=runtime._config.session_id,
+                        turn_id=turn_id,
+                        type=HistoryItemType.USER_MESSAGE,
+                        text=queued_input.text,
+                        metadata=self._queued_input_metadata(queued_input),
+                    )
+                    for queued_input in queued_inputs
+                ),
+            )
+            runtime.commit_queue_items(
+                tuple(queued_input.queue_id for queued_input in queued_inputs)
+            )
+        drained = len(queued_inputs)
         if drained == 0:
             return
         progress_updates.append(f"[queue] steering {drained}")
@@ -1533,17 +1524,17 @@ class TurnExecutor:
         )
         self._emit_queue_update(stream_sink=stream_sink)
 
-    def _queued_input_metadata(self, queued_input: QueuedTurnInput) -> dict[str, object]:
+    def _queued_input_metadata(self, queued_input: QueuedInputRecord) -> dict[str, object]:
         metadata: dict[str, object] = {
             "queued": True,
             "queue_kind": queued_input.kind,
             "source": queued_input.source,
+            "queue_id": queued_input.queue_id,
+            "client_turn_id": queued_input.client_turn_id,
         }
         if queued_input.image_paths:
             metadata["image_count"] = len(queued_input.image_paths)
             metadata["image_paths"] = list(queued_input.image_paths)
-        if queued_input.client_turn_id:
-            metadata["client_turn_id"] = queued_input.client_turn_id
         return metadata
 
     def _emit_queue_update(

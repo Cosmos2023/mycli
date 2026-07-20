@@ -241,7 +241,7 @@ class SessionQueueCoordinator:
             return tuple(
                 record
                 for record in self._snapshot.pending_steers
-                if record.target_turn_id == turn_id
+                if record.target_turn_id in {turn_id, "turn_pending"}
             )
 
     def commit(self, queue_ids: Iterable[str]) -> QueueSnapshot:

@@ -112,6 +112,8 @@ class RuntimeEventLedger:
     ) -> tuple[HistoryItem, ...]:
         history_items: list[HistoryItem] = []
         for index, item in enumerate(turn.items, start=1):
+            if item.metadata.get("history_committed") is True:
+                continue
             history_item_type = self._history_type_for_turn_item(item)
             if history_item_type is None:
                 continue
