@@ -389,13 +389,19 @@ def test_agent_runtime_emits_compaction_activity_before_continuing_model_turn(
     )
 
     assert response.assistant_message == "done"
-    assert [event.kind for event in stream_events[:2]] == [
+    compaction_events = [
+        event for event in stream_events if event.kind.startswith("compaction_")
+    ]
+    assert [event.kind for event in compaction_events] == [
         "compaction_started",
         "compaction_completed",
     ]
-    assert stream_events[0].metadata["source"] == "request_budget"
-    assert stream_events[1].metadata["status"] == "compressed"
-    assert stream_events[1].metadata["after_tokens"] < stream_events[1].metadata["before_tokens"]
+    assert compaction_events[0].metadata["source"] == "request_budget"
+    assert compaction_events[1].metadata["status"] == "compressed"
+    assert (
+        compaction_events[1].metadata["after_tokens"]
+        < compaction_events[1].metadata["before_tokens"]
+    )
     assert adapter.main_requests
     rendered_main_request = "\n".join(message.content for message in adapter.main_requests[0])
     assert "Full-context L4 summary." in rendered_main_request

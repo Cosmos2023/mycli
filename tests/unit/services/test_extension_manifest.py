@@ -193,6 +193,11 @@ def test_extension_manifest_exposes_event_payload_schemas() -> None:
         "queue_conflict",
         "queue_capacity",
         "queue_worker_start_failed",
+        "no_active_turn",
+        "turn_id_mismatch",
+        "active_turn_not_steerable",
+        "input_too_large",
+        "message_id_conflict",
     ]
     assert schemas["gateway.error"]["properties"]["code"]["enum"] == list(GATEWAY_ERROR_CODES)
     assert schemas["approval.respond"]["properties"]["choice"]["enum"] == [
