@@ -23,12 +23,9 @@ from mycli.domain.runtime import (
     CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
-    HistoryItem,
-    HistoryItemType,
     PendingClarification,
     PendingDecision,
     PlanState,
-    QueuedInputRecord,
     RuntimeBlock,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
@@ -42,7 +39,6 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnStatus,
     UserMessageInput,
-    queue_activity,
 )
 from mycli.domain.runtime.images import local_image_block
 from mycli.memory.dream_service import MemoryDreamRequest
@@ -164,18 +160,34 @@ class TurnExecutor:
                     stop_reason=StopReason.RUNTIME_ERROR,
                     turn_items=turn_items,
                 )
-        runtime._user_message_lifecycle.commit(
-            turn_id=resolved_turn_id,
-            item=UserMessageInput(
-                client_user_message_id=client_user_message_id or resolved_turn_id,
-                text=user_message,
-                image_paths=image_paths,
-                source="submit",
-            ),
-            conversation=conversation,
-            turn_items=turn_items,
-            stream_sink=stream_sink,
+        runtime.begin_active_turn_mailbox(
+            resolved_turn_id,
+            steerable=True,
+            turn_kind="regular",
         )
+        try:
+            runtime._user_message_lifecycle.commit(
+                turn_id=resolved_turn_id,
+                item=UserMessageInput(
+                    client_user_message_id=client_user_message_id or resolved_turn_id,
+                    text=user_message,
+                    image_paths=image_paths,
+                    source="submit",
+                ),
+                conversation=conversation,
+                turn_items=turn_items,
+                stream_sink=stream_sink,
+            )
+        except Exception:
+            runtime.close_active_turn_mailbox(resolved_turn_id)
+            raise
+        if image_paths and not runtime._config.supports_images:
+            self._commit_leftovers_before_finalize(
+                conversation=conversation,
+                turn_id=resolved_turn_id,
+                turn_items=turn_items,
+                stream_sink=stream_sink,
+            )
         unsupported_image_response = self._unsupported_image_response(
             user_message=user_message,
             image_paths=image_paths,
@@ -738,7 +750,7 @@ class TurnExecutor:
 
         while True:
             _raise_if_interrupted(interrupt_token)
-            self._drain_steering_messages(
+            self._drain_active_turn_input(
                 conversation=conversation,
                 turn_id=turn_id,
                 turn_items=turn_items,
@@ -789,6 +801,12 @@ class TurnExecutor:
                             **checkpoint_result.diagnostics,
                         },
                     ),
+                )
+                self._commit_leftovers_before_finalize(
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
                 )
                 runtime._save_runtime_state(
                     conversation=conversation,
@@ -894,6 +912,7 @@ class TurnExecutor:
                     activity_events=activity_events,
                     streamed_chunks=streamed_chunks,
                     progress_updates=progress_updates,
+                    stream_sink=stream_sink,
                 )
             if pre_compaction_started_at is not None:
                 after_compaction_budget = runtime._estimate_window_budget(conversation_for_model)
@@ -1022,6 +1041,7 @@ class TurnExecutor:
                         activity_events=activity_events,
                         streamed_chunks=streamed_chunks,
                         progress_updates=progress_updates,
+                        stream_sink=stream_sink,
                     )
                 if request_compaction_started_at is not None:
                     after_request_compaction_budget = runtime._estimate_window_budget(
@@ -1271,6 +1291,12 @@ class TurnExecutor:
                                     )
                                 )
                     continue
+                self._commit_leftovers_before_finalize(
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                )
                 return self._error_finalizer.finalize_model_error(
                     user_message=user_message,
                     current_plan_state=current_plan_state,
@@ -1297,8 +1323,15 @@ class TurnExecutor:
                     activity_events=activity_events,
                     streamed_chunks=streamed_chunks,
                     progress_updates=progress_updates,
+                    stream_sink=stream_sink,
                 )
             except Exception as exc:  # pragma: no cover - guarded by focused tests
+                self._commit_leftovers_before_finalize(
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                )
                 return self._error_finalizer.finalize_runtime_exception(
                     user_message=user_message,
                     current_plan_state=current_plan_state,
@@ -1333,6 +1366,12 @@ class TurnExecutor:
             )
             if early_response is not None:
                 response, status, stop_reason = early_response
+                self._commit_leftovers_before_finalize(
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                )
                 if status is not TurnStatus.WAITING_APPROVAL:
                     runtime._save_runtime_state(
                         conversation=conversation,
@@ -1363,6 +1402,12 @@ class TurnExecutor:
 
             assistant_message = "".join(turn_text_chunks)
             if turn_result.done and assistant_message:
+                if (
+                    runtime.active_turn_mailbox_id() == turn_id
+                    and runtime.active_turn_has_pending_input(turn_id)
+                ):
+                    step_index += 1
+                    continue
                 current_plan_state = runtime._complete_task_if_active(
                     current_plan_state,
                     initial_in_progress_item_id,
@@ -1406,6 +1451,12 @@ class TurnExecutor:
                         )
                         step_index += 1
                         continue
+                self._commit_leftovers_before_finalize(
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                )
                 runtime._save_runtime_state(
                     conversation=conversation,
                     plan_state=current_plan_state,
@@ -1456,7 +1507,7 @@ class TurnExecutor:
                 )
             step_index += 1
 
-    def _drain_steering_messages(
+    def _drain_active_turn_input(
         self,
         *,
         conversation: Conversation,
@@ -1467,110 +1518,82 @@ class TurnExecutor:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None,
     ) -> None:
         runtime = self._runtime
-        queued_inputs = runtime.claim_pending_steers(turn_id)
-        for queued_input in queued_inputs:
-            metadata = self._queued_input_metadata(queued_input)
+        if runtime.active_turn_mailbox_id() != turn_id:
+            return
+        inputs = runtime.drain_active_turn_input(turn_id)
+        try:
+            self._commit_user_inputs(
+                inputs,
+                conversation=conversation,
+                turn_id=turn_id,
+                turn_items=turn_items,
+                stream_sink=stream_sink,
+            )
+        except Exception:
+            runtime.close_active_turn_mailbox(turn_id)
+            raise
+        for notification in runtime.drain_task_notifications(turn_id):
             conversation.append(
                 Message(
                     role="user",
-                    content=queued_input.text,
+                    content=notification.text,
                     blocks=self._user_message_blocks(
-                        user_message=queued_input.text,
-                        image_paths=queued_input.image_paths,
+                        user_message=notification.text,
+                        image_paths=notification.image_paths,
                     ),
-                )
-            )
-            runtime._append_turn_item(
-                turn_id=turn_id,
-                turn_items=turn_items,
-                item=TurnItem(
-                    type=TurnItemType.USER_MESSAGE,
-                    text=queued_input.text,
-                    metadata={**metadata, "history_committed": True},
-                ),
-            )
-        if queued_inputs:
-            runtime._session_service.append_history_items(
-                runtime._config.session_id,
-                tuple(
-                    HistoryItem(
-                        id=f"{turn_id}:queue:{queued_input.queue_id}",
-                        thread_id=runtime._config.session_id,
-                        turn_id=turn_id,
-                        type=HistoryItemType.USER_MESSAGE,
-                        text=queued_input.text,
-                        metadata=self._queued_input_metadata(queued_input),
-                    )
-                    for queued_input in queued_inputs
-                ),
-            )
-            runtime.commit_queue_items(
-                tuple(queued_input.queue_id for queued_input in queued_inputs)
-            )
-            if stream_sink is not None:
-                for queued_input in queued_inputs:
-                    try:
-                        stream_sink(
-                            RuntimeStreamEvent(
-                                kind="queued_message_committed",
-                                text=queued_input.text,
-                                metadata=self._queued_input_metadata(queued_input),
-                            )
-                        )
-                    except Exception:
-                        continue
-        drained = len(queued_inputs)
-        if drained == 0:
-            return
-        progress_updates.append(f"[queue] steering {drained}")
-        activity_events.append(
-            ActivityEvent(kind="queued_message", message=f"processing {drained} steering message(s)")
-        )
-        self._emit_queue_update(stream_sink=stream_sink)
-
-    def _queued_input_metadata(self, queued_input: QueuedInputRecord) -> dict[str, object]:
-        metadata: dict[str, object] = {
-            "queued": True,
-            "queue_kind": queued_input.kind,
-            "source": queued_input.source,
-            "queue_id": queued_input.queue_id,
-            "client_turn_id": queued_input.client_turn_id,
-        }
-        if queued_input.image_paths:
-            metadata["image_count"] = len(queued_input.image_paths)
-            metadata["image_paths"] = list(queued_input.image_paths)
-        return metadata
-
-    def _emit_queue_update(
-        self,
-        *,
-        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
-    ) -> None:
-        if stream_sink is None:
-            return
-        steering_items, follow_up_items = self._runtime.queued_input_items()
-        steering, follow_up = self._runtime.queued_messages()
-        activity = queue_activity((steering_items, follow_up_items))
-        try:
-            stream_sink(
-                RuntimeStreamEvent(
-                    kind="queue_updated",
                     metadata={
-                        "steering": list(steering),
-                        "follow_up": list(follow_up),
-                        "has_pending_input": activity.has_pending_input,
-                        "activity": activity.to_gateway_payload(),
-                        "steering_items": [
-                            item.to_gateway_payload() for item in steering_items
-                        ],
-                        "follow_up_items": [
-                            item.to_gateway_payload() for item in follow_up_items
-                        ],
+                        "internal": True,
+                        "source": "task_notification",
+                        "queue_id": notification.queue_id,
                     },
                 )
             )
-        except Exception:
+        drained = len(inputs)
+        if drained == 0:
             return
+        progress_updates.append(f"[steer] steering {drained}")
+        activity_events.append(
+            ActivityEvent(kind="steering", message=f"processing {drained} steering message(s)")
+        )
+
+    def _commit_user_inputs(
+        self,
+        inputs: tuple[UserMessageInput, ...],
+        *,
+        conversation: Conversation,
+        turn_id: str,
+        turn_items: list[TurnItem],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+    ) -> None:
+        runtime = self._runtime
+        for item in inputs:
+            runtime._user_message_lifecycle.commit(
+                turn_id=turn_id,
+                item=item,
+                conversation=conversation,
+                turn_items=turn_items,
+                stream_sink=stream_sink,
+            )
+
+    def _commit_leftovers_before_finalize(
+        self,
+        *,
+        conversation: Conversation,
+        turn_id: str,
+        turn_items: list[TurnItem],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+    ) -> None:
+        runtime = self._runtime
+        if runtime.active_turn_mailbox_id() != turn_id:
+            return
+        leftovers = runtime.close_active_turn_mailbox(turn_id)
+        self._commit_user_inputs(
+            leftovers,
+            conversation=conversation,
+            turn_id=turn_id,
+            turn_items=turn_items,
+            stream_sink=stream_sink,
+        )
 
     def _recovery_action_for_model_error(
         self,
@@ -1858,10 +1881,17 @@ class TurnExecutor:
         activity_events: list[ActivityEvent],
         streamed_chunks: list[str],
         progress_updates: list[str],
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         interrupt_warning = (
             "Turn interrupted. The current turn was aborted; send a new message to continue."
+        )
+        self._commit_leftovers_before_finalize(
+            conversation=conversation,
+            turn_id=turn_id,
+            turn_items=turn_items,
+            stream_sink=stream_sink,
         )
         runtime._persist_model_continuation_state(
             turn_id=turn_id,

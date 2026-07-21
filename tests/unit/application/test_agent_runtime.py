@@ -4,11 +4,9 @@ from collections.abc import Callable
 from pathlib import Path
 import json
 import sys
-from threading import Lock
+from threading import Event, Lock, Thread
 import time
 from dataclasses import replace
-from unittest.mock import Mock
-
 import pytest
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
@@ -36,6 +34,7 @@ from mycli.domain.runtime import (
     ContextBaseline,
     HistoryItem,
     HistoryItemType,
+    MailboxAcceptance,
     ModelTurnResult,
     PlanItem,
     PlanState,
@@ -51,6 +50,7 @@ from mycli.domain.runtime import (
     TurnItemType,
     TurnRollout,
     TurnStatus,
+    UserMessageInput,
 )
 from mycli.schemas.responses_protocol import ResponsesContinuationState
 from mycli.services.trace_service import TraceService
@@ -1589,28 +1589,41 @@ def test_legacy_projection_keeps_rejected_before_follow_up(tmp_path: Path) -> No
     assert runtime.queued_messages() == ((), ("rejected", "later"))
 
 
-def test_pending_steer_is_removed_only_after_history_commit(tmp_path: Path) -> None:
+def test_failed_steer_commit_closes_mailbox_for_tui_retry(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
         model_adapter=FollowUpCaptureAdapter(),
     )
-    runtime.queue_steering_message(
-        "inspect",
-        client_turn_id="client-steer",
-        expected_turn_id="turn-fixed",
-        active_turn_id="turn-fixed",
-        steerable=True,
+    runtime.begin_active_turn_mailbox("turn-fixed", steerable=True)
+    runtime.steer_active_turn(
+        UserMessageInput(
+            client_user_message_id="client-steer",
+            text="inspect",
+            source="steer",
+            target_turn_id="turn-fixed",
+        )
     )
-    runtime._session_service.append_history_items = Mock(side_effect=OSError("disk full"))
+    append_history_items = runtime._session_service.append_history_items
+
+    def fail_steer_commit(session_id: str, items: tuple[HistoryItem, ...]) -> None:
+        if items[0].metadata.get("source") == "steer":
+            raise OSError("disk full")
+        append_history_items(session_id, items)
+
+    runtime._session_service.append_history_items = fail_steer_commit
 
     with pytest.raises(OSError, match="disk full"):
         TurnExecutor(runtime).execute_user_turn("start", turn_id="turn-fixed")
 
-    assert [item.text for item in runtime.queue_snapshot().pending_steers] == ["inspect"]
+    assert runtime.active_turn_mailbox_id() is None
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    assert [item.text for item in history if item.type is HistoryItemType.USER_MESSAGE] == [
+        "start"
+    ]
 
 
-def test_committed_steer_history_carries_queue_id_once_and_uses_server_turn_id(
+def test_committed_steer_history_uses_client_identity_and_server_turn_id(
     tmp_path: Path,
 ) -> None:
     runtime = AgentRuntime.for_tests(
@@ -1618,13 +1631,15 @@ def test_committed_steer_history_carries_queue_id_once_and_uses_server_turn_id(
         home_dir=tmp_path / "home",
         model_adapter=FollowUpCaptureAdapter(),
     )
-    queued = runtime.queue_steering_input(
-        "inspect",
-        client_turn_id="client-steer",
-        expected_turn_id="turn-fixed",
-        active_turn_id="turn-fixed",
-        steerable=True,
-    ).record
+    runtime.begin_active_turn_mailbox("turn-fixed", steerable=True)
+    assert runtime.steer_active_turn(
+        UserMessageInput(
+            client_user_message_id="client-steer",
+            text="inspect",
+            source="steer",
+            target_turn_id="turn-fixed",
+        )
+    ) is MailboxAcceptance.ACCEPTED
 
     stream_events: list[RuntimeStreamEvent] = []
     response = TurnExecutor(runtime).execute_user_turn(
@@ -1634,18 +1649,23 @@ def test_committed_steer_history_carries_queue_id_once_and_uses_server_turn_id(
     )
 
     history = runtime._session_service.load_history_items(runtime._config.session_id)
-    committed = [item for item in history if item.metadata.get("queue_id") == queued.queue_id]
+    committed = [
+        item
+        for item in history
+        if item.metadata.get("client_user_message_id") == "client-steer"
+    ]
     assert len(committed) == 1
     assert committed[0].turn_id == "turn-fixed"
     assert response.turn is not None
     assert response.turn.turn_id == "turn-fixed"
     assert runtime.queue_snapshot().pending_steers == ()
     committed_event = next(
-        event for event in stream_events if event.kind == "queued_message_committed"
+        event
+        for event in stream_events
+        if event.kind == "item_completed"
+        and event.metadata["item"]["client_user_message_id"] == "client-steer"
     )
-    assert committed_event.text == "inspect"
-    assert committed_event.metadata["queue_id"] == queued.queue_id
-    assert committed_event.metadata["queue_kind"] == "pending_steer"
+    assert committed_event.metadata["item"]["content"] == "inspect"
 
 
 class TerminalQueueingAdapter:
@@ -1671,7 +1691,135 @@ class TerminalQueueingAdapter:
         )
 
 
-def test_terminal_turn_reclassifies_pending_and_leaves_next_input_for_host(
+class BlockingSteerCaptureAdapter:
+    def __init__(self) -> None:
+        self.first_request_started = Event()
+        self.release_first_request = Event()
+        self.seen_items: list[list[RuntimeItem]] = []
+
+    def next_turn(self, *, items: list[RuntimeItem], tools: object) -> ModelTurnResult:
+        del tools
+        self.seen_items.append(items)
+        if len(self.seen_items) == 1:
+            self.first_request_started.set()
+            assert self.release_first_request.wait(timeout=2)
+            text = "first answer"
+        else:
+            text = "steer answer"
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text=text),),
+                ),
+            ),
+            done=True,
+        )
+
+
+def test_accepted_steer_continues_same_server_turn(tmp_path: Path) -> None:
+    adapter = BlockingSteerCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    responses = []
+    worker = Thread(
+        target=lambda: responses.append(
+            runtime.handle_user_turn(
+                "start",
+                turn_id="turn-fixed",
+                client_user_message_id="client-start",
+            )
+        )
+    )
+    worker.start()
+    assert adapter.first_request_started.wait(timeout=2)
+
+    accepted = runtime.steer_active_turn(
+        UserMessageInput(
+            client_user_message_id="client-steer",
+            text="inspect output",
+            source="steer",
+            target_turn_id="turn-fixed",
+        )
+    )
+    adapter.release_first_request.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert accepted is MailboxAcceptance.ACCEPTED
+    assert len(adapter.seen_items) == 2
+    second_request_user_texts = [
+        block.text
+        for request_item in adapter.seen_items[1]
+        if request_item.role == "user"
+        for block in request_item.blocks
+        if block.type == "text"
+    ]
+    assert second_request_user_texts[-1] == "inspect output"
+    assert responses[0].turn is not None
+    assert responses[0].turn.turn_id == "turn-fixed"
+
+
+def test_terminal_race_commits_leftover_steer_without_another_model_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = TerminalQueueingAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    events: list[RuntimeStreamEvent] = []
+    accepted = False
+
+    def accept_after_pending_check(turn_id: str) -> bool:
+        nonlocal accepted
+        if not accepted:
+            accepted = True
+            assert runtime.steer_active_turn(
+                UserMessageInput(
+                    client_user_message_id="client-late",
+                    text="late steer",
+                    source="steer",
+                    target_turn_id=turn_id,
+                )
+            ) is MailboxAcceptance.ACCEPTED
+        return False
+
+    monkeypatch.setattr(
+        runtime,
+        "active_turn_has_pending_input",
+        accept_after_pending_check,
+    )
+
+    response = runtime.handle_user_turn(
+        "start",
+        turn_id="turn-fixed",
+        client_user_message_id="client-start",
+        stream_sink=events.append,
+    )
+
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    assert adapter.call_count == 1
+    assert [
+        item.text for item in history if item.type is HistoryItemType.USER_MESSAGE
+    ] == ["start", "late steer"]
+    assert response.turn is not None
+    assert [
+        item.text for item in response.turn.items if item.type is TurnItemType.USER_MESSAGE
+    ] == ["start", "late steer"]
+    assert [
+        event.metadata["item"]["client_user_message_id"]
+        for event in events
+        if event.kind == "item_completed"
+    ] == ["client-start", "client-late"]
+
+
+def test_terminal_turn_consumes_accepted_steer_and_leaves_follow_up_for_host(
     tmp_path: Path,
 ) -> None:
     adapter = TerminalQueueingAdapter()
@@ -1696,10 +1844,10 @@ def test_terminal_turn_reclassifies_pending_and_leaves_next_input_for_host(
     TurnExecutor(runtime).execute_user_turn("start", turn_id="turn-fixed")
 
     snapshot = runtime.queue_snapshot()
-    assert adapter.call_count == 1
-    assert [item.text for item in snapshot.rejected_steers] == ["retry first"]
+    assert adapter.call_count == 2
+    assert snapshot.rejected_steers == ()
     assert [item.text for item in snapshot.follow_ups] == ["ordinary later"]
-    assert runtime.next_queued_turn().text == "retry first"
+    assert runtime.next_queued_turn().text == "ordinary later"
 
 
 class PushThenResumedReasoningUnsupportedAdapter:
@@ -2618,8 +2766,9 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
         "</task-notification>"
     )
     runtime.queue_steering_message(notification)
+    stream_events: list[RuntimeStreamEvent] = []
 
-    response = runtime.handle_user_turn("answer first")
+    response = runtime.handle_user_turn("answer first", stream_sink=stream_events.append)
 
     assert response.assistant_message == "first answer"
     assert adapter.calls >= 1
@@ -2632,6 +2781,13 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
     ]
     assert notification in request_user_texts
     assert runtime.queued_messages() == ((), ())
+    completed_user_items = [
+        event.metadata["item"]
+        for event in stream_events
+        if event.kind == "item_completed"
+    ]
+    assert len(completed_user_items) == 1
+    assert completed_user_items[0]["content"] == "answer first"
 
 
 def test_agent_runtime_enqueues_background_bash_task_notification(

@@ -16,6 +16,7 @@ from mycli.domain.runtime import (
     DecisionAction,
     HistoryItem,
     HistoryItemType,
+    MailboxAcceptance,
     QueueSnapshot,
     ReasoningEffort,
     QueuedInputRecord,
@@ -32,6 +33,7 @@ from mycli.domain.runtime import (
     SuspendedTurn,
     TurnItemType,
     TurnResponse,
+    UserMessageInput,
     ViewMode,
 )
 from mycli.application.runtime.session_queue import QueueMutationResult
@@ -412,6 +414,15 @@ class TurnService:
                 client_user_message_id=client_user_message_id,
             ),
         )
+
+    def steer_active_turn(self, item: UserMessageInput) -> MailboxAcceptance:
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("TurnService has no runtime.")
+        steer = getattr(runtime, "steer_active_turn", None)
+        if not callable(steer):
+            raise RuntimeError("Runtime does not support active-turn steering.")
+        return cast(MailboxAcceptance, steer(item))
 
     def resolve_pending_decision(
         self,

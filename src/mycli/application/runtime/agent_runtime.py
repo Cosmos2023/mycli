@@ -16,6 +16,7 @@ from mycli.domain.tooling.contributed_tools import (
 from mycli.domain.runtime import (
     ActivityEvent,
     AgentConfig,
+    MailboxAcceptance,
     CompactionRehydrationContext,
     ContextBaseline,
     DecisionAction,
@@ -50,6 +51,7 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    UserMessageInput,
     ExecPolicyRuleSet,
     ToolRuntimeDecision,
     ToolRuntimeDecisionKind,
@@ -161,6 +163,7 @@ from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
 from mycli.application.runtime.user_message_lifecycle import UserMessageLifecycle
+from mycli.application.runtime.user_input_mailbox import ActiveTurnMailbox
 from mycli.tools.task import TaskTool
 from mycli.tools.send_message import SendMessageTool
 from mycli.tools.subagent_output import SubagentOutputTool
@@ -409,6 +412,7 @@ class AgentRuntime:
             session_service=self._session_service,
             append_turn_item=self._append_turn_item,
         )
+        self._user_input_mailbox = ActiveTurnMailbox()
         self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
         self._execpolicy_writer = ExecPolicyWriter(home_dir=home_dir)
@@ -911,6 +915,42 @@ class AgentRuntime:
     def _set_current_turn_id(self, turn_id: str) -> None:
         self._current_turn_id = turn_id
 
+    def begin_active_turn_mailbox(
+        self,
+        turn_id: str,
+        *,
+        steerable: bool,
+        turn_kind: str = "regular",
+    ) -> None:
+        self._user_input_mailbox.begin(
+            turn_id,
+            steerable=steerable,
+            turn_kind=turn_kind,
+        )
+
+    def steer_active_turn(self, item: UserMessageInput) -> MailboxAcceptance:
+        if item.target_turn_id is None:
+            raise ValueError("steer input requires target_turn_id")
+        return self._user_input_mailbox.accept(item.target_turn_id, item)
+
+    def active_turn_has_pending_input(self, turn_id: str) -> bool:
+        return self._user_input_mailbox.has_pending(turn_id)
+
+    def drain_active_turn_input(
+        self,
+        turn_id: str,
+    ) -> tuple[UserMessageInput, ...]:
+        return self._user_input_mailbox.drain(turn_id)
+
+    def close_active_turn_mailbox(
+        self,
+        turn_id: str,
+    ) -> tuple[UserMessageInput, ...]:
+        return self._user_input_mailbox.close_and_drain(turn_id)
+
+    def active_turn_mailbox_id(self) -> str | None:
+        return self._user_input_mailbox.active_turn_id()
+
     def queue_steering_message(
         self,
         message: str,
@@ -922,8 +962,25 @@ class AgentRuntime:
         active_turn_id: str | None = None,
         steerable: bool = True,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        if source == "user" and message.lstrip().startswith("<task-notification>"):
+            source = "task_notification"
         current_turn_id = active_turn_id or getattr(self, "_current_turn_id", None)
         target_turn_id = expected_turn_id or current_turn_id or "turn_pending"
+        if (
+            source == "user"
+            and current_turn_id is not None
+            and current_turn_id == self.active_turn_mailbox_id()
+        ):
+            self.steer_active_turn(
+                UserMessageInput(
+                    client_user_message_id=client_turn_id or f"client_steer_{uuid4().hex}",
+                    text=message,
+                    image_paths=image_paths,
+                    source="steer",
+                    target_turn_id=target_turn_id,
+                )
+            )
+            return self.queued_messages()
         self.queue_steering_input(
             message,
             image_paths=image_paths,
@@ -934,6 +991,16 @@ class AgentRuntime:
             source=source,
         )
         return self.queued_messages()
+
+    def drain_task_notifications(self, turn_id: str) -> tuple[QueuedInputRecord, ...]:
+        records = tuple(
+            record
+            for record in self._session_queue.claim_pending_steers(turn_id)
+            if record.source == "task_notification"
+        )
+        if records:
+            self._session_queue.commit(tuple(record.queue_id for record in records))
+        return records
 
     def queue_steering_input(
         self,
