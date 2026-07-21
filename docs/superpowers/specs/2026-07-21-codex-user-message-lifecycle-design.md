@@ -197,6 +197,38 @@ TUI reducer 对 mirror 去重。`item.started` 建立 lifecycle 状态；`item.c
 
 ## Turn 执行状态机
 
+### Canonical item 顺序
+
+Runtime 必须按照 Codex 的 completed-item 顺序构造 durable history。模型一次采样产生的
+assistant、reasoning 和 tool item 在完成时先提交；随后才能 drain active-turn mailbox
+并提交 steering UserMessage。不能等到整个 turn 结束后才批量保存前面的 assistant item，
+也不能在 `/resume` 或 TUI reducer 中重新猜测顺序。
+
+Same-turn steering 的固定顺序是：
+
+```text
+initial UserMessage committed
+-> provider response item completed
+-> completed assistant/tool item persisted
+-> active-turn mailbox drained
+-> steering UserMessage committed
+-> next provider request
+```
+
+例如，用户在 `qqq` 的回复仍在生成时发送 `111`，canonical history 必须是：
+
+```text
+user: qqq
+assistant: response segment 1
+user: 111
+assistant: response segment 2
+```
+
+`turn_items` 可以继续作为当前 turn 的内存聚合，但每个已完成 item 必须携带稳定 identity
+和 durable-commit 状态。Turn finalizer 只补写尚未提交的 item；它不能再次保存已完成 item，
+也不能改变其顺序。实时 TUI 使用同一 completed lifecycle 追加 transcript，`/resume` 直接
+回放 durable history，因此两条路径得到完全相同的顺序。
+
 ### 普通提交
 
 ```text
@@ -217,6 +249,7 @@ TUI pending steer
 -> turn.steer accepted
 -> active-turn mailbox
 -> current provider request finishes
+-> completed assistant/tool items persist
 -> mailbox drain
 -> commit_user_message
 -> item.started / item.completed
@@ -337,6 +370,8 @@ queue ID 幂等，不能重复导入。
 - Mailbox 接受成功但 RPC 响应丢失：客户端使用同一 ID 重试；backend 返回 duplicate
   accepted，不能产生第二条消息。
 - History commit 失败：消息留在 mailbox，不能发送 completed lifecycle。
+- Assistant/tool completed-item commit 失败：不能 drain mailbox，也不能提交后续 steering；
+  turn 按持久化错误路径结束，避免 durable history 发生因果倒置。
 - Lifecycle 发出失败：history 保持 committed；resume 或后续 replay 补回。
 - 进程在 mailbox input commit 前崩溃：该输入不从 persisted queue 恢复；这是严格
   Codex 语义，不允许为此重新引入 backend 用户队列双写。
@@ -368,6 +403,8 @@ mailbox 与 persisted queue 之间长期双写；兼容阶段只允许读取旧 
 - 单条和多条 steer 在同一 server turn FIFO commit。
 - 相同 ID retry 幂等，不同内容 conflict。
 - provider in-flight 时输入只进入 mailbox。
+- provider response item 在 steering UserMessage 之前完成并持久化。
+- turn finalizer 不重复保存已经 durable committed 的 item。
 - 采样后发现 mailbox 时继续同一 turn。
 - task finish leftover 在 `turn.completed` 前进入 history。
 - no-active、turn mismatch、non-steerable 和 oversize typed errors。
@@ -400,6 +437,8 @@ mailbox 与 persisted queue 之间长期双写；兼容阶段只允许读取旧 
 ### End-to-End
 
 - `111` 运行中发送 `qqq`，`qqq` 在同一 turn 中进入 transcript 并影响后续采样。
+- `qqq` 运行中发送 `111`，durable history、实时 transcript 和 `/resume` 都严格保持
+  `qqq -> assistant segment 1 -> 111 -> assistant segment 2`。
 - completion race 将 `qqq` 转为下一轮普通提交，不经过 backend queue scheduler。
 - agent 不产生对应回复时，已 accepted 的 `qqq` 仍存在于 committed history。
 - 未 accepted 的 queued follow-up 在进程重启后不恢复。
@@ -410,6 +449,8 @@ mailbox 与 persisted queue 之间长期双写；兼容阶段只允许读取旧 
 
 - 所有新用户消息只通过 `commit_user_message()` 进入 durable history。
 - Same-turn steer 不创建第二个 backend turn。
+- Completed assistant/tool item 必须先于随后消费的 steering UserMessage 持久化；finalizer
+  只提交剩余 item，不能重复或重排历史。
 - Backend 不再持久化或调度 rejected steer 和 Tab follow-up。
 - TUI 只用 `client_user_message_id` 对 pending 和 committed lifecycle 做匹配。
 - 已 accepted 的消息在无 assistant 回复时仍可恢复；未 accepted 的本地队列不恢复。
