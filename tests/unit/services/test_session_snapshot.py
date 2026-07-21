@@ -10,7 +10,7 @@ from mycli.domain.runtime import HistoryItem, HistoryItemType
 from mycli.services.session_snapshot import SessionSnapshotContext, SessionSnapshotService
 
 
-def test_snapshot_writes_sparse_v2_transcript_without_runtime_messages(tmp_path: Path) -> None:
+def test_snapshot_writes_sparse_v3_transcript_without_runtime_messages(tmp_path: Path) -> None:
     service = SessionSnapshotService(home_dir=tmp_path)
     conversation = Conversation(
         session_id="demo",
@@ -33,7 +33,7 @@ def test_snapshot_writes_sparse_v2_transcript_without_runtime_messages(tmp_path:
     )
 
     payload = json.loads(service.snapshot_path("demo").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert "messages" not in payload
     assert payload["transcript"] == [
         {"id": "user-1", "type": "user_message", "text": "inspect repo"}
@@ -191,7 +191,42 @@ def test_snapshot_tui_reader_skips_malformed_items(tmp_path: Path) -> None:
     )
 
 
-def test_v2_snapshot_omits_repeated_runtime_payloads(tmp_path: Path) -> None:
+def test_v2_snapshot_requires_rebuild_but_remains_readable(tmp_path: Path) -> None:
+    service = SessionSnapshotService(home_dir=tmp_path)
+    path = service.snapshot_path("legacy")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "session_id": "legacy",
+                "transcript": [
+                    {"id": "user-1", "type": "user_message", "text": "hello"},
+                    {
+                        "id": "command-1",
+                        "type": "command_result",
+                        "text": "transient status output",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert service.snapshot_requires_rebuild("legacy") is True
+    assert service.load_tui_items("legacy") == (
+        {
+            "id": "user-1",
+            "type": "user",
+            "text": "hello",
+            "created_at": "",
+            "folded": False,
+            "metadata": {},
+        },
+    )
+
+
+def test_v3_snapshot_omits_repeated_runtime_payloads(tmp_path: Path) -> None:
     private_blob = "provider-private-reasoning-" * 2_000
     repeated_tool_output = "same shell output\n" * 2_000
     conversation = Conversation(session_id="large")

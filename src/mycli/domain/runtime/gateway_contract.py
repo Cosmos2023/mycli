@@ -179,7 +179,6 @@ GATEWAY_ERROR_CODES = (
     "decision_not_pending",
     "clarification_not_pending",
     "incompatible_protocol",
-    "command_result_persistence_failed",
     "stale_turn",
     "queue_conflict",
     "queue_capacity",

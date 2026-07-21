@@ -215,10 +215,6 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			const commandResult = commandResultFromTranscriptItem(item);
 			if (commandResult) {
 				transcript.push({ id: item.id, kind: "command_result", commandResult });
-			} else {
-				const message: MycliShellMessage = { id: item.id, role: "system", text: item.text };
-				messages.push(message);
-				transcript.push({ id: item.id, kind: "message", message });
 			}
 		} else if (item.type === "proposed_plan") {
 			transcript.push({
@@ -447,6 +443,7 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 				.map((item) => ({ ...item, metadata: recordValue(item.metadata) }))
 		: [];
 	const items = rawItems.flatMap((item) => {
+		if (item.type === "command_result") return [];
 		if (item.type !== "plan_update") return [item];
 		const normalized = planUpdateFromPayload(recordValue(item.metadata), item.id, item.text);
 		return normalized ? [normalized] : [];

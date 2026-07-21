@@ -17,6 +17,9 @@ from mycli.services.transcript_projection import (
     snapshot_item_to_tui_items,
 )
 
+SESSION_SNAPSHOT_SCHEMA_VERSION = 3
+_READABLE_TRANSCRIPT_SCHEMA_VERSIONS = frozenset({2, SESSION_SNAPSHOT_SCHEMA_VERSION})
+
 
 @dataclass(slots=True, frozen=True)
 class SessionSnapshotContext:
@@ -91,13 +94,16 @@ class SessionSnapshotService:
         payload = self.read_snapshot(session_id)
         return (
             payload is None
-            or payload.get("schema_version") != 2
+            or payload.get("schema_version") != SESSION_SNAPSHOT_SCHEMA_VERSION
             or not isinstance(payload.get("transcript"), list)
         )
 
     def load_tui_items(self, session_id: str) -> tuple[dict[str, object], ...]:
         payload = self.read_snapshot(session_id)
-        if payload is None or payload.get("schema_version") != 2:
+        if (
+            payload is None
+            or payload.get("schema_version") not in _READABLE_TRANSCRIPT_SCHEMA_VERSIONS
+        ):
             return ()
         raw_items = payload.get("transcript")
         if not isinstance(raw_items, list):
@@ -202,7 +208,7 @@ class SessionSnapshotService:
         transcript = [item.to_dict() for item in transcript_items]
         subagents = self._load_subagent_index(conversation.session_id)
         raw_payload: dict[str, object] = {
-            "schema_version": 2,
+            "schema_version": SESSION_SNAPSHOT_SCHEMA_VERSION,
             "session_id": conversation.session_id,
             "title": self._title(transcript),
             "cwd": str(context.workspace_root),

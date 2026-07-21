@@ -147,33 +147,6 @@ class SessionService:
             },
         )
 
-    def append_command_result(
-        self,
-        *,
-        session_id: str,
-        result_id: str,
-        command: str,
-        text: str,
-        display: dict[str, object],
-    ) -> None:
-        self.append_history_items(
-            session_id,
-            (
-                HistoryItem(
-                    id=result_id,
-                    thread_id=session_id,
-                    turn_id=result_id,
-                    type=HistoryItemType.COMMAND_RESULT,
-                    text=text,
-                    metadata={
-                        "command": command,
-                        "display": display,
-                        "model_visible": False,
-                    },
-                ),
-            ),
-        )
-
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
         return tuple(
             HistoryItem.from_dict(item)

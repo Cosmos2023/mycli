@@ -101,7 +101,7 @@ def test_legacy_snapshot_hides_persisted_turn_aborted_marker() -> None:
     assert projected == ()
 
 
-def test_command_result_is_visible_to_tui_but_not_rewritten() -> None:
+def test_command_result_is_excluded_from_durable_transcript_projection() -> None:
     item = HistoryItem(
         id="command-1",
         thread_id="demo",
@@ -125,48 +125,19 @@ def test_command_result_is_visible_to_tui_but_not_rewritten() -> None:
         },
     )
 
-    snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
-    assert snapshot == {
-        "id": "command-1",
-        "type": "command_result",
-        "text": "Tools - 1 available",
-        "metadata": {
-            "command": "/tools",
-            "display": {
-                "version": 1,
-                "kind": "list",
-                "command": "/tools",
-                "title": "Tools",
-                "severity": "info",
-                "rows": [
-                    {"key": "Read", "label": "Read", "values": ["file"]}
-                ],
-            },
-            "model_visible": False,
-        },
-    }
-    assert project_history_item_for_tui(item)["type"] == "command_result"
+    assert project_history_items_for_snapshot((item,)) == ()
+    assert project_history_items_for_tui((item,)) == ()
 
 
-def test_command_result_projection_drops_invalid_display() -> None:
-    item = HistoryItem(
-        id="command-invalid",
-        thread_id="demo",
-        turn_id="command-invalid",
-        type=HistoryItemType.COMMAND_RESULT,
-        text="Invalid display",
-        metadata={
-            "command": "/tools",
-            "display": {"version": 1, "kind": "list"},
-            "model_visible": False,
-        },
-    )
-
-    snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
-    assert snapshot["metadata"] == {
-        "command": "/tools",
-        "model_visible": False,
-    }
+def test_legacy_command_result_snapshot_item_is_hidden_from_tui() -> None:
+    assert snapshot_item_to_tui_items(
+        {
+            "id": "command-legacy",
+            "type": "command_result",
+            "text": "Tools - 1 available",
+            "metadata": {"command": "/tools"},
+        }
+    ) == ()
 
 
 def test_snapshot_projection_coalesces_tool_call_and_result() -> None:

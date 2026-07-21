@@ -719,7 +719,7 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
     assert any("/status" in line for line in help_response.result["lines"])
 
 
-def test_gateway_command_run_returns_and_persists_one_stable_result(
+def test_gateway_command_run_returns_transient_result_without_persisting(
     tmp_path: Path,
 ) -> None:
     service = FakeService(tmp_path)
@@ -733,10 +733,7 @@ def test_gateway_command_run_returns_and_persists_one_stable_result(
     result_id = str(response.result["result_id"])
     assert result_id.startswith("command:")
     assert response.result["display"]["kind"] == "list"
-    saved = service.fake_session_service.load_history_items("demo")
-    assert [
-        item.id for item in saved if item.type is HistoryItemType.COMMAND_RESULT
-    ] == [result_id]
+    assert service.fake_session_service.load_history_items("demo") == ()
 
 
 def test_unknown_command_returns_compact_error_display(tmp_path: Path) -> None:
@@ -753,7 +750,7 @@ def test_unknown_command_returns_compact_error_display(tmp_path: Path) -> None:
     assert response.result["display"]["suggestions"] == ["/memory"]
 
 
-def test_command_result_persistence_failure_returns_display_and_warning(
+def test_command_result_does_not_attempt_session_persistence(
     tmp_path: Path,
 ) -> None:
     service = FakeService(tmp_path)
@@ -773,14 +770,14 @@ def test_command_result_persistence_failure_returns_display_and_warning(
     assert response.error is None
     assert response.result is not None
     assert response.result["display"]["kind"] == "list"
-    warnings = [
+    persistence_warnings = [
         payload
         for method, payload in events
         if method == "gateway.error"
         and payload.get("code") == "command_result_persistence_failed"
     ]
-    assert len(warnings) == 1
-    assert len(str(warnings[0]["detail"])) <= 1_000
+    assert persistence_warnings == []
+    assert service.fake_session_service.load_history_items("demo") == ()
 
 
 def test_non_transcript_commands_do_not_persist_results(tmp_path: Path) -> None:
@@ -1298,11 +1295,7 @@ def test_gateway_transcript_load_upgrades_legacy_tagged_command_output(
     )
 
     assert response.result is not None
-    item = response.result["items"][0]
-    assert item["id"] == "legacy-usage"
-    assert item["type"] == "command_result"
-    assert item["metadata"]["display"]["version"] == 1
-    assert item["metadata"]["display"]["kind"] == "diagnostic"
+    assert response.result["items"] == []
     assert service.fake_session_service.history_items[0].type is HistoryItemType.WARNING
 
 
@@ -1332,7 +1325,7 @@ def test_gateway_transcript_load_keeps_malformed_legacy_text_exact(
     assert response.result["items"][0]["text"] == text
 
 
-def test_gateway_snapshot_fallback_upgrades_legacy_tagged_command_output(
+def test_gateway_snapshot_fallback_hides_legacy_tagged_command_output(
     tmp_path: Path,
 ) -> None:
     service = FakeService(tmp_path)
@@ -1356,8 +1349,7 @@ def test_gateway_snapshot_fallback_upgrades_legacy_tagged_command_output(
     )
 
     assert response.result is not None
-    assert response.result["items"][1]["type"] == "command_result"
-    assert response.result["items"][1]["metadata"]["display"]["kind"] == "notice"
+    assert [item["type"] for item in response.result["items"]] == ["warning"]
 
 
 def test_gateway_transcript_load_projects_plan_updates_in_order(tmp_path: Path) -> None:

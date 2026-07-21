@@ -1639,7 +1639,6 @@ class NodeTuiGateway:
     def _handle_command_run(self, params: dict[str, object]) -> dict[str, object]:
         command = _required_str(params, "command").strip()
         context = self._command_context(params)
-        origin_session_id = str(self.service._config.session_id)
         try:
             invocation = resolve_slash_command(command, context)
         except SlashCommandError as exc:
@@ -1658,11 +1657,7 @@ class NodeTuiGateway:
                     suggestions=suggestions,
                 )
             )
-            return self._command_result_payload(
-                result=result,
-                session_id=origin_session_id,
-                command=command,
-            )
+            return self._command_result_payload(result=result)
         if invocation.owner is SlashCommandOwner.TUI:
             return {
                 "execution": "tui",
@@ -1671,14 +1666,7 @@ class NodeTuiGateway:
                 "command_id": invocation.command_id.value,
             }
         result = dispatch_backend_slash_command(cast(TurnService, self.service), invocation)
-        command_text = " ".join(
-            part for part in (invocation.canonical_name, invocation.args) if part
-        )
-        payload = self._command_result_payload(
-            result=result,
-            session_id=origin_session_id,
-            command=command_text,
-        )
+        payload = self._command_result_payload(result=result)
         if result.mutated_session and self._emit is not None:
             self._emit("session.changed", {"session_id": self.service._config.session_id})
         if result.mutated_session:
@@ -1691,8 +1679,6 @@ class NodeTuiGateway:
         self,
         *,
         result: SlashCommandResult,
-        session_id: str,
-        command: str,
     ) -> dict[str, object]:
         if (
             result.presentation is not SlashCommandPresentation.TRANSCRIPT
@@ -1700,24 +1686,6 @@ class NodeTuiGateway:
         ):
             return result.to_payload()
         result_id = f"command:{uuid4().hex}"
-        try:
-            self.service._session_service.append_command_result(
-                session_id=session_id,
-                result_id=result_id,
-                command=command,
-                text="\n".join(result.lines),
-                display=result.display.to_payload(),
-            )
-        except (OSError, sqlite3.Error) as exc:
-            self._emit_gateway_error(
-                code="command_result_persistence_failed",
-                message=(
-                    "Command result could not be saved; "
-                    "it remains visible in this session."
-                ),
-                detail=str(exc),
-                method="command.run",
-            )
         return result.to_payload(result_id=result_id)
 
     def _command_context(self, params: dict[str, object]) -> SlashCommandContext:
@@ -1762,12 +1730,12 @@ class NodeTuiGateway:
             }
             return {
                 "session_id": session_id,
-                "items": [warning, *_upgrade_legacy_command_items(fallback)],
+                "items": [warning, *_filter_transient_command_items(fallback)],
                 "next_before": None,
                 "read_only": True,
             }
         projected = list(
-            _upgrade_legacy_command_items(
+            _filter_transient_command_items(
                 list(project_history_items_for_tui(tuple(items)))
             )
         )
@@ -2688,45 +2656,30 @@ def _bounded_text(value: str, *, max_chars: int = 500) -> str:
     return compact[: max_chars - 3] + "..."
 
 
-def _upgrade_legacy_command_items(
+def _filter_transient_command_items(
     items: list[dict[str, object]],
 ) -> tuple[dict[str, object], ...]:
-    upgraded: list[dict[str, object]] = []
+    visible: list[dict[str, object]] = []
     for item in items:
+        if item.get("type") == "command_result":
+            continue
         if item.get("type") not in {"command_output", "system_notice", "warning"}:
-            upgraded.append(item)
+            visible.append(item)
             continue
         text = item.get("text")
         if not isinstance(text, str):
-            upgraded.append(item)
+            visible.append(item)
             continue
         raw_metadata = item.get("metadata")
         metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
-        existing_display = metadata.get("display")
-        if isinstance(existing_display, dict) and existing_display.get("version") == 1:
-            upgraded.append(item)
-            continue
         command = metadata.get("command")
         display = legacy_slash_display(
             command=command if isinstance(command, str) else "",
             lines=tuple(text.splitlines()),
         )
         if display is None:
-            upgraded.append(item)
-            continue
-        upgraded.append(
-            {
-                **item,
-                "type": "command_result",
-                "folded": bool(item.get("folded", False)),
-                "metadata": {
-                    "command": display.command,
-                    "display": display.to_payload(),
-                    "model_visible": False,
-                },
-            }
-        )
-    return tuple(upgraded)
+            visible.append(item)
+    return tuple(visible)
 
 
 def _resources_from_lines(

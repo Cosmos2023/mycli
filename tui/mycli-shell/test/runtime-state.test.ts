@@ -1838,7 +1838,7 @@ test("runtime adapter upserts structured command results by stable id", () => {
 	);
 });
 
-test("runtime adapter upserts a live command result over resumed history", () => {
+test("runtime adapter ignores resumed command results but renders live results", () => {
 	const display = {
 		version: 1,
 		kind: "notice",
@@ -1858,6 +1858,8 @@ test("runtime adapter upserts a live command result over resumed history", () =>
 			},
 		],
 	});
+	assert.deepEqual(state.transcript, []);
+
 	state = runtimeStateWithCommandResult(state, "/undo", {
 		result_id: "command:resume",
 		display,

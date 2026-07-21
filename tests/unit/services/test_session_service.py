@@ -193,7 +193,7 @@ def test_session_service_writes_readable_session_snapshot(tmp_path: Path) -> Non
         / "session.json"
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["session_id"] == "3ff83220-447c-4b12-ab27-6e14079b39c7"
     assert payload["cwd"] == str(workspace)
     assert payload["lineage"] == {
@@ -309,55 +309,6 @@ def test_history_append_preserves_plan_update_in_visible_transcript(tmp_path: Pa
     }
 
 
-def test_append_command_result_updates_history_and_formatted_snapshot(
-    tmp_path: Path,
-) -> None:
-    home_dir = tmp_path / "home"
-    service = SessionService(home_dir=home_dir)
-    display = {
-        "version": 1,
-        "kind": "list",
-        "command": "/tools",
-        "title": "Tools",
-        "severity": "info",
-        "rows": [{"key": "Read", "label": "Read", "values": ["file"]}],
-    }
-
-    service.append_command_result(
-        session_id="demo",
-        result_id="command-1",
-        command="/tools",
-        text="Tools - 1 available\nRead  file",
-        display=display,
-    )
-
-    stored = service.load_history_items("demo")
-    assert len(stored) == 1
-    assert stored[0].type is HistoryItemType.COMMAND_RESULT
-    assert stored[0].metadata == {
-        "command": "/tools",
-        "display": display,
-        "model_visible": False,
-    }
-
-    snapshot_path = home_dir / ".mycli" / "sessions" / "demo" / "session.json"
-    raw_snapshot = snapshot_path.read_text(encoding="utf-8")
-    assert raw_snapshot.startswith("{\n  ")
-    payload = json.loads(raw_snapshot)
-    assert payload["transcript"] == [
-        {
-            "id": "command-1",
-            "type": "command_result",
-            "text": "Tools - 1 available\nRead  file",
-            "metadata": {
-                "command": "/tools",
-                "display": display,
-                "model_visible": False,
-            },
-        }
-    ]
-
-
 def test_conversation_save_writes_snapshot_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -435,7 +386,7 @@ def test_load_conversation_imports_v1_messages_when_sqlite_is_empty(tmp_path: Pa
 
     assert [message.content for message in conversation.messages] == ["hello", "hi"]
     migrated = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert migrated["schema_version"] == 2
+    assert migrated["schema_version"] == 3
     assert "messages" not in migrated
     assert service._store.load_conversation("legacy") is not None
 
@@ -486,6 +437,48 @@ def test_v2_transcript_is_never_used_as_model_conversation(tmp_path: Path) -> No
     assert service._store.load_conversation("display-only") is None
 
 
+def test_load_conversation_rewrites_v2_snapshot_without_command_results(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    service = SessionService(home_dir=home_dir)
+    service.save_conversation(
+        Conversation(
+            session_id="legacy-command",
+            messages=[Message(role="user", content="hello")],
+        )
+    )
+    snapshot_path = (
+        home_dir / ".mycli" / "sessions" / "legacy-command" / "session.json"
+    )
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "session_id": "legacy-command",
+                "transcript": [
+                    {"id": "user-1", "type": "user_message", "text": "hello"},
+                    {
+                        "id": "command-1",
+                        "type": "command_result",
+                        "text": "transient status output",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    conversation = service.load_conversation("legacy-command")
+
+    assert [message.content for message in conversation.messages] == ["hello"]
+    migrated = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert migrated["schema_version"] == 3
+    assert migrated["transcript"] == [
+        {"id": "message-1", "type": "user_message", "text": "hello"}
+    ]
+
+
 def test_corrupt_snapshot_is_rebuilt_from_sqlite(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     service = SessionService(home_dir=home_dir)
@@ -499,7 +492,7 @@ def test_corrupt_snapshot_is_rebuilt_from_sqlite(tmp_path: Path) -> None:
 
     assert loaded.messages[0].content == "hello"
     repaired = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert repaired["schema_version"] == 2
+    assert repaired["schema_version"] == 3
 
 
 def test_unknown_session_load_does_not_create_empty_snapshot(tmp_path: Path) -> None:
