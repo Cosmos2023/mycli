@@ -68,6 +68,23 @@ test("runtime adapter projects bootstrap and transcript into mycli shell state",
 	assert.equal(shell.tools[0]?.durationMs, 1200);
 });
 
+test("runtime adapter does not append the same transcript page twice", () => {
+	const payload = {
+		items: [
+			{ id: "u1", type: "user", text: "hello", folded: false, metadata: {} },
+			{ id: "a1", type: "assistant_final", text: "world", folded: false, metadata: {} },
+		],
+	};
+
+	let state = runtimeStateFromTranscript(initialRuntimeState(), payload);
+	state = runtimeStateFromTranscript(state, payload);
+
+	assert.deepEqual(
+		state.transcript.map((item) => item.id),
+		["u1", "a1"],
+	);
+});
+
 test("runtime adapter projects a resumed Skill name as its tool argument", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateFromTranscript(state, {

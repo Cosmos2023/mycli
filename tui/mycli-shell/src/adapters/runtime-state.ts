@@ -454,7 +454,7 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 			: item,
 	);
 	const transcript = coalesceResumedShellOutputItems(
-		coalesceLegacyToolItems([...state.transcript, ...resumedItems]),
+		coalesceLegacyToolItems(mergeTranscriptItemsById(state.transcript, resumedItems)),
 	)
 		.filter((item) => !shouldSuppressSuccessfulTaskItem(item));
 	const latestPlanUpdate = [...transcript].reverse().find((item) => item.type === "plan_update");
@@ -463,6 +463,24 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 		transcript,
 		taskProgress: latestPlanUpdate ? taskProgressFromPlanUpdate(latestPlanUpdate) : state.taskProgress,
 	};
+}
+
+function mergeTranscriptItemsById(
+	existing: RuntimeTranscriptItem[],
+	incoming: RuntimeTranscriptItem[],
+): RuntimeTranscriptItem[] {
+	const merged: RuntimeTranscriptItem[] = [];
+	const indexes = new Map<string, number>();
+	for (const item of [...existing, ...incoming]) {
+		const index = indexes.get(item.id);
+		if (index === undefined) {
+			indexes.set(item.id, merged.length);
+			merged.push(item);
+		} else {
+			merged[index] = item;
+		}
+	}
+	return merged;
 }
 
 function coalesceResumedShellOutputItems(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
