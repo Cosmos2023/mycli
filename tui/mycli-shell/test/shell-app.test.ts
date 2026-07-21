@@ -3977,11 +3977,24 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 	assert.equal(result.stdout, "");
 });
 
-test("gateway uses pop-last editing and interrupt does not clear queues", () => {
+test("gateway keeps follow-up editing local and interrupt does not clear queues", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const interruptBody = source.match(/async function interruptTurn\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
 
-	assert.match(source, /send\("turn\.queue\.pop"/);
+	assert.match(source, /popLastLocalFollowUp\(runtimeState\)/);
+	assert.doesNotMatch(source, /send\("turn\.queue\.pop"/);
 	assert.doesNotMatch(source, /send\("turn\.queue\.clear"/);
 	assert.doesNotMatch(interruptBody, /dequeueQueuedInput|popLastQueuedFollowUp|clearQueuedTurns/);
+});
+
+test("scripted gateway client follows backend user lifecycle and local follow-up queues", () => {
+	const source = readFileSync(new URL("./support/scripted-client.ts", import.meta.url), "utf8");
+
+	assert.match(source, /client_user_message_id/);
+	assert.match(source, /runtimeStateWithSubmittingMessage/);
+	assert.match(source, /runtimeStateWithPendingSteer/);
+	assert.match(source, /runtimeStateWithLocalFollowUp/);
+	assert.doesNotMatch(source, /runtimeStateWithUserMessage/);
+	assert.doesNotMatch(source, /send\("turn\.follow_up"/);
+	assert.doesNotMatch(source, /send\("turn\.queue\.(?:pop|clear)"/);
 });

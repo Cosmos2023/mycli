@@ -1585,14 +1585,25 @@ test("session changes clear transient local user input queues", () => {
 	assert.deepEqual(state.localSubmittingMessages, []);
 });
 
-test("gateway steering uses the active server turn without local durable fallback", () => {
+test("gateway steering retries a turn mismatch with stable user identity", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const steeringBody = source.match(/async function queueSteeringTurn\([\s\S]*?\n\}/)?.[0] ?? "";
 
-	assert.match(steeringBody, /expected_turn_id:\s*runtimeState\.activeTurnId/);
+	assert.match(steeringBody, /client_user_message_id:\s*input\.clientUserMessageId/);
+	assert.match(steeringBody, /let expectedTurnId = runtimeState\.activeTurnId/);
+	assert.match(steeringBody, /expected_turn_id:\s*expectedTurnId/);
+	assert.match(steeringBody, /attempt < 2/);
+	assert.match(steeringBody, /error\.code === "turn_id_mismatch"/);
+	assert.match(steeringBody, /error\.data\.actual_turn_id/);
+	assert.match(steeringBody, /expectedTurnId = actualTurnId/);
+	assert.match(steeringBody, /runtimeStateWithPendingSteer/);
+	assert.match(steeringBody, /runtimeStateRejectPendingSteer/);
 	assert.match(source, /activeTurnId:\s*turnId \?\? runtimeState\.activeTurnId/);
+	assert.match(source, /if \(backendTurnBusy\) \{\s*setRuntimeState\(\{/);
+	assert.match(source, /event\.method === "status\.changed" && event\.params\.turn_running === false/);
+	assert.doesNotMatch(source, /event\.method === "status\.changed" && backendTurnBusy/);
 	assert.doesNotMatch(source, /queuedSteeringTurns|queuedFollowUpTurns/);
-	assert.doesNotMatch(steeringBody, /catch[\s\S]*enqueueSteeringTurn/);
+	assert.doesNotMatch(source, /send\("turn\.follow_up"/);
 });
 
 test("runtime adapter syncs typed backend message queues", () => {

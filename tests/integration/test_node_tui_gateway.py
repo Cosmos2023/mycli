@@ -5,12 +5,13 @@ import os
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event
 import time
 from types import SimpleNamespace
 from typing import Any, cast
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
+from mycli.application.runtime.user_input_mailbox import ActiveTurnMailbox
 from mycli.application.turn_service import TurnService
 from mycli.cli.node_tui.process import NodeTuiProcess
 from mycli.cli.node_tui.gateway import NodeTuiGateway, run_node_tui_gateway
@@ -21,6 +22,7 @@ from mycli.domain.runtime import (
     CollaborationMode,
     DecisionAction,
     DecisionKind,
+    MailboxAcceptance,
     ModelTurnResult,
     PendingDecision,
     PendingClarification,
@@ -33,6 +35,7 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    UserMessageInput,
 )
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.registry import ToolRegistry
@@ -1060,14 +1063,9 @@ class E2EQueuedTurnService:
         self._session_service = E2ESessionService()
         self.messages: list[str] = []
         self.steering_requests: list[str] = []
-        self.follow_up_requests: list[str] = []
-        self.cleared_steering: tuple[str, ...] = ()
-        self.cleared_follow_up: tuple[str, ...] = ()
         self.started = Event()
-        self.cleared = Event()
-        self._queue_lock = Lock()
-        self._steering: list[str] = []
-        self._follow_up: list[str] = []
+        self.steered = Event()
+        self.mailbox = ActiveTurnMailbox()
 
     def current_context_window_metrics(self) -> dict[str, object]:
         return {"input_tokens": 10, "max_tokens": 12000, "source": "test"}
@@ -1076,54 +1074,84 @@ class E2EQueuedTurnService:
         self,
         message: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        *,
+        turn_id: str | None = None,
+        client_user_message_id: str | None = None,
     ) -> TurnResponse:
+        assert turn_id is not None
+        assert client_user_message_id is not None
         self.messages.append(message)
-        if message != "long task":
-            raise AssertionError(f"unexpected message: {message}")
-        self.started.set()
-        if stream_sink is not None:
-            stream_sink(RuntimeStreamEvent(kind="reasoning", text="working"))
-        if not self.cleared.wait(timeout=2.0):
-            return TurnResponse(
-                assistant_message="Queue was not cleared.",
-                turn=TurnRecord(
-                    thread_id="queued-turn-smoke",
-                    turn_id="turn_queue_failed_1",
-                    status=TurnStatus.FAILED,
-                    started_at="2026-05-31T00:00:00Z",
-                    completed_at="2026-05-31T00:00:01Z",
-                    stop_reason=StopReason.RUNTIME_ERROR,
-                    user_message=message,
-                ),
+        self._emit_user_lifecycle(
+            stream_sink=stream_sink,
+            turn_id=turn_id,
+            client_user_message_id=client_user_message_id,
+            message=message,
+            source="submit",
+        )
+        if message == "long task":
+            self.started.set()
+            if stream_sink is not None:
+                stream_sink(RuntimeStreamEvent(kind="reasoning", text="working"))
+            if not self.steered.wait(timeout=2.0):
+                raise AssertionError("active turn steering was not received")
+            for item in self.mailbox.drain(turn_id):
+                self.steering_requests.append(item.text)
+                self._emit_user_lifecycle(
+                    stream_sink=stream_sink,
+                    turn_id=turn_id,
+                    client_user_message_id=item.client_user_message_id,
+                    message=item.text,
+                    source="steer",
+                )
+            return TurnResponse(assistant_message="queued turn done")
+        if message == "summarize next":
+            return TurnResponse(assistant_message="follow-up done")
+        raise AssertionError(f"unexpected message: {message}")
+
+    def begin_active_turn_mailbox(
+        self,
+        turn_id: str,
+        *,
+        steerable: bool,
+        turn_kind: str = "regular",
+    ) -> None:
+        self.mailbox.begin(turn_id, steerable=steerable, turn_kind=turn_kind)
+
+    def close_active_turn_mailbox(self, turn_id: str) -> tuple[UserMessageInput, ...]:
+        return self.mailbox.close_and_drain(turn_id)
+
+    def steer_active_turn(self, item: UserMessageInput) -> MailboxAcceptance:
+        assert item.target_turn_id is not None
+        acceptance = self.mailbox.accept(item.target_turn_id, item)
+        self.steered.set()
+        return acceptance
+
+    @staticmethod
+    def _emit_user_lifecycle(
+        *,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        turn_id: str,
+        client_user_message_id: str,
+        message: str,
+        source: str,
+    ) -> None:
+        if stream_sink is None:
+            return
+        item = {
+            "id": f"{turn_id}:user:{client_user_message_id}",
+            "type": "user_message",
+            "client_user_message_id": client_user_message_id,
+            "content": message,
+            "source": source,
+        }
+        metadata: dict[str, object] = {"turn_id": turn_id, "item": item}
+        for kind in ("item_started", "item_completed"):
+            stream_sink(
+                RuntimeStreamEvent(
+                    kind=kind,
+                    metadata=metadata,
+                )
             )
-        return TurnResponse(assistant_message="queued turn done")
-
-    def queue_steering_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        self.steering_requests.append(message)
-        with self._queue_lock:
-            self._steering.append(message)
-            return tuple(self._steering), tuple(self._follow_up)
-
-    def queue_follow_up_message(self, message: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        self.follow_up_requests.append(message)
-        with self._queue_lock:
-            self._follow_up.append(message)
-            return tuple(self._steering), tuple(self._follow_up)
-
-    def queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        with self._queue_lock:
-            return tuple(self._steering), tuple(self._follow_up)
-
-    def clear_queued_messages(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        with self._queue_lock:
-            steering = tuple(self._steering)
-            follow_up = tuple(self._follow_up)
-            self._steering.clear()
-            self._follow_up.clear()
-        self.cleared_steering = steering
-        self.cleared_follow_up = follow_up
-        self.cleared.set()
-        return steering, follow_up
 
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=queued-turn-smoke",)
@@ -1418,7 +1446,6 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_running_turn_queue(
                         "message": "long task",
                         "steering": ["add more detail"],
                         "follow_up": ["summarize next"],
-                        "clear": True,
                         "expected_state": "completed",
                     }
                 ]
@@ -1433,11 +1460,8 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_running_turn_queue(
 
     assert exit_code == 0
     assert service.started.is_set()
-    assert service.messages == ["long task"]
+    assert service.messages == ["long task", "summarize next"]
     assert service.steering_requests == ["add more detail"]
-    assert service.follow_up_requests == ["summarize next"]
-    assert service.cleared_steering == ("add more detail",)
-    assert service.cleared_follow_up == ("summarize next",)
     state = json.loads(dump_path.read_text(encoding="utf-8"))
     assert state["turnRunning"] is False
     assert state["currentTurnId"] is None
@@ -1449,7 +1473,10 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_running_turn_queue(
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
-    assert [item["text"] for item in assistant_items] == ["queued turn done"]
+    assert [item["text"] for item in assistant_items] == [
+        "queued turn done",
+        "follow-up done",
+    ]
 
 
 def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_matrix(

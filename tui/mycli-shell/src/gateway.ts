@@ -8,18 +8,25 @@ import {
 	runtimeStateFromTranscript,
 	runtimeStateAfterCommandResult,
 	runtimeStateWithSettings,
-	runtimeStateWithUserMessage,
+	runtimeStateWithPendingSteer,
+	runtimeStateWithSubmittingMessage,
+	runtimeStateWithLocalFollowUp,
+	runtimeStateRejectPendingSteer,
+	restorePendingSteersAfterInterrupt,
+	popLastLocalFollowUp,
+	nextLocalUserInput,
+	removeLocalUserInput,
 	resourcesFromResult,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
 	type RuntimeShellState,
+	type RuntimeLocalUserInput,
 } from "./adapters/runtime-state.ts";
 import { MycliShellRuntime } from "./shell-runtime.ts";
 import { NativeChatRuntime } from "./native-chat-runtime.ts";
 import type { MycliShellSession, MycliShellState, MycliShellVisualSettings } from "./model.ts";
 import type {
-	MycliShellLocalImageAttachment,
 	MycliShellQueuedInput,
 	MycliShellSubmitAttachments,
 } from "./shell-runtime.ts";
@@ -34,7 +41,7 @@ type QueuedTurnInput = {
 	kind: QueueKind;
 	message: string;
 	attachments?: MycliShellSubmitAttachments;
-	clientTurnId?: string;
+	clientUserMessageId: string;
 	source?: string;
 };
 
@@ -56,6 +63,8 @@ let bootstrapped = false;
 const eventDeduper = new GatewayEventDeduper();
 let backendTurnBusy = false;
 let clientTurnSequence = 0;
+let localDispatchEligible = false;
+let localDispatchScheduled = false;
 
 function currentShellState(): MycliShellState {
 	return projectRuntimeState(runtimeState, sessions);
@@ -80,12 +89,27 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	if (!eventDeduper.shouldConsume(event)) {
 		return;
 	}
-	setRuntimeState(reduceRuntimeEvent(runtimeState, event.method, event.params));
+	let nextState = reduceRuntimeEvent(runtimeState, event.method, event.params);
+	const interrupted =
+		event.method === "turn.interrupted" ||
+		(event.method === "turn.completed" && event.params.turn_state === "interrupted");
+	if (interrupted) {
+		nextState = restorePendingSteersAfterInterrupt(nextState);
+	}
+	setRuntimeState(nextState);
 	if (event.method === "turn.started") {
 		backendTurnBusy = true;
 	}
-	if (event.method === "status.changed" && backendTurnBusy && event.params.turn_running === false) {
+	if (
+		event.method === "turn.completed" ||
+		event.method === "turn.failed" ||
+		event.method === "turn.interrupted"
+	) {
+		localDispatchEligible = true;
+	}
+	if (event.method === "status.changed" && event.params.turn_running === false) {
 		backendTurnBusy = false;
+		scheduleNextLocalInput();
 	}
 }
 
@@ -159,38 +183,55 @@ async function loadSessions(): Promise<void> {
 async function submitTurn(
 	message: string,
 	attachments: MycliShellSubmitAttachments = {},
+	clientUserMessageId = nextClientTurnId("user"),
 ): Promise<void> {
 	const text = message.trim();
 	if (!text) {
 		return;
 	}
 	if (runtimeState.turnRunning || runtimeState.activeTurnId) {
-		await queueSteeringTurn({ kind: "steer", message: text, attachments });
+		await queueSteeringTurn({
+			kind: "steer",
+			message: text,
+			attachments,
+			clientUserMessageId,
+		});
 		return;
 	}
 	const clientTurnId = nextClientTurnId("ui");
+	const localInput = runtimeLocalInput(clientUserMessageId, text, attachments);
+	setRuntimeState(runtimeStateWithSubmittingMessage(runtimeState, localInput));
+	backendTurnBusy = true;
 	try {
 		const result = await send(
 			"turn.submit",
 			{
 				message: text,
 				client_turn_id: clientTurnId,
+				client_user_message_id: clientUserMessageId,
 				...(attachments?.localImages?.length ? { local_images: attachments.localImages } : {}),
 			},
 			{ recordErrors: false },
 		);
-		backendTurnBusy = true;
 		const turnId = typeof result.turn_id === "string" ? result.turn_id : null;
-		setRuntimeState(runtimeStateWithUserMessage({
-			...runtimeState,
-			turnRunning: true,
-			activeTurnId: turnId ?? runtimeState.activeTurnId,
-		}, text));
+		if (backendTurnBusy) {
+			setRuntimeState({
+				...runtimeState,
+				turnRunning: true,
+				activeTurnId: turnId ?? runtimeState.activeTurnId,
+			});
+		}
 	} catch (error) {
+		setRuntimeState(removeLocalUserInput(runtimeState, clientUserMessageId));
 		if (error instanceof GatewayRequestError && error.code === "turn_in_progress") {
 			backendTurnBusy = true;
 			if (runtimeState.activeTurnId) {
-				await queueSteeringTurn({ kind: "steer", message: text, attachments, clientTurnId });
+				await queueSteeringTurn({
+					kind: "steer",
+					message: text,
+					attachments,
+					clientUserMessageId,
+				});
 				return;
 			}
 		}
@@ -211,6 +252,70 @@ function nextClientTurnId(prefix: string): string {
 	return `${prefix}_${Date.now()}_${clientTurnSequence}`;
 }
 
+function runtimeLocalInput(
+	clientUserMessageId: string,
+	message: string,
+	attachments?: MycliShellSubmitAttachments,
+): RuntimeLocalUserInput {
+	return {
+		clientUserMessageId,
+		message,
+		attachments: [...(attachments?.localImages ?? [])],
+	};
+}
+
+function scheduleNextLocalInput(): void {
+	if (!localDispatchEligible || localDispatchScheduled) {
+		return;
+	}
+	localDispatchScheduled = true;
+	queueMicrotask(() => {
+		localDispatchScheduled = false;
+		void dispatchNextLocalInput();
+	});
+}
+
+async function dispatchNextLocalInput(): Promise<void> {
+	if (
+		!localDispatchEligible ||
+		backendTurnBusy ||
+		runtimeState.turnRunning ||
+		runtimeState.activeTurnId ||
+		runtimeState.pendingApproval ||
+		runtimeState.pendingClarification
+	) {
+		return;
+	}
+	const next = nextLocalUserInput(runtimeState);
+	if (!next) {
+		localDispatchEligible = false;
+		return;
+	}
+	localDispatchEligible = false;
+	setRuntimeState(
+		removeLocalUserInput(runtimeState, next.input.clientUserMessageId),
+	);
+	try {
+		await submitTurn(
+			next.input.message,
+			{ localImages: next.input.attachments },
+			next.input.clientUserMessageId,
+		);
+	} catch {
+		const restored =
+			next.kind === "rejected"
+				? {
+					...runtimeState,
+					localRejectedSteers: [next.input, ...runtimeState.localRejectedSteers],
+				}
+				: {
+					...runtimeState,
+					localFollowUps: [next.input, ...runtimeState.localFollowUps],
+				};
+		setRuntimeState(restored);
+	}
+}
+
 async function submitFollowUp(message: string, attachments?: MycliShellSubmitAttachments): Promise<void> {
 	const text = message.trim();
 	if (!text) {
@@ -220,57 +325,73 @@ async function submitFollowUp(message: string, attachments?: MycliShellSubmitAtt
 		kind: "followUp",
 		message: text,
 		attachments,
-		clientTurnId: nextClientTurnId("followUp"),
+		clientUserMessageId: nextClientTurnId("followUp"),
 	};
 	if (runtimeState.turnRunning || runtimeState.activeTurnId || backendTurnBusy) {
-		await queueFollowUpTurn(input);
+		setRuntimeState(
+			runtimeStateWithLocalFollowUp(
+				runtimeState,
+				runtimeLocalInput(input.clientUserMessageId, input.message, input.attachments),
+			),
+		);
 		return;
 	}
-	await submitTurn(input.message, input.attachments);
+	await submitTurn(input.message, input.attachments, input.clientUserMessageId);
 }
 
 async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
-	try {
-		const result = await send("turn.steer", {
-			...queueRpcPayload(input),
-			expected_turn_id: runtimeState.activeTurnId,
-		}, { recordErrors: false });
-		setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", result));
-	} catch (error) {
-		setRuntimeState(reduceRuntimeEvent(runtimeState, "gateway.error", {
-			code: error instanceof GatewayRequestError ? error.code : "request_failed",
-			message: error instanceof Error ? error.message : "Request failed.",
-			method: "turn.steer",
-		}));
-	}
-}
-
-async function queueFollowUpTurn(input: QueuedTurnInput): Promise<void> {
-	try {
-		const result = await send("turn.follow_up", queueRpcPayload(input), { recordErrors: false });
-		setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", result));
-	} catch (error) {
-		setRuntimeState(reduceRuntimeEvent(runtimeState, "gateway.error", {
-			code: error instanceof GatewayRequestError ? error.code : "request_failed",
-			message: error instanceof Error ? error.message : "Request failed.",
-			method: "turn.follow_up",
-		}));
+	const localInput = runtimeLocalInput(
+		input.clientUserMessageId,
+		input.message,
+		input.attachments,
+	);
+	setRuntimeState(runtimeStateWithPendingSteer(runtimeState, localInput));
+	let expectedTurnId = runtimeState.activeTurnId;
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			await send("turn.steer", {
+				message: input.message,
+				client_user_message_id: input.clientUserMessageId,
+				expected_turn_id: expectedTurnId,
+				...(input.attachments?.localImages?.length
+					? { local_images: input.attachments.localImages }
+					: {}),
+			}, { recordErrors: false });
+			return;
+		} catch (error) {
+			const actualTurnId =
+				error instanceof GatewayRequestError &&
+				error.code === "turn_id_mismatch" &&
+				typeof error.data.actual_turn_id === "string"
+					? error.data.actual_turn_id
+					: null;
+			if (attempt === 0 && actualTurnId) {
+				expectedTurnId = actualTurnId;
+				setRuntimeState({ ...runtimeState, activeTurnId: actualTurnId });
+				continue;
+			}
+			setRuntimeState(
+				runtimeStateRejectPendingSteer(
+					runtimeState,
+					input.clientUserMessageId,
+				),
+			);
+			return;
+		}
 	}
 }
 
 async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
-	try {
-		const result = await send("turn.queue.pop", {}, { recordErrors: false });
-		setRuntimeState(reduceRuntimeEvent(runtimeState, "turn.queue.updated", result));
-		const popped = queuedItemsValue(
-			result.item === null || result.item === undefined ? [] : [result.item],
-			"followUp",
-			[],
-		)[0];
-		return popped ? combineQueuedInputs([popped]) : null;
-	} catch {
-		return null;
-	}
+	const popped = popLastLocalFollowUp(runtimeState);
+	setRuntimeState(popped.state);
+	return popped.input
+		? {
+			text: popped.input.message,
+			...(popped.input.attachments.length
+				? { localImages: popped.input.attachments }
+				: {}),
+		}
+		: null;
 }
 
 async function interruptTurn(): Promise<void> {
@@ -291,113 +412,6 @@ async function saveApiKey(providerId: string, apiKey: string): Promise<{ message
 	};
 	refreshRuntime();
 	return { message: typeof result.message === "string" ? result.message : undefined };
-}
-
-function queueRpcPayload(input: QueuedTurnInput): Record<string, unknown> {
-	return {
-		message: input.message,
-		client_turn_id: input.clientTurnId ?? nextClientTurnId(input.kind),
-		...(input.attachments?.localImages?.length ? { local_images: input.attachments.localImages } : {}),
-	};
-}
-
-function queuedItemsValue(value: unknown, kind: QueueKind, fallback: unknown): QueuedTurnInput[] {
-	const parsed = queuedItemsFromPayload(value, kind);
-	if (parsed.length > 0) {
-		return parsed;
-	}
-	return stringArrayValue(fallback).map((message) => ({ kind, message }));
-}
-
-function queuedItemsFromPayload(value: unknown, kind: QueueKind): QueuedTurnInput[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	const inputs: QueuedTurnInput[] = [];
-	for (const item of value) {
-		if (typeof item === "string" && item.trim()) {
-			inputs.push({ kind, message: item.trim() });
-			continue;
-		}
-		if (!item || typeof item !== "object") {
-			continue;
-		}
-		const record = item as Record<string, unknown>;
-		const rawMessage = record.message ?? record.text;
-		if (typeof rawMessage !== "string" || !rawMessage.trim()) {
-			continue;
-		}
-		const localImages = localImagesValue(record.local_images);
-		inputs.push({
-			kind,
-			message: rawMessage.trim(),
-			...(localImages.length ? { attachments: { localImages } } : {}),
-			...(typeof record.client_turn_id === "string" ? { clientTurnId: record.client_turn_id } : {}),
-			...(typeof record.source === "string" ? { source: record.source } : {}),
-		});
-	}
-	return inputs;
-}
-
-function localImagesValue(value: unknown): MycliShellLocalImageAttachment[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	const images: MycliShellLocalImageAttachment[] = [];
-	for (let index = 0; index < value.length; index += 1) {
-		const item = value[index];
-		if (typeof item === "string" && item.trim()) {
-			images.push({ path: item.trim(), placeholder: `[image #${index + 1}]` });
-			continue;
-		}
-		if (!item || typeof item !== "object") {
-			continue;
-		}
-		const record = item as Record<string, unknown>;
-		if (typeof record.path !== "string" || !record.path.trim()) {
-			continue;
-		}
-		images.push({
-			path: record.path.trim(),
-			placeholder:
-				typeof record.placeholder === "string" && record.placeholder.trim()
-					? record.placeholder.trim()
-					: `[image #${index + 1}]`,
-		});
-	}
-	return images;
-}
-
-function combineQueuedInputs(inputs: QueuedTurnInput[]): MycliShellQueuedInput {
-	const localImages: MycliShellLocalImageAttachment[] = [];
-	const textParts: string[] = [];
-	for (const input of inputs) {
-		let text = input.message;
-		for (const image of input.attachments?.localImages ?? []) {
-			const nextPlaceholder = `[image #${localImages.length + 1}]`;
-			if (image.placeholder && text.includes(image.placeholder)) {
-				text = text.split(image.placeholder).join(nextPlaceholder);
-			}
-			localImages.push({ path: image.path, placeholder: nextPlaceholder });
-		}
-		if (text.trim()) {
-			textParts.push(text.trim());
-		}
-	}
-	return {
-		text: textParts.join("\n\n"),
-		...(localImages.length ? { localImages } : {}),
-	};
-}
-
-function stringArrayValue(value: unknown): string[] {
-	if (typeof value === "string" && value.trim()) {
-		return [value.trim()];
-	}
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 async function runCommand(command: string): Promise<void> {

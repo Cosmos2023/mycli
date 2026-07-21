@@ -7,9 +7,16 @@ import {
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateAfterCommandResult,
-	runtimeStateWithUserMessage,
+	runtimeStateWithPendingSteer,
+	runtimeStateWithSubmittingMessage,
+	runtimeStateWithLocalFollowUp,
+	runtimeStateRejectPendingSteer,
+	restorePendingSteersAfterInterrupt,
+	nextLocalUserInput,
+	removeLocalUserInput,
 	sessionsFromResult,
 	type RuntimeShellState,
+	type RuntimeLocalUserInput,
 } from "../../src/adapters/runtime-state.ts";
 
 type ExpectedScriptedTurnState =
@@ -50,6 +57,7 @@ type ScriptedAction =
 
 let state: RuntimeShellState = initialRuntimeState();
 let sessions: unknown[] = [];
+let clientMessageSequence = 0;
 const eventDeduper = new GatewayEventDeduper();
 
 const client = new GatewayClient({
@@ -87,8 +95,7 @@ export async function runScriptedClient(
 			}
 			turnSequence += 1;
 			const clientTurnId = `script_${turnSequence}`;
-			state = runtimeStateWithUserMessage(state, item);
-			await send("turn.submit", { message: item, client_turn_id: clientTurnId });
+			await submitScriptedTurn(item, clientTurnId);
 			await waitForSubmittedTurn(clientTurnId);
 		}
 
@@ -104,6 +111,12 @@ function handleGatewayEvent(event: GatewayEvent): void {
 		return;
 	}
 	state = reduceRuntimeEvent(state, event.method, event.params);
+	if (
+		event.method === "turn.interrupted" ||
+		(event.method === "turn.completed" && event.params.turn_state === "interrupted")
+	) {
+		state = restorePendingSteersAfterInterrupt(state);
+	}
 	process.stderr.write(`[mycli-shell-scripted] ${event.method}\n`);
 }
 
@@ -151,11 +164,7 @@ async function runScriptedCommand(command: string): Promise<void> {
 async function runScriptedAction(action: ScriptedAction): Promise<void> {
 	if (action.type === "turn.submit_interrupt") {
 		const clientTurnId = `script_interrupt_${Date.now()}`;
-		state = runtimeStateWithUserMessage(state, action.message);
-		await send("turn.submit", {
-			message: action.message,
-			client_turn_id: clientTurnId,
-		});
+		await submitScriptedTurn(action.message, clientTurnId);
 		await client.waitForEvent("turn.started", (event) => event.params.client_turn_id === clientTurnId);
 		await send("turn.interrupt", {});
 		await waitForInterruptedTerminal(clientTurnId);
@@ -165,50 +174,41 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 
 	if (action.type === "turn.submit_expect") {
 		const clientTurnId = `script_expect_${Date.now()}`;
-		state = runtimeStateWithUserMessage(state, action.message);
-		await send("turn.submit", {
-			message: action.message,
-			client_turn_id: clientTurnId,
-		});
+		await submitScriptedTurn(action.message, clientTurnId);
 		await waitForExpectedTurnState(clientTurnId, action.expected_state);
 		return;
 	}
 
 	if (action.type === "turn.submit_queue") {
 		const clientTurnId = `script_queue_${Date.now()}`;
-		state = runtimeStateWithUserMessage(state, action.message);
-		await send("turn.submit", {
-			message: action.message,
-			client_turn_id: clientTurnId,
-		});
+		await submitScriptedTurn(action.message, clientTurnId);
 		await client.waitForEvent("turn.started", (event) => event.params.client_turn_id === clientTurnId);
 		for (const message of action.steering ?? []) {
-			await queueMessage("turn.steer", message, "steering");
+			await queueSteeringMessage(message);
 		}
 		for (const message of action.follow_up ?? []) {
-			await queueMessage("turn.follow_up", message, "follow_up");
+			queueFollowUpMessage(message);
 		}
 		if (action.clear === true) {
-			await send("turn.queue.clear", {});
-			await waitForQueue((event) => queueValues(event, "steering").length === 0 && queueValues(event, "follow_up").length === 0);
+			clearLocalQueuedMessages();
 		}
 		await waitForExpectedTurnState(clientTurnId, action.expected_state ?? "completed");
+		await dispatchLocalInputs();
 		return;
 	}
 
 	if (action.type === "turn.steer") {
-		await queueMessage("turn.steer", action.message, "steering");
+		await queueSteeringMessage(action.message);
 		return;
 	}
 
 	if (action.type === "turn.follow_up") {
-		await queueMessage("turn.follow_up", action.message, "follow_up");
+		queueFollowUpMessage(action.message);
 		return;
 	}
 
 	if (action.type === "turn.queue.clear") {
-		await send("turn.queue.clear", {});
-		await waitForQueue((event) => queueValues(event, "steering").length === 0 && queueValues(event, "follow_up").length === 0);
+		clearLocalQueuedMessages();
 		return;
 	}
 
@@ -266,19 +266,95 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 	await waitForTerminalStatus(clientTurnId);
 }
 
-async function queueMessage(method: "turn.steer" | "turn.follow_up", message: string, queueKey: "steering" | "follow_up"): Promise<void> {
-	const expectedTurnId = state.activeTurnId;
-	if (method === "turn.steer" && !expectedTurnId) {
-		throw new Error("turn.steer requires an active server turn.");
+async function submitScriptedTurn(
+	message: string,
+	clientTurnId: string,
+	input = localInput(message, "user"),
+): Promise<void> {
+	state = runtimeStateWithSubmittingMessage(state, input);
+	try {
+		await send("turn.submit", {
+			message,
+			client_turn_id: clientTurnId,
+			client_user_message_id: input.clientUserMessageId,
+		});
+	} catch (error) {
+		state = removeLocalUserInput(state, input.clientUserMessageId);
+		throw error;
 	}
-	const result = await send(method, {
+}
+
+async function dispatchLocalInputs(): Promise<void> {
+	await client.waitForEvent(
+		"status.changed",
+		(event) => event.params.turn_running === false,
+	);
+	while (!state.pendingApproval && !state.pendingClarification) {
+		const next = nextLocalUserInput(state);
+		if (!next) {
+			return;
+		}
+		state = removeLocalUserInput(state, next.input.clientUserMessageId);
+		const clientTurnId = `script_local_${Date.now()}_${clientMessageSequence}`;
+		await submitScriptedTurn(next.input.message, clientTurnId, next.input);
+		await waitForSubmittedTurn(clientTurnId);
+	}
+}
+
+async function queueSteeringMessage(message: string): Promise<void> {
+	const input = localInput(message, "steer");
+	state = runtimeStateWithPendingSteer(state, input);
+	let expectedTurnId = state.activeTurnId;
+	if (!expectedTurnId) {
+		state = runtimeStateRejectPendingSteer(state, input.clientUserMessageId);
+		return;
+	}
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			await send("turn.steer", {
+				message,
+				client_user_message_id: input.clientUserMessageId,
+				expected_turn_id: expectedTurnId,
+			});
+			return;
+		} catch (error) {
+			const actualTurnId =
+				error instanceof GatewayRequestError &&
+				error.code === "turn_id_mismatch" &&
+				typeof error.data.actual_turn_id === "string"
+					? error.data.actual_turn_id
+					: null;
+			if (attempt === 0 && actualTurnId) {
+				expectedTurnId = actualTurnId;
+				state = { ...state, activeTurnId: actualTurnId };
+				continue;
+			}
+			state = runtimeStateRejectPendingSteer(state, input.clientUserMessageId);
+			return;
+		}
+	}
+}
+
+function queueFollowUpMessage(message: string): void {
+	state = runtimeStateWithLocalFollowUp(state, localInput(message, "follow_up"));
+}
+
+function clearLocalQueuedMessages(): void {
+	state = {
+		...state,
+		localPendingSteers: [],
+		localRejectedSteers: [],
+		localFollowUps: [],
+	};
+}
+
+function localInput(message: string, prefix: string): RuntimeLocalUserInput {
+	clientMessageSequence += 1;
+	return {
+		clientUserMessageId: `${prefix}_${Date.now()}_${clientMessageSequence}`,
 		message,
-		...(method === "turn.steer" ? { expected_turn_id: expectedTurnId } : {}),
-	});
-	if (result.accepted !== true) {
-		throw new Error(`${method} was not accepted.`);
-	}
-	await waitForQueue((event) => queueValues(event, queueKey).includes(message));
+		attachments: [],
+	};
 }
 
 async function waitForSubmittedTurn(clientTurnId: string): Promise<void> {
@@ -404,18 +480,6 @@ async function waitForPending(
 		return;
 	}
 	throw new Error(`${eventName} did not update scripted client state.`);
-}
-
-async function waitForQueue(matches: (event: GatewayEvent) => boolean): Promise<void> {
-	await client.waitForEvent("turn.queue.updated", matches);
-}
-
-function queueValues(event: GatewayEvent, key: "steering" | "follow_up"): string[] {
-	const value = event.params[key];
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	return value.filter((item): item is string => typeof item === "string");
 }
 
 function isScriptedAction(item: unknown): item is ScriptedAction {
