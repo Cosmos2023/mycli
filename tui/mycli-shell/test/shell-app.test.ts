@@ -2298,6 +2298,34 @@ test("ctrl o globally toggles tool details and survives gateway state refreshes"
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /└ Command:/);
 });
 
+test("ctrl o reflows native scrollback from the toggled transcript", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 6;
+	const runtime = new MycliShellRuntime({
+		initialState: expandedToolDetailState(),
+		terminal,
+	});
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+
+	terminal.input?.("\x0f");
+	await setTimeout(25);
+
+	assert.match(terminal.output, /\x1b\[3J/);
+	const collapsedOutput = stripAnsi(terminal.output);
+	assert.match(collapsedOutput, /Read/);
+	assert.doesNotMatch(collapsedOutput, /└ Command:/);
+
+	terminal.output = "";
+	terminal.input?.("\x0f");
+	await setTimeout(25);
+
+	assert.match(terminal.output, /\x1b\[3J/);
+	assert.match(stripAnsi(terminal.output), /└ Command:/);
+});
+
 test("ctrl o does not toggle tool details while a selector owns input", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({

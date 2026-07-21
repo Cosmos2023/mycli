@@ -736,10 +736,13 @@ export class MycliShellRuntime {
 		this.queueNativeTranscriptHistory();
 	}
 
-	private queueNativeTranscriptHistory(): void {
+	private queueNativeTranscriptHistory(replaceScrollback = false): void {
 		if (!this.ui.terminal.nativeScrollback) return;
 		const prefix = this.transcriptViewport.scrollbackPrefix(this.ui.terminal.columns);
-		this.ui.insertHistoryBeforeNextFrame(prefix, { clearViewport: true });
+		this.ui.insertHistoryBeforeNextFrame(prefix, {
+			clearViewport: true,
+			replaceScrollback,
+		});
 	}
 
 	private queueNativeTranscriptDelta(): void {
@@ -1430,6 +1433,7 @@ export class MycliShellRuntime {
 			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
 		}
 		this.setState(this.state);
+		this.queueNativeTranscriptHistory(true);
 	}
 
 	private applyToolDetailMode(state: MycliShellState): MycliShellState {
