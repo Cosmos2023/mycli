@@ -1626,7 +1626,12 @@ def test_committed_steer_history_carries_queue_id_once_and_uses_server_turn_id(
         steerable=True,
     ).record
 
-    response = TurnExecutor(runtime).execute_user_turn("start", turn_id="turn-fixed")
+    stream_events: list[RuntimeStreamEvent] = []
+    response = TurnExecutor(runtime).execute_user_turn(
+        "start",
+        turn_id="turn-fixed",
+        stream_sink=stream_events.append,
+    )
 
     history = runtime._session_service.load_history_items(runtime._config.session_id)
     committed = [item for item in history if item.metadata.get("queue_id") == queued.queue_id]
@@ -1635,6 +1640,12 @@ def test_committed_steer_history_carries_queue_id_once_and_uses_server_turn_id(
     assert response.turn is not None
     assert response.turn.turn_id == "turn-fixed"
     assert runtime.queue_snapshot().pending_steers == ()
+    committed_event = next(
+        event for event in stream_events if event.kind == "queued_message_committed"
+    )
+    assert committed_event.text == "inspect"
+    assert committed_event.metadata["queue_id"] == queued.queue_id
+    assert committed_event.metadata["queue_kind"] == "pending_steer"
 
 
 class TerminalQueueingAdapter:

@@ -394,6 +394,7 @@ class NodeTuiGateway:
                     "client_turn_id": client_turn_id,
                     "turn_id": turn_id,
                     "image_paths": next_record.image_paths,
+                    "queued_input": next_record,
                 },
                 daemon=True,
             )
@@ -1025,7 +1026,17 @@ class NodeTuiGateway:
         client_turn_id: str,
         turn_id: str,
         image_paths: tuple[str, ...] = (),
+        queued_input: QueuedInputRecord | None = None,
     ) -> None:
+        if queued_input is not None:
+            self._forward_stream_event(
+                client_turn_id,
+                RuntimeStreamEvent(
+                    kind="queued_message_committed",
+                    text=queued_input.text,
+                    metadata=_queued_message_metadata(queued_input),
+                ),
+            )
         self._emit_event(
             "turn.started",
             {"client_turn_id": client_turn_id, "turn_id": turn_id},
@@ -2239,6 +2250,20 @@ def _queued_record_payload(record: QueuedInputRecord) -> dict[str, object]:
             for index, path in enumerate(record.image_paths, start=1)
         ]
     return payload
+
+
+def _queued_message_metadata(record: QueuedInputRecord) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "queued": True,
+        "queue_kind": record.kind,
+        "source": record.source,
+        "queue_id": record.queue_id,
+        "client_turn_id": record.client_turn_id,
+    }
+    if record.image_paths:
+        metadata["image_count"] = len(record.image_paths)
+        metadata["image_paths"] = list(record.image_paths)
+    return metadata
 
 
 def _queued_items_payload(value: object) -> list[dict[str, object]]:

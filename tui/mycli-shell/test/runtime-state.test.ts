@@ -1460,6 +1460,36 @@ test("runtime adapter projects pending steering through rejection and removal", 
 	assert.equal(projectRuntimeState(state).pendingInput, undefined);
 });
 
+test("runtime adapter moves a consumed steer from pending input into transcript", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.queue.updated", {
+		queue_revision: 1,
+		queue_items: {
+			pending_steers: [{ queue_id: "queue-1", message: "inspect output" }],
+			rejected_steers: [],
+			follow_ups: [],
+		},
+	});
+	state = reduceRuntimeEvent(state, "turn.event", {
+		client_turn_id: "client-1",
+		phase: "queued_message_committed",
+		kind: "queued_message_committed",
+		text: "inspect output",
+		metadata: {
+			queue_id: "queue-1",
+			queue_kind: "pending_steer",
+			source: "user",
+		},
+	});
+	state = reduceRuntimeEvent(state, "turn.queue.updated", {
+		queue_revision: 2,
+		queue_items: { pending_steers: [], rejected_steers: [], follow_ups: [] },
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.pendingInput, undefined);
+	assert.deepEqual(shell.messages.map((message) => message.text), ["inspect output"]);
+});
+
 test("gateway steering uses the active server turn without local durable fallback", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const steeringBody = source.match(/async function queueSteeringTurn\([\s\S]*?\n\}/)?.[0] ?? "";

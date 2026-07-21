@@ -528,6 +528,32 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			transcript: params.final === true ? reconcileFinalAnswer(state.transcript, assistantId, text) : state.transcript,
 		};
 	}
+	if (method === "turn.event" && params.kind === "queued_message_committed") {
+		const metadata = recordValue(params.metadata);
+		const text = textValue(params.text);
+		const queueId = stringValue(metadata.queue_id);
+		if (
+			!text?.trim()
+			|| metadata.source === "task_notification"
+			|| isInternalTaskNotification(text)
+			|| (queueId && state.transcript.some((item) => stringValue(recordValue(item.metadata).queue_id) === queueId))
+		) {
+			return state;
+		}
+		return {
+			...state,
+			transcript: [
+				...state.transcript,
+				{
+					id: queueId ? `queued_user_${queueId}` : nextId("queued-user"),
+					type: "user",
+					text,
+					folded: false,
+					metadata,
+				},
+			],
+		};
+	}
 	if (method === "plan.proposed") {
 		const assistantId = state.activeAssistantItemId;
 		return {

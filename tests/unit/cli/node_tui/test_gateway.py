@@ -3532,7 +3532,7 @@ def test_gateway_starts_rejected_steer_as_a_new_server_turn(tmp_path: Path) -> N
         )
         assert service.started.wait(timeout=2.0)
         assert first.result is not None
-        gateway.handle_request(
+        steered = gateway.handle_request(
             RpcRequest(
                 id="steer",
                 method="turn.steer",
@@ -3556,6 +3556,28 @@ def test_gateway_starts_rejected_steer_as_a_new_server_turn(tmp_path: Path) -> N
         assert started_ids[0] != started_ids[1]
         assert service.server_turn_ids == started_ids
         assert service.user_messages == ["start", "retry"]
+        assert steered.result is not None
+        queue_id = str(steered.result["queue_items"]["rejected_steers"][0]["queue_id"])
+        queued_event_index, queued_event = next(
+            (index, params)
+            for index, (method, params) in enumerate(events)
+            if method == "turn.event"
+            and params.get("kind") == "queued_message_committed"
+        )
+        second_started_index = next(
+            index
+            for index, (method, params) in enumerate(events)
+            if method == "turn.started" and params.get("turn_id") == started_ids[1]
+        )
+        assert queued_event_index < second_started_index
+        assert queued_event["text"] == "retry"
+        assert queued_event["metadata"] == {
+            "queued": True,
+            "queue_kind": "rejected_steer",
+            "source": "user",
+            "queue_id": queue_id,
+            "client_turn_id": "client-steer",
+        }
     finally:
         service.release.set()
         gateway.close()

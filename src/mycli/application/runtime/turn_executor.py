@@ -1515,6 +1515,18 @@ class TurnExecutor:
             runtime.commit_queue_items(
                 tuple(queued_input.queue_id for queued_input in queued_inputs)
             )
+            if stream_sink is not None:
+                for queued_input in queued_inputs:
+                    try:
+                        stream_sink(
+                            RuntimeStreamEvent(
+                                kind="queued_message_committed",
+                                text=queued_input.text,
+                                metadata=self._queued_input_metadata(queued_input),
+                            )
+                        )
+                    except Exception:
+                        continue
         drained = len(queued_inputs)
         if drained == 0:
             return
