@@ -115,6 +115,37 @@ function sampleState(): MycliShellState {
 	};
 }
 
+function expandedToolDetailState(): MycliShellState {
+	const tool = {
+		id: "tool-detail",
+		name: "Read",
+		args: "README.md",
+		status: "success" as const,
+		outputPreview: "line one\nline two",
+		hiddenLineCount: 1,
+		expanded: true,
+	};
+	const bash = {
+		id: "shell-detail",
+		toolName: "Shell",
+		command: "printf 'one\\ntwo\\n'",
+		status: "success" as const,
+		outputPreview: "one\ntwo",
+		expanded: true,
+	};
+	return {
+		...sampleState(),
+		messages: [],
+		tools: [tool],
+		bash: [bash],
+		transcript: [
+			{ id: tool.id, kind: "tool", tool },
+			{ id: bash.id, kind: "bash", bash },
+		],
+		pendingNotice: undefined,
+	};
+}
+
 function slashCommand(
 	id: string,
 	name: string,
@@ -2228,6 +2259,59 @@ test("mycli shell executes stable local client actions", async () => {
 
 	await runtime.handleClientAction("unknown_action", "");
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /unknown action unknown_action/);
+});
+
+test("ctrl o globally toggles tool details and survives gateway state refreshes", () => {
+	const terminal = new TestTerminal();
+	const initial = expandedToolDetailState();
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	runtime.start();
+
+	terminal.input?.("\x0f");
+	assert.equal(runtime.getState().tools[0]?.expanded, false);
+	assert.equal(runtime.getState().bash[0]?.expanded, false);
+	assert.doesNotMatch(stripAnsi(runtime.ui.render(100).join("\n")), /└ Command:/);
+	const collapsedTranscriptTool = runtime.getState().transcript?.[0];
+	assert.equal(
+		collapsedTranscriptTool?.kind === "tool"
+			? collapsedTranscriptTool.tool.expanded
+			: undefined,
+		false,
+	);
+
+	const incoming = expandedToolDetailState();
+	const newTool = { ...incoming.tools[0]!, id: "tool-new", expanded: true };
+	runtime.setState({
+		...incoming,
+		tools: [...incoming.tools, newTool],
+		transcript: [
+			...(incoming.transcript ?? []),
+			{ id: newTool.id, kind: "tool", tool: newTool },
+		],
+	});
+	assert.deepEqual(runtime.getState().tools.map((tool) => tool.expanded), [false, false]);
+	assert.equal(runtime.getState().bash[0]?.expanded, false);
+
+	terminal.input?.("\x0f");
+	assert.deepEqual(runtime.getState().tools.map((tool) => tool.expanded), [true, true]);
+	assert.equal(runtime.getState().bash[0]?.expanded, true);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /└ Command:/);
+});
+
+test("ctrl o does not toggle tool details while a selector owns input", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: expandedToolDetailState(),
+		terminal,
+		commands: [slashCommand("settings", "/settings", "Open settings")],
+	});
+	runtime.start();
+	await runtime.handleClientAction("open_settings", "");
+
+	terminal.input?.("\x0f");
+
+	assert.equal(runtime.getState().tools[0]?.expanded, true);
+	assert.equal(runtime.getState().bash[0]?.expanded, true);
 });
 
 test("mycli shell dispatches every remaining local client action", async () => {

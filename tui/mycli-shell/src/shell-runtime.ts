@@ -87,6 +87,8 @@ export type MycliShellQueuedInput = {
 	localImages?: MycliShellLocalImageAttachment[];
 };
 
+type ToolDetailMode = "default" | "expanded" | "collapsed";
+
 type ChatBlockComponent =
 	| { kind: "message"; signature: string; role: MycliShellMessage["role"]; component: Component }
 	| { kind: "plan"; signature: string; component: ProposedPlanComponent }
@@ -291,6 +293,7 @@ export class MycliShellRuntime {
 	private lastSubmittedInput: string | null = null;
 	private dismissedSubagentIds = new Set<string>();
 	private pendingLocalImages: MycliShellLocalImageAttachment[] = [];
+	private toolDetailMode: ToolDetailMode = "default";
 
 	constructor(private readonly options: MycliShellRuntimeOptions) {
 		this.state = options.initialState;
@@ -372,12 +375,13 @@ export class MycliShellRuntime {
 
 	setState(nextState: MycliShellState): void {
 		const previousState = this.state;
-		this.updateStatusTiming(previousState, nextState);
-		this.state = nextState;
+		const effectiveState = this.applyToolDetailMode(nextState);
+		this.updateStatusTiming(previousState, effectiveState);
+		this.state = effectiveState;
 		if (this.mainMounted) {
-			this.rebuildChangedSections(previousState, nextState);
+			this.rebuildChangedSections(previousState, effectiveState);
 		}
-		this.maybeResetTranscriptScroll(previousState, nextState);
+		this.maybeResetTranscriptScroll(previousState, effectiveState);
 		this.queueNativeTranscriptDelta();
 		this.ui.requestRender();
 	}
@@ -428,6 +432,10 @@ export class MycliShellRuntime {
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			void this.handleCtrlC();
+			return { consume: true };
+		}
+		if (matchesKey(data, "ctrl+o")) {
+			this.toggleToolDetails();
 			return { consume: true };
 		}
 		if (matchesKey(data, "escape") && this.isTurnRunning()) {
@@ -1406,33 +1414,45 @@ export class MycliShellRuntime {
 	}
 
 	private toggleToolDetails(): void {
-		const nextTools = this.state.tools.map((tool) => ({ ...tool, expanded: !tool.expanded }));
-		const nextBash = this.state.bash.map((bash) => ({ ...bash, expanded: !bash.expanded }));
-		const toolById = new Map(nextTools.map((tool) => [tool.id, tool]));
-		const bashById = new Map(nextBash.map((bash) => [bash.id, bash]));
-		this.setState({
-			...this.state,
-			tools: nextTools,
-			bash: nextBash,
-			transcript: this.state.transcript?.map((block) => {
+		if (this.toolDetailMode === "expanded") {
+			this.toolDetailMode = "collapsed";
+		} else if (this.toolDetailMode === "collapsed") {
+			this.toolDetailMode = "expanded";
+		} else {
+			const blocks = this.state.transcript?.length
+				? this.state.transcript
+				: this.legacyTranscriptBlocks();
+			const hasCollapsed = blocks.some((block) =>
+				block.kind === "tool"
+					? !block.tool.hidden && block.tool.expanded !== true
+					: block.kind === "bash" && block.bash.expanded !== true,
+			);
+			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
+		}
+		this.setState(this.state);
+	}
+
+	private applyToolDetailMode(state: MycliShellState): MycliShellState {
+		if (this.toolDetailMode === "default") return state;
+		const expanded = this.toolDetailMode === "expanded";
+		const tools = state.tools.map((tool) => ({ ...tool, expanded }));
+		const bash = state.bash.map((item) => ({ ...item, expanded }));
+		const toolById = new Map(tools.map((tool) => [tool.id, tool]));
+		const bashById = new Map(bash.map((item) => [item.id, item]));
+		return {
+			...state,
+			tools,
+			bash,
+			transcript: state.transcript?.map((block) => {
 				if (block.kind === "tool") {
-					return { ...block, tool: toolById.get(block.tool.id) ?? { ...block.tool, expanded: !block.tool.expanded } };
+					return { ...block, tool: toolById.get(block.tool.id) ?? { ...block.tool, expanded } };
 				}
 				if (block.kind === "bash") {
-					return { ...block, bash: bashById.get(block.bash.id) ?? { ...block.bash, expanded: !block.bash.expanded } };
-				}
-				if (block.kind === "command_result" && block.commandResult.display.kind === "list") {
-					return {
-						...block,
-						commandResult: {
-							...block.commandResult,
-							folded: !block.commandResult.folded,
-						},
-					};
+					return { ...block, bash: bashById.get(block.bash.id) ?? { ...block.bash, expanded } };
 				}
 				return block;
 			}),
-		});
+		};
 	}
 
 	private clearTranscript(): void {
