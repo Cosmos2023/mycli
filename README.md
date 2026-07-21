@@ -461,10 +461,23 @@ SQLite 默认使用 WAL journal mode，因此运行中可能看到 `sessions.db-
 src/mycli/prompts/skills/
 ```
 
-用户自定义 skills 位于：
+新 skills 推荐使用 Agent Skills 目录格式：
 
 ```text
-~/.mycli/skills/*.md
+<workspace>/.agents/skills/<skill-name>/SKILL.md
+<workspace>/.mycli/skills/<skill-name>/SKILL.md
+~/.mycli/skills/<skill-name>/SKILL.md
+```
+
+`.agents/skills` 适合放入仓库并与其他 coding agent 共享；`.mycli/skills` 适合
+mycli 专属 skill。每个 skill 目录可以包含自己的 `scripts/`、`references/` 和
+`assets/`。
+
+为兼容已有配置，以上目录及内置目录中的扁平 `<skill-name>.md` 文件仍会加载。
+同名 skill 按以下顺序覆盖，右侧优先级更高：
+
+```text
+builtin < user ~/.mycli < workspace .agents < workspace .mycli
 ```
 
 Skill metadata 会被索引，正文按需加载。匹配到的 skill 会作为独立指令注入当前 turn。
