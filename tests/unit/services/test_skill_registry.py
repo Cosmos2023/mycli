@@ -111,6 +111,107 @@ def test_skill_registry_discovers_repo_skills_and_source_metadata(tmp_path: Path
     assert diagnostics.source_counts == (("repo", 1),)
 
 
+def test_skill_registry_discovers_standard_skill_directories_only(tmp_path: Path) -> None:
+    builtin_dir = tmp_path / "builtin"
+    user_dir = tmp_path / "home" / ".mycli" / "skills"
+    skill_dir = user_dir / "release-helper"
+    references_dir = skill_dir / "references"
+    references_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        'name = "release-helper"\n'
+        'description = "Prepare releases"\n'
+        "---\n"
+        "Release instructions.\n",
+        encoding="utf-8",
+    )
+    (references_dir / "ignored.md").write_text(
+        "---\n"
+        'name = "ignored-reference"\n'
+        'description = "Support material, not a skill"\n'
+        "---\n"
+        "Reference body.\n",
+        encoding="utf-8",
+    )
+
+    registry = SkillRegistry(builtin_root=builtin_dir, user_root=user_dir)
+
+    skill = registry.load("release-helper")
+    assert skill is not None
+    assert skill.body == "Release instructions."
+    assert skill.source_path == str(skill_dir / "SKILL.md")
+    assert registry.get("ignored-reference") is None
+
+
+def test_skill_registry_applies_source_and_format_precedence(tmp_path: Path) -> None:
+    builtin_dir = tmp_path / "builtin"
+    user_dir = tmp_path / "home" / ".mycli" / "skills"
+    shared_repo_dir = tmp_path / "workspace" / ".agents" / "skills"
+    repo_dir = tmp_path / "workspace" / ".mycli" / "skills"
+    for directory in (builtin_dir, user_dir, shared_repo_dir, repo_dir):
+        directory.mkdir(parents=True)
+
+    def write_flat(root: Path, filename: str, name: str, description: str) -> None:
+        (root / filename).write_text(
+            "---\n"
+            f'name = "{name}"\n'
+            f'description = "{description}"\n'
+            "---\n"
+            f"{description} body.\n",
+            encoding="utf-8",
+        )
+
+    def write_standard(root: Path, directory_name: str, name: str, description: str) -> None:
+        skill_dir = root / directory_name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            f'name = "{name}"\n'
+            f'description = "{description}"\n'
+            "---\n"
+            f"{description} body.\n",
+            encoding="utf-8",
+        )
+
+    for root, description in (
+        (builtin_dir, "Builtin source"),
+        (user_dir, "User source"),
+        (shared_repo_dir, "Shared repo source"),
+        (repo_dir, "Mycli repo source"),
+    ):
+        write_flat(root, "source-priority.md", "source-priority", description)
+    write_flat(user_dir, "shared-priority.md", "shared-priority", "User source")
+    write_flat(
+        shared_repo_dir,
+        "shared-priority.md",
+        "shared-priority",
+        "Shared repo source",
+    )
+    write_flat(repo_dir, "format-priority.md", "format-priority", "Flat repo format")
+    write_standard(
+        repo_dir,
+        "format-priority",
+        "format-priority",
+        "Directory repo format",
+    )
+
+    registry = SkillRegistry(
+        builtin_root=builtin_dir,
+        user_root=user_dir,
+        shared_repo_root=shared_repo_dir,
+        repo_root=repo_dir,
+    )
+
+    assert registry.get_metadata("source-priority").description == "Mycli repo source"
+    assert registry.get_metadata("source-priority").source_kind == "repo"
+    assert registry.get_metadata("shared-priority").description == "Shared repo source"
+    assert registry.get_metadata("shared-priority").source_kind == "shared_repo"
+    assert registry.get_metadata("format-priority").description == "Directory repo format"
+    assert registry.get_metadata("format-priority").source_path == str(
+        repo_dir / "format-priority" / "SKILL.md"
+    )
+
+
 def test_skill_registry_reports_duplicates_and_invalid_files_without_bodies(tmp_path: Path) -> None:
     builtin_dir = tmp_path / "builtin"
     user_dir = tmp_path / "home" / ".mycli" / "skills"

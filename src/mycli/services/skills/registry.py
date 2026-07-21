@@ -59,6 +59,7 @@ class SkillRegistry:
         builtin_root: Path,
         user_root: Path,
         *,
+        shared_repo_root: Path | None = None,
         repo_root: Path | None = None,
     ) -> None:
         self._metadata: dict[str, SkillMetadata] = {}
@@ -67,6 +68,11 @@ class SkillRegistry:
         self._directories = (
             SkillDirectory(builtin_root, "builtin"),
             SkillDirectory(user_root, "user"),
+            *(
+                (SkillDirectory(shared_repo_root, "shared_repo"),)
+                if shared_repo_root is not None
+                else ()
+            ),
             *((SkillDirectory(repo_root, "repo"),) if repo_root is not None else ()),
         )
         for directory in self._directories:
@@ -76,7 +82,7 @@ class SkillRegistry:
         root = directory.root
         if not root.exists():
             return
-        for path in sorted(root.glob("*.md")):
+        for path in self._skill_paths(root):
             try:
                 metadata = self._parse_metadata(path, source_kind=directory.source_kind)
             except Exception as exc:
@@ -93,6 +99,12 @@ class SkillRegistry:
                 self._duplicates[metadata.name].append(self._metadata[metadata.name])
                 self._duplicates[metadata.name].append(metadata)
             self._metadata[metadata.name] = metadata
+
+    def _skill_paths(self, root: Path) -> tuple[Path, ...]:
+        return (
+            *sorted(root.glob("*.md")),
+            *sorted(root.glob("*/SKILL.md")),
+        )
 
     def _split_skill_file(self, path: Path) -> tuple[str, dict[str, object], str]:
         raw_text = path.read_text(encoding="utf-8")
