@@ -1849,6 +1849,7 @@ class DoctorService:
         registry = SkillRegistry(
             builtin_root=Path(__file__).resolve().parents[2] / "prompts" / "skills",
             user_root=self._home_dir / ".mycli" / "skills",
+            shared_repo_root=self._workspace_root / ".agents" / "skills",
             repo_root=self._workspace_root / ".mycli" / "skills",
         )
         diagnostics = registry.diagnostics()

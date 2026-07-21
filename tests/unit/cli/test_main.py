@@ -684,6 +684,34 @@ def test_build_turn_service_uses_stable_skill_tool_without_skill_contributions(
     assert "Skill" in tool_names
 
 
+def test_build_turn_service_discovers_shared_repo_standard_skill(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    skill_dir = workspace / ".agents" / "skills" / "shared-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        'name = "shared-skill"\n'
+        'description = "Shared repository skill"\n'
+        "---\n"
+        "Use shared repository guidance.\n",
+        encoding="utf-8",
+    )
+
+    service = build_turn_service(
+        cli_args={"session": "demo", "model": "gpt-test"},
+        cwd=workspace,
+        home=home_dir,
+        env={"MYCLI_API_KEY": "test-key"},
+    )
+
+    skill = service._runtime._skill_registry.load("shared-skill")
+    assert skill is not None
+    assert skill.source_kind == "shared_repo"
+    assert skill.source_path == str(skill_dir / "SKILL.md")
+
+
 def test_main_starts_repl_with_turn_and_decision_handlers(monkeypatch, tmp_path: Path) -> None:
     events: dict[str, object] = {}
 

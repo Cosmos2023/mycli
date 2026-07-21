@@ -154,6 +154,7 @@ class TurnService:
             SkillRegistry(
                 builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",
                 user_root=home_dir / ".mycli" / "skills",
+                shared_repo_root=config.workspace_root / ".agents" / "skills",
                 repo_root=config.workspace_root / ".mycli" / "skills",
             ),
         )

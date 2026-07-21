@@ -163,6 +163,7 @@ def build_turn_service(
     skill_registry = SkillRegistry(
         builtin_root=Path(__file__).resolve().parents[1] / "prompts" / "skills",
         user_root=home_dir / ".mycli" / "skills",
+        shared_repo_root=workspace_root / ".agents" / "skills",
         repo_root=workspace_root / ".mycli" / "skills",
     )
     contributed_tool_providers: tuple[ToolContributionProvider, ...] = (

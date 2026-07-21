@@ -800,6 +800,12 @@ def test_doctor_service_warns_for_skill_catalog_issues_without_leaking_body(
         encoding="utf-8",
     )
     (skill_dir / "broken.md").write_text("not frontmatter", encoding="utf-8")
+    shared_skill_dir = workspace / ".agents" / "skills" / "broken"
+    shared_skill_dir.mkdir(parents=True)
+    (shared_skill_dir / "SKILL.md").write_text(
+        "not frontmatter\nSECRET SHARED SKILL BODY SHOULD NOT LEAK\n",
+        encoding="utf-8",
+    )
 
     report = DoctorService(
         workspace_root=workspace,
@@ -814,7 +820,9 @@ def test_doctor_service_warns_for_skill_catalog_issues_without_leaking_body(
     assert check.status is DoctorStatus.WARNING
     assert "skills:" in check.message
     assert "invalid_skill:broken.md" in rendered
+    assert "invalid_skill:SKILL.md" in rendered
     assert "SECRET SKILL BODY" not in rendered
+    assert "SECRET SHARED SKILL BODY" not in rendered
 
 
 def test_doctor_service_reports_skill_runtime_diagnostics_without_leaking_body(
