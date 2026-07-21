@@ -72,6 +72,7 @@ def _call_handle_user_turn(
     stream_sink: Callable[[RuntimeStreamEvent], None] | None,
     interrupt_token: RuntimeInterruptToken | None,
     turn_id: str | None,
+    client_user_message_id: str | None,
 ) -> object:
     kwargs: dict[str, object] = {}
     if image_paths and _callable_accepts_keyword(handle_user_turn, "image_paths"):
@@ -85,6 +86,11 @@ def _call_handle_user_turn(
         kwargs["interrupt_token"] = interrupt_token
     if turn_id is not None and _callable_accepts_keyword(handle_user_turn, "turn_id"):
         kwargs["turn_id"] = turn_id
+    if client_user_message_id is not None and _callable_accepts_keyword(
+        handle_user_turn,
+        "client_user_message_id",
+    ):
+        kwargs["client_user_message_id"] = client_user_message_id
     return handle_user_turn(user_message, **kwargs)
 
 
@@ -389,6 +395,7 @@ class TurnService:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
         turn_id: str | None = None,
+        client_user_message_id: str | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         if runtime is None:
@@ -402,6 +409,7 @@ class TurnService:
                 stream_sink=stream_sink,
                 interrupt_token=interrupt_token,
                 turn_id=turn_id,
+                client_user_message_id=client_user_message_id,
             ),
         )
 

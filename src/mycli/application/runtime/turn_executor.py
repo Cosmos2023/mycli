@@ -41,6 +41,7 @@ from mycli.domain.runtime import (
     TurnItemType,
     TurnResponse,
     TurnStatus,
+    UserMessageInput,
     queue_activity,
 )
 from mycli.domain.runtime.images import local_image_block
@@ -82,6 +83,7 @@ class TurnExecutor:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
         turn_id: str | None = None,
+        client_user_message_id: str | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         _raise_if_interrupted(interrupt_token)
@@ -162,6 +164,18 @@ class TurnExecutor:
                     stop_reason=StopReason.RUNTIME_ERROR,
                     turn_items=turn_items,
                 )
+        runtime._user_message_lifecycle.commit(
+            turn_id=resolved_turn_id,
+            item=UserMessageInput(
+                client_user_message_id=client_user_message_id or resolved_turn_id,
+                text=user_message,
+                image_paths=image_paths,
+                source="submit",
+            ),
+            conversation=conversation,
+            turn_items=turn_items,
+            stream_sink=stream_sink,
+        )
         unsupported_image_response = self._unsupported_image_response(
             user_message=user_message,
             image_paths=image_paths,
@@ -174,16 +188,6 @@ class TurnExecutor:
         initial_hook_contexts = runtime._session_hook_additional_contexts(
             source="startup"
         ) + _hook_additional_contexts(prompt_hook_execution.results)
-        user_blocks = self._user_message_blocks(
-            user_message=user_message,
-            image_paths=image_paths,
-        )
-        conversation.append(Message(role="user", content=user_message, blocks=user_blocks))
-        runtime._append_turn_item(
-            turn_id=resolved_turn_id,
-            turn_items=turn_items,
-            item=TurnItem(type=TurnItemType.USER_MESSAGE, text=user_message),
-        )
         return self._run_turn_loop(
             user_message=user_message,
             conversation=conversation,
@@ -228,18 +232,6 @@ class TurnExecutor:
             "This model configuration does not support image input. "
             "Switch to a vision-capable model or set [model].supports_images = true "
             "if your compatible endpoint supports multimodal input."
-        )
-        runtime._append_turn_item(
-            turn_id=turn_id,
-            turn_items=turn_items,
-            item=TurnItem(
-                type=TurnItemType.USER_MESSAGE,
-                text=user_message,
-                metadata={
-                    "image_count": len(tuple(path for path in image_paths if path)),
-                    "image_input_blocked": True,
-                },
-            ),
         )
         runtime._append_turn_item(
             turn_id=turn_id,

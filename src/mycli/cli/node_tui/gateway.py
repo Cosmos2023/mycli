@@ -147,6 +147,7 @@ class NodeTuiServiceLike(Protocol):
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
         turn_id: str | None = None,
+        client_user_message_id: str | None = None,
     ) -> TurnResponse: ...
 
     def resolve_pending_decision(
@@ -247,6 +248,7 @@ class _HandleUserTurnKwargs(TypedDict, total=False):
     interrupt_token: RuntimeInterruptToken
     image_paths: tuple[str, ...]
     turn_id: str
+    client_user_message_id: str
 
 
 def run_node_tui_gateway(*, service: TurnService, process: NodeTuiProcessLike) -> int:
@@ -710,6 +712,9 @@ class NodeTuiGateway:
             )
         image_paths = _local_image_paths(request.params.get("local_images"))
         client_turn_id = _optional_str(request.params.get("client_turn_id")) or str(request.id)
+        client_user_message_id = (
+            _optional_str(request.params.get("client_user_message_id")) or client_turn_id
+        )
         turn_id = f"turn_{uuid4().hex}"
         with self._turn_lock:
             if self._turn_running:
@@ -731,6 +736,7 @@ class NodeTuiGateway:
                     "client_turn_id": client_turn_id,
                     "turn_id": turn_id,
                     "image_paths": image_paths,
+                    "client_user_message_id": client_user_message_id,
                 },
                 daemon=True,
             )
@@ -1027,6 +1033,7 @@ class NodeTuiGateway:
         turn_id: str,
         image_paths: tuple[str, ...] = (),
         queued_input: QueuedInputRecord | None = None,
+        client_user_message_id: str | None = None,
     ) -> None:
         if queued_input is not None:
             self._forward_stream_event(
@@ -1056,6 +1063,7 @@ class NodeTuiGateway:
                     interrupt_token=self._current_interrupt_token,
                     image_paths=image_paths,
                     turn_id=turn_id,
+                    client_user_message_id=client_user_message_id,
                 ),
             )
         except KeyboardInterrupt:
@@ -2352,6 +2360,7 @@ def _handle_user_turn_kwargs(
     interrupt_token: RuntimeInterruptToken | None,
     image_paths: tuple[str, ...] = (),
     turn_id: str | None = None,
+    client_user_message_id: str | None = None,
 ) -> _HandleUserTurnKwargs:
     # The gateway is used directly in tests with small fake services. Keep the
     # new cancellation channel optional so old service fakes remain valid.
@@ -2365,6 +2374,11 @@ def _handle_user_turn_kwargs(
         kwargs["image_paths"] = image_paths
     if turn_id is not None and _callable_accepts_keyword(handle_user_turn, "turn_id"):
         kwargs["turn_id"] = turn_id
+    if client_user_message_id is not None and _callable_accepts_keyword(
+        handle_user_turn,
+        "client_user_message_id",
+    ):
+        kwargs["client_user_message_id"] = client_user_message_id
     return kwargs
 
 

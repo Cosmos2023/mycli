@@ -2909,6 +2909,8 @@ def test_agent_runtime_forwards_stream_events_to_sink(tmp_path: Path) -> None:
 
     assert response.assistant_message == "Repository summary complete."
     assert [event.kind for event in events] == [
+        "item_started",
+        "item_completed",
         "reasoning",
         "text_delta",
         "text_delta",
@@ -2960,6 +2962,8 @@ def test_agent_runtime_forwards_execution_tool_lifecycle_events_to_sink(tmp_path
 
     assert response.assistant_message == "Repository summary complete."
     assert [event.kind for event in events] == [
+        "item_started",
+        "item_completed",
         "reasoning",
         "tool_call",
         "completed",
@@ -3172,11 +3176,11 @@ def test_agent_runtime_writes_only_provider_transcript_items_to_history(
     assert not any(item.type is TurnItemType.REASONING for item in response.turn.items)
     history_items = runtime._session_service.load_history_items(runtime._config.session_id)
     assert [item.type for item in history_items] == [
-        HistoryItemType.CONTEXT_BASELINE_UPDATE,
         HistoryItemType.USER_MESSAGE,
+        HistoryItemType.CONTEXT_BASELINE_UPDATE,
         HistoryItemType.ASSISTANT_MESSAGE,
     ]
-    assert history_items[0].metadata["context_kind"] == "environment_context"
+    assert history_items[1].metadata["context_kind"] == "environment_context"
     assert not any(
         item.type
         in {
@@ -5479,6 +5483,52 @@ def test_agent_runtime_persists_turn_record_with_stop_reason(tmp_path: Path) -> 
     assert any(item.type is TurnItemType.USER_MESSAGE for item in response.turn.items)
     assert any(item.type is TurnItemType.REASONING for item in response.turn.items)
     assert any(item.type is TurnItemType.ASSISTANT_MESSAGE for item in response.turn.items)
+
+
+def test_agent_runtime_commits_user_message_with_client_identity(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ReasoningTextDoneAdapter(),
+    )
+    events: list[RuntimeStreamEvent] = []
+
+    response = runtime.handle_user_turn(
+        "inspect the repo",
+        stream_sink=events.append,
+        turn_id="turn-fixed",
+        client_user_message_id="client-1",
+    )
+
+    assert response.turn is not None
+    user_history = [
+        item
+        for item in runtime._session_service.load_history_items(
+            runtime._config.session_id
+        )
+        if item.type is HistoryItemType.USER_MESSAGE
+    ]
+    assert [(item.id, item.text, item.metadata) for item in user_history] == [
+        (
+            "turn-fixed:user:client-1",
+            "inspect the repo",
+            {
+                "client_user_message_id": "client-1",
+                "source": "submit",
+                "image_paths": [],
+            },
+        )
+    ]
+    assert [
+        event.kind
+        for event in events
+        if event.kind in {"item_started", "item_completed"}
+    ] == ["item_started", "item_completed"]
+    user_turn_items = [
+        item for item in response.turn.items if item.type is TurnItemType.USER_MESSAGE
+    ]
+    assert len(user_turn_items) == 1
+    assert user_turn_items[0].metadata["history_committed"] is True
 
 
 def test_agent_runtime_persists_provider_history_baseline_state_and_runtime_rollout(

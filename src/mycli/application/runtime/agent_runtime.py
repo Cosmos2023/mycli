@@ -160,6 +160,7 @@ from mycli.application.runtime.subagents.loop import (
 from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.application.runtime.tools import ToolExecutionService, ToolOrchestrator
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
+from mycli.application.runtime.user_message_lifecycle import UserMessageLifecycle
 from mycli.tools.task import TaskTool
 from mycli.tools.send_message import SendMessageTool
 from mycli.tools.subagent_output import SubagentOutputTool
@@ -402,6 +403,11 @@ class AgentRuntime:
             session_service=self._session_service,
             trace_service=self._trace_service,
             continuation_state_provider=self._model_continuation_state,
+        )
+        self._user_message_lifecycle = UserMessageLifecycle(
+            session_id=config.session_id,
+            session_service=self._session_service,
+            append_turn_item=self._append_turn_item,
         )
         self._assistant_conversation_recorder = AssistantConversationRecorder()
         self._approval_decisions = RuntimeApprovalDecisions(self._approval_service)
@@ -2324,6 +2330,7 @@ class AgentRuntime:
         self._tool_execution_service.set_session_id(session_id)
         self._tool_orchestrator._session_id = session_id
         self._event_ledger._session_id = session_id
+        self._user_message_lifecycle.set_session_id(session_id)
         self._sub_agent_service._session_id = session_id
         self._assistant_block_consumer.set_session_id(session_id)
         self._planning_effects.set_session_id(session_id)
@@ -2338,6 +2345,7 @@ class AgentRuntime:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
         turn_id: str | None = None,
+        client_user_message_id: str | None = None,
     ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
@@ -2349,6 +2357,7 @@ class AgentRuntime:
             stream_sink=stream_sink,
             interrupt_token=interrupt_token,
             turn_id=turn_id,
+            client_user_message_id=client_user_message_id,
         )
 
     def resolve_pending_approval(
