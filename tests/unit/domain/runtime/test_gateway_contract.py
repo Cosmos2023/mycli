@@ -26,12 +26,17 @@ def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
         "turn_in_progress",
         "decision_not_pending",
         "clarification_not_pending",
-            "incompatible_protocol",
-            "command_result_persistence_failed",
-            "stale_turn",
-            "queue_conflict",
-            "queue_capacity",
-            "queue_worker_start_failed",
+        "incompatible_protocol",
+        "command_result_persistence_failed",
+        "stale_turn",
+        "queue_conflict",
+        "queue_capacity",
+        "queue_worker_start_failed",
+        "no_active_turn",
+        "turn_id_mismatch",
+        "active_turn_not_steerable",
+        "input_too_large",
+        "message_id_conflict",
     ]
 
 
@@ -294,3 +299,20 @@ def test_tool_lifecycle_schemas_require_turn_correlation() -> None:
         "summary_truncated",
         "success",
     ]
+
+
+def test_user_message_lifecycle_schemas_require_identity_and_content() -> None:
+    schemas = gateway_event_payload_schemas()
+
+    for event_type in ("item.started", "item.completed"):
+        schema = schemas[event_type]
+        assert schema["required"] == ["client_turn_id", "turn_id", "item"]
+        item = schema["properties"]["item"]
+        assert item["required"] == [
+            "id",
+            "type",
+            "client_user_message_id",
+            "content",
+            "source",
+        ]
+        assert item["properties"]["type"]["enum"] == ["user_message"]

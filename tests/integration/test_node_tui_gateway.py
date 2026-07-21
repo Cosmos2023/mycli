@@ -1844,7 +1844,7 @@ def test_gateway_queue_pop_and_interrupt_preserve_pending_steering(
     gateway.close()
 
 
-def test_gateway_queue_retry_is_idempotent_with_real_runtime(tmp_path: Path) -> None:
+def test_gateway_active_turn_retry_is_idempotent_with_real_runtime(tmp_path: Path) -> None:
     class BlockingAdapter:
         def __init__(self) -> None:
             self.started = Event()
@@ -1900,9 +1900,9 @@ def test_gateway_queue_retry_is_idempotent_with_real_runtime(tmp_path: Path) -> 
 
         assert first.result is not None
         assert retry.result is not None
-        assert first.result["disposition"] == "accepted_for_turn"
+        assert first.result["disposition"] == "accepted"
         assert retry.result["disposition"] == "duplicate"
-        assert len(runtime.queue_snapshot().pending_steers) == 1
+        assert runtime.queue_snapshot().pending_steers == ()
     finally:
         service.queue_drain_blocked = lambda: True  # type: ignore[method-assign]
         adapter.release.set()

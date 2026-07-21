@@ -49,7 +49,10 @@ from mycli.cli.node_tui.protocol import (
 )
 from mycli.cli.startup_marks import startup_mark
 from mycli.domain.runtime import (
+    ActiveTurnNotSteerableError,
     DecisionAction,
+    MailboxAcceptance,
+    NoActiveTurnError,
     PendingDecision,
     QueueSnapshot,
     QueuedInputRecord,
@@ -62,6 +65,9 @@ from mycli.domain.runtime import (
     TurnRecord,
     TurnResponse,
     TurnStatus,
+    TurnIdMismatchError,
+    UserMessageIdConflictError,
+    UserMessageInput,
 )
 from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_EVENT_STREAMS,
@@ -173,6 +179,18 @@ class NodeTuiServiceLike(Protocol):
     def resume_session(self, session_id: str | None = None) -> tuple[str, ...]: ...
 
     def record_turn_interrupt_request(self, *, client_turn_id: str | None = None) -> None: ...
+
+    def begin_active_turn_mailbox(
+        self,
+        turn_id: str,
+        *,
+        steerable: bool,
+        turn_kind: str = "regular",
+    ) -> None: ...
+
+    def steer_active_turn(self, item: UserMessageInput) -> MailboxAcceptance: ...
+
+    def close_active_turn_mailbox(self, turn_id: str) -> tuple[UserMessageInput, ...]: ...
 
     def queue_steering_message(
         self,
@@ -446,7 +464,7 @@ class NodeTuiGateway:
             if request.method == "turn.submit":
                 return self._handle_turn_submit(request)
             if request.method == "turn.steer":
-                return result_response(request.id, self._handle_turn_steer(request.params))
+                return self._handle_turn_steer(request)
             if request.method == "turn.follow_up":
                 return result_response(request.id, self._handle_turn_follow_up(request.params))
             if request.method == "turn.queue.pop":
@@ -552,9 +570,16 @@ class NodeTuiGateway:
         message: str,
         method: str | None = None,
         detail: str | None = None,
+        data: dict[str, object] | None = None,
     ) -> RpcResponse:
-        self._emit_gateway_error(code=code, message=message, detail=detail, method=method)
-        return error_response(message_id, code=code, message=message)
+        self._emit_gateway_error(
+            code=code,
+            message=message,
+            detail=detail,
+            method=method,
+            data=data,
+        )
+        return error_response(message_id, code=code, message=message, data=data)
 
     def wait_for_current_turn(self, timeout: float | None = None) -> None:
         thread = self._turn_thread
@@ -724,6 +749,12 @@ class NodeTuiGateway:
                     message="A turn is already running.",
                     method=request.method,
                 )
+            begin_mailbox = _runtime_service_method(
+                self.service,
+                "begin_active_turn_mailbox",
+            )
+            if callable(begin_mailbox):
+                begin_mailbox(turn_id, steerable=True, turn_kind="regular")
             self._turn_running = True
             self._current_client_turn_id = client_turn_id
             self._current_turn_id = turn_id
@@ -743,6 +774,7 @@ class NodeTuiGateway:
             try:
                 self._turn_thread.start()
             except Exception as exc:
+                self._close_service_turn_mailbox(turn_id)
                 self._turn_running = False
                 self._current_client_turn_id = None
                 self._current_turn_id = None
@@ -760,12 +792,77 @@ class NodeTuiGateway:
             {"accepted": True, "client_turn_id": client_turn_id, "turn_id": turn_id},
         )
 
-    def _handle_turn_steer(self, params: dict[str, object]) -> dict[str, object]:
+    def _handle_turn_steer(self, request: RpcRequest) -> RpcResponse:
+        params = request.params
         message = _required_str(params, "message").strip()
         if not message:
             raise ValueError("message is required.")
         image_paths = _local_image_paths(params.get("local_images"))
         client_turn_id = _optional_str(params.get("client_turn_id")) or f"steer_{uuid4().hex}"
+        typed_steer = _runtime_service_method(self.service, "steer_active_turn")
+        if callable(typed_steer):
+            client_user_message_id = (
+                _optional_str(params.get("client_user_message_id")) or client_turn_id
+            )
+            expected_turn_id = _required_str(params, "expected_turn_id").strip()
+            if not expected_turn_id:
+                raise ValueError("expected_turn_id is required.")
+            if len(message.encode("utf-8")) > 64 * 1024 or len(image_paths) > 16:
+                return self._gateway_error_response(
+                    request.id,
+                    code="input_too_large",
+                    message="steering input exceeds the active-turn input limit",
+                    method=request.method,
+                )
+            item = UserMessageInput(
+                client_user_message_id=client_user_message_id,
+                text=message,
+                image_paths=image_paths,
+                source="steer",
+                target_turn_id=expected_turn_id,
+            )
+            try:
+                with self._turn_lock:
+                    acceptance = cast(MailboxAcceptance, typed_steer(item))
+            except NoActiveTurnError as exc:
+                return self._gateway_error_response(
+                    request.id,
+                    code="no_active_turn",
+                    message=str(exc),
+                    method=request.method,
+                )
+            except TurnIdMismatchError as exc:
+                return self._gateway_error_response(
+                    request.id,
+                    code="turn_id_mismatch",
+                    message=str(exc),
+                    method=request.method,
+                    data={"actual_turn_id": exc.actual_turn_id},
+                )
+            except ActiveTurnNotSteerableError as exc:
+                return self._gateway_error_response(
+                    request.id,
+                    code="active_turn_not_steerable",
+                    message=str(exc),
+                    method=request.method,
+                    data={"turn_kind": exc.turn_kind},
+                )
+            except UserMessageIdConflictError as exc:
+                return self._gateway_error_response(
+                    request.id,
+                    code="message_id_conflict",
+                    message=str(exc),
+                    method=request.method,
+                )
+            return result_response(
+                request.id,
+                {
+                    "accepted": True,
+                    "disposition": acceptance.value,
+                    "client_user_message_id": client_user_message_id,
+                    "turn_id": expected_turn_id,
+                },
+            )
         structured_snapshot = self._structured_queue_snapshot()
         if structured_snapshot is not None:
             expected_turn_id = _required_str(params, "expected_turn_id").strip()
@@ -784,18 +881,27 @@ class NodeTuiGateway:
                     steerable=running,
                 )
             payload = self._queue_payload(snapshot=result.snapshot)
-            return {
-                "accepted": True,
-                "disposition": result.disposition.value,
-                **payload,
-            }
+            return result_response(
+                request.id,
+                {
+                    "accepted": True,
+                    "disposition": result.disposition.value,
+                    **payload,
+                },
+            )
         with self._turn_lock:
             running = self._turn_running
         if not running:
-            return {"accepted": False, "reason": "not_running", **self._queue_payload()}
+            return result_response(
+                request.id,
+                {"accepted": False, "reason": "not_running", **self._queue_payload()},
+            )
         queue = getattr(self.service, "queue_steering_message", None)
         if not callable(queue):
-            return {"accepted": False, "reason": "unsupported", **self._queue_payload()}
+            return result_response(
+                request.id,
+                {"accepted": False, "reason": "unsupported", **self._queue_payload()},
+            )
         steering, follow_up = _call_queue_message(
             queue,
             message,
@@ -804,7 +910,19 @@ class NodeTuiGateway:
         )
         payload = self._queue_payload(steering=steering, follow_up=follow_up)
         self._emit_queue_update(payload)
-        return {"accepted": True, **payload}
+        return result_response(request.id, {"accepted": True, **payload})
+
+    def _close_service_turn_mailbox(self, turn_id: str) -> None:
+        close_mailbox = _runtime_service_method(
+            self.service,
+            "close_active_turn_mailbox",
+        )
+        if not callable(close_mailbox):
+            return
+        try:
+            close_mailbox(turn_id)
+        except Exception:
+            return
 
     def _handle_turn_follow_up(self, params: dict[str, object]) -> dict[str, object]:
         message = _required_str(params, "message").strip()
@@ -1154,6 +1272,7 @@ class NodeTuiGateway:
                 message=_terminal_status_message(response, turn_state),
             )
         finally:
+            self._close_service_turn_mailbox(turn_id)
             with self._turn_lock:
                 if self._current_turn_id == turn_id:
                     self._turn_running = False
@@ -1193,6 +1312,17 @@ class NodeTuiGateway:
 
     def _forward_stream_event(self, client_turn_id: str, event: RuntimeStreamEvent) -> None:
         self._raise_if_interrupted(client_turn_id)
+        if event.kind in {"item_started", "item_completed"}:
+            method = {
+                "item_started": "item.started",
+                "item_completed": "item.completed",
+            }[event.kind]
+            self._emit_event(
+                method,
+                {"client_turn_id": client_turn_id, **event.metadata},
+            )
+            self._raise_if_interrupted(client_turn_id)
+            return
         if event.kind in {"tool_start", "tool_progress", "tool_complete", "tool_failed"}:
             method = {
                 "tool_start": "tool.start",
@@ -1424,12 +1554,15 @@ class NodeTuiGateway:
         message: str,
         detail: str | None = None,
         method: str | None = None,
+        data: dict[str, object] | None = None,
     ) -> None:
         payload: dict[str, object] = {"code": code, "message": message}
         if detail:
             payload["detail"] = _bounded_text(detail)
         if method:
             payload["method"] = method
+        if data:
+            payload["data"] = data
         self._emit_event("gateway.error", payload)
 
     def _emit_final_message_complete(
@@ -2214,6 +2347,22 @@ class _GatewayError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _runtime_service_method(
+    service: object,
+    method_name: str,
+) -> Callable[..., object] | None:
+    candidate = getattr(service, method_name, None)
+    if not callable(candidate):
+        return None
+    method = cast(Callable[..., object], candidate)
+    for service_type in type(service).__mro__:
+        if service_type is TurnService:
+            return method if hasattr(service, "_runtime") else None
+        if method_name in service_type.__dict__:
+            return method
+    return method
 
 
 def _required_str(params: dict[str, object], key: str) -> str:

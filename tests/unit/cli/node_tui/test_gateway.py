@@ -13,6 +13,7 @@ from mycli.application.runtime.session_queue import (
     QueueMutationResult,
     SessionQueueCoordinator,
 )
+from mycli.application.runtime.user_input_mailbox import ActiveTurnMailbox
 from mycli.cli.node_tui.gateway import (
     NodeTuiGateway,
     _SerializedGatewayWriter,
@@ -32,6 +33,7 @@ from mycli.domain.runtime import (
     CollaborationMode,
     DecisionAction,
     DecisionKind,
+    MailboxAcceptance,
     ReasoningEffort,
     PendingDecision,
     PendingClarification,
@@ -46,6 +48,7 @@ from mycli.domain.runtime import (
     TurnResponse,
     TurnRecord,
     TurnStatus,
+    UserMessageInput,
 )
 from mycli.domain.runtime.session_history import HistoryItem, HistoryItemType
 from mycli.domain.tooling.calls import ToolCall
@@ -2170,6 +2173,170 @@ class BlockingTurnService(FakeTurnService):
         if not self.release.wait(timeout=2.0):
             raise AssertionError("blocking fake turn was not released")
         return TurnResponse(assistant_message="")
+
+
+class TypedSteeringTurnService(BlockingTurnService):
+    def __init__(self, workspace_root: Path) -> None:
+        super().__init__(workspace_root)
+        self.mailbox = ActiveTurnMailbox()
+
+    def begin_active_turn_mailbox(
+        self,
+        turn_id: str,
+        *,
+        steerable: bool,
+        turn_kind: str = "regular",
+    ) -> None:
+        self.mailbox.begin(turn_id, steerable=steerable, turn_kind=turn_kind)
+
+    def close_active_turn_mailbox(self, turn_id: str) -> tuple[UserMessageInput, ...]:
+        return self.mailbox.close_and_drain(turn_id)
+
+    def steer_active_turn(self, item: UserMessageInput) -> MailboxAcceptance:
+        assert item.target_turn_id is not None
+        return self.mailbox.accept(item.target_turn_id, item)
+
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+        *,
+        turn_id: str | None = None,
+    ) -> TurnResponse:
+        del message, stream_sink
+        assert turn_id is not None
+        self.started.set()
+        if not self.release.wait(timeout=2.0):
+            raise AssertionError("blocking fake turn was not released")
+        self.close_active_turn_mailbox(turn_id)
+        return TurnResponse(assistant_message="")
+
+
+class UserLifecycleTurnService(FakeTurnService):
+    def handle_user_turn(
+        self,
+        message: str,
+        stream_sink: StreamSink | None = None,
+        *,
+        turn_id: str | None = None,
+        client_user_message_id: str | None = None,
+    ) -> TurnResponse:
+        assert turn_id is not None
+        assert client_user_message_id is not None
+        assert stream_sink is not None
+        item = {
+            "id": f"{turn_id}:user:{client_user_message_id}",
+            "type": "user_message",
+            "client_user_message_id": client_user_message_id,
+            "content": message,
+            "source": "submit",
+        }
+        stream_sink(
+            RuntimeStreamEvent(
+                kind="item_started",
+                metadata={"turn_id": turn_id, "item": item},
+            )
+        )
+        stream_sink(
+            RuntimeStreamEvent(
+                kind="item_completed",
+                metadata={"turn_id": turn_id, "item": item},
+            )
+        )
+        stream_sink(RuntimeStreamEvent(kind="reasoning", text="thinking"))
+        return TurnResponse(assistant_message="done")
+
+
+def test_turn_steer_mismatch_returns_actual_turn_id(tmp_path: Path) -> None:
+    service = TypedSteeringTurnService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+    try:
+        submitted = gateway.handle_request(
+            RpcRequest(
+                id="submit",
+                method="turn.submit",
+                params={
+                    "message": "start",
+                    "client_turn_id": "turn-client",
+                    "client_user_message_id": "user-client",
+                },
+            )
+        )
+        assert service.started.wait(timeout=2)
+        assert submitted.result is not None
+        actual_turn_id = str(submitted.result["turn_id"])
+
+        response = gateway.handle_request(
+            RpcRequest(
+                id="steer",
+                method="turn.steer",
+                params={
+                    "client_user_message_id": "client-1",
+                    "expected_turn_id": "turn-stale",
+                    "message": "inspect",
+                },
+            )
+        )
+
+        assert response.error == {
+            "code": "turn_id_mismatch",
+            "message": (
+                f"expected active turn turn-stale but found {actual_turn_id}"
+            ),
+            "data": {"actual_turn_id": actual_turn_id},
+        }
+    finally:
+        service.release.set()
+        gateway.wait_for_current_turn(timeout=2)
+        gateway.close()
+
+
+def test_gateway_forwards_user_item_lifecycle_before_model_events(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=UserLifecycleTurnService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="submit",
+            method="turn.submit",
+            params={
+                "message": "inspect",
+                "client_turn_id": "turn-client",
+                "client_user_message_id": "user-client",
+            },
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2)
+    gateway.close()
+
+    assert response.result is not None
+    direct = [(method, params) for method, params in events if method != "runtime.event"]
+    lifecycle = [
+        (method, params)
+        for method, params in direct
+        if method in {"item.started", "item.completed"}
+    ]
+    assert [method for method, _params in lifecycle] == [
+        "item.started",
+        "item.completed",
+    ]
+    assert lifecycle[0][1]["item"] == lifecycle[1][1]["item"]
+    assert lifecycle[1][1]["item"]["client_user_message_id"] == "user-client"
+    assert next(
+        index for index, (method, _params) in enumerate(direct) if method == "item.completed"
+    ) < next(
+        index for index, (method, _params) in enumerate(direct) if method == "reasoning.delta"
+    )
+    mirrored_types = [
+        params["type"] for method, params in events if method == "runtime.event"
+    ]
+    assert "item.started" in mirrored_types
+    assert "item.completed" in mirrored_types
 
 
 class QueueSchedulingTurnService(FakeTurnService):

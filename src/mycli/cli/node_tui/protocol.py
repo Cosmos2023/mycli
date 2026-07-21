@@ -100,8 +100,12 @@ def error_response(
     *,
     code: str,
     message: str,
+    data: JsonObject | None = None,
 ) -> RpcResponse:
-    return RpcResponse(id=message_id, error={"code": code, "message": message})
+    error: JsonObject = {"code": code, "message": message}
+    if data:
+        error["data"] = data
+    return RpcResponse(id=message_id, error=error)
 
 
 def notification(method: str, params: JsonObject | None = None) -> RpcNotification:

@@ -64,3 +64,18 @@ def test_protocol_builds_error_and_notification() -> None:
     assert error.error == {"code": "invalid_params", "message": "Missing message"}
     assert note.method == "turn.started"
     assert note.params == {"client_turn_id": "c1"}
+
+
+def test_protocol_error_response_includes_structured_data() -> None:
+    error = error_response(
+        "req_1",
+        code="turn_id_mismatch",
+        message="expected active turn stale but found actual",
+        data={"actual_turn_id": "actual"},
+    )
+
+    assert error.error == {
+        "code": "turn_id_mismatch",
+        "message": "expected active turn stale but found actual",
+        "data": {"actual_turn_id": "actual"},
+    }

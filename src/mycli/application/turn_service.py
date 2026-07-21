@@ -424,6 +424,31 @@ class TurnService:
             raise RuntimeError("Runtime does not support active-turn steering.")
         return cast(MailboxAcceptance, steer(item))
 
+    def begin_active_turn_mailbox(
+        self,
+        turn_id: str,
+        *,
+        steerable: bool,
+        turn_kind: str = "regular",
+    ) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("TurnService has no runtime.")
+        runtime.begin_active_turn_mailbox(
+            turn_id,
+            steerable=steerable,
+            turn_kind=turn_kind,
+        )
+
+    def close_active_turn_mailbox(self, turn_id: str) -> tuple[UserMessageInput, ...]:
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("TurnService has no runtime.")
+        return cast(
+            tuple[UserMessageInput, ...],
+            runtime.close_active_turn_mailbox(turn_id),
+        )
+
     def resolve_pending_decision(
         self,
         choice: str,

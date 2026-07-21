@@ -45,6 +45,8 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "compaction.completed",
         "compaction.started",
         "gateway.error",
+        "item.completed",
+        "item.started",
         "message.complete",
         "message.delta",
         "plan.proposed",
@@ -181,6 +183,11 @@ GATEWAY_ERROR_CODES = (
     "queue_conflict",
     "queue_capacity",
     "queue_worker_start_failed",
+    "no_active_turn",
+    "turn_id_mismatch",
+    "active_turn_not_steerable",
+    "input_too_large",
+    "message_id_conflict",
 )
 _GATEWAY_ERROR_CODE = {"type": "string", "enum": list(GATEWAY_ERROR_CODES)}
 APPROVAL_DECISION_CHOICES = (
@@ -285,6 +292,23 @@ _COMPACTION_COMPLETED_STATUS = {
     "type": "string",
     "enum": ["compressed", "skipped", "failed"],
 }
+_USER_MESSAGE_ITEM = {
+    "type": "object",
+    "required": [
+        "id",
+        "type",
+        "client_user_message_id",
+        "content",
+        "source",
+    ],
+    "properties": {
+        "id": _STRING,
+        "type": {"type": "string", "enum": ["user_message"]},
+        "client_user_message_id": _STRING,
+        "content": _STRING,
+        "source": {"type": "string", "enum": ["submit", "steer"]},
+    },
+}
 
 GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
     "approval.request": _schema(
@@ -369,6 +393,25 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "message": _STRING,
             "detail": _STRING,
             "method": _STRING,
+            "data": _OBJECT,
+        },
+    ),
+    "item.started": _schema(
+        "item.started",
+        required=("client_turn_id", "turn_id", "item"),
+        properties={
+            "client_turn_id": _STRING,
+            "turn_id": _STRING,
+            "item": _USER_MESSAGE_ITEM,
+        },
+    ),
+    "item.completed": _schema(
+        "item.completed",
+        required=("client_turn_id", "turn_id", "item"),
+        properties={
+            "client_turn_id": _STRING,
+            "turn_id": _STRING,
+            "item": _USER_MESSAGE_ITEM,
         },
     ),
     "message.complete": _schema(
