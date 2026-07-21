@@ -1119,7 +1119,7 @@ test("ps history bounds long commands and caps the process list at sixteen", () 
 	}, 60);
 	const output = stripAnsi(lines.join("\n"));
 
-	assert.equal((output.match(/• /g) ?? []).length, 16);
+	assert.equal((output.match(/^  • /gm) ?? []).length, 16);
 	assert.match(output, /\.\.\. and 4 more running/);
 	for (const line of lines) {
 		assert.ok(visibleWidth(line) <= 60, `line too wide: ${stripAnsi(line)}`);
