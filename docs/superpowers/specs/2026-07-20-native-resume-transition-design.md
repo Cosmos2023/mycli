@@ -67,9 +67,12 @@ that frame it performs one synchronized terminal write:
    row before writing it.
 5. Store the bounded frame as the differential-render baseline.
 
-The operation does not emit clear-screen, clear-scrollback, alternate-screen, or
-mouse-capture sequences. Because history insertion and the final frame share one
-synchronized write, users do not see an intermediate blank screen.
+Normal same-session history insertion does not emit clear-screen,
+clear-scrollback, alternate-screen, or mouse-capture sequences. Because history
+insertion and the final frame share one synchronized write, users do not see an
+intermediate blank screen. A cross-session Resume is different: it explicitly
+replaces old-session scrollback before replaying the destination transcript so
+content from two sessions cannot remain mixed in the terminal.
 
 ### Runtime Coordination
 
@@ -89,6 +92,40 @@ updates continue through the differential renderer unless they advance the
 visible transcript boundary; only that boundary delta enters the history
 insertion path, and already committed rows are never replayed.
 
+### Session Transition Gate
+
+Session Resume is one atomic transcript replacement, not a normal sequence of
+state updates. While a session selector callback is awaiting `session.resume`
+and `transcript.load`, `MycliShellRuntime` marks a session transition active.
+`queueNativeTranscriptDelta()` is suppressed during this interval. After the
+destination transcript has loaded, the runtime calls
+`queueNativeTranscriptHistory(true)` exactly once and then restores the editor.
+
+This gate prevents an asynchronous render frame from committing the destination
+history as a normal delta before the full replacement is queued. Empty sessions
+still complete the replacement, clearing old-session rows without inventing a
+placeholder transcript item.
+
+The gate affects only terminal commit scheduling. It must not normalize, merge,
+drop, reorder, or rewrite transcript items. Message IDs, repeated user inputs,
+tool items, Plan updates, folding state, and visible text remain exactly as
+provided by the existing transcript projection.
+
+### Slash Resume Event Ordering
+
+The `/resume` command records the source session ID before sending
+`command.run`. The backend may emit `session.changed` before the command response
+arrives, so the command-result reducer cannot use the current session ID to
+decide whether the command changed sessions. It compares the response's
+destination session ID with the captured source session ID instead.
+
+For a real cross-session mutation, the command path clears the source transcript,
+loads the destination transcript, applies the transient Resume notice, and asks
+the runtime for one native scrollback replacement. A same-session `/resume`
+keeps the existing transcript and uses the ordinary command-result projection.
+The selector and slash-command paths therefore converge on the same final
+transcript semantics without sharing two independent terminal replay calls.
+
 ## Testing
 
 - Verify initial startup writes the transcript prefix once and leaves the header
@@ -96,10 +133,22 @@ insertion path, and already committed rows are never replayed.
 - Resume through the session selector and verify transcript prefix ordering,
   complete-history coverage without duplication, and no selector/header/footer
   chrome among committed history rows.
+- Insert asynchronous state updates and render frames during selector Resume;
+  verify no destination row is committed as a delta before the single full
+  replacement.
+- Verify `/resume` still loads the destination transcript when `session.changed`
+  arrives before the command response.
+- Verify cross-session `/resume` replaces native scrollback exactly once while a
+  same-session command preserves existing history.
+- Verify empty-session Resume clears old native history and renders no synthetic
+  message.
+- Verify destination transcript item IDs, order, text, and legitimate repeated
+  messages are unchanged by the transition gate.
 - Verify Resume loading keeps the selector mounted until the asynchronous callback
   completes.
-- Verify native replay uses synchronized output and emits no clear-screen,
-  clear-scrollback, alternate-screen, or mouse-capture sequence.
+- Verify normal same-session native delta insertion uses synchronized output and
+  emits no clear-screen, clear-scrollback, alternate-screen, or mouse-capture
+  sequence.
 - After Resume, add a user message and grow a long assistant response until that
   message leaves the live tail; verify the user message is inserted once before
   the live header rather than overwritten.
