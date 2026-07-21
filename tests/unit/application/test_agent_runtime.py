@@ -1762,6 +1762,83 @@ def test_accepted_steer_continues_same_server_turn(tmp_path: Path) -> None:
     assert responses[0].turn is not None
     assert responses[0].turn.turn_id == "turn-fixed"
 
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    visible = [
+        (item.type, item.text)
+        for item in history
+        if item.type
+        in {
+            HistoryItemType.USER_MESSAGE,
+            HistoryItemType.ASSISTANT_MESSAGE,
+        }
+    ]
+    assert visible == [
+        (HistoryItemType.USER_MESSAGE, "start"),
+        (HistoryItemType.ASSISTANT_MESSAGE, "first answer"),
+        (HistoryItemType.USER_MESSAGE, "inspect output"),
+        (HistoryItemType.ASSISTANT_MESSAGE, "steer answer"),
+    ]
+    resumed = runtime._session_service.load_conversation(runtime._config.session_id)
+    resumed_visible = [
+        (message.role, message.content)
+        for message in resumed.messages
+        if message.role in {"user", "assistant"}
+    ]
+    assert resumed_visible[-4:] == [
+        ("user", "start"),
+        ("assistant", "first answer"),
+        ("user", "inspect output"),
+        ("assistant", "steer answer"),
+    ]
+
+
+def test_assistant_history_failure_does_not_commit_pending_steer(
+    tmp_path: Path,
+) -> None:
+    adapter = TerminalQueueingAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    def accept_steer_before_response_returns() -> None:
+        assert runtime.steer_active_turn(
+            UserMessageInput(
+                client_user_message_id="client-steer",
+                text="inspect output",
+                source="steer",
+                target_turn_id="turn-fixed",
+            )
+        ) is MailboxAcceptance.ACCEPTED
+
+    adapter.before_return = accept_steer_before_response_returns
+    append_history_items = runtime._session_service.append_history_items
+
+    def fail_assistant_commit(
+        session_id: str,
+        items: tuple[HistoryItem, ...],
+    ) -> None:
+        if any(item.type is HistoryItemType.ASSISTANT_MESSAGE for item in items):
+            raise OSError("disk full")
+        append_history_items(session_id, items)
+
+    runtime._session_service.append_history_items = fail_assistant_commit
+
+    with pytest.raises(OSError, match="disk full"):
+        runtime.handle_user_turn(
+            "start",
+            turn_id="turn-fixed",
+            client_user_message_id="client-start",
+        )
+
+    history = runtime._session_service.load_history_items(runtime._config.session_id)
+    assert [
+        item.text for item in history if item.type is HistoryItemType.USER_MESSAGE
+    ] == ["start"]
+    assert adapter.call_count == 1
+    assert runtime.active_turn_mailbox_id() is None
+
 
 def test_terminal_race_commits_leftover_steer_without_another_model_request(
     tmp_path: Path,
@@ -1808,6 +1885,20 @@ def test_terminal_race_commits_leftover_steer_without_another_model_request(
     assert [
         item.text for item in history if item.type is HistoryItemType.USER_MESSAGE
     ] == ["start", "late steer"]
+    visible = [
+        (item.type, item.text)
+        for item in history
+        if item.type
+        in {
+            HistoryItemType.USER_MESSAGE,
+            HistoryItemType.ASSISTANT_MESSAGE,
+        }
+    ]
+    assert visible == [
+        (HistoryItemType.USER_MESSAGE, "start"),
+        (HistoryItemType.ASSISTANT_MESSAGE, "first"),
+        (HistoryItemType.USER_MESSAGE, "late steer"),
+    ]
     assert response.turn is not None
     assert [
         item.text for item in response.turn.items if item.type is TurnItemType.USER_MESSAGE

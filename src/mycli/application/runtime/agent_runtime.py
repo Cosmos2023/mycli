@@ -22,6 +22,7 @@ from mycli.domain.runtime import (
     DecisionAction,
     ExecutionContext,
     FileRehydrationCandidate,
+    HistoryItem,
     InstructionContract,
     ModelTurnResult,
     PendingApproval,
@@ -2204,6 +2205,17 @@ class AgentRuntime:
 
     def _timestamp(self) -> str:
         return self._event_ledger.timestamp()
+
+    def _persist_completed_turn_items(
+        self,
+        *,
+        turn_id: str,
+        turn_items: list[TurnItem],
+    ) -> tuple[HistoryItem, ...]:
+        return self._event_ledger.persist_completed_turn_items(
+            turn_id=turn_id,
+            turn_items=turn_items,
+        )
 
     def _persist_turn_record(
         self,
