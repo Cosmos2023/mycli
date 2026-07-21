@@ -287,6 +287,7 @@ export class MycliShellRuntime {
 	private turnStartedAtMs: number | null = null;
 	private completedDurationMs: number | null = null;
 	private selectorActive = false;
+	private sessionTransitionDepth = 0;
 	private approvalSurfaceDecisionId: string | null = null;
 	private readonly now: () => number;
 	private lastCtrlCAtMs: number | null = null;
@@ -384,6 +385,16 @@ export class MycliShellRuntime {
 		this.maybeResetTranscriptScroll(previousState, effectiveState);
 		this.queueNativeTranscriptDelta();
 		this.ui.requestRender();
+	}
+
+	replaceSessionState(nextState: MycliShellState): void {
+		this.sessionTransitionDepth += 1;
+		try {
+			this.setState(nextState);
+			this.queueNativeTranscriptHistory(true);
+		} finally {
+			this.sessionTransitionDepth -= 1;
+		}
 	}
 
 	getState(): MycliShellState {
@@ -746,6 +757,7 @@ export class MycliShellRuntime {
 	}
 
 	private queueNativeTranscriptDelta(): void {
+		if (this.sessionTransitionDepth > 0) return;
 		if (!this.ui.terminal.nativeScrollback || !this.mainMounted) return;
 		const delta = this.transcriptViewport.takeNewScrollbackLines(this.ui.terminal.columns);
 		if (delta.length > 0) {

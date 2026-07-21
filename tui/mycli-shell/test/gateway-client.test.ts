@@ -5,6 +5,7 @@ import { setTimeout } from "node:timers/promises";
 import { GatewayClient, GatewayRequestError } from "../src/adapters/gateway-client.ts";
 import {
 	initialRuntimeState,
+	reduceRuntimeEvent,
 	runtimeStateAfterCommandResult,
 } from "../src/adapters/runtime-state.ts";
 
@@ -111,6 +112,48 @@ test("inline resume loads the destination before adding one transient notice", a
 	assert.equal(state.transcript[1]?.type, "system_notice");
 	assert.equal(state.transcript[1]?.text, "Resumed session demo-2");
 	assert.equal(state.transcript.some((item) => item.id === "source-message"), false);
+});
+
+test("inline resume uses the source session when session.changed arrives first", async () => {
+	const source = {
+		...initialRuntimeState(),
+		sessionId: "demo-1",
+		transcript: [
+			{ id: "source-message", type: "user" as const, text: "source", folded: false },
+		],
+	};
+	const eventAdvanced = reduceRuntimeEvent(source, "session.changed", {
+		session_id: "demo-2",
+	});
+	let loads = 0;
+
+	const state = await runtimeStateAfterCommandResult(
+		eventAdvanced,
+		"/resume demo-2",
+		{
+			mutated_session: true,
+			session_id: "demo-2",
+			lines: ["Resumed session demo-2"],
+		},
+		async () => {
+			loads += 1;
+			return {
+				items: [
+					{
+						id: "destination-message",
+						type: "assistant_final",
+						text: "destination",
+						folded: false,
+					},
+				],
+			};
+		},
+		"demo-1",
+	);
+
+	assert.equal(loads, 1);
+	assert.equal(state.transcript.some((item) => item.id === "source-message"), false);
+	assert.equal(state.transcript[0]?.id, "destination-message");
 });
 
 test("same-session mutation keeps transcript and uses normal command projection", async () => {

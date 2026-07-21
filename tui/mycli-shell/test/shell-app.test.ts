@@ -2727,6 +2727,45 @@ test("mycli shell session selection replaces native scrollback with loaded histo
 	assert.match(terminal.output, /\x1b\[3J/);
 });
 
+test("cross-session state replacement writes history once without changing messages", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 12;
+	const destination = [
+		{ id: "same-text-1", role: "user" as const, text: "legitimate repeat" },
+		{ id: "same-text-2", role: "user" as const, text: "legitimate repeat" },
+		...Array.from({ length: 20 }, (_, index) => ({
+			id: `destination-${index}`,
+			role: "assistant" as const,
+			text: `destination history ${index}`,
+		})),
+	];
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+	runtime.replaceSessionState({
+		...runtime.getState(),
+		messages: destination,
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		footer: { ...runtime.getState().footer, sessionName: "destination" },
+	});
+	await setTimeout(50);
+
+	assert.equal(terminal.output.match(/\x1b\[3J/g)?.length, 1);
+	assert.equal(
+		stripAnsi(terminal.output).match(/destination history 0/g)?.length,
+		1,
+	);
+	assert.deepEqual(runtime.getState().messages.slice(0, 2), destination.slice(0, 2));
+});
+
 test("mycli shell keeps the session selector mounted until resume history is ready", async () => {
 	const terminal = new TestTerminal();
 	let releaseLoad: (() => void) | undefined;

@@ -1264,12 +1264,13 @@ export async function runtimeStateAfterCommandResult(
 	command: string,
 	result: Record<string, unknown>,
 	loadTranscript: (sessionId: string) => Promise<Record<string, unknown>>,
+	sourceSessionId: string | null = state.sessionId,
 ): Promise<RuntimeShellState> {
 	const destinationSessionId = stringValue(result.session_id);
 	if (
 		result.mutated_session !== true ||
 		!destinationSessionId ||
-		destinationSessionId === state.sessionId
+		destinationSessionId === sourceSessionId
 	) {
 		return runtimeStateWithCommandResult(state, command, result);
 	}

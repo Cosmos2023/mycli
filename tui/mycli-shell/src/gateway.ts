@@ -72,10 +72,18 @@ function currentShellState(): MycliShellState {
 	return projectRuntimeState(runtimeState, sessions);
 }
 
-function setRuntimeState(nextState: RuntimeShellState): void {
+function setRuntimeState(
+	nextState: RuntimeShellState,
+	options: { replaceSessionTranscript?: boolean } = {},
+): void {
 	runtimeState = nextState;
 	if (runtime) {
-		runtime.setState(currentShellState());
+		const shellState = currentShellState();
+		if (options.replaceSessionTranscript) {
+			runtime.replaceSessionState(shellState);
+		} else {
+			runtime.setState(shellState);
+		}
 	}
 	if (nativeRuntime) {
 		nativeRuntime.setState(currentShellState());
@@ -436,21 +444,26 @@ async function saveApiKey(providerId: string, apiKey: string): Promise<{ message
 }
 
 async function runCommand(command: string): Promise<void> {
+	const sourceSessionId = runtimeState.sessionId;
 	const result = await send("command.run", { command, surface: commandSurface });
 	const clientAction = clientActionFromResult(result);
 	if (clientAction && runtime) {
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
 		return;
 	}
-	setRuntimeState(
-		await runtimeStateAfterCommandResult(
-			runtimeState,
-			command,
-			result,
-			async (sessionId) =>
-				await send("transcript.load", { session_id: sessionId, before: null }),
-		),
+	const nextState = await runtimeStateAfterCommandResult(
+		runtimeState,
+		command,
+		result,
+		async (sessionId) =>
+			await send("transcript.load", { session_id: sessionId, before: null }),
+		sourceSessionId,
 	);
+	const replacedSession =
+		result.mutated_session === true &&
+		nextState.sessionId !== null &&
+		nextState.sessionId !== sourceSessionId;
+	setRuntimeState(nextState, { replaceSessionTranscript: replacedSession });
 	if (result.exit_requested === true) {
 		await shutdown(0);
 	}
