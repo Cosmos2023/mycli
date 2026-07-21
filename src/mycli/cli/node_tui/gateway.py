@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from mycli.application.turn_service import TurnService
 from mycli.application.runtime.session_queue import (
+    LegacyQueueMigration,
     QueueCapacityError,
     QueueConflictError,
     QueueMutationResult,
@@ -238,6 +239,10 @@ class NodeTuiServiceLike(Protocol):
 
     def queue_snapshot(self) -> QueueSnapshot: ...
 
+    def legacy_user_queue_migration(self) -> LegacyQueueMigration | None: ...
+
+    def ack_legacy_user_queue_migration(self, token: str) -> None: ...
+
     def next_queued_turn(self) -> QueuedInputRecord | None: ...
 
     def mark_queued_turn_started(self, queue_id: str) -> QueueSnapshot: ...
@@ -335,6 +340,9 @@ class NodeTuiGateway:
         self._queue_scheduler_stop = Event()
         self._bind_shell_lifecycle_listener()
         self._bind_queue_listener()
+        self._legacy_queue_migration_pending = (
+            self._legacy_user_queue_migration_payload() is not None
+        )
         self._queue_scheduler_thread = Thread(
             target=self._queue_scheduler_loop,
             daemon=True,
@@ -392,7 +400,7 @@ class NodeTuiGateway:
         client_turn_id: str | None = None
         thread: Thread | None = None
         with self._turn_lock:
-            if self._turn_running:
+            if self._turn_running or self._legacy_queue_migration_pending:
                 return
             blocked = getattr(self.service, "queue_drain_blocked", None)
             try:
@@ -471,6 +479,11 @@ class NodeTuiGateway:
                 return result_response(request.id, self._handle_turn_queue_pop())
             if request.method == "turn.queue.clear":
                 return result_response(request.id, self._handle_turn_queue_clear())
+            if request.method == "turn.queue.migration.ack":
+                return result_response(
+                    request.id,
+                    self._handle_turn_queue_migration_ack(request.params),
+                )
             if request.method == "turn.interrupt":
                 return result_response(request.id, self._handle_turn_interrupt())
             if request.method == "command.list":
@@ -614,10 +627,52 @@ class NodeTuiGateway:
             "welcome": self._welcome_payload(),
             "auth_providers": self._auth_providers_payload(),
         }
+        migration = self._legacy_user_queue_migration_payload()
+        if migration is not None:
+            payload["legacy_user_queue_migration"] = migration
         title = self._session_title()
         if title:
             payload["session_title"] = title
         return payload
+
+    def _legacy_user_queue_migration_payload(self) -> dict[str, object] | None:
+        provider = getattr(self.service, "legacy_user_queue_migration", None)
+        if not callable(provider):
+            return None
+        try:
+            migration = provider()
+        except (AttributeError, TypeError):
+            return None
+        if not isinstance(migration, LegacyQueueMigration):
+            return None
+        return {
+            "token": migration.token,
+            "records": [
+                _legacy_queue_migration_record_payload(record)
+                for record in migration.records
+            ],
+        }
+
+    def _handle_turn_queue_migration_ack(
+        self,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        token = _required_str(params, "token").strip()
+        if not token:
+            raise ValueError("token is required.")
+        acknowledge = getattr(self.service, "ack_legacy_user_queue_migration", None)
+        if not callable(acknowledge):
+            raise QueueConflictError("legacy queue migration is not available")
+        try:
+            acknowledge(token)
+        except QueueConflictError:
+            if self._legacy_user_queue_migration_payload() is None:
+                self._legacy_queue_migration_pending = False
+                self._queue_scheduler_event.set()
+            raise
+        self._legacy_queue_migration_pending = False
+        self._queue_scheduler_event.set()
+        return {"acknowledged": True, "token": token}
 
     def _handle_auth_api_key_save(self, params: dict[str, object]) -> dict[str, object]:
         provider = parse_provider(_required_str(params, "provider_id"))
@@ -2125,6 +2180,8 @@ class NodeTuiGateway:
         if not session_id:
             raise ValueError("session_id is required.")
         lines = [f"[session] {line}" for line in self.service.resume_session(session_id)]
+        migration = self._legacy_user_queue_migration_payload()
+        self._legacy_queue_migration_pending = migration is not None
         self._bind_shell_lifecycle_listener()
         self._bind_queue_listener()
         if self._emit is not None:
@@ -2132,7 +2189,13 @@ class NodeTuiGateway:
             self._emit_event("status.changed", self._status_payload())
             self._emit_resume_pending_state()
         self._queue_scheduler_event.set()
-        return {"session_id": self.service._config.session_id, "lines": lines}
+        payload: dict[str, object] = {
+            "session_id": self.service._config.session_id,
+            "lines": lines,
+        }
+        if migration is not None:
+            payload["legacy_user_queue_migration"] = migration
+        return payload
 
     def _handle_session_tree(self, params: dict[str, object]) -> dict[str, object]:
         limit = _positive_int(params.get("limit"), default=100)
@@ -2400,6 +2463,22 @@ def _queued_record_payload(record: QueuedInputRecord) -> dict[str, object]:
         "source": record.source,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+    }
+    if record.image_paths:
+        payload["local_images"] = [
+            {"path": path, "placeholder": f"[image #{index}]"}
+            for index, path in enumerate(record.image_paths, start=1)
+        ]
+    return payload
+
+
+def _legacy_queue_migration_record_payload(
+    record: QueuedInputRecord,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "queue_id": record.queue_id,
+        "kind": record.kind,
+        "text": record.text,
     }
     if record.image_paths:
         payload["local_images"] = [

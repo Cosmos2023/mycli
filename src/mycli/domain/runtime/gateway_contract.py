@@ -28,6 +28,7 @@ SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
         "transcript.load",
         "turn.interrupt",
         "turn.queue.clear",
+        "turn.queue.migration.ack",
         "turn.queue.pop",
         "turn.submit",
         "turn.steer",

@@ -7,6 +7,7 @@ import {
 	runtimeStateFromBootstrap,
 	runtimeStateFromTranscript,
 	runtimeStateAfterCommandResult,
+	runtimeStateWithLegacyQueueMigration,
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
@@ -15,6 +16,7 @@ import {
 	nextLocalUserInput,
 	removeLocalUserInput,
 	sessionsFromResult,
+	legacyQueueMigrationToken,
 	type RuntimeShellState,
 	type RuntimeLocalUserInput,
 } from "../../src/adapters/runtime-state.ts";
@@ -76,6 +78,7 @@ export async function runScriptedClient(
 			client: { name: "mycli-shell-scripted", version: "0.1.0" },
 		});
 		state = runtimeStateFromBootstrap(state, bootstrap);
+		await acknowledgeLegacyQueueMigration(bootstrap);
 		await loadTranscript();
 		await loadSessions();
 
@@ -126,6 +129,20 @@ async function send(method: string, params: Record<string, unknown> = {}): Promi
 	} catch (error) {
 		void method;
 		throw error;
+	}
+}
+
+async function acknowledgeLegacyQueueMigration(
+	payload: Record<string, unknown>,
+): Promise<void> {
+	const migrationToken = legacyQueueMigrationToken(payload);
+	if (!migrationToken) return;
+	try {
+		await send("turn.queue.migration.ack", { token: migrationToken });
+	} catch (error) {
+		if (!(error instanceof GatewayRequestError && error.code === "queue_conflict")) {
+			throw error;
+		}
 	}
 }
 
@@ -221,6 +238,8 @@ async function runScriptedAction(action: ScriptedAction): Promise<void> {
 			async (sessionId) =>
 				await send("transcript.load", { session_id: sessionId, before: null }),
 		);
+		state = runtimeStateWithLegacyQueueMigration(state, result);
+		await acknowledgeLegacyQueueMigration(result);
 		return;
 	}
 

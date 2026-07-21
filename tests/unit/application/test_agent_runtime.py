@@ -2768,6 +2768,8 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
     runtime.queue_steering_message(notification)
     stream_events: list[RuntimeStreamEvent] = []
 
+    assert runtime.queue_snapshot().active_records() == ()
+
     response = runtime.handle_user_turn("answer first", stream_sink=stream_events.append)
 
     assert response.assistant_message == "first answer"
@@ -2788,6 +2790,12 @@ def test_agent_runtime_places_subagent_notification_in_next_request(
     ]
     assert len(completed_user_items) == 1
     assert completed_user_items[0]["content"] == "answer first"
+    user_history = [
+        item.text
+        for item in runtime._session_service.load_history_items(runtime._config.session_id)
+        if item.type is HistoryItemType.USER_MESSAGE
+    ]
+    assert user_history == ["answer first"]
 
 
 def test_agent_runtime_enqueues_background_bash_task_notification(
@@ -2815,20 +2823,19 @@ def test_agent_runtime_enqueues_background_bash_task_notification(
     output_file = Path(str(result.raw_payload["output_file"]))
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        steering, _ = runtime.queued_messages()
-        if steering and output_file.exists():
+        if runtime._runtime_notification_inbox.snapshot() and output_file.exists():
             break
         time.sleep(0.01)
 
-    steering, follow_up = runtime.queued_messages()
-    assert follow_up == ()
-    assert len(steering) == 1
-    assert "<task-notification>" in steering[0]
-    assert "<task-type>local_bash</task-type>" in steering[0]
-    assert f"<output-file>{output_file}</output-file>" in steering[0]
+    notifications = runtime._runtime_notification_inbox.snapshot()
+    assert runtime.queued_messages() == ((), ())
+    assert len(notifications) == 1
+    assert "<task-notification>" in notifications[0].content
+    assert "<task-type>local_bash</task-type>" in notifications[0].content
+    assert f"<output-file>{output_file}</output-file>" in notifications[0].content
     assert output_file.read_text(encoding="utf-8").strip() == "runtime-background-ready"
     time.sleep(0.05)
-    assert len(runtime.queued_messages()[0]) == 1
+    assert len(runtime._runtime_notification_inbox.snapshot()) == 1
     assert adapter.calls == 0
 
 

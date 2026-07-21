@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from mycli.config.auth_store import AuthStore
 from mycli.application.turn_service import TurnService
 from mycli.application.runtime.session_queue import (
+    LegacyQueueMigration,
     QueueMutationResult,
     SessionQueueCoordinator,
 )
@@ -2396,6 +2397,12 @@ class QueueSchedulingTurnService(FakeTurnService):
     def queue_snapshot(self) -> QueueSnapshot:
         return self._queue.snapshot()
 
+    def legacy_user_queue_migration(self) -> LegacyQueueMigration | None:
+        return self._queue.legacy_user_queue_migration()
+
+    def ack_legacy_user_queue_migration(self, token: str) -> None:
+        self._queue.ack_legacy_user_queue_migration(token)
+
     def queue_follow_up_input(
         self,
         message: str,
@@ -3679,6 +3686,97 @@ def test_gateway_exposes_server_turn_id_and_rejects_stale_steer(tmp_path: Path) 
     finally:
         service.release.set()
         gateway.wait_for_current_turn(timeout=2.0)
+        gateway.close()
+
+
+def test_gateway_repeats_legacy_queue_handoff_until_matching_ack(
+    tmp_path: Path,
+) -> None:
+    service = QueueSchedulingTurnService(tmp_path)
+    service._queue.enqueue_steer(
+        text="retry",
+        client_turn_id="legacy-steer",
+        expected_turn_id="turn-old",
+        active_turn_id=None,
+        steerable=False,
+    )
+    service._queue.enqueue_follow_up(
+        text="later",
+        client_turn_id="legacy-follow-up",
+        image_paths=("/tmp/later.png",),
+    )
+    gateway = NodeTuiGateway(service=service)
+    peer_gateway = NodeTuiGateway(service=service)
+    try:
+        request = RpcRequest(
+            id="bootstrap-1",
+            method="session.bootstrap",
+            params={"protocol_version": 1},
+        )
+        first = gateway.handle_request(request)
+        second = gateway.handle_request(
+            RpcRequest(
+                id="bootstrap-2",
+                method="session.bootstrap",
+                params={"protocol_version": 1},
+            )
+        )
+
+        assert first.result is not None
+        assert second.result is not None
+        migration = first.result["legacy_user_queue_migration"]
+        assert migration == second.result["legacy_user_queue_migration"]
+        assert service.user_messages == []
+        assert [record["kind"] for record in migration["records"]] == [
+            "rejected_steer",
+            "follow_up",
+        ]
+        assert migration["records"][1]["local_images"] == [
+            {"path": "/tmp/later.png", "placeholder": "[image #1]"}
+        ]
+
+        ack = gateway.handle_request(
+            RpcRequest(
+                id="ack",
+                method="turn.queue.migration.ack",
+                params={"token": migration["token"]},
+            )
+        )
+        after = gateway.handle_request(
+            RpcRequest(
+                id="bootstrap-3",
+                method="session.bootstrap",
+                params={"protocol_version": 1},
+            )
+        )
+
+        assert ack.result == {"acknowledged": True, "token": migration["token"]}
+        assert after.result is not None
+        assert "legacy_user_queue_migration" not in after.result
+        assert service.queue_snapshot().active_records() == ()
+
+        stale = gateway.handle_request(
+            RpcRequest(
+                id="stale",
+                method="turn.queue.migration.ack",
+                params={"token": migration["token"]},
+            )
+        )
+        assert stale.error is not None
+        assert stale.error["code"] == "queue_conflict"
+
+        peer_stale = peer_gateway.handle_request(
+            RpcRequest(
+                id="peer-stale",
+                method="turn.queue.migration.ack",
+                params={"token": migration["token"]},
+            )
+        )
+        assert peer_stale.error is not None
+        assert peer_stale.error["code"] == "queue_conflict"
+        assert peer_gateway._legacy_queue_migration_pending is False
+    finally:
+        peer_gateway.close()
         gateway.close()
 
 

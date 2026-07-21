@@ -214,14 +214,15 @@ def test_gateway_stops_only_owned_background_shells_without_model_requests(
         assert stop_response.result["command_kind"] == "shell_stop"
 
         deadline = time.monotonic() + 3
+        notifications = []
         while time.monotonic() < deadline:
             terminal_ids = [
                 payload["shell_id"]
                 for method, payload in events
                 if method == "shell.completed"
             ]
-            steering, _ = runtime.queued_messages()
-            if len(terminal_ids) >= 2 and len(steering) >= 2:
+            notifications.extend(runtime.drain_task_notifications("test-shell-stop"))
+            if len(terminal_ids) >= 2 and len(notifications) >= 2:
                 break
             time.sleep(0.01)
 
@@ -236,10 +237,11 @@ def test_gateway_stops_only_owned_background_shells_without_model_requests(
         assert terminal_ids.count(first_id) == 1
         assert terminal_ids.count(second_id) == 1
         steering, follow_up = runtime.queued_messages()
+        assert steering == ()
         assert follow_up == ()
-        assert len(steering) == 2
-        assert sum(first_id in message for message in steering) == 1
-        assert sum(second_id in message for message in steering) == 1
+        assert len(notifications) == 2
+        assert sum(first_id in notification.content for notification in notifications) == 1
+        assert sum(second_id in notification.content for notification in notifications) == 1
         assert adapter.calls == 0
     finally:
         gateway.close()
@@ -1477,6 +1479,122 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_running_turn_queue(
         "queued turn done",
         "follow-up done",
     ]
+
+
+def test_real_node_bootstrap_migrates_legacy_queue_and_acknowledges_it(
+    tmp_path: Path,
+) -> None:
+    class NoModelRequestsAdapter:
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            raise AssertionError("legacy queue migration must not request the model")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "legacy-queue-migration-state.json"
+    home_dir = tmp_path / "home"
+    config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="legacy-queue-migration",
+    )
+    runtime = AgentRuntime(
+        model_adapter=NoModelRequestsAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=config,
+        home_dir=home_dir,
+    )
+    runtime.queue_steering_message("retry after restart")
+    runtime.queue_follow_up_message("summarize later")
+    service = TurnService(runtime=runtime, config=config, home_dir=home_dir)
+    process = NodeTuiProcess(
+        args=node_scripted_client_args(repo_root),
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": "[]",
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+
+    exit_code = run_node_tui_gateway(service=service, process=process)
+
+    assert exit_code == 0
+    assert runtime.queue_snapshot().active_records() == ()
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert [item["message"] for item in state["localRejectedSteers"]] == [
+        "retry after restart"
+    ]
+    assert [item["message"] for item in state["localFollowUps"]] == [
+        "summarize later"
+    ]
+    assert state["queuedPendingSteers"] == []
+    assert state["queuedRejectedSteers"] == []
+    assert state["queuedFollowUpInputs"] == []
+
+
+def test_real_node_resume_migrates_destination_legacy_queue_and_acknowledges_it(
+    tmp_path: Path,
+) -> None:
+    class NoModelRequestsAdapter:
+        def next_turn(self, *, items: object, tools: object) -> ModelTurnResult:
+            del items, tools
+            raise AssertionError("legacy queue migration must not request the model")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    dump_path = tmp_path / "resume-legacy-queue-migration-state.json"
+    home_dir = tmp_path / "home"
+    destination_config = AgentConfig(
+        workspace_root=tmp_path,
+        session_id="legacy-resume-destination",
+    )
+    runtime = AgentRuntime(
+        model_adapter=NoModelRequestsAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=destination_config,
+        home_dir=home_dir,
+    )
+    runtime._session_service.save_conversation(
+        Conversation(session_id="legacy-resume-destination")
+    )
+    runtime.queue_steering_message("retry after resume")
+    runtime.queue_follow_up_message("summarize after resume")
+    source_config = replace(destination_config, session_id="legacy-resume-source")
+    runtime.rebind_session(source_config)
+    runtime._session_service.save_conversation(
+        Conversation(session_id="legacy-resume-source")
+    )
+    service = TurnService(runtime=runtime, config=source_config, home_dir=home_dir)
+    process = NodeTuiProcess(
+        args=node_scripted_client_args(repo_root),
+        env={
+            **os.environ,
+            "MYCLI_NODE_TUI_SCRIPT": json.dumps(
+                [
+                    {
+                        "type": "session.resume",
+                        "session_id": "legacy-resume-destination",
+                    }
+                ]
+            ),
+            "MYCLI_NODE_TUI_STATE_DUMP": str(dump_path),
+        },
+        cwd=repo_root,
+    )
+
+    exit_code = run_node_tui_gateway(service=service, process=process)
+
+    assert exit_code == 0
+    assert runtime.queue_snapshot().active_records() == ()
+    state = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert state["sessionId"] == "legacy-resume-destination"
+    assert [item["message"] for item in state["localRejectedSteers"]] == [
+        "retry after resume"
+    ]
+    assert [item["message"] for item in state["localFollowUps"]] == [
+        "summarize after resume"
+    ]
+    assert state["queuedPendingSteers"] == []
+    assert state["queuedRejectedSteers"] == []
+    assert state["queuedFollowUpInputs"] == []
 
 
 def test_run_node_tui_gateway_with_real_node_scripted_client_failure_recovery_matrix(

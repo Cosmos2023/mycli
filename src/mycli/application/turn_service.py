@@ -36,7 +36,11 @@ from mycli.domain.runtime import (
     UserMessageInput,
     ViewMode,
 )
-from mycli.application.runtime.session_queue import QueueMutationResult
+from mycli.application.runtime.session_queue import (
+    LegacyQueueMigration,
+    QueueConflictError,
+    QueueMutationResult,
+)
 from mycli.domain.subagents import SubAgentRunSummary
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
@@ -320,6 +324,20 @@ class TurnService:
 
     def queue_snapshot(self) -> QueueSnapshot:
         return cast(QueueSnapshot, self._runtime.queue_snapshot())
+
+    def legacy_user_queue_migration(self) -> LegacyQueueMigration | None:
+        runtime = getattr(self, "_runtime", None)
+        migration = getattr(runtime, "legacy_user_queue_migration", None)
+        if not callable(migration):
+            return None
+        return cast(LegacyQueueMigration | None, migration())
+
+    def ack_legacy_user_queue_migration(self, token: str) -> None:
+        runtime = getattr(self, "_runtime", None)
+        acknowledge = getattr(runtime, "ack_legacy_user_queue_migration", None)
+        if not callable(acknowledge):
+            raise QueueConflictError("legacy queue migration is not available")
+        acknowledge(token)
 
     def next_queued_turn(self) -> QueuedInputRecord | None:
         return cast(QueuedInputRecord | None, self._runtime.next_queued_turn())

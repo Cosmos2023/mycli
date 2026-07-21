@@ -20,6 +20,8 @@ import {
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
+	legacyQueueMigrationToken,
+	runtimeStateWithLegacyQueueMigration,
 	type RuntimeShellState,
 	type RuntimeLocalUserInput,
 } from "./adapters/runtime-state.ts";
@@ -149,6 +151,7 @@ async function bootstrap(): Promise<void> {
 		client: { name: "mycli-shell-tui", version: "0.1.0" },
 	});
 	setRuntimeState(runtimeStateFromBootstrap(runtimeState, bootstrapPayload));
+	await acknowledgeLegacyQueueMigration(bootstrapPayload);
 	const transcriptPayload = await send("transcript.load", {
 		session_id: runtimeState.sessionId ?? undefined,
 		before: null,
@@ -177,6 +180,24 @@ async function loadSessions(): Promise<void> {
 		refreshRuntime();
 	} catch {
 		sessions = [];
+	}
+}
+
+async function acknowledgeLegacyQueueMigration(
+	payload: Record<string, unknown>,
+): Promise<void> {
+	const migrationToken = legacyQueueMigrationToken(payload);
+	if (!migrationToken) return;
+	try {
+		await send(
+			"turn.queue.migration.ack",
+			{ token: migrationToken },
+			{ recordErrors: false },
+		);
+	} catch (error) {
+		if (!(error instanceof GatewayRequestError && error.code === "queue_conflict")) {
+			throw error;
+		}
 	}
 }
 
@@ -443,9 +464,11 @@ async function selectSession(sessionId: string): Promise<void> {
 		session_title: session?.title ?? sessionId,
 	});
 	runtimeState = {
-		...runtimeState,
+		...runtimeStateWithLegacyQueueMigration(runtimeState, result),
 		transcript: [],
 	};
+	setRuntimeState(runtimeState);
+	await acknowledgeLegacyQueueMigration(result);
 	const transcriptPayload = await send("transcript.load", {
 		session_id: String(result.session_id ?? sessionId),
 		before: null,

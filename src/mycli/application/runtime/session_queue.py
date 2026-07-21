@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from threading import Lock
 from uuid import uuid4
 
@@ -28,6 +29,12 @@ class QueueConflictError(ValueError):
 
 class QueueCapacityError(ValueError):
     pass
+
+
+@dataclass(slots=True, frozen=True)
+class LegacyQueueMigration:
+    token: str
+    records: tuple[QueuedInputRecord, ...]
 
 
 QueueListener = Callable[[QueueSnapshot], None]
@@ -366,6 +373,85 @@ class SessionQueueCoordinator:
         self._notify(listeners, candidate)
         return records
 
+    def legacy_user_queue_migration(self) -> LegacyQueueMigration | None:
+        with self._lock:
+            records = tuple(
+                record
+                for record in self._snapshot.active_records()
+                if record.source != "task_notification"
+            )
+            if not records:
+                return None
+            token = self._migration_token(self._snapshot.revision, records)
+            return LegacyQueueMigration(token=token, records=records)
+
+    def ack_legacy_user_queue_migration(self, token: str) -> None:
+        normalized_token = token.strip()
+        with self._lock:
+            current = self._snapshot
+            records = tuple(
+                record
+                for record in current.active_records()
+                if record.source != "task_notification"
+            )
+            expected = self._migration_token(current.revision, records) if records else None
+            if not normalized_token or normalized_token != expected:
+                raise QueueConflictError("legacy queue migration token is stale")
+            record_ids = {record.queue_id for record in records}
+            candidate = replace(
+                current,
+                revision=current.revision + 1,
+                pending_steers=tuple(
+                    record for record in current.pending_steers if record.queue_id not in record_ids
+                ),
+                rejected_steers=tuple(
+                    record for record in current.rejected_steers if record.queue_id not in record_ids
+                ),
+                follow_ups=tuple(
+                    record for record in current.follow_ups if record.queue_id not in record_ids
+                ),
+            )
+            listeners = self._persist_and_publish_locked(candidate)
+        self._notify(listeners, candidate)
+
+    def drain_legacy_task_notifications(self) -> tuple[QueuedInputRecord, ...]:
+        with self._lock:
+            current = self._snapshot
+            records = tuple(
+                record
+                for record in current.active_records()
+                if record.source == "task_notification"
+            )
+            if not records:
+                return ()
+            record_ids = {record.queue_id for record in records}
+            candidate = replace(
+                current,
+                revision=current.revision + 1,
+                pending_steers=tuple(
+                    record for record in current.pending_steers if record.queue_id not in record_ids
+                ),
+                rejected_steers=tuple(
+                    record for record in current.rejected_steers if record.queue_id not in record_ids
+                ),
+                follow_ups=tuple(
+                    record for record in current.follow_ups if record.queue_id not in record_ids
+                ),
+            )
+            listeners = self._persist_and_publish_locked(candidate)
+        self._notify(listeners, candidate)
+        return records
+
+    @staticmethod
+    def _migration_token(
+        revision: int,
+        records: tuple[QueuedInputRecord, ...],
+    ) -> str:
+        identity = "\n".join(
+            f"{record.queue_id}\0{record.kind}\0{record.updated_at}" for record in records
+        )
+        return sha256(f"{revision}\n{identity}".encode()).hexdigest()
+
     def _record_for_client_turn_id(self, client_turn_id: str) -> QueuedInputRecord | None:
         normalized = client_turn_id.strip()
         return next(
@@ -487,6 +573,7 @@ class SessionQueueCoordinator:
 
 
 __all__ = [
+    "LegacyQueueMigration",
     "QueueCapacityError",
     "QueueConflictError",
     "QueueMutationResult",

@@ -1430,6 +1430,50 @@ test("runtime adapter restores structured queue state from bootstrap", () => {
 	assert.deepEqual(state.queuedFollowUpInputs.map((item) => item.message), ["later"]);
 });
 
+test("legacy queue migration imports user records into local queues once", () => {
+	const payload = {
+		session_id: "session-1",
+		status: {
+			queue_revision: 4,
+			queue_items: {
+				pending_steers: [{ queue_id: "queue-1", message: "inspect" }],
+				rejected_steers: [],
+				follow_ups: [{ queue_id: "queue-2", message: "later" }],
+			},
+		},
+		legacy_user_queue_migration: {
+			token: "migration-1",
+			records: [
+				{ queue_id: "queue-1", kind: "pending_steer", text: "inspect" },
+				{
+					queue_id: "queue-2",
+					client_user_message_id: "client-2",
+					kind: "follow_up",
+					text: "later",
+					local_images: [{ path: "/tmp/later.png", placeholder: "[image #1]" }],
+				},
+			],
+		},
+	};
+
+	let state = runtimeStateFromBootstrap(initialRuntimeState(), payload);
+	state = runtimeStateFromBootstrap(state, payload);
+
+	assert.deepEqual(state.localRejectedSteers, [
+		{ clientUserMessageId: "queue-1", message: "inspect", attachments: [] },
+	]);
+	assert.deepEqual(state.localFollowUps, [
+		{
+			clientUserMessageId: "client-2",
+			message: "later",
+			attachments: [{ path: "/tmp/later.png", placeholder: "[image #1]" }],
+		},
+	]);
+	assert.deepEqual(state.queuedPendingSteers, []);
+	assert.deepEqual(state.queuedRejectedSteers, []);
+	assert.deepEqual(state.queuedFollowUpInputs, []);
+});
+
 test("runtime adapter projects pending steering through rejection and removal", () => {
 	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.queue.updated", {
 		queue_revision: 1,

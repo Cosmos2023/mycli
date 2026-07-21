@@ -379,13 +379,15 @@ function footerLiveState(state: RuntimeShellState): string {
 
 export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
 	const status = recordValue(payload.status);
+	const migration = recordValue(payload.legacy_user_queue_migration);
+	const hasLegacyMigration = Array.isArray(migration.records) && migration.records.length > 0;
 	const trust = trustFromPayload(payload.trust ?? status.trust, String(payload.workspace ?? state.workspace));
 	const welcome = recordValue(payload.welcome);
 	const startupMark = recordValue(welcome.startup_mark);
 	const welcomeText = welcome
 		? `${String(startupMark.text ?? "mycli")}\n${String(welcome.workspace ?? payload.workspace ?? "")}`.trim()
 		: "mycli";
-	const nextState = applyQueuePayload({
+	const bootstrapState = {
 		...state,
 		sessionId: stringValue(payload.session_id) ?? state.sessionId,
 		sessionTitle: stringValue(payload.session_title) ?? state.sessionTitle,
@@ -402,11 +404,40 @@ export function runtimeStateFromBootstrap(state: RuntimeShellState, payload: Rec
 			...state.transcript,
 			{ id: "welcome", type: "system_notice", text: welcomeText, folded: false, metadata: welcome },
 		],
-	}, status, "status");
+	};
+	const nextState = hasLegacyMigration
+		? runtimeStateWithMessageQueues(bootstrapState, {
+			pendingSteers: [],
+			rejectedSteers: [],
+			followUps: [],
+		})
+		: applyQueuePayload(bootstrapState, status, "status");
 	return applyShellBootstrap(
-		nextState,
+		runtimeStateWithLegacyQueueMigration(nextState, payload),
 		Array.isArray(payload.background_shells) ? payload.background_shells : status.background_shells,
 	);
+}
+
+export function legacyQueueMigrationToken(payload: Record<string, unknown>): string | null {
+	return stringValue(recordValue(payload.legacy_user_queue_migration).token);
+}
+
+export function runtimeStateWithLegacyQueueMigration(
+	state: RuntimeShellState,
+	payload: Record<string, unknown>,
+): RuntimeShellState {
+	const migration = recordValue(payload.legacy_user_queue_migration);
+	const migrated = applyLegacyQueueMigration(
+		state,
+		migration,
+	);
+	return Array.isArray(migration.records) && migration.records.length > 0
+		? runtimeStateWithMessageQueues(migrated, {
+			pendingSteers: [],
+			rejectedSteers: [],
+			followUps: [],
+		})
+		: migrated;
 }
 
 export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Record<string, unknown>): RuntimeShellState {
@@ -971,6 +1002,48 @@ function appendLocalInput(
 		throw new Error(`conflicting local user message id: ${normalized.clientUserMessageId}`);
 	}
 	return inputs;
+}
+
+function applyLegacyQueueMigration(
+	state: RuntimeShellState,
+	migration: Record<string, unknown>,
+): RuntimeShellState {
+	if (!Array.isArray(migration.records)) return state;
+	let nextState = state;
+	for (const value of migration.records) {
+		const record = recordValue(value);
+		const queueId = stringValue(record.queue_id);
+		const message = stringValue(record.text) ?? stringValue(record.message);
+		const kind = stringValue(record.kind);
+		if (!queueId || !message || !kind) continue;
+		const input: RuntimeLocalUserInput = {
+			clientUserMessageId: stringValue(record.client_user_message_id) ?? queueId,
+			message,
+			attachments: localImageAttachments(record.local_images),
+		};
+		if (kind === "follow_up") {
+			nextState = runtimeStateWithLocalFollowUp(nextState, input);
+		} else if (kind === "pending_steer" || kind === "rejected_steer") {
+			nextState = {
+				...nextState,
+				localRejectedSteers: appendLocalInput(nextState.localRejectedSteers, input),
+			};
+		}
+	}
+	return nextState;
+}
+
+function localImageAttachments(value: unknown): MycliShellLocalImageAttachment[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item, index) => {
+		const record = recordValue(item);
+		const path = stringValue(record.path);
+		if (!path) return [];
+		return [{
+			path,
+			placeholder: stringValue(record.placeholder) ?? `[image #${index + 1}]`,
+		}];
+	});
 }
 
 export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInputs: string[]): RuntimeShellState {

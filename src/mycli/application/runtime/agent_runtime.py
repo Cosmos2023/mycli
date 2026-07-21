@@ -128,8 +128,13 @@ from mycli.tools.shell_resolver import detect_shell_profile_with_diagnostics
 from mycli.tools.skill import SkillTool
 from mycli.application.runtime.context import RuntimeContextBuilder
 from mycli.application.runtime.session_queue import (
+    LegacyQueueMigration,
     QueueMutationResult,
     SessionQueueCoordinator,
+)
+from mycli.application.runtime.runtime_notification_inbox import (
+    RuntimeNotificationInbox,
+    RuntimeNotificationRecord,
 )
 from mycli.application.runtime.approval_decisions import RuntimeApprovalDecisions
 from mycli.application.runtime.ledger import RuntimeEventLedger
@@ -339,6 +344,7 @@ class AgentRuntime:
             workspace_root=config.workspace_root,
             session_store=self._session_store,
         )
+        self._runtime_notification_inbox = RuntimeNotificationInbox()
         self._session_queue = self._restore_session_queue(config.session_id)
         memory_selector = ModelFileMemorySelector(
             client=_SummarizerClientAdapter(
@@ -964,6 +970,12 @@ class AgentRuntime:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if source == "user" and message.lstrip().startswith("<task-notification>"):
             source = "task_notification"
+        if source == "task_notification":
+            self._runtime_notification_inbox.enqueue_serialized(
+                message,
+                metadata={"source": "task_notification"},
+            )
+            return self.queued_messages()
         current_turn_id = active_turn_id or getattr(self, "_current_turn_id", None)
         target_turn_id = expected_turn_id or current_turn_id or "turn_pending"
         if (
@@ -992,15 +1004,12 @@ class AgentRuntime:
         )
         return self.queued_messages()
 
-    def drain_task_notifications(self, turn_id: str) -> tuple[QueuedInputRecord, ...]:
-        records = tuple(
-            record
-            for record in self._session_queue.claim_pending_steers(turn_id)
-            if record.source == "task_notification"
-        )
-        if records:
-            self._session_queue.commit(tuple(record.queue_id for record in records))
-        return records
+    def drain_task_notifications(
+        self,
+        turn_id: str,
+    ) -> tuple[RuntimeNotificationRecord, ...]:
+        del turn_id
+        return self._runtime_notification_inbox.drain()
 
     def queue_steering_input(
         self,
@@ -1054,8 +1063,8 @@ class AgentRuntime:
     def queue_task_notification(
         self,
         notification: TaskNotification,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return self.queue_steering_message(notification.to_xml(), source="task_notification")
+    ) -> None:
+        self._runtime_notification_inbox.enqueue_task_notification(notification)
 
     def register_shell_lifecycle_listener(
         self,
@@ -1114,6 +1123,12 @@ class AgentRuntime:
 
     def queue_snapshot(self) -> QueueSnapshot:
         return self._session_queue.snapshot()
+
+    def legacy_user_queue_migration(self) -> LegacyQueueMigration | None:
+        return self._session_queue.legacy_user_queue_migration()
+
+    def ack_legacy_user_queue_migration(self, token: str) -> None:
+        self._session_queue.ack_legacy_user_queue_migration(token)
 
     def subscribe_queue(
         self,
@@ -1202,12 +1217,21 @@ class AgentRuntime:
             if isinstance((queue_id := item.metadata.get("queue_id")), str)
             and queue_id
         }
-        return SessionQueueCoordinator.restore(
+        coordinator = SessionQueueCoordinator.restore(
             session_id=session_id,
             session_service=self._session_service,
             committed_queue_ids=committed_queue_ids,
             active_turn_id=None,
         )
+        for record in coordinator.drain_legacy_task_notifications():
+            self._runtime_notification_inbox.enqueue_serialized(
+                record.text,
+                metadata={
+                    "source": "task_notification",
+                    "legacy_queue_id": record.queue_id,
+                },
+            )
+        return coordinator
 
     def recent_subagents(self) -> tuple[SubAgentRunSummary, ...]:
         return self._sub_agent_service.recent_runs()
@@ -2344,6 +2368,7 @@ class AgentRuntime:
         return self._approval_decisions.format_allowed_choices(options)
 
     def rebind_session(self, config: AgentConfig) -> None:
+        self._runtime_notification_inbox = RuntimeNotificationInbox()
         session_queue = self._restore_session_queue(config.session_id)
         self._config = config
         self._session_queue = session_queue

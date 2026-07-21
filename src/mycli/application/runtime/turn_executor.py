@@ -1536,15 +1536,15 @@ class TurnExecutor:
             conversation.append(
                 Message(
                     role="user",
-                    content=notification.text,
+                    content=notification.content,
                     blocks=self._user_message_blocks(
-                        user_message=notification.text,
-                        image_paths=notification.image_paths,
+                        user_message=notification.content,
+                        image_paths=(),
                     ),
                     metadata={
+                        **notification.metadata,
                         "internal": True,
                         "source": "task_notification",
-                        "queue_id": notification.queue_id,
                     },
                 )
             )
