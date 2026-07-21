@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from mycli.domain.conversation import Message
 from mycli.domain.runtime import HistoryItem, HistoryItemType
 from mycli.services.transcript_projection import (
     SHELL_TRANSCRIPT_MAX_CHARS,
     project_history_item_for_tui,
     project_history_items_for_tui,
     project_history_items_for_snapshot,
+    project_messages_for_snapshot,
     snapshot_item_to_tui_items,
 )
 
@@ -43,6 +45,60 @@ def test_snapshot_projection_keeps_only_tui_visible_history() -> None:
         "created_at": "2026-07-12T10:00:00Z",
     }
     assert "provider_blob" not in str(projected)
+
+
+def test_snapshot_projection_hides_internal_turn_aborted_marker() -> None:
+    items = (
+        HistoryItem(
+            id="user-1",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="inspect the repo",
+        ),
+        HistoryItem(
+            id="abort-marker",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="<turn_aborted>internal recovery marker</turn_aborted>",
+            metadata={"event_kind": "turn_aborted_marker"},
+        ),
+    )
+
+    projected = project_history_items_for_snapshot(items)
+
+    assert [item.text for item in projected] == ["inspect the repo"]
+
+
+def test_message_fallback_hides_internal_turn_aborted_marker() -> None:
+    messages = [
+        Message(role="user", content="inspect the repo"),
+        Message(
+            role="user",
+            content="<turn_aborted>internal recovery marker</turn_aborted>",
+            metadata={"event_kind": "turn_aborted_marker"},
+        ),
+    ]
+
+    projected = project_messages_for_snapshot(messages)
+
+    assert [item.text for item in projected] == ["inspect the repo"]
+
+
+def test_legacy_snapshot_hides_persisted_turn_aborted_marker() -> None:
+    marker = (
+        "<turn_aborted>\n"
+        "The user interrupted the previous turn on purpose. Any running tools or "
+        "commands may have partially executed.\n"
+        "</turn_aborted>"
+    )
+
+    projected = snapshot_item_to_tui_items(
+        {"id": "abort-marker", "type": "user_message", "text": marker}
+    )
+
+    assert projected == ()
 
 
 def test_command_result_is_visible_to_tui_but_not_rewritten() -> None:

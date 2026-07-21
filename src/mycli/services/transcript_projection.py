@@ -10,6 +10,13 @@ from mycli.services.tool_display import ToolDisplayEnvelope
 
 SHELL_TRANSCRIPT_MAX_CHARS = 8_000
 
+_LEGACY_TURN_ABORTED_MARKER = (
+    "<turn_aborted>\n"
+    "The user interrupted the previous turn on purpose. Any running tools or "
+    "commands may have partially executed.\n"
+    "</turn_aborted>"
+)
+
 _SHELL_TOOL_NAMES = frozenset({"bash", "bashoutput", "run_shell", "shell"})
 _VISIBLE_HISTORY_TYPES = frozenset(
     {
@@ -123,6 +130,11 @@ def project_history_items_for_snapshot(
     for item in items:
         if item.type not in _VISIBLE_HISTORY_TYPES:
             continue
+        if (
+            item.type is HistoryItemType.USER_MESSAGE
+            and _is_internal_turn_aborted_marker(item.metadata)
+        ):
+            continue
         if item.type is HistoryItemType.COMMAND_RESULT:
             projected.append(_command_result_snapshot_item(item))
             continue
@@ -175,6 +187,8 @@ def project_messages_for_snapshot(
     for index, message in enumerate(messages, start=1):
         item_id = f"message-{index}"
         if message.role == "user":
+            if _is_internal_turn_aborted_marker(message.metadata):
+                continue
             projected.append(
                 TranscriptSnapshotItem(id=item_id, type="user_message", text=message.content)
             )
@@ -200,6 +214,10 @@ def project_messages_for_snapshot(
                 )
             )
     return tuple(projected)
+
+
+def _is_internal_turn_aborted_marker(metadata: dict[str, object]) -> bool:
+    return metadata.get("event_kind") == "turn_aborted_marker"
 
 
 def project_history_items_for_tui(
@@ -264,6 +282,8 @@ def snapshot_item_to_tui_items(
         return ()
     text = _optional_str(payload.get("text")) or ""
     created_at = _optional_str(payload.get("created_at")) or ""
+    if item_type == "user_message" and text == _LEGACY_TURN_ABORTED_MARKER:
+        return ()
     if item_type == "command_result":
         raw_metadata = payload.get("metadata")
         metadata = (
