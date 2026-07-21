@@ -142,7 +142,7 @@ class RuntimeEventLedger:
         for index, item in enumerate(turn_items, start=1):
             if item.metadata.get("history_committed") is True:
                 continue
-            history_item_type = self._history_type_for_turn_item(item)
+            history_item_type = self._provider_transcript_type_for_turn_item(item)
             if history_item_type is None:
                 continue
             pending.append(

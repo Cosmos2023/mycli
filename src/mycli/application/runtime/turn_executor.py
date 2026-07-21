@@ -750,10 +750,6 @@ class TurnExecutor:
 
         while True:
             _raise_if_interrupted(interrupt_token)
-            self._persist_completed_turn_items_before_user_input(
-                turn_id=turn_id,
-                turn_items=turn_items,
-            )
             self._drain_active_turn_input(
                 conversation=conversation,
                 turn_id=turn_id,
@@ -1526,6 +1522,11 @@ class TurnExecutor:
             return
         inputs = runtime.drain_active_turn_input(turn_id)
         try:
+            if inputs:
+                runtime._persist_completed_turn_items(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                )
             self._commit_user_inputs(
                 inputs,
                 conversation=conversation,
@@ -1588,13 +1589,14 @@ class TurnExecutor:
         stream_sink: Callable[[RuntimeStreamEvent], None] | None,
     ) -> None:
         runtime = self._runtime
-        self._persist_completed_turn_items_before_user_input(
-            turn_id=turn_id,
-            turn_items=turn_items,
-        )
         if runtime.active_turn_mailbox_id() != turn_id:
             return
         leftovers = runtime.close_active_turn_mailbox(turn_id)
+        if leftovers:
+            runtime._persist_completed_turn_items(
+                turn_id=turn_id,
+                turn_items=turn_items,
+            )
         self._commit_user_inputs(
             leftovers,
             conversation=conversation,
@@ -1602,21 +1604,6 @@ class TurnExecutor:
             turn_items=turn_items,
             stream_sink=stream_sink,
         )
-
-    def _persist_completed_turn_items_before_user_input(
-        self,
-        *,
-        turn_id: str,
-        turn_items: list[TurnItem],
-    ) -> None:
-        try:
-            self._runtime._persist_completed_turn_items(
-                turn_id=turn_id,
-                turn_items=turn_items,
-            )
-        except Exception:
-            self._runtime.close_active_turn_mailbox(turn_id)
-            raise
 
     def _recovery_action_for_model_error(
         self,
