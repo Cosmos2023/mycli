@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Callable
 
@@ -130,6 +131,47 @@ class RuntimeEventLedger:
                 )
             )
         return tuple(history_items)
+
+    def persist_completed_turn_items(
+        self,
+        *,
+        turn_id: str,
+        turn_items: list[TurnItem],
+    ) -> tuple[HistoryItem, ...]:
+        pending: list[tuple[int, HistoryItem]] = []
+        for index, item in enumerate(turn_items, start=1):
+            if item.metadata.get("history_committed") is True:
+                continue
+            history_item_type = self._history_type_for_turn_item(item)
+            if history_item_type is None:
+                continue
+            pending.append(
+                (
+                    index - 1,
+                    HistoryItem(
+                        id=f"{turn_id}:item:{index}",
+                        thread_id=self._session_id,
+                        turn_id=turn_id,
+                        type=history_item_type,
+                        text=item.text,
+                        tool_name=item.tool_name,
+                        call_id=item.call_id,
+                        metadata=dict(item.metadata),
+                    ),
+                )
+            )
+        if not pending:
+            return ()
+
+        committed = tuple(history_item for _item_index, history_item in pending)
+        self._session_service.append_history_items(self._session_id, committed)
+        for item_index, _history_item in pending:
+            item = turn_items[item_index]
+            turn_items[item_index] = replace(
+                item,
+                metadata={**item.metadata, "history_committed": True},
+            )
+        return committed
 
     def provider_history_items_from_turn(
         self,

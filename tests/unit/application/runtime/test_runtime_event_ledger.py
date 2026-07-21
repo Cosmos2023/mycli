@@ -34,6 +34,19 @@ class _NoopSessionService(SessionService):
         return ()
 
 
+class _RecordingSessionService(_NoopSessionService):
+    def __init__(self) -> None:
+        self.appended: list[HistoryItem] = []
+
+    def append_history_items(
+        self,
+        session_id: str,
+        items: tuple[HistoryItem, ...],
+    ) -> None:
+        assert session_id == "demo"
+        self.appended.extend(items)
+
+
 class _NoopTraceService:
     def append(self, session_id: str, event: RuntimeTraceEvent) -> None:
         del session_id, event
@@ -50,6 +63,45 @@ def _ledger() -> RuntimeEventLedger:
         trace_service=_NoopTraceService(),  # type: ignore[arg-type]
         continuation_state_provider=lambda: None,
     )
+
+
+def test_runtime_event_ledger_incrementally_commits_completed_items_once() -> None:
+    service = _RecordingSessionService()
+    ledger = RuntimeEventLedger(
+        session_id="demo",
+        session_service=service,
+        trace_service=_NoopTraceService(),  # type: ignore[arg-type]
+        continuation_state_provider=lambda: None,
+    )
+    turn_items = [
+        TurnItem(
+            type=TurnItemType.USER_MESSAGE,
+            text="start",
+            metadata={"history_committed": True},
+        ),
+        TurnItem(type=TurnItemType.ASSISTANT_MESSAGE, text="first answer"),
+    ]
+
+    committed = ledger.persist_completed_turn_items(
+        turn_id="turn-1",
+        turn_items=turn_items,
+    )
+
+    assert [item.id for item in committed] == ["turn-1:item:2"]
+    assert [item.text for item in service.appended] == ["first answer"]
+    assert turn_items[1].metadata["history_committed"] is True
+    assert ledger.persist_completed_turn_items(
+        turn_id="turn-1",
+        turn_items=turn_items,
+    ) == ()
+    turn = TurnRecord(
+        thread_id="demo",
+        turn_id="turn-1",
+        status=TurnStatus.COMPLETED,
+        started_at="2026-07-21T00:00:00Z",
+        items=tuple(turn_items),
+    )
+    assert ledger.history_items_from_turn(turn) == ()
 
 
 def test_tool_display_survives_ledger_history_and_snapshot_projection() -> None:
