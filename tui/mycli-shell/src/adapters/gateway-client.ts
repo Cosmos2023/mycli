@@ -13,7 +13,7 @@ export type RpcResponse = {
 	jsonrpc: "2.0";
 	id: string;
 	result?: JsonObject;
-	error?: { code: string; message: string };
+	error?: { code: string; message: string; data?: JsonObject };
 };
 
 export type RpcNotification = {
@@ -59,12 +59,24 @@ export function decodeMessage(line: string): RpcMessage {
 export class GatewayRequestError extends Error {
 	readonly code: string;
 	readonly method: string;
+	readonly data: JsonObject;
 
-	constructor({ code, message, method }: { code: string; message: string; method: string }) {
+	constructor({
+		code,
+		message,
+		method,
+		data = {},
+	}: {
+		code: string;
+		message: string;
+		method: string;
+		data?: JsonObject;
+	}) {
 		super(message);
 		this.name = "GatewayRequestError";
 		this.code = code;
 		this.method = method;
+		this.data = data;
 	}
 }
 
@@ -174,6 +186,7 @@ export class GatewayClient {
 						code: message.error.code,
 						message: message.error.message,
 						method: pending.method,
+						data: message.error.data ?? {},
 					}),
 				);
 				return;

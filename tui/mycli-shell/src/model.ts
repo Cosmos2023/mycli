@@ -235,6 +235,11 @@ export type MycliShellQueuedInputPreview = {
 	hasImages: boolean;
 };
 
+export type MycliShellLocalImageAttachment = {
+	path: string;
+	placeholder: string;
+};
+
 export type MycliShellPendingInput = {
 	pendingSteers: MycliShellQueuedInputPreview[];
 	rejectedSteers: MycliShellQueuedInputPreview[];

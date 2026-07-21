@@ -9,6 +9,12 @@ import {
 	runtimeStateFromTranscript,
 	runtimeStateWithCommandResult,
 	runtimeStateWithUserMessage,
+	runtimeStateWithPendingSteer,
+	runtimeStateWithSubmittingMessage,
+	runtimeStateWithLocalFollowUp,
+	runtimeStateRejectPendingSteer,
+	popLastLocalFollowUp,
+	nextLocalUserInput,
 	sessionsFromResult,
 	sessionTreeFromResult,
 	settingsFromResult,
@@ -1488,6 +1494,95 @@ test("runtime adapter moves a consumed steer from pending input into transcript"
 	const shell = projectRuntimeState(state);
 	assert.equal(shell.pendingInput, undefined);
 	assert.deepEqual(shell.messages.map((message) => message.text), ["inspect output"]);
+});
+
+test("completed user item commits a pending steer exactly once", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "client-1",
+		message: "inspect",
+		attachments: [],
+	});
+	const payload = {
+		turn_id: "turn-1",
+		item: {
+			id: "turn-1:user:client-1",
+			type: "user_message",
+			client_user_message_id: "client-1",
+			content: "inspect",
+			source: "steer",
+		},
+	};
+
+	state = reduceRuntimeEvent(state, "item.completed", payload);
+	state = reduceRuntimeEvent(state, "item.completed", payload);
+
+	assert.equal(state.localPendingSteers.length, 0);
+	assert.deepEqual(projectRuntimeState(state).messages.map((item) => item.text), ["inspect"]);
+});
+
+test("completed user item commits without local pending state", () => {
+	let state = runtimeStateWithSubmittingMessage(initialRuntimeState(), {
+		clientUserMessageId: "other-client",
+		message: "other",
+		attachments: [],
+	});
+	state = reduceRuntimeEvent(state, "item.completed", {
+		turn_id: "turn-1",
+		item: {
+			id: "turn-1:user:client-1",
+			type: "user_message",
+			client_user_message_id: "client-1",
+			content: "inspect",
+			source: "steer",
+		},
+	});
+
+	assert.deepEqual(projectRuntimeState(state).messages.map((item) => item.text), ["inspect"]);
+	assert.equal(state.localSubmittingMessages.length, 1);
+});
+
+test("local rejected inputs precede follow-ups and edit-last restores latest follow-up", () => {
+	let state = runtimeStateWithLocalFollowUp(initialRuntimeState(), {
+		clientUserMessageId: "follow-1",
+		message: "later one",
+		attachments: [],
+	});
+	state = runtimeStateWithLocalFollowUp(state, {
+		clientUserMessageId: "follow-2",
+		message: "later two",
+		attachments: [],
+	});
+	state = runtimeStateWithPendingSteer(state, {
+		clientUserMessageId: "steer-1",
+		message: "retry first",
+		attachments: [],
+	});
+	state = runtimeStateRejectPendingSteer(state, "steer-1");
+
+	assert.equal(nextLocalUserInput(state)?.kind, "rejected");
+	assert.equal(nextLocalUserInput(state)?.input.message, "retry first");
+	const popped = popLastLocalFollowUp(state);
+	assert.equal(popped.input?.message, "later two");
+	assert.deepEqual(popped.state.localFollowUps.map((item) => item.message), ["later one"]);
+});
+
+test("session changes clear transient local user input queues", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "inspect",
+		attachments: [],
+	});
+	state = runtimeStateWithLocalFollowUp(state, {
+		clientUserMessageId: "follow-1",
+		message: "later",
+		attachments: [],
+	});
+	state = reduceRuntimeEvent(state, "session.changed", { session_id: "session-2" });
+
+	assert.deepEqual(state.localPendingSteers, []);
+	assert.deepEqual(state.localRejectedSteers, []);
+	assert.deepEqual(state.localFollowUps, []);
+	assert.deepEqual(state.localSubmittingMessages, []);
 });
 
 test("gateway steering uses the active server turn without local durable fallback", () => {

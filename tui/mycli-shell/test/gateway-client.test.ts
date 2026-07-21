@@ -47,6 +47,32 @@ test("gateway client ignores input after closure", async () => {
 	client.stop();
 });
 
+test("gateway client exposes structured error data", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const client = new GatewayClient({ input, output });
+	client.start();
+
+	const pending = client.send("turn.steer", {});
+	input.write(`${JSON.stringify({
+		jsonrpc: "2.0",
+		id: "1",
+		error: {
+			code: "turn_id_mismatch",
+			message: "stale turn",
+			data: { actual_turn_id: "turn-2" },
+		},
+	})}\n`);
+
+	await assert.rejects(
+		pending,
+		(error) =>
+			error instanceof GatewayRequestError &&
+			error.data.actual_turn_id === "turn-2",
+	);
+	client.stop();
+});
+
 test("inline resume loads the destination before adding one transient notice", async () => {
 	const calls = ["command.run"];
 	const source = {

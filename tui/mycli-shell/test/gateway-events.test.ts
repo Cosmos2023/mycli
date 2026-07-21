@@ -61,6 +61,29 @@ test("gateway event deduper renders direct and mirrored Plan updates once", () =
 	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["plan_update"]);
 });
 
+test("gateway event deduper commits direct and mirrored user lifecycle once", () => {
+	const deduper = new GatewayEventDeduper();
+	let state = initialRuntimeState();
+	const payload = {
+		turn_id: "turn-1",
+		item: {
+			id: "turn-1:user:client-1",
+			type: "user_message",
+			client_user_message_id: "client-1",
+			content: "inspect",
+			source: "steer",
+		},
+	};
+
+	for (const item of [event("item.completed", payload), runtimeEvent("item.completed", payload)]) {
+		if (deduper.shouldConsume(item)) {
+			state = reduceRuntimeEvent(state, item.method, item.params);
+		}
+	}
+
+	assert.deepEqual(projectRuntimeState(state).messages.map((item) => item.text), ["inspect"]);
+});
+
 function event(method: string, params: Record<string, unknown>): GatewayEvent {
 	return { jsonrpc: "2.0", method, params };
 }

@@ -8,6 +8,7 @@ import type {
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
 	MycliShellMessage,
+	MycliShellLocalImageAttachment,
 	MycliShellModel,
 	MycliShellPendingApproval,
 	MycliShellResource,
@@ -65,6 +66,12 @@ export type RuntimeQueuedInputPreview = {
 	source?: string;
 };
 
+export type RuntimeLocalUserInput = {
+	clientUserMessageId: string;
+	message: string;
+	attachments: MycliShellLocalImageAttachment[];
+};
+
 export type RuntimeShellState = {
 	sessionId: string | null;
 	sessionTitle: string | null;
@@ -84,6 +91,10 @@ export type RuntimeShellState = {
 	queuedPendingSteers: RuntimeQueuedInputPreview[];
 	queuedRejectedSteers: RuntimeQueuedInputPreview[];
 	queuedFollowUpInputs: RuntimeQueuedInputPreview[];
+	localPendingSteers: RuntimeLocalUserInput[];
+	localRejectedSteers: RuntimeLocalUserInput[];
+	localFollowUps: RuntimeLocalUserInput[];
+	localSubmittingMessages: RuntimeLocalUserInput[];
 	hasPendingInput: boolean;
 	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
 	liveStatus: { state: string; text: string; kind?: string; message?: string } | null;
@@ -121,6 +132,10 @@ export function initialRuntimeState(): RuntimeShellState {
 		queuedPendingSteers: [],
 		queuedRejectedSteers: [],
 		queuedFollowUpInputs: [],
+		localPendingSteers: [],
+		localRejectedSteers: [],
+		localFollowUps: [],
+		localSubmittingMessages: [],
 		hasPendingInput: false,
 		queueActivity: null,
 		liveStatus: null,
@@ -144,18 +159,27 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 	const tools: MycliShellTool[] = [];
 	const bash: MycliShellBash[] = [];
 	const transcript: MycliShellTranscriptBlock[] = [];
-	const pendingSteers = state.queuedPendingSteers.map((item) => ({
+	const pendingSteers = state.localPendingSteers.map((item) => ({
+		text: item.message,
+		hasImages: item.attachments.length > 0,
+	})).concat(state.queuedPendingSteers.map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
-	}));
-	const rejectedSteers = state.queuedRejectedSteers.map((item) => ({
+	})));
+	const rejectedSteers = state.localRejectedSteers.map((item) => ({
+		text: item.message,
+		hasImages: item.attachments.length > 0,
+	})).concat(state.queuedRejectedSteers.map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
-	}));
-	const followUps = state.queuedFollowUpInputs.map((item) => ({
+	})));
+	const followUps = state.localFollowUps.map((item) => ({
+		text: item.message,
+		hasImages: item.attachments.length > 0,
+	})).concat(state.queuedFollowUpInputs.map((item) => ({
 		text: item.message,
 		hasImages: item.hasImages,
-	}));
+	})));
 
 	for (const item of state.transcript) {
 		if (isInternalTaskNotification(item.text)) {
@@ -287,10 +311,10 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			reasoningLevel: reasoningLevelFromStatus(state.status),
 			...usageFooterData(state.status),
 			queueCount: queuedInputCount(state),
-			steeringQueueCount: state.queuedPendingSteers.length,
-			followUpQueueCount: state.queuedRejectedSteers.length + state.queuedFollowUpInputs.length,
-			hasPendingInput: state.hasPendingInput,
-			queueActivity: state.queueActivity?.kind,
+			steeringQueueCount: pendingSteers.length,
+			followUpQueueCount: rejectedSteers.length + followUps.length,
+			hasPendingInput: queuedInputCount(state) > 0,
+			queueActivity: state.queueActivity?.kind ?? (queuedInputCount(state) > 0 ? "pending_input" : "idle"),
 			trust: state.trust.state ?? "unknown",
 			collaborationMode: state.collaborationMode,
 			liveState: footerLiveState(state),
@@ -507,6 +531,48 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			pendingApproval: null,
 			pendingClarification: null,
 			transcript: removeTransientClarificationItems(removeTransientApprovalItems(state.transcript)),
+		};
+	}
+	if (method === "item.started") {
+		return state;
+	}
+	if (method === "item.completed") {
+		const item = recordValue(params.item);
+		const itemId = stringValue(item.id);
+		const itemType = stringValue(item.type);
+		const clientUserMessageId = stringValue(item.client_user_message_id);
+		const content = textValue(item.content);
+		if (
+			itemType !== "user_message" ||
+			!itemId ||
+			!clientUserMessageId ||
+			!content?.trim() ||
+			isInternalTaskNotification(content)
+		) {
+			return state;
+		}
+		const withoutIdentity = (inputs: RuntimeLocalUserInput[]) =>
+			inputs.filter((input) => input.clientUserMessageId !== clientUserMessageId);
+		const transcript = state.transcript.some((entry) => entry.id === itemId)
+			? state.transcript
+			: [
+				...sealActiveAssistantStream(state.transcript, state.activeAssistantItemId),
+				{
+					id: itemId,
+					type: "user",
+					text: content,
+					folded: false,
+					metadata: item,
+				},
+			];
+		return {
+			...state,
+			activeAssistantItemId: null,
+			localPendingSteers: withoutIdentity(state.localPendingSteers),
+			localRejectedSteers: withoutIdentity(state.localRejectedSteers),
+			localFollowUps: withoutIdentity(state.localFollowUps),
+			localSubmittingMessages: withoutIdentity(state.localSubmittingMessages),
+			transcript,
 		};
 	}
 	if (method === "message.delta") {
@@ -773,6 +839,10 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			queuedPendingSteers: [],
 			queuedRejectedSteers: [],
 			queuedFollowUpInputs: [],
+			localPendingSteers: [],
+			localRejectedSteers: [],
+			localFollowUps: [],
+			localSubmittingMessages: [],
 			hasPendingInput: false,
 			queueActivity: null,
 			backgroundShells: {},
@@ -788,6 +858,119 @@ export function runtimeStateWithUserMessage(state: RuntimeShellState, message: s
 		...state,
 		transcript: [...state.transcript, { id: nextId("user"), type: "user", text: message, folded: false, metadata: {} }],
 	};
+}
+
+export function runtimeStateWithPendingSteer(
+	state: RuntimeShellState,
+	input: RuntimeLocalUserInput,
+): RuntimeShellState {
+	return {
+		...state,
+		localPendingSteers: appendLocalInput(state.localPendingSteers, input),
+	};
+}
+
+export function runtimeStateWithSubmittingMessage(
+	state: RuntimeShellState,
+	input: RuntimeLocalUserInput,
+): RuntimeShellState {
+	return {
+		...state,
+		localSubmittingMessages: appendLocalInput(state.localSubmittingMessages, input),
+	};
+}
+
+export function runtimeStateWithLocalFollowUp(
+	state: RuntimeShellState,
+	input: RuntimeLocalUserInput,
+): RuntimeShellState {
+	return {
+		...state,
+		localFollowUps: appendLocalInput(state.localFollowUps, input),
+	};
+}
+
+export function runtimeStateRejectPendingSteer(
+	state: RuntimeShellState,
+	clientUserMessageId: string,
+): RuntimeShellState {
+	const input = state.localPendingSteers.find(
+		(candidate) => candidate.clientUserMessageId === clientUserMessageId,
+	);
+	if (!input) return state;
+	return {
+		...state,
+		localPendingSteers: state.localPendingSteers.filter(
+			(candidate) => candidate.clientUserMessageId !== clientUserMessageId,
+		),
+		localRejectedSteers: appendLocalInput(state.localRejectedSteers, input),
+	};
+}
+
+export function restorePendingSteersAfterInterrupt(state: RuntimeShellState): RuntimeShellState {
+	return {
+		...state,
+		localRejectedSteers: state.localPendingSteers.reduce(
+			(inputs, input) => appendLocalInput(inputs, input),
+			state.localRejectedSteers,
+		),
+		localPendingSteers: [],
+	};
+}
+
+export function popLastLocalFollowUp(
+	state: RuntimeShellState,
+): { state: RuntimeShellState; input: RuntimeLocalUserInput | null } {
+	const input = state.localFollowUps.at(-1) ?? null;
+	return {
+		state: input ? { ...state, localFollowUps: state.localFollowUps.slice(0, -1) } : state,
+		input,
+	};
+}
+
+export function nextLocalUserInput(
+	state: RuntimeShellState,
+): { kind: "rejected" | "follow_up"; input: RuntimeLocalUserInput } | null {
+	const rejected = state.localRejectedSteers[0];
+	if (rejected) return { kind: "rejected", input: rejected };
+	const followUp = state.localFollowUps[0];
+	return followUp ? { kind: "follow_up", input: followUp } : null;
+}
+
+export function removeLocalUserInput(
+	state: RuntimeShellState,
+	clientUserMessageId: string,
+): RuntimeShellState {
+	const withoutIdentity = (inputs: RuntimeLocalUserInput[]) =>
+		inputs.filter((input) => input.clientUserMessageId !== clientUserMessageId);
+	return {
+		...state,
+		localPendingSteers: withoutIdentity(state.localPendingSteers),
+		localRejectedSteers: withoutIdentity(state.localRejectedSteers),
+		localFollowUps: withoutIdentity(state.localFollowUps),
+		localSubmittingMessages: withoutIdentity(state.localSubmittingMessages),
+	};
+}
+
+function appendLocalInput(
+	inputs: RuntimeLocalUserInput[],
+	input: RuntimeLocalUserInput,
+): RuntimeLocalUserInput[] {
+	const normalized = {
+		...input,
+		attachments: input.attachments.map((attachment) => ({ ...attachment })),
+	};
+	const existing = inputs.find(
+		(candidate) => candidate.clientUserMessageId === normalized.clientUserMessageId,
+	);
+	if (!existing) return [...inputs, normalized];
+	if (
+		existing.message !== normalized.message ||
+		JSON.stringify(existing.attachments) !== JSON.stringify(normalized.attachments)
+	) {
+		throw new Error(`conflicting local user message id: ${normalized.clientUserMessageId}`);
+	}
+	return inputs;
 }
 
 export function runtimeStateWithQueuedInputs(state: RuntimeShellState, queuedInputs: string[]): RuntimeShellState {
@@ -880,6 +1063,9 @@ export function runtimeStateWithMessageQueues(
 
 function queuedInputCount(state: RuntimeShellState): number {
 	const splitQueueCount =
+		state.localPendingSteers.length +
+		state.localRejectedSteers.length +
+		state.localFollowUps.length +
 		state.queuedPendingSteers.length +
 		state.queuedRejectedSteers.length +
 		state.queuedFollowUpInputs.length;
