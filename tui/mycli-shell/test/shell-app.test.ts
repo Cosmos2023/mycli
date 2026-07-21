@@ -2678,7 +2678,7 @@ test("mycli shell session selector handles empty state and selection", async () 
 	assert.equal(runtime.getState().footer.sessionName, "session-b");
 });
 
-test("mycli shell session selection inserts loaded history once into native scrollback", async () => {
+test("mycli shell session selection replaces native scrollback with loaded history once", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
 	terminal.rows = 16;
@@ -2724,7 +2724,7 @@ test("mycli shell session selection inserts loaded history once into native scro
 	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
 	assert.equal(output.match(/resumed history 0/g)?.length, 1);
 	assert.doesNotMatch(output, /Resume Session/);
-	assertNativeScrollbackSafeOutput(terminal.output);
+	assert.match(terminal.output, /\x1b\[3J/);
 });
 
 test("mycli shell keeps the session selector mounted until resume history is ready", async () => {

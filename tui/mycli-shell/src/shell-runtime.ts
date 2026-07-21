@@ -1663,7 +1663,7 @@ export class MycliShellRuntime {
 			},
 		});
 		await this.options.onSessionSelect?.(sessionId);
-		this.queueNativeTranscriptHistory();
+		this.queueNativeTranscriptHistory(true);
 	}
 
 	private async inspectResource(resource: MycliShellResource): Promise<void> {
