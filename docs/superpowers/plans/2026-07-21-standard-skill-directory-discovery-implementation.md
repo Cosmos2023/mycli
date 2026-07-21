@@ -13,12 +13,14 @@
 ### Task 1: Directory-Based Skill Discovery
 
 **Files:**
+- Modify: `pyproject.toml`
+- Modify: `uv.lock`
 - Modify: `src/mycli/services/skills/registry.py`
 - Test: `tests/unit/services/test_skill_registry.py`
 
 - [ ] **Step 1: Write failing registry tests**
 
-Add tests that create `skills/<name>/SKILL.md`, a nested `references/ignored.md`, and same-name definitions across built-in, user, shared repository, and mycli repository roots. Assert that only direct `SKILL.md` entries load, directory form overrides same-source flat form, and precedence is `repo > shared_repo > user > builtin`.
+Add tests that create a YAML-frontmatter `skills/<name>/SKILL.md`, a nested `references/ignored.md`, and same-name definitions across built-in, user, shared repository, and mycli repository roots. Assert that standard YAML and legacy TOML load, only direct `SKILL.md` entries load, directory form overrides same-source flat form, and precedence is `repo > shared_repo > user > builtin`.
 
 - [ ] **Step 2: Run the registry tests and verify RED**
 
@@ -51,7 +53,9 @@ Build `_directories` in low-to-high precedence order and replace the flat-only g
 (*sorted(root.glob("*.md")), *sorted(root.glob("*/SKILL.md")))
 ```
 
-Keep duplicate tracking unchanged so collisions in either format remain diagnosable.
+Keep duplicate tracking unchanged so collisions in either format remain diagnosable. Parse
+frontmatter as legacy TOML first and then standard YAML with `yaml.safe_load`, accepting only
+mapping payloads with string keys. Declare `pyyaml>=6.0.3` as a direct runtime dependency.
 
 - [ ] **Step 4: Run registry tests and verify GREEN**
 
@@ -148,4 +152,3 @@ Expected: pytest, Ruff, and mypy all pass.
 git add README.md
 git commit -m "docs: document standard skill directories"
 ```
-

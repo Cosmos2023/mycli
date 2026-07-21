@@ -43,17 +43,21 @@ Discovery is limited to direct children. mycli does not recursively treat files 
 
 ## Skill Format
 
-Both formats retain the existing TOML frontmatter contract:
+Directory-form `SKILL.md` files use Agent Skills YAML frontmatter:
 
 ```markdown
 ---
-name = "code-review"
-description = "Review code for correctness risks"
-trigger_hints = ["review"]
+name: code-review
+description: Review code for correctness risks
+trigger_hints:
+  - review
 ---
 
 Skill instructions.
 ```
+
+Existing flat skills with TOML frontmatter remain supported. The parser accepts both TOML and
+YAML for either path format so users can migrate paths and frontmatter independently.
 
 The skill name continues to come from frontmatter rather than the directory name. A mismatch
 does not prevent loading because existing skills may already use aliases.
@@ -79,9 +83,9 @@ them relative to the skill's `source_path`.
 Tests will cover:
 
 - Loading `skills/<name>/SKILL.md` and preserving its source path.
+- Parsing standard YAML frontmatter while retaining legacy TOML frontmatter.
 - Ignoring nested support markdown files.
 - Loading `.agents/skills` through application bootstrap.
 - Precedence across built-in, user, shared repository, and mycli repository sources.
 - Directory-form precedence over a same-source flat definition.
 - Continued loading of existing flat `*.md` skills and duplicate diagnostics.
-

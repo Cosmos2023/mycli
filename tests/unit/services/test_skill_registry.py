@@ -119,8 +119,10 @@ def test_skill_registry_discovers_standard_skill_directories_only(tmp_path: Path
     references_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        'name = "release-helper"\n'
-        'description = "Prepare releases"\n'
+        "name: release-helper\n"
+        "description: Prepare releases\n"
+        "trigger_hints:\n"
+        "  - release\n"
         "---\n"
         "Release instructions.\n",
         encoding="utf-8",
@@ -139,6 +141,7 @@ def test_skill_registry_discovers_standard_skill_directories_only(tmp_path: Path
     skill = registry.load("release-helper")
     assert skill is not None
     assert skill.body == "Release instructions."
+    assert skill.trigger_hints == ("release",)
     assert skill.source_path == str(skill_dir / "SKILL.md")
     assert registry.get("ignored-reference") is None
 

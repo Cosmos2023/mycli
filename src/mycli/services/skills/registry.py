@@ -6,6 +6,7 @@ from pathlib import Path
 import textwrap
 
 import tomllib
+import yaml  # type: ignore[import-untyped]
 
 from mycli.domain.skills import SkillDefinition, SkillMetadata
 
@@ -109,8 +110,22 @@ class SkillRegistry:
     def _split_skill_file(self, path: Path) -> tuple[str, dict[str, object], str]:
         raw_text = path.read_text(encoding="utf-8")
         _, frontmatter, body = raw_text.split("---", maxsplit=2)
-        payload = tomllib.loads(frontmatter)
+        payload = self._parse_frontmatter(frontmatter)
         return raw_text, payload, body
+
+    def _parse_frontmatter(self, frontmatter: str) -> dict[str, object]:
+        try:
+            return tomllib.loads(frontmatter)
+        except tomllib.TOMLDecodeError as toml_error:
+            try:
+                parsed: object = yaml.safe_load(frontmatter)
+            except yaml.YAMLError as yaml_error:
+                raise ValueError("skill frontmatter is neither TOML nor YAML") from yaml_error
+            if not isinstance(parsed, dict) or not all(
+                isinstance(key, str) for key in parsed
+            ):
+                raise ValueError("skill frontmatter must be a mapping") from toml_error
+            return {key: value for key, value in parsed.items() if isinstance(key, str)}
 
     def _coerce_trigger_hints(self, payload: dict[str, object]) -> tuple[str, ...]:
         raw_hints = payload.get("trigger_hints", [])

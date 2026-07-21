@@ -471,7 +471,7 @@ src/mycli/prompts/skills/
 
 `.agents/skills` 适合放入仓库并与其他 coding agent 共享；`.mycli/skills` 适合
 mycli 专属 skill。每个 skill 目录可以包含自己的 `scripts/`、`references/` 和
-`assets/`。
+`assets/`。标准 `SKILL.md` 使用 YAML frontmatter；原有 TOML frontmatter 继续兼容。
 
 为兼容已有配置，以上目录及内置目录中的扁平 `<skill-name>.md` 文件仍会加载。
 同名 skill 按以下顺序覆盖，右侧优先级更高：
