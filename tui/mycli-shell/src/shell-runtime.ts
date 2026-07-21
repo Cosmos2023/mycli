@@ -655,7 +655,13 @@ export class MycliShellRuntime {
 				sessions: this.state.sessions ?? [],
 				currentWorkspace: this.state.footer.cwd,
 				onSelect: (session) => {
-					void this.selectSession(session.id).finally(done);
+					void this.selectSession(session.id).then(
+						() => {
+							done();
+							this.queueNativeTranscriptHistory(true);
+						},
+						() => done(),
+					);
 				},
 				onCancel: () => done(),
 			});
@@ -1675,7 +1681,6 @@ export class MycliShellRuntime {
 			},
 		});
 		await this.options.onSessionSelect?.(sessionId);
-		this.queueNativeTranscriptHistory(true);
 	}
 
 	private async inspectResource(resource: MycliShellResource): Promise<void> {

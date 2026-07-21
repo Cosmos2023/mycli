@@ -2722,7 +2722,13 @@ test("mycli shell session selection replaces native scrollback with loaded histo
 	assert.ok(oldestHistory > header);
 	assert.ok(visibleTail > oldestHistory);
 	assert.equal(output.match(/mycli ctrl\+p commands/g)?.length, 1);
-	assert.equal(output.match(/resumed history 0/g)?.length, 1);
+	for (let index = 0; index < 30; index += 1) {
+		assert.equal(
+			output.match(new RegExp(`resumed history ${index}(?!\\d)`, "g"))?.length,
+			1,
+			`resumed history ${index} should render once`,
+		);
+	}
 	assert.doesNotMatch(output, /Resume Session/);
 	assert.match(terminal.output, /\x1b\[3J/);
 });
