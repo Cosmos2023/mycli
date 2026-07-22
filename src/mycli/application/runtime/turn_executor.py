@@ -435,7 +435,11 @@ class TurnExecutor:
             runtime._session_service.clear_pending_decision(runtime._config.session_id)
             runtime._session_service.clear_suspended_turn(runtime._config.session_id)
             message = f"Rejected {decision.tool_call.name}. Pending decision cleared."
-            runtime._memory_service.append_session_summary(runtime._config.session_id, message)
+            if runtime._config.memory_enabled:
+                runtime._memory_service.append_session_summary(
+                    runtime._config.session_id,
+                    message,
+                )
             user_message = suspended.user_message if suspended is not None else ""
             return runtime._finalize_response(
                 response=TurnResponse(
@@ -1466,7 +1470,7 @@ class TurnExecutor:
                         runtime._config.session_id,
                         assistant_message,
                     )
-                    memory_updates = (
+                    if runtime._config.memory_extraction_enabled:
                         runtime._memory_extraction_service.maybe_start_background_extraction(
                             MemoryExtractionRequest(
                                 session_id=runtime._config.session_id,
@@ -1476,17 +1480,17 @@ class TurnExecutor:
                                 turn_items=tuple(turn_items),
                             )
                         )
-                    )
-                    progress_updates.extend(f"[memory] {update}" for update in memory_updates)
-                    dream_updates = runtime._memory_dream_service.maybe_start_background_dream(
-                        MemoryDreamRequest(
-                            session_id=runtime._config.session_id,
-                            turn_id=turn_id,
-                            recent_session_ids=runtime._recent_session_ids_for_memory_dream(),
-                            now=datetime.now(UTC),
+                    if runtime._config.memory_dream_enabled:
+                        runtime._memory_dream_service.maybe_start_background_dream(
+                            MemoryDreamRequest(
+                                session_id=runtime._config.session_id,
+                                turn_id=turn_id,
+                                recent_session_ids=(
+                                    runtime._recent_session_ids_for_memory_dream()
+                                ),
+                                now=datetime.now(UTC),
+                            )
                         )
-                    )
-                    progress_updates.extend(f"[memory] {update}" for update in dream_updates)
                 runtime._session_service.clear_pending_decision(runtime._config.session_id)
                 runtime._session_service.clear_suspended_turn(runtime._config.session_id)
                 return runtime._finalize_response(

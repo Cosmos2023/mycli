@@ -519,6 +519,8 @@ class AgentRuntime:
             child_loop=self._sub_agent_child_loop,
             memory_dir=self._memory_service.file_memory_dir(),
             trace_service=self._trace_service,
+            min_hours=config.memory_dream_min_hours,
+            min_sessions=config.memory_dream_min_sessions,
         )
         self._sub_agent_service = SubAgentService(
             session_id=config.session_id,

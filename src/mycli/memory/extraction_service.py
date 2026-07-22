@@ -82,10 +82,10 @@ class MemoryExtractionService:
         if self._has_memory_write(request.turn_items):
             self._trace(request, result="skipped_direct_write")
             return ("memory_extract_skipped:direct_write",)
-        if self._automatic_interval_turns < 0:
+        explicit = extract_explicit_memory_request(request.user_message) is not None
+        if not explicit and self._automatic_interval_turns < 0:
             self._trace(request, result="skipped_disabled")
             return ("memory_extract_skipped:disabled",)
-        explicit = extract_explicit_memory_request(request.user_message) is not None
         with self._lock:
             if not explicit:
                 self._turns_since_automatic += 1

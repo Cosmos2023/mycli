@@ -243,6 +243,35 @@ def test_turn_executor_handles_resumed_approval_no_progress_detection(tmp_path: 
     assert "no new evidence" in resumed.assistant_message.lower()
 
 
+def test_rejected_approval_does_not_write_summary_when_memory_disabled(
+    tmp_path: Path,
+) -> None:
+    class RecordingMemoryService:
+        def __init__(self) -> None:
+            self.summaries: list[tuple[str, str]] = []
+
+        def append_session_summary(self, session_id: str, summary: str) -> None:
+            self.summaries.append((session_id, summary))
+
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=PushThenLoopAdapter(),
+    )
+    runtime._config = replace(runtime._config, memory_enabled=False)
+    memory_service = RecordingMemoryService()
+    runtime._memory_service = memory_service  # type: ignore[assignment]
+
+    first = runtime.handle_user_turn("push the branch")
+    assert first.pending_decision is not None
+
+    rejected = runtime.resolve_pending_approval("2")
+
+    assert rejected.turn is not None
+    assert rejected.turn.status.value == "rejected"
+    assert memory_service.summaries == []
+
+
 def test_user_prompt_submit_hook_can_block_before_model_call(tmp_path: Path) -> None:
     from mycli.application.runtime.turn_executor import TurnExecutor
 

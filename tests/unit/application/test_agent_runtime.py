@@ -4890,7 +4890,7 @@ def test_agent_runtime_extracts_explicit_memory_after_successful_turn(tmp_path: 
     response = runtime.handle_user_turn("remember that I prefer terse final answers")
 
     assert response.assistant_message == "Memory captured"
-    assert "[memory] memory_extract_started" in response.progress_updates
+    assert not any(update.startswith("[memory]") for update in response.progress_updates)
     trace = runtime._trace_service.load(runtime._config.session_id)
     event = next(event for event in trace if event.kind == "memory_extraction")
     assert event.payload["result"] == "started"
@@ -4916,6 +4916,14 @@ class FakeMemoryExtractionService:
         return ("memory_extract_started",)
 
 
+class RecordingMemoryService:
+    def __init__(self) -> None:
+        self.summaries: list[tuple[str, str]] = []
+
+    def append_session_summary(self, session_id: str, summary: str) -> None:
+        self.summaries.append((session_id, summary))
+
+
 def test_agent_runtime_skips_automatic_memory_when_disabled(tmp_path: Path) -> None:
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
@@ -4929,6 +4937,8 @@ def test_agent_runtime_skips_automatic_memory_when_disabled(tmp_path: Path) -> N
     )
     extraction_service = FakeMemoryExtractionService()
     dream_service = FakeMemoryDreamService()
+    memory_service = RecordingMemoryService()
+    runtime._memory_service = memory_service  # type: ignore[assignment]
     runtime._memory_extraction_service = extraction_service
     runtime._memory_dream_service = dream_service
 
@@ -4938,6 +4948,73 @@ def test_agent_runtime_skips_automatic_memory_when_disabled(tmp_path: Path) -> N
     assert "[memory] memory_dream_started" not in response.progress_updates
     assert extraction_service.requests == []
     assert dream_service.requests == []
+    assert memory_service.summaries == []
+
+
+def test_agent_runtime_can_disable_extraction_without_disabling_dream(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+    runtime._config = replace(
+        runtime._config,
+        memory_extraction_enabled=False,
+        memory_dream_enabled=True,
+    )
+    extraction_service = FakeMemoryExtractionService()
+    dream_service = FakeMemoryDreamService()
+    runtime._memory_extraction_service = extraction_service
+    runtime._memory_dream_service = dream_service
+
+    response = runtime.handle_user_turn("continue")
+
+    assert extraction_service.requests == []
+    assert len(dream_service.requests) == 1
+    assert not any(update.startswith("[memory]") for update in response.progress_updates)
+
+
+def test_agent_runtime_can_disable_dream_without_disabling_extraction(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=MemoryCaptureAdapter(),
+    )
+    runtime._config = replace(
+        runtime._config,
+        memory_extraction_enabled=True,
+        memory_dream_enabled=False,
+    )
+    extraction_service = FakeMemoryExtractionService()
+    dream_service = FakeMemoryDreamService()
+    runtime._memory_extraction_service = extraction_service
+    runtime._memory_dream_service = dream_service
+
+    response = runtime.handle_user_turn("continue")
+
+    assert len(extraction_service.requests) == 1
+    assert dream_service.requests == []
+    assert not any(update.startswith("[memory]") for update in response.progress_updates)
+
+
+def test_agent_runtime_passes_configured_memory_dream_thresholds(tmp_path: Path) -> None:
+    runtime = AgentRuntime(
+        model_adapter=MemoryCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([]),
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            memory_dream_min_hours=48,
+            memory_dream_min_sessions=9,
+        ),
+        home_dir=tmp_path / "home",
+    )
+
+    assert runtime._memory_dream_service._min_hours == 48
+    assert runtime._memory_dream_service._min_sessions == 9
 
 
 def test_agent_runtime_throttles_automatic_memory_extraction(tmp_path: Path) -> None:
@@ -4949,8 +5026,10 @@ def test_agent_runtime_throttles_automatic_memory_extraction(tmp_path: Path) -> 
 
     response = runtime.handle_user_turn("continue")
 
-    assert "[memory] memory_extract_started" not in response.progress_updates
-    assert "[memory] memory_extract_skipped:interval" in response.progress_updates
+    assert not any(update.startswith("[memory]") for update in response.progress_updates)
+    trace = runtime._trace_service.load(runtime._config.session_id)
+    event = next(event for event in trace if event.kind == "memory_extraction")
+    assert event.payload["result"] == "skipped_interval"
 
 
 def test_agent_runtime_checks_memory_dream_after_successful_turn(tmp_path: Path) -> None:
@@ -4964,11 +5043,30 @@ def test_agent_runtime_checks_memory_dream_after_successful_turn(tmp_path: Path)
 
     response = runtime.handle_user_turn("continue")
 
-    assert "[memory] memory_dream_started" in response.progress_updates
+    assert not any(update.startswith("[memory]") for update in response.progress_updates)
     assert dream_service.requests
     request = dream_service.requests[0]
     assert request.session_id == runtime._config.session_id
     assert request.turn_id
+
+
+def test_agent_runtime_does_not_schedule_memory_after_failed_turn(tmp_path: Path) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=ErroringAdapter(),
+    )
+    extraction_service = FakeMemoryExtractionService()
+    dream_service = FakeMemoryDreamService()
+    runtime._memory_extraction_service = extraction_service
+    runtime._memory_dream_service = dream_service
+
+    response = runtime.handle_user_turn("continue")
+
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.FAILED
+    assert extraction_service.requests == []
+    assert dream_service.requests == []
 
 
 def test_agent_runtime_emits_trace_for_tool_execution(tmp_path: Path) -> None:
