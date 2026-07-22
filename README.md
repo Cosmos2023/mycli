@@ -89,7 +89,11 @@ effort = "medium"
 
 [memory]
 enabled = true
+extraction_enabled = true
 extraction_interval_turns = 5
+dream_enabled = true
+dream_min_hours = 24
+dream_min_sessions = 5
 ```
 
 也可以使用环境变量：
@@ -100,6 +104,10 @@ export MYCLI_PROVIDER="openai"
 export MYCLI_PROTOCOL="responses"
 export MYCLI_MODEL="gpt-5"
 export MYCLI_BASE_URL="https://api.openai.com/v1"
+export MYCLI_MEMORY_EXTRACTION_ENABLED=true
+export MYCLI_MEMORY_DREAM_ENABLED=true
+export MYCLI_MEMORY_DREAM_MIN_HOURS=24
+export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
 ```
 
 配置读取位置：
@@ -405,17 +413,31 @@ File memory 保存在：
 enabled = false
 ```
 
-完全关闭后台 memory extraction：
+完整配置示例：
 
 ```toml
 [memory]
+enabled = true
+extraction_enabled = true
 extraction_interval_turns = -1
+dream_enabled = true
+dream_min_hours = 24
+dream_min_sessions = 5
 ```
+
+- `enabled = false`：关闭 session summary、memory 注入、extraction 和 dream。
+- `extraction_enabled = false`：关闭显式和自动 extraction。
+- `extraction_interval_turns = -1`：只关闭自动 extraction，显式“记住/忘记”仍然有效。
+- `dream_enabled = false`：关闭后台 memory consolidation。
 
 或：
 
 ```bash
 export MYCLI_MEMORY_ENABLED=false
+export MYCLI_MEMORY_EXTRACTION_ENABLED=false
+export MYCLI_MEMORY_DREAM_ENABLED=false
+export MYCLI_MEMORY_DREAM_MIN_HOURS=24
+export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
 ```
 
 关闭后，runtime 不再注入 file memory，也不会启动后台 memory extraction/dream。
