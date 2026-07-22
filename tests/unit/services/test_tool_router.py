@@ -17,6 +17,10 @@ from mycli.domain.tools import ToolCall
 from mycli.application.runtime.tools.contributed_tool_registry import ToolContributionRegistry
 from mycli.tools.routing.tool_router import ToolRouter
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.invocation_context import (
+    ToolInvocationContext,
+    current_tool_owner_session_id,
+)
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.read import ReadTool
 
@@ -47,6 +51,16 @@ class ExplodingTool(FakeTool):
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.calls.append(arguments)
         raise RuntimeError("boom")
+
+
+class OwnerCapturingTool(FakeTool):
+    def __init__(self) -> None:
+        super().__init__("OwnerCapture", "captured")
+        self.owners: list[str] = []
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.owners.append(current_tool_owner_session_id("main"))
+        return super().execute(arguments)
 
 
 def _contribution_registration(tool: FakeTool) -> ToolContributionRegistration:
@@ -365,6 +379,36 @@ def test_tool_router_executes_exposed_tool_calls() -> None:
     )
 
     assert result.summary == "ran"
+
+
+def test_tool_router_scopes_owner_to_one_execution() -> None:
+    tool = OwnerCapturingTool()
+    registry = ToolRegistry.from_tools([tool])
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local(tool.spec.name),
+                source=ToolRouteSource.REGISTRY,
+                spec=tool.spec,
+            ),
+        )
+    )
+    router = ToolRouter(tool_registry=registry)
+    call = ToolCall(
+        name=tool.spec.name,
+        arguments={},
+        reason="capture owner",
+        call_id="call_owner",
+    )
+
+    router.execute(
+        call,
+        exposure=exposure,
+        invocation_context=ToolInvocationContext(owner_session_id="child-session"),
+    )
+    router.execute(call, exposure=exposure)
+
+    assert tool.owners == ["child-session", "main"]
 
 
 def test_tool_router_returns_effect_profile_without_executing_tool(tmp_path) -> None:

@@ -18,6 +18,7 @@ from mycli.tools.base import (
     tool_effects_for_tool,
     tool_has_mutation_contract,
 )
+from mycli.tools.invocation_context import ToolInvocationContext, tool_invocation_scope
 from mycli.tools.registry import ToolRegistry
 
 
@@ -54,7 +55,17 @@ class ToolRouter:
             for entry in tool_set.model_visible_entries()
         ]
 
-    def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResult:
+    def execute(
+        self,
+        call: ToolCall,
+        *,
+        exposure: ToolExposure,
+        invocation_context: ToolInvocationContext | None = None,
+    ) -> ToolResult:
+        with tool_invocation_scope(invocation_context):
+            return self._execute_scoped(call, exposure=exposure)
+
+    def _execute_scoped(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResult:
         call = self._canonical_call(call, exposure=exposure)
         allowed_names = set(exposure.callable_tool_names())
         if call.name not in allowed_names:
