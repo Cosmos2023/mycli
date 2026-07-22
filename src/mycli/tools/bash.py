@@ -16,6 +16,7 @@ from mycli.domain.runtime import (
 from mycli.domain.runtime.task_notifications import TaskNotification
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.invocation_context import current_tool_owner_session_id
 from mycli.tools.model_output import shell_model_output
 from mycli.tools.path_utils import classify_filesystem_error, resolve_workspace_path
 from mycli.tools.shell_environment import create_shell_environment
@@ -80,10 +81,11 @@ class ShellCommandRuntime:
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> dict[str, Any]:
         effective_cwd = workdir or os.getcwd()
+        owner_session_id = current_tool_owner_session_id(self._owner_session_id)
         started = time.monotonic()
         payload = SHELL_REGISTRY.execute(
             command,
-            owner_session_id=self._owner_session_id,
+            owner_session_id=owner_session_id,
             timeout_seconds=timeout,
             workdir=effective_cwd,
             background=run_in_background,
@@ -360,6 +362,7 @@ class _ShellToolBase:
         return ToolEffectProfile(filesystem="unknown", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        owner_session_id = current_tool_owner_session_id(self._owner_session_id)
         command_value = arguments.get("command")
         if command_value is None and isinstance(arguments.get("args"), list):
             parts = [part for part in arguments["args"] if isinstance(part, str)]
@@ -462,7 +465,7 @@ class _ShellToolBase:
                 command=command_value,
                 timeout_seconds=timeout,
                 cwd=str(cwd_result),
-                owner_session_id=self._owner_session_id,
+                owner_session_id=owner_session_id,
                 run_in_background=legacy_background is True,
                 tty=tty,
                 yield_time_ms=yield_time_ms,

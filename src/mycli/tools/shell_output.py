@@ -4,6 +4,7 @@ from typing import Any
 
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
+from mycli.tools.invocation_context import current_tool_owner_session_id
 from mycli.tools.model_output import shell_model_output
 from mycli.tools.shell_registry import LEGACY_SHELL_OWNER, SHELL_REGISTRY
 
@@ -36,7 +37,8 @@ class ShellOutputTool:
                 error=f"{self.name} requires shell_id.",
                 raw_payload={"error_kind": "missing_shell_id"},
             )
-        payload = SHELL_REGISTRY.read(shell_id, owner_session_id=self._session_id)
+        owner_session_id = current_tool_owner_session_id(self._session_id)
+        payload = SHELL_REGISTRY.read(shell_id, owner_session_id=owner_session_id)
         success = "error" not in payload
         if not success:
             payload.setdefault("error_kind", "shell_not_found")

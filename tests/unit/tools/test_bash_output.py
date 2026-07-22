@@ -3,6 +3,7 @@ import time
 from mycli.tools.bash import BashTool, execute_bash
 from mycli.tools.bash_output import BashOutputTool
 from mycli.tools.kill_shell import KillShellTool, kill_shell
+from mycli.tools.invocation_context import ToolInvocationContext, tool_invocation_scope
 from mycli.tools.shell_output import ShellOutputTool
 from tests.support.shell_commands import python_shell_command
 
@@ -75,6 +76,34 @@ def test_bash_output_rejects_shell_owned_by_another_session(tmp_path) -> None:
         assert output.raw_payload["error_kind"] == "shell_session_forbidden"
     finally:
         KillShellTool(session_id="session-a").execute({"shell_id": shell_id})
+
+
+def test_shell_tool_family_uses_invocation_owner(tmp_path) -> None:
+    bash = BashTool(tmp_path)
+    bash.configure_shell_session("main-session")
+
+    with tool_invocation_scope(ToolInvocationContext("child-session")):
+        started = bash.execute({"command": "sleep 30", "run_in_background": True})
+    shell_id = str(started.raw_payload["shell_id"])
+
+    try:
+        denied = ShellOutputTool(session_id="main-session").execute(
+            {"shell_id": shell_id}
+        )
+        with tool_invocation_scope(ToolInvocationContext("child-session")):
+            allowed = ShellOutputTool(session_id="main-session").execute(
+                {"shell_id": shell_id}
+            )
+
+        assert denied.success is False
+        assert denied.raw_payload["error_kind"] == "shell_session_forbidden"
+        assert allowed.success is True
+    finally:
+        with tool_invocation_scope(ToolInvocationContext("child-session")):
+            killed = KillShellTool(session_id="main-session").execute(
+                {"shell_id": shell_id}
+            )
+        assert killed.success is True
 
 
 def test_background_timeout_is_enforced_without_initial_poll(tmp_path) -> None:

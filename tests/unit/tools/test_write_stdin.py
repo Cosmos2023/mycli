@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mycli.tools.shell_registry import ShellProcessRegistry
 from mycli.tools.shell_session_manager import ShellSessionManager
+from mycli.tools.invocation_context import ToolInvocationContext, tool_invocation_scope
 from mycli.tools.write_stdin import WriteStdinTool
 from tests.support.shell_transports import FakeShellTransport
 
@@ -37,6 +38,22 @@ def test_write_stdin_empty_chars_waits_for_incremental_output(tmp_path: Path) ->
     assert result.success is True
     assert result.raw_payload["output"] == "prompt> "
     assert transport.writes == []
+    transport.finish(0)
+
+
+def test_write_stdin_uses_invocation_owner(tmp_path: Path) -> None:
+    transport = FakeShellTransport(tty=True)
+    registry, started = _start_session(tmp_path, transport)
+    transport.publish(b"child output")
+    tool = WriteStdinTool(session_id="main-session", registry=registry)
+
+    with tool_invocation_scope(ToolInvocationContext("session-a")):
+        result = tool.execute(
+            {"session_id": started["shell_id"], "chars": "", "yield_time_ms": 250}
+        )
+
+    assert result.success is True
+    assert result.raw_payload["output"] == "child output"
     transport.finish(0)
 
 
