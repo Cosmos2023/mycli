@@ -12,6 +12,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "cli-highlight": "2.1.11",
     "get-east-asian-width": "1.6.0",
     "marked": "15.0.12",
     "parse-diff": "0.12.0"

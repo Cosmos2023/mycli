@@ -1,7 +1,8 @@
 import parseDiff from "parse-diff";
 
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
+import { applyBackgroundToLine, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
 import { theme } from "../theme/theme.ts";
+import { highlightDiffCode } from "./syntax-highlight.ts";
 
 
 export type DiffRowKind = "context" | "add" | "remove" | "hunk" | "marker";
@@ -31,6 +32,8 @@ export function renderUnifiedDiff(diff: string, options: DiffRenderOptions): str
 	if (chunks.length === 0) return renderFallback(diff, width, indent);
 
 	const changes = chunks.flatMap((chunk) => chunk.changes);
+	const highlight = options.highlight ?? ((code: string, language?: string) =>
+		highlightDiffCode(code, language, changes.length));
 	const maxLine = changes.reduce((maximum, change) => {
 		if (change.type === "normal") return Math.max(maximum, change.ln1, change.ln2);
 		return Math.max(maximum, change.ln);
@@ -45,6 +48,7 @@ export function renderUnifiedDiff(diff: string, options: DiffRenderOptions): str
 		for (const change of chunk.changes) {
 			lines.push(...renderChange(change, {
 				...options,
+				highlight,
 				width,
 				indent,
 				numberWidth,
@@ -76,7 +80,7 @@ function renderChange(
 	return wrapped.map((segment, index) => {
 		const prefix = index === 0 ? firstPrefix : continuationPrefix;
 		const line = truncateToWidth(`${prefix}${segment}`, options.width, "");
-		return styleRow(kind, line);
+		return styleRow(kind, line, options.width);
 	});
 }
 
@@ -91,7 +95,7 @@ function renderMetaRow(
 	const available = Math.max(1, width - indent);
 	return wrapTextWithAnsi(text.trim(), available).map((segment) => {
 		const line = truncateToWidth(`${prefix}${segment}`, width, "");
-		return styleRow(kind, line);
+		return styleRow(kind, line, width);
 	});
 }
 
@@ -109,9 +113,21 @@ function renderFallback(diff: string, width: number, indent: number): string[] {
 }
 
 
-function styleRow(kind: DiffRowKind, line: string): string {
-	if (kind === "add") return theme.fg("toolDiffAdded", line);
-	if (kind === "remove") return theme.fg("toolDiffRemoved", line);
+function styleRow(kind: DiffRowKind, line: string, width: number): string {
+	if (kind === "add") {
+		return applyBackgroundToLine(
+			theme.fg("toolDiffAdded", line),
+			width,
+			(text) => theme.bg("toolDiffAddedBg", text),
+		);
+	}
+	if (kind === "remove") {
+		return applyBackgroundToLine(
+			theme.fg("toolDiffRemoved", line),
+			width,
+			(text) => theme.bg("toolDiffRemovedBg", text),
+		);
+	}
 	if (kind === "hunk") return theme.fg("accent", line);
 	return theme.fg("toolDiffContext", line);
 }

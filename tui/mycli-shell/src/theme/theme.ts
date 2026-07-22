@@ -69,10 +69,12 @@ export type ThemeBg =
 	| "customMessageBg"
 	| "toolPendingBg"
 	| "toolSuccessBg"
-	| "toolErrorBg";
+	| "toolErrorBg"
+	| "toolDiffAddedBg"
+	| "toolDiffRemovedBg";
 
 type ColorValue = string | number;
-type ColorMode = "truecolor" | "256color";
+type ColorMode = "truecolor" | "256color" | "16color";
 
 const DARK_VARS: Record<string, ColorValue> = {
 	cyan: "#00d7ff",
@@ -90,6 +92,8 @@ const DARK_VARS: Record<string, ColorValue> = {
 	toolPendingBg: "#282832",
 	toolSuccessBg: "#283228",
 	toolErrorBg: "#3c2828",
+	diffAddedBg: "#193825",
+	diffRemovedBg: "#452126",
 	customMsgBg: "#2d2838",
 };
 
@@ -114,6 +118,8 @@ const DARK_COLORS: Record<ThemeColor | ThemeBg, ColorValue> = {
 	toolPendingBg: "toolPendingBg",
 	toolSuccessBg: "toolSuccessBg",
 	toolErrorBg: "toolErrorBg",
+	toolDiffAddedBg: "diffAddedBg",
+	toolDiffRemovedBg: "diffRemovedBg",
 	toolTitle: "text",
 	toolOutput: "gray",
 	selectorTitle: "accent",
@@ -178,6 +184,8 @@ const LIGHT_VARS: Record<string, ColorValue> = {
 	toolPendingBg: "#e8e8f0",
 	toolSuccessBg: "#e8f0e8",
 	toolErrorBg: "#f0e8e8",
+	diffAddedBg: "#dafbe1",
+	diffRemovedBg: "#ffebe9",
 	customMsgBg: "#ede7f6",
 };
 
@@ -202,6 +210,8 @@ const LIGHT_COLORS: Record<ThemeColor | ThemeBg, ColorValue> = {
 	toolPendingBg: "toolPendingBg",
 	toolSuccessBg: "toolSuccessBg",
 	toolErrorBg: "toolErrorBg",
+	toolDiffAddedBg: "diffAddedBg",
+	toolDiffRemovedBg: "diffRemovedBg",
 	toolTitle: "text",
 	toolOutput: "mediumGray",
 	selectorTitle: "teal",
@@ -273,7 +283,40 @@ function ansi(value: ColorValue, mode: ColorMode, bg = false): string {
 	if (mode === "truecolor") {
 		return `\x1b[${bg ? 48 : 38};2;${r};${g};${b}m`;
 	}
+	if (mode === "16color") {
+		return ansi16(r, g, b, bg);
+	}
 	return `\x1b[${bg ? 48 : 38};5;${rgbTo256(r, g, b)}m`;
+}
+
+const ANSI16_PALETTE = [
+	{ r: 0, g: 0, b: 0, fg: 30, bg: 40 },
+	{ r: 205, g: 49, b: 49, fg: 31, bg: 41 },
+	{ r: 13, g: 188, b: 121, fg: 32, bg: 42 },
+	{ r: 229, g: 229, b: 16, fg: 33, bg: 43 },
+	{ r: 36, g: 114, b: 200, fg: 34, bg: 44 },
+	{ r: 188, g: 63, b: 188, fg: 35, bg: 45 },
+	{ r: 17, g: 168, b: 205, fg: 36, bg: 46 },
+	{ r: 229, g: 229, b: 229, fg: 37, bg: 47 },
+	{ r: 102, g: 102, b: 102, fg: 90, bg: 100 },
+	{ r: 241, g: 76, b: 76, fg: 91, bg: 101 },
+	{ r: 35, g: 209, b: 139, fg: 92, bg: 102 },
+	{ r: 245, g: 245, b: 67, fg: 93, bg: 103 },
+	{ r: 59, g: 142, b: 234, fg: 94, bg: 104 },
+	{ r: 214, g: 112, b: 214, fg: 95, bg: 105 },
+	{ r: 41, g: 184, b: 219, fg: 96, bg: 106 },
+	{ r: 255, g: 255, b: 255, fg: 97, bg: 107 },
+] as const;
+
+function ansi16(r: number, g: number, b: number, background: boolean): string {
+	if (background && g > r + 10 && g > b) return "\x1b[42m";
+	if (background && r > g + 10 && r > b) return "\x1b[41m";
+	const nearest = ANSI16_PALETTE.reduce((best, candidate) => {
+		const bestDistance = (r - best.r) ** 2 + (g - best.g) ** 2 + (b - best.b) ** 2;
+		const candidateDistance = (r - candidate.r) ** 2 + (g - candidate.g) ** 2 + (b - candidate.b) ** 2;
+		return candidateDistance < bestDistance ? candidate : best;
+	});
+	return `\x1b[${background ? nearest.bg : nearest.fg}m`;
 }
 
 function rgbTo256(r: number, g: number, b: number): number {
@@ -293,7 +336,11 @@ function resolve(value: ColorValue, vars: Record<string, ColorValue>): ColorValu
 class Theme {
 	private readonly vars = themeName === "light" ? LIGHT_VARS : DARK_VARS;
 	private readonly colors = themeName === "light" ? LIGHT_COLORS : DARK_COLORS;
-	private readonly mode: ColorMode = process.env.COLORTERM === "truecolor" ? "truecolor" : "256color";
+	private readonly mode: ColorMode = process.env.COLORTERM === "truecolor"
+		? "truecolor"
+		: process.env.TERM?.includes("256color")
+			? "256color"
+			: "16color";
 
 	fg(color: ThemeColor, text: string): string {
 		if (!colorEnabled) return text;
@@ -319,6 +366,14 @@ class Theme {
 
 	inverse(text: string): string {
 		return colorEnabled ? `\x1b[7m${text}\x1b[27m` : text;
+	}
+
+	isColorEnabled(): boolean {
+		return colorEnabled;
+	}
+
+	name(): "dark" | "light" {
+		return themeName;
 	}
 
 	strikethrough(text: string): string {
