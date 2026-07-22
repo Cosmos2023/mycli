@@ -7,6 +7,8 @@ import type {
 	MycliShellCommandResult,
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
+	MycliShellFileChange,
+	MycliShellFileChangeEntry,
 	MycliShellMessage,
 	MycliShellLocalImageAttachment,
 	MycliShellModel,
@@ -232,6 +234,20 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 				transcript.push({ id: item.id, kind: "plan_update", planUpdate });
 			}
 		} else if (item.type === "tool_summary" || item.type === "tool_detail") {
+			const fileChange = fileChangeFromTranscriptItem(item);
+			if (fileChange) {
+				transcript.push({
+					id: item.id,
+					kind: "file_change",
+					fileChange,
+					message: {
+						id: item.id,
+						role: fileChange.status === "error" ? "error" : "system",
+						text: fileChangeFallbackText(fileChange),
+					},
+				});
+				continue;
+			}
 			const tool = toolFromTranscriptItem(item, state.workspace, state.viewMode, state.settings.toolDetailsDefault);
 			if (isShellTool(tool.name)) {
 				const metadata = recordValue(item.metadata);
@@ -1674,6 +1690,7 @@ type ToolDisplay = {
 	truncated: boolean;
 	omittedChars: number;
 	presentation: string;
+	fileChanges: MycliShellFileChangeEntry[];
 };
 
 const DISPLAY_PRESENTATIONS = new Set([
@@ -1712,7 +1729,158 @@ function toolDisplayFromMetadata(metadata: Record<string, unknown>): ToolDisplay
 		truncated: booleanValue(display.truncated) ?? false,
 		omittedChars: numberValue(display.omitted_chars) ?? 0,
 		presentation: DISPLAY_PRESENTATIONS.has(rawPresentation) ? rawPresentation : "tool",
+		fileChanges: fileChangeEntriesFromUnknown(display.file_changes),
 	};
+}
+
+function fileChangeFromTranscriptItem(item: RuntimeTranscriptItem): MycliShellFileChange | null {
+	const metadata = recordValue(item.metadata);
+	const display = toolDisplayFromMetadata(metadata);
+	const name = stringValue(metadata.tool_name) ?? stringValue(metadata.name) ?? item.text.split(/\s+/, 1)[0] ?? "Tool";
+	const recognizedMutation = isFileMutationTool(name);
+	if (!recognizedMutation && (!display || display.fileChanges.length === 0)) return null;
+	const status = display?.status ?? toolStatus(metadata);
+	if (status === "running" || status === "cancelled") return null;
+
+	const files = display?.fileChanges.length
+		? display.fileChanges
+		: legacyFileChangeEntries(name, metadata, display?.target);
+	const summary = display?.summary ?? stringValue(metadata.summary) ?? item.text;
+	const target =
+		display?.target ??
+		stringValue(metadata.path) ??
+		stringValue(recordValue(metadata.raw_payload).path) ??
+		undefined;
+	const callId = stringValue(metadata.call_id) ?? undefined;
+
+	if (files.length > 0) {
+		return { id: item.id, callId, status: "success", summary, target, files };
+	}
+	if (status === "error" && recognizedMutation) {
+		return {
+			id: item.id,
+			callId,
+			status: "error",
+			summary: summary || "Failed to update file",
+			target,
+			files: [],
+			error: display?.error ?? textValue(metadata.error) ?? undefined,
+		};
+	}
+	if (recognizedMutation && summary.trim().toLowerCase().startsWith("no changes")) {
+		return { id: item.id, callId, status: "unchanged", summary, target, files: [] };
+	}
+	return null;
+}
+
+function fileChangeEntriesFromUnknown(value: unknown): MycliShellFileChangeEntry[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.slice(0, 64)
+		.map(fileChangeEntryFromUnknown)
+		.filter((entry): entry is MycliShellFileChangeEntry => entry !== null);
+}
+
+function fileChangeEntryFromUnknown(value: unknown): MycliShellFileChangeEntry | null {
+	const record = recordValue(value);
+	if (record.version !== 1) return null;
+	const kind = fileChangeKind(record.kind);
+	const path = stringValue(record.path);
+	if (!kind || !path) return null;
+	const diff = textValue(record.diff) ?? "";
+	const counts = countDiffLines(diff);
+	return {
+		version: 1,
+		kind,
+		path,
+		previousPath: stringValue(record.previous_path) ?? stringValue(record.previousPath) ?? undefined,
+		diff,
+		addedLines: nonnegativeInteger(record.added_lines) ?? nonnegativeInteger(record.addedLines) ?? counts.added,
+		removedLines: nonnegativeInteger(record.removed_lines) ?? nonnegativeInteger(record.removedLines) ?? counts.removed,
+		truncated: booleanValue(record.truncated) ?? false,
+		omittedChars: nonnegativeInteger(record.omitted_chars) ?? nonnegativeInteger(record.omittedChars) ?? 0,
+		language: stringValue(record.language) ?? languageForPath(path),
+	};
+}
+
+function legacyFileChangeEntries(
+	name: string,
+	metadata: Record<string, unknown>,
+	target: string | undefined,
+): MycliShellFileChangeEntry[] {
+	const normalized = normalizeToolName(name);
+	const rawPayload = recordValue(metadata.raw_payload);
+	const rawStatus = (stringValue(rawPayload.status) ?? stringValue(metadata.status) ?? "").toLowerCase();
+	const legacyChanges = Array.isArray(metadata.file_changes) ? metadata.file_changes.map(recordValue) : [];
+	const legacyKind = legacyChanges.map((change) => normalizeToolName(stringValue(change.kind) ?? ""));
+	const safelyUpdated =
+		normalized === "edit" ||
+		normalized === "editfile" ||
+		normalized === "patch" ||
+		normalized === "patchfile" ||
+		["edited", "patched", "overwritten", "written"].includes(rawStatus) ||
+		legacyKind.some((kind) => kind === "edit" || kind === "patch");
+	if (!safelyUpdated) return [];
+	const diff = diffPreviewForTool(metadata);
+	const path = target ?? stringValue(metadata.path) ?? stringValue(rawPayload.path);
+	if (!diff || !path) return [];
+	const counts = countDiffLines(diff);
+	return [{
+		version: 1,
+		kind: "update",
+		path,
+		diff,
+		addedLines: counts.added,
+		removedLines: counts.removed,
+		truncated: booleanValue(metadata.diff_truncated) ?? false,
+		omittedChars: 0,
+		language: languageForPath(path),
+	}];
+}
+
+function fileChangeKind(value: unknown): MycliShellFileChangeEntry["kind"] | null {
+	return value === "add" || value === "update" || value === "delete" || value === "rename" ? value : null;
+}
+
+function countDiffLines(diff: string): { added: number; removed: number } {
+	let added = 0;
+	let removed = 0;
+	for (const line of diff.split(/\r?\n/)) {
+		if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+		else if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+	}
+	return { added, removed };
+}
+
+function nonnegativeInteger(value: unknown): number | null {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function languageForPath(path: string): string | undefined {
+	const leaf = path.replace(/\\/g, "/").split("/").pop() ?? "";
+	const dot = leaf.lastIndexOf(".");
+	return dot > 0 && dot < leaf.length - 1 ? leaf.slice(dot + 1).toLowerCase() : undefined;
+}
+
+function isFileMutationTool(name: string): boolean {
+	return new Set(["write", "writefile", "edit", "editfile", "patch", "patchfile"]).has(normalizeToolName(name));
+}
+
+function normalizeToolName(name: string): string {
+	return name.trim().toLowerCase().replace(/[_-]/g, "");
+}
+
+function fileChangeFallbackText(change: MycliShellFileChange): string {
+	if (change.status === "error") return `${change.summary}${change.error ? `: ${change.error}` : ""}`;
+	if (change.status === "unchanged") return change.target ? `No changes to ${change.target}` : change.summary;
+	if (change.files.length === 1) {
+		const file = change.files[0]!;
+		const verb = file.kind === "add" ? "Added" : file.kind === "delete" ? "Deleted" : file.kind === "rename" ? "Renamed" : "Edited";
+		return `${verb} ${file.path} (+${file.addedLines} -${file.removedLines})`;
+	}
+	const added = change.files.reduce((total, file) => total + file.addedLines, 0);
+	const removed = change.files.reduce((total, file) => total + file.removedLines, 0);
+	return `Edited ${change.files.length} files (+${added} -${removed})`;
 }
 
 function scalarDisplayMetrics(value: unknown): Record<string, string | number | boolean> {

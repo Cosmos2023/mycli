@@ -56,6 +56,29 @@ export type MycliShellTool = {
 	expanded?: boolean;
 };
 
+export type MycliShellFileChangeEntry = {
+	version: 1;
+	kind: "add" | "update" | "delete" | "rename";
+	path: string;
+	previousPath?: string;
+	diff: string;
+	addedLines: number;
+	removedLines: number;
+	truncated: boolean;
+	omittedChars: number;
+	language?: string;
+};
+
+export type MycliShellFileChange = {
+	id: string;
+	callId?: string;
+	status: "success" | "error" | "unchanged";
+	summary: string;
+	target?: string;
+	files: MycliShellFileChangeEntry[];
+	error?: string;
+};
+
 export type MycliShellBash = {
 	id: string;
 	toolName?: "Shell" | "Bash" | string;
@@ -194,6 +217,7 @@ export type MycliShellTranscriptBlock =
 	| { id: string; kind: "plan"; plan: MycliShellPlan }
 	| { id: string; kind: "plan_update"; planUpdate: MycliShellPlanUpdate }
 	| { id: string; kind: "tool"; tool: MycliShellTool }
+	| { id: string; kind: "file_change"; fileChange: MycliShellFileChange; message: MycliShellMessage }
 	| { id: string; kind: "bash"; bash: MycliShellBash }
 	| { id: string; kind: "subagent"; subagent: MycliShellSubagent }
 	| { id: string; kind: "background_terminals"; backgroundTerminals: MycliShellBackgroundTerminals }

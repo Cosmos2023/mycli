@@ -176,6 +176,72 @@ test("runtime adapter projects equal live and resumed display semantics", () => 
 	);
 });
 
+test("runtime adapter projects equal live and resumed file changes", () => {
+	const display = {
+		target: "src/app.py",
+		status: "success",
+		summary: "Updated",
+		presentation: "mutation",
+		file_changes: [
+			{
+				version: 1,
+				kind: "update",
+				path: "src/app.py",
+				diff: "--- src/app.py:before\n+++ src/app.py:after\n@@ -1 +1 @@\n-old\n+new\n",
+				added_lines: 1,
+				removed_lines: 1,
+				language: "py",
+			},
+		],
+	};
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), {
+		items: [
+			{
+				id: "edit-resumed",
+				type: "tool_summary",
+				text: "Edit",
+				metadata: { tool_name: "Write", call_id: "call-edit", display },
+			},
+		],
+	});
+	const live = reduceRuntimeEvent(initialRuntimeState(), "tool.complete", {
+		tool_id: "edit-live",
+		call_id: "call-edit",
+		name: "Write",
+		display,
+	});
+
+	const resumedBlock = projectRuntimeState(resumed).transcript?.[0];
+	const liveState = projectRuntimeState(live);
+	const liveBlock = liveState.transcript?.[0];
+
+	assert.equal(resumedBlock?.kind, "file_change");
+	assert.equal(liveBlock?.kind, "file_change");
+	assert.deepEqual(
+		{ ...(liveBlock?.kind === "file_change" ? liveBlock.fileChange : {}), id: "stable" },
+		{ ...(resumedBlock?.kind === "file_change" ? resumedBlock.fileChange : {}), id: "stable" },
+	);
+	assert.equal(liveState.tools.length, 0);
+});
+
+test("runtime adapter keeps running Write as a generic tool until completion", () => {
+	const state = reduceRuntimeEvent(initialRuntimeState(), "tool.start", {
+		tool_id: "write-running",
+		call_id: "call-write-running",
+		name: "Write",
+		display: {
+			target: "src/new.py",
+			status: "running",
+			summary: "Preparing change",
+			presentation: "mutation",
+		},
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.transcript?.[0]?.kind, "tool");
+	assert.equal(shell.tools[0]?.status, "running");
+});
+
 test("runtime adapter falls back to legacy metadata for malformed display", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateFromTranscript(state, {
@@ -573,9 +639,12 @@ test("runtime adapter reduces live gateway events", () => {
 
 	assert.equal(shell.messages.some((message) => message.role === "user" && message.text === "hello"), true);
 	assert.equal(shell.messages.some((message) => message.role === "assistant" && message.text === "final"), true);
-	assert.equal(shell.tools[0]?.name, "Edit");
-	assert.equal(shell.tools[0]?.status, "error");
-	assert.equal(shell.tools[0]?.errorPreview, "no match");
+	const failedEdit = shell.transcript?.find((block) => block.kind === "file_change");
+	assert.equal(failedEdit?.kind, "file_change");
+	if (failedEdit?.kind !== "file_change") return;
+	assert.equal(failedEdit.fileChange.status, "error");
+	assert.equal(failedEdit.fileChange.error, "no match");
+	assert.equal(shell.tools.some((tool) => tool.name === "Edit"), false);
 });
 
 test("runtime adapter renders compaction lifecycle as an in-turn block", () => {
@@ -988,7 +1057,7 @@ test("runtime adapter projects write_file content preview alias", () => {
 	assert.equal(tool?.outputPreview, undefined);
 });
 
-test("runtime adapter projects mutation diff preview from raw payload", () => {
+test("runtime adapter upgrades a legacy Edit diff to a file change", () => {
 	let state = initialRuntimeState();
 	state = { ...state, workspace: "/repo" };
 	state = runtimeStateFromTranscript(state, {
@@ -1012,11 +1081,14 @@ test("runtime adapter projects mutation diff preview from raw payload", () => {
 	});
 
 	const shell = projectRuntimeState(state);
-	const tool = shell.tools[0];
+	const block = shell.transcript?.[0];
 
-	assert.equal(tool?.args, "app.py");
-	assert.equal(tool?.diffPreview, "@@ -1 +1 @@\n-old\n+new");
-	assert.equal(tool?.outputPreview, undefined);
+	assert.equal(block?.kind, "file_change");
+	if (block?.kind !== "file_change") return;
+	assert.equal(block.fileChange.files[0]?.kind, "update");
+	assert.equal(block.fileChange.files[0]?.path, "/repo/app.py");
+	assert.equal(block.fileChange.files[0]?.diff, "@@ -1 +1 @@\n-old\n+new");
+	assert.equal(shell.tools.length, 0);
 });
 
 test("runtime adapter projects proposed plan as a dedicated transcript block", () => {
