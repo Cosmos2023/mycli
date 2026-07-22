@@ -11,6 +11,7 @@ from mycli.domain.runtime.execution_policy import (
 )
 from mycli.tools.ripgrep_runtime import prepend_ripgrep_to_path
 
+MYCLI_CI_ENV_VAR = "MYCLI_CI"
 MYCLI_THREAD_ID_ENV_VAR = "MYCLI_THREAD_ID"
 MYCLI_RIPGREP_PATH_DIR_ENV_VAR = "MYCLI_RIPGREP_PATH_DIR"
 
@@ -36,6 +37,7 @@ def create_shell_environment(
         }
     if policy.thread_id:
         env[MYCLI_THREAD_ID_ENV_VAR] = policy.thread_id
+    env[MYCLI_CI_ENV_VAR] = "1"
 
     path_key = next((key for key in env if key.casefold() == "path"), "PATH")
     env[path_key], ripgrep_path_dir = prepend_ripgrep_to_path(env.get(path_key))

@@ -28,6 +28,7 @@ def test_create_shell_environment_sanitized_core_with_workspace_pwd(
     assert env == {
         "HOME": "/home/user",
         "LANG": "en_US.UTF-8",
+        "MYCLI_CI": "1",
         "PATH": "/usr/bin",
         "PWD": str(tmp_path),
     }
@@ -78,8 +79,30 @@ def test_create_shell_environment_filters_and_sets_values(
     assert env == {
         "PATH": "/usr/bin",
         "CI": "false",
+        "MYCLI_CI": "1",
         "MYCLI_THREAD_ID": "thread-123",
     }
+
+
+def test_create_shell_environment_sets_mycli_ci_after_policy_filters(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        shell_environment,
+        "prepend_ripgrep_to_path",
+        lambda path: (path or "", None),
+    )
+
+    env = create_shell_environment(
+        ShellEnvironmentPolicy(
+            inherit="none",
+            set={"MYCLI_CI": "0"},
+            include_only=("PATH",),
+        ),
+        source_env={},
+    )
+
+    assert env["MYCLI_CI"] == "1"
 
 
 def test_create_shell_environment_prepends_prepared_ripgrep(
