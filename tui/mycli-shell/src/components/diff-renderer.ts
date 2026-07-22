@@ -1,0 +1,122 @@
+import parseDiff from "parse-diff";
+
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../tui-core/utils.ts";
+import { theme } from "../theme/theme.ts";
+
+
+export type DiffRowKind = "context" | "add" | "remove" | "hunk" | "marker";
+
+export type DiffRenderOptions = {
+	width: number;
+	indent: number;
+	language?: string;
+	highlight?: (code: string, language?: string) => string;
+};
+
+type ParsedChange = parseDiff.Change;
+
+const OMISSION_PATTERN = /\.\.\.\s+(?:\d+\s+lines\s+\/\s+)?\d+\s+chars\s+omitted\s+\.\.\./;
+
+
+export function renderUnifiedDiff(diff: string, options: DiffRenderOptions): string[] {
+	const width = Math.max(1, Math.floor(options.width));
+	const indent = Math.min(Math.max(0, Math.floor(options.indent)), Math.max(0, width - 3));
+	let files: parseDiff.File[];
+	try {
+		files = parseDiff(diff);
+	} catch {
+		return renderFallback(diff, width, indent);
+	}
+	const chunks = files.flatMap((file) => file.chunks);
+	if (chunks.length === 0) return renderFallback(diff, width, indent);
+
+	const changes = chunks.flatMap((chunk) => chunk.changes);
+	const maxLine = changes.reduce((maximum, change) => {
+		if (change.type === "normal") return Math.max(maximum, change.ln1, change.ln2);
+		return Math.max(maximum, change.ln);
+	}, 1);
+	const numberWidth = String(maxLine).length;
+	const fullNumberPrefixWidth = indent + numberWidth + 3;
+	const showNumbers = width - fullNumberPrefixWidth >= 8;
+	const lines: string[] = [];
+
+	for (const chunk of chunks) {
+		lines.push(...renderMetaRow(chunk.content, "hunk", width, indent));
+		for (const change of chunk.changes) {
+			lines.push(...renderChange(change, {
+				...options,
+				width,
+				indent,
+				numberWidth,
+				showNumbers,
+			}));
+		}
+	}
+	return lines;
+}
+
+
+function renderChange(
+	change: ParsedChange,
+	options: DiffRenderOptions & { numberWidth: number; showNumbers: boolean },
+): string[] {
+	if (isMarker(change.content)) {
+		return renderMetaRow(change.content.replace(/^[ +\\-]/, ""), "marker", options.width, options.indent);
+	}
+	const kind: DiffRowKind = change.type === "add" ? "add" : change.type === "del" ? "remove" : "context";
+	const sign = kind === "add" ? "+" : kind === "remove" ? "-" : " ";
+	const lineNumber = change.type === "normal" ? change.ln2 : change.ln;
+	const rawCode = change.content.slice(1);
+	const code = options.highlight ? options.highlight(rawCode, options.language) : rawCode;
+	const number = options.showNumbers ? String(lineNumber).padStart(options.numberWidth) : "";
+	const firstPrefix = `${" ".repeat(options.indent)}${number}${options.showNumbers ? " " : ""}${sign} `;
+	const continuationPrefix = `${" ".repeat(options.indent)}${options.showNumbers ? " ".repeat(options.numberWidth + 1) : ""}  `;
+	const codeWidth = Math.max(1, options.width - visibleWidth(firstPrefix));
+	const wrapped = wrapTextWithAnsi(code, codeWidth);
+	return wrapped.map((segment, index) => {
+		const prefix = index === 0 ? firstPrefix : continuationPrefix;
+		const line = truncateToWidth(`${prefix}${segment}`, options.width, "");
+		return styleRow(kind, line);
+	});
+}
+
+
+function renderMetaRow(
+	text: string,
+	kind: "hunk" | "marker",
+	width: number,
+	indent: number,
+): string[] {
+	const prefix = " ".repeat(indent);
+	const available = Math.max(1, width - indent);
+	return wrapTextWithAnsi(text.trim(), available).map((segment) => {
+		const line = truncateToWidth(`${prefix}${segment}`, width, "");
+		return styleRow(kind, line);
+	});
+}
+
+
+function renderFallback(diff: string, width: number, indent: number): string[] {
+	const prefix = " ".repeat(indent);
+	const available = Math.max(1, width - indent);
+	const rows = diff.split(/\r?\n/);
+	if (rows.at(-1) === "") rows.pop();
+	return rows.flatMap((row) =>
+		wrapTextWithAnsi(row, available).map((segment) =>
+			truncateToWidth(`${prefix}${segment}`, width, ""),
+		),
+	);
+}
+
+
+function styleRow(kind: DiffRowKind, line: string): string {
+	if (kind === "add") return theme.fg("toolDiffAdded", line);
+	if (kind === "remove") return theme.fg("toolDiffRemoved", line);
+	if (kind === "hunk") return theme.fg("accent", line);
+	return theme.fg("toolDiffContext", line);
+}
+
+
+function isMarker(content: string): boolean {
+	return content.startsWith("\\ No newline at end of file") || OMISSION_PATTERN.test(content);
+}
