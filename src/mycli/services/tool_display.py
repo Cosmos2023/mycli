@@ -5,6 +5,7 @@ from math import isfinite
 import re
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
+from mycli.services.file_change_display import FileChangeDisplay, project_file_changes
 
 
 DISPLAY_TARGET_MAX_CHARS = 240
@@ -12,6 +13,7 @@ DISPLAY_SUMMARY_MAX_CHARS = 500
 DISPLAY_DETAIL_MAX_CHARS = 8_000
 DISPLAY_ERROR_MAX_CHARS = 2_000
 DISPLAY_METRICS_MAX_ITEMS = 16
+DISPLAY_FILE_CHANGES_MAX_ITEMS = 64
 
 DISPLAY_STATUSES = frozenset({"running", "success", "error", "cancelled", "waiting"})
 DISPLAY_PRESENTATIONS = frozenset(
@@ -105,6 +107,7 @@ class ToolDisplayEnvelope:
     truncated: bool = False
     omitted_chars: int = 0
     presentation: str = "tool"
+    file_changes: tuple[FileChangeDisplay, ...] = ()
 
     @classmethod
     def create(
@@ -117,6 +120,7 @@ class ToolDisplayEnvelope:
         error: object = None,
         metrics: object = None,
         presentation: object = "tool",
+        file_changes: object = None,
     ) -> ToolDisplayEnvelope:
         bounded_target, target_omitted = _bounded_single_line(
             target,
@@ -153,6 +157,7 @@ class ToolDisplayEnvelope:
             truncated=omitted_chars > 0,
             omitted_chars=omitted_chars,
             presentation=normalized_presentation,
+            file_changes=_file_changes(file_changes),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -173,6 +178,8 @@ class ToolDisplayEnvelope:
             payload["truncated"] = True
         if self.omitted_chars:
             payload["omitted_chars"] = self.omitted_chars
+        if self.file_changes:
+            payload["file_changes"] = [change.to_dict() for change in self.file_changes]
         return payload
 
     @classmethod
@@ -195,6 +202,7 @@ class ToolDisplayEnvelope:
             error=value.get("error"),
             metrics=value.get("metrics"),
             presentation=value.get("presentation"),
+            file_changes=value.get("file_changes"),
         )
         previous_omitted = value.get("omitted_chars")
         if not isinstance(previous_omitted, int) or isinstance(previous_omitted, bool):
@@ -248,14 +256,24 @@ class ToolDisplayProjector:
             metrics = _result_metrics(call, result, presentation)
             if duration_ms is not None:
                 metrics["duration_ms"] = max(0, duration_ms)
+            file_changes = (
+                project_file_changes(call, result)
+                if presentation == "mutation"
+                else ()
+            )
             envelope = ToolDisplayEnvelope.create(
                 target=_target_for(call, result.raw_payload),
                 status=_result_status(result, presentation),
                 summary=_result_summary(call, result, presentation),
-                detail=_result_detail(call, result, presentation),
+                detail=(
+                    None
+                    if file_changes
+                    else _result_detail(call, result, presentation)
+                ),
                 error=result.error if not result.success else None,
                 metrics=metrics,
                 presentation=presentation,
+                file_changes=file_changes,
             )
             return _preserve_payload_truncation(envelope, result.raw_payload)
         except (AttributeError, TypeError, ValueError):
@@ -327,6 +345,21 @@ def _scalar_metrics(value: object) -> dict[str, MetricValue]:
         elif isinstance(raw_value, str) and raw_value:
             metrics[key] = raw_value[:500]
     return metrics
+
+
+def _file_changes(value: object) -> tuple[FileChangeDisplay, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    changes: list[FileChangeDisplay] = []
+    for item in value[:DISPLAY_FILE_CHANGES_MAX_ITEMS]:
+        change = (
+            item
+            if isinstance(item, FileChangeDisplay)
+            else FileChangeDisplay.from_mapping(item)
+        )
+        if change is not None:
+            changes.append(change)
+    return tuple(changes)
 
 
 def _normalized_tool_name(value: str) -> str:

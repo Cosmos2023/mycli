@@ -2882,6 +2882,18 @@ def test_tool_execution_service_exposes_write_preview_and_diff_lifecycle_metadat
     assert "@@" in str(complete.metadata["diff"])
     assert "+line 12" in str(complete.metadata["diff"])
     assert complete.metadata["diff_truncated"] is False
+    complete_display = complete.metadata["display"]
+    assert isinstance(complete_display, dict)
+    changes = complete_display["file_changes"]
+    assert isinstance(changes, list)
+    assert changes[0]["kind"] == "add"
+    assert changes[0]["path"] == "docs/notes.md"
+    assert changes[0]["added_lines"] == 12
+    assert "detail" not in complete_display
+
+    tool_result = next(item for item in turn_items if item.type is TurnItemType.TOOL_RESULT)
+    assert tool_result.metadata["display"] == complete_display
+    assert tool_result.metadata["file_changes"] == changes
 
 
 def test_tool_execution_service_notifies_clarify_request_after_question_tool(

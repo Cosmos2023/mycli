@@ -447,6 +447,72 @@ def test_snapshot_projection_preserves_bounded_file_diff_for_tui_fallback() -> N
     assert tui_items[0]["metadata"]["file_changes"] == metadata["file_changes"]
 
 
+def test_snapshot_projection_preserves_typed_file_change_display() -> None:
+    diff = (
+        "--- app.py:before\n"
+        "+++ app.py:after\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    display = {
+        "target": "app.py",
+        "status": "success",
+        "summary": "Updated",
+        "presentation": "mutation",
+        "file_changes": [
+            {
+                "version": 1,
+                "kind": "update",
+                "path": "app.py",
+                "diff": diff,
+                "added_lines": 1,
+                "removed_lines": 1,
+                "language": "py",
+            }
+        ],
+    }
+    projected = project_history_items_for_snapshot(
+        (
+            HistoryItem(
+                id="tool-call-typed",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.TOOL_CALL,
+                text="Edit app.py",
+                tool_name="Edit",
+                call_id="call-edit-typed",
+                metadata={
+                    "arguments": {"file_path": "app.py"},
+                    "display": {
+                        "target": "app.py",
+                        "status": "running",
+                        "summary": "Preparing change",
+                        "presentation": "mutation",
+                    },
+                },
+            ),
+            HistoryItem(
+                id="tool-result-typed",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.TOOL_RESULT,
+                text="Edited app.py",
+                tool_name="Edit",
+                call_id="call-edit-typed",
+                metadata={"success": True, "display": display},
+            ),
+        )
+    )
+
+    payload = projected[0].to_dict()
+    metadata = payload["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["display"] == display
+    tui_items = snapshot_item_to_tui_items(payload)
+    assert tui_items[0]["metadata"]["display"] == display
+
+
 def test_snapshot_tool_fallback_maps_completed_status_and_keeps_zero_exit_code() -> None:
     tui_items = snapshot_item_to_tui_items(
         {

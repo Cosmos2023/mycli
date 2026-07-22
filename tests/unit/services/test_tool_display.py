@@ -5,6 +5,7 @@ import json
 import pytest
 
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence, ToolResult
+from mycli.services.file_change_display import FileChangeKind
 from mycli.services.tool_display import ToolDisplayEnvelope
 from mycli.services.tool_display import ToolDisplayProjector
 
@@ -218,7 +219,12 @@ def test_projector_builds_category_specific_summary_and_detail() -> None:
         ToolResult(
             success=True,
             summary="Edited src/a.py",
-            raw_payload={"path": "src/a.py", "diff": "-old\n+new", "matches": 1},
+            raw_payload={
+                "path": "src/a.py",
+                "status": "edited",
+                "diff": "-old\n+new",
+                "matches": 1,
+            },
         ),
     )
 
@@ -226,8 +232,36 @@ def test_projector_builds_category_specific_summary_and_detail() -> None:
     assert grep.detail == "src/a.py:10: class ToolResult\nsrc/b.py:20: ToolResult("
     assert grep.metrics["match_count"] == 2
     assert edit.summary == "Updated"
-    assert edit.detail == "-old\n+new"
+    assert edit.detail is None
+    assert edit.file_changes[0].kind is FileChangeKind.UPDATE
+    assert edit.file_changes[0].diff == "-old\n+new"
     assert edit.metrics["match_count"] == 1
+
+
+def test_completed_write_exposes_typed_diff_not_content_detail() -> None:
+    call = ToolCall(
+        name="Write",
+        arguments={"file_path": "app.py", "content": "new\n"},
+        reason="test",
+        call_id="call-write-1",
+    )
+    result = ToolResult(
+        success=True,
+        summary="Wrote app.py",
+        raw_payload={
+            "path": "app.py",
+            "status": "overwritten",
+            "diff": "--- app.py:before\n+++ app.py:after\n@@ -1 +1 @@\n-old\n+new\n",
+        },
+    )
+
+    display = ToolDisplayProjector().project_result(call, result)
+
+    assert display.detail is None
+    assert display.file_changes[0].kind is FileChangeKind.UPDATE
+    assert display.file_changes[0].added_lines == 1
+    assert display.file_changes[0].removed_lines == 1
+    assert ToolDisplayEnvelope.from_mapping(display.to_dict()) == display
 
 
 def test_external_tool_fallback_does_not_copy_unknown_payload() -> None:

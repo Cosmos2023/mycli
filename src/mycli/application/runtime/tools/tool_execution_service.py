@@ -50,7 +50,7 @@ from mycli.services.context.tool_output_projector import (
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks import HookExecutionSummary, HookManager
 from mycli.services.security import InjectionGuard
-from mycli.services.tool_display import ToolDisplayProjector
+from mycli.services.tool_display import ToolDisplayEnvelope, ToolDisplayProjector
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
 from mycli.tools.routing.tool_router import ToolRouter
@@ -831,6 +831,11 @@ class ToolExecutionService:
             result_summary=result.summary,
         )
         duration_seconds = max(0.0, self._monotonic() - execution_started_at)
+        result_display = self._tool_display_projector.project_result(
+            normalized_call,
+            result,
+            duration_ms=round(duration_seconds * 1000),
+        )
         result_metadata: dict[str, object] = {
             "success": result.success,
             "summary": result.summary,
@@ -839,15 +844,10 @@ class ToolExecutionService:
             "error_kind": result.raw_payload.get("error_kind"),
             "raw_payload": dict(result.raw_payload),
             "transcript_content": guarded_tool_transcript_content,
-            "file_changes": self._file_changes_for_tool_result(
-                call=normalized_call,
-                result_payload=result.raw_payload,
-            ),
-            "display": self._tool_display_projector.project_result(
-                normalized_call,
-                result,
-                duration_ms=round(duration_seconds * 1000),
-            ).to_dict(),
+            "file_changes": [
+                change.to_dict() for change in result_display.file_changes
+            ],
+            "display": result_display.to_dict(),
         }
         diff = result.raw_payload.get("diff")
         if isinstance(diff, str) and diff:
@@ -873,6 +873,7 @@ class ToolExecutionService:
                 call=normalized_call,
                 result=result,
                 duration_seconds=duration_seconds,
+                display=result_display,
             ),
         )
         terminal_phase = self._tool_runtime_terminal_phase(result)
@@ -1031,6 +1032,7 @@ class ToolExecutionService:
         call: ToolCall,
         result: ToolResult,
         duration_seconds: float,
+        display: ToolDisplayEnvelope | None = None,
     ) -> RuntimeStreamEvent:
         metadata: dict[str, object] = {
             "tool_id": self._tool_lifecycle_id(call),
@@ -1038,10 +1040,13 @@ class ToolExecutionService:
             "name": call.name,
             "duration_s": round(duration_seconds, 3),
             "success": result.success,
-            "display": self._tool_display_projector.project_result(
-                call,
-                result,
-                duration_ms=round(duration_seconds * 1000),
+            "display": (
+                display
+                or self._tool_display_projector.project_result(
+                    call,
+                    result,
+                    duration_ms=round(duration_seconds * 1000),
+                )
             ).to_dict(),
             **self._lifecycle_text_metadata("summary", result.summary),
         }
@@ -1754,18 +1759,6 @@ class ToolExecutionService:
                 response_id=response_id,
             )
         )
-
-    def _file_changes_for_tool_result(
-        self,
-        *,
-        call: ToolCall,
-        result_payload: dict[str, object],
-    ) -> list[dict[str, object]]:
-        if call.name in FILE_MUTATION_TOOLS:
-            path = result_payload.get("path") or call.arguments.get("file_path") or call.arguments.get("path")
-            if isinstance(path, str) and path:
-                return [{"kind": call.name, "path": path}]
-        return []
 
     def _tool_activity_event(
         self,
