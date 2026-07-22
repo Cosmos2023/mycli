@@ -4106,6 +4106,19 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
     assert "turn.status" in methods
     assert "status.changed" in methods
     assert methods.index("approval.respond") < methods.index("message.delta")
+    direct_events = [item for item in events if item[0] != "runtime.event"]
+    first_message_delta = next(
+        index for index, (method, _params) in enumerate(direct_events) if method == "message.delta"
+    )
+    running_updates = [
+        params
+        for method, params in direct_events[:first_message_delta]
+        if method == "status.update"
+    ]
+    assert [params["text"] for params in running_updates] == [
+        "Resolving approval",
+        "Running",
+    ]
     final_complete = next(params for method, params in events if method == "message.complete")
     assert final_complete == {
         "client_turn_id": "approval_req_1",
@@ -4118,6 +4131,7 @@ def test_gateway_decision_resolve_maps_choice_and_emits_turn_events(tmp_path: Pa
 def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compatible(
     tmp_path: Path,
 ) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
     service.fake_session_service.pending_decision = PendingDecision(
         tool_call=ToolCall(name="Bash", arguments={"command": "git push"}, reason="push"),
@@ -4126,7 +4140,10 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
         preview="git push",
         options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
     )
-    gateway = NodeTuiGateway(service=service)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
 
     response = gateway.handle_request(
         RpcRequest(
@@ -4140,6 +4157,12 @@ def test_gateway_approval_respond_maps_choice_and_keeps_decision_resolve_compati
     _assert_accepted_turn(response, "approval_req_1")
     assert response.result["decision_id"] == "decision_current"
     assert service.resolved_choices == ["2"]
+    status_texts = [
+        params["text"]
+        for method, params in events
+        if method == "status.update"
+    ]
+    assert status_texts == ["Resolving approval", "Rejected"]
 
 
 def test_gateway_approval_respond_accepts_stable_decision_id(tmp_path: Path) -> None:

@@ -1861,6 +1861,13 @@ class NodeTuiGateway:
                 "choice": _choice_for_resolved_value(choice),
             },
         )
+        if choice != DECISION_CHOICE_MAP["reject"]:
+            self._emit_status_update(
+                client_turn_id=client_turn_id,
+                state="running",
+                kind="running",
+                text="Running",
+            )
         try:
             response = self.service.resolve_pending_decision(
                 choice,
