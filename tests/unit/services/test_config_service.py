@@ -166,7 +166,11 @@ def test_resolve_config_reads_sectioned_user_config(tmp_path: Path) -> None:
                 "",
                 "[memory]",
                 "enabled = true",
+                "extraction_enabled = false",
                 "extraction_interval_turns = -1",
+                "dream_enabled = false",
+                "dream_min_hours = 48",
+                "dream_min_sessions = 9",
                 "",
                 "[context]",
                 "recent_message_count = 9",
@@ -195,7 +199,11 @@ def test_resolve_config_reads_sectioned_user_config(tmp_path: Path) -> None:
     assert config.api_key == "sk-auth-store"
     assert config.max_prompt_tokens == 64_000
     assert config.memory_enabled is True
+    assert config.memory_extraction_enabled is False
     assert config.memory_extraction_interval_turns == -1
+    assert config.memory_dream_enabled is False
+    assert config.memory_dream_min_hours == 48
+    assert config.memory_dream_min_sessions == 9
     assert config.recent_message_count == 9
     assert config.view_mode is ViewMode.FOCUS
     assert config.statusline_enabled is False
@@ -307,6 +315,72 @@ def test_resolve_config_allows_disabling_memory_extraction_interval(
     )
 
     assert config.memory_extraction_interval_turns == -1
+
+
+def test_resolve_config_loads_memory_feature_environment_overrides(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    config = resolve_config(
+        cli_args={},
+        env={
+            "MYCLI_MEMORY_EXTRACTION_ENABLED": "false",
+            "MYCLI_MEMORY_DREAM_ENABLED": "false",
+            "MYCLI_MEMORY_DREAM_MIN_HOURS": "36",
+            "MYCLI_MEMORY_DREAM_MIN_SESSIONS": "7",
+        },
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.memory_extraction_enabled is False
+    assert config.memory_dream_enabled is False
+    assert config.memory_dream_min_hours == 36
+    assert config.memory_dream_min_sessions == 7
+
+
+@pytest.mark.parametrize(
+    ("env_key", "value", "message"),
+    [
+        (
+            "MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS",
+            "-2",
+            "memory_extraction_interval_turns must be -1, 0, or positive",
+        ),
+        (
+            "MYCLI_MEMORY_DREAM_MIN_HOURS",
+            "0",
+            "memory_dream_min_hours must be at least 1",
+        ),
+        (
+            "MYCLI_MEMORY_DREAM_MIN_SESSIONS",
+            "0",
+            "memory_dream_min_sessions must be at least 1",
+        ),
+    ],
+)
+def test_resolve_config_rejects_invalid_memory_thresholds(
+    tmp_path: Path,
+    env_key: str,
+    value: str,
+    message: str,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match=message):
+        resolve_config(
+            cli_args={},
+            env={env_key: value},
+            cwd=workspace,
+            home=home_dir,
+        )
 
 
 def test_resolve_config_loads_shell_environment_policy(tmp_path: Path) -> None:

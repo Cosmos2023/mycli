@@ -570,22 +570,66 @@ def resolve_config(
     if thinking_enabled is False and thinking_effort_value is not None:
         raise ValueError("thinking_effort requires thinking_enabled=true")
     thinking_effort = reasoning_effort if thinking_enabled else None
-    memory_enabled_raw: object | None = env.get("MYCLI_MEMORY_ENABLED")
-    if memory_enabled_raw is None:
-        memory_enabled_raw = _config_value_no_env(
+    memory_enabled_value = _parse_optional_bool(
+        _config_value(
+            env=env,
             user_config=user_config,
             project_config=project_config,
             legacy_user_config=legacy_user_config,
+            env_key="MYCLI_MEMORY_ENABLED",
             config_key="memory_enabled",
         )
-    memory_enabled_value = _parse_optional_bool(memory_enabled_raw)
-    memory_extraction_interval_turns_value = (
-        env.get("MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS")
-        or user_config.get("memory_extraction_interval_turns")
-        or project_config.get("memory_extraction_interval_turns")
-        or legacy_user_config.get("memory_extraction_interval_turns")
-        or 5
     )
+    memory_extraction_enabled_value = _parse_optional_bool(
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_MEMORY_EXTRACTION_ENABLED",
+            config_key="memory_extraction_enabled",
+        )
+    )
+    memory_extraction_interval_turns_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_MEMORY_EXTRACTION_INTERVAL_TURNS",
+        config_key="memory_extraction_interval_turns",
+    )
+    if memory_extraction_interval_turns_value is None:
+        memory_extraction_interval_turns_value = 5
+    memory_dream_enabled_value = _parse_optional_bool(
+        _config_value(
+            env=env,
+            user_config=user_config,
+            project_config=project_config,
+            legacy_user_config=legacy_user_config,
+            env_key="MYCLI_MEMORY_DREAM_ENABLED",
+            config_key="memory_dream_enabled",
+        )
+    )
+    memory_dream_min_hours_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_MEMORY_DREAM_MIN_HOURS",
+        config_key="memory_dream_min_hours",
+    )
+    if memory_dream_min_hours_value is None:
+        memory_dream_min_hours_value = 24
+    memory_dream_min_sessions_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_MEMORY_DREAM_MIN_SESSIONS",
+        config_key="memory_dream_min_sessions",
+    )
+    if memory_dream_min_sessions_value is None:
+        memory_dream_min_sessions_value = 5
     compression_threshold_tokens_value = (
         env.get("MYCLI_COMPRESSION_THRESHOLD_TOKENS")
         or user_config.get("compression_threshold_tokens")
@@ -777,9 +821,17 @@ def resolve_config(
 
     memory_extraction_interval_turns = int(str(memory_extraction_interval_turns_value))
     if memory_extraction_interval_turns < -1:
-        memory_extraction_interval_turns = -1
+        raise ValueError(
+            "memory_extraction_interval_turns must be -1, 0, or positive"
+        )
     elif memory_extraction_interval_turns == 0:
         memory_extraction_interval_turns = 1
+    memory_dream_min_hours = int(str(memory_dream_min_hours_value))
+    if memory_dream_min_hours < 1:
+        raise ValueError("memory_dream_min_hours must be at least 1")
+    memory_dream_min_sessions = int(str(memory_dream_min_sessions_value))
+    if memory_dream_min_sessions < 1:
+        raise ValueError("memory_dream_min_sessions must be at least 1")
 
     return AgentConfig(
         workspace_root=cwd,
@@ -811,7 +863,17 @@ def resolve_config(
         thinking_enabled=thinking_enabled,
         thinking_effort=thinking_effort,
         memory_enabled=True if memory_enabled_value is None else memory_enabled_value,
+        memory_extraction_enabled=(
+            True
+            if memory_extraction_enabled_value is None
+            else memory_extraction_enabled_value
+        ),
         memory_extraction_interval_turns=memory_extraction_interval_turns,
+        memory_dream_enabled=(
+            True if memory_dream_enabled_value is None else memory_dream_enabled_value
+        ),
+        memory_dream_min_hours=memory_dream_min_hours,
+        memory_dream_min_sessions=memory_dream_min_sessions,
         compression_threshold_tokens=int(str(compression_threshold_tokens_value)),
         compaction_l4_trigger_ratio=float(str(compaction_l4_trigger_ratio_value)),
         compaction_l4_buffer_tokens=int(str(compaction_l4_buffer_tokens_value)),

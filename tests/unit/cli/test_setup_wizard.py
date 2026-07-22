@@ -140,7 +140,11 @@ def test_run_setup_wizard_rewrites_config_with_grouped_qwen_cache_defaults(
                 'model = "deepseek-v4-flash"',
                 'api_base_url = "https://api.deepseek.com"',
                 "memory_enabled = true",
+                "memory_extraction_enabled = false",
                 "memory_extraction_interval_turns = -1",
+                "memory_dream_enabled = false",
+                "memory_dream_min_hours = 48",
+                "memory_dream_min_sessions = 9",
                 "cache_control_enabled = false",
                 "prompt_cache_key_enabled = false",
                 "",
@@ -171,7 +175,11 @@ def test_run_setup_wizard_rewrites_config_with_grouped_qwen_cache_defaults(
     assert payload["model"]["protocol"] == "chat_completions"
     assert payload["request"]["cache_control_enabled"] is True
     assert payload["request"]["prompt_cache_key_enabled"] is False
+    assert payload["memory"]["extraction_enabled"] is False
     assert payload["memory"]["extraction_interval_turns"] == -1
+    assert payload["memory"]["dream_enabled"] is False
+    assert payload["memory"]["dream_min_hours"] == 48
+    assert payload["memory"]["dream_min_sessions"] == 9
     assert payload["compaction_l4_trigger_ratios_by_model"] == {
         "deepseek-v4-flash": 0.9
     }

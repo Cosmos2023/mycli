@@ -50,7 +50,11 @@ CONFIG_SECTIONS: tuple[ConfigSection, ...] = (
         "memory",
         (
             ("enabled", "memory_enabled"),
+            ("extraction_enabled", "memory_extraction_enabled"),
             ("extraction_interval_turns", "memory_extraction_interval_turns"),
+            ("dream_enabled", "memory_dream_enabled"),
+            ("dream_min_hours", "memory_dream_min_hours"),
+            ("dream_min_sessions", "memory_dream_min_sessions"),
         ),
     ),
     (
