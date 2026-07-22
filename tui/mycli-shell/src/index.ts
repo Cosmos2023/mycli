@@ -13,6 +13,8 @@ export type {
 	MycliShellDiagnosticMetric,
 	MycliShellDiagnosticSection,
 	MycliShellFooterData,
+	MycliShellFileChange,
+	MycliShellFileChangeEntry,
 	MycliShellMessage,
 	MycliShellModel,
 	MycliShellPendingInput,
@@ -40,6 +42,7 @@ export { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 export { CommandResultComponent } from "./components/command-result.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { FooterComponent } from "./components/footer.ts";
+export { FileChangeComponent } from "./components/file-change.ts";
 export { LoginFlowComponent } from "./components/login-flow.ts";
 export { ModelSelectorComponent } from "./components/model-selector.ts";
 export { PlanUpdateComponent } from "./components/plan-update.ts";

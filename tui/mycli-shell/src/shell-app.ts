@@ -10,6 +10,7 @@ import { CollapsedToolGroupComponent } from "./components/collapsed-tool-group.t
 import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { CommandResultComponent } from "./components/command-result.ts";
 import { FooterComponent } from "./components/footer.ts";
+import { FileChangeComponent } from "./components/file-change.ts";
 import { PlanUpdateComponent } from "./components/plan-update.ts";
 import { ProposedPlanComponent } from "./components/proposed-plan.ts";
 import { isResolvedSubagent, SubagentTaskPanelComponent } from "./components/subagent-task-panel.ts";
@@ -83,6 +84,8 @@ class TranscriptBlocksComponent extends Container {
 				this.addChild(new PlanUpdateComponent(block.planUpdate));
 			} else if (block.kind === "tool") {
 				this.addChild(new ToolExecutionComponent(block.tool));
+			} else if (block.kind === "file_change") {
+				this.addChild(new FileChangeComponent(block.fileChange));
 			} else if (block.kind === "bash") {
 				this.addChild(new BashExecutionComponent(block.bash));
 			} else if (block.kind === "diagnostic") {

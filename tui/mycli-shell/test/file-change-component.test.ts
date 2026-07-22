@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { renderUnifiedDiff } from "../src/components/diff-renderer.ts";
+import { FileChangeComponent } from "../src/components/file-change.ts";
 import { highlightDiffCode } from "../src/components/syntax-highlight.ts";
+import type { MycliShellFileChange } from "../src/model.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
 
 
@@ -28,6 +30,44 @@ function renderThemeFixture(env: NodeJS.ProcessEnv): string {
 function backgroundSequenceFor(text: string, needle: string): string {
 	const line = text.split("\n").find((candidate) => stripAnsi(candidate).includes(needle)) ?? "";
 	return line.match(/\x1b\[(?:4[0-7]|10[0-7]|48;(?:2|5);[^m]+)m/)?.[0] ?? "";
+}
+
+
+function editedFileChange(overrides: Partial<MycliShellFileChange> = {}): MycliShellFileChange {
+	return {
+		id: "change-1",
+		callId: "call-1",
+		status: "success",
+		summary: "Updated",
+		files: [{
+			version: 1,
+			kind: "update",
+			path: "src/app.py",
+			diff: "@@ -24 +24 @@\n-old\n+new\n",
+			addedLines: 1,
+			removedLines: 1,
+			truncated: false,
+			omittedChars: 0,
+			language: "py",
+		}],
+		...overrides,
+	};
+}
+
+
+function renderFileChange(
+	fileChange: MycliShellFileChange,
+	width = 100,
+	term = "xterm-256color",
+): string[] {
+	const previousTerm = process.env.TERM;
+	process.env.TERM = term;
+	try {
+		return new FileChangeComponent(fileChange).render(width);
+	} finally {
+		if (previousTerm === undefined) delete process.env.TERM;
+		else process.env.TERM = previousTerm;
+	}
 }
 
 
@@ -166,4 +206,108 @@ test("256-color and 16-color backgrounds avoid truecolor escapes", () => {
 test("syntax highlighting skips diffs above two thousand lines", () => {
 	const code = "value = \"plain\"";
 	assert.equal(highlightDiffCode(code, "py", 2_001), code);
+});
+
+
+test("file change component renders a single edited file without a tool card", () => {
+	const output = stripAnsi(renderFileChange(editedFileChange()).join("\n"));
+
+	assert.match(output, /• Edited src\/app\.py \(\+1 -1\)/);
+	assert.match(output, /24 - old/);
+	assert.match(output, /24 \+ new/);
+	assert.doesNotMatch(output, /⏺ Write|⏺ Edit|⎿ Wrote/);
+});
+
+
+test("file change component aggregates multiple files and renders operation labels", () => {
+	const multi = editedFileChange({
+		files: [
+			{
+				version: 1, kind: "add", path: "src/new.py", diff: "@@ -0,0 +1,2 @@\n+one\n+two\n",
+				addedLines: 2, removedLines: 0, truncated: false, omittedChars: 0, language: "py",
+			},
+			{
+				version: 1, kind: "delete", path: "src/old.py", diff: "@@ -1,2 +0,0 @@\n-one\n-two\n",
+				addedLines: 0, removedLines: 2, truncated: false, omittedChars: 0, language: "py",
+			},
+			{
+				version: 1, kind: "rename", previousPath: "src/a.py", path: "src/b.py", diff: "",
+				addedLines: 0, removedLines: 0, truncated: false, omittedChars: 0, language: "py",
+			},
+		],
+	});
+	const output = stripAnsi(renderFileChange(multi).join("\n"));
+
+	assert.match(output, /• Edited 3 files \(\+2 -2\)/);
+	assert.match(output, /└ src\/new\.py \(\+2 -0\)/);
+	assert.match(output, /└ src\/old\.py \(\+0 -2\)/);
+	assert.match(output, /└ src\/a\.py -> src\/b\.py \(\+0 -0\)/);
+
+	const added = stripAnsi(renderFileChange({
+		...editedFileChange(),
+		files: [{ ...editedFileChange().files[0]!, kind: "add", path: "src/new.py" }],
+	}, 80).join("\n"));
+	const deleted = stripAnsi(renderFileChange({
+		...editedFileChange(),
+		files: [{ ...editedFileChange().files[0]!, kind: "delete", path: "src/old.py" }],
+	}, 80).join("\n"));
+	const renamed = stripAnsi(renderFileChange({
+		...editedFileChange(),
+		files: [{ ...editedFileChange().files[0]!, kind: "rename", previousPath: "src/a.py", path: "src/b.py" }],
+	}, 80).join("\n"));
+	assert.match(added, /• Added src\/new\.py/);
+	assert.match(deleted, /• Deleted src\/old\.py/);
+	assert.match(renamed, /• Renamed src\/a\.py -> src\/b\.py/);
+});
+
+
+test("file change component renders unchanged failures and truncation explicitly", () => {
+	const unchanged = stripAnsi(renderFileChange(editedFileChange({
+		status: "unchanged",
+		target: "src/app.py",
+		files: [],
+	}), 80).join("\n"));
+	const failed = stripAnsi(renderFileChange(editedFileChange({
+		status: "error",
+		summary: "Failed to apply patch",
+		error: "Expected lines were not found in src/app.py",
+		files: [],
+	}), 80).join("\n"));
+	const truncated = stripAnsi(renderFileChange(editedFileChange({
+		files: [{
+			...editedFileChange().files[0]!,
+			diff: "@@ -1 +1 @@\n-old\n... 20 lines / 400 chars omitted ...\n+new\n",
+			truncated: true,
+			omittedChars: 400,
+		}],
+	}), 80).join("\n"));
+
+	assert.match(unchanged, /• No changes to src\/app\.py/);
+	assert.match(failed, /× Failed to apply patch/);
+	assert.match(failed, /└ Expected lines were not found in src\/app\.py/);
+	assert.match(truncated, /20 lines \/ 400 chars omitted/);
+});
+
+
+test("file change component stays width safe and falls back to ASCII glyphs", () => {
+	const change = editedFileChange({
+		files: [{
+			...editedFileChange().files[0]!,
+			path: "src/这是一个很长的文件名🙂.py",
+			diff: "@@ -1 +1 @@\n-旧值🙂很长很长很长\n+新值🙂很长很长很长\n",
+		}],
+	});
+	const lines = renderFileChange(change, 40);
+	for (const line of lines) assert.ok(visibleWidth(line) <= 40, stripAnsi(line));
+
+	const plain = stripAnsi(renderFileChange(editedFileChange({
+			status: "error",
+			summary: "Failed to apply patch",
+			error: "No match",
+			files: [],
+		}), 80, "dumb").join("\n"));
+	const success = stripAnsi(renderFileChange(editedFileChange(), 80, "dumb").join("\n"));
+	assert.match(plain, /x Failed to apply patch/);
+	assert.match(plain, /\\ No match/);
+	assert.match(success, /\* Edited src\/app\.py/);
 });

@@ -31,6 +31,7 @@ import { CommandDiagnosticComponent } from "./components/command-diagnostic.ts";
 import { CommandResultComponent } from "./components/command-result.ts";
 import { CustomEditor } from "./components/custom-editor.ts";
 import { FooterComponent } from "./components/footer.ts";
+import { FileChangeComponent } from "./components/file-change.ts";
 import { rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginFlowComponent } from "./components/login-flow.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
@@ -94,6 +95,7 @@ type ChatBlockComponent =
 	| { kind: "plan"; signature: string; component: ProposedPlanComponent }
 	| { kind: "plan_update"; signature: string; component: PlanUpdateComponent }
 	| { kind: "tool"; signature: string; component: ToolExecutionComponent }
+	| { kind: "file_change"; signature: string; component: FileChangeComponent }
 	| { kind: "bash"; signature: string; component: BashExecutionComponent }
 	| { kind: "background_terminals"; signature: string; component: BackgroundTerminalsComponent }
 	| { kind: "diagnostic"; signature: string; component: CommandDiagnosticComponent }
@@ -1031,6 +1033,11 @@ export class MycliShellRuntime {
 				cached.signature = signature;
 				return cached;
 			}
+			if (block.kind === "file_change" && cached.component instanceof FileChangeComponent) {
+				cached.component.updateFileChange(block.fileChange);
+				cached.signature = signature;
+				return cached;
+			}
 			if (block.kind === "bash" && cached.component instanceof BashExecutionComponent) {
 				cached.component.updateBash(block.bash);
 				cached.signature = signature;
@@ -1066,6 +1073,9 @@ export class MycliShellRuntime {
 		}
 		if (block.kind === "tool") {
 			return { kind: "tool", signature, component: new ToolExecutionComponent(block.tool) };
+		}
+		if (block.kind === "file_change") {
+			return { kind: "file_change", signature, component: new FileChangeComponent(block.fileChange) };
 		}
 		if (block.kind === "bash") {
 			return { kind: "bash", signature, component: new BashExecutionComponent(block.bash, this.now) };

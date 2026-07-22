@@ -8,7 +8,7 @@ import { Editor } from "../src/tui-core/components/editor.ts";
 import { Text } from "../src/tui-core/components/text.ts";
 import { TUI, visibleWidth } from "../src/tui-core/tui.ts";
 import { spawnSync } from "node:child_process";
-import { BashExecutionComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
+import { BashExecutionComponent, FileChangeComponent, FooterComponent, MycliShellRuntime, PendingInputPreviewComponent, renderMycliShell, ToolExecutionComponent, TrustSelectorComponent, type MycliShellCommandSpec, type MycliShellState } from "../src/index.ts";
 import { filterSessions, parseSessionSearchQuery } from "../src/components/session-selector-search.ts";
 
 function stripAnsi(text: string): string {
@@ -879,6 +879,35 @@ test("mycli shell does not collapse context tools across mutating tools", () => 
 	assert.doesNotMatch(output, /Read 1 file, searched 1 pattern/);
 });
 
+test("file changes flush context groups and remain in transcript order", () => {
+	const fileChange = {
+		id: "write-1", callId: "call-1", status: "success" as const, summary: "Updated",
+		files: [{
+			version: 1 as const, kind: "update" as const, path: "src/app.py",
+			diff: "@@ -1 +1 @@\n-old\n+new\n", addedLines: 1, removedLines: 1,
+			truncated: false, omittedChars: 0, language: "py",
+		}],
+	};
+	const state: MycliShellState = {
+		...sampleState(), messages: [], tools: [], bash: [], pendingNotice: undefined,
+		transcript: [
+			{ id: "read-1", kind: "tool", tool: { id: "read-1", name: "Read", args: "before-a.py", status: "success" } },
+			{ id: "read-2", kind: "tool", tool: { id: "read-2", name: "Read", args: "before-b.py", status: "success" } },
+			{ id: "write-1", kind: "file_change", fileChange, message: { id: "write-1", role: "system", text: "fallback" } },
+			{ id: "read-3", kind: "tool", tool: { id: "read-3", name: "Read", args: "after-a.py", status: "success" } },
+			{ id: "read-4", kind: "tool", tool: { id: "read-4", name: "Read", args: "after-b.py", status: "success" } },
+		],
+	};
+	const output = stripAnsi(renderMycliShell(state, 100).join("\n"));
+	const before = output.indexOf("before-a.py");
+	const changed = output.indexOf("Edited src/app.py");
+	const after = output.indexOf("after-a.py");
+
+	assert.ok(before >= 0 && changed > before && after > changed, output);
+	assert.equal((output.match(/Read 2 files/g) ?? []).length, 2);
+	assert.doesNotMatch(output, /fallback|⏺ Write|⏺ Edit/);
+});
+
 test("mycli shell expands collapsed context tool groups into individual tools", () => {
 	const state: MycliShellState = {
 		...sampleState(),
@@ -1642,6 +1671,69 @@ test("mycli shell runtime updates transcript tool components in place", () => {
 	assert.equal(runtime.chatContainer.children[0], component);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /⎿ word\.txt · 3 lines/);
 	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /3 lines/);
+});
+
+test("running Write becomes one file change component and updates in place", () => {
+	const terminal = new TestTerminal();
+	const runningTool = { id: "change-1", name: "Write", args: "src/app.py", status: "running" as const, mutating: true };
+	const initial: MycliShellState = {
+		...sampleState(), messages: [], tools: [runningTool], bash: [], pendingNotice: undefined,
+		transcript: [{ id: "change-1", kind: "tool", tool: runningTool }],
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	assert.ok(runtime.chatContainer.children[0] instanceof ToolExecutionComponent);
+
+	const fileChange = {
+		id: "change-1", callId: "call-1", status: "success" as const, summary: "Updated",
+		files: [{
+			version: 1 as const, kind: "update" as const, path: "src/app.py",
+			diff: "@@ -1 +1 @@\n-old\n+new\n", addedLines: 1, removedLines: 1,
+			truncated: false, omittedChars: 0, language: "py",
+		}],
+	};
+	runtime.setState({
+		...initial, tools: [],
+		transcript: [{ id: "change-1", kind: "file_change", fileChange, message: { id: "change-1", role: "system", text: "fallback" } }],
+	});
+	const completedComponent = runtime.chatContainer.children[0];
+	assert.ok(completedComponent instanceof FileChangeComponent);
+	assert.equal(runtime.chatContainer.children.length, 1);
+	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(100).join("\n")), /fallback|⏺ Write/);
+
+	runtime.setState({
+		...runtime.getState(),
+		transcript: [{
+			id: "change-1", kind: "file_change",
+			fileChange: { ...fileChange, summary: "Updated again" },
+			message: { id: "change-1", role: "system", text: "fallback" },
+		}],
+	});
+	assert.equal(runtime.chatContainer.children[0], completedComponent);
+});
+
+test("global detail toggle never hides file change diffs", () => {
+	const terminal = new TestTerminal();
+	const fileChange = {
+		id: "change-1", status: "success" as const, summary: "Updated",
+		files: [{
+			version: 1 as const, kind: "update" as const, path: "src/app.py",
+			diff: "@@ -1 +1 @@\n-old-visible\n+new-visible\n", addedLines: 1, removedLines: 1,
+			truncated: false, omittedChars: 0, language: "py",
+		}],
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(), messages: [], tools: [], bash: [], pendingNotice: undefined,
+			transcript: [{ id: "change-1", kind: "file_change", fileChange, message: { id: "change-1", role: "system", text: "fallback" } }],
+		},
+		terminal,
+	});
+	runtime.start();
+	terminal.input?.("\x0f");
+
+	const output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /old-visible/);
+	assert.match(output, /new-visible/);
 });
 
 test("mycli shell runtime streams output into the mounted Shell component", () => {
