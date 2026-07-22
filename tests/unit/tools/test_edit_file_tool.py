@@ -93,7 +93,8 @@ def test_patch_tool_applies_exact_replacement_after_read_snapshot(tmp_path: Path
     assert result.success is True
     assert result.raw_payload["status"] == "patched"
     assert result.raw_payload["matches"] == 1
-    assert "Diff preview" in rendered
+    assert rendered == "Success. Updated the following files:\nM app.py"
+    assert "Diff preview" not in rendered
     assert target.read_text(encoding="utf-8") == "value = 2\n"
 
 

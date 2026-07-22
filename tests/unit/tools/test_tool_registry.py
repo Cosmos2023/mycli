@@ -170,8 +170,11 @@ def test_registry_uses_declared_read_and_mutation_presenters(tmp_path: Path) -> 
     assert "one" in read_result.model_output.text_content()
     assert read_result.model_output.budget_class is ToolOutputBudgetClass.READ
     assert write_result.model_output is not None
-    assert "Wrote created.txt" in write_result.model_output.text_content()
-    assert "Diff:" in write_result.model_output.text_content()
+    assert (
+        write_result.model_output.text_content()
+        == "Success. Updated the following files:\nA created.txt"
+    )
+    assert "Diff:" not in write_result.model_output.text_content()
 
 
 def test_builtin_tool_parallel_support_matches_safe_runtime_set(tmp_path: Path) -> None:

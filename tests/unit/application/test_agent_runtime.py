@@ -3638,9 +3638,8 @@ def test_agent_runtime_preserves_grounded_tool_messages_across_reinjection(
     assert "needle one" in read_content
     assert "line two" in read_content
 
-    assert "Diff:" in edit_content
-    assert "-line two" in edit_content
-    assert "+line three" in edit_content
+    assert edit_content == "Success. Updated the following files:\nM notes.txt"
+    assert "Diff:" not in edit_content
 
 
 def test_agent_runtime_reinjects_search_and_range_evidence_into_tool_messages(
