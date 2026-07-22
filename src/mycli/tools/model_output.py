@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from mycli.domain.tooling.calls import ToolResult
 from mycli.domain.tooling.output import ToolModelOutput, ToolOutputBudgetClass
+from mycli.services.file_change_display import mutation_receipt
 
 
 ToolModelOutputAdapter = Callable[[ToolResult], ToolModelOutput]
@@ -91,16 +92,10 @@ def _shell_response_text(result: ToolResult) -> str:
 
 
 def mutation_model_output(result: ToolResult) -> ToolModelOutput:
-    parts = [result.summary]
-    path = result.raw_payload.get("path")
-    if isinstance(path, str) and path:
-        parts.append(f"Path: {path}")
-    diff = result.raw_payload.get("diff")
-    if isinstance(diff, str) and diff.strip():
-        parts.extend(("Diff:", diff.rstrip()))
-    if not result.success and result.error:
-        parts.append(f"Error: {result.error}")
-    return ToolModelOutput.from_text("\n".join(parts), success=result.success)
+    return ToolModelOutput.from_text(
+        mutation_receipt(result),
+        success=result.success,
+    )
 
 
 def structured_model_output(result: ToolResult) -> ToolModelOutput:

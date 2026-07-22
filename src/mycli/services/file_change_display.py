@@ -154,6 +154,59 @@ def project_file_changes(
     )
 
 
+def mutation_receipt(result: ToolResult) -> str:
+    path = _optional_text(result.raw_payload.get("path"))
+    if not result.success:
+        if result.error:
+            return f"Failed to update {path or 'file'}: {result.error}"
+        return result.summary
+    if result.raw_payload.get("status") == "unchanged":
+        return f"No changes to {path or 'file'}"
+
+    entries = _receipt_entries(result.raw_payload)
+    if not entries and path:
+        entries = (("M", path),)
+    if not entries:
+        return result.summary
+    return "\n".join(
+        (
+            "Success. Updated the following files:",
+            *(f"{status} {label}" for status, label in entries),
+        )
+    )
+
+
+def _receipt_entries(payload: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    labels = {
+        FileChangeKind.ADD: "A",
+        FileChangeKind.UPDATE: "M",
+        FileChangeKind.DELETE: "D",
+        FileChangeKind.RENAME: "R",
+    }
+    entries: list[tuple[str, str]] = []
+    raw_changes = payload.get("file_changes")
+    if isinstance(raw_changes, list):
+        for raw_change in raw_changes:
+            change = FileChangeDisplay.from_mapping(raw_change)
+            if change is None:
+                continue
+            label = (
+                f"{change.previous_path} -> {change.path}"
+                if change.kind is FileChangeKind.RENAME and change.previous_path
+                else change.path
+            )
+            entries.append((labels[change.kind], label))
+    if entries:
+        return tuple(entries)
+
+    path = _optional_text(payload.get("path"))
+    status = _optional_text(payload.get("status"))
+    kind = _STATUS_KINDS.get((status or "").lower())
+    if kind is None or path is None:
+        return ()
+    return ((labels[kind], path),)
+
+
 def _result_path(call: ToolCall, payload: dict[str, object]) -> str | None:
     for value in (
         payload.get("path"),
@@ -258,5 +311,6 @@ __all__ = [
     "FILE_CHANGE_VERSION",
     "FileChangeDisplay",
     "FileChangeKind",
+    "mutation_receipt",
     "project_file_changes",
 ]

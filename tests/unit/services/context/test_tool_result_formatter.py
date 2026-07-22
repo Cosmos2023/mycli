@@ -401,7 +401,7 @@ def test_failure_model_output_uses_stable_error_contract() -> None:
     )
 
 
-def test_mutation_model_output_uses_compact_diff_preview() -> None:
+def test_mutation_model_output_uses_compact_file_receipt() -> None:
     formatter = ToolResultFormatter(default_max_chars=2000)
     diff = "\n".join(f"+line {index}" for index in range(30))
     result = ToolResult(
@@ -418,35 +418,7 @@ def test_mutation_model_output_uses_compact_diff_preview() -> None:
 
     output = formatter.format("Edit", result)
 
-    assert output == (
-        "Edit succeeded\n"
-        "Path: file.py\n"
-        "Status: edited\n"
-        "Matches: 2\n"
-        "Diagnostics: 1 issue(s)\n"
-        "Diff preview (first 20 of 30 lines):\n"
-        "+line 0\n"
-        "+line 1\n"
-        "+line 2\n"
-        "+line 3\n"
-        "+line 4\n"
-        "+line 5\n"
-        "+line 6\n"
-        "+line 7\n"
-        "+line 8\n"
-        "+line 9\n"
-        "+line 10\n"
-        "+line 11\n"
-        "+line 12\n"
-        "+line 13\n"
-        "+line 14\n"
-        "+line 15\n"
-        "+line 16\n"
-        "+line 17\n"
-        "+line 18\n"
-        "+line 19\n"
-        "Note: diff truncated for model context; inspect raw payload or run GitDiff if needed."
-    )
+    assert output == "Success. Updated the following files:\nM file.py"
 
 
 def test_mutation_model_output_omits_empty_diff_for_unchanged_write() -> None:
@@ -457,8 +429,18 @@ def test_mutation_model_output_omits_empty_diff_for_unchanged_write() -> None:
         raw_payload={"path": "file.py", "status": "unchanged", "diff": ""},
     )
 
-    assert formatter.format("Write", result) == (
-        "Write succeeded\n"
-        "Path: file.py\n"
-        "Status: unchanged"
+    assert formatter.format("Write", result) == "No changes to file.py"
+
+
+def test_mutation_failure_uses_actionable_compact_receipt() -> None:
+    formatter = ToolResultFormatter()
+    result = ToolResult(
+        success=False,
+        summary="Failed to edit file.py",
+        error="expected lines were not found",
+        raw_payload={"path": "file.py", "error_kind": "string_not_found"},
+    )
+
+    assert formatter.format("Edit", result) == (
+        "Failed to update file.py: expected lines were not found"
     )

@@ -3,12 +3,14 @@ from __future__ import annotations
 import re
 
 from mycli.domain.tooling.calls import ToolEvidence
+from mycli.services.file_change_display import mutation_receipt
 from mycli.tools.base import ToolResult
 
 
 SHELL_RESULT_TOOLS = frozenset(
     {"run_shell", "Shell", "Bash", "ShellOutput", "BashOutput", "WriteStdin"}
 )
+MUTATION_RESULT_TOOLS = frozenset({"Write", "Edit", "Patch"})
 
 
 class ToolResultFormatter:
@@ -49,6 +51,8 @@ class ToolResultFormatter:
 
     def _render(self, tool_name: str, result: ToolResult) -> str:
         if not result.success:
+            if tool_name in MUTATION_RESULT_TOOLS:
+                return mutation_receipt(result)
             if tool_name in SHELL_RESULT_TOOLS:
                 rendered = self._render_shell_result(result)
                 if rendered is not None:
@@ -204,39 +208,15 @@ class ToolResultFormatter:
         path = result.raw_payload.get("path")
         status = result.raw_payload.get("status")
         diff = result.raw_payload.get("diff")
-        if not isinstance(path, str) and not isinstance(status, str) and not isinstance(diff, str):
+        file_changes = result.raw_payload.get("file_changes")
+        if (
+            not isinstance(path, str)
+            and not isinstance(status, str)
+            and not isinstance(diff, str)
+            and not isinstance(file_changes, list)
+        ):
             return None
-
-        parts = [f"{_display_tool_name(tool_name)} succeeded"]
-        if isinstance(path, str) and path:
-            parts.append(f"Path: {path}")
-        if isinstance(status, str) and status:
-            parts.append(f"Status: {status}")
-        matches = result.raw_payload.get("matches")
-        if isinstance(matches, int):
-            parts.append(f"Matches: {matches}")
-
-        diagnostics = result.raw_payload.get("write_diagnostics")
-        if isinstance(diagnostics, dict):
-            count = diagnostics.get("count")
-            if isinstance(count, int):
-                parts.append(f"Diagnostics: {count} issue(s)")
-            error = diagnostics.get("error")
-            if isinstance(error, str) and error:
-                parts.append(f"Diagnostics error: {error}")
-            if diagnostics.get("truncated") is True:
-                parts.append("Diagnostics truncated: true")
-
-        if isinstance(diff, str) and diff.strip():
-            lines = diff.rstrip().splitlines()
-            preview = lines[:20]
-            parts.append(f"Diff preview (first {len(preview)} of {len(lines)} lines):")
-            parts.append("\n".join(preview))
-            if len(lines) > len(preview):
-                parts.append(
-                    "Note: diff truncated for model context; inspect raw payload or run GitDiff if needed."
-                )
-        return "\n".join(parts)
+        return mutation_receipt(result)
 
     def _read_output_budget(self, tool_name: str, *, parts: list[str], note: str) -> int:
         fixed_chars = sum(len(part) + 1 for part in parts) + len(note) + 1
