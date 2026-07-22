@@ -425,6 +425,23 @@ class ShellSessionManager:
             ]
         return tuple(self.terminate(owner_session_id, shell_id) for shell_id in shell_ids)
 
+    def terminate_owner_tree(
+        self,
+        root_owner_session_id: str,
+    ) -> tuple[ShellSessionSnapshot, ...]:
+        child_prefix = f"{root_owner_session_id}:"
+        with self._lock:
+            owned = [
+                (session.owner_session_id, shell_id)
+                for shell_id, session in self._sessions.items()
+                if (
+                    session.owner_session_id == root_owner_session_id
+                    or session.owner_session_id.startswith(child_prefix)
+                )
+                and session.transport.poll() is None
+            ]
+        return tuple(self.terminate(owner, shell_id) for owner, shell_id in owned)
+
     def list_sessions(self, owner_session_id: str | None = None) -> tuple[ShellSessionSnapshot, ...]:
         with self._lock:
             sessions = [

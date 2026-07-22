@@ -442,6 +442,33 @@ def test_gateway_emits_shell_lifecycle_notification(tmp_path: Path) -> None:
     gateway.close()
 
 
+def test_gateway_ignores_shell_lifecycle_notification_from_child(
+    tmp_path: Path,
+) -> None:
+    service = FakeService(tmp_path)
+    emitted: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: emitted.append((method, params)),
+    )
+
+    service.emit_shell_event(
+        ShellLifecycleEvent(
+            kind="shell.started",
+            shell_id="shell-child",
+            owner_session_id=f"{service._config.session_id}:dream:turn_1:abcd1234",
+            call_id="call-child",
+            sequence=1,
+            command_preview="find .",
+            background=False,
+            process_state="running_foreground",
+        )
+    )
+
+    assert not any(method == "shell.started" for method, _params in emitted)
+    gateway.close()
+
+
 def test_gateway_bootstrap_and_status_include_active_background_shells(
     tmp_path: Path,
 ) -> None:

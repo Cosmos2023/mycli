@@ -14,14 +14,27 @@ from mycli.domain.tooling.exposure import (
 )
 from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
 from mycli.tools.base import ToolResult, ToolSpec
+from mycli.tools.bash import BashTool
+from mycli.tools.invocation_context import ToolInvocationContext
+from mycli.tools.registry import ToolRegistry
+from mycli.tools.routing.tool_router import ToolRouter
+from tests.support.shell_commands import python_shell_command
 
 
 class FakeRouter:
     def __init__(self) -> None:
-        self.calls: list[tuple[ToolCall, ToolExposure]] = []
+        self.calls: list[
+            tuple[ToolCall, ToolExposure, ToolInvocationContext | None]
+        ] = []
 
-    def execute(self, call: ToolCall, *, exposure: ToolExposure) -> ToolResult:
-        self.calls.append((call, exposure))
+    def execute(
+        self,
+        call: ToolCall,
+        *,
+        exposure: ToolExposure,
+        invocation_context: ToolInvocationContext | None = None,
+    ) -> ToolResult:
+        self.calls.append((call, exposure, invocation_context))
         return ToolResult(success=True, summary="ok", raw_payload={"content": "ok"})
 
 
@@ -50,6 +63,38 @@ def test_runtime_child_tool_executor_uses_child_exposure_only() -> None:
     assert result.success is True
     assert router.calls[0][0] == call
     assert router.calls[0][1].callable_tool_names() == ("Read",)
+    assert router.calls[0][2] == ToolInvocationContext(
+        owner_session_id="demo:sub:turn_1:abcd1234"
+    )
+
+
+def test_runtime_child_shell_lifecycle_events_keep_dream_owner(tmp_path) -> None:
+    bash = BashTool(tmp_path)
+    bash.configure_shell_session("main-session")
+    events = []
+    bash.configure_shell_lifecycle(events.append)
+    registry = ToolRegistry.from_tools([bash])
+    executor = RuntimeChildToolExecutor(
+        tool_router=ToolRouter(tool_registry=registry),
+        tool_specs=dict(registry.specs or {}),
+    )
+    child_session_id = "main-session:dream:turn_1:abcd1234"
+
+    for label in ("find", "ls", "cat"):
+        result = executor.execute_child_tool(
+            call=ToolCall(
+                name="Bash",
+                arguments={"command": python_shell_command(f"print({label!r})")},
+                reason=f"dream {label}",
+                call_id=f"call_{label}",
+            ),
+            child_session_id=child_session_id,
+            tool_names=("Bash",),
+        )
+        assert result.success is True
+
+    assert events
+    assert all(event.owner_session_id == child_session_id for event in events)
 
 
 class FakeRequester:

@@ -22,6 +22,7 @@ from mycli.domain.tooling.exposure import (
 from mycli.llms.adapters.base import ModelMessage, ModelToolDefinition
 from mycli.services.context.tool_output_projector import ToolModelOutputProjector
 from mycli.tools.base import ToolResult, ToolSpec
+from mycli.tools.invocation_context import ToolInvocationContext
 from mycli.tools.routing.tool_router import ToolRouter
 
 
@@ -248,7 +249,6 @@ class RuntimeChildToolExecutor:
         child_session_id: str,
         tool_names: tuple[str, ...],
     ) -> ToolResult:
-        del child_session_id
         exposure = ToolExposure(
             entries=tuple(
                 ToolExposureEntry(
@@ -260,7 +260,13 @@ class RuntimeChildToolExecutor:
                 if name in self.tool_specs
             )
         )
-        return self.tool_router.execute(call, exposure=exposure)
+        return self.tool_router.execute(
+            call,
+            exposure=exposure,
+            invocation_context=ToolInvocationContext(
+                owner_session_id=child_session_id,
+            ),
+        )
 
 
 class SubAgentChildLoop:

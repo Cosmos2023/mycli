@@ -204,6 +204,15 @@ class ShellProcessRegistry:
             for snapshot in self._manager.terminate_owner(owner_session_id)
         )
 
+    def terminate_owner_tree(
+        self,
+        root_owner_session_id: str,
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(
+            _snapshot_payload(snapshot)
+            for snapshot in self._manager.terminate_owner_tree(root_owner_session_id)
+        )
+
     def processes(self) -> dict[str, object]:
         return self._manager.processes()
 

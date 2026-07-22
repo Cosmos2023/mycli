@@ -2496,12 +2496,30 @@ def test_agent_runtime_close_terminates_owned_shell_sessions(tmp_path: Path) -> 
     )
     started = bash.execute({"command": "sleep 30", "run_in_background": True})
     shell_id = str(started.raw_payload["shell_id"])
+    child = SHELL_REGISTRY.execute(
+        "sleep 30",
+        owner_session_id="session-close:dream:turn_1:abcd1234",
+        workdir=str(tmp_path),
+        background=True,
+    )
+    peer = SHELL_REGISTRY.execute(
+        "sleep 30",
+        owner_session_id="session-close-peer",
+        workdir=str(tmp_path),
+        background=True,
+    )
+    child_shell_id = str(child["shell_id"])
+    peer_shell_id = str(peer["shell_id"])
 
-    runtime.close()
+    try:
+        runtime.close()
 
-    from mycli.tools.shell_registry import SHELL_REGISTRY
-
-    assert shell_id not in SHELL_REGISTRY.processes()
+        processes = SHELL_REGISTRY.processes()
+        assert shell_id not in processes
+        assert child_shell_id not in processes
+        assert peer_shell_id in processes
+    finally:
+        SHELL_REGISTRY.kill(peer_shell_id, owner_session_id="session-close-peer")
 
 
 def test_agent_runtime_loads_enabled_plugin_hooks_and_tools(tmp_path: Path) -> None:

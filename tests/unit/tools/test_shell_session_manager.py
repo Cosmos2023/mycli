@@ -92,6 +92,32 @@ def test_manager_flushes_decoder_before_completed_event(tmp_path: Path) -> None:
     )
 
 
+def test_terminate_owner_tree_uses_colon_delimited_child_boundary(
+    tmp_path: Path,
+) -> None:
+    transports = [FakeShellTransport() for _index in range(4)]
+    pending = iter(transports)
+    manager = ShellSessionManager(transport_factory=lambda _request: next(pending))
+    owners = (
+        "main-session",
+        "main-session:dream:turn_1:abcd1234",
+        "main-session:sub:turn_2:efgh5678",
+        "main-session-peer",
+    )
+    sessions = tuple(
+        manager.start(_request(tmp_path, "ignored", owner=owner)) for owner in owners
+    )
+
+    terminated = manager.terminate_owner_tree("main-session")
+
+    assert {snapshot.shell_id for snapshot in terminated} == {
+        session.shell_id for session in sessions[:3]
+    }
+    assert all(transport.poll() is not None for transport in transports[:3])
+    assert transports[3].poll() is None
+    manager.terminate(owners[3], sessions[3].shell_id)
+
+
 def test_new_session_yields_to_background_after_deadline(tmp_path: Path) -> None:
     transport = FakeShellTransport()
     events: list[ShellLifecycleEvent] = []

@@ -1334,7 +1334,7 @@ class AgentRuntime:
         self._closed = True
         from mycli.tools.shell_registry import SHELL_REGISTRY
 
-        SHELL_REGISTRY.terminate_owner(self._config.session_id)
+        SHELL_REGISTRY.terminate_owner_tree(self._config.session_id)
         self._execute_session_hook(HookPoint.SESSION_END)
 
     def _execute_session_hook(self, hook_point: HookPoint) -> None:
