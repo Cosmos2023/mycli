@@ -24,6 +24,16 @@ type OpenTtyOptions = {
 	openSync?: (path: string, flags: string) => number;
 };
 
+type ResizeSignalSource = {
+	on(event: "SIGWINCH", listener: () => void): unknown;
+	removeListener(event: "SIGWINCH", listener: () => void): unknown;
+};
+
+type StreamTerminalOptions = {
+	platform?: NodeJS.Platform;
+	resizeSignalSource?: ResizeSignalSource;
+};
+
 export function openTtyStreams(options: OpenTtyOptions = {}): TtyStreams {
 	const platform = options.platform ?? process.platform;
 	if (platform === "win32") {
@@ -65,11 +75,21 @@ export class StreamTerminal implements Terminal {
 	private wasRaw = false;
 	private inputHandler?: (data: string) => void;
 	private resizeHandler?: () => void;
+	private sigwinchHandler?: () => void;
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
 	private _kittyProtocolActive = false;
 
-	constructor(private readonly streams: TtyStreams) {}
+	private readonly platform: NodeJS.Platform;
+	private readonly resizeSignalSource: ResizeSignalSource;
+
+	constructor(
+		private readonly streams: TtyStreams,
+		options: StreamTerminalOptions = {},
+	) {
+		this.platform = options.platform ?? process.platform;
+		this.resizeSignalSource = options.resizeSignalSource ?? process;
+	}
 
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
@@ -80,11 +100,11 @@ export class StreamTerminal implements Terminal {
 	}
 
 	get columns(): number {
-		return this.streams.output.columns || Number(process.env.COLUMNS) || 80;
+		return this.windowSize()?.[0] || this.streams.output.columns || Number(process.env.COLUMNS) || 80;
 	}
 
 	get rows(): number {
-		return this.streams.output.rows || Number(process.env.LINES) || 24;
+		return this.windowSize()?.[1] || this.streams.output.rows || Number(process.env.LINES) || 24;
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
@@ -98,6 +118,10 @@ export class StreamTerminal implements Terminal {
 		this.streams.input.resume();
 		this.write("\x1b[?2004h");
 		this.streams.output.on("resize", this.resizeHandler);
+		if (this.platform !== "win32") {
+			this.sigwinchHandler = () => this.resizeHandler?.();
+			this.resizeSignalSource.on("SIGWINCH", this.sigwinchHandler);
+		}
 		this.stdinBuffer = new StdinBuffer({ timeout: 10 });
 		this.stdinBuffer.on("data", (sequence) => {
 			this.inputHandler?.(normalizeAppleTerminalInput(sequence, sequence === "\r" && isAppleTerminalSession(), false));
@@ -123,11 +147,25 @@ export class StreamTerminal implements Terminal {
 			this.streams.output.removeListener("resize", this.resizeHandler);
 			this.resizeHandler = undefined;
 		}
+		if (this.sigwinchHandler) {
+			this.resizeSignalSource.removeListener("SIGWINCH", this.sigwinchHandler);
+			this.sigwinchHandler = undefined;
+		}
 		this.inputHandler = undefined;
 		this.streams.input.pause();
 		if (this.streams.input.setRawMode) {
 			this.streams.input.setRawMode(this.wasRaw);
 		}
+	}
+
+	private windowSize(): [number, number] | undefined {
+		try {
+			const [columns, rows] = this.streams.output.getWindowSize();
+			if (columns > 0 && rows > 0) return [columns, rows];
+		} catch {
+			// Fall back to the stream's cached dimensions below.
+		}
+		return undefined;
 	}
 
 	async drainInput(maxMs = 1000, idleMs = 50): Promise<void> {

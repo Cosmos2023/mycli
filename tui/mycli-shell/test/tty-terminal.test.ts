@@ -35,11 +35,17 @@ class FakeInput extends EventEmitter {
 class FakeOutput extends EventEmitter {
 	columns = 100;
 	rows = 40;
+	windowColumns = 100;
+	windowRows = 40;
 	output = "";
 
 	write(data: string): boolean {
 		this.output += data;
 		return true;
+	}
+
+	getWindowSize(): [number, number] {
+		return [this.windowColumns, this.windowRows];
 	}
 }
 
@@ -68,6 +74,39 @@ test("stream terminal uses main screen without mouse capture so copy and native 
 	assert.equal(input.resumed, true);
 	assert.equal(input.paused, true);
 	assert.equal(input.isRaw, false);
+});
+
+test("stream terminal refreshes dev tty dimensions on SIGWINCH", () => {
+	const input = new FakeInput();
+	const output = new FakeOutput();
+	const resizeSignals = new EventEmitter();
+	const terminal = new StreamTerminal({
+		input: input as unknown as tty.ReadStream,
+		output: output as unknown as tty.WriteStream,
+		close: () => {},
+	} satisfies TtyStreams, {
+		platform: "darwin",
+		resizeSignalSource: resizeSignals,
+	});
+	let resizeCalls = 0;
+
+	terminal.start(() => {}, () => {
+		resizeCalls += 1;
+	});
+	try {
+		output.windowColumns = 132;
+		output.windowRows = 55;
+		resizeSignals.emit("SIGWINCH");
+
+		assert.equal(resizeCalls, 1);
+		assert.equal(terminal.columns, 132);
+		assert.equal(terminal.rows, 55);
+	} finally {
+		terminal.stop();
+	}
+
+	resizeSignals.emit("SIGWINCH");
+	assert.equal(resizeCalls, 1);
 });
 
 test("Windows uses raw TTY stdio without opening /dev/tty", () => {
