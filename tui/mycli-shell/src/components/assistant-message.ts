@@ -3,6 +3,10 @@ import { Spacer } from "../tui-core/components/spacer.ts";
 import { Container } from "../tui-core/tui.ts";
 import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
+import {
+	renderTranscriptMessageLines,
+	transcriptMessageContentWidth,
+} from "./transcript-message-layout.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -33,12 +37,9 @@ export class AssistantMessageComponent extends Container {
 		const hasThinking = Boolean(this.thinking?.trim());
 		const hasText = Boolean(this.text.trim());
 		const shouldRenderThinking = hasThinking && !this.thinkingHidden;
-		if (shouldRenderThinking || hasText) {
-			this.addChild(new Spacer(1));
-		}
 		if (shouldRenderThinking) {
 			this.addChild(
-				new Markdown(this.thinking!.trim(), 1, 0, markdownTheme(), {
+				new Markdown(this.thinking!.trim(), 0, 0, markdownTheme(), {
 					color: (content) => theme.fg("thinkingText", content),
 					italic: true,
 				}),
@@ -46,12 +47,19 @@ export class AssistantMessageComponent extends Container {
 			if (hasText) this.addChild(new Spacer(1));
 		}
 		if (hasText) {
-			this.addChild(new Markdown(this.text.trim(), 1, 0, markdownTheme()));
+			this.addChild(new Markdown(this.text.trim(), 0, 0, markdownTheme()));
 		}
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
+		const safeWidth = Math.max(1, Math.floor(width));
+		const content = super.render(transcriptMessageContentWidth(safeWidth));
+		const lines = content.length === 0
+			? []
+			: [
+				" ".repeat(safeWidth),
+				...renderTranscriptMessageLines(content, safeWidth, theme.fg("text", "• ")),
+			];
 		if (lines.length === 0) {
 			return lines;
 		}

@@ -1,8 +1,11 @@
-import { Box } from "../tui-core/components/box.ts";
 import { Markdown } from "../tui-core/components/markdown.ts";
 import { Container } from "../tui-core/tui.ts";
 import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
+import {
+	renderTranscriptMessageLines,
+	transcriptMessageContentWidth,
+} from "./transcript-message-layout.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -11,8 +14,7 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 export class UserMessageComponent extends Container {
 	constructor(text: string) {
 		super();
-		const box = new Box(1, 1, (content: string) => theme.bg("userMessageBg", content));
-		box.addChild(
+		this.addChild(
 			new Markdown(
 				text,
 				0,
@@ -22,11 +24,18 @@ export class UserMessageComponent extends Container {
 				{ preserveOrderedListMarkers: true },
 			),
 		);
-		this.addChild(box);
 	}
 
 	override render(width: number): string[] {
-		const lines = super.render(width);
+		const safeWidth = Math.max(1, Math.floor(width));
+		const content = super.render(transcriptMessageContentWidth(safeWidth));
+		const lines = content.length === 0
+			? []
+			: [
+				" ".repeat(safeWidth),
+				...renderTranscriptMessageLines(content, safeWidth, theme.fg("accent", "› ")),
+				" ".repeat(safeWidth),
+			];
 		if (lines.length === 0) {
 			return lines;
 		}
