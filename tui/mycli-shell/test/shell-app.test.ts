@@ -299,15 +299,19 @@ test("mycli shell renders promoted shell surfaces", () => {
 
 	assert.match(output, /mycli/);
 	assert.match(output, /Read word\.txt/);
+	assert.match(output, /^› Read word\.txt and summarize it\./m);
 	assert.doesNotMatch(output, /Thinking\.\.\./);
 	assert.doesNotMatch(output, /I should inspect the file/);
 	assert.match(output, /Summary: hello/);
+	assert.match(output, /^• Summary: hello\./m);
 	assert.match(output, /Read/);
 	assert.match(output, /Edit/);
 	assert.match(output, /Patch did not apply/);
-	assert.match(output, /• Ran pytest -q/);
+	assert.match(output, /^ • Ran pytest -q/m);
+	assert.doesNotMatch(output, /^  • Ran pytest -q/m);
 	assert.match(output, /└ exit 1/);
 	assert.match(output, /Waiting for approval/);
+	assert.match(output, /^~\/Desktop\/mycli/m);
 	assert.match(output, /deepseek-v4-flash/);
 });
 
