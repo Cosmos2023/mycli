@@ -62,6 +62,13 @@ CONFIG_SECTIONS: tuple[ConfigSection, ...] = (
         (
             ("recent_message_count", "recent_message_count"),
             ("compression_threshold_tokens", "compression_threshold_tokens"),
+            ("compaction_token_limit", "compaction_token_limit"),
+            (
+                "compaction_reserved_output_tokens",
+                "compaction_reserved_output_tokens",
+            ),
+            ("compaction_tail_turns", "compaction_tail_turns"),
+            ("compaction_tail_max_tokens", "compaction_tail_max_tokens"),
             ("compaction_l4_trigger_ratio", "compaction_l4_trigger_ratio"),
             ("compaction_l4_buffer_tokens", "compaction_l4_buffer_tokens"),
             ("compaction_l4_min_savings_ratio", "compaction_l4_min_savings_ratio"),

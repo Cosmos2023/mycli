@@ -19,6 +19,13 @@ from mycli.services.context.compaction.replacement import (
     CompactionReplacementBuilder,
     CompactionSelection,
 )
+from mycli.services.context.compaction.trigger import (
+    CompactDecision,
+    CompactPhase,
+    CompactReason,
+    CompactTokenStatus,
+    CompactTriggerPolicy,
+)
 
 __all__ = [
     "CacheZones",
@@ -28,6 +35,11 @@ __all__ = [
     "CompactionRehydrationService",
     "CompactionReplacementBuilder",
     "CompactionSelection",
+    "CompactDecision",
+    "CompactPhase",
+    "CompactReason",
+    "CompactTokenStatus",
+    "CompactTriggerPolicy",
     "ContextBudget",
     "ContextWindowAnalyzer",
     "ContextWindowMetrics",

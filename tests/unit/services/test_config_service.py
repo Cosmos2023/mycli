@@ -680,6 +680,68 @@ def test_resolve_config_reads_compaction_l4_settings(tmp_path: Path) -> None:
     assert config.compaction_l4_buffer_tokens == 9000
 
 
+def test_resolve_config_reads_absolute_compaction_settings(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "[context]",
+                "compaction_token_limit = 87000",
+                "compaction_reserved_output_tokens = 13000",
+                "compaction_tail_turns = 2",
+                "compaction_tail_max_tokens = 8000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.compaction_token_limit == 87_000
+    assert config.compaction_reserved_output_tokens == 13_000
+    assert config.compaction_tail_turns == 2
+    assert config.compaction_tail_max_tokens == 8_000
+
+
+def test_resolve_config_derives_absolute_compaction_limit_from_legacy_settings(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    (workspace / ".mycli").mkdir()
+    (workspace / ".mycli" / "config.toml").write_text(
+        "\n".join(
+            [
+                "max_prompt_tokens = 100000",
+                "compaction_l4_trigger_ratio = 0.82",
+                "compaction_l4_buffer_tokens = 9000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.compaction_token_limit == 82_000
+    assert config.compaction_reserved_output_tokens == 9_000
+
+
 def test_resolve_config_reads_usage_price_settings(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"

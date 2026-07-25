@@ -232,6 +232,10 @@ class AgentConfig:
     memory_dream_min_hours: int = 24
     memory_dream_min_sessions: int = 5
     compression_threshold_tokens: int = 8000
+    compaction_token_limit: int | None = None
+    compaction_reserved_output_tokens: int = 13_000
+    compaction_tail_turns: int = 2
+    compaction_tail_max_tokens: int = 8_000
     compaction_l4_trigger_ratio: float = 0.9
     compaction_l4_buffer_tokens: int = 13_000
     compaction_l4_min_savings_ratio: float | None = None

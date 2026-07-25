@@ -255,6 +255,25 @@ def _parse_float_map(value: object) -> dict[str, float]:
     return parsed
 
 
+def _legacy_compaction_token_limit(
+    *,
+    max_tokens: int,
+    trigger_ratio: float,
+    buffer_tokens: int,
+) -> int:
+    normalized_ratio = max(0.0, min(1.0, trigger_ratio))
+    normalized_buffer = max(0, buffer_tokens)
+    if max_tokens <= normalized_buffer:
+        normalized_buffer = max(0, int(max_tokens * 0.20))
+    return max(
+        1,
+        min(
+            int(max_tokens * normalized_ratio),
+            max_tokens - normalized_buffer,
+        ),
+    )
+
+
 def _parse_string_tuple(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -651,6 +670,51 @@ def resolve_config(
         or legacy_user_config.get("compaction_l4_buffer_tokens")
         or 13_000
     )
+    compaction_token_limit_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_COMPACTION_TOKEN_LIMIT",
+        config_key="compaction_token_limit",
+    )
+    compaction_reserved_output_tokens_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_COMPACTION_RESERVED_OUTPUT_TOKENS",
+        config_key="compaction_reserved_output_tokens",
+    )
+    compaction_tail_turns_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_COMPACTION_TAIL_TURNS",
+        config_key="compaction_tail_turns",
+    )
+    compaction_tail_max_tokens_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_COMPACTION_TAIL_MAX_TOKENS",
+        config_key="compaction_tail_max_tokens",
+    )
+    resolved_compaction_buffer_tokens = int(str(compaction_l4_buffer_tokens_value))
+    if compaction_token_limit_value is None:
+        compaction_token_limit_value = _legacy_compaction_token_limit(
+            max_tokens=int(str(max_prompt_tokens_value)),
+            trigger_ratio=float(str(compaction_l4_trigger_ratio_value)),
+            buffer_tokens=resolved_compaction_buffer_tokens,
+        )
+    if compaction_reserved_output_tokens_value is None:
+        compaction_reserved_output_tokens_value = resolved_compaction_buffer_tokens
+    if compaction_tail_turns_value is None:
+        compaction_tail_turns_value = 2
+    if compaction_tail_max_tokens_value is None:
+        compaction_tail_max_tokens_value = 8_000
     compaction_l4_min_savings_ratio = _parse_optional_float(
         env.get("MYCLI_COMPACTION_L4_MIN_SAVINGS_RATIO")
         or user_config.get("compaction_l4_min_savings_ratio")
@@ -875,8 +939,14 @@ def resolve_config(
         memory_dream_min_hours=memory_dream_min_hours,
         memory_dream_min_sessions=memory_dream_min_sessions,
         compression_threshold_tokens=int(str(compression_threshold_tokens_value)),
+        compaction_token_limit=int(str(compaction_token_limit_value)),
+        compaction_reserved_output_tokens=int(
+            str(compaction_reserved_output_tokens_value)
+        ),
+        compaction_tail_turns=int(str(compaction_tail_turns_value)),
+        compaction_tail_max_tokens=int(str(compaction_tail_max_tokens_value)),
         compaction_l4_trigger_ratio=float(str(compaction_l4_trigger_ratio_value)),
-        compaction_l4_buffer_tokens=int(str(compaction_l4_buffer_tokens_value)),
+        compaction_l4_buffer_tokens=resolved_compaction_buffer_tokens,
         compaction_l4_min_savings_ratio=compaction_l4_min_savings_ratio,
         compaction_l4_input_cost_per_1k=compaction_l4_input_cost_per_1k,
         compaction_l4_output_cost_per_1k=compaction_l4_output_cost_per_1k,
