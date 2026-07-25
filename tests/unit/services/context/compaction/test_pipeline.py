@@ -7,12 +7,20 @@ from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
 from mycli.services.context.compaction.pipeline import (
     CheapPruning,
+    CompactService,
     CompactionCostProfile,
     CompactionPipeline,
     ContextWindowAnalyzer,
     FullContextSnapshot,
     LLMSummarization,
+    LocalCompactProvider,
     ToolResultBudget,
+)
+from mycli.services.context.compaction.replacement import CompactionReplacementBuilder
+from mycli.services.context.compaction.trigger import (
+    CompactPhase,
+    CompactReason,
+    CompactTriggerPolicy,
 )
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
@@ -775,3 +783,142 @@ class TestCompactionPipeline:
         assert all(message.metadata.get("compaction") is not True for message in result.messages)
         assert pipeline.last_context_window_metrics is not None
         assert pipeline.last_context_window_metrics.total_tokens < stale_budget.total_tokens
+
+
+class CapturingCompactProvider:
+    path = "capturing"
+
+    def __init__(self, output: tuple[Message, ...]) -> None:
+        self.output = output
+        self.messages: tuple[Message, ...] = ()
+
+    def compact(self, messages: tuple[Message, ...]) -> tuple[Message, ...]:
+        self.messages = messages
+        return self.output
+
+
+def _compact_decision():
+    return CompactTriggerPolicy(limit_tokens=100).forced(
+        reason=CompactReason.CONTEXT_LIMIT,
+        phase=CompactPhase.PRE_TURN,
+        trigger_tokens=120,
+    )
+
+
+def _three_completed_turns() -> Conversation:
+    return Conversation(
+        session_id="compact-service",
+        messages=[
+            Message(role="user", content="old request"),
+            _assistant_tool_call("call_old"),
+            _tool_msg("call_old", content="large old tool output"),
+            Message(role="assistant", content="old final answer"),
+            Message(role="user", content="recent request"),
+            Message(role="assistant", content="recent answer"),
+            Message(role="user", content="latest request"),
+            Message(role="assistant", content="latest answer"),
+        ],
+    )
+
+
+def test_compact_service_summarizes_removed_prefix_only() -> None:
+    provider = CapturingCompactProvider(
+        (Message(role="assistant", content="Earlier work summary."),)
+    )
+    service = CompactService(
+        provider=provider,
+        replacement_builder=CompactionReplacementBuilder(
+            tail_turns=2,
+            tail_max_tokens=2_000,
+        ),
+    )
+    conversation = _three_completed_turns()
+
+    result = service.compact(conversation, _compact_decision())
+
+    assert [message.content for message in provider.messages] == [
+        "old request",
+        "",
+        "large old tool output",
+        "old final answer",
+    ]
+    assert [(message.role, message.content) for message in result.messages] == [
+        ("user", "[compact-summary]\nEarlier work summary."),
+        ("user", "recent request"),
+        ("assistant", "recent answer"),
+        ("user", "latest request"),
+        ("assistant", "latest answer"),
+    ]
+    assert result.messages[0].metadata["compaction_reason"] == "context_limit"
+    assert result.messages[0].metadata["compaction_phase"] == "pre_turn"
+
+
+def test_native_and_local_provider_outputs_normalize_to_same_history() -> None:
+    builder = CompactionReplacementBuilder(tail_turns=2, tail_max_tokens=2_000)
+    conversation = _three_completed_turns()
+    local = CompactService(
+        provider=CapturingCompactProvider(
+            (Message(role="assistant", content="Shared summary."),)
+        ),
+        replacement_builder=builder,
+    )
+    native = CompactService(
+        provider=CapturingCompactProvider(
+            (
+                Message(role="developer", content="stale instructions"),
+                _assistant_tool_call("native_call"),
+                _tool_msg("native_call", content="native tool output"),
+                Message(role="assistant", content="Shared summary."),
+            )
+        ),
+        replacement_builder=builder,
+    )
+
+    local_result = local.compact(conversation, _compact_decision())
+    native_result = native.compact(conversation, _compact_decision())
+
+    assert native_result.messages == local_result.messages
+
+
+def test_compact_service_keeps_original_history_when_provider_output_is_invalid() -> None:
+    service = CompactService(
+        provider=CapturingCompactProvider(
+            (
+                Message(role="developer", content="instructions only"),
+                _tool_msg("call_invalid", content="tool output only"),
+            )
+        ),
+        replacement_builder=CompactionReplacementBuilder(
+            tail_turns=2,
+            tail_max_tokens=2_000,
+        ),
+    )
+    conversation = _three_completed_turns()
+
+    result = service.compact(conversation, _compact_decision())
+
+    assert result is conversation
+    assert service.last_status == "failed"
+
+
+def test_local_compact_provider_falls_back_to_visible_removed_history() -> None:
+    provider = LocalCompactProvider(
+        summarizer_client=None,
+        model_name="summary-model",
+    )
+
+    output = provider.compact(
+        (
+            Message(role="user", content="old request"),
+            Message(
+                role="assistant",
+                content="private reasoning",
+                blocks=(RuntimeBlock(type="reasoning", text="private reasoning"),),
+            ),
+            Message(role="assistant", content="old final answer"),
+        )
+    )
+
+    assert "old request" in output[0].content
+    assert "old final answer" in output[0].content
+    assert "private reasoning" not in output[0].content

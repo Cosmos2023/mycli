@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Protocol
+from typing import Protocol, Sequence
 
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import RuntimeBlock
 from mycli.domain.tooling.calls import ToolCall, ToolEvidence
 from mycli.services.context.compaction.budget import ContextBudget
 from mycli.services.context.compaction.cache_zones import CacheZones
+from mycli.services.context.compaction.replacement import CompactionReplacementBuilder
+from mycli.services.context.compaction.trigger import CompactDecision
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.context.tool_output_projector import ToolModelOutputProjector
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
@@ -69,6 +71,121 @@ class SummarizerClient(Protocol):
 @dataclass(slots=True, frozen=True)
 class FullContextSnapshot:
     messages: tuple[Message, ...]
+
+
+class CompactProvider(Protocol):
+    path: str
+
+    def compact(self, messages: tuple[Message, ...]) -> tuple[Message, ...]: ...
+
+
+class LocalCompactProvider:
+    path = "local"
+
+    def __init__(
+        self,
+        *,
+        summarizer_client: SummarizerClient | None,
+        model_name: str,
+        max_output_tokens: int = 600,
+    ) -> None:
+        self._summarizer_client = summarizer_client
+        self._model_name = model_name
+        self._max_output_tokens = max_output_tokens
+
+    def compact(self, messages: tuple[Message, ...]) -> tuple[Message, ...]:
+        conversation_text = "\n\n".join(
+            f"[{message.role}]\n{content}"
+            for message in messages
+            if (content := _summary_visible_content(message))
+        )
+        if not conversation_text:
+            raise ValueError("compact input contains no visible conversation text")
+        if self._summarizer_client is None:
+            summary = _fallback_summary(messages)
+        else:
+            prompt = SUMMARY_PROMPT.format(conversation_text=conversation_text)
+            response = self._summarizer_client.complete(
+                messages=[{"role": "user", "content": prompt}],
+                model=self._model_name,
+                max_tokens=self._max_output_tokens,
+            )
+            summary = getattr(response, "content", str(response)).strip()
+        return (Message(role="assistant", content=summary),)
+
+
+class CompactProviderNormalizer:
+    def summary_text(self, messages: tuple[Message, ...]) -> str:
+        preferred = [message for message in messages if message.metadata.get("compaction")]
+        candidates = [*preferred, *[message for message in messages if message not in preferred]]
+        for message in candidates:
+            if message.role not in {"user", "assistant"}:
+                continue
+            if message.tool_call_id or message.tool_calls:
+                continue
+            content = _summary_visible_content(message).strip()
+            if not content:
+                continue
+            marker = "[compact-summary]\n"
+            return content[len(marker) :].strip() if content.startswith(marker) else content
+        raise ValueError("compact provider returned no usable summary text")
+
+
+class CompactService:
+    def __init__(
+        self,
+        *,
+        provider: CompactProvider,
+        replacement_builder: CompactionReplacementBuilder,
+        token_counter: TokenCounter | None = None,
+        summary_max_tokens: int = 600,
+        normalizer: CompactProviderNormalizer | None = None,
+    ) -> None:
+        if summary_max_tokens <= 0:
+            raise ValueError("summary_max_tokens must be positive")
+        self._provider = provider
+        self._replacement_builder = replacement_builder
+        self._token_counter = token_counter or TokenCounter()
+        self._summary_max_tokens = summary_max_tokens
+        self._normalizer = normalizer or CompactProviderNormalizer()
+        self.last_status = "idle"
+        self.last_failure_kind: str | None = None
+
+    def compact(
+        self,
+        conversation: Conversation,
+        decision: CompactDecision,
+    ) -> Conversation:
+        selection = self._replacement_builder.select(conversation)
+        try:
+            provider_messages = self._provider.compact(selection.removed_prefix)
+            summary = self._normalizer.summary_text(provider_messages)
+            if self._token_counter.count(summary) > self._summary_max_tokens:
+                raise ValueError("compact summary exceeds token limit")
+            replacement = self._replacement_builder.build(
+                conversation=conversation,
+                selection=selection,
+                summary=summary,
+            )
+        except Exception as exc:
+            self.last_status = "failed"
+            self.last_failure_kind = type(exc).__name__
+            return conversation
+
+        summary_message = replacement.messages[0]
+        reason = decision.reason.value if decision.reason is not None else ""
+        replacement.messages[0] = Message(
+            role="user",
+            content=summary_message.content,
+            metadata={
+                **summary_message.metadata,
+                "compaction_reason": reason,
+                "compaction_phase": decision.phase.value,
+            },
+        )
+        self.last_status = "compressed"
+        self.last_failure_kind = None
+        return replacement
 
 
 @dataclass(slots=True, frozen=True)
@@ -899,6 +1016,17 @@ def _summary_visible_content(message: Message) -> str:
         if all(block.type == "reasoning" for block in message.blocks):
             return ""
     return message.content.strip()
+
+
+def _fallback_summary(messages: Sequence[Message]) -> str:
+    lines = [
+        f"- {message.role}: {' '.join(content.split())[:120]}"
+        for message in messages
+        if (content := _summary_visible_content(message))
+    ]
+    if not lines:
+        raise ValueError("compact input contains no visible conversation text")
+    return "Conversation summary:\n" + "\n".join(lines)
 
 
 def _is_provider_private_reasoning_message(message: Message) -> bool:
