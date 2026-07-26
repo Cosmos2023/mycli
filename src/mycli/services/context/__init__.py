@@ -1,4 +1,4 @@
-from mycli.services.context.context_manager import ContextManager, ManagedContext
+from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.context_files import (
     ContextFileDiagnostics,
     ContextFileLoader,
@@ -19,7 +19,6 @@ __all__ = [
     "ContextFileLoader",
     "InstructionContractAssembler",
     "LoadedContextFile",
-    "ManagedContext",
     "SectionBudgetDiagnostic",
     "SectionBudgetTrim",
     "TokenCounter",

@@ -6,70 +6,6 @@ from mycli.tools.base import ToolResult
 from mycli.services.context.context_manager import ContextManager
 
 
-def test_context_manager_summarizes_older_messages() -> None:
-    manager = ContextManager()
-
-    context = manager.build(
-        conversation=(
-            Message(role="user", content="first question"),
-            Message(role="assistant", content="first answer"),
-            Message(role="user", content="second question"),
-        ),
-        recent_message_count=1,
-    )
-
-    assert len(context.messages) == 1
-    assert context.summary is not None
-    assert "first question" in context.summary
-
-
-def test_context_manager_excludes_reasoning_blocks_from_older_summary() -> None:
-    manager = ContextManager()
-
-    context = manager.build(
-        conversation=(
-            Message(
-                role="assistant",
-                content="Private reasoning that should not become summary text.",
-                blocks=(
-                    RuntimeBlock(
-                        type="reasoning",
-                        text="Private reasoning that should not become summary text.",
-                    ),
-                ),
-            ),
-            Message(role="assistant", content="Public answer."),
-        ),
-        recent_message_count=1,
-    )
-
-    assert context.summary is None
-
-
-def test_context_manager_keeps_provider_replay_append_only_while_recent_context_slides() -> None:
-    manager = ContextManager()
-    conversation = (
-        Message(role="user", content="first question"),
-        Message(
-            role="assistant",
-            content="Private reasoning.",
-            blocks=(RuntimeBlock(type="reasoning", text="Private reasoning."),),
-        ),
-        Message(role="assistant", content="first answer"),
-        Message(role="user", content="second question"),
-    )
-
-    managed = manager.build(conversation=conversation, recent_message_count=1)
-    provider_replay = manager.provider_replay_messages(
-        conversation=conversation,
-        history_items=(),
-    )
-
-    assert managed.messages == (conversation[-1],)
-    assert managed.summary == "- user: first question\n- assistant: first answer"
-    assert provider_replay == conversation
-
-
 def test_context_manager_prefers_live_conversation_over_stale_history_for_provider_replay() -> None:
     manager = ContextManager()
     stale_history = (
@@ -171,55 +107,6 @@ def test_context_manager_prepends_replayable_baseline_updates_to_live_provider_r
         "new request",
         "new answer",
     ]
-
-
-def test_context_manager_expands_recent_messages_to_avoid_orphaned_tool_results() -> None:
-    manager = ContextManager()
-    tool_call_message = Message(
-        role="assistant",
-        content="",
-        tool_calls=(
-            ToolCall(
-                name="list_directory",
-                arguments={"path": "."},
-                reason="inspect root",
-                call_id="call_list_1",
-            ),
-        ),
-        blocks=(
-            RuntimeBlock(
-                type="tool_call",
-                tool_name="list_directory",
-                tool_arguments={"path": "."},
-                call_id="call_list_1",
-            ),
-        ),
-    )
-    tool_result_message = Message(
-        role="tool",
-        content="README.md, src, tests",
-        tool_call_id="call_list_1",
-        blocks=(RuntimeBlock(type="tool_result", text="README.md, src, tests", call_id="call_list_1"),),
-    )
-
-    context = manager.build(
-        conversation=(
-            Message(role="user", content="inspect"),
-            Message(role="assistant", content="I will inspect."),
-            tool_call_message,
-            tool_result_message,
-            Message(role="assistant", content="Next step."),
-        ),
-        recent_message_count=2,
-    )
-
-    assert context.messages == (
-        tool_call_message,
-        tool_result_message,
-        Message(role="assistant", content="Next step."),
-    )
-    assert context.summary is not None
-    assert "inspect" in context.summary
 
 
 def test_context_manager_reconstructs_block_aware_messages_from_history_items() -> None:

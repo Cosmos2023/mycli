@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from mycli.domain.conversation import Message
 from mycli.domain.runtime import HistoryItem, HistoryItemType, RuntimeBlock
 from mycli.domain.tooling.calls import ToolCall
@@ -10,59 +8,9 @@ from mycli.tools.base import ToolResult
 from mycli.services.context.tool_result_formatter import ToolResultFormatter
 
 
-@dataclass(slots=True, frozen=True)
-class ManagedContext:
-    messages: tuple[Message, ...]
-    summary: str | None = None
-
-
 class ContextManager:
     def __init__(self, *, formatter: ToolResultFormatter | None = None) -> None:
         self._formatter = formatter
-
-    def build(
-        self,
-        *,
-        conversation: tuple[Message, ...],
-        history_items: tuple[HistoryItem, ...] = (),
-        recent_message_count: int,
-        max_summary_chars: int = 512,
-    ) -> ManagedContext:
-        if not conversation and history_items:
-            conversation = self.messages_from_history(
-                history_items,
-                include_context_baseline_updates=False,
-            )
-
-        recent: tuple[Message, ...]
-        older: tuple[Message, ...]
-        if recent_message_count <= 0:
-            recent = ()
-            older = conversation
-        else:
-            recent_start = max(0, len(conversation) - recent_message_count)
-            recent_start = self._expand_recent_start_to_tool_boundary(
-                conversation,
-                recent_start,
-            )
-            recent = conversation[recent_start:]
-            older = conversation[:recent_start]
-
-        summary = None
-        if older:
-            lines = [
-                f"- {message.role}: {content[:96]}"
-                for message in older
-                if (content := self._summary_content(message))
-            ]
-            rendered = "\n".join(lines)
-            if rendered:
-                summary = (
-                    rendered
-                    if len(rendered) <= max_summary_chars
-                    else rendered[: max_summary_chars - 3].rstrip() + "..."
-                )
-        return ManagedContext(messages=recent, summary=summary)
 
     def provider_replay_messages(
         self,
@@ -76,21 +24,6 @@ class ContextManager:
         if history_items:
             return self.messages_from_history(history_items)
         return ()
-
-    def _summary_content(self, message: Message) -> str:
-        if not message.blocks:
-            return " ".join(message.content.split())
-        text = Message.text_content_from_blocks(message.blocks)
-        return " ".join(text.split())
-
-    def _expand_recent_start_to_tool_boundary(
-        self,
-        conversation: tuple[Message, ...],
-        recent_start: int,
-    ) -> int:
-        while recent_start > 0 and conversation[recent_start].role == "tool":
-            recent_start -= 1
-        return recent_start
 
     def messages_from_history(
         self,

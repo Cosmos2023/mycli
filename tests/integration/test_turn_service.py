@@ -1274,7 +1274,9 @@ def test_turn_service_inspect_session_uses_conversation_title(tmp_path: Path) ->
     assert service.inspect_session()[0] == "session=Fix the TUI session title rendering"
 
 
-def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(tmp_path: Path) -> None:
+def test_turn_service_compacts_older_turns_when_token_limit_is_exceeded(
+    tmp_path: Path,
+) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
@@ -1286,6 +1288,8 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     )
     recent_user = "recent-user"
     recent_assistant = "recent-assistant"
+    latest_user = "latest-user"
+    latest_assistant = "latest-assistant"
 
     model = PromptCaptureModel()
     service = make_turn_service(
@@ -1296,8 +1300,8 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
             workspace_root=workspace,
             session_id="demo",
             max_prompt_tokens=120,
-            compression_threshold_tokens=80,
-            recent_message_count=2,
+            compaction_token_limit=80,
+            compaction_tail_turns=2,
         ),
         home_dir=home_dir,
     )
@@ -1306,6 +1310,8 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     conversation.append(Message(role="assistant", content=very_old_assistant))
     conversation.append(Message(role="user", content=recent_user))
     conversation.append(Message(role="assistant", content=recent_assistant))
+    conversation.append(Message(role="user", content=latest_user))
+    conversation.append(Message(role="assistant", content=latest_assistant))
     service._session_service.save_conversation(conversation)
 
     service.handle_user_turn("new question")
@@ -1316,6 +1322,8 @@ def test_turn_service_compresses_older_conversation_when_threshold_is_exceeded(t
     assert very_old_user not in model.prompts[1]
     assert recent_user in model.prompts[1]
     assert recent_assistant in model.prompts[1]
+    assert latest_user in model.prompts[1]
+    assert latest_assistant in model.prompts[1]
 
 
 def test_turn_service_pops_only_latest_follow_up(tmp_path: Path) -> None:
