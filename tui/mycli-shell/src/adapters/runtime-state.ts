@@ -13,6 +13,7 @@ import type {
 	MycliShellLocalImageAttachment,
 	MycliShellModel,
 	MycliShellPendingApproval,
+	MycliShellPendingClarification,
 	MycliShellResource,
 	MycliShellPlanUpdate,
 	MycliShellPlanStep,
@@ -30,6 +31,8 @@ import {
 	commandResultFromGateway,
 	commandResultFromTranscriptItem,
 } from "./command-results.ts";
+
+const TURN_INTERRUPTED_NOTICE = "Turn interrupted. The current turn was aborted; send a new message to continue.";
 
 export type RuntimeTranscriptItem = {
 	id: string;
@@ -74,6 +77,13 @@ export type RuntimeLocalUserInput = {
 	attachments: MycliShellLocalImageAttachment[];
 };
 
+export type RuntimeLiveStatus = {
+	state: string;
+	text: string;
+	kind?: string;
+	message?: string;
+};
+
 export type RuntimeShellState = {
 	sessionId: string | null;
 	sessionTitle: string | null;
@@ -99,7 +109,8 @@ export type RuntimeShellState = {
 	localSubmittingMessages: RuntimeLocalUserInput[];
 	hasPendingInput: boolean;
 	queueActivity: { kind: string; steeringCount: number; followUpCount: number } | null;
-	liveStatus: { state: string; text: string; kind?: string; message?: string } | null;
+	liveStatus: RuntimeLiveStatus | null;
+	retryRestoreStatus: RuntimeLiveStatus | null;
 	liveReasoning: { text: string; kind: string } | null;
 	viewMode: "default" | "verbose" | "focus";
 	statusbarMode: "off" | "compact" | "full";
@@ -141,6 +152,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		hasPendingInput: false,
 		queueActivity: null,
 		liveStatus: null,
+		retryRestoreStatus: null,
 		liveReasoning: null,
 		viewMode: "default",
 		statusbarMode: "full",
@@ -185,6 +197,12 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 
 	for (const item of state.transcript) {
 		if (isInternalTaskNotification(item.text)) {
+			continue;
+		}
+		if (
+			state.turnRunning &&
+			booleanValue(recordValue(item.metadata).deferred_until_turn_complete) === true
+		) {
 			continue;
 		}
 		if (item.type === "user") {
@@ -330,12 +348,16 @@ export function projectRuntimeState(state: RuntimeShellState, sessions: MycliShe
 			trust: state.trust.state ?? "unknown",
 			collaborationMode: state.collaborationMode,
 			liveState: footerLiveState(state),
+			liveStateKind: state.liveStatus?.kind ?? state.liveStatus?.state,
+			liveStateDetail: state.liveStatus?.message,
+			turnRunning: state.turnRunning,
 			backgroundShellCount: state.backgroundShellCount,
 			taskProgress: state.taskProgress ?? undefined,
 			autoCompact: true,
 		},
 		pendingNotice: pendingNotice(state),
 		pendingApproval: pendingApprovalFromRecord(state.pendingApproval),
+		pendingClarification: pendingClarificationFromRecord(state.pendingClarification),
 		models: modelListFromStatus(state.status, state.provider, state.model),
 		authProviders: state.authProviders,
 		currentModel: currentModel(state.provider, state.model, reasoningLevelFromStatus(state.status)),
@@ -465,7 +487,7 @@ export function runtimeStateFromTranscript(state: RuntimeShellState, payload: Re
 		return normalized ? [normalized] : [];
 	});
 	const resumedItems = items.map((item) =>
-		isToolTranscriptItem(item) && item.folded === undefined
+		isToolTranscriptItem(item)
 			? { ...item, folded: true }
 			: item,
 	);
@@ -590,6 +612,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			activeTurnId: stringValue(params.turn_id) ?? state.activeTurnId,
 			activeAssistantItemId: nextId("assistant"),
 			liveStatus: { state: "running", kind: "running", text: "Running" },
+			retryRestoreStatus: null,
 			pendingApproval: null,
 			pendingClarification: null,
 			transcript: removeTransientClarificationItems(removeTransientApprovalItems(state.transcript)),
@@ -643,6 +666,38 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			...state,
 			activeAssistantItemId: assistantId,
 			transcript: applyAssistantDelta(state.transcript, assistantId, String(params.text ?? "")),
+		};
+	}
+	if (method === "message.reset") {
+		return rollbackActiveAssistantAttempt(state);
+	}
+	if (method === "stream.retrying") {
+		const text = String(params.text ?? "Reconnecting...");
+		const retryRestoreStatus =
+			state.liveStatus?.kind === "reconnecting"
+				? state.retryRestoreStatus
+				: state.liveStatus;
+		return {
+			...state,
+			turnRunning: true,
+			liveStatus: {
+				state: "running",
+				kind: "reconnecting",
+				text,
+				...(stringValue(params.additional_details)
+					? { message: stringValue(params.additional_details)! }
+					: {}),
+			},
+			retryRestoreStatus,
+		};
+	}
+	if (method === "stream.recovered") {
+		return {
+			...state,
+			liveStatus:
+				state.retryRestoreStatus ??
+				{ state: "running", kind: "running", text: "Running" },
+			retryRestoreStatus: null,
 		};
 	}
 	if (method === "message.complete") {
@@ -732,9 +787,25 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			method === "tool.start" && state.activeAssistantItemId
 				? sealAssistantStream(state.transcript, state.activeAssistantItemId)
 				: state.transcript;
+		const emptyShellPoll = method === "tool.start" && isEmptyWriteStdinPoll(params);
+		const shellId = stringValue(params.session_id);
+		const waitingCommand = shellId ? state.backgroundShells[shellId]?.commandPreview : undefined;
+		const leavingBackgroundWait =
+			(method === "tool.complete" || method === "tool.failed") &&
+			state.liveStatus?.kind === "waiting_background_terminal";
 		return {
 			...state,
 			activeAssistantItemId: method === "tool.start" ? null : state.activeAssistantItemId,
+			liveStatus: emptyShellPoll
+				? {
+					state: "running",
+					kind: "waiting_background_terminal",
+					text: "Waiting for background terminal",
+					...(waitingCommand ? { message: waitingCommand } : {}),
+				}
+				: leavingBackgroundWait
+					? { state: "running", kind: "running", text: "Running" }
+					: state.liveStatus,
 			transcript: applyToolLifecycle(transcript, method, params),
 		};
 	}
@@ -752,23 +823,36 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 	if (method === "turn.completed") {
 		const turnState = stringValue(params.turn_state);
 		const assistantMessage = stringValue(params.assistant_message);
-		const failedTranscript =
-			turnState === "failed" && assistantMessage
+		const inputRolledBack = params.input_rolled_back === true;
+		const terminalTranscript =
+			inputRolledBack
+				? rollbackOutputFreeUserTurn(state.transcript)
+				: turnState === "failed" && assistantMessage
 				? [...state.transcript, { id: nextId("error"), type: "error", text: assistantMessage, folded: false, metadata: params }]
-				: state.transcript;
+				: turnState === "interrupted"
+					? appendInterruptedNotice(state.transcript, params)
+					: state.transcript;
 		return {
 			...state,
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
+			retryRestoreStatus: null,
 			liveStatus:
-				turnState === "failed" && assistantMessage
+				turnState === "interrupted"
+					? {
+						state: "interrupted",
+						kind: "interrupted",
+						text: "Interrupted",
+						message: TURN_INTERRUPTED_NOTICE,
+					}
+					: turnState === "failed" && assistantMessage
 					? { state: "failed", kind: "failed", text: assistantMessage, message: assistantMessage }
 					: { state: "completed", kind: "completed", text: "Completed" },
 			pendingApproval: params.pending_decision === true || params.turn_state === "waiting_approval" ? state.pendingApproval : null,
 			pendingClarification: params.turn_state === "waiting_clarification" ? state.pendingClarification : null,
-			transcript: failedTranscript,
+			transcript: terminalTranscript,
 		};
 	}
 	if (method === "turn.status" || method === "status.update") {
@@ -785,18 +869,33 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 	}
 	if (method === "turn.interrupted") {
 		const message = stringValue(params.message) ?? "Interrupt requested";
+		if (params.requested === true) {
+			return {
+				...state,
+				turnRunning: true,
+				liveStatus: {
+					state: "interrupting",
+					kind: "interrupting",
+					text: "Interrupting",
+					message,
+				},
+				retryRestoreStatus: null,
+			};
+		}
 		return {
 			...state,
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeAssistantItemId: null,
 			liveReasoning: null,
+			retryRestoreStatus: null,
 			liveStatus: {
 				state: "interrupted",
 				kind: "interrupted",
 				text: "Interrupted",
-				message,
+				message: TURN_INTERRUPTED_NOTICE,
 			},
+			transcript: appendInterruptedNotice(state.transcript, params),
 		};
 	}
 	if (method === "turn.failed" || method === "gateway.error") {
@@ -813,6 +912,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 				method === "turn.failed" ? activeTurnIdAfterTerminal(state, params) : state.activeTurnId,
 			activeAssistantItemId: null,
 			liveReasoning: null,
+			retryRestoreStatus: null,
 			liveStatus: previousWaitingStatus ?? { state: "failed", kind: "failed", text: message, message },
 			transcript: [...state.transcript, { id: nextId("error"), type: "error", text: message, folded: false, metadata: params }],
 		};
@@ -854,13 +954,19 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 		};
 	}
 	if (method === "clarify.respond") {
+		const response = stringValue(params.response);
 		return {
 			...state,
 			pendingClarification: null,
-			transcript: removeTransientClarificationItems(
-				state.transcript,
-				stringValue(params.request_id) ?? stringValue(params.requestId) ?? undefined,
-			),
+			transcript: [
+				...removeTransientClarificationItems(
+					state.transcript,
+					stringValue(params.request_id) ?? stringValue(params.requestId) ?? undefined,
+				),
+				...(response
+					? [{ id: nextId("clarification-response"), type: "user", text: response, folded: false, metadata: params }]
+					: []),
+			],
 		};
 	}
 	if (method === "status.changed") {
@@ -870,7 +976,10 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			...state,
 			status: params,
 			turnRunning: turnRunning ?? state.turnRunning,
-			activeTurnId: stringValue(params.turn_id) ?? state.activeTurnId,
+			activeTurnId:
+				turnRunning === false
+					? null
+					: stringValue(params.turn_id) ?? state.activeTurnId,
 			activeAssistantItemId: turnRunning === false ? null : state.activeAssistantItemId,
 			liveReasoning: turnRunning === false ? null : state.liveReasoning,
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
@@ -907,6 +1016,7 @@ export function reduceRuntimeEvent(state: RuntimeShellState, method: string, par
 			localSubmittingMessages: [],
 			hasPendingInput: false,
 			queueActivity: null,
+			retryRestoreStatus: null,
 			backgroundShells: {},
 			backgroundShellCount: 0,
 			shellEventSequences: {},
@@ -940,6 +1050,19 @@ export function runtimeStateWithSubmittingMessage(
 		...state,
 		localSubmittingMessages: appendLocalInput(state.localSubmittingMessages, input),
 	};
+}
+
+export function runtimeInputDisposition(
+	state: RuntimeShellState,
+	backendTurnBusy: boolean,
+): "submit" | "steer" | "follow_up" {
+	if (state.liveStatus?.state === "interrupting") {
+		return "follow_up";
+	}
+	if (state.turnRunning || state.activeTurnId) {
+		return "steer";
+	}
+	return backendTurnBusy ? "follow_up" : "submit";
 }
 
 export function runtimeStateWithLocalFollowUp(
@@ -977,6 +1100,44 @@ export function restorePendingSteersAfterInterrupt(state: RuntimeShellState): Ru
 			state.localRejectedSteers,
 		),
 		localPendingSteers: [],
+	};
+}
+
+export function resolveLocalInterruptInputs(
+	state: RuntimeShellState,
+	resubmitPendingSteers: boolean,
+): {
+	state: RuntimeShellState;
+	restoreToComposer: RuntimeLocalUserInput[];
+	dispatchNext: boolean;
+} {
+	if (resubmitPendingSteers && state.localPendingSteers.length > 0) {
+		return {
+			state: restorePendingSteersAfterInterrupt(state),
+			restoreToComposer: [],
+			dispatchNext: true,
+		};
+	}
+
+	const seen = new Set<string>();
+	const restoreToComposer = [
+		...state.localRejectedSteers,
+		...state.localPendingSteers,
+		...state.localFollowUps,
+	].filter((input) => {
+		if (seen.has(input.clientUserMessageId)) return false;
+		seen.add(input.clientUserMessageId);
+		return true;
+	});
+	return {
+		state: {
+			...state,
+			localPendingSteers: [],
+			localRejectedSteers: [],
+			localFollowUps: [],
+		},
+		restoreToComposer,
+		dispatchNext: false,
 	};
 }
 
@@ -1135,6 +1296,42 @@ function activeTurnIdAfterTerminal(
 		: state.activeTurnId;
 }
 
+function appendInterruptedNotice(
+	items: RuntimeTranscriptItem[],
+	params: Record<string, unknown>,
+): RuntimeTranscriptItem[] {
+	const currentTurnStart = items.findLastIndex((item) => item.type === "user");
+	const currentTurnItems = items.slice(currentTurnStart + 1);
+	if (
+		currentTurnItems.some(
+			(item) => item.type === "warning" && item.text === TURN_INTERRUPTED_NOTICE,
+		)
+	) {
+		return items;
+	}
+	const turnId = stringValue(params.turn_id) ?? stringValue(params.client_turn_id);
+	return [
+		...items,
+		{
+			id: turnId ? `turn-interrupted:${turnId}` : nextId("turn-interrupted"),
+			type: "warning",
+			text: TURN_INTERRUPTED_NOTICE,
+			folded: false,
+			metadata: {
+				event_kind: "turn_aborted_marker",
+				...(turnId ? { interrupted_turn_id: turnId } : {}),
+			},
+		},
+	];
+}
+
+function rollbackOutputFreeUserTurn(
+	items: RuntimeTranscriptItem[],
+): RuntimeTranscriptItem[] {
+	const userIndex = items.findLastIndex((item) => item.type === "user");
+	return userIndex < 0 ? items : items.slice(0, userIndex);
+}
+
 export function runtimeStateWithMessageQueues(
 	state: RuntimeShellState,
 	queues: {
@@ -1229,6 +1426,12 @@ function isInternalTaskNotification(text: string): boolean {
 export function runtimeStateWithCommandResult(state: RuntimeShellState, command: string, result: Record<string, unknown>): RuntimeShellState {
 	const lines = Array.isArray(result.lines) ? result.lines.map((line) => String(line)) : [String(result.message ?? "Done")];
 	const collaborationMode = collaborationModeValue(result.collaboration_mode);
+	if (result.presentation === "overlay" || result.presentation === "none") {
+		return {
+			...state,
+			collaborationMode: collaborationMode ?? state.collaborationMode,
+		};
+	}
 	if (result.command_kind === "background_shells") {
 		const backgroundTerminals: Omit<MycliShellBackgroundTerminals, "id"> = {
 			processes: backgroundProcessesFromUnknown(result.processes),
@@ -1244,7 +1447,7 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 					type: "background_terminals",
 					text: "Background terminals",
 					folded: false,
-					metadata: { command, backgroundTerminals },
+					metadata: commandResultMetadata(state, { command, backgroundTerminals }),
 				},
 			),
 		};
@@ -1256,7 +1459,7 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 			collaborationMode: collaborationMode ?? state.collaborationMode,
 			transcript: upsertTranscriptItem(
 				state.transcript,
-				commandResultTranscriptItem(commandResult),
+				commandResultTranscriptItem(commandResult, state.turnRunning),
 			),
 		};
 	}
@@ -1266,7 +1469,7 @@ export function runtimeStateWithCommandResult(state: RuntimeShellState, command:
 		type: "command_output",
 		text: lines.join("\n"),
 		folded: false,
-		metadata: { command },
+		metadata: commandResultMetadata(state, { command }),
 	};
 	return {
 		...state,
@@ -1297,6 +1500,7 @@ export async function runtimeStateAfterCommandResult(
 		transcript: [],
 		activeAssistantItemId: null,
 		liveStatus: null,
+		retryRestoreStatus: null,
 		liveReasoning: null,
 		pendingApproval: null,
 		pendingClarification: null,
@@ -1326,7 +1530,10 @@ export async function runtimeStateAfterCommandResult(
 	};
 }
 
-function commandResultTranscriptItem(commandResult: MycliShellCommandResult): RuntimeTranscriptItem {
+function commandResultTranscriptItem(
+	commandResult: MycliShellCommandResult,
+	deferUntilTurnComplete: boolean,
+): RuntimeTranscriptItem {
 	return {
 		id: commandResult.id,
 		type: "command_result",
@@ -1337,8 +1544,18 @@ function commandResultTranscriptItem(commandResult: MycliShellCommandResult): Ru
 			display: commandResultDisplayPayload(commandResult),
 			fallback_lines: commandResult.fallbackLines,
 			model_visible: false,
+			...(deferUntilTurnComplete ? { deferred_until_turn_complete: true } : {}),
 		},
 	};
+}
+
+function commandResultMetadata(
+	state: RuntimeShellState,
+	metadata: Record<string, unknown>,
+): Record<string, unknown> {
+	return state.turnRunning
+		? { ...metadata, deferred_until_turn_complete: true }
+		: metadata;
 }
 
 function commandResultDisplayPayload(commandResult: MycliShellCommandResult): Record<string, unknown> {
@@ -1575,6 +1792,35 @@ function pendingApprovalFromRecord(value: Record<string, unknown> | null): Mycli
 		contentPreview: stringValue(value.content_preview) ?? stringValue(value.contentPreview) ?? undefined,
 		contentLineCount: numberValue(value.content_line_count) ?? numberValue(value.contentLineCount) ?? undefined,
 		diffPreview: diffPreviewForTool(value),
+	};
+}
+
+function pendingClarificationFromRecord(
+	value: Record<string, unknown> | null,
+): MycliShellPendingClarification | undefined {
+	if (!value) {
+		return undefined;
+	}
+	const requestId = stringValue(value.request_id) ?? stringValue(value.requestId);
+	const question = stringValue(value.question);
+	if (!requestId || !question) {
+		return undefined;
+	}
+	const rawOptions = Array.isArray(value.options) ? value.options : [];
+	const options: MycliShellPendingClarification["options"] = [];
+	for (const item of rawOptions) {
+		const record = recordValue(item);
+		const label = stringValue(record.label);
+		if (!label) continue;
+		const description = stringValue(record.description);
+		options.push({ label, ...(description ? { description } : {}) });
+	}
+	return {
+		requestId,
+		question,
+		header: stringValue(value.header) ?? undefined,
+		options,
+		multiSelect: booleanValue(value.multi_select) ?? booleanValue(value.multiSelect) ?? false,
 	};
 }
 
@@ -2226,6 +2472,30 @@ function applyAssistantDelta(items: RuntimeTranscriptItem[], assistantId: string
 	return [...items, { id: assistantId, type: "assistant_stream", text, folded: false, metadata: {} }];
 }
 
+function rollbackActiveAssistantAttempt(state: RuntimeShellState): RuntimeShellState {
+	const activeId = state.activeAssistantItemId;
+	let start = activeId === null ? -1 : state.transcript.findIndex((item) => item.id === activeId);
+	let end = start;
+	if (start >= 0) {
+		while (start > 0 && state.transcript[start - 1]?.type === "reasoning") start -= 1;
+		while (end + 1 < state.transcript.length && state.transcript[end + 1]?.type === "reasoning") end += 1;
+	} else {
+		end = state.transcript.length - 1;
+		start = end;
+		while (start >= 0 && state.transcript[start]?.type === "reasoning") start -= 1;
+		start += 1;
+	}
+	const transcript = start >= 0 && end >= start
+		? [...state.transcript.slice(0, start), ...state.transcript.slice(end + 1)]
+		: state.transcript;
+	return {
+		...state,
+		activeAssistantItemId: nextId("assistant"),
+		liveReasoning: null,
+		transcript,
+	};
+}
+
 function reconcileFinalAnswer(items: RuntimeTranscriptItem[], assistantId: string | null, answer: string): RuntimeTranscriptItem[] {
 	const streamIndex =
 		assistantId !== null
@@ -2608,6 +2878,11 @@ function isShellOutputLifecycle(params: Record<string, unknown>): boolean {
 	return normalized === "shelloutput" || normalized === "bashoutput" || normalized === "writestdin";
 }
 
+function isEmptyWriteStdinPoll(params: Record<string, unknown>): boolean {
+	const name = stringValue(params.name) ?? stringValue(params.tool_name) ?? "";
+	return name.trim().toLowerCase().replace(/[_-]/g, "") === "writestdin" && params.empty_poll === true;
+}
+
 function removeToolLifecycleItem(items: RuntimeTranscriptItem[], params: Record<string, unknown>): RuntimeTranscriptItem[] {
 	const index = findToolIndex(items, params);
 	return index < 0 ? items : [...items.slice(0, index), ...items.slice(index + 1)];
@@ -2904,9 +3179,10 @@ function trustFromPayload(payload: unknown, workspace: string): RuntimeShellStat
 }
 
 function modelListFromStatus(status: Record<string, unknown>, provider: string, model: string): MycliShellModel[] {
+	const hasCatalog = Array.isArray(status.models) || Array.isArray(status.available_models);
 	const raw = Array.isArray(status.models) ? status.models : Array.isArray(status.available_models) ? status.available_models : [];
 	const models = raw.map(modelFromUnknown).filter((item): item is MycliShellModel => item !== null);
-	if (models.length === 0 && model) {
+	if (!hasCatalog && models.length === 0 && model) {
 		models.push(currentModel(provider, model, reasoningLevelFromStatus(status)));
 	}
 	return models;
@@ -2914,14 +3190,22 @@ function modelListFromStatus(status: Record<string, unknown>, provider: string, 
 
 function modelFromUnknown(value: unknown): MycliShellModel | null {
 	const record = recordValue(value);
-	const id = stringValue(record.id) ?? stringValue(record.model);
-	if (!id) return null;
+	const model = stringValue(record.model);
+	if (!model) return null;
 	return {
-		id,
+		model,
 		provider: stringValue(record.provider) ?? "",
+		protocol: stringValue(record.protocol) ?? undefined,
 		name: stringValue(record.name) ?? undefined,
-		thinkingLevel: stringValue(record.thinking_level) ?? stringValue(record.thinking_effort) ?? undefined,
-		scoped: typeof record.scoped === "boolean" ? record.scoped : undefined,
+		description: stringValue(record.description) ?? undefined,
+		baseUrl: stringValue(record.base_url) ?? stringValue(record.baseUrl) ?? undefined,
+		supportedReasoningEfforts: stringArrayValue(
+			record.supported_reasoning_efforts ?? record.supportedReasoningEfforts,
+		),
+		defaultReasoningEffort:
+			stringValue(record.default_reasoning_effort) ?? stringValue(record.defaultReasoningEffort) ?? undefined,
+		current: booleanValue(record.current) ?? undefined,
+		default: booleanValue(record.default) ?? undefined,
 	};
 }
 
@@ -2961,7 +3245,15 @@ function resourceFromUnknown(value: unknown): MycliShellResource | null {
 }
 
 function currentModel(provider: string, model: string, thinkingLevel?: string): MycliShellModel {
-	return { provider, id: model || "no-model", ...(thinkingLevel ? { thinkingLevel } : {}) };
+	const [providerId = provider, protocol] = provider.split("/", 2);
+	return {
+		provider: providerId,
+		...(protocol ? { protocol } : {}),
+		model: model || "no-model",
+		supportedReasoningEfforts: thinkingLevel ? [thinkingLevel] : [],
+		current: true,
+		...(thinkingLevel ? { thinkingLevel } : {}),
+	};
 }
 
 function reasoningLevelFromStatus(status: Record<string, unknown>): string | undefined {

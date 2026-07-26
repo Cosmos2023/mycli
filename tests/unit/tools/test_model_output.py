@@ -26,7 +26,8 @@ def test_running_shell_model_output_uses_stable_response_shape() -> None:
             "Chunk ID: c0ffee12",
             "Wall time: 0.25 seconds",
             "Process running with session ID 7ad20502",
-            "Live output:",
+            "Original token count: 5",
+            "Output:",
             "collecting tests...",
         )
     )
@@ -53,7 +54,8 @@ def test_completed_shell_model_output_reports_exit_code() -> None:
             "Chunk ID: decafbad",
             "Wall time: 0.50 seconds",
             "Process exited with code 0",
-            "Final output:",
+            "Original token count: 1",
+            "Output:",
             "done",
         )
     )

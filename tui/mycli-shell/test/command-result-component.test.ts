@@ -34,7 +34,7 @@ function result(display: Partial<MycliShellCommandDisplay>): MycliShellCommandRe
 	};
 }
 
-test("status uses the only bordered command surface", () => {
+test("status uses a compact bordered command surface", () => {
 	const status = result({
 		kind: "status",
 		command: "/status",
@@ -46,6 +46,7 @@ test("status uses the only bordered command surface", () => {
 	});
 	const output = stripAnsi(new CommandResultComponent(status).render(80).join("\n"));
 
+	assert.match(output, /^\n\/status\n\n╭─+/);
 	assert.match(output, /╭─+/);
 	assert.match(output, /Model\s+gpt-5\.4/);
 	assert.match(output, /Directory\s+\/repo\/mycli/);
@@ -72,10 +73,11 @@ test("list and notice results stay borderless and compact", () => {
 	const toolsOutput = stripAnsi(new CommandResultComponent(tools).render(100).join("\n"));
 	const undoOutput = stripAnsi(new CommandResultComponent(undo).render(100).join("\n"));
 
+	assert.match(toolsOutput, /^\n\/tools\n\n/);
 	assert.match(toolsOutput, /Tools\s+2 available/);
 	assert.match(toolsOutput, /Read\s+file\s+auto allow/);
 	assert.doesNotMatch(toolsOutput, /╭|╰/);
-	assert.equal(undoOutput.trim(), "✓ Restored src/mycli/app.py");
+	assert.equal(undoOutput.trim(), "/undo\n✓ Restored src/mycli/app.py");
 });
 
 test("errors show reason usage and suggestions without a border", () => {
@@ -90,7 +92,7 @@ test("errors show reason usage and suggestions without a border", () => {
 	});
 	const output = stripAnsi(new CommandResultComponent(error).render(100).join("\n"));
 
-	assert.match(output, /^! Missing memory value\./m);
+	assert.match(output, /^\n\/memory add\n! Missing memory value\./);
 	assert.match(output, /Usage: \/memory add <kind> <key> <value>/);
 	assert.match(output, /Did you mean: \/memory/);
 	assert.doesNotMatch(output, /╭|╰/);
@@ -111,6 +113,43 @@ test("command surfaces remain width-safe with CJK fields and long paths", () => 
 		const lines = new CommandResultComponent(status).render(width);
 		for (const line of lines) {
 			assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${stripAnsi(line)}`);
+		}
+	}
+});
+
+test("every command presentation remains width-safe with its command prefix", () => {
+	const displays: Partial<MycliShellCommandDisplay>[] = [
+		{
+			kind: "diagnostic",
+			command: "/context",
+			title: "Context",
+			fields: [{ label: "上下文窗口", value: "123456 / 200000" }],
+		},
+		{
+			kind: "list",
+			command: "/tools plugins",
+			title: "Plugins",
+			rows: [{ key: "plugin", label: "很长的插件名称", values: ["available"] }],
+		},
+		{
+			kind: "notice",
+			command: "/sandbox danger-full-access",
+			title: "Sandbox",
+			summary: "Changed sandbox mode",
+		},
+		{
+			kind: "error",
+			command: "/memory add",
+			title: "Command error",
+			summary: "Missing memory value",
+		},
+	];
+
+	for (const display of displays) {
+		for (const width of [12, 24, 60]) {
+			for (const line of new CommandResultComponent(result(display)).render(width)) {
+				assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${stripAnsi(line)}`);
+			}
 		}
 	}
 });
@@ -144,13 +183,13 @@ test("empty lists and preformatted omissions have explicit text", () => {
 		omittedChars: 42,
 	});
 
-	assert.match(stripAnsi(new CommandResultComponent(empty).render(80).join("\n")), /No items/);
+	assert.match(stripAnsi(new CommandResultComponent(empty).render(80).join("\n")), /^\n\/skills\n\nSkills\n  No items/);
 	const output = stripAnsi(new CommandResultComponent(preformatted).render(80).join("\n"));
-	assert.match(output, /head\ntail/);
+	assert.match(output, /^\n\/trace\n\nhead\ntail/);
 	assert.match(output, /42 chars omitted/);
 });
 
-test("diagnostics use full titles instead of abbreviations", () => {
+test("diagnostics use compact bordered cards with a separate command line", () => {
 	const diagnostic = result({
 		kind: "diagnostic",
 		command: "/usage",
@@ -166,7 +205,9 @@ test("diagnostics use full titles instead of abbreviations", () => {
 	});
 	const output = stripAnsi(new CommandResultComponent(diagnostic).render(100).join("\n"));
 
-	assert.match(output, /Usage \/usage/);
+	assert.match(output, /^\n\/usage\n\n╭─+/);
+	assert.match(output, /│  Usage/);
 	assert.match(output, /Cumulative tokens/);
+	assert.match(output, /Input tokens\s+100000/);
 	assert.doesNotMatch(output, /\b(?:USE|CTX|CMD)\b/);
 });

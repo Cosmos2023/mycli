@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError
@@ -7,6 +8,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 from mycli.domain.logging import LogLevel
 from mycli.domain.runtime import StopReason
 from mycli.llms.clients.openai_chat import ModelResponseError, _api_status_error_detail
+from mycli.llms.clients.openai_chat_errors import retry_after_seconds_from_status_error
 from mycli.llms.clients.responses_logging import ResponsesClientLogger
 
 
@@ -69,7 +71,7 @@ def classify_provider_failure(
             is_retryable=True,
             failure_kind="request_timeout",
         )
-    if status_code == 429:
+    if status_code == 429 or normalized_code in {"rate_limit_exceeded", "rate_limited"}:
         return FailureClassification(
             stop_reason=StopReason.RATE_LIMITED,
             is_retryable=True,
@@ -92,6 +94,21 @@ def classify_provider_failure(
         is_retryable=False,
         failure_kind="provider_error",
     )
+
+
+_RETRY_AFTER_PATTERN = re.compile(
+    r"(?:try again|retry)\s+in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s|seconds?)\b",
+    re.IGNORECASE,
+)
+
+
+def _retry_after_seconds_from_text(detail: str) -> float | None:
+    match = _RETRY_AFTER_PATTERN.search(detail)
+    if match is None:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    return value / 1000.0 if unit == "ms" else value
 
 
 class ResponsesErrorFactory:
@@ -178,6 +195,7 @@ class ResponsesErrorFactory:
             stop_reason=classification.stop_reason,
             is_retryable=classification.is_retryable,
             failure_kind=classification.failure_kind,
+            retry_after_seconds=_retry_after_seconds_from_text(detail),
         )
 
     def build_http_error(
@@ -215,7 +233,7 @@ class ResponsesErrorFactory:
         provider_name = self._logger.provider_name()
         classification = self.classify_provider_failure(
             detail=detail,
-            status_code=exc.code if isinstance(exc.code, int) else None,
+            status_code=exc.status_code,
             provider_error_code=None,
         )
         error_path = self._logger.log_failure(
@@ -237,6 +255,7 @@ class ResponsesErrorFactory:
             stop_reason=classification.stop_reason,
             is_retryable=classification.is_retryable,
             failure_kind=classification.failure_kind,
+            retry_after_seconds=retry_after_seconds_from_status_error(exc),
         )
 
     def build_transport_error(

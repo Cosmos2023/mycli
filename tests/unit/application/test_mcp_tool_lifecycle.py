@@ -11,6 +11,7 @@ from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import ToolContributionLifecycleState
 from mycli.services.mcp import McpClient, McpServerConfig, McpToolAdapter, McpToolContributionProvider
 from mycli.services.tracing import TraceService
+from mycli.tools.base import ToolResult, ToolSpec
 from mycli.tools.registry import ToolRegistry
 from mycli.tools.routing.tool_exposure_planner import ToolExposurePlanner
 
@@ -22,6 +23,15 @@ class FakeTransport:
     def request(self, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
         del timeout_seconds
         return dict(self.responses[str(payload["method"])])
+
+
+class SearchableTool:
+    def __init__(self, name: str, description: str) -> None:
+        self.spec = ToolSpec(name=name, description=description)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        return ToolResult(success=True, summary=f"{self.spec.name} ok")
 
 
 def test_mcp_provider_tool_flows_through_orchestrator_registry_and_router(
@@ -94,3 +104,51 @@ def test_mcp_provider_tool_flows_through_orchestrator_registry_and_router(
         ToolContributionLifecycleState.COMPLETED,
     ]
     assert registry.snapshot()[0]["tool_id"] == "mcp:local:echo"
+
+
+def test_tool_search_uses_current_plan_when_deferred_catalog_changes(tmp_path) -> None:
+    registry = ToolContributionRegistry()
+    tool_registry = ToolRegistry(specs={}, executors={})
+    orchestrator = ToolOrchestrator(
+        session_id="search-session",
+        tool_registry=tool_registry,
+        tool_exposure_planner=ToolExposurePlanner(
+            tool_registry=tool_registry,
+            defer_threshold=2,
+        ),
+        contributed_tool_registry=registry,
+        contributed_tool_providers=(),
+        trace_service=TraceService(tmp_path / "traces"),
+        append_turn_item=lambda **_kwargs: None,
+    )
+    conversation = Conversation(session_id="search-session")
+    orchestrator.plan_tool_exposure(
+        user_message="first",
+        conversation=conversation,
+        plan_state=PlanState(),
+        runtime_contributed_tools=(
+            SearchableTool("first_alpha", "first-only capability"),
+            SearchableTool("first_beta", "first-only helper"),
+        ),
+    )
+
+    current = orchestrator.plan_tool_exposure(
+        user_message="second",
+        conversation=conversation,
+        plan_state=PlanState(),
+        runtime_contributed_tools=(
+            SearchableTool("second_alpha", "second-only capability"),
+            SearchableTool("second_beta", "second-only helper"),
+        ),
+    )
+    result = orchestrator.build_tool_router(current).execute(
+        ToolCall(
+            name="ToolSearch",
+            arguments={"query": "second-only capability"},
+            reason="discover current tools",
+            call_id="call_search_current",
+        ),
+        exposure=current.exposure,
+    )
+
+    assert result.raw_payload["tools"][0]["name"] == "second_alpha"

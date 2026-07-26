@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from mycli.application.runtime.model.model_turn_requester import ModelTurnRequester
+from mycli.application.runtime.model.model_turn_requester import (
+    ModelTurnInterrupted,
+    ModelTurnRequester,
+)
 import pytest
 import threading
 
-from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeInterruptToken
+from mycli.domain.runtime import (
+    ModelTurnResult,
+    RuntimeBlock,
+    RuntimeInterruptToken,
+    RuntimeItem,
+)
 from mycli.llms.clients.openai_chat import ModelResponseError
 
 
@@ -27,6 +35,23 @@ class StreamingAdapter:
             "response_id": "resp_1",
             "metadata": {"usage": {"input_tokens": 10}},
         }
+
+
+class ChunkedTextBeforeToolAdapter:
+    def stream_turn(self, *, items, tools):
+        del items, tools
+        yield {"type": "text_delta", "text": "再"}
+        yield {"type": "text_delta", "text": "次"}
+        yield {
+            "type": "tool_call",
+            "block": RuntimeBlock(
+                type="tool_call",
+                tool_name="WriteStdin",
+                tool_arguments={"session_id": "shell_1", "chars": ""},
+                call_id="call_1",
+            ),
+        }
+        yield {"type": "completed", "response_id": "resp_1", "metadata": {}}
 
 
 class SinkFailureAdapter:
@@ -89,6 +114,30 @@ class BlockingInterruptibleStreamingAdapter:
         yield {"type": "text_delta", "text": "late"}
 
 
+class PartialFailureStreamingAdapter:
+    def stream_turn(self, *, items, tools):
+        del items, tools
+        yield {"type": "text_delta", "text": "partial"}
+        raise ModelResponseError(
+            "stream disconnected",
+            is_retryable=True,
+            failure_kind="transport_error",
+        )
+
+
+class CompletedItemThenInterruptAdapter:
+    def stream_turn(self, *, items, tools):
+        del items, tools
+        completed_item = RuntimeItem(
+            role="assistant",
+            blocks=(RuntimeBlock(type="text", text="keep me", provider_id="msg_1"),),
+        )
+        yield {"type": "text_delta", "text": "keep me"}
+        yield {"type": "item_completed", "item": completed_item}
+        yield {"type": "text_delta", "text": "discard me"}
+        raise KeyboardInterrupt()
+
+
 def _requester(adapter: object, diagnostics_sink=None) -> ModelTurnRequester:
     return ModelTurnRequester(
         model_adapter=adapter,  # type: ignore[arg-type]
@@ -131,6 +180,71 @@ def test_model_turn_requester_notifies_stream_sink_in_order() -> None:
     assert diagnostics[0].completed_event_count == 1
     assert diagnostics[0].text_bytes == len("hello ".encode("utf-8"))
     assert diagnostics[0].failure_kind is None
+
+
+def test_model_turn_requester_coalesces_streamed_text_before_tool_call() -> None:
+    events = []
+
+    result, chunks = _requester(ChunkedTextBeforeToolAdapter()).request_model_turn(
+        runtime_items=[],
+        legacy_messages=[],
+        tools=[],
+        stream_sink=events.append,
+    )
+
+    assert chunks == ("再", "次")
+    assert [event.text for event in events if event.kind == "text_delta"] == ["再", "次"]
+    assert result.items == (
+        RuntimeItem(
+            role="assistant",
+            blocks=(
+                RuntimeBlock(type="text", text="再次"),
+                RuntimeBlock(
+                    type="tool_call",
+                    tool_name="WriteStdin",
+                    tool_arguments={"session_id": "shell_1", "chars": ""},
+                    call_id="call_1",
+                ),
+            ),
+        ),
+    )
+
+
+def test_model_turn_requester_marks_retryable_failure_after_partial_output() -> None:
+    events = []
+
+    with pytest.raises(ModelResponseError) as exc_info:
+        _requester(PartialFailureStreamingAdapter()).request_model_turn(
+            runtime_items=[],
+            legacy_messages=[],
+            tools=[],
+            stream_sink=events.append,
+        )
+
+    assert exc_info.value.stream_started is True
+    assert exc_info.value.partial_output is True
+    assert [event.text for event in events] == ["partial"]
+
+
+def test_model_turn_requester_preserves_only_completed_items_on_interrupt() -> None:
+    events = []
+
+    with pytest.raises(ModelTurnInterrupted) as exc_info:
+        _requester(CompletedItemThenInterruptAdapter()).request_model_turn(
+            runtime_items=[],
+            legacy_messages=[],
+            tools=[],
+            stream_sink=events.append,
+        )
+
+    assert exc_info.value.completed_result.items == (
+        RuntimeItem(
+            role="assistant",
+            blocks=(RuntimeBlock(type="text", text="keep me", provider_id="msg_1"),),
+        ),
+    )
+    assert exc_info.value.streamed_chunks == ("keep me", "discard me")
+    assert [event.text for event in events] == ["keep me", "discard me"]
 
 
 def test_model_turn_requester_ignores_stream_sink_failures() -> None:

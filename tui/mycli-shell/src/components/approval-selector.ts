@@ -1,6 +1,7 @@
 import type { MycliShellPendingApproval } from "../model.ts";
 import { getKeybindings, Spacer, Text, Container, truncateToWidth } from "../tui-core/index.ts";
 import { theme } from "../theme/theme.ts";
+import { stripDiffHunkHeaders } from "./diff-renderer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
@@ -200,7 +201,9 @@ export class ApprovalSelectorComponent extends Container {
 
 	private changePreviewText(): string {
 		if (this.approval.diffPreview) {
-			return styleDiff(this.limitPreview(this.approval.diffPreview));
+			return styleDiff(
+				this.limitPreview(stripDiffHunkHeaders(this.approval.diffPreview)),
+			);
 		}
 		if (this.approval.contentPreview) {
 			const suffix =

@@ -82,6 +82,7 @@ test("diff renderer numbers old and new lines independently", () => {
 	assert.match(output, /24 \+ new/);
 	assert.match(output, /25   context/);
 	assert.doesNotMatch(output, /---|\+\+\+/);
+	assert.doesNotMatch(output, /@@ .* @@/);
 });
 
 

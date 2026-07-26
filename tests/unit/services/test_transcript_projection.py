@@ -549,6 +549,21 @@ def test_file_change_history_uses_tui_supported_system_notice_type() -> None:
     assert snapshot_item_to_tui_items(snapshot)[0]["type"] == "system_notice"
 
 
+def test_clarification_response_history_projects_as_user_message() -> None:
+    item = HistoryItem(
+        id="clarification-response-1",
+        thread_id="demo",
+        turn_id="turn-1",
+        type=HistoryItemType.CLARIFICATION_RESPONSE,
+        text="Runtime",
+        call_id="call-question-1",
+    )
+
+    assert project_history_item_for_tui(item)["type"] == "user"
+    snapshot = project_history_items_for_snapshot((item,))[0].to_dict()
+    assert snapshot_item_to_tui_items(snapshot)[0]["type"] == "user"
+
+
 def test_plan_update_history_projects_to_structured_tui_item() -> None:
     item = HistoryItem(
         id="turn-1:item:2",

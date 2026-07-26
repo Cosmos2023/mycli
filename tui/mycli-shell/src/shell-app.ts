@@ -35,7 +35,6 @@ export class MycliShellApp extends Container {
 			this.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
 		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(this.composerHint(), 1, 0));
 		const agents = this.subagents();
 		if (agents.length > 0) {
 			this.addChild(new SubagentTaskPanelComponent({ agents }));
@@ -46,10 +45,6 @@ export class MycliShellApp extends Container {
 	private headerText(): string {
 		const title = this.state.title ?? "mycli";
 		return `${theme.fg("accent", theme.bold(title))} ${theme.fg("muted", rawKeyHint("ctrl+p", "commands"))} ${theme.fg("muted", rawKeyHint("ctrl+l", "model"))}`;
-	}
-
-	private composerHint(): string {
-		return `${theme.fg("dim", "▸")} ${theme.fg("muted", "Message mycli")}  ${rawKeyHint("enter", "send")}  ${rawKeyHint("tab", "queue")}`;
 	}
 
 	private transcriptBlocks(): MycliShellTranscriptBlock[] {

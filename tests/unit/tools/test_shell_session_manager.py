@@ -12,6 +12,7 @@ import pytest
 
 from mycli.domain.runtime import (
     PowerShellEdition,
+    RuntimeInterruptToken,
     ShellKind,
     ShellLifecycleEvent,
     ShellProfile,
@@ -145,6 +146,134 @@ def test_new_session_yields_to_background_after_deadline(tmp_path: Path) -> None
     assert yielded_event.tty is False
     assert yielded_event.yielded is True
     transport.finish(0)
+
+
+def test_yielded_session_survives_turn_interrupt(tmp_path: Path) -> None:
+    token = RuntimeInterruptToken(source="test")
+    transport = FakeShellTransport()
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+
+    snapshot = manager.start(
+        ShellStartRequest(
+            owner_session_id="session-a",
+            command="ignored",
+            cwd=tmp_path,
+            timeout_seconds=30,
+            background=None,
+            yield_time_ms=25,
+            interrupt_token=token,
+        )
+    )
+
+    token.request("turn interrupted")
+
+    assert snapshot.background is True
+    assert transport.poll() is None
+    manager.terminate("session-a", snapshot.shell_id)
+
+
+def test_foreground_shell_cleanup_does_not_block_interrupt_request(tmp_path: Path) -> None:
+    callback_added = Event()
+
+    class ObservableToken(RuntimeInterruptToken):
+        def add_callback(self, callback):  # type: ignore[no-untyped-def]
+            super().add_callback(callback)
+            callback_added.set()
+
+    class BlockingInterruptTransport(FakeShellTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interrupt_started = Event()
+            self.release_interrupt = Event()
+
+        def terminate(self) -> ProcessTerminationOutcome:
+            self.interrupt_started.set()
+            self.release_interrupt.wait(timeout=2.0)
+            self.finish(130)
+            return ProcessTerminationOutcome("interrupted", terminal=True)
+
+    token = ObservableToken(source="test")
+    transport = BlockingInterruptTransport()
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+    shell_worker = Thread(
+        target=lambda: manager.start(
+            ShellStartRequest(
+                owner_session_id="session-a",
+                command="ignored",
+                cwd=tmp_path,
+                timeout_seconds=30,
+                background=False,
+                interrupt_token=token,
+            )
+        )
+    )
+    shell_worker.start()
+    assert callback_added.wait(timeout=1.0)
+
+    interrupt_worker = Thread(target=lambda: token.request("test_interrupt"))
+    interrupt_worker.start()
+    assert transport.interrupt_started.wait(timeout=1.0)
+    interrupt_worker.join(timeout=0.2)
+    request_returned_promptly = not interrupt_worker.is_alive()
+    transport.release_interrupt.set()
+    interrupt_worker.join(timeout=2.0)
+    shell_worker.join(timeout=2.0)
+
+    assert request_returned_promptly
+    assert not shell_worker.is_alive()
+
+
+def test_turn_interrupt_terminates_foreground_shell_without_sending_ctrl_c(
+    tmp_path: Path,
+) -> None:
+    callback_added = Event()
+
+    class ObservableToken(RuntimeInterruptToken):
+        def add_callback(self, callback):  # type: ignore[no-untyped-def]
+            remove = super().add_callback(callback)
+            callback_added.set()
+            return remove
+
+    class RecordingTransport(FakeShellTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.interrupt_called = Event()
+            self.terminate_called = Event()
+
+        def interrupt(self) -> ProcessTerminationOutcome:
+            self.interrupt_called.set()
+            self.finish(130)
+            return ProcessTerminationOutcome("interrupted", terminal=True)
+
+        def terminate(self) -> ProcessTerminationOutcome:
+            self.terminate_called.set()
+            self.finish(143)
+            return ProcessTerminationOutcome("terminated", terminal=True)
+
+    token = ObservableToken(source="test")
+    transport = RecordingTransport()
+    manager = ShellSessionManager(transport_factory=lambda _request: transport)
+    shell_worker = Thread(
+        target=lambda: manager.start(
+            ShellStartRequest(
+                owner_session_id="session-a",
+                command="ignored",
+                cwd=tmp_path,
+                timeout_seconds=30,
+                background=False,
+                interrupt_token=token,
+            )
+        )
+    )
+    shell_worker.start()
+    assert callback_added.wait(timeout=1.0)
+
+    token.request("turn interrupted")
+
+    assert transport.terminate_called.wait(timeout=1.0)
+    shell_worker.join(timeout=1.0)
+    assert not transport.interrupt_called.is_set()
+    assert not shell_worker.is_alive()
 
 
 def test_completion_wins_race_with_yield(tmp_path: Path) -> None:
@@ -449,6 +578,35 @@ def test_manager_emits_started_output_and_completed_in_order(tmp_path: Path) -> 
         event.sequence for event in events
     )
     assert next(event for event in events if event.kind == "shell.completed").call_id == "call-a"
+
+
+def test_manager_flushes_final_output_delta_once_before_completion(
+    tmp_path: Path,
+) -> None:
+    events: list[ShellLifecycleEvent] = []
+    transport = FakeShellTransport()
+    transport.publish(b"final output")
+    transport.finish(0)
+    manager = ShellSessionManager(
+        transport_factory=lambda _request: transport,
+        output_event_interval_seconds=10,
+    )
+
+    manager.start(
+        _request(
+            tmp_path,
+            "ignored",
+            background=True,
+            lifecycle_sink=events.append,
+        )
+    )
+    _wait_for_lifecycle_kind(events, "shell.completed")
+
+    output_events = [event for event in events if event.kind == "shell.output"]
+    assert [event.output_delta for event in output_events] == ["final output"]
+    assert events.index(output_events[0]) < next(
+        index for index, event in enumerate(events) if event.kind == "shell.completed"
+    )
 
 
 def test_manager_caps_output_event_delta_and_flushes_before_terminal(

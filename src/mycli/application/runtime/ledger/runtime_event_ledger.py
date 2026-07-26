@@ -180,7 +180,11 @@ class RuntimeEventLedger:
         return tuple(
             item
             for item in self.history_items_from_turn(turn)
-            if item.type is not HistoryItemType.PLAN_UPDATE
+            if item.type
+            not in {
+                HistoryItemType.PLAN_UPDATE,
+                HistoryItemType.CLARIFICATION_RESPONSE,
+            }
         )
 
     def context_baseline_from_contract(
@@ -378,6 +382,8 @@ class RuntimeEventLedger:
     ) -> HistoryItemType | None:
         if item.type is TurnItemType.PLAN_UPDATE:
             return HistoryItemType.PLAN_UPDATE
+        if item.type is TurnItemType.CLARIFICATION_RESPONSE:
+            return HistoryItemType.CLARIFICATION_RESPONSE
         return self._provider_transcript_type_for_turn_item(item)
 
     def _continuation_state_payload(self) -> dict[str, object]:

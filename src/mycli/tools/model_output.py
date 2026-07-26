@@ -36,7 +36,6 @@ def shell_model_output(result: ToolResult) -> ToolModelOutput:
     payload = result.raw_payload
     payload.setdefault("chunk_id", uuid4().hex[:8])
     text = _shell_response_text(result)
-    payload["original_token_count"] = (len(text) + 3) // 4
     output = ToolModelOutput.from_text(
         text,
         success=result.success,
@@ -71,20 +70,21 @@ def _shell_response_text(result: ToolResult) -> str:
         output = "\n".join(parts)
     if not output and result.error:
         output = result.error
+    original_token_count = (len(output) + 3) // 4
+    payload["original_token_count"] = original_token_count
 
     session_id = payload.get("shell_id") or payload.get("bash_id")
     if payload.get("terminal_state") is None and isinstance(session_id, str):
         status = f"Process running with session ID {session_id}"
-        heading = "Live output:"
     else:
         exit_code = payload.get("exit_code")
         status = f"Process exited with code {exit_code if isinstance(exit_code, int) else -1}"
-        heading = "Final output:"
     lines = [
         f"Chunk ID: {chunk_id}",
         f"Wall time: {float(wall_time_value):.2f} seconds",
         status,
-        heading,
+        f"Original token count: {original_token_count}",
+        "Output:",
     ]
     if output:
         lines.append(output)

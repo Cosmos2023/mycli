@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 from mycli.application.runtime.subagents.service import SubAgentService
 from mycli.domain.runtime import BaselineFragment, ContextBaseline, HistoryItem, HistoryItemType
@@ -76,6 +77,21 @@ class ExplodingLoop:
 
     def run(self, **kwargs):
         raise self.exc
+
+
+class BlockingInterruptibleLoop:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.interrupted = threading.Event()
+
+    def run(self, **kwargs):
+        token = kwargs["interrupt_token"]
+        self.started.set()
+        token.wait(5.0)
+        if token.interrupted:
+            self.interrupted.set()
+            token.raise_if_interrupted()
+        raise AssertionError("sub-agent was not interrupted")
 
 
 class CompletionRaceLoop:
@@ -201,6 +217,29 @@ def test_service_passes_transcript_recorder_to_child_loop() -> None:
     assert result.status == "completed"
     assert loop.calls[0]["transcript"] is not None
     assert session_service.appended
+
+
+def test_cancel_background_subagent_interrupts_running_child_loop() -> None:
+    loop = BlockingInterruptibleLoop()
+    service = SubAgentService(
+        session_id="demo",
+        turn_id_provider=lambda: "turn_1",
+        parent_tool_names=lambda: ("Read",),
+        child_loop=loop,
+    )
+
+    started = service.run_task(
+        description="Wait",
+        agent_type="explore",
+        allowed_tools=("Read",),
+        mode="background",
+    )
+    assert loop.started.wait(timeout=1.0)
+
+    cancelled = service.cancel_background_job(started.child_session_id)
+
+    assert cancelled[0].state == "cancelled"
+    assert loop.interrupted.wait(timeout=0.5)
 
 
 def test_service_writes_subagent_snapshot_when_session_service_supports_it() -> None:

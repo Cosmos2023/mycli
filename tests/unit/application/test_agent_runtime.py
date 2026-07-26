@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 
 from mycli.application.runtime.agent_runtime import AgentRuntime
+from mycli.application.runtime.request.provider_timeline import ProviderTimelineState
 from mycli.application.runtime.turn_executor import TurnExecutor
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.contributed_tools import (
@@ -34,6 +35,7 @@ from mycli.domain.runtime import (
     ContextBaseline,
     HistoryItem,
     HistoryItemType,
+    InstructionContract,
     MailboxAcceptance,
     ModelTurnResult,
     PlanItem,
@@ -75,6 +77,56 @@ from mycli.tools.write import WriteTool
 from mycli.tools.plan import PlanTool
 from mycli.tools.ask_user_question import AskUserQuestionTool
 from tests.support.shell_commands import python_shell_command
+
+
+def test_agent_runtime_projects_provider_timeline_before_building_request_shape() -> None:
+    conversation = Conversation(
+        session_id="session-1",
+        messages=[Message(role="user", content="U1")],
+    )
+    contract = InstructionContract(
+        base_instructions="S",
+        current_user_request="U1",
+    )
+    projected = InstructionContract(
+        base_instructions="S",
+        conversation_messages=(Message(role="user", content="projected"),),
+    )
+    calls: list[tuple[object, ...]] = []
+
+    class Coordinator:
+        def project_and_persist(self, **kwargs):
+            calls.append(
+                (
+                    "project",
+                    kwargs["contract"],
+                    kwargs["conversation"],
+                    kwargs["current_user_request"],
+                )
+            )
+            return projected
+
+    class Pipeline:
+        def build_and_trace_request_shape(self, **kwargs):
+            calls.append(("build", kwargs["contract"]))
+            return "shape"
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime._provider_timeline = Coordinator()
+    runtime._request_pipeline = Pipeline()
+
+    result = runtime._build_and_trace_request_shape(
+        turn_id="turn-1",
+        contract=contract,
+        conversation=conversation,
+        tools=[],
+    )
+
+    assert result == "shape"
+    assert calls == [
+        ("project", contract, conversation, "U1"),
+        ("build", projected),
+    ]
 
 
 class PushThenDoneAdapter:
@@ -918,6 +970,106 @@ def test_agent_runtime_pauses_and_resumes_after_clarification(tmp_path: Path) ->
     )
 
 
+def test_agent_runtime_forwards_stream_events_after_clarification_resume(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=StreamClarifyThenDoneAdapter(),
+    )
+    runtime._tool_registry.register(AskUserQuestionTool())
+    first = runtime.handle_user_turn("choose next slice")
+    assert first.turn is not None
+    assert first.turn.status is TurnStatus.WAITING_CLARIFICATION
+    stream_events: list[RuntimeStreamEvent] = []
+
+    resumed = runtime.resolve_pending_clarification(
+        request_id="call_question_1",
+        response="Runtime",
+        stream_sink=stream_events.append,
+    )
+
+    assert resumed.assistant_message == "Runtime slice selected."
+    assert "".join(
+        event.text for event in stream_events if event.kind == "text_delta"
+    ) == "Runtime slice selected."
+    assert any(event.kind == "completed" for event in stream_events)
+
+
+def test_clarification_result_is_persisted_before_resumed_model_request(
+    tmp_path: Path,
+) -> None:
+    adapter = ClarifyThenPersistenceProbeAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._tool_registry.register(AskUserQuestionTool())
+    adapter.probe = lambda: any(
+        message.role == "tool" and message.tool_call_id == "call_question_1"
+        for message in runtime._session_service.load_conversation(
+            runtime._config.session_id
+        ).messages
+    )
+    first = runtime.handle_user_turn("choose next slice")
+    assert first.turn is not None
+    assert first.turn.status is TurnStatus.WAITING_CLARIFICATION
+
+    resumed = runtime.resolve_pending_clarification(
+        request_id="call_question_1",
+        response="Runtime",
+    )
+
+    assert resumed.turn is not None
+    assert resumed.turn.status is TurnStatus.COMPLETED
+    assert adapter.persisted_before_resume is True
+
+
+def test_new_turn_repairs_dangling_tool_call_before_model_request(tmp_path: Path) -> None:
+    adapter = BlockSingleTurnCaptureAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._session_service.save_conversation(
+        Conversation(
+            session_id=runtime._config.session_id,
+            messages=[
+                Message(role="user", content="choose next slice"),
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=(
+                        ToolCall(
+                            name="AskUserQuestion",
+                            arguments={"question": "Which slice?"},
+                            reason="clarify",
+                            call_id="call_dangling",
+                        ),
+                    ),
+                ),
+            ],
+        )
+    )
+
+    response = runtime.handle_user_turn("continue")
+
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.COMPLETED
+    blocks = [block for item in adapter.seen_items[0] for block in item.blocks]
+    assert any(
+        block.type == "tool_call" and block.call_id == "call_dangling"
+        for block in blocks
+    )
+    assert any(
+        block.type == "tool_result" and block.call_id == "call_dangling"
+        for block in blocks
+    )
+
+
 def test_agent_runtime_records_blank_clarification_response_without_raw_text(
     tmp_path: Path,
 ) -> None:
@@ -1159,6 +1311,48 @@ class ClarifyThenDoneAdapter:
             ),
             done=True,
         )
+
+
+class StreamClarifyThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "type": "tool_call",
+                "block": RuntimeBlock(
+                    type="tool_call",
+                    tool_name="AskUserQuestion",
+                    tool_arguments={
+                        "question": "Which slice should come next?",
+                        "options": [
+                            {"label": "Runtime"},
+                            {"label": "TUI"},
+                        ],
+                    },
+                    call_id="call_question_1",
+                ),
+            }
+            yield {"type": "completed", "response_id": "resp_clarify_1"}
+            return
+        yield {"type": "text_delta", "text": "Runtime slice selected."}
+        yield {"type": "completed", "response_id": "resp_clarify_2"}
+
+
+class ClarifyThenPersistenceProbeAdapter(ClarifyThenDoneAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.probe: Callable[[], bool] | None = None
+        self.persisted_before_resume: bool | None = None
+
+    def next_turn(self, *, items, tools):
+        if self.calls > 0:
+            assert self.probe is not None
+            self.persisted_before_resume = self.probe()
+        return super().next_turn(items=items, tools=tools)
 
 
 class OverviewReasoningEffortAdapter:
@@ -5213,6 +5407,62 @@ def test_agent_runtime_traces_cache_shape_diagnostic_from_provider_usage(
     assert snapshot.budget_curve
 
 
+def test_agent_runtime_extends_provider_timeline_without_reset_between_turns(
+    tmp_path: Path,
+) -> None:
+    adapter = UsageMetadataAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+
+    runtime.handle_user_turn("U1")
+    runtime.handle_user_turn("U2")
+
+    payload = runtime._session_service.load_provider_timeline_state(
+        runtime._config.session_id
+    )
+    assert payload is not None
+    state = ProviderTimelineState.from_dict(payload)
+    assert state.reset_count == 0
+    contents = [message.content for message in state.messages]
+    u1_index = contents.index("U1")
+    a1_index = contents.index("done 1")
+    u2_index = contents.index("U2")
+    assert u1_index < a1_index < u2_index
+
+
+def test_agent_runtime_does_not_append_conversation_summary_without_compaction(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=UsageMetadataAdapter(),
+    )
+    runtime.rebind_session(
+        replace(
+            runtime._config,
+            recent_message_count=1,
+            memory_enabled=False,
+        )
+    )
+
+    runtime.handle_user_turn("U1")
+    runtime.handle_user_turn("U2")
+
+    payload = runtime._session_service.load_provider_timeline_state(
+        runtime._config.session_id
+    )
+    assert payload is not None
+    state = ProviderTimelineState.from_dict(payload)
+    assert all(
+        message.metadata.get("context_kind") != "conversation_context"
+        for message in state.messages
+    )
+
+
 def test_agent_runtime_traces_context_budget_trimming_for_oversized_context(
     tmp_path: Path,
 ) -> None:
@@ -5498,8 +5748,12 @@ def test_agent_runtime_rebind_session_updates_workspace_log_context(
 
 
 class RepeatMissingReadAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def next_turn(self, *, items, tools):
         del items, tools
+        self.calls += 1
         return ModelTurnResult(
             items=(
                 RuntimeItem(
@@ -5768,6 +6022,18 @@ class ContributedSummaryTool:
         return ToolResult(success=True, summary="Workspace summary ready", raw_payload={"path": "."})
 
 
+class WeatherContributionTool:
+    spec = ToolSpec(
+        name="weather_forecast",
+        description="Get a weather forecast",
+        parameters=(),
+    )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        return ToolResult(success=True, summary="Weather forecast unavailable")
+
+
 class OverviewToolContributionProvider(ToolContributionProvider):
     def provide(
         self,
@@ -5775,8 +6041,9 @@ class OverviewToolContributionProvider(ToolContributionProvider):
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
+        interrupt_token=None,
     ) -> tuple[object, ...]:
-        del conversation, plan_state
+        del conversation, plan_state, interrupt_token
         if "概览" not in user_message and "overview" not in user_message.lower():
             return ()
         tool = ContributedSummaryTool()
@@ -5828,6 +6095,60 @@ class ToolContributionAdapter:
                 RuntimeItem(
                     role="assistant",
                     blocks=(RuntimeBlock(type="text", text="Contributed summary complete"),),
+                ),
+            ),
+            done=True,
+        )
+
+
+class ToolSearchThenContributionAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_tool_names: list[list[str]] = []
+
+    def next_turn(self, *, items, tools):
+        del items
+        self.calls += 1
+        self.seen_tool_names.append([tool.name for tool in tools])
+        if self.calls == 1:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="ToolSearch",
+                                tool_arguments={"query": "workspace summary"},
+                                call_id="call_tool_search_1",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+        if self.calls == 2:
+            return ModelTurnResult(
+                items=(
+                    RuntimeItem(
+                        role="assistant",
+                        blocks=(
+                            RuntimeBlock(
+                                type="tool_call",
+                                tool_name="workspace_summary",
+                                tool_arguments={"path": "."},
+                                call_id="call_workspace_summary_after_search",
+                            ),
+                        ),
+                    ),
+                ),
+                done=False,
+            )
+        return ModelTurnResult(
+            items=(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="Discovered tool completed"),),
                 ),
             ),
             done=True,
@@ -6175,7 +6496,7 @@ def test_agent_runtime_build_context_uses_append_only_provider_replay(
         "first answer",
         "second request",
     ]
-    assert context.conversation_summary == "- user: first request\n- assistant: first answer"
+    assert context.conversation_summary is None
 
 
 def test_agent_runtime_build_context_reconstructs_block_aware_messages_from_history(
@@ -6345,13 +6666,14 @@ def test_agent_runtime_loads_continuation_state_from_rollout_when_state_file_is_
     assert adapter.loaded_state.response_id == "resp_rollout_1"
 
 
-def test_agent_runtime_converts_missing_file_reads_into_recoverable_loop_stop(
+def test_agent_runtime_allows_recovery_after_repeated_missing_file_reads(
     tmp_path: Path,
 ) -> None:
+    adapter = RepeatMissingReadAdapter()
     runtime = AgentRuntime.for_tests(
         workspace_root=tmp_path,
         home_dir=tmp_path / "home",
-        model_adapter=RepeatMissingReadAdapter(),
+        model_adapter=adapter,
     )
     runtime._config = AgentConfig(workspace_root=tmp_path)
 
@@ -6360,7 +6682,8 @@ def test_agent_runtime_converts_missing_file_reads_into_recoverable_loop_stop(
     assert response.turn is not None
     assert response.turn.stop_reason is StopReason.LOOP_DETECTED
     assert response.turn.status is TurnStatus.COMPLETED
-    assert "repeated exploration" in response.assistant_message.lower()
+    assert "no new evidence" in response.assistant_message.lower()
+    assert adapter.calls > 3
     assert any(
         item.type is TurnItemType.TOOL_RESULT
         and item.metadata.get("success") is False
@@ -6427,7 +6750,7 @@ def test_agent_runtime_records_compaction_metrics_when_window_changes(tmp_path: 
     for index in range(8):
         conversation.append(
             Message(
-                role="assistant",
+                role="user" if index % 2 == 0 else "assistant",
                 content=" ".join(f"evidence_{index}_{token}" for token in range(240)),
             )
         )
@@ -6577,6 +6900,43 @@ def test_agent_runtime_executes_runtime_contributed_tool_via_router(tmp_path: Pa
         item.type is TurnItemType.TOOL_RESULT and item.tool_name == "workspace_summary"
         for item in response.turn.items
     )
+
+
+def test_agent_runtime_searches_then_executes_deferred_contributed_tool(
+    tmp_path: Path,
+) -> None:
+    adapter = ToolSearchThenContributionAdapter()
+    runtime = AgentRuntime(
+        model_adapter=adapter,
+        tool_registry=ToolRegistry.from_tools([LSTool(tmp_path)]),
+        config=AgentConfig(workspace_root=tmp_path),
+        home_dir=tmp_path / "home",
+    )
+    runtime._tool_exposure_planner._defer_threshold = 2
+    runtime._runtime_contributed_tools = lambda **_kwargs: (
+        ContributedSummaryTool(),
+        WeatherContributionTool(),
+    )
+
+    response = runtime.handle_user_turn("find and use the workspace summary tool")
+
+    assert response.turn is not None
+    assert response.assistant_message == "Discovered tool completed"
+    assert len(adapter.seen_tool_names) == 3
+    assert all("ToolSearch" in names for names in adapter.seen_tool_names)
+    assert all("workspace_summary" not in names for names in adapter.seen_tool_names)
+    assert all("weather_forecast" not in names for names in adapter.seen_tool_names)
+    tool_results = [
+        item for item in response.turn.items if item.type is TurnItemType.TOOL_RESULT
+    ]
+    assert [item.tool_name for item in tool_results] == [
+        "ToolSearch",
+        "workspace_summary",
+    ]
+    conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert [
+        message.tool_call_id for message in conversation.messages if message.role == "tool"
+    ] == ["call_tool_search_1", "call_workspace_summary_after_search"]
 
 
 def test_agent_runtime_records_contributed_tool_lifecycle_and_persists_thread_snapshot(

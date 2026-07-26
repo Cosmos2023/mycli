@@ -11,6 +11,7 @@ export type NativeChatRuntimeOptions = {
 	initialState: MycliShellState;
 	streams?: NativeChatStreams;
 	onSubmit?: (text: string) => void | Promise<void>;
+	onClarificationRespond?: (requestId: string, response: string) => void | Promise<void>;
 	onFollowUp?: (text: string) => void | Promise<void>;
 	onCommandSubmit?: (command: string) => void | Promise<void>;
 	onExit?: () => void | Promise<void>;
@@ -147,6 +148,11 @@ export class NativeChatRuntime {
 		}
 		if (text.startsWith("/")) {
 			await this.options.onCommandSubmit?.(text);
+		} else if (this.state.pendingClarification) {
+			await this.options.onClarificationRespond?.(
+				this.state.pendingClarification.requestId,
+				text,
+			);
 		} else {
 			await this.options.onSubmit?.(text);
 		}

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState
+from mycli.domain.runtime import PlanState, RuntimeInterruptToken
 from mycli.domain.subagents import SubAgentProfile, SubAgentResult
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import (
@@ -112,10 +112,18 @@ class SubAgentToolContributionProvider:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ToolContributionRegistration, ...]:
         del user_message, conversation, plan_state
+        if interrupt_token is not None:
+            interrupt_token.raise_if_interrupted()
         profiles = self.list_profiles() if self.list_profiles is not None else _builtin_profiles()
-        return tuple(self._registration(profile) for profile in profiles)
+        registrations: list[ToolContributionRegistration] = []
+        for profile in profiles:
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+            registrations.append(self._registration(profile))
+        return tuple(registrations)
 
     def _registration(self, profile: SubAgentProfile) -> ToolContributionRegistration:
         legacy_route_name = f"subagent.{profile.name}"

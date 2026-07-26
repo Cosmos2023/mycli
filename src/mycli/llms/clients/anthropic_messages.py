@@ -15,6 +15,7 @@ from anthropic import (
 from mycli.domain.logging import LogLevel, ModelLogContext, ModelLogEvent
 from mycli.domain.runtime import RuntimeBlock, RuntimeInterruptToken, StopReason
 from mycli.llms.clients.openai_chat import ModelResponseError, _close_stream
+from mycli.llms.clients.openai_chat_errors import retry_after_seconds_from_status_error
 from mycli.llms.clients.responses_errors import FailureClassification, classify_provider_failure
 from mycli.llms.clients.user_agent import model_request_headers
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
@@ -31,13 +32,18 @@ _THINKING_BUDGETS: dict[str, int] = {
 }
 
 
-def _build_anthropic_sdk_client(*, api_key: str, base_url: str) -> Anthropic:
+def _build_anthropic_sdk_client(
+    *,
+    api_key: str,
+    base_url: str,
+    max_retries: int = 4,
+) -> Anthropic:
     return Anthropic(
         api_key=api_key,
         base_url=base_url,
         default_headers=model_request_headers(),
         timeout=DEFAULT_ANTHROPIC_SDK_TIMEOUT_SECONDS,
-        max_retries=0,
+        max_retries=max(0, min(100, max_retries)),
     )
 
 
@@ -94,6 +100,7 @@ class AnthropicMessagesClient:
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
         sdk_client: object | None = None,
+        request_max_retries: int = 4,
     ) -> None:
         ensure_certifi_ca_bundle()
         self._api_key = api_key
@@ -105,9 +112,11 @@ class AnthropicMessagesClient:
         self._thinking_enabled = True
         self._thinking_effort: str | None = None
         self._owns_sdk_client = sdk_client is None
+        self._request_max_retries = max(0, min(100, request_max_retries))
         self._sdk_client = sdk_client or _build_anthropic_sdk_client(
             api_key=api_key,
             base_url=base_url,
+            max_retries=self._request_max_retries,
         )
 
     def set_log_context_provider(
@@ -236,13 +245,19 @@ class AnthropicMessagesClient:
             tools=tools,
         )
         request_path = self._log_request(payload_body)
+        unregister_interrupt_callbacks: list[Callable[[], None]] = []
         try:
             if interrupt_token is not None:
-                interrupt_token.add_callback(self._reset_sdk_client)
+                unregister_interrupt_callbacks.append(
+                    interrupt_token.add_callback(self._reset_sdk_client)
+                )
             stream = cast(Any, self._sdk_client).messages.stream(**payload_body)
             if interrupt_token is not None:
-                interrupt_token.add_callback(
-                    lambda: self._close_stream_and_reset_client(stream)
+                unregister_interrupt_callbacks[-1]()
+                unregister_interrupt_callbacks.append(
+                    interrupt_token.add_callback(
+                        lambda: self._close_stream_and_reset_client(stream)
+                    )
                 )
                 if interrupt_token.interrupted:
                     _close_stream(stream)
@@ -287,6 +302,9 @@ class AnthropicMessagesClient:
                 stop_reason=StopReason.MODEL_ERROR,
                 failure_kind="provider_response_parse_error",
             ) from exc
+        finally:
+            for unregister in reversed(unregister_interrupt_callbacks):
+                unregister()
         self._log_service_event(
             level=LogLevel.INFO,
             event="model_response_received",
@@ -300,6 +318,7 @@ class AnthropicMessagesClient:
             self._sdk_client = _build_anthropic_sdk_client(
                 api_key=self._api_key,
                 base_url=self._base_url,
+                max_retries=self._request_max_retries,
             )
 
     def _close_stream_and_reset_client(self, stream: object | None = None) -> None:
@@ -500,6 +519,7 @@ class AnthropicMessagesClient:
             stop_reason=classification.stop_reason,
             is_retryable=classification.is_retryable,
             failure_kind=classification.failure_kind,
+            retry_after_seconds=retry_after_seconds_from_status_error(exc),
         )
 
     def _log_request(self, payload_body: dict[str, object]) -> str | None:

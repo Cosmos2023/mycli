@@ -12,8 +12,22 @@ This design replaces tagged text as the primary contract with a versioned,
 structured command result. The Gateway returns that result to every client, the
 TUI chooses a Codex-style semantic presentation, and CLI clients receive a plain
 text projection of the same data. Transcript-visible command results are stored as
-UI-only history so live execution and resumed sessions render identically without
-adding content to the model context.
+UI-only history for the current TUI process without adding content to the model
+context or durable session history.
+
+## 2026-07-22 Presentation Amendment
+
+Codex renders a local slash invocation as its own transcript line before the
+semantic result. mycli follows that behavior for transcript-presented commands:
+
+- `/status`, `/usage`, `/context`, and `/stats` use compact bordered cards;
+- lists remain dense and borderless;
+- notices and errors remain one to three compact lines;
+- preformatted results retain their bounded text layout;
+- TUI-owned selectors and overlays do not create transcript output.
+
+These local command results remain visible only in the current TUI transcript.
+They are not persisted to session history and are not replayed by `/resume`.
 
 ## Goals
 
@@ -23,7 +37,7 @@ adding content to the model context.
 - Keep status information rich, lists easy to scan, and action feedback compact.
 - Make TUI, native chat, scripted clients, and the Python CLI consume the same
   command semantics.
-- Preserve all transcript-visible command results across session resume.
+- Keep transcript-visible command results local to the current TUI process.
 - Upgrade recognizable legacy tagged output when old sessions are loaded.
 - Keep command results out of provider requests and context token accounting.
 - Preserve a bounded plain text fallback for malformed or unsupported displays.
@@ -169,16 +183,15 @@ model, provider, directory, collaboration mode, sandbox, permission, pending tur
 and context information. Missing fields are omitted rather than shown as
 `unknown` unless absence itself is important.
 
-The card is the only general slash result that uses a full border. It has a
-reasonable maximum width, truncates individual values by terminal cell width, and
-remains readable in monochrome.
+The card has a reasonable maximum width, truncates individual values by terminal
+cell width, and remains readable in monochrome.
 
 ### Diagnostic
 
-`/usage`, `/context`, and `/stats` use a borderless diagnostic layout:
+`/usage`, `/context`, and `/stats` use the same compact card anatomy as `/status`:
 
-- title and command;
-- high-value metrics on the first line;
+- the command appears as a separate line immediately before the card;
+- the card title and high-value metrics appear first;
 - named sections for cumulative tokens, context composition, compaction, cache,
   and alerts;
 - semantic color paired with explicit labels and values.
@@ -267,13 +280,10 @@ temporary `lines` compatibility field.
 ## Gateway And Client Flow
 
 `command.run` continues to return request-response data. Backend-owned transcript
-results include a stable `result_id` allocated before persistence. The response and
-the stored history item use that same ID.
+results include a stable `result_id` used to upsert the local TUI block.
 
-The Node client appends or replaces command output by `result_id`. A later
-`transcript.load` therefore cannot duplicate a result already visible in the live
-state. TUI-owned actions continue to return `client_action` and do not fabricate a
-backend result.
+The Node client appends or replaces command output by `result_id`. TUI-owned
+actions continue to return `client_action` and do not fabricate a backend result.
 
 Session-switching commands require special ordering:
 
@@ -288,37 +298,21 @@ session.
 
 ## Persistence
 
-Add `HistoryItemType.COMMAND_RESULT`. A transcript-visible command result stores:
+Slash command results are local presentation state. The Gateway returns structured
+display data but does not append a command-result history item. Results are
+excluded from:
 
-```json
-{
-  "type": "command_result",
-  "text": "Tools: 18 available",
-  "metadata": {
-    "command": "/tools",
-    "model_visible": false,
-    "display": {
-      "version": 1,
-      "kind": "list",
-      "title": "Tools"
-    }
-  }
-}
-```
-
-The full display is stored in `metadata.display`; `text` is a concise plain text
-fallback. Command results are included in TUI history and readable session
-snapshots but excluded from:
-
+- session history and readable session snapshots;
+- `/resume` replay;
 - provider transcript reconstruction;
 - context assembly;
 - compaction inputs and summaries;
 - cache-prefix calculations;
 - model token usage.
 
-Only commands with `presentation=transcript` are persisted. Overlay and transient
-notices are not. Session snapshots preserve display version, command, timestamps,
-folded state where relevant, and bounded presentation data.
+`presentation=transcript` means "show in the current TUI transcript", not
+"persist in the session". Overlay commands and transient selector state remain
+outside the transcript entirely.
 
 ## Legacy Session Compatibility
 
@@ -365,8 +359,6 @@ process state and streaming output rather than static command result data.
 - Invalid display payloads are logged and rendered through bounded fallback text.
 - Unsupported display versions do not partially render.
 - Empty results render a command-specific empty state.
-- Persistence failure does not discard the command response; the TUI shows it and
-  Gateway emits a bounded warning.
 - Legacy parsing failure preserves the original text exactly.
 
 ## Testing Strategy
@@ -378,16 +370,15 @@ process state and streaming output rather than static command result data.
 - command-family presenter tests;
 - all canonical backend commands return an appropriate display kind;
 - aliases resolve to the same command semantics without appearing in manifests;
-- Gateway contract and stable result ID tests;
-- command result persistence and snapshot projection tests;
+- Gateway contract and stable local result ID tests;
+- tests proving command results are not persisted or resumed;
 - command result exclusion from provider and context reconstruction;
 - legacy tagged output conversion and fallback fixtures;
-- persistence failure behavior.
 
 ### TypeScript
 
 - strict display parser tests, including unknown versions and malformed data;
-- runtime reducer upsert and resume deduplication tests;
+- runtime reducer upsert and resume exclusion tests;
 - component tests for all display kinds;
 - width safety at 60, 100, and 160 columns;
 - CJK, long path, empty list, long list, and preformatted truncation cases;
@@ -396,26 +387,26 @@ process state and streaming output rather than static command result data.
 
 ### Visual Acceptance Cases
 
-Four examples anchor the desired presentation:
+Five examples anchor the desired presentation:
 
 1. `/status`: bordered Codex-style session card.
-2. `/tools`: borderless aligned list with count and row status.
-3. `/undo`: compact success notice naming the restored path.
-4. invalid `/memory add`: compact error with the correct canonical usage.
+2. `/usage`: separate command line followed by a bordered diagnostic card.
+3. `/tools`: separate command line followed by a borderless aligned list.
+4. `/undo`: command line plus compact success notice naming the restored path.
+5. invalid `/memory add`: command line plus compact error and canonical usage.
 
-Live execution and resume must produce equivalent projected transcript blocks for
-all four examples.
+Live execution renders these blocks; resume does not replay them.
 
 ## Migration Sequence
 
 1. Add typed Python display models, validation, and text projection.
 2. Add presenters and migrate backend command dispatch family by family.
 3. Extend Gateway payloads while retaining generated `lines` compatibility.
-4. Add `COMMAND_RESULT` history and snapshot support with model-context exclusion.
+4. Keep command-result IDs process-local and exclude them from session history.
 5. Add TypeScript parsing, transcript upsert, and semantic components.
 6. Add legacy session conversion at transcript-load boundaries.
 7. Remove command-name and tagged-line parsing from the new TUI live path.
-8. Run cross-client, persistence, context, and visual verification.
+8. Run cross-client, session-exclusion, context, and visual verification.
 
 Each migration step keeps plain text clients functional. The final removal applies
 only to duplicate live-path parsing; the isolated legacy loader remains supported.

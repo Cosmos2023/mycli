@@ -20,37 +20,42 @@ from mycli.cli.slash_command_registry import (
 VISIBLE_TUI_NAMES = (
     "/model",
     "/plan",
-    "/mode",
     "/permissions",
-    "/sandbox",
-    "/settings",
+    "/new",
     "/resume",
     "/fork",
-    "/new",
     "/status",
     "/usage",
-    "/context",
-    "/stats",
+    "/compact",
     "/skills",
     "/tools",
-    "/resources",
-    "/memory",
-    "/agents",
     "/tasks",
     "/ps",
-    "/stop",
     "/changes",
-    "/undo",
-    "/trace",
-    "/details",
-    "/view",
-    "/hotkeys",
-    "/copy",
-    "/clear",
-    "/login",
-    "/trust",
     "/help",
     "/quit",
+)
+
+
+HIDDEN_COMPATIBILITY_COMMANDS = (
+    ("/mode", SlashCommandId.MODE),
+    ("/sandbox", SlashCommandId.SANDBOX),
+    ("/settings", SlashCommandId.SETTINGS),
+    ("/context", SlashCommandId.CONTEXT),
+    ("/stats", SlashCommandId.STATS),
+    ("/resources", SlashCommandId.RESOURCES),
+    ("/memory", SlashCommandId.MEMORY),
+    ("/agents", SlashCommandId.AGENTS),
+    ("/stop", SlashCommandId.STOP),
+    ("/undo", SlashCommandId.UNDO),
+    ("/trace", SlashCommandId.TRACE),
+    ("/details", SlashCommandId.DETAILS),
+    ("/view", SlashCommandId.VIEW),
+    ("/hotkeys", SlashCommandId.HOTKEYS),
+    ("/copy", SlashCommandId.COPY),
+    ("/clear", SlashCommandId.CLEAR),
+    ("/login", SlashCommandId.LOGIN),
+    ("/trust", SlashCommandId.TRUST),
 )
 
 
@@ -76,6 +81,17 @@ def test_tui_manifest_has_one_ordered_canonical_command_surface() -> None:
     assert "/theme" not in VISIBLE_TUI_NAMES
     assert "/mark" not in VISIBLE_TUI_NAMES
     assert "/release-notes" not in VISIBLE_TUI_NAMES
+
+
+@pytest.mark.parametrize(("raw", "command_id"), HIDDEN_COMPATIBILITY_COMMANDS)
+def test_hidden_commands_remain_parseable_compatibility_routes(
+    raw: str,
+    command_id: SlashCommandId,
+) -> None:
+    resolved = resolve_slash_command(raw, tui_context())
+
+    assert resolved.command_id is command_id
+    assert raw not in tuple(item.name for item in command_manifest(tui_context()))
 
 
 @pytest.mark.parametrize(
@@ -155,6 +171,18 @@ def test_turn_policy_recognizes_but_rejects_unavailable_command() -> None:
     assert "disabled while a task is in progress" in str(caught.value)
 
 
+def test_compact_is_backend_owned_and_unavailable_during_turn() -> None:
+    resolved = resolve_slash_command("/compact", tui_context())
+
+    assert resolved.command_id is SlashCommandId.COMPACT
+    assert resolved.owner is SlashCommandOwner.BACKEND
+
+    with pytest.raises(SlashCommandError) as caught:
+        resolve_slash_command("/compact", tui_context(turn_running=True))
+
+    assert caught.value.code == "unavailable_during_turn"
+
+
 def test_argument_policy_rejects_extra_text() -> None:
     with pytest.raises(SlashCommandError) as caught:
         resolve_slash_command("/usage now", tui_context())
@@ -181,21 +209,28 @@ def test_help_uses_canonical_names_without_aliases() -> None:
 
 
 def test_slash_command_suggestions_use_visible_canonical_names() -> None:
-    assert slash_command_suggestions("/memroy", cli_context()) == ("/memory",)
+    assert slash_command_suggestions("/memroy", cli_context()) == ()
     assert "/status usage" not in slash_command_suggestions("/usag", cli_context())
 
 
-def test_backend_results_use_transcript_presentation() -> None:
-    for command in ("/status", "/usage", "/context", "/stats", "/permissions"):
+def test_command_presentations_separate_reports_overlays_and_actions() -> None:
+    for command in ("/status", "/usage", "/context", "/stats", "/ps", "/changes", "/undo"):
         assert (
             resolve_slash_command(command, cli_context()).presentation
             is SlashCommandPresentation.TRANSCRIPT
         )
 
-    assert (
-        resolve_slash_command("/quit", cli_context()).presentation
-        is SlashCommandPresentation.NONE
-    )
+    for command in ("/skills", "/tools", "/permissions", "/memory", "/agents", "/trace"):
+        assert (
+            resolve_slash_command(command, cli_context()).presentation
+            is SlashCommandPresentation.OVERLAY
+        )
+
+    for command in ("/plan", "/mode plan", "/sandbox next", "/stop", "/quit"):
+        assert (
+            resolve_slash_command(command, cli_context()).presentation
+            is SlashCommandPresentation.NONE
+        )
 
 
 def test_registry_integrity_passes() -> None:

@@ -66,10 +66,15 @@ class McpDiscoveryDiagnostics:
 def discover_mcp_servers(
     workspace_root: Path,
     *,
+    home_dir: Path | None = None,
     environ: Mapping[str, str] | None = None,
     client_factory: ClientFactory | None = None,
 ) -> McpDiscoveryDiagnostics:
-    configs = load_mcp_server_configs(workspace_root, environ=environ)
+    configs = load_mcp_server_configs(
+        workspace_root,
+        home_dir=home_dir,
+        environ=environ,
+    )
     return discover_configured_mcp_servers(configs, client_factory=client_factory)
 
 

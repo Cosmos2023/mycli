@@ -145,7 +145,8 @@ def test_turn_context_assembler_builds_deterministic_sections() -> None:
         if section.type is TurnContextSectionType.TOOL_EXPOSURE
     )
     assert skill_catalog_section.enabled is False
-    assert "Available tools: Grep, LS, Read, workspace_summary" in tool_exposure_section.content
+    assert "Available tools: LS, Read, workspace_summary" in tool_exposure_section.content
+    assert "1 deferred tool is available through ToolSearch." in tool_exposure_section.content
     assert "Direct tools:" not in tool_exposure_section.content
     assert "Deferred tools:" not in tool_exposure_section.content
     assert "Contributed tools:" not in tool_exposure_section.content
@@ -333,7 +334,10 @@ def test_turn_context_assembler_prefers_structured_tool_exposure_metadata() -> N
     )
 
     assert tool_section.enabled is True
-    assert tool_section.metadata["tool_names"] == ["Bash", "LS", "workspace_summary"]
+    assert tool_section.metadata == {
+        "tool_names": ["LS", "workspace_summary"],
+        "deferred_tool_count": 1,
+    }
 
 
 def test_turn_context_assembler_renders_non_compaction_runtime_reminders() -> None:

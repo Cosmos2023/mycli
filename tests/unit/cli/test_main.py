@@ -257,6 +257,7 @@ def test_mcp_list_command_is_provider_free_and_redacts_failures(tmp_path: Path) 
     exit_code = handle_mcp_command(
         {"command": "mcp", "utility_args": ["list"], "json_output": False},
         cwd=workspace,
+        home=tmp_path / "home",
         env={},
         output_func=output.append,
     )
@@ -290,6 +291,7 @@ def test_mcp_inspect_command_renders_json(tmp_path: Path) -> None:
     exit_code = handle_mcp_command(
         {"command": "mcp", "utility_args": ["inspect", "disabled"], "json_output": True},
         cwd=workspace,
+        home=tmp_path / "home",
         env={},
         output_func=output.append,
     )
@@ -299,6 +301,38 @@ def test_mcp_inspect_command_renders_json(tmp_path: Path) -> None:
     assert payload["server"]["server_id"] == "disabled"
     assert payload["server"]["status"] == "disabled"
     assert payload["server"]["failure_category"] is None
+
+
+def test_mcp_list_command_loads_global_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    (home / ".mycli").mkdir(parents=True)
+    (home / ".mycli" / "mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[mcpServers.global_disabled]",
+                'type = "streamable_http"',
+                'url = "https://mcp.example.test/mcp"',
+                "enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output: list[str] = []
+
+    exit_code = handle_mcp_command(
+        {"command": "mcp", "utility_args": ["list"], "json_output": False},
+        cwd=workspace,
+        home=home,
+        env={},
+        output_func=output.append,
+    )
+
+    rendered = "\n".join(output)
+    assert exit_code == 0
+    assert "mcp server global_disabled" in rendered
+    assert "transport=streamable_http" in rendered
 
 
 def test_main_runs_doctor_without_leaking_api_key(tmp_path: Path) -> None:
@@ -343,9 +377,9 @@ def test_help_lists_sessions_command() -> None:
     assert "/status" in output
     assert "/resume" in output
     assert "/usage" in output
-    assert "/context" in output
     assert "/ps" in output
-    assert "/undo" in output
+    assert "/context" not in output
+    assert "/undo" not in output
     assert "/session list" not in output
     assert "/status usage" not in output
     assert "Aliases:" not in output
@@ -613,13 +647,13 @@ def test_build_turn_service_can_disable_memory_from_env(tmp_path: Path) -> None:
     assert service._config.memory_enabled is False
 
 
-def test_build_turn_service_passes_cli_env_to_mcp_config_loader(tmp_path: Path) -> None:
+def test_build_turn_service_loads_global_mcp_config_with_cli_env(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home_dir.mkdir()
     workspace.mkdir()
-    (workspace / ".mycli").mkdir()
-    (workspace / ".mycli" / "mcp_servers.toml").write_text(
+    (home_dir / ".mycli").mkdir()
+    (home_dir / ".mycli" / "mcp_servers.toml").write_text(
         "\n".join(
             [
                 "[servers.fs]",
@@ -906,6 +940,31 @@ def test_main_noninteractive_missing_api_key_returns_error(
 
     assert main([], cwd=tmp_path, home=tmp_path / "home", env={}, output_func=outputs.append) == 2
     assert outputs == ["MYCLI_API_KEY is required"]
+
+
+def test_main_reports_malformed_config_without_traceback(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    config_dir = workspace / ".mycli"
+    config_dir.mkdir(parents=True)
+    home.mkdir()
+    config_path = config_dir / "config.toml"
+    config_path.write_text("[model\nname = 'gpt-5'\n", encoding="utf-8")
+    outputs: list[str] = []
+
+    exit_code = main(
+        [],
+        cwd=workspace,
+        home=home,
+        env={"MYCLI_API_KEY": "test-key"},
+        output_func=outputs.append,
+    )
+
+    assert exit_code == 2
+    assert len(outputs) == 1
+    assert "Invalid mycli configuration" in outputs[0]
+    assert str(config_path) in outputs[0]
+    assert "Traceback" not in outputs[0]
 
 
 def test_main_plain_still_overrides_default_node_tui(monkeypatch, tmp_path: Path) -> None:

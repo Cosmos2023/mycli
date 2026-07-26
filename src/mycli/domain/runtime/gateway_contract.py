@@ -14,6 +14,8 @@ SUPPORTED_GATEWAY_RPC_METHODS = frozenset(
         "completion.slash",
         "decision.resolve",
         "extension.manifest",
+        "model.list",
+        "model.select",
         "resource.list",
         "session.bootstrap",
         "session.list",
@@ -50,6 +52,7 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "item.started",
         "message.complete",
         "message.delta",
+        "message.reset",
         "plan.proposed",
         "plan.updated",
         "reasoning.delta",
@@ -57,6 +60,8 @@ SUPPORTED_GATEWAY_EVENT_STREAMS = frozenset(
         "session.changed",
         "status.changed",
         "status.update",
+        "stream.recovered",
+        "stream.retrying",
         "thinking.delta",
         "tool.complete",
         "tool.failed",
@@ -423,6 +428,11 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
         required=("text",),
         properties=_with_client_turn({"text": _STRING}),
     ),
+    "message.reset": _schema(
+        "message.reset",
+        required=("client_turn_id",),
+        properties=_with_client_turn({}),
+    ),
     "plan.proposed": _schema(
         "plan.proposed",
         required=("client_turn_id", "text"),
@@ -507,6 +517,27 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
             "trust": _OBJECT,
         },
     ),
+    "stream.recovered": _schema(
+        "stream.recovered",
+        required=("client_turn_id",),
+        properties=_with_client_turn({}),
+    ),
+    "stream.retrying": _schema(
+        "stream.retrying",
+        required=("client_turn_id", "text", "attempt", "max_retries", "delay_seconds"),
+        properties=_with_client_turn(
+            {
+                "text": _STRING,
+                "attempt": _INTEGER,
+                "max_retries": _INTEGER,
+                "max_attempts": _INTEGER,
+                "delay_seconds": _NUMBER,
+                "failure_kind": _STRING,
+                "recovery_kind": _STRING,
+                "additional_details": _STRING,
+            }
+        ),
+    ),
     "status.update": _schema(
         "status.update",
         required=("state", "kind", "text"),
@@ -574,6 +605,7 @@ GATEWAY_EVENT_PAYLOAD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "assistant_message": _STRING,
                 "turn_state": _TURN_STATE,
                 "pending_decision": _BOOLEAN,
+                "input_rolled_back": _BOOLEAN,
                 "activity_events": _ARRAY,
                 "progress_updates": _ARRAY,
                 "plan_steps": _ARRAY,

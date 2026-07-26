@@ -21,7 +21,10 @@ from mycli.infrastructure.providers.chat import (
     DefaultChatProviderAdapter,
 )
 from mycli.infrastructure.ssl import ensure_certifi_ca_bundle
-from mycli.llms.clients.openai_chat_errors import ModelResponseError
+from mycli.llms.clients.openai_chat_errors import (
+    ModelResponseError,
+    retry_after_seconds_from_status_error,
+)
 from mycli.llms.clients.openai_chat_payloads import (
     NATIVE_TOOL_ARGUMENTS_PARSE_ERROR,
     decode_native_tool_arguments as _decode_native_tool_arguments,
@@ -144,13 +147,18 @@ def _wire_tool_name_with_hash(base: str, canonical_name: str) -> str:
     return f"{prefix}{suffix}"
 
 
-def _build_openai_sdk_client(*, api_key: str, base_url: str) -> OpenAI:
+def _build_openai_sdk_client(
+    *,
+    api_key: str,
+    base_url: str,
+    max_retries: int = 4,
+) -> OpenAI:
     return OpenAI(
         api_key=api_key,
         base_url=base_url,
         default_headers=model_request_headers(),
         timeout=DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS,
-        max_retries=0,
+        max_retries=max(0, min(100, max_retries)),
     )
 
 
@@ -163,12 +171,18 @@ class OpenAIChatClient:
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
         provider_adapter: ChatProviderAdapter | None = None,
+        request_max_retries: int = 4,
     ) -> None:
         ensure_certifi_ca_bundle()
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._sdk_client = _build_openai_sdk_client(api_key=api_key, base_url=base_url)
+        self._request_max_retries = max(0, min(100, request_max_retries))
+        self._sdk_client = _build_openai_sdk_client(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=self._request_max_retries,
+        )
         self._thinking_enabled = True
         self._thinking_effort: str | None = None
         self._log_service = log_service
@@ -460,6 +474,9 @@ class OpenAIChatClient:
                 f"Failed to reach model provider: {detail}",
                 error_path=error_path,
                 log_path=self._default_error_log_path(),
+                stop_reason=StopReason.TRANSPORT_FAILED,
+                is_retryable=True,
+                failure_kind="transport_error",
             ) from exc
         except (APIResponseValidationError, TypeError) as exc:
             detail = str(exc)
@@ -634,13 +651,19 @@ class OpenAIChatClient:
             url=f"{self._base_url}/chat/completions",
             payload_body=payload_body,
         )
+        unregister_interrupt_callbacks: list[Callable[[], None]] = []
         try:
             if interrupt_token is not None:
-                interrupt_token.add_callback(self._close_stream_and_reset_client)
+                unregister_interrupt_callbacks.append(
+                    interrupt_token.add_callback(self._close_stream_and_reset_client)
+                )
             stream = cast(Any, self._sdk_client.chat.completions.create)(**payload_body)
             if interrupt_token is not None:
-                interrupt_token.add_callback(
-                    lambda: self._close_stream_and_reset_client(stream)
+                unregister_interrupt_callbacks[-1]()
+                unregister_interrupt_callbacks.append(
+                    interrupt_token.add_callback(
+                        lambda: self._close_stream_and_reset_client(stream)
+                    )
                 )
             yield from self._events_from_chat_stream(
                 stream,
@@ -663,6 +686,9 @@ class OpenAIChatClient:
                 f"Failed to reach model provider: {detail}",
                 error_path=error_path,
                 log_path=self._default_error_log_path(),
+                stop_reason=StopReason.TRANSPORT_FAILED,
+                is_retryable=True,
+                failure_kind="transport_error",
             ) from exc
         except (APIResponseValidationError, TypeError) as exc:
             detail = str(exc)
@@ -681,6 +707,9 @@ class OpenAIChatClient:
                 error_path=error_path,
                 log_path=self._default_error_log_path(),
             ) from exc
+        finally:
+            for unregister in reversed(unregister_interrupt_callbacks):
+                unregister()
         self._log_service_event(
             level=LogLevel.INFO,
             event="model_response_received",
@@ -1009,6 +1038,7 @@ class OpenAIChatClient:
             stop_reason=classification.stop_reason,
             is_retryable=classification.is_retryable,
             failure_kind=classification.failure_kind,
+            retry_after_seconds=retry_after_seconds_from_status_error(exc),
         )
 
     def _log_request(
@@ -1125,6 +1155,7 @@ class OpenAIChatClient:
         self._sdk_client = _build_openai_sdk_client(
             api_key=self._api_key,
             base_url=self._base_url,
+            max_retries=self._request_max_retries,
         )
 
     def _close_stream_and_reset_client(self, stream: object | None = None) -> None:

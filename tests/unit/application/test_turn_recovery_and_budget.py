@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from mycli.application.runtime.recovery import (
     ErrorClassifier,
     RecoveryErrorClass,
@@ -15,7 +17,6 @@ from mycli.application.runtime.turn_executor import (
     BudgetNudge,
     LoopState,
     TurnExecutor,
-    _apply_l4_recent_file_hints,
     _repair_interrupted_tool_results,
 )
 from mycli.domain.conversation import Conversation, Message
@@ -25,6 +26,7 @@ from mycli.domain.runtime import (
     PlanState,
     RuntimeBlock,
     RuntimeItem,
+    RuntimeInterruptToken,
     RuntimeStreamEvent,
     StopReason,
     TurnItemType,
@@ -120,6 +122,69 @@ class InterruptOnceThenDoneAdapter:
         )
 
 
+class CompletedStreamItemThenInterruptAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_items: list[list[RuntimeItem]] = []
+        self.persisted_probe = lambda: False
+        self.persisted_before_interrupt = False
+
+    def stream_turn(self, *, items, tools):
+        del tools
+        self.calls += 1
+        self.seen_items.append(items)
+        if self.calls == 1:
+            yield {"type": "text_delta", "text": "persisted answer"}
+            yield {
+                "type": "item_completed",
+                "item": RuntimeItem(
+                    role="assistant",
+                    blocks=(
+                        RuntimeBlock(
+                            type="text",
+                            text="persisted answer",
+                            provider_id="msg_persisted",
+                        ),
+                    ),
+                ),
+            }
+            self.persisted_before_interrupt = self.persisted_probe()
+            yield {"type": "text_delta", "text": " transient draft"}
+            raise KeyboardInterrupt()
+        yield {"type": "text_delta", "text": "continued"}
+        yield {"type": "completed", "response_id": "resp_continued", "metadata": {}}
+
+
+class CompletedToolCallThenInterruptAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_items: list[list[RuntimeItem]] = []
+        self.persisted_probe = lambda: False
+        self.persisted_before_interrupt = False
+
+    def stream_turn(self, *, items, tools):
+        del tools
+        self.calls += 1
+        self.seen_items.append(items)
+        if self.calls == 1:
+            block = RuntimeBlock(
+                type="tool_call",
+                tool_name="Read",
+                tool_arguments={"file_path": "README.md"},
+                call_id="call_interrupted_read",
+                provider_id="fc_interrupted_read",
+            )
+            yield {"type": "tool_call", "block": block}
+            yield {
+                "type": "item_completed",
+                "item": RuntimeItem(role="assistant", blocks=(block,)),
+            }
+            self.persisted_before_interrupt = self.persisted_probe()
+            raise KeyboardInterrupt()
+        yield {"type": "text_delta", "text": "continued after tool interrupt"}
+        yield {"type": "completed", "response_id": "resp_after_tool", "metadata": {}}
+
+
 def _runtime_item_text(item: RuntimeItem) -> str:
     return "".join(block.text or "" for block in item.blocks if block.type == "text")
 
@@ -147,6 +212,32 @@ class RetryTwiceThenDoneAdapter:
             ),
             done=True,
         )
+
+
+class PartialStreamFailureThenDoneAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream_turn(self, *, items, tools):
+        del items, tools
+        self.calls += 1
+        if self.calls == 1:
+            yield {"type": "text_delta", "text": "discard me"}
+            yield {
+                "type": "item_completed",
+                "item": RuntimeItem(
+                    role="assistant",
+                    blocks=(RuntimeBlock(type="text", text="discard me"),),
+                ),
+            }
+            raise ModelResponseError(
+                "stream disconnected",
+                stop_reason=StopReason.TRANSPORT_FAILED,
+                is_retryable=True,
+                failure_kind="transport_error",
+            )
+        yield {"type": "text_delta", "text": "final answer"}
+        yield {"type": "completed", "response_id": "resp_recovered", "metadata": {}}
 
 
 class InvalidEncryptedContentThenDoneAdapter:
@@ -254,26 +345,29 @@ def test_budget_nudge_adds_force_answer_at_85_percent() -> None:
     assert any("85%" in reminder and "answer" in reminder.lower() for reminder in reminders)
 
 
-def test_l4_recent_file_hints_are_added_once() -> None:
-    metrics: dict[str, int | float | str | list[str]] = {
-        "recent_files": ["src/a.py", "src/b.py"]
-    }
-
-    reminders = _apply_l4_recent_file_hints((), metrics)
-    duplicate = _apply_l4_recent_file_hints(reminders, metrics)
-
-    assert reminders == duplicate
-    assert len(reminders) == 1
-    assert "src/a.py, src/b.py" in reminders[0]
-
-
 def test_retry_backoff_policy_calculates_capped_delays() -> None:
-    policy = RetryBackoffPolicy(base_seconds=0.25, multiplier=2.0, max_seconds=1.0)
+    policy = RetryBackoffPolicy(
+        base_seconds=0.25,
+        multiplier=2.0,
+        max_seconds=1.0,
+        jitter_ratio=0.0,
+    )
 
     assert policy.delay_for_attempt(1) == 0.25
     assert policy.delay_for_attempt(2) == 0.5
     assert policy.delay_for_attempt(3) == 1.0
     assert policy.delay_for_attempt(4) == 1.0
+
+
+def test_retry_backoff_policy_applies_jitter_and_provider_delay() -> None:
+    policy = RetryBackoffPolicy(base_seconds=0.2, multiplier=2.0, max_seconds=4.0)
+
+    assert policy.delay_for_attempt(2, jitter_factor=1.1) == pytest.approx(0.44)
+    assert policy.delay_for_attempt(
+        2,
+        jitter_factor=0.9,
+        retry_after_seconds=3.0,
+    ) == 3.0
 
 
 def test_error_classifier_maps_p8_provider_error_taxonomy() -> None:
@@ -374,6 +468,7 @@ def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
         model_adapter=RetryTwiceThenDoneAdapter(),
     )
     runtime._recovery_sleep = sleeps.append
+    runtime._retry_jitter = lambda _low, _high: 1.0
     runtime._config = AgentConfig(
         workspace_root=tmp_path,
         transport_retry_limit=2,
@@ -382,14 +477,121 @@ def test_turn_executor_records_retry_backoff_metadata(tmp_path: Path) -> None:
     response = runtime.handle_user_turn("inspect")
 
     assert response.assistant_message == "Recovered after backoff"
-    assert sleeps == [0.25, 0.5]
+    assert sleeps == [0.2, 0.4]
     assert response.turn is not None
-    warnings = [
-        item for item in response.turn.items if item.type is TurnItemType.WARNING
+    assert not any(
+        item.type is TurnItemType.WARNING
+        and item.metadata.get("recovery_kind") == "retry"
+        for item in response.turn.items
+    )
+def test_turn_executor_resets_partial_stream_before_reconnecting(tmp_path: Path) -> None:
+    adapter = PartialStreamFailureThenDoneAdapter()
+    sleeps: list[float] = []
+    stream_events: list[RuntimeStreamEvent] = []
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._recovery_sleep = sleeps.append
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        stream_max_retries=1,
+    )
+
+    response = runtime.handle_user_turn("inspect", stream_sink=stream_events.append)
+
+    assert adapter.calls == 2
+    assert response.assistant_message == "final answer"
+    assert response.streamed_chunks == ("final answer",)
+    assert [event.kind for event in stream_events] == [
+        "item_started",
+        "item_completed",
+        "text_delta",
+        "stream_attempt_reset",
+        "stream_retrying",
+        "text_delta",
+        "completed",
+        "stream_recovered",
     ]
-    assert warnings[0].metadata["recovery_kind"] == "retry"
-    assert warnings[0].metadata["failure_kind"] == "rate_limited"
-    assert warnings[0].metadata["delay_seconds"] == 0.25
+    retry_event = next(event for event in stream_events if event.kind == "stream_retrying")
+    assert retry_event.text == "Reconnecting... 1/1"
+    assert retry_event.metadata["attempt"] == 1
+    assert retry_event.metadata["max_retries"] == 1
+    assert retry_event.metadata["additional_details"] == "stream disconnected"
+    assert len(sleeps) == 1
+    assert response.turn is not None
+    assert not any(
+        item.type is TurnItemType.WARNING
+        and item.metadata.get("recovery_kind") == "retry"
+        for item in response.turn.items
+    )
+    conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    assistant_messages = [
+        message.content for message in conversation.messages if message.role == "assistant"
+    ]
+    assert assistant_messages == ["final answer"]
+
+
+def test_turn_executor_finalizes_interrupt_during_retry_lifecycle(tmp_path: Path) -> None:
+    adapter = RetryTwiceThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        stream_max_retries=2,
+    )
+    stream_events: list[RuntimeStreamEvent] = []
+
+    def interrupt_on_retry(event: RuntimeStreamEvent) -> None:
+        stream_events.append(event)
+        if event.kind == "stream_retrying":
+            raise KeyboardInterrupt()
+
+    response = runtime.handle_user_turn("inspect", stream_sink=interrupt_on_retry)
+
+    assert adapter.calls == 1
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.INTERRUPTED
+    assert response.turn.stop_reason is StopReason.INTERRUPTED
+    assert any(event.kind == "stream_retrying" for event in stream_events)
+    assert any(
+        item.type is TurnItemType.WARNING
+        and item.metadata.get("event_kind") == "turn_aborted_marker"
+        for item in response.turn.items
+    )
+
+
+def test_turn_executor_finalizes_interrupt_during_retry_backoff(tmp_path: Path) -> None:
+    class InterruptDuringBackoffToken(RuntimeInterruptToken):
+        def wait(self, timeout: float) -> bool:
+            del timeout
+            self.request("test backoff interrupt")
+            return True
+
+    adapter = RetryTwiceThenDoneAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime._config = AgentConfig(
+        workspace_root=tmp_path,
+        stream_max_retries=2,
+    )
+
+    response = runtime.handle_user_turn(
+        "inspect",
+        interrupt_token=InterruptDuringBackoffToken(source="test"),
+    )
+
+    assert adapter.calls == 1
+    assert response.turn is not None
+    assert response.turn.status is TurnStatus.INTERRUPTED
+    assert response.turn.stop_reason is StopReason.INTERRUPTED
 
 
 def test_turn_executor_retries_invalid_encrypted_content_once_without_leaking_secret(
@@ -609,7 +811,7 @@ def test_turn_executor_finalizes_keyboard_interrupt_with_preserved_warning(
         for item in response.turn.items
     )
     conversation = runtime._session_service.load_conversation(runtime._config.session_id)
-    assert conversation.messages[-1].role == "user"
+    assert conversation.messages[-1].role == "developer"
     assert "<turn_aborted>" in conversation.messages[-1].content
     trace = runtime._trace_service.load(runtime._config.session_id)
     interrupted_event = next(event for event in trace if event.kind == "turn_interrupted")
@@ -650,7 +852,7 @@ def test_turn_executor_starts_new_turn_after_interrupted_turn(
     assert resumed.assistant_message == "Resumed after interrupt"
     assert adapter.calls == 2
     assert any(
-        item.role == "user" and "<turn_aborted>" in _runtime_item_text(item)
+        item.role == "developer" and "<turn_aborted>" in _runtime_item_text(item)
         for item in adapter.seen_items[1]
     )
     assert any(
@@ -658,6 +860,103 @@ def test_turn_executor_starts_new_turn_after_interrupted_turn(
         for item in adapter.seen_items[1]
     )
     assert runtime._session_service.load_suspended_turn(runtime._config.session_id) is None
+
+
+def test_turn_executor_replays_completed_stream_item_after_interrupt(
+    tmp_path: Path,
+) -> None:
+    adapter = CompletedStreamItemThenInterruptAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(replace(runtime._config, memory_enabled=False))
+    adapter.persisted_probe = lambda: any(
+        message.role == "assistant"
+        and message.content == "persisted answer"
+        for message in runtime._session_service.load_conversation(
+            runtime._config.session_id
+        ).messages
+    )
+
+    interrupted = runtime.handle_user_turn("first request")
+
+    assert interrupted.turn is not None
+    assert interrupted.turn.status is TurnStatus.INTERRUPTED
+    assert adapter.persisted_before_interrupt is True
+    conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert [message.role for message in conversation.messages] == [
+        "user",
+        "assistant",
+        "developer",
+    ]
+    assert conversation.messages[1].content == "persisted answer"
+    assert all("transient draft" not in message.content for message in conversation.messages)
+
+    resumed = runtime.handle_user_turn("second request")
+
+    assert resumed.assistant_message == "continued"
+    replayed = adapter.seen_items[1]
+    assert any(
+        item.role == "assistant" and _runtime_item_text(item) == "persisted answer"
+        for item in replayed
+    )
+    assert not any("transient draft" in _runtime_item_text(item) for item in replayed)
+    assert any(
+        item.role == "developer" and "<turn_aborted>" in _runtime_item_text(item)
+        for item in replayed
+    )
+
+
+def test_turn_executor_repairs_completed_tool_call_after_stream_interrupt(
+    tmp_path: Path,
+) -> None:
+    adapter = CompletedToolCallThenInterruptAdapter()
+    runtime = AgentRuntime.for_tests(
+        workspace_root=tmp_path,
+        home_dir=tmp_path / "home",
+        model_adapter=adapter,
+    )
+    runtime.rebind_session(replace(runtime._config, memory_enabled=False))
+    adapter.persisted_probe = lambda: any(
+        message.role == "assistant"
+        and any(call.call_id == "call_interrupted_read" for call in message.tool_calls)
+        for message in runtime._session_service.load_conversation(
+            runtime._config.session_id
+        ).messages
+    )
+
+    interrupted = runtime.handle_user_turn("inspect README")
+
+    assert interrupted.turn is not None
+    assert interrupted.turn.status is TurnStatus.INTERRUPTED
+    assert adapter.persisted_before_interrupt is True
+    conversation = runtime._session_service.load_conversation(runtime._config.session_id)
+    assert [message.role for message in conversation.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "developer",
+    ]
+    assert conversation.messages[1].tool_calls[0].call_id == "call_interrupted_read"
+    assert conversation.messages[2].tool_call_id == "call_interrupted_read"
+    assert conversation.messages[2].blocks[0].metadata["error_kind"] == "tool_interrupted"
+
+    resumed = runtime.handle_user_turn("continue")
+
+    assert resumed.assistant_message == "continued after tool interrupt"
+    replayed = adapter.seen_items[1]
+    assert any(
+        block.type == "tool_call" and block.call_id == "call_interrupted_read"
+        for item in replayed
+        for block in item.blocks
+    )
+    assert any(
+        block.type == "tool_result" and block.call_id == "call_interrupted_read"
+        for item in replayed
+        for block in item.blocks
+    )
 
 
 def test_turn_executor_records_marker_during_pre_request_compaction_interrupt(
@@ -670,11 +969,12 @@ def test_turn_executor_records_marker_during_pre_request_compaction_interrupt(
         model_adapter=adapter,
     )
 
-    def interrupt_compaction(conversation, budget):
-        del conversation, budget
+    def interrupt_compaction(conversation, decision):
+        del conversation, decision
         raise KeyboardInterrupt()
 
-    runtime._compaction_pipeline.apply = interrupt_compaction  # type: ignore[method-assign]
+    runtime._compact_compatibility_changed_pending = True
+    runtime._compact_service.compact = interrupt_compaction  # type: ignore[method-assign]
 
     interrupted = runtime.handle_user_turn("inspect interrupted l4 path")
 
@@ -684,7 +984,7 @@ def test_turn_executor_records_marker_during_pre_request_compaction_interrupt(
     suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
     assert suspended is None
     conversation = runtime._session_service.load_conversation(runtime._config.session_id)
-    assert conversation.messages[-1].role == "user"
+    assert conversation.messages[-1].role == "developer"
     assert "<turn_aborted>" in conversation.messages[-1].content
 
 
@@ -765,6 +1065,47 @@ def test_repair_interrupted_tool_results_does_not_duplicate_existing_result() ->
     ]
 
 
+def test_repair_interrupted_tool_results_scans_full_conversation() -> None:
+    conversation = Conversation(
+        session_id="demo",
+        messages=[
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="Read",
+                        arguments={"file_path": "README.md"},
+                        reason="inspect file",
+                        call_id="call_completed",
+                    ),
+                ),
+            ),
+            Message(role="user", content="continue"),
+            Message(role="tool", content="contents", tool_call_id="call_completed"),
+            Message(role="developer", content="runtime context"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="AskUserQuestion",
+                        arguments={"question": "Which slice?"},
+                        reason="clarify",
+                        call_id="call_dangling",
+                    ),
+                ),
+            ),
+            Message(role="user", content="new message"),
+        ],
+    )
+
+    repaired = _repair_interrupted_tool_results(conversation)
+
+    assert [message.tool_call_id for message in repaired] == ["call_dangling"]
+    assert conversation.messages[-1].tool_call_id == "call_dangling"
+
+
 def test_turn_executor_interrupted_finalization_repairs_dangling_tool_call(
     tmp_path: Path,
 ) -> None:
@@ -815,7 +1156,7 @@ def test_turn_executor_interrupted_finalization_repairs_dangling_tool_call(
     stored = runtime._session_service.load_conversation(runtime._config.session_id)
     assert stored.messages[-2].role == "tool"
     assert stored.messages[-2].tool_call_id == "call_read_1"
-    assert stored.messages[-1].role == "user"
+    assert stored.messages[-1].role == "developer"
     assert "<turn_aborted>" in stored.messages[-1].content
     assert any(
         item.type is TurnItemType.TOOL_RESULT

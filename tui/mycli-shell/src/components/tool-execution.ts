@@ -3,6 +3,7 @@ import { Text } from "../tui-core/components/text.ts";
 import { Container } from "../tui-core/tui.ts";
 import type { MycliShellTool } from "../model.ts";
 import { theme } from "../theme/theme.ts";
+import { stripDiffHunkHeaders } from "./diff-renderer.ts";
 import { keyHint } from "./keybinding-hints.ts";
 import { shortPreview } from "./tool-display.ts";
 import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "./tool-presentation.ts";
@@ -124,7 +125,7 @@ export class ToolExecutionComponent extends Container {
 			return theme.fg("error", text);
 		}
 		if (this.tool.diffPreview) {
-			return styleDiff(text);
+			return styleDiff(stripDiffHunkHeaders(text));
 		}
 		return theme.fg("muted", text);
 	}

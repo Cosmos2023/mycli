@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.domain.tooling.calls import ToolCall
 from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.invocation_context import current_tool_owner_session_id
@@ -18,14 +19,37 @@ class WriteStdinTool:
     spec = ToolSpec(
         name=name,
         description=(
-            "Wait for output from a running Shell session or write input to a PTY "
-            "session."
+            "Write characters to an existing Shell session and return recent output. "
+            "An empty chars value polls without writing."
         ),
         parameters=(
-            ToolParameter(name="session_id", type="string", required=True),
-            ToolParameter(name="chars", type="string", required=False),
-            ToolParameter(name="yield_time_ms", type="integer", required=False),
-            ToolParameter(name="max_output_tokens", type="integer", required=False),
+            ToolParameter(
+                name="session_id",
+                type="string",
+                required=True,
+                description="Identifier returned by a running Shell call.",
+            ),
+            ToolParameter(
+                name="chars",
+                type="string",
+                required=False,
+                description="Input to write. Defaults to empty, which only polls output.",
+            ),
+            ToolParameter(
+                name="yield_time_ms",
+                type="integer",
+                required=False,
+                description=(
+                    "Wait before yielding output. Empty polls wait 5000-300000 ms; "
+                    "non-empty writes wait 250-30000 ms."
+                ),
+            ),
+            ToolParameter(
+                name="max_output_tokens",
+                type="integer",
+                required=False,
+                description="Model-facing output token budget. Defaults to 10000.",
+            ),
         ),
         risk_level="low",
         model_output_adapter=shell_model_output,
@@ -80,6 +104,13 @@ class WriteStdinTool:
                 shell_id=shell_id,
             )
 
+        raw_interrupt_token = arguments.get("_runtime_interrupt_token")
+        interrupt_token = (
+            raw_interrupt_token
+            if isinstance(raw_interrupt_token, RuntimeInterruptToken)
+            else None
+        )
+
         owner_session_id = current_tool_owner_session_id(self._session_id)
         payload = self._registry.interact(
             shell_id,
@@ -87,6 +118,7 @@ class WriteStdinTool:
             chars=chars,
             yield_time_ms=yield_time_ms,
             max_output_tokens=max_output_tokens,
+            interrupt_token=interrupt_token,
         )
         success = "error" not in payload
         return ToolResult(

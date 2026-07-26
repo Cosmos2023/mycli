@@ -164,15 +164,28 @@ class RecoveryPolicy:
 
 @dataclass(slots=True, frozen=True)
 class RetryBackoffPolicy:
-    base_seconds: float = 0.25
+    base_seconds: float = 0.2
     multiplier: float = 2.0
     max_seconds: float = 4.0
+    jitter_ratio: float = 0.1
 
-    def delay_for_attempt(self, attempt: int) -> float:
+    def delay_for_attempt(
+        self,
+        attempt: int,
+        *,
+        jitter_factor: float = 1.0,
+        retry_after_seconds: float | None = None,
+    ) -> float:
+        if retry_after_seconds is not None:
+            return max(0.0, retry_after_seconds)
         if attempt <= 0:
             return 0.0
         delay = self.base_seconds * (self.multiplier ** (attempt - 1))
-        return min(self.max_seconds, delay)
+        bounded_factor = min(
+            1.0 + self.jitter_ratio,
+            max(1.0 - self.jitter_ratio, jitter_factor),
+        )
+        return min(self.max_seconds, delay) * bounded_factor
 
 
 TRANSIENT_FAILURE_KINDS = frozenset(

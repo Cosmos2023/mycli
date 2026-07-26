@@ -61,6 +61,25 @@ def test_normalizer_preserves_users_outside_approval_resume_turns() -> None:
     assert normalize_history_for_replay(history, approval_turn_ids=frozenset()) == history
 
 
+def test_normalizer_preserves_developer_marker_in_approval_resume_turn() -> None:
+    marker = HistoryItem(
+        id="turn-2:aborted",
+        thread_id="demo",
+        turn_id="turn-2",
+        type=HistoryItemType.USER_MESSAGE,
+        text="<turn_aborted>",
+        metadata={
+            "event_kind": "turn_aborted_marker",
+            "model_role": "developer",
+        },
+    )
+
+    assert normalize_history_for_replay(
+        (marker,),
+        approval_turn_ids=frozenset({"turn-2"}),
+    ) == (marker,)
+
+
 def test_approval_resume_turn_ids_uses_rollout_turn_items() -> None:
     rollout = TurnRollout(
         thread_id="demo",

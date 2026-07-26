@@ -53,7 +53,7 @@ Windows 默认依次选择 PowerShell 7、Windows PowerShell 5.1、`cmd.exe`。�
 uv run mycli setup
 ```
 
-setup 默认采用 TypeScript TUI，交互风格参考 pi-agent：先选择认证方式，再通过 provider 列表选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。完成前会展示配置摘要。模型配置默认写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显；如果 Node TUI 不可用，会自动回退到纯文本 setup。
+setup 默认采用 TypeScript TUI，交互风格参考 pi-agent：先选择认证方式，再通过 provider 列表选择要配置的 provider，然后进入 `Login to <Provider>` 输入 API key，并补充 API base URL 和 model。完成前会展示配置摘要。当前模型配置写入用户级配置 `~/.mycli/config.toml`，API key 单独写入 `~/.mycli/auth.json`。API key 输入不会回显；如果 Node TUI 不可用，会自动回退到纯文本 setup。
 
 setup 还会准备 mycli 自用的 `rg`，安装位置为：
 
@@ -77,6 +77,7 @@ provider = "openai"
 protocol = "responses"
 name = "gpt-5"
 api_base_url = "https://api.openai.com/v1"
+auth_ref = "openai"
 supports_images = true
 
 [request]
@@ -104,6 +105,7 @@ export MYCLI_PROVIDER="openai"
 export MYCLI_PROTOCOL="responses"
 export MYCLI_MODEL="gpt-5"
 export MYCLI_BASE_URL="https://api.openai.com/v1"
+export MYCLI_AUTH_REF="openai"
 export MYCLI_MEMORY_EXTRACTION_ENABLED=true
 export MYCLI_MEMORY_DREAM_ENABLED=true
 export MYCLI_MEMORY_DREAM_MIN_HOURS=24
@@ -113,11 +115,43 @@ export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
 配置读取位置：
 
 - 用户级：`~/.mycli/config.toml`
+- 可选模型目录：`~/.mycli/models.json`
 - 项目级覆盖：`<workspace>/.mycli/config.toml`
 - 用户凭证：`~/.mycli/auth.json`
 - 旧用户级 fallback：`~/.config/mycli/config.toml`
 
 读取优先级是命令行参数和环境变量最高，其次是 `~/.mycli/config.toml`，再到项目级 `.mycli/config.toml`，最后才读取旧的 `~/.config/mycli/config.toml`。API key 优先级是环境变量、`~/.mycli/auth.json`，然后才兼容读取 config 中旧式 `api_key`；新配置不要把密钥写进 `config.toml`。
+
+`/model` 只展示 `~/.mycli/models.json` 中定义的模型。该文件不存在时，mycli 会在首次读取模型目录时写入内置预设和当前模型；此后文件内容由用户管理，不会被自动补回或重排。每个模型可以使用独立 endpoint 和 credential reference：
+
+```json
+{
+  "models": [
+    {
+      "model": "gpt-5.4",
+      "provider": "openai",
+      "protocol": "responses",
+      "base_url": "https://api.openai.com/v1",
+      "auth_ref": "openai-primary",
+      "name": "GPT-5.4",
+      "description": "Primary OpenAI endpoint",
+      "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+      "default_reasoning_effort": "medium"
+    }
+  ]
+}
+```
+
+`auth_ref` 对应 `~/.mycli/auth.json` 的顶层键；未填写时默认使用 `provider`。同一 provider 的多个 endpoint 可以引用不同凭证：
+
+```json
+{
+  "openai-primary": {"type": "api_key", "key": "sk-..."},
+  "openai-proxy": {"type": "api_key", "key": "sk-..."}
+}
+```
+
+成功切换后，`config.toml` 只保存当前模型的 `provider`、`protocol`、`name`、`api_base_url`、`auth_ref` 和运行时能力；模型清单仍以 `models.json` 为准。
 
 ### 启动
 
@@ -337,6 +371,8 @@ effort = "medium"
 - 交互工具：`AskUserQuestion`
 - 外部工具：MCP、skills、plugins 可贡献额外工具
 
+mycli 使用 Codex 风格的工具发现策略。少量外部工具会直接暴露给模型；当单轮有效 contributed tool 达到 100 项时，这些工具会转为 deferred，只向模型暴露 `ToolSearch`。模型先按能力搜索，获得最多 8 个完整工具定义后，可在同一 turn 中调用命中的工具。内置核心工具始终直接暴露，`ToolSearch` 的 call/output 会沿用普通工具的持久化、resume 和重试链路。
+
 安全模型：
 
 - sandbox 支持 `read-only`、`workspace-write`、`danger-full-access`，可通过 `/sandbox` 查看或切换。
@@ -457,7 +493,7 @@ export MYCLI_MEMORY_DREAM_MIN_SESSIONS=5
 | Hook config | `<workspace>/.mycli/hooks.json`、`~/.mycli/hooks.json` |
 | Hook allowlist | `~/.mycli/hook-allowlist.json` |
 | Plugins | `<workspace>/.mycli/plugins/`、`~/.mycli/plugins/` |
-| MCP config | `<workspace>/.mycli/mcp_servers.toml` |
+| MCP config | `~/.mycli/mcp_servers.toml`、`<workspace>/.mycli/mcp_servers.toml` |
 
 SQLite session store 会保存：
 
@@ -506,11 +542,14 @@ Skill metadata 会被索引，正文按需加载。匹配到的 skill 会作为�
 
 ### MCP servers
 
-项目级 MCP 配置文件：
+MCP 配置可以放在用户级或项目级：
 
 ```text
+~/.mycli/mcp_servers.toml
 <workspace>/.mycli/mcp_servers.toml
 ```
+
+项目级同名 server 会覆盖用户级配置。
 
 stdio server 示例：
 
@@ -530,6 +569,16 @@ HTTP server 示例：
 enabled = true
 transport = "http"
 url = "http://127.0.0.1:8765/mcp"
+timeout_seconds = 30
+```
+
+Streamable HTTP server 也兼容常见的 `mcpServers` 和 `type` 写法：
+
+```toml
+[mcpServers.remote]
+enabled = true
+type = "streamable_http"
+url = "https://mcp.example.test/mcp"
 timeout_seconds = 30
 ```
 

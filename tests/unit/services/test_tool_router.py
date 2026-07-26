@@ -10,6 +10,7 @@ from mycli.domain.tooling.contributed_tools import (
 from mycli.domain.tool_exposure import (
     ToolExposure,
     ToolExposureEntry,
+    ToolExposureKind,
     ToolRouteKey,
     ToolRouteSource,
 )
@@ -109,6 +110,35 @@ def test_tool_router_renders_only_callable_tools() -> None:
     rendered = router.render_for_model(exposure)
 
     assert [tool.name for tool in rendered] == ["Bash", "LS", "workspace_summary"]
+
+
+def test_tool_router_hides_deferred_schema_but_keeps_tool_callable() -> None:
+    deferred = FakeTool("weather_forecast", "forecast")
+    registry = ToolRegistry.from_tools([deferred])
+    exposure = ToolExposure(
+        entries=(
+            ToolExposureEntry(
+                route_key=ToolRouteKey.local("weather_forecast"),
+                source=ToolRouteSource.REGISTRY,
+                spec=deferred.spec,
+                kind=ToolExposureKind.DEFERRED,
+            ),
+        ),
+    )
+    router = ToolRouter(tool_registry=registry)
+
+    assert router.render_for_model(exposure) == []
+    result = router.execute(
+        ToolCall(
+            name="weather_forecast",
+            arguments={"path": "Shanghai"},
+            reason="use discovered tool",
+            call_id="call_weather",
+        ),
+        exposure=exposure,
+    )
+
+    assert result.summary == "forecast"
 
 
 def test_tool_router_schema_order_does_not_change_when_exposure_order_changes() -> None:

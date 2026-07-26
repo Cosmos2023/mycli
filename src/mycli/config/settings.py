@@ -39,8 +39,13 @@ def default_legacy_user_config_path(home: Path) -> Path:
 def _read_toml(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
-    with path.open("rb") as handle:
-        return flatten_user_config_payload(tomllib.load(handle))
+    try:
+        with path.open("rb") as handle:
+            return flatten_user_config_payload(tomllib.load(handle))
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Invalid TOML in {path}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"Could not read configuration file {path}: {exc}") from exc
 
 
 def _validate_reasoning_effort(reasoning_effort: str) -> ReasoningEffort:
@@ -469,6 +474,13 @@ def resolve_config(
         or profile.default_model
         or "gpt-5"
     )
+    auth_ref_value = (
+        env.get("MYCLI_AUTH_REF")
+        or user_config.get("auth_ref")
+        or project_config.get("auth_ref")
+        or legacy_user_config.get("auth_ref")
+    )
+    auth_ref = str(auth_ref_value).strip() if auth_ref_value else provider.value
     supports_images_value = _parse_optional_bool(
         _config_value(
             env=env,
@@ -481,7 +493,7 @@ def resolve_config(
     )
     api_key_value = (
         env.get("MYCLI_API_KEY")
-        or AuthStore.from_home(home).get_api_key(provider.value)
+        or AuthStore.from_home(home).get_api_key(auth_ref)
         or user_config.get("api_key")
         or project_config.get("api_key")
         or legacy_user_config.get("api_key")
@@ -501,13 +513,32 @@ def resolve_config(
         or project_config.get("fallback_model")
         or legacy_user_config.get("fallback_model")
     )
-    transport_retry_limit_value = (
-        env.get("MYCLI_TRANSPORT_RETRY_LIMIT")
-        or user_config.get("transport_retry_limit")
-        or project_config.get("transport_retry_limit")
-        or legacy_user_config.get("transport_retry_limit")
-        or 2
+    request_max_retries_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_REQUEST_MAX_RETRIES",
+        config_key="request_max_retries",
     )
+    transport_retry_limit_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_TRANSPORT_RETRY_LIMIT",
+        config_key="transport_retry_limit",
+    )
+    stream_max_retries_value = _config_value(
+        env=env,
+        user_config=user_config,
+        project_config=project_config,
+        legacy_user_config=legacy_user_config,
+        env_key="MYCLI_STREAM_MAX_RETRIES",
+        config_key="stream_max_retries",
+    )
+    if stream_max_retries_value is None:
+        stream_max_retries_value = transport_retry_limit_value
     heartbeat_enabled_raw: object | None = env.get("MYCLI_HEARTBEAT_ENABLED")
     if heartbeat_enabled_raw is None:
         heartbeat_enabled_raw = _config_value_no_env(
@@ -904,6 +935,7 @@ def resolve_config(
         protocol=protocol,
         api_base_url=api_base_url,
         api_key=api_key,
+        auth_ref=auth_ref,
         supports_images=(
             profile.supports_images
             if supports_images_value is None
@@ -913,7 +945,17 @@ def resolve_config(
         cache_policy_capability=cache_policy_capability,
         max_prompt_tokens=int(str(max_prompt_tokens_value)),
         fallback_model=str(fallback_model_value) if fallback_model_value else None,
-        transport_retry_limit=int(str(transport_retry_limit_value)),
+        request_max_retries=int(
+            str(4 if request_max_retries_value is None else request_max_retries_value)
+        ),
+        stream_max_retries=int(
+            str(5 if stream_max_retries_value is None else stream_max_retries_value)
+        ),
+        transport_retry_limit=(
+            int(str(transport_retry_limit_value))
+            if transport_retry_limit_value is not None
+            else None
+        ),
         heartbeat_enabled=True if heartbeat_enabled_value is None else heartbeat_enabled_value,
         heartbeat_interval_seconds=float(str(heartbeat_interval_seconds_value)),
         view_mode=_parse_view_mode(view_mode_value),

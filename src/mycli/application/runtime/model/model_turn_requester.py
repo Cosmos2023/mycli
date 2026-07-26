@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from queue import Empty, Queue
 from threading import Thread
 from time import monotonic
@@ -33,6 +33,20 @@ class ModelStreamDiagnostics:
     failure_message: str | None = None
 
 
+class ModelTurnInterrupted(KeyboardInterrupt):
+    """Carries provider items completed before a streaming turn was interrupted."""
+
+    def __init__(
+        self,
+        *,
+        completed_result: ModelTurnResult,
+        streamed_chunks: tuple[str, ...],
+    ) -> None:
+        super().__init__()
+        self.completed_result = completed_result
+        self.streamed_chunks = streamed_chunks
+
+
 class ModelTurnRequester:
     """Normalizes model-adapter request styles into `ModelTurnResult`."""
 
@@ -47,6 +61,9 @@ class ModelTurnRequester:
         self._normalize_tool_call = normalize_tool_call
         self._stream_diagnostics_sink = stream_diagnostics_sink
 
+    def replace_model_adapter(self, model_adapter: ModelAdapter) -> None:
+        self._model_adapter = model_adapter
+
     def request_model_turn(
         self,
         *,
@@ -54,6 +71,7 @@ class ModelTurnRequester:
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        completed_item_sink: Callable[[RuntimeItem], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         _raise_if_interrupted(interrupt_token)
@@ -72,6 +90,7 @@ class ModelTurnRequester:
                 runtime_items=runtime_items,
                 tools=tools,
                 stream_sink=stream_sink,
+                completed_item_sink=completed_item_sink,
                 interrupt_token=interrupt_token,
             )
 
@@ -99,11 +118,13 @@ class ModelTurnRequester:
         runtime_items: list[RuntimeItem],
         tools: list[ModelToolDefinition],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        completed_item_sink: Callable[[RuntimeItem], None] | None,
         interrupt_token: RuntimeInterruptToken | None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         if not callable(stream_turn):
             raise ModelResponseError("Model adapter stream_turn must be callable.")
         blocks: list[RuntimeBlock] = []
+        completed_items: list[RuntimeItem] = []
         streamed_chunks: list[str] = []
         response_id: str | None = None
         metadata: dict[str, object] = {}
@@ -154,7 +175,11 @@ class ModelTurnRequester:
                     if isinstance(text, str) and text:
                         text_event_count += 1
                         text_bytes += len(text.encode("utf-8"))
-                        blocks.append(RuntimeBlock(type="text", text=text))
+                        if blocks and blocks[-1].type == "text":
+                            previous = blocks[-1]
+                            blocks[-1] = replace(previous, text=(previous.text or "") + text)
+                        else:
+                            blocks.append(RuntimeBlock(type="text", text=text))
                         streamed_chunks.append(text)
                         self._notify_stream_sink(
                             stream_sink,
@@ -182,8 +207,28 @@ class ModelTurnRequester:
                         ),
                     )
                     continue
+                if event_type == "item_completed":
+                    item = event.get("item")
+                    if not isinstance(item, RuntimeItem):
+                        raise ModelResponseError(
+                            "Model adapter item_completed stream event must include RuntimeItem."
+                        )
+                    completed_items.append(item)
+                    if completed_item_sink is not None:
+                        completed_item_sink(item)
+                    blocks.clear()
+                    continue
                 if event_type == "completed":
                     completed_event_count += 1
+                    if blocks:
+                        completed_item = RuntimeItem(
+                            role="assistant",
+                            blocks=tuple(blocks),
+                        )
+                        completed_items.append(completed_item)
+                        if completed_item_sink is not None:
+                            completed_item_sink(completed_item)
+                        blocks.clear()
                     raw_response_id = event.get("response_id")
                     if isinstance(raw_response_id, str) and raw_response_id:
                         response_id = raw_response_id
@@ -197,6 +242,8 @@ class ModelTurnRequester:
                     continue
                 raise ModelResponseError(f"Unsupported model stream event type: {event_type!r}.")
         except ModelResponseError as exc:
+            exc.stream_started = first_event_time is not None
+            exc.partial_output = bool(completed_items or blocks)
             self._notify_stream_diagnostics(
                 self._stream_diagnostics(
                     success=False,
@@ -212,6 +259,30 @@ class ModelTurnRequester:
                 )
             )
             raise
+        except KeyboardInterrupt as exc:
+            self._notify_stream_diagnostics(
+                self._stream_diagnostics(
+                    success=False,
+                    start_time=start_time,
+                    first_event_time=first_event_time,
+                    provider_event_count=provider_event_count,
+                    text_event_count=text_event_count,
+                    tool_call_event_count=tool_call_event_count,
+                    completed_event_count=completed_event_count,
+                    text_bytes=text_bytes,
+                    failure_kind="interrupted",
+                    failure_message="Model stream interrupted by user.",
+                )
+            )
+            raise ModelTurnInterrupted(
+                completed_result=ModelTurnResult(
+                    items=tuple(completed_items),
+                    done=False,
+                    response_id=response_id,
+                    metadata=metadata,
+                ),
+                streamed_chunks=tuple(streamed_chunks),
+            ) from exc
         except Exception as exc:
             self._notify_stream_diagnostics(
                 self._stream_diagnostics(
@@ -229,9 +300,18 @@ class ModelTurnRequester:
             )
             raise
 
-        items: tuple[RuntimeItem, ...] = ()
-        if blocks:
-            items = (RuntimeItem(role="assistant", blocks=tuple(blocks)),)
+        completed_blocks = tuple(
+            block
+            for item in completed_items
+            if item.role == "assistant"
+            for block in item.blocks
+        )
+        all_blocks = (*completed_blocks, *blocks)
+        items: tuple[RuntimeItem, ...] = (
+            (RuntimeItem(role="assistant", blocks=all_blocks),)
+            if all_blocks
+            else ()
+        )
         self._notify_stream_diagnostics(
             self._stream_diagnostics(
                 success=True,

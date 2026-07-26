@@ -26,6 +26,7 @@ _VISIBLE_HISTORY_TYPES = frozenset(
         HistoryItemType.TOOL_RESULT,
         HistoryItemType.APPROVAL_REQUEST,
         HistoryItemType.APPROVAL_RESOLUTION,
+        HistoryItemType.CLARIFICATION_RESPONSE,
         HistoryItemType.WARNING,
         HistoryItemType.COMPACTION,
         HistoryItemType.FILE_CHANGE,
@@ -240,6 +241,7 @@ def project_history_item_for_tui(item: HistoryItem) -> dict[str, object] | None:
         HistoryItemType.TOOL_RESULT: "tool_detail",
         HistoryItemType.APPROVAL_REQUEST: "approval",
         HistoryItemType.APPROVAL_RESOLUTION: "system_notice",
+        HistoryItemType.CLARIFICATION_RESPONSE: "user",
         HistoryItemType.WARNING: "warning",
         HistoryItemType.COMPACTION: "system_notice",
         HistoryItemType.FILE_CHANGE: "system_notice",
@@ -286,6 +288,7 @@ def snapshot_item_to_tui_items(
         return (summary,)
     tui_type = {
         "user_message": "user",
+        "clarification_response": "user",
         "assistant_message": "assistant_final",
         "reasoning_summary": "reasoning",
         "warning": "warning",
@@ -320,6 +323,7 @@ def _history_snapshot_item(item: HistoryItem) -> TranscriptSnapshotItem:
         HistoryItemType.REASONING: "reasoning_summary",
         HistoryItemType.APPROVAL_REQUEST: "warning",
         HistoryItemType.APPROVAL_RESOLUTION: "status",
+        HistoryItemType.CLARIFICATION_RESPONSE: "clarification_response",
         HistoryItemType.WARNING: "warning",
         HistoryItemType.COMPACTION: "status",
         HistoryItemType.FILE_CHANGE: "file_change",

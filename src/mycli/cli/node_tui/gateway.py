@@ -55,6 +55,7 @@ from mycli.domain.runtime import (
     MailboxAcceptance,
     NoActiveTurnError,
     PendingDecision,
+    ReasoningEffort,
     QueueSnapshot,
     QueuedInputRecord,
     RuntimeEventEnvelope,
@@ -75,7 +76,8 @@ from mycli.domain.runtime.gateway_contract import (
     SUPPORTED_GATEWAY_RPC_METHODS,
 )
 from mycli.domain.conversation import Conversation, Message
-from mycli.domain.providers import ProviderId, parse_provider
+from mycli.domain.model_catalog import ModelCatalogEntry, ModelSelection
+from mycli.domain.providers import ProviderId, parse_protocol, parse_provider
 from mycli.infrastructure.providers import profile_for_provider
 from mycli.services.legacy_slash_output import legacy_slash_display
 from mycli.services.transcript_projection import project_history_items_for_tui
@@ -161,11 +163,22 @@ class NodeTuiServiceLike(Protocol):
         self,
         choice: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse: ...
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse: ...
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> TurnResponse: ...
 
     def current_context_window_metrics(self) -> dict[str, object]: ...
+
+    def available_models(self) -> tuple[ModelCatalogEntry, ...]: ...
+
+    def select_model(self, selection: ModelSelection) -> ModelCatalogEntry: ...
 
     def extension_manifest(self) -> dict[str, object]: ...
 
@@ -423,6 +436,7 @@ class NodeTuiGateway:
                     "turn_id": turn_id,
                     "image_paths": next_record.image_paths,
                     "queued_input": next_record,
+                    "interrupt_token": interrupt_token,
                 },
                 daemon=True,
             )
@@ -485,11 +499,18 @@ class NodeTuiGateway:
                     self._handle_turn_queue_migration_ack(request.params),
                 )
             if request.method == "turn.interrupt":
-                return result_response(request.id, self._handle_turn_interrupt())
+                return result_response(
+                    request.id,
+                    self._handle_turn_interrupt(request.params),
+                )
             if request.method == "command.list":
                 return result_response(request.id, self._handle_command_list(request.params))
             if request.method == "command.run":
                 return result_response(request.id, self._handle_command_run(request.params))
+            if request.method == "model.list":
+                return result_response(request.id, self._handle_model_list())
+            if request.method == "model.select":
+                return result_response(request.id, self._handle_model_select(request.params))
             if request.method == "transcript.load":
                 return result_response(request.id, self._handle_transcript_load(request.params))
             if request.method == "decision.resolve":
@@ -626,6 +647,7 @@ class NodeTuiGateway:
             "background_shells": self._active_background_shells(),
             "welcome": self._welcome_payload(),
             "auth_providers": self._auth_providers_payload(),
+            "models": self._models_payload(),
         }
         migration = self._legacy_user_queue_migration_payload()
         if migration is not None:
@@ -700,6 +722,55 @@ class NodeTuiGateway:
                 payload["default_model"] = profile.default_model
             providers.append(payload)
         return providers
+
+    def _models_payload(self) -> list[dict[str, object]]:
+        available = getattr(self.service, "available_models", None)
+        if not callable(available):
+            return []
+        return [
+            entry.to_payload()
+            for entry in available()
+            if isinstance(entry, ModelCatalogEntry)
+        ]
+
+    def _handle_model_list(self) -> dict[str, object]:
+        return {"models": self._models_payload()}
+
+    def _handle_model_select(self, params: dict[str, object]) -> dict[str, object]:
+        if self._turn_running:
+            raise _GatewayError(
+                code="turn_in_progress",
+                message="Wait for the current turn to finish before changing models.",
+            )
+        raw_effort = _optional_str(params.get("reasoning_effort"))
+        reasoning_effort = None
+        if raw_effort is not None:
+            try:
+                reasoning_effort = ReasoningEffort(raw_effort.strip().lower())
+            except ValueError as exc:
+                allowed = ", ".join(item.value for item in ReasoningEffort)
+                raise ValueError(
+                    f"Unsupported reasoning_effort '{raw_effort}'. Supported values: {allowed}."
+                ) from exc
+        selection = ModelSelection(
+            provider=parse_provider(_required_str(params, "provider")),
+            protocol=parse_protocol(_required_str(params, "protocol")),
+            model=_required_str(params, "model").strip(),
+            base_url=_required_str(params, "base_url").strip(),
+            reasoning_effort=reasoning_effort,
+        )
+        if not selection.model:
+            raise ValueError("model is required.")
+        if not selection.base_url:
+            raise ValueError("base_url is required.")
+        selected = self.service.select_model(selection)
+        status = self._status_payload()
+        self._emit_event("status.changed", status)
+        return {
+            "selected": selected.to_payload(),
+            "status": status,
+            "models": self._models_payload(),
+        }
 
     def _handle_settings_load(self) -> dict[str, object]:
         settings = load_shell_settings(self._home_dir(), runtime_config=self.service._config)
@@ -823,6 +894,7 @@ class NodeTuiGateway:
                     "turn_id": turn_id,
                     "image_paths": image_paths,
                     "client_user_message_id": client_user_message_id,
+                    "interrupt_token": self._current_interrupt_token,
                 },
                 daemon=True,
             )
@@ -1058,7 +1130,13 @@ class NodeTuiGateway:
         self._emit_queue_update(payload)
         return payload
 
-    def _handle_turn_interrupt(self) -> dict[str, object]:
+    def _handle_turn_interrupt(
+        self,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        rollback_user_input = bool(
+            params is not None and params.get("rollback_user_input") is True
+        )
         with self._turn_lock:
             running = self._turn_running
             client_turn_id = self._current_client_turn_id
@@ -1066,7 +1144,10 @@ class NodeTuiGateway:
             if running:
                 self._interrupt_requested = True
                 if self._current_interrupt_token is not None:
-                    self._current_interrupt_token.request("interrupt")
+                    self._current_interrupt_token.request_nonblocking(
+                        "interrupt",
+                        rollback_user_input=rollback_user_input,
+                    )
         if running:
             self._record_turn_interrupt_request(client_turn_id=client_turn_id)
         if running and self._emit is not None:
@@ -1207,6 +1288,7 @@ class NodeTuiGateway:
         image_paths: tuple[str, ...] = (),
         queued_input: QueuedInputRecord | None = None,
         client_user_message_id: str | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> None:
         if queued_input is not None:
             self._forward_stream_event(
@@ -1233,33 +1315,17 @@ class NodeTuiGateway:
                 **_handle_user_turn_kwargs(
                     handle_user_turn=self.service.handle_user_turn,
                     stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
-                    interrupt_token=self._current_interrupt_token,
+                    interrupt_token=interrupt_token,
                     image_paths=image_paths,
                     turn_id=turn_id,
                     client_user_message_id=client_user_message_id,
                 ),
             )
         except KeyboardInterrupt:
-            self._emit_interrupted_turn_completed(client_turn_id=client_turn_id, message=message)
-            self._emit_event(
-                "turn.interrupted",
-                {
-                    "requested": True,
-                    "client_turn_id": client_turn_id,
-                    "turn_id": turn_id,
-                },
-            )
-            self._emit_turn_status(
+            self._emit_worker_interrupted(
                 client_turn_id=client_turn_id,
-                state="interrupted",
-                message="Interrupt requested",
-            )
-            self._emit_status_update(
-                client_turn_id=client_turn_id,
-                state="interrupted",
-                kind="interrupted",
-                text="Interrupted",
-                message="Interrupt requested",
+                turn_id=turn_id,
+                message=message,
             )
         except Exception as exc:
             self._emit_event(
@@ -1454,6 +1520,31 @@ class NodeTuiGateway:
             )
             self._raise_if_interrupted(client_turn_id)
             return
+        if event.kind == "stream_attempt_reset":
+            self._emit_event(
+                "message.reset",
+                {"client_turn_id": client_turn_id},
+            )
+            self._raise_if_interrupted(client_turn_id)
+            return
+        if event.kind == "stream_retrying":
+            self._emit_event(
+                "stream.retrying",
+                {
+                    "client_turn_id": client_turn_id,
+                    "text": event.text,
+                    **event.metadata,
+                },
+            )
+            self._raise_if_interrupted(client_turn_id)
+            return
+        if event.kind == "stream_recovered":
+            self._emit_event(
+                "stream.recovered",
+                {"client_turn_id": client_turn_id},
+            )
+            self._raise_if_interrupted(client_turn_id)
+            return
         if event.kind == "reasoning":
             reasoning_payload: dict[str, object] = {
                 "client_turn_id": client_turn_id,
@@ -1494,7 +1585,46 @@ class NodeTuiGateway:
         if interrupted:
             raise KeyboardInterrupt()
 
-    def _emit_interrupted_turn_completed(self, *, client_turn_id: str, message: str) -> None:
+    def _emit_worker_interrupted(
+        self,
+        *,
+        client_turn_id: str,
+        turn_id: str,
+        message: str,
+    ) -> None:
+        self._emit_interrupted_turn_completed(
+            client_turn_id=client_turn_id,
+            turn_id=turn_id,
+            message=message,
+        )
+        self._emit_event(
+            "turn.interrupted",
+            {
+                "requested": True,
+                "client_turn_id": client_turn_id,
+                "turn_id": turn_id,
+            },
+        )
+        self._emit_turn_status(
+            client_turn_id=client_turn_id,
+            state="interrupted",
+            message="Interrupt requested",
+        )
+        self._emit_status_update(
+            client_turn_id=client_turn_id,
+            state="interrupted",
+            kind="interrupted",
+            text="Interrupted",
+            message="Interrupt requested",
+        )
+
+    def _emit_interrupted_turn_completed(
+        self,
+        *,
+        client_turn_id: str,
+        turn_id: str,
+        message: str,
+    ) -> None:
         response = TurnResponse(
             assistant_message="Interrupt requested",
             turn=TurnRecord(
@@ -1511,8 +1641,7 @@ class NodeTuiGateway:
             client_turn_id=client_turn_id,
             response=response,
         )
-        if self._current_turn_id is not None:
-            payload["turn_id"] = self._current_turn_id
+        payload["turn_id"] = turn_id
         self._emit_event("turn.completed", payload)
 
     def _turn_completed_payload(
@@ -1525,7 +1654,7 @@ class NodeTuiGateway:
         rendered_assistant_message = (
             response.assistant_message if assistant_message is None else assistant_message
         )
-        return {
+        payload: dict[str, object] = {
             "client_turn_id": client_turn_id,
             "assistant_message": rendered_assistant_message,
             "activity_events": [
@@ -1545,6 +1674,9 @@ class NodeTuiGateway:
             "turn_state": _turn_state_for_response(response),
             "usage": {},
         }
+        if response.input_rolled_back:
+            payload["input_rolled_back"] = True
+        return payload
 
     def _emit_event(self, method: str, params: dict[str, object]) -> None:
         if self._emit is not None:
@@ -1800,12 +1932,14 @@ class NodeTuiGateway:
             self._turn_running = True
             self._current_client_turn_id = client_turn_id
             self._current_turn_id = turn_id
+            self._current_interrupt_token = RuntimeInterruptToken(source="node_tui_gateway")
             self._turn_thread = self._turn_thread_factory(
                 target=self._run_decision_worker,
                 kwargs={
                     "choice": mapped,
                     "client_turn_id": client_turn_id,
                     "turn_id": turn_id,
+                    "interrupt_token": self._current_interrupt_token,
                     "decision_id": active_decision_id,
                 },
                 daemon=True,
@@ -1816,6 +1950,7 @@ class NodeTuiGateway:
                 self._turn_running = False
                 self._current_client_turn_id = None
                 self._current_turn_id = None
+                self._current_interrupt_token = None
                 self._turn_thread = None
                 return self._gateway_error_response(
                     request.id,
@@ -1841,6 +1976,7 @@ class NodeTuiGateway:
         client_turn_id: str,
         turn_id: str,
         decision_id: str,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> None:
         self._emit_event(
             "turn.started",
@@ -1867,11 +2003,29 @@ class NodeTuiGateway:
                 state="running",
                 kind="running",
                 text="Running",
-            )
+        )
         try:
-            response = self.service.resolve_pending_decision(
-                choice,
-                stream_sink=lambda event: self._forward_stream_event(client_turn_id, event),
+            resolve = self.service.resolve_pending_decision
+
+            def stream_sink(event: RuntimeStreamEvent) -> None:
+                self._forward_stream_event(client_turn_id, event)
+
+            if interrupt_token is not None and _callable_accepts_keyword(
+                resolve,
+                "interrupt_token",
+            ):
+                response = resolve(
+                    choice,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
+            else:
+                response = resolve(choice, stream_sink=stream_sink)
+        except KeyboardInterrupt:
+            self._emit_worker_interrupted(
+                client_turn_id=client_turn_id,
+                turn_id=turn_id,
+                message=choice,
             )
         except Exception as exc:
             self._emit_event(
@@ -1941,6 +2095,7 @@ class NodeTuiGateway:
                     self._turn_running = False
                     self._current_client_turn_id = None
                     self._current_turn_id = None
+                    self._current_interrupt_token = None
             self._emit_event("status.changed", self._status_payload())
             self._queue_scheduler_event.set()
 
@@ -1974,6 +2129,7 @@ class NodeTuiGateway:
             self._turn_running = True
             self._current_client_turn_id = client_turn_id
             self._current_turn_id = turn_id
+            self._current_interrupt_token = RuntimeInterruptToken(source="node_tui_gateway")
             self._turn_thread = self._turn_thread_factory(
                 target=self._run_clarification_worker,
                 kwargs={
@@ -1981,6 +2137,7 @@ class NodeTuiGateway:
                     "response": response,
                     "client_turn_id": client_turn_id,
                     "turn_id": turn_id,
+                    "interrupt_token": self._current_interrupt_token,
                 },
                 daemon=True,
             )
@@ -1990,6 +2147,7 @@ class NodeTuiGateway:
                 self._turn_running = False
                 self._current_client_turn_id = None
                 self._current_turn_id = None
+                self._current_interrupt_token = None
                 self._turn_thread = None
                 return self._gateway_error_response(
                     request.id,
@@ -2015,6 +2173,7 @@ class NodeTuiGateway:
         response: str,
         client_turn_id: str,
         turn_id: str,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> None:
         self._emit_event(
             "turn.started",
@@ -2027,7 +2186,29 @@ class NodeTuiGateway:
             text="Resolving clarification",
         )
         try:
-            turn_response = self.service.resolve_pending_clarification(request_id, response)
+            resolve = self.service.resolve_pending_clarification
+
+            def stream_sink(event: RuntimeStreamEvent) -> None:
+                self._forward_stream_event(client_turn_id, event)
+
+            if interrupt_token is not None and _callable_accepts_keyword(
+                resolve,
+                "interrupt_token",
+            ):
+                turn_response = resolve(
+                    request_id,
+                    response,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
+            else:
+                turn_response = resolve(request_id, response, stream_sink=stream_sink)
+        except KeyboardInterrupt:
+            self._emit_worker_interrupted(
+                client_turn_id=client_turn_id,
+                turn_id=turn_id,
+                message=response,
+            )
         except Exception as exc:
             self._emit_event(
                 "turn.failed",
@@ -2100,6 +2281,7 @@ class NodeTuiGateway:
                     self._turn_running = False
                     self._current_client_turn_id = None
                     self._current_turn_id = None
+                    self._current_interrupt_token = None
             self._emit_event("status.changed", self._status_payload())
             self._queue_scheduler_event.set()
 
@@ -2287,6 +2469,7 @@ class NodeTuiGateway:
             "has_pending_input": queue_payload["has_pending_input"],
             "queue_activity": queue_payload["activity"],
             "trust": self._trust_status_payload(),
+            "models": self._models_payload(),
         }
         if "queue_revision" in queue_payload:
             payload["queue_revision"] = queue_payload["queue_revision"]

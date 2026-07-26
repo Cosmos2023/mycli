@@ -4,7 +4,7 @@
 
 **Goal:** Preserve developer and user authority in mycli's canonical model timeline and make full HTTP Responses inputs append-only across unchanged and changed runtime context.
 
-**Architecture:** Extend persisted baseline fragments with a semantic role, replay those fragments as canonical messages, and introduce a durable context-delta projector that emits only new or changed context before the current user message. Keep base instructions in the Responses `instructions` field and leave WebSocket continuation as a later transport-only phase.
+**Architecture:** Project every protocol from a persisted, model-visible provider timeline that is independent of the TUI transcript. Keep base instructions in the Responses `instructions` field; append developer and user context updates at their actual turn boundary; then append the current user message. The target sequence is `S -> D0 -> E0 -> U1 -> A1 -> E1 -> U2`. Full HTTP input uses this complete timeline, while WebSocket continuation remains a later transport-only optimization.
 
 **Tech Stack:** Python 3.13, dataclasses, pytest, OpenAI Responses/Chat Completions adapters
 
@@ -14,7 +14,9 @@
 
 - Modify `src/mycli/domain/conversation.py`: admit canonical `developer` messages.
 - Modify `src/mycli/domain/runtime/session_history.py`: persist the role of baseline fragments with a backward-compatible default.
-- Create `src/mycli/application/runtime/request/context_timeline_projector.py`: compare current context with the durable baseline and return append-only context updates.
+- Create `src/mycli/application/runtime/request/provider_timeline.py`: persist the provider-visible timeline, compare source-conversation cursors, and append changed context before the current user message.
+- Modify `src/mycli/state/session_service.py`: persist provider timeline state independently from conversation and TUI history.
+- Modify `src/mycli/application/runtime/agent_runtime.py`: project and persist the provider timeline before request-shape construction.
 - Modify `src/mycli/application/runtime/ledger/runtime_event_ledger.py`: persist role-aware context updates rather than environment-only updates.
 - Modify `src/mycli/services/context/context_manager.py`: restore context updates with their persisted role.
 - Modify `src/mycli/services/context/instruction_contract_assembler.py`: make developer fragments replayable and classify runtime policy reminders separately.

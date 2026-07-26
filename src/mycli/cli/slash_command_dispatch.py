@@ -274,6 +274,12 @@ def dispatch_backend_slash_command(
                 values=service.inspect_context(),
             ),
         )
+    if command_id is SlashCommandId.COMPACT:
+        return _result(
+            invocation,
+            _notice(command, "Context compacted", service.compact_session()),
+            command_kind="compact",
+        )
     if command_id is SlashCommandId.USAGE:
         return _result(
             invocation,
@@ -322,6 +328,7 @@ def dispatch_backend_slash_command(
                     title="Trace export",
                     values=values,
                 ),
+                presentation=SlashCommandPresentation.TRANSCRIPT,
             )
         if args == "logs":
             return _result(
@@ -393,6 +400,7 @@ def _dispatch_tools(
         return _result(
             invocation,
             present_preformatted(command=command, title="Plugin output", values=values),
+            presentation=SlashCommandPresentation.TRANSCRIPT,
         )
     return _result(
         invocation,
@@ -435,7 +443,11 @@ def _dispatch_permissions(
                 usage="/permissions [allow <pattern>|revoke <pattern>|clear]",
             ),
         )
-    return _result(invocation, _notice(command, "Permissions updated", values))
+    return _result(
+        invocation,
+        _notice(command, "Permissions updated", values),
+        presentation=SlashCommandPresentation.TRANSCRIPT,
+    )
 
 
 def _dispatch_tasks(
@@ -561,7 +573,11 @@ def _dispatch_memory(
             ),
         )
     if mutating:
-        return _result(invocation, _notice(command, "Memory updated", values))
+        return _result(
+            invocation,
+            _notice(command, "Memory updated", values),
+            presentation=SlashCommandPresentation.TRANSCRIPT,
+        )
     return _result(
         invocation,
         present_list(

@@ -4,7 +4,12 @@ from mycli.application.runtime.subagents.loop import (
     RuntimeChildToolExecutor,
     RuntimeChildTurnRequester,
 )
-from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem
+from mycli.domain.runtime import (
+    ModelTurnResult,
+    RuntimeBlock,
+    RuntimeInterruptToken,
+    RuntimeItem,
+)
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.exposure import (
     ToolExposure,
@@ -68,6 +73,27 @@ def test_runtime_child_tool_executor_uses_child_exposure_only() -> None:
     )
 
 
+def test_runtime_child_tool_executor_propagates_interrupt_token() -> None:
+    router = FakeRouter()
+    token = RuntimeInterruptToken(source="subagent")
+    executor = RuntimeChildToolExecutor(
+        tool_router=router,
+        tool_specs={"Read": ToolSpec(name="Read", description="Read a file.")},
+    )
+
+    executor.execute_child_tool(
+        call=ToolCall(name="Read", arguments={}, reason="inspect", call_id="call_1"),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        tool_names=("Read",),
+        interrupt_token=token,
+    )
+
+    assert router.calls[0][2] == ToolInvocationContext(
+        owner_session_id="demo:sub:turn_1:abcd1234",
+        interrupt_token=token,
+    )
+
+
 def test_runtime_child_shell_lifecycle_events_keep_dream_owner(tmp_path) -> None:
     bash = BashTool(tmp_path)
     bash.configure_shell_session("main-session")
@@ -109,6 +135,7 @@ class FakeRequester:
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
         stream_sink=None,
+        interrupt_token=None,
     ):
         self.calls.append(
             {
@@ -116,6 +143,7 @@ class FakeRequester:
                 "legacy_messages": legacy_messages,
                 "tools": tools,
                 "stream_sink": stream_sink,
+                "interrupt_token": interrupt_token,
             }
         )
         result = ModelTurnResult(
@@ -184,6 +212,25 @@ def test_runtime_child_turn_requester_projects_model_result() -> None:
         ),
     )
     assert requester.calls[0]["stream_sink"] is None
+
+
+def test_runtime_child_turn_requester_propagates_interrupt_token() -> None:
+    requester = FakeRequester()
+    token = RuntimeInterruptToken(source="subagent")
+    child_requester = RuntimeChildTurnRequester(
+        requester=requester,
+        tool_exposure_builder=lambda names: ToolExposure(entries=()),
+        tool_renderer=lambda exposure: [],
+    )
+
+    child_requester.request_child_turn(
+        messages=[{"role": "user", "content": "inspect"}],
+        tool_names=(),
+        child_session_id="demo:sub:turn_1:abcd1234",
+        interrupt_token=token,
+    )
+
+    assert requester.calls[0]["interrupt_token"] is token
 
 
 def test_runtime_child_turn_requester_marks_usage_internal() -> None:

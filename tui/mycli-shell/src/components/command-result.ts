@@ -2,15 +2,12 @@ import type { Component } from "../tui-core/tui.ts";
 import { Container } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type {
-	MycliShellCommandDiagnostic,
 	MycliShellCommandField,
 	MycliShellCommandResult,
 	MycliShellCommandRow,
-	MycliShellDiagnosticMetric,
 } from "../model.ts";
 import type { ThemeColor } from "../theme/theme.ts";
 import { theme } from "../theme/theme.ts";
-import { CommandDiagnosticComponent } from "./command-diagnostic.ts";
 
 const STATUS_MAX_WIDTH = 76;
 const FOLDED_ROW_LIMIT = 8;
@@ -27,38 +24,71 @@ export class CommandResultComponent extends Container implements Component {
 
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
+		let body: string[];
 		switch (this.result.display.kind) {
 			case "status":
-				return this.renderStatus(safeWidth);
+				body = this.renderStatus(safeWidth);
+				break;
 			case "diagnostic":
-				return new CommandDiagnosticComponent(this.diagnostic()).render(safeWidth);
+				body = this.renderDiagnostic(safeWidth);
+				break;
 			case "list":
-				return this.renderList(safeWidth);
+				body = this.renderList(safeWidth);
+				break;
 			case "notice":
-				return this.renderNotice(safeWidth);
+				body = this.renderNotice(safeWidth);
+				break;
 			case "error":
-				return this.renderError(safeWidth);
+				body = this.renderError(safeWidth);
+				break;
 			case "preformatted":
-				return this.renderPreformatted(safeWidth);
-	}
+				body = this.renderPreformatted(safeWidth);
+				break;
+		}
+		return this.withCommand(body, safeWidth);
 	}
 
 	private renderStatus(width: number): string[] {
+		return this.renderCard(width, this.result.display.title);
+	}
+
+	private renderDiagnostic(width: number): string[] {
+		return this.renderCard(width, this.result.display.title);
+	}
+
+	private renderCard(width: number, title: string): string[] {
 		if (width < 8) {
-			return [this.fit(this.result.display.summary ?? this.result.display.title, width)];
+			return [this.fit(this.result.display.summary ?? title, width)];
 		}
 		const boxWidth = Math.min(STATUS_MAX_WIDTH, width);
 		const contentWidth = boxWidth - 6;
 		const borderWidth = boxWidth - 2;
 		const lines = [theme.fg("border", `╭${"─".repeat(borderWidth)}╮`)];
-		const title = this.result.display.summary
-			? `${this.result.display.title}  ${this.result.display.summary}`
-			: this.result.display.title;
-		lines.push(this.statusLine(theme.bold(title), contentWidth));
-		const fields = [
-			...this.result.display.fields,
-			...this.result.display.sections.flatMap((section) => section.fields),
-		];
+		const cardTitle = this.result.display.summary
+			? `${title}  ${this.result.display.summary}`
+			: title;
+		lines.push(this.statusLine(theme.bold(cardTitle), contentWidth));
+		this.appendCardFields(lines, this.result.display.fields, contentWidth);
+		for (const section of this.result.display.sections) {
+			if (lines.length > 2) {
+				lines.push(this.statusLine("", contentWidth));
+			}
+			lines.push(this.statusLine(theme.fg("muted", theme.bold(sanitize(section.title))), contentWidth));
+			this.appendCardFields(lines, section.fields, contentWidth);
+			for (const row of section.rows) {
+				const value = [...row.values, ...(row.detail ? [row.detail] : [])].join("  ");
+				this.appendCardFields(
+					lines,
+					[{ label: row.label, value, tone: row.status }],
+					contentWidth,
+				);
+			}
+		}
+		lines.push(theme.fg("border", `╰${"─".repeat(borderWidth)}╯`));
+		return lines;
+	}
+
+	private appendCardFields(lines: string[], fields: MycliShellCommandField[], contentWidth: number): void {
 		const labelWidth = this.labelWidth(fields, Math.max(1, Math.floor(contentWidth / 2)));
 		for (const field of fields) {
 			const label = padVisible(sanitize(field.label), labelWidth);
@@ -69,8 +99,6 @@ export class CommandResultComponent extends Container implements Component {
 				),
 			);
 		}
-		lines.push(theme.fg("border", `╰${"─".repeat(borderWidth)}╯`));
-		return lines;
 	}
 
 	private statusLine(text: string, contentWidth: number): string {
@@ -143,54 +171,12 @@ export class CommandResultComponent extends Container implements Component {
 		return lines;
 	}
 
-	private diagnostic(): MycliShellCommandDiagnostic {
-		const display = this.result.display;
-		return {
-			id: this.result.id,
-			command: display.command,
-			title: display.title,
-			kind: display.command === "/usage" ? "usage" : display.command === "/context" ? "context" : "generic",
-			metrics: display.fields.map((field) => ({
-				label: field.label,
-				value: field.value,
-				accent: this.diagnosticAccent(field),
-			})),
-			sections: display.sections.map((section) => ({
-				title: section.title,
-				rows: [
-					...section.fields.map((field) => ({
-						label: field.label,
-						value: field.value,
-						accent: this.diagnosticAccent(field),
-					})),
-					...section.rows.map((row) => ({
-						label: row.label,
-						value: [...row.values, ...(row.detail ? [row.detail] : [])].join("  "),
-						accent: "muted" as const,
-					})),
-				],
-			})),
-		};
-	}
-
 	private fieldColor(field: MycliShellCommandField): ThemeColor {
 		return field.tone === "success" || field.tone === "warning" || field.tone === "error"
 			? field.tone
 			: field.tone === "accent"
 				? "accent"
 				: "text";
-	}
-
-	private diagnosticAccent(
-		field: MycliShellCommandField,
-	): MycliShellDiagnosticMetric["accent"] {
-		return field.tone === "success" ||
-			field.tone === "warning" ||
-			field.tone === "error" ||
-			field.tone === "accent" ||
-			field.tone === "muted"
-			? field.tone
-			: "muted";
 	}
 
 	private labelWidth(fields: MycliShellCommandField[], limit: number): number {
@@ -209,6 +195,15 @@ export class CommandResultComponent extends Container implements Component {
 
 	private fit(text: string, width: number): string {
 		return truncateToWidth(text, width, theme.fg("dim", "..."));
+	}
+
+	private withCommand(body: string[], width: number): string[] {
+		const command = this.fit(theme.fg("accent", this.result.display.command), width);
+		const separated = this.result.display.kind === "status" ||
+			this.result.display.kind === "diagnostic" ||
+			this.result.display.kind === "list" ||
+			this.result.display.kind === "preformatted";
+		return separated ? ["", command, "", ...body] : ["", command, ...body];
 	}
 }
 

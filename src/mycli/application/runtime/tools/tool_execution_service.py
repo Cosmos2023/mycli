@@ -4,6 +4,8 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from queue import Empty, Queue
+from threading import Thread
 from time import monotonic
 
 from mycli.application.runtime.tools.tool_file_history_runtime import (
@@ -53,6 +55,7 @@ from mycli.services.security import InjectionGuard
 from mycli.services.tool_display import ToolDisplayEnvelope, ToolDisplayProjector
 from mycli.services.tracing import TraceService
 from mycli.tools.base import ToolEffectProfile, ToolResult
+from mycli.tools.invocation_context import ToolInvocationContext
 from mycli.tools.routing.tool_router import ToolRouter
 
 SHELL_TOOL_NAMES = frozenset({"Shell", "Bash", "run_shell"})
@@ -354,7 +357,18 @@ class ToolExecutionService:
         )
         try:
             _raise_if_interrupted(interrupt_token)
-            result = tool_router.execute(execution_call, exposure=tool_exposure)
+            result = _execute_interruptibly(
+                lambda: tool_router.execute(
+                    execution_call,
+                    exposure=tool_exposure,
+                    invocation_context=ToolInvocationContext(
+                        owner_session_id=None,
+                        interrupt_token=interrupt_token,
+                    ),
+                ),
+                interrupt_token=interrupt_token,
+                enabled=effect_profile.network or effect_profile.process,
+            )
             _raise_if_interrupted(interrupt_token)
         except KeyboardInterrupt:
             interrupted_result = self._interrupted_tool_result(normalized_call)
@@ -493,7 +507,18 @@ class ToolExecutionService:
         )
         try:
             _raise_if_interrupted(interrupt_token)
-            result = tool_router.execute(normalized_call, exposure=tool_exposure)
+            result = _execute_interruptibly(
+                lambda: tool_router.execute(
+                    normalized_call,
+                    exposure=tool_exposure,
+                    invocation_context=ToolInvocationContext(
+                        owner_session_id=None,
+                        interrupt_token=interrupt_token,
+                    ),
+                ),
+                interrupt_token=interrupt_token,
+                enabled=effect_profile.network or effect_profile.process,
+            )
             _raise_if_interrupted(interrupt_token)
         except KeyboardInterrupt:
             interrupted_result = self._interrupted_tool_result(normalized_call)
@@ -911,10 +936,10 @@ class ToolExecutionService:
         *,
         interrupt_token: RuntimeInterruptToken | None,
     ) -> ToolCall:
-        if call.name not in SHELL_TOOL_NAMES:
+        if call.name not in SHELL_TOOL_NAMES and call.name != "WriteStdin":
             return call
         arguments = dict(call.arguments)
-        if self._policy_gate is not None:
+        if call.name in SHELL_TOOL_NAMES and self._policy_gate is not None:
             arguments["_runtime_shell_options"] = self._policy_gate.shell_execution_options()
         if interrupt_token is not None:
             arguments["_runtime_interrupt_token"] = interrupt_token
@@ -999,6 +1024,13 @@ class ToolExecutionService:
         skill_name = self._skill_name(call)
         if skill_name:
             metadata["skill_name"] = skill_name
+        if call.name == "WriteStdin":
+            session_id = call.arguments.get("session_id")
+            chars = call.arguments.get("chars", "")
+            if isinstance(session_id, str) and session_id:
+                metadata["session_id"] = session_id
+            if isinstance(chars, str):
+                metadata["empty_poll"] = chars == ""
         metadata.update(_write_content_lifecycle_metadata(call))
         return RuntimeStreamEvent(kind="tool_start", tool_name=call.name, metadata=metadata)
 
@@ -1923,6 +1955,35 @@ class ToolExecutionService:
 def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
     if interrupt_token is not None:
         interrupt_token.raise_if_interrupted()
+
+
+def _execute_interruptibly(
+    execute: Callable[[], ToolResult],
+    *,
+    interrupt_token: RuntimeInterruptToken | None,
+    enabled: bool,
+) -> ToolResult:
+    if interrupt_token is None or not enabled:
+        return execute()
+
+    outcomes: Queue[ToolResult | BaseException] = Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            outcomes.put(execute())
+        except BaseException as exc:  # noqa: BLE001 - forwarded to the turn worker.
+            outcomes.put(exc)
+
+    Thread(target=run, name="mycli-tool-call", daemon=True).start()
+    while True:
+        interrupt_token.raise_if_interrupted()
+        try:
+            outcome = outcomes.get(timeout=0.02)
+        except Empty:
+            continue
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _render_plan_steps(plan_state: PlanState) -> list[str]:

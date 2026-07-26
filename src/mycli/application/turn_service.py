@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from mycli.domain.conversation import Conversation, Message
+from mycli.config.auth_store import AuthStore
+from mycli.config.model_settings import save_model_settings
+from mycli.domain.model_catalog import ModelCatalogEntry, ModelSelection
 from mycli.domain.logging import LogLevel
 from mycli.domain.memory import MemoryKind
 from mycli.domain.runtime import (
@@ -42,6 +45,12 @@ from mycli.application.runtime.session_queue import (
     QueueMutationResult,
 )
 from mycli.domain.subagents import SubAgentRunSummary
+from mycli.infrastructure.providers import (
+    profile_for_provider,
+    resolve_provider_cache_policy_capability,
+    validate_provider_protocol,
+)
+from mycli.services.model_catalog import ModelCatalogService
 from mycli.services.context.instruction_contract_assembler import InstructionContractAssembler
 from mycli.services.context.turn_context_assembler import TurnContextAssembler
 from mycli.services.file_history import FileHistoryService
@@ -117,12 +126,17 @@ def _next_sandbox_mode(current: SandboxMode) -> SandboxMode:
     return modes[(index + 1) % len(modes)]
 
 
+class ModelSelectionError(ValueError):
+    pass
+
+
 class TurnService:
     def __init__(
         self,
         config: AgentConfig | None = None,
         home_dir: Path | None = None,
         runtime: Any | None = None,
+        model_adapter_factory: Callable[[AgentConfig], object] | None = None,
     ) -> None:
         if config is None:
             raise ValueError("config is required")
@@ -133,6 +147,7 @@ class TurnService:
 
         self._runtime = runtime
         self._home_dir = home_dir
+        self._model_adapter_factory = model_adapter_factory
         self._tool_registry = getattr(runtime, "_tool_registry", None)
         self._model_client = getattr(runtime, "_model_adapter", None)
         self._safety_policy = getattr(runtime, "_approval_service", None)
@@ -472,13 +487,27 @@ class TurnService:
         self,
         choice: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         if runtime is None:
             raise RuntimeError("TurnService has no runtime.")
-        return cast(TurnResponse, runtime.resolve_pending_approval(choice, stream_sink=stream_sink))
+        return cast(
+            TurnResponse,
+            runtime.resolve_pending_approval(
+                choice,
+                stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
+            ),
+        )
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> TurnResponse:
         runtime = self._runtime
         if runtime is None:
             raise RuntimeError("TurnService has no runtime.")
@@ -487,6 +516,8 @@ class TurnService:
             runtime.resolve_pending_clarification(
                 request_id=request_id,
                 response=response,
+                stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
             ),
         )
 
@@ -1211,6 +1242,36 @@ class TurnService:
             except ValueError:
                 allowed = ", ".join(item.value for item in ReasoningEffort)
                 return (f"unsupported thinking_effort={thinking_effort}; allowed={allowed}",)
+        if model_value is not None and self._model_adapter_factory is not None:
+            candidates = [
+                entry for entry in self.available_models() if entry.model == model_value
+            ]
+            entry = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.provider is self._config.provider
+                ),
+                candidates[0] if candidates else None,
+            )
+            if entry is None:
+                return (f"model '{model_value}' is not available",)
+            try:
+                selected = self.select_model(
+                    ModelSelection(
+                        provider=entry.provider,
+                        protocol=entry.protocol,
+                        model=entry.model,
+                        base_url=entry.base_url,
+                        reasoning_effort=reasoning_effort,
+                    )
+                )
+            except ModelSelectionError as exc:
+                return (str(exc),)
+            return (
+                f"model={selected.model}",
+                f"thinking_effort={self._config.thinking_effort.value if self._config.thinking_effort is not None else 'off'}",
+            )
         updates: dict[str, object] = {}
         if model_value is not None:
             updates["model"] = model_value
@@ -1224,6 +1285,115 @@ class TurnService:
         return (
             f"model={self._config.model}",
             f"thinking_effort={self._config.thinking_effort.value if self._config.thinking_effort is not None else 'off'}",
+        )
+
+    def available_models(self) -> tuple[ModelCatalogEntry, ...]:
+        return ModelCatalogService(home_dir=self._home_dir).list_models(
+            current_config=self._config
+        )
+
+    def select_model(self, selection: ModelSelection) -> ModelCatalogEntry:
+        if self._model_adapter_factory is None:
+            raise ModelSelectionError("Model switching is unavailable in this runtime.")
+        validate_provider_protocol(
+            provider=selection.provider,
+            protocol=selection.protocol,
+        )
+        entry = next(
+            (
+                candidate
+                for candidate in self.available_models()
+                if candidate.identity == selection.identity
+                and candidate.base_url.rstrip("/") == selection.base_url.rstrip("/")
+            ),
+            None,
+        )
+        if entry is None:
+            raise ModelSelectionError(
+                f"Model '{selection.provider.value}/{selection.model}' is not available."
+            )
+        if selection.base_url.rstrip("/") != entry.base_url.rstrip("/"):
+            raise ModelSelectionError("Selected model endpoint does not match the catalog.")
+        effort = selection.reasoning_effort
+        supported_efforts = entry.supported_reasoning_efforts
+        if effort is None:
+            effort = entry.default_reasoning_effort
+            if effort is None and len(supported_efforts) == 1:
+                effort = supported_efforts[0]
+        if effort is not None and effort not in supported_efforts:
+            raise ModelSelectionError(
+                f"Model '{entry.model}' does not support reasoning effort '{effort.value}'."
+            )
+        auth_ref = entry.auth_ref or entry.provider.value
+        api_key = AuthStore.from_home(self._home_dir).get_api_key(auth_ref)
+        if (
+            not api_key
+            and selection.provider is self._config.provider
+            and auth_ref == (self._config.auth_ref or self._config.provider.value)
+        ):
+            api_key = self._config.api_key
+        if not api_key:
+            raise ModelSelectionError(
+                f"No API key configured for auth_ref '{auth_ref}'."
+            )
+        profile = profile_for_provider(selection.provider)
+        next_config = replace(
+            self._config,
+            provider=selection.provider,
+            protocol=selection.protocol,
+            model=selection.model,
+            api_base_url=entry.base_url,
+            api_key=api_key,
+            auth_ref=auth_ref,
+            supports_images=profile.supports_images,
+            cache_policy_capability=resolve_provider_cache_policy_capability(
+                provider=selection.provider,
+                base_url=entry.base_url,
+            ),
+            reasoning_effort=effort or self._config.reasoning_effort,
+            thinking_enabled=effort is not None,
+            thinking_effort=effort,
+        )
+        try:
+            model_adapter = self._model_adapter_factory(next_config)
+        except Exception as exc:
+            raise ModelSelectionError(str(exc)) from exc
+        previous_config = self._config
+        previous_adapter = self._model_client
+        previous_continuation = self._session_service.load_responses_continuation_state(
+            previous_config.session_id
+        )
+        snapshot = save_model_settings(self._home_dir, next_config)
+        runtime_replaced = False
+        try:
+            self._runtime.replace_model_adapter(model_adapter, next_config)
+            runtime_replaced = True
+            self._session_service.save_responses_continuation_state(
+                next_config.session_id,
+                None,
+            )
+        except Exception as exc:
+            if runtime_replaced and previous_adapter is not None:
+                try:
+                    self._runtime.replace_model_adapter(
+                        previous_adapter,
+                        previous_config,
+                    )
+                except Exception:
+                    pass
+            self._session_service.save_responses_continuation_state(
+                previous_config.session_id,
+                previous_continuation,
+            )
+            snapshot.restore()
+            raise ModelSelectionError(str(exc)) from exc
+        self._config = next_config
+        self._model_client = model_adapter
+        return next(
+            candidate
+            for candidate in self.available_models()
+            if candidate.identity == selection.identity
+            and candidate.base_url.rstrip("/") == selection.base_url.rstrip("/")
         )
 
     def inspect_usage(self) -> tuple[str, ...]:
@@ -1276,6 +1446,10 @@ class TurnService:
             f"cache_read_tokens={cache_read_tokens} cache_write_tokens={cache_write_tokens}",
             f"estimated_cost={estimated_cost}",
         )
+
+    def compact_session(self) -> tuple[str, ...]:
+        result = self._runtime.compact_session()
+        return tuple(f"{key}={value}" for key, value in result.items())
 
     def current_context_window_metrics(self) -> dict[str, object]:
         latest_usage_metadata = self._latest_model_usage_metadata()

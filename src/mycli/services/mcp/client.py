@@ -1,23 +1,29 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import http.client
 import json
 import os
 import selectors
+import socket
 import subprocess
 import tomllib
-import urllib.error
-import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, IO, Literal, Protocol
+from threading import Lock
+from time import monotonic
+from typing import Any, IO, Literal, Protocol, cast
+from urllib.parse import urlsplit
 
+from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.domain.tooling.names import provider_safe_tool_name
+from mycli.tools.process_controller import process_spawn_options, terminate_process_tree
 from mycli.tools.base import ToolParameter
 
 JsonObject = dict[str, Any]
-McpTransportKind = Literal["stdio", "http"]
+McpTransportKind = Literal["stdio", "http", "streamable_http"]
 
 
 class JsonRpcError(RuntimeError):
@@ -29,7 +35,13 @@ class JsonRpcError(RuntimeError):
 
 
 class JsonRpcTransport(Protocol):
-    def request(self, payload: JsonObject, *, timeout_seconds: float) -> JsonObject:
+    def request(
+        self,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> JsonObject:
         ...
 
 
@@ -52,9 +64,9 @@ class McpServerConfig:
         if self.transport == "stdio":
             if self.command is None or not self.command.strip():
                 raise ValueError("stdio MCP server requires command.")
-        elif self.transport == "http":
+        elif self.transport in {"http", "streamable_http"}:
             if self.url is None or not self.url.strip():
-                raise ValueError("http MCP server requires url.")
+                raise ValueError(f"{self.transport} MCP server requires url.")
         else:
             raise ValueError(f"Unsupported MCP transport: {self.transport}")
         if self.timeout_seconds <= 0:
@@ -147,27 +159,160 @@ class McpResourceContent:
 
 
 class HttpJsonRpcTransport:
-    def __init__(self, url: str, *, headers: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        streamable: bool = False,
+    ) -> None:
         self._url = url
         self._headers = {} if headers is None else dict(headers)
+        self._streamable = streamable
+        self._session_id: str | None = None
+        self._lock = Lock()
+        self._active_connections: dict[object, http.client.HTTPConnection] = {}
+        self._active_responses: dict[object, http.client.HTTPResponse] = {}
 
-    def request(self, payload: JsonObject, *, timeout_seconds: float) -> JsonObject:
-        body = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            self._url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                **self._headers,
-            },
-            method="POST",
+    def request(
+        self,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> JsonObject:
+        return self._post(
+            payload,
+            timeout_seconds=timeout_seconds,
+            expect_response=True,
+            interrupt_token=interrupt_token,
         )
+
+    def notify(
+        self,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> None:
+        if not self._streamable:
+            return
+        self._post(
+            payload,
+            timeout_seconds=timeout_seconds,
+            expect_response=False,
+            interrupt_token=interrupt_token,
+        )
+
+    def _post(
+        self,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float,
+        expect_response: bool,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> JsonObject:
+        if interrupt_token is not None:
+            interrupt_token.raise_if_interrupted()
+        body = json.dumps(payload).encode("utf-8")
+        session_headers: dict[str, str] = {}
+        if self._streamable:
+            session_headers["MCP-Protocol-Version"] = "2025-03-26"
+            with self._lock:
+                if self._session_id is not None:
+                    session_headers["Mcp-Session-Id"] = self._session_id
+        parsed = urlsplit(self._url)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            raise ValueError(f"Unsupported MCP HTTP URL: {self._url}")
+        connection_type = (
+            http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+        )
+        connection = connection_type(
+            parsed.hostname,
+            port=parsed.port,
+            timeout=timeout_seconds,
+        )
+        request_id = payload.get("id", object())
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        unregister_interrupt = (
+            interrupt_token.add_callback(connection.close)
+            if interrupt_token is not None
+            else lambda: None
+        )
+        def unregister_response_interrupt() -> None:
+            return
+        with self._lock:
+            self._active_connections[request_id] = connection
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                return _decode_json(response.read())
-        except urllib.error.HTTPError as error:
-            raise RuntimeError(f"MCP HTTP request failed with status {error.code}") from error
+            connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    **self._headers,
+                    **session_headers,
+                },
+            )
+            response = connection.getresponse()
+            with self._lock:
+                self._active_responses[request_id] = response
+            if interrupt_token is not None:
+                unregister_interrupt()
+                unregister_response_interrupt = interrupt_token.add_callback(
+                    lambda: _shutdown_http_exchange(connection, response)
+                )
+            response_body = response.read()
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+            if response.status >= 400:
+                raise RuntimeError(f"MCP HTTP request failed with status {response.status}")
+            session_id = response.headers.get("Mcp-Session-Id")
+            if session_id:
+                with self._lock:
+                    self._session_id = session_id
+            if not response_body:
+                if expect_response:
+                    raise RuntimeError("MCP HTTP response was empty.")
+                return {}
+            content_type = response.headers.get("Content-Type", "")
+            return _decode_http_json_rpc(response_body, content_type=content_type)
+        except Exception as exc:
+            if interrupt_token is not None and interrupt_token.interrupted:
+                raise KeyboardInterrupt() from exc
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError(f"MCP HTTP request failed: {exc}") from exc
+        finally:
+            unregister_response_interrupt()
+            unregister_interrupt()
+            with self._lock:
+                self._active_connections.pop(request_id, None)
+                self._active_responses.pop(request_id, None)
+            connection.close()
+
+    def abort_request(self, request_id: object) -> None:
+        with self._lock:
+            connection = self._active_connections.pop(request_id, None)
+            response = self._active_responses.pop(request_id, None)
+        if response is not None:
+            _shutdown_http_exchange(connection, response)
+        if connection is not None:
+            connection.close()
+
+    def close(self) -> None:
+        with self._lock:
+            connections = tuple(self._active_connections.values())
+            responses = tuple(self._active_responses.values())
+            self._active_connections.clear()
+            self._active_responses.clear()
+        for response in responses:
+            _shutdown_http_exchange(None, response)
+        for connection in connections:
+            connection.close()
 
 
 class StdioJsonRpcTransport:
@@ -184,32 +329,73 @@ class StdioJsonRpcTransport:
         self._env = {} if env is None else dict(env)
         self._cwd = cwd
         self._process: subprocess.Popen[bytes] | None = None
+        self._io_lock = Lock()
 
-    def request(self, payload: JsonObject, *, timeout_seconds: float) -> JsonObject:
-        process = self._ensure_process()
-        if process.stdin is None or process.stdout is None:
-            raise RuntimeError("MCP stdio process pipes are unavailable.")
-        process.stdin.write(_encode_framed_json(payload))
-        process.stdin.flush()
-        return _read_framed_json(process.stdout, timeout_seconds=timeout_seconds)
+    def request(
+        self,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> JsonObject:
+        self._acquire_io_lock(interrupt_token)
+        try:
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+            process = self._ensure_process()
+            if process.stdin is None or process.stdout is None:
+                raise RuntimeError("MCP stdio process pipes are unavailable.")
+            process.stdin.write(_encode_framed_json(payload))
+            process.stdin.flush()
+            return _read_framed_json(
+                process.stdout,
+                timeout_seconds=timeout_seconds,
+                interrupt_token=interrupt_token,
+            )
+        finally:
+            self._io_lock.release()
+
+    def notify(
+        self,
+        payload: JsonObject,
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> None:
+        del timeout_seconds
+        self._acquire_io_lock(interrupt_token)
+        try:
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+            process = self._ensure_process()
+            if process.stdin is None:
+                raise RuntimeError("MCP stdio process stdin is unavailable.")
+            process.stdin.write(_encode_framed_json(payload))
+            process.stdin.flush()
+        finally:
+            self._io_lock.release()
+
+    def abort_request(self, request_id: object) -> None:
+        del request_id
+        self.close()
 
     def close(self) -> None:
         process = self._process
         self._process = None
         if process is None:
             return
-        process.terminate()
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
+        outcome = terminate_process_tree(process, prefer_interrupt=False)
+        if not outcome.terminal:
             process.kill()
-            process.wait(timeout=1)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
 
     def _ensure_process(self) -> subprocess.Popen[bytes]:
         if self._process is not None and self._process.poll() is None:
             return self._process
         process_env = os.environ.copy()
         process_env.update(self._env)
+        spawn_options = process_spawn_options()
         self._process = subprocess.Popen(
             [self._command, *self._args],
             cwd=self._cwd,
@@ -217,8 +403,25 @@ class StdioJsonRpcTransport:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            creationflags=cast(int, spawn_options.get("creationflags", 0)),
+            start_new_session=cast(bool, spawn_options.get("start_new_session", False)),
         )
         return self._process
+
+    def _acquire_io_lock(
+        self,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> None:
+        if interrupt_token is None:
+            self._io_lock.acquire()
+            return
+        while not self._io_lock.acquire(timeout=0.02):
+            interrupt_token.raise_if_interrupted()
+        try:
+            interrupt_token.raise_if_interrupted()
+        except BaseException:
+            self._io_lock.release()
+            raise
 
 
 class McpClient:
@@ -227,21 +430,54 @@ class McpClient:
         self._transport = transport if transport is not None else self._build_transport(config)
         self._next_id = 1
         self._initialized = False
+        self._id_lock = Lock()
+        self._initialize_lock = Lock()
 
-    def initialize(self) -> JsonObject:
-        if self._initialized:
-            return {}
-        result = self.request(
-            "initialize",
-            {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "mycli", "version": "0.1.0"},
-            },
-            initialize=False,
-        )
-        self._initialized = True
-        return result
+    def initialize(
+        self,
+        *,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> JsonObject:
+        self._acquire_initialize_lock(interrupt_token)
+        try:
+            if self._initialized:
+                return {}
+            result = self.request(
+                "initialize",
+                {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "mycli", "version": "0.1.0"},
+                },
+                initialize=False,
+                interrupt_token=interrupt_token,
+            )
+            notify = getattr(self._transport, "notify", None)
+            if callable(notify):
+                notify(
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    timeout_seconds=self.config.timeout_seconds,
+                    interrupt_token=interrupt_token,
+                )
+            self._initialized = True
+            return result
+        finally:
+            self._initialize_lock.release()
+
+    def _acquire_initialize_lock(
+        self,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> None:
+        if interrupt_token is None:
+            self._initialize_lock.acquire()
+            return
+        while not self._initialize_lock.acquire(timeout=0.02):
+            interrupt_token.raise_if_interrupted()
+        try:
+            interrupt_token.raise_if_interrupted()
+        except BaseException:
+            self._initialize_lock.release()
+            raise
 
     def request(
         self,
@@ -249,14 +485,32 @@ class McpClient:
         params: Mapping[str, Any] | None = None,
         *,
         initialize: bool = True,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> JsonObject:
         if initialize and method != "initialize":
-            self.initialize()
-        payload: JsonObject = {"jsonrpc": "2.0", "id": self._next_id, "method": method}
-        self._next_id += 1
+            self.initialize(interrupt_token=interrupt_token)
+        with self._id_lock:
+            request_id = self._next_id
+            self._next_id += 1
+        payload: JsonObject = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = dict(params)
-        response = self._transport.request(payload, timeout_seconds=self.config.timeout_seconds)
+        try:
+            if interrupt_token is None:
+                response = self._transport.request(
+                    payload,
+                    timeout_seconds=self.config.timeout_seconds,
+                )
+            else:
+                response = self._transport.request(
+                    payload,
+                    timeout_seconds=self.config.timeout_seconds,
+                    interrupt_token=interrupt_token,
+                )
+        except KeyboardInterrupt:
+            self._notify_cancelled(payload["id"], interrupt_token=interrupt_token)
+            self._abort_request(payload["id"])
+            raise
         if "error" in response:
             error = response["error"]
             if isinstance(error, Mapping):
@@ -271,15 +525,29 @@ class McpClient:
             return {"value": result}
         return dict(result)
 
-    def list_tools(self) -> tuple[McpToolDescriptor, ...]:
-        result = self.request("tools/list")
+    def list_tools(
+        self,
+        *,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> tuple[McpToolDescriptor, ...]:
+        result = self.request("tools/list", interrupt_token=interrupt_token)
         tools = result.get("tools", ())
         if not isinstance(tools, list):
             return ()
         return tuple(self._parse_tool(item) for item in tools if isinstance(item, Mapping))
 
-    def call_tool(self, name: str, arguments: Mapping[str, Any]) -> McpToolCallResult:
-        result = self.request("tools/call", {"name": name, "arguments": dict(arguments)})
+    def call_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> McpToolCallResult:
+        result = self.request(
+            "tools/call",
+            {"name": name, "arguments": dict(arguments)},
+            interrupt_token=interrupt_token,
+        )
         content = result.get("content", ())
         items = tuple(dict(item) for item in content if isinstance(item, Mapping)) if isinstance(content, list) else ()
         return McpToolCallResult(
@@ -287,6 +555,35 @@ class McpClient:
             structured_content=result.get("structuredContent"),
             is_error=bool(result.get("isError", False)),
         )
+
+    def _notify_cancelled(
+        self,
+        request_id: object,
+        *,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> None:
+        notify = getattr(self._transport, "notify", None)
+        if not callable(notify):
+            return
+        reason = "cancelled"
+        if interrupt_token is not None and interrupt_token.reason:
+            reason = interrupt_token.reason
+        with contextlib.suppress(Exception):
+            notify(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": request_id, "reason": reason},
+                },
+                timeout_seconds=min(self.config.timeout_seconds, 0.25),
+            )
+
+    def _abort_request(self, request_id: object) -> None:
+        abort_request = getattr(self._transport, "abort_request", None)
+        if callable(abort_request):
+            with contextlib.suppress(Exception):
+                abort_request(request_id)
+        self._initialized = False
 
     def list_resources(self) -> tuple[McpResourceDescriptor, ...]:
         result = self.request("resources/list")
@@ -332,10 +629,13 @@ class McpClient:
         )
 
     def _build_transport(self, config: McpServerConfig) -> JsonRpcTransport:
-        if config.transport == "http":
+        if config.transport in {"http", "streamable_http"}:
             if config.url is None:
-                raise ValueError("http MCP server requires url.")
-            return HttpJsonRpcTransport(config.url)
+                raise ValueError(f"{config.transport} MCP server requires url.")
+            return HttpJsonRpcTransport(
+                config.url,
+                streamable=config.transport == "streamable_http",
+            )
         if config.command is None:
             raise ValueError("stdio MCP server requires command.")
         return StdioJsonRpcTransport(command=config.command, args=config.args, env=config.env)
@@ -346,15 +646,31 @@ class McpClient:
             close()
 
 
-def load_mcp_server_configs(workspace_root: Path, *, environ: Mapping[str, str] | None = None) -> dict[str, McpServerConfig]:
-    path = workspace_root / ".mycli" / "mcp_servers.toml"
+def load_mcp_server_configs(
+    workspace_root: Path,
+    *,
+    home_dir: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, McpServerConfig]:
+    user_path = (home_dir or Path.home()) / ".mycli" / "mcp_servers.toml"
+    workspace_path = workspace_root / ".mycli" / "mcp_servers.toml"
+    configs = _load_mcp_server_config_file(user_path, environ=environ)
+    configs.update(_load_mcp_server_config_file(workspace_path, environ=environ))
+    return configs
+
+
+def _load_mcp_server_config_file(
+    path: Path,
+    *,
+    environ: Mapping[str, str] | None,
+) -> dict[str, McpServerConfig]:
     if not path.exists():
         return {}
     with path.open("rb") as handle:
         data = tomllib.load(handle)
-    servers = data.get("servers", data.get("mcp_servers", {}))
+    servers = data.get("servers", data.get("mcp_servers", data.get("mcpServers", {})))
     if not isinstance(servers, Mapping):
-        raise ValueError(".mycli/mcp_servers.toml must define a [servers] table.")
+        raise ValueError(f"{path} must define a [servers] table.")
     return {
         name: _parse_server_config(name, value, environ=environ)
         for name, value in servers.items()
@@ -370,8 +686,8 @@ def _parse_server_config(
 ) -> McpServerConfig:
     env = raw.get("env", {})
     args = raw.get("args", ())
-    transport = str(raw.get("transport", "stdio"))
-    if transport not in {"stdio", "http"}:
+    transport = str(raw.get("transport", raw.get("type", "stdio"))).replace("-", "_")
+    if transport not in {"stdio", "http", "streamable_http"}:
         raise ValueError(f"Unsupported MCP transport for server {name}: {transport}")
     return McpServerConfig(
         name=name,
@@ -424,13 +740,27 @@ def _decode_framed_json(data: bytes) -> JsonObject:
     return _decode_json(body[:length])
 
 
-def _read_framed_json(stream: IO[bytes], *, timeout_seconds: float) -> JsonObject:
+def _read_framed_json(
+    stream: IO[bytes],
+    *,
+    timeout_seconds: float,
+    interrupt_token: RuntimeInterruptToken | None = None,
+) -> JsonObject:
     selector = selectors.DefaultSelector()
     selector.register(stream, selectors.EVENT_READ)
+    deadline = monotonic() + timeout_seconds
     try:
         buffer = bytearray()
         while b"\r\n\r\n" not in buffer and b"\n\n" not in buffer:
-            if not selector.select(timeout=timeout_seconds):
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Timed out waiting for MCP stdio response header.")
+            wait_timeout = min(remaining, 0.02) if interrupt_token is not None else remaining
+            if not selector.select(timeout=wait_timeout):
+                if interrupt_token is not None:
+                    continue
                 raise TimeoutError("Timed out waiting for MCP stdio response header.")
             chunk = os.read(stream.fileno(), 4096)
             if not chunk:
@@ -449,7 +779,15 @@ def _read_framed_json(stream: IO[bytes], *, timeout_seconds: float) -> JsonObjec
         if length <= 0:
             raise RuntimeError("MCP stdio response missing Content-Length.")
         while len(body) < length:
-            if not selector.select(timeout=timeout_seconds):
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Timed out waiting for MCP stdio response body.")
+            wait_timeout = min(remaining, 0.02) if interrupt_token is not None else remaining
+            if not selector.select(timeout=wait_timeout):
+                if interrupt_token is not None:
+                    continue
                 raise TimeoutError("Timed out waiting for MCP stdio response body.")
             chunk = os.read(stream.fileno(), length - len(body))
             if not chunk:
@@ -467,3 +805,34 @@ def _decode_json(data: bytes) -> JsonObject:
     if not isinstance(value, dict):
         raise ValueError("MCP JSON-RPC response must be an object.")
     return value
+
+
+def _decode_http_json_rpc(data: bytes, *, content_type: str) -> JsonObject:
+    if "text/event-stream" not in content_type.lower():
+        return _decode_json(data)
+    event_data: list[str] = []
+    for line in data.decode("utf-8").splitlines():
+        if line.startswith("data:"):
+            event_data.append(line[5:].lstrip())
+            continue
+        if not line and event_data:
+            return _decode_json("\n".join(event_data).encode("utf-8"))
+    if event_data:
+        return _decode_json("\n".join(event_data).encode("utf-8"))
+    raise ValueError("MCP SSE response did not contain a JSON-RPC data event.")
+
+
+def _shutdown_http_exchange(
+    connection: http.client.HTTPConnection | None,
+    response: http.client.HTTPResponse,
+) -> None:
+    response_fp = getattr(response, "fp", None)
+    raw = getattr(response_fp, "raw", None)
+    response_socket = getattr(raw, "_sock", None)
+    active_socket = response_socket or (connection.sock if connection is not None else None)
+    if active_socket is None:
+        return
+    with contextlib.suppress(OSError):
+        active_socket.shutdown(socket.SHUT_RDWR)
+    with contextlib.suppress(OSError):
+        active_socket.close()

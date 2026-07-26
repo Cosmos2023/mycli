@@ -15,17 +15,18 @@ from mycli.infrastructure.providers.openai import OpenAIChatProviderAdapter
 from mycli.infrastructure.providers.qwen import QwenChatProviderAdapter
 
 
-def test_help_lists_approval_and_memory_controls() -> None:
+def test_help_lists_only_the_primary_command_surface() -> None:
     output = handle_slash_command("/help")
-    assert "/memory" in output
-    assert "/undo" in output
+    assert "/permissions" in output
     assert "/resume" in output
     assert "/usage" in output
-    assert "/context" in output
-    assert "/stats" in output
     assert "/tasks" in output
     assert "/ps" in output
-    assert "/stop" in output
+    assert "/memory" not in output
+    assert "/undo" not in output
+    assert "/context" not in output
+    assert "/stats" not in output
+    assert "/stop" not in output
     assert "/status usage" not in output
     assert "/session list" not in output
     assert "Aliases:" not in output
@@ -48,12 +49,11 @@ def test_shell_process_aliases_route_to_read_and_stop_commands() -> None:
     assert list(handler("/stop")) == ["Stopping all background terminals."]
 
 
-def test_command_handler_projects_unknown_command_with_canonical_suggestion() -> None:
+def test_command_handler_does_not_suggest_hidden_compatibility_commands() -> None:
     handler = build_command_handler(SimpleNamespace())
 
     assert list(handler("/memroy")) == [
         "Error: Unknown command: /memroy",
-        "Did you mean: /memory",
     ]
 
 
@@ -67,7 +67,8 @@ def test_run_repl_prints_help_and_stops_on_quit() -> None:
         output_func=outputs.append,
     )
 
-    assert any("/memory" in line for line in outputs)
+    assert any("/permissions" in line for line in outputs)
+    assert not any("/memory" in line for line in outputs)
     assert outputs[-1] == "Bye."
 
 

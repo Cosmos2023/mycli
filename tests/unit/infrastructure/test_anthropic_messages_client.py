@@ -502,6 +502,7 @@ def test_build_anthropic_sdk_client_uses_mycli_user_agent(monkeypatch) -> None:
 
     assert isinstance(client, FakeAnthropic)
     assert captured["base_url"] == "https://api.anthropic.com"
+    assert captured["max_retries"] == 4
     assert captured["default_headers"] == {"User-Agent": "mycli/0.1.0"}
 
 

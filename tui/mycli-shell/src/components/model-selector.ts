@@ -4,26 +4,13 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
-	Spacer,
-	Text,
+	truncateToWidth,
 	type TUI,
 } from "../tui-core/index.ts";
 import type { MycliShellModel } from "../model.ts";
 import { theme } from "../theme/theme.ts";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
 
-type ModelScope = "all" | "scoped";
-type ThinkingLevel = "low" | "medium" | "high" | "xhigh";
-
-const THINKING_LEVELS: ThinkingLevel[] = ["low", "medium", "high", "xhigh"];
-
-type ModelItem = {
-	provider: string;
-	id: string;
-	name: string;
-	model: MycliShellModel;
-};
+type SelectorStage = "model" | "reasoning";
 
 export type ModelSelectorOptions = {
 	tui: TUI;
@@ -35,25 +22,26 @@ export type ModelSelectorOptions = {
 };
 
 function modelsAreEqual(a: MycliShellModel | undefined, b: MycliShellModel | undefined): boolean {
-	return Boolean(a && b && a.provider === b.provider && a.id === b.id);
+	return Boolean(
+		a
+			&& b
+			&& a.provider === b.provider
+			&& a.model === b.model
+			&& (!a.protocol || !b.protocol || a.protocol === b.protocol),
+	);
 }
 
 export class ModelSelectorComponent extends Container implements Focusable {
 	private readonly searchInput = new Input();
-	private readonly listContainer = new Container();
 	private readonly tui: TUI;
 	private readonly currentModel?: MycliShellModel;
-	private readonly allModels: ModelItem[];
-	private readonly scopedModelItems: ModelItem[];
-	private activeModels: ModelItem[];
-	private filteredModels: ModelItem[];
-	private selectedIndex = 0;
-	private thinkingLevel: ThinkingLevel;
-	private scope: ModelScope;
-	private scopeText?: Text;
-	private scopeHintText?: Text;
-	private thinkingText: Text;
-	private thinkingHintText: Text;
+	private readonly models: MycliShellModel[];
+	private filteredModels: MycliShellModel[];
+	private selectedModelIndex = 0;
+	private selectedEffortIndex = 0;
+	private selectedModel?: MycliShellModel;
+	private stage: SelectorStage = "model";
+	private error?: string;
 	private readonly onSelectCallback: (model: MycliShellModel) => void;
 	private readonly onCancelCallback: () => void;
 	private _focused = false;
@@ -64,227 +52,175 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	set focused(value: boolean) {
 		this._focused = value;
-		this.searchInput.focused = value;
+		this.searchInput.focused = value && this.stage === "model";
 	}
 
 	constructor(options: ModelSelectorOptions) {
 		super();
 		this.tui = options.tui;
 		this.currentModel = options.currentModel;
-		this.allModels = this.sortModels(options.models.map((model) => this.toItem(model)));
-		this.scopedModelItems = this.allModels.filter((item) => item.model.scoped);
-		this.scope = this.scopedModelItems.length > 0 ? "scoped" : "all";
-		this.thinkingLevel = thinkingLevelFromModel(options.currentModel);
-		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-		this.filteredModels = this.activeModels;
+		this.models = [...options.models].sort((a, b) => {
+			const aCurrent = a.current === true || modelsAreEqual(options.currentModel, a);
+			const bCurrent = b.current === true || modelsAreEqual(options.currentModel, b);
+			if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
+			return a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model);
+		});
+		this.filteredModels = this.models;
 		this.onSelectCallback = options.onSelect;
 		this.onCancelCallback = options.onCancel;
-
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-		if (this.scopedModelItems.length > 0) {
-			this.scopeText = new Text(this.getScopeText(), 0, 0);
-			this.addChild(this.scopeText);
-			this.scopeHintText = new Text(this.getScopeHintText(), 0, 0);
-			this.addChild(this.scopeHintText);
-		} else {
-			this.addChild(new Text(theme.fg("warning", "Only showing models from configured providers."), 0, 0));
-		}
-		this.addChild(new Spacer(1));
-		this.thinkingText = new Text(this.getThinkingText(), 0, 0);
-		this.thinkingHintText = new Text(this.getThinkingHintText(), 0, 0);
-		this.addChild(this.thinkingText);
-		this.addChild(this.thinkingHintText);
-		this.addChild(new Spacer(1));
-
-		if (options.initialSearchInput) {
-			this.searchInput.setValue(options.initialSearchInput);
-		}
-		this.searchInput.onSubmit = () => {
-			const selected = this.filteredModels[this.selectedIndex];
-			if (selected) {
-				this.handleSelect(selected.model);
-			}
-		};
-		this.addChild(this.searchInput);
-		this.addChild(new Spacer(1));
-		this.addChild(this.listContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
-
-		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-		this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
-		if (options.initialSearchInput) {
-			this.filterModels(options.initialSearchInput);
-		} else {
-			this.updateList();
-		}
-	}
-
-	private toItem(model: MycliShellModel): ModelItem {
-		return {
-			provider: model.provider,
-			id: model.id,
-			name: model.name ?? model.id,
-			model,
-		};
-	}
-
-	private sortModels(models: ModelItem[]): ModelItem[] {
-		return [...models].sort((a, b) => {
-			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
-			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
-			if (aIsCurrent && !bIsCurrent) return -1;
-			if (!aIsCurrent && bIsCurrent) return 1;
-			return a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id);
-		});
-	}
-
-	private getScopeText(): string {
-		const allText = this.scope === "all" ? theme.fg("accent", "all") : theme.fg("muted", "all");
-		const scopedText = this.scope === "scoped" ? theme.fg("accent", "scoped") : theme.fg("muted", "scoped");
-		return `${theme.fg("muted", "Scope: ")}${allText}${theme.fg("muted", " | ")}${scopedText}`;
-	}
-
-	private getScopeHintText(): string {
-		return keyHint("tui.input.tab", "scope") + theme.fg("muted", " (all/scoped)");
-	}
-
-	private getThinkingText(): string {
-		const parts = THINKING_LEVELS.map((level) =>
-			level === this.thinkingLevel ? theme.getThinkingBorderColor(level)(level) : theme.fg("muted", level),
-		);
-		return `${theme.fg("muted", "Thinking: ")}${parts.join(theme.fg("muted", " | "))}`;
-	}
-
-	private getThinkingHintText(): string {
-		return theme.fg("muted", "left/right thinking effort");
-	}
-
-	private setScope(scope: ModelScope): void {
-		if (this.scope === scope) return;
-		this.scope = scope;
-		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-		const currentIndex = this.activeModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-		this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
+		if (options.initialSearchInput) this.searchInput.setValue(options.initialSearchInput);
+		this.searchInput.onSubmit = () => this.confirmModel();
 		this.filterModels(this.searchInput.getValue());
-		this.scopeText?.setText(this.getScopeText());
 	}
 
-	private setThinkingLevel(level: ThinkingLevel): void {
-		if (this.thinkingLevel === level) return;
-		this.thinkingLevel = level;
-		this.thinkingText.setText(this.getThinkingText());
-		this.thinkingHintText.setText(this.getThinkingHintText());
-	}
-
-	private cycleThinking(delta: number): void {
-		const currentIndex = Math.max(0, THINKING_LEVELS.indexOf(this.thinkingLevel));
-		const nextIndex = (currentIndex + delta + THINKING_LEVELS.length) % THINKING_LEVELS.length;
-		this.setThinkingLevel(THINKING_LEVELS[nextIndex]!);
-	}
-
-	private filterModels(query: string): void {
-		this.filteredModels = query
-			? fuzzyFilter(this.activeModels, query, ({ id, provider }) => `${id} ${provider} ${provider}/${id}`)
-			: this.activeModels;
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
-		this.updateList();
-	}
-
-	private updateList(): void {
-		this.listContainer.clear();
-		const maxVisible = 10;
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible),
-		);
-		const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
-
-		for (let index = startIndex; index < endIndex; index += 1) {
-			const item = this.filteredModels[index];
-			if (!item) continue;
-			const isSelected = index === this.selectedIndex;
-			const isCurrent = modelsAreEqual(this.currentModel, item.model);
-			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
-			const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
-			const providerBadge = theme.fg("muted", `[${item.provider}]`);
-			const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-			this.listContainer.addChild(new Text(`${prefix}${modelText} ${providerBadge}${checkmark}`, 0, 0));
-		}
-
-		if (startIndex > 0 || endIndex < this.filteredModels.length) {
-			this.listContainer.addChild(new Text(theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredModels.length})`), 0, 0));
-		}
-
-		if (this.filteredModels.length === 0) {
-			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
-			return;
-		}
-
-		const selected = this.filteredModels[this.selectedIndex];
-		if (selected) {
-			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.name}`), 0, 0));
-		}
-	}
-
-	handleInput(keyData: string): void {
-		const kb = getKeybindings();
-		if (kb.matches(keyData, "tui.input.tab")) {
-			if (this.scopedModelItems.length > 0) {
-				this.setScope(this.scope === "all" ? "scoped" : "all");
-				this.scopeHintText?.setText(this.getScopeHintText());
-			}
-			return;
-		}
-		if (kb.matches(keyData, "tui.select.up")) {
-			if (this.filteredModels.length === 0) return;
-			this.selectedIndex = this.selectedIndex === 0 ? this.filteredModels.length - 1 : this.selectedIndex - 1;
-			this.updateList();
-			return;
-		}
-		if (kb.matches(keyData, "tui.select.down")) {
-			if (this.filteredModels.length === 0) return;
-			this.selectedIndex = this.selectedIndex === this.filteredModels.length - 1 ? 0 : this.selectedIndex + 1;
-			this.updateList();
-			return;
-		}
-		if (keyData === "\x1b[C") {
-			this.cycleThinking(1);
-			return;
-		}
-		if (keyData === "\x1b[D") {
-			this.cycleThinking(-1);
-			return;
-		}
-		if (kb.matches(keyData, "tui.select.confirm")) {
-			const selected = this.filteredModels[this.selectedIndex];
-			if (selected) {
-				this.handleSelect(selected.model);
-			}
-			return;
-		}
-		if (kb.matches(keyData, "tui.select.cancel")) {
-			this.onCancelCallback();
-			return;
-		}
-
-		this.searchInput.handleInput(keyData);
-		this.filterModels(this.searchInput.getValue());
+	setError(message: string): void {
+		this.error = message.trim() || "Model selection failed.";
 		this.tui.requestRender();
 	}
 
-	private handleSelect(model: MycliShellModel): void {
-		this.onSelectCallback({ ...model, thinkingLevel: this.thinkingLevel });
+	override render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const border = theme.fg("border", "─".repeat(safeWidth));
+		const lines = [border, ""];
+		if (this.stage === "reasoning") {
+			lines.push(this.line(theme.bold("Select reasoning effort"), safeWidth));
+			lines.push(this.line(theme.fg("muted", this.selectedModel?.model ?? ""), safeWidth));
+			lines.push("");
+			lines.push(...this.reasoningRows(safeWidth));
+			lines.push("");
+			lines.push(this.line(theme.fg("muted", "Enter select · Esc back"), safeWidth));
+		} else {
+			lines.push(this.line(theme.bold("Select model"), safeWidth));
+			lines.push(this.line(theme.fg("muted", "Type to search · Enter select · Esc close"), safeWidth));
+			lines.push("");
+			lines.push(...this.searchInput.render(safeWidth).map((line) => this.line(line, safeWidth)));
+			lines.push("");
+			lines.push(...this.modelRows(safeWidth));
+		}
+		if (this.error) {
+			lines.push("");
+			lines.push(this.line(theme.fg("error", this.error), safeWidth));
+		}
+		lines.push("", border);
+		return lines.map((line) => this.line(line, safeWidth));
+	}
+
+	handleInput(keyData: string): void {
+		this.error = undefined;
+		const kb = getKeybindings();
+		if (this.stage === "reasoning") {
+			const efforts = this.selectedModel?.supportedReasoningEfforts ?? [];
+			if (kb.matches(keyData, "tui.select.up")) {
+				this.selectedEffortIndex = this.previousIndex(this.selectedEffortIndex, efforts.length);
+			} else if (kb.matches(keyData, "tui.select.down")) {
+				this.selectedEffortIndex = this.nextIndex(this.selectedEffortIndex, efforts.length);
+			} else if (kb.matches(keyData, "tui.select.confirm")) {
+				this.confirmEffort();
+			} else if (kb.matches(keyData, "tui.select.cancel")) {
+				this.stage = "model";
+				this.searchInput.focused = this.focused;
+			}
+			this.tui.requestRender();
+			return;
+		}
+		if (kb.matches(keyData, "tui.select.up")) {
+			this.selectedModelIndex = this.previousIndex(this.selectedModelIndex, this.filteredModels.length);
+		} else if (kb.matches(keyData, "tui.select.down")) {
+			this.selectedModelIndex = this.nextIndex(this.selectedModelIndex, this.filteredModels.length);
+		} else if (kb.matches(keyData, "tui.select.confirm")) {
+			this.confirmModel();
+		} else if (kb.matches(keyData, "tui.select.cancel")) {
+			this.onCancelCallback();
+		} else {
+			this.searchInput.handleInput(keyData);
+			this.filterModels(this.searchInput.getValue());
+		}
+		this.tui.requestRender();
 	}
 
 	getSearchInput(): Input {
 		return this.searchInput;
 	}
-}
 
-function thinkingLevelFromModel(model: MycliShellModel | undefined): ThinkingLevel {
-	const value = model?.thinkingLevel;
-	return value === "low" || value === "high" || value === "xhigh" ? value : "medium";
+	private confirmModel(): void {
+		const model = this.filteredModels[this.selectedModelIndex];
+		if (!model) return;
+		const efforts = model.supportedReasoningEfforts ?? [];
+		if (efforts.length <= 1) {
+			this.onSelectCallback({
+				...model,
+				thinkingLevel: efforts[0],
+			});
+			return;
+		}
+		this.selectedModel = model;
+		const preferred = model.thinkingLevel ?? model.defaultReasoningEffort;
+		const preferredIndex = preferred ? efforts.indexOf(preferred) : -1;
+		this.selectedEffortIndex = preferredIndex >= 0 ? preferredIndex : 0;
+		this.stage = "reasoning";
+		this.searchInput.focused = false;
+	}
+
+	private confirmEffort(): void {
+		const model = this.selectedModel;
+		const effort = model?.supportedReasoningEfforts?.[this.selectedEffortIndex];
+		if (!model || !effort) return;
+		this.onSelectCallback({ ...model, thinkingLevel: effort });
+	}
+
+	private filterModels(query: string): void {
+		this.filteredModels = query
+			? fuzzyFilter(this.models, query, (model) => `${model.model} ${model.name ?? ""} ${model.provider}`)
+			: this.models;
+		this.selectedModelIndex = Math.min(this.selectedModelIndex, Math.max(0, this.filteredModels.length - 1));
+	}
+
+	private modelRows(width: number): string[] {
+		if (this.filteredModels.length === 0) return [theme.fg("muted", "  No matching models")];
+		const maxVisible = 10;
+		const start = Math.max(0, Math.min(this.selectedModelIndex - 4, this.filteredModels.length - maxVisible));
+		const end = Math.min(start + maxVisible, this.filteredModels.length);
+		const showProvider = width >= 48;
+		const showDescription = width >= 80;
+		const rows = this.filteredModels.slice(start, end).map((model, offset) => {
+			const index = start + offset;
+			const selected = index === this.selectedModelIndex;
+			const current = model.current === true || modelsAreEqual(this.currentModel, model);
+			const markers = [current ? "current" : "", model.default ? "default" : ""].filter(Boolean).join(", ");
+			const provider = showProvider ? theme.fg("muted", `  ${model.provider}`) : "";
+			const marker = markers ? theme.fg("success", `  (${markers})`) : "";
+			const description = showDescription && model.description ? theme.fg("dim", `  ${model.description}`) : "";
+			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const name = selected ? theme.fg("accent", model.model) : model.model;
+			return this.line(`${prefix}${name}${provider}${marker}${description}`, width);
+		});
+		if (start > 0 || end < this.filteredModels.length) {
+			rows.push(this.line(theme.fg("muted", `  ${this.selectedModelIndex + 1}/${this.filteredModels.length}`), width));
+		}
+		return rows;
+	}
+
+	private reasoningRows(width: number): string[] {
+		const model = this.selectedModel;
+		const efforts = model?.supportedReasoningEfforts ?? [];
+		return efforts.map((effort, index) => {
+			const selected = index === this.selectedEffortIndex;
+			const defaultMarker = effort === model?.defaultReasoningEffort ? theme.fg("muted", "  (default)") : "";
+			const prefix = selected ? theme.fg("accent", "› ") : "  ";
+			const label = selected ? theme.fg("accent", effort) : effort;
+			return this.line(`${prefix}${label}${defaultMarker}`, width);
+		});
+	}
+
+	private previousIndex(index: number, length: number): number {
+		return length === 0 ? 0 : (index - 1 + length) % length;
+	}
+
+	private nextIndex(index: number, length: number): number {
+		return length === 0 ? 0 : (index + 1) % length;
+	}
+
+	private line(text: string, width: number): string {
+		return truncateToWidth(text, width, theme.fg("dim", "..."));
+	}
 }

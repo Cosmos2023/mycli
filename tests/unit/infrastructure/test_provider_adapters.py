@@ -213,6 +213,31 @@ def test_provider_quirk_profile_resolves_deepseek_chat() -> None:
     assert profile.reasoning_content_replay == "reasoning_content_required_for_tool_replay"
 
 
+def test_deepseek_maps_developer_messages_in_place() -> None:
+    messages = [
+        {"role": "system", "content": "S"},
+        {"role": "developer", "content": "D0"},
+        {"role": "user", "content": "E0"},
+        {"role": "user", "content": "U1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "developer", "content": "D1"},
+        {"role": "user", "content": "E1"},
+        {"role": "user", "content": "U2"},
+    ]
+
+    adapted = DeepSeekChatProviderAdapter().adapt_messages(messages)
+
+    assert [(item["role"], item["content"]) for item in adapted] == [
+        ("system", "S\n\nD0"),
+        ("user", "E0"),
+        ("user", "U1"),
+        ("assistant", "A1"),
+        ("system", "D1"),
+        ("user", "E1"),
+        ("user", "U2"),
+    ]
+
+
 def test_provider_quirk_profile_resolves_deepseek_anthropic_style_endpoint() -> None:
     profile = resolve_provider_quirk_profile(
         provider=ProviderId.ANTHROPIC,

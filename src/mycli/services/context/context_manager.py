@@ -38,7 +38,11 @@ class ContextManager:
             if item.type is HistoryItemType.USER_MESSAGE:
                 messages.append(
                     Message(
-                        role="user",
+                        role=(
+                            "developer"
+                            if item.metadata.get("model_role") == "developer"
+                            else "user"
+                        ),
                         content=item.text or "",
                         blocks=(
                             ()

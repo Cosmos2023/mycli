@@ -146,6 +146,7 @@ class ShellProcessRegistry:
         chars: str = "",
         yield_time_ms: int = 250,
         max_output_tokens: int = 10_000,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> dict[str, object]:
         started = time.monotonic()
         snapshot = self._manager.interact(
@@ -154,6 +155,7 @@ class ShellProcessRegistry:
             chars=chars,
             yield_time_ms=yield_time_ms,
             max_output_tokens=max_output_tokens,
+            interrupt_token=interrupt_token,
         )
         payload = _snapshot_payload(snapshot)
         payload["max_output_tokens"] = max_output_tokens

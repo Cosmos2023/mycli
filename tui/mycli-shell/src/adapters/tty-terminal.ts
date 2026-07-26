@@ -32,6 +32,13 @@ type ResizeSignalSource = {
 type StreamTerminalOptions = {
 	platform?: NodeJS.Platform;
 	resizeSignalSource?: ResizeSignalSource;
+	alternateScreen?: boolean;
+};
+
+type TtyWriteStreamWithHandle = tty.WriteStream & {
+	_handle?: {
+		getWindowSize(size: number[]): number;
+	};
 };
 
 export function openTtyStreams(options: OpenTtyOptions = {}): TtyStreams {
@@ -82,6 +89,7 @@ export class StreamTerminal implements Terminal {
 
 	private readonly platform: NodeJS.Platform;
 	private readonly resizeSignalSource: ResizeSignalSource;
+	readonly alternateScreen: boolean;
 
 	constructor(
 		private readonly streams: TtyStreams,
@@ -89,6 +97,7 @@ export class StreamTerminal implements Terminal {
 	) {
 		this.platform = options.platform ?? process.platform;
 		this.resizeSignalSource = options.resizeSignalSource ?? process;
+		this.alternateScreen = options.alternateScreen ?? false;
 	}
 
 	get kittyProtocolActive(): boolean {
@@ -96,7 +105,7 @@ export class StreamTerminal implements Terminal {
 	}
 
 	get nativeScrollback(): boolean {
-		return true;
+		return !this.alternateScreen;
 	}
 
 	get columns(): number {
@@ -116,6 +125,7 @@ export class StreamTerminal implements Terminal {
 		}
 		this.streams.input.setEncoding("utf8");
 		this.streams.input.resume();
+		if (this.alternateScreen) this.write("\x1b[?1049h");
 		this.write("\x1b[?2004h");
 		this.streams.output.on("resize", this.resizeHandler);
 		if (this.platform !== "win32") {
@@ -156,9 +166,20 @@ export class StreamTerminal implements Terminal {
 		if (this.streams.input.setRawMode) {
 			this.streams.input.setRawMode(this.wasRaw);
 		}
+		if (this.alternateScreen) this.write("\x1b[?1049l");
 	}
 
 	private windowSize(): [number, number] | undefined {
+		try {
+			const size = [0, 0];
+			const handle = (this.streams.output as TtyWriteStreamWithHandle)._handle;
+			if (handle?.getWindowSize(size) === 0) {
+				const [columns = 0, rows = 0] = size;
+				if (columns > 0 && rows > 0) return [columns, rows];
+			}
+		} catch {
+			// Fall through to the public cached dimensions for other Node runtimes.
+		}
 		try {
 			const [columns, rows] = this.streams.output.getWindowSize();
 			if (columns > 0 && rows > 0) return [columns, rows];

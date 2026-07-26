@@ -40,6 +40,15 @@ class AuthStore:
         payload[provider] = {"type": "api_key", "key": api_key}
         self._write(payload)
 
+    def configured_providers(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                provider
+                for provider in self._read()
+                if self.get_api_key(provider) is not None
+            )
+        )
+
     def _read(self) -> dict[str, Any]:
         if not self._path.exists():
             return {}

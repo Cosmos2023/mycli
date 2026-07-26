@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 from pathlib import Path
+import threading
+import time
 from typing import Any
 
 import pytest
 
-from mycli.services.mcp.client import JsonRpcError, McpClient, McpServerConfig, load_mcp_server_configs
+from mycli.services.mcp.client import (
+    HttpJsonRpcTransport,
+    JsonRpcError,
+    McpClient,
+    McpServerConfig,
+    load_mcp_server_configs,
+)
+from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.services.mcp.resource_adapter import McpResourceAdapter
 from mycli.services.mcp.tool_adapter import McpToolAdapter
 from mycli.domain.tooling.output import ToolImageContent, ToolJsonContent, ToolTextContent
@@ -25,6 +36,42 @@ class FakeTransport:
         if isinstance(response, Exception):
             raise response
         return dict(response)
+
+
+class InterruptAwareTransport:
+    def __init__(self, token: RuntimeInterruptToken) -> None:
+        self.token = token
+        self.requests: list[dict[str, Any]] = []
+        self.aborted_request_ids: list[object] = []
+
+    def request(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> dict[str, Any]:
+        del timeout_seconds
+        self.requests.append(payload)
+        if payload["method"] == "initialize":
+            return {"protocolVersion": "2025-03-26"}
+        assert interrupt_token is self.token
+        self.token.request("test_interrupt")
+        interrupt_token.raise_if_interrupted()
+        raise AssertionError("unreachable")
+
+    def notify(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> None:
+        del timeout_seconds, interrupt_token
+        self.requests.append(payload)
+
+    def abort_request(self, request_id: object) -> None:
+        self.aborted_request_ids.append(request_id)
 
 
 def test_load_mcp_server_configs_reads_project_file_and_resolves_env(
@@ -53,7 +100,7 @@ def test_load_mcp_server_configs_reads_project_file_and_resolves_env(
     )
     monkeypatch.setenv("GITHUB_TOKEN", "secret")
 
-    configs = load_mcp_server_configs(tmp_path)
+    configs = load_mcp_server_configs(tmp_path, home_dir=tmp_path / "home")
 
     assert configs["filesystem"] == McpServerConfig(
         name="filesystem",
@@ -65,6 +112,46 @@ def test_load_mcp_server_configs_reads_project_file_and_resolves_env(
     assert configs["github"].url == "https://mcp.example.test"
     assert configs["github"].enabled is False
     assert configs["github"].env == {"GITHUB_TOKEN": "secret", "STATIC": "value"}
+
+
+def test_load_mcp_server_configs_merges_global_and_workspace_with_workspace_precedence(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    (home / ".mycli").mkdir(parents=True)
+    (workspace / ".mycli").mkdir(parents=True)
+    (home / ".mycli" / "mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[mcpServers.rail]",
+                'type = "streamable_http"',
+                'url = "https://global.example.test/mcp"',
+                "",
+                "[mcpServers.global_only]",
+                'type = "streamable_http"',
+                'url = "https://global-only.example.test/mcp"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".mycli" / "mcp_servers.toml").write_text(
+        "\n".join(
+            [
+                "[servers.rail]",
+                'transport = "streamable_http"',
+                'url = "https://workspace.example.test/mcp"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    configs = load_mcp_server_configs(workspace, home_dir=home)
+
+    assert set(configs) == {"rail", "global_only"}
+    assert configs["rail"].transport == "streamable_http"
+    assert configs["rail"].url == "https://workspace.example.test/mcp"
+    assert configs["global_only"].transport == "streamable_http"
 
 
 def test_mcp_client_initializes_lists_tools_and_calls_tool() -> None:
@@ -101,6 +188,109 @@ def test_mcp_client_initializes_lists_tools_and_calls_tool() -> None:
         "tools/call",
     ]
     assert transport.requests[-1]["params"] == {"name": "search", "arguments": {"query": "needle"}}
+
+
+def test_mcp_client_sends_cancel_notification_for_interrupted_request() -> None:
+    token = RuntimeInterruptToken(source="test")
+    transport = InterruptAwareTransport(token)
+    client = McpClient(
+        McpServerConfig(name="fs", transport="stdio", command="mcp"),
+        transport=transport,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        client.call_tool("search", {"query": "needle"}, interrupt_token=token)
+
+    tool_request = next(item for item in transport.requests if item.get("method") == "tools/call")
+    cancellation = transport.requests[-1]
+    assert cancellation == {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+            "requestId": tool_request["id"],
+            "reason": "test_interrupt",
+        },
+    }
+    assert transport.aborted_request_ids == [tool_request["id"]]
+
+
+def test_streamable_http_client_keeps_session_and_decodes_sse_tools() -> None:
+    requests: list[dict[str, Any]] = []
+    session_headers: list[str | None] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length))
+            requests.append(payload)
+            session_headers.append(self.headers.get("Mcp-Session-Id"))
+            method = payload["method"]
+            if method == "initialize":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {"protocolVersion": "2025-03-26"},
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Mcp-Session-Id", "session-123")
+            elif method == "notifications/initialized":
+                body = b""
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+            else:
+                body = (
+                    "event: message\n"
+                    f"data: {json.dumps({'jsonrpc': '2.0', 'id': payload['id'], 'result': {'tools': [{'name': 'lookup', 'inputSchema': {'type': 'object'}}]}})}\n\n"
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        client = McpClient(
+            McpServerConfig(
+                name="rail",
+                transport="streamable_http",
+                url=f"http://{host}:{port}/mcp",
+            )
+        )
+
+        tools = client.list_tools()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert [request["method"] for request in requests] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+    ]
+    assert "id" not in requests[1]
+    assert session_headers == [None, "session-123", "session-123"]
+    assert tools[0].name == "lookup"
+
+
+def test_legacy_http_transport_does_not_send_initialized_notification() -> None:
+    transport = HttpJsonRpcTransport("http://127.0.0.1:1", streamable=False)
+
+    transport.notify(
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        timeout_seconds=0.01,
+    )
 
 
 def test_mcp_client_raises_protocol_error() -> None:
@@ -356,6 +546,8 @@ while True:
         break
     body = sys.stdin.buffer.read(int(headers["content-length"]))
     request = json.loads(body)
+    if "id" not in request:
+        continue
     response = {"jsonrpc": "2.0", "id": request["id"], "result": {"ok": request["method"]}}
     payload = json.dumps(response).encode("utf-8")
     sys.stdout.buffer.write(f"Content-Length: {len(payload)}\\r\\n\\r\\n".encode("ascii") + payload)
@@ -369,3 +561,133 @@ while True:
     result = client.request("ping")
 
     assert result == {"ok": "ping"}
+
+
+def test_stdio_mcp_interrupt_restarts_transport_without_stale_response(tmp_path: Path) -> None:
+    server = tmp_path / "interruptible_server.py"
+    pid_log = tmp_path / "pids.txt"
+    server.write_text(
+        """
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+
+with open(sys.argv[1], "a", encoding="utf-8") as log:
+    log.write(f"{os.getpid()}\\n")
+
+while True:
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if line in {b"\\r\\n", b"\\n", b""}:
+            break
+        key, value = line.decode("ascii").strip().split(":", 1)
+        headers[key.lower()] = value.strip()
+    if not headers:
+        break
+    request = json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+    if "id" not in request:
+        continue
+    method = request["method"]
+    if method == "tools/call" and request["params"]["name"] == "hang":
+        time.sleep(30)
+    if method == "initialize":
+        result = {"protocolVersion": "2025-03-26"}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "ok"}]}
+    else:
+        result = {"ok": method}
+    payload = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}).encode()
+    sys.stdout.buffer.write(f"Content-Length: {len(payload)}\\r\\n\\r\\n".encode() + payload)
+    sys.stdout.buffer.flush()
+""".lstrip(),
+        encoding="utf-8",
+    )
+    token = RuntimeInterruptToken(source="test")
+    client = McpClient(
+        McpServerConfig(
+            name="stdio",
+            transport="stdio",
+            command="python",
+            args=(str(server), str(pid_log)),
+        )
+    )
+    interrupted = threading.Event()
+
+    def call_hanging_tool() -> None:
+        try:
+            client.call_tool("hang", {}, interrupt_token=token)
+        except KeyboardInterrupt:
+            interrupted.set()
+
+    worker = threading.Thread(target=call_hanging_tool)
+    worker.start()
+    for _ in range(100):
+        if pid_log.exists() and pid_log.read_text(encoding="utf-8").strip():
+            break
+        threading.Event().wait(0.01)
+    token.request("test_interrupt")
+    assert interrupted.wait(timeout=1.5)
+    worker.join(timeout=1)
+
+    result = client.call_tool("fast", {})
+    client.close()
+
+    assert result.text == "ok"
+    assert len(pid_log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_http_mcp_transport_closes_inflight_connection_on_interrupt() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.flush()
+            started.set()
+            release.wait(timeout=5)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+    transport = HttpJsonRpcTransport(f"http://{host}:{port}/mcp", streamable=True)
+    token = RuntimeInterruptToken(source="test")
+    interrupted = threading.Event()
+
+    def request() -> None:
+        try:
+            transport.request(
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call"},
+                timeout_seconds=30,
+                interrupt_token=token,
+            )
+        except KeyboardInterrupt:
+            interrupted.set()
+
+    worker = threading.Thread(target=request)
+    worker.start()
+    assert started.wait(timeout=1)
+    interrupt_started = time.monotonic()
+    token.request("test_interrupt")
+    interrupt_elapsed = time.monotonic() - interrupt_started
+    try:
+        assert interrupt_elapsed < 0.1
+        assert interrupted.wait(timeout=1)
+    finally:
+        release.set()
+        worker.join(timeout=2)
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)

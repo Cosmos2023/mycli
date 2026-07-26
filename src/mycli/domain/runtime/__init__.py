@@ -209,12 +209,15 @@ class AgentConfig:
     protocol: ProtocolId = ProtocolId.RESPONSES
     api_base_url: str = "https://api.openai.com/v1"
     api_key: str | None = None
+    auth_ref: str | None = None
     supports_images: bool = True
     session_id: str = "default"
     max_prompt_tokens: int = 12000
     fallback_model: str | None = None
     cache_policy_capability: ProviderCachePolicyCapability | None = None
-    transport_retry_limit: int = 2
+    request_max_retries: int = 4
+    stream_max_retries: int = 5
+    transport_retry_limit: int | None = None
     heartbeat_enabled: bool = True
     heartbeat_interval_seconds: float = 30.0
     view_mode: ViewMode = ViewMode.DEFAULT
@@ -266,6 +269,12 @@ class AgentConfig:
     max_tokens_per_turn: int = 200_000
     no_progress_threshold: int = 6
     reroute_threshold: int = 3
+
+    @property
+    def effective_stream_max_retries(self) -> int:
+        legacy_limit = self.transport_retry_limit
+        configured = legacy_limit if legacy_limit is not None else self.stream_max_retries
+        return max(0, min(100, configured))
 
 
 @dataclass(slots=True, frozen=True)
@@ -380,6 +389,7 @@ class TurnResponse:
     plan_steps: tuple[str, ...] = field(default_factory=tuple)
     pending_decision: PendingDecision | None = None
     turn: TurnRecord | None = None
+    input_rolled_back: bool = False
 
 
 __all__ = [

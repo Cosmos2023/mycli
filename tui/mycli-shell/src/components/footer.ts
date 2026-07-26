@@ -3,20 +3,30 @@ import type { Component } from "../tui-core/tui.ts";
 import { truncateToWidth, visibleWidth } from "../tui-core/utils.ts";
 import type { MycliShellFooterData } from "../model.ts";
 import { theme } from "../theme/theme.ts";
+import { rawKeyHint } from "./keybinding-hints.ts";
+
+export type FooterInteractionState = {
+	turnRunning: boolean;
+	hasQueuedInput: boolean;
+};
+
+type FooterSegment = {
+	id: string;
+	text: string;
+	optional: boolean;
+};
+
+const idleInteraction: FooterInteractionState = {
+	turnRunning: false,
+	hasQueuedInput: false,
+};
 
 function sanitizeStatusText(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 }
 
-function formatTokens(count: number): string {
-	if (count < 1000) return String(count);
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${(count / 1000000).toFixed(1)}M`;
-}
-
 export function formatCwdForFooter(cwd: string, home: string | undefined = process.env.HOME || process.env.USERPROFILE): string {
+	if (cwd === "~" || cwd.startsWith("~/") || cwd.startsWith("~\\")) return cwd;
 	if (!home) return cwd;
 	const resolvedCwd = resolve(cwd);
 	const resolvedHome = resolve(home);
@@ -28,106 +38,169 @@ export function formatCwdForFooter(cwd: string, home: string | undefined = proce
 	return relativeToHome === "" ? "~" : `~${sep}${relativeToHome}`;
 }
 
+function compactPathToWidth(path: string, width: number): string {
+	if (width <= 0) return "";
+	if (visibleWidth(path) <= width) return path;
+
+	const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+	const parts = path.split(/[\\/]/).filter(Boolean);
+	const leaf = parts.at(-1) ?? path;
+	let prefix = `...${separator}`;
+	if (path.startsWith(`~${separator}`)) {
+		prefix = `~${separator}...${separator}`;
+	} else if (path.startsWith(separator)) {
+		prefix = `${separator}...${separator}`;
+	} else if (/^[A-Za-z]:[\\/]/.test(path)) {
+		prefix = `${path.slice(0, 2)}${separator}...${separator}`;
+	}
+
+	return truncateToWidth(`${prefix}${leaf}`, width, "...");
+}
+
+function alignedColumns(left: string, right: string, width: number): string {
+	if (!right) return truncateToWidth(left, width, "...");
+	if (!left) return truncateToWidth(right, width, "...");
+	const leftWidth = visibleWidth(left);
+	const rightWidth = visibleWidth(right);
+	if (leftWidth + 2 + rightWidth <= width) {
+		return `${left}${" ".repeat(width - leftWidth - rightWidth)}${right}`;
+	}
+	const availableRight = width - leftWidth - 2;
+	if (availableRight >= 4) {
+		const fittedRight = truncateToWidth(right, availableRight, "...");
+		return `${left}${" ".repeat(Math.max(2, width - leftWidth - visibleWidth(fittedRight)))}${fittedRight}`;
+	}
+	return truncateToWidth(left, width, "...");
+}
+
 export class FooterComponent implements Component {
-	constructor(private readonly data: MycliShellFooterData) {}
+	constructor(
+		private readonly data: MycliShellFooterData,
+		private readonly interaction: FooterInteractionState = idleInteraction,
+	) {}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const cwdParts = [
-			formatCwdForFooter(this.data.cwd),
-			this.data.gitBranch ? `(${this.data.gitBranch})` : "",
-			this.data.sessionName ? `• ${this.data.sessionName}` : "",
-		].filter(Boolean);
-		const cwdLine = truncateToWidth(theme.fg("dim", cwdParts.join(" ")), width, theme.fg("dim", "..."));
-
-		const taskText = this.data.taskProgress && this.data.taskProgress.total > 0
-			? `Tasks ${this.data.taskProgress.completed}/${this.data.taskProgress.total}`
-			: undefined;
-		const statsParts: string[] = [
-			this.data.totalInputTokens ? `↑${formatTokens(this.data.totalInputTokens)}` : undefined,
-			this.data.totalOutputTokens ? `↓${formatTokens(this.data.totalOutputTokens)}` : undefined,
-			this.data.cacheReadTokens ? `R${formatTokens(this.data.cacheReadTokens)}` : undefined,
-			this.data.cacheWriteTokens ? `W${formatTokens(this.data.cacheWriteTokens)}` : undefined,
-			this.data.cacheHitRate !== undefined ? `CH${this.data.cacheHitRate.toFixed(1)}%` : undefined,
-			this.costText(),
-			this.contextText(),
-			this.data.trust ? `trust ${this.data.trust}` : undefined,
-			this.data.collaborationMode ? `mode ${this.data.collaborationMode}` : undefined,
-			this.backgroundShellText(),
-			taskText,
-			this.data.liveState,
-		].filter((part): part is string => Boolean(part));
-
-		let left = statsParts.join(" ");
-		if (!left) {
-			left = "ready";
-		}
-
-		const rightWithoutProvider = [this.data.model ?? "no-model", this.data.reasoningLevel ? `• ${this.data.reasoningLevel}` : ""]
-			.filter(Boolean)
-			.join(" ");
-		let right = this.data.provider ? `(${this.data.provider}) ${rightWithoutProvider}` : rightWithoutProvider;
-		const minPadding = 2;
-		if (taskText && visibleWidth(left) + minPadding + visibleWidth(right) > width) {
-			left = statsParts.filter((part) => part !== taskText).join(" ") || "ready";
-		}
-		if (visibleWidth(left) > width) {
-			left = truncateToWidth(left, width, "...");
-		}
-		let leftWidth = visibleWidth(left);
-		if (leftWidth + minPadding + visibleWidth(right) > width && this.data.provider) {
-			right = rightWithoutProvider;
-		}
-		const rightWidth = visibleWidth(right);
-		const totalNeeded = leftWidth + minPadding + rightWidth;
-
-		let statsLine: string;
-		if (totalNeeded <= width) {
-			statsLine = `${left}${" ".repeat(width - leftWidth - rightWidth)}${right}`;
-		} else {
-			const availableRight = width - leftWidth - minPadding;
-			if (availableRight > 0) {
-				const truncatedRight = truncateToWidth(right, availableRight, "");
-				statsLine = `${left}${" ".repeat(Math.max(0, width - leftWidth - visibleWidth(truncatedRight)))}${truncatedRight}`;
-			} else {
-				statsLine = left;
-			}
-		}
-
-		const lines = [cwdLine, theme.fg("dim", statsLine)];
+		const safeWidth = Math.max(1, width);
+		const lines = [
+			theme.fg("dim", this.contextRow(safeWidth)),
+			theme.fg("dim", this.actionStatusRow(safeWidth)),
+		];
 		for (const status of this.data.extensionStatuses ?? []) {
-			lines.push(truncateToWidth(theme.fg("dim", sanitizeStatusText(status)), width, theme.fg("dim", "...")));
+			lines.push(truncateToWidth(theme.fg("dim", sanitizeStatusText(status)), safeWidth, theme.fg("dim", "...")));
 		}
 		return lines;
 	}
 
-	private backgroundShellText(): string | undefined {
-		const count = this.data.backgroundShellCount ?? 0;
-		if (count <= 0) return undefined;
-		const noun = count === 1 ? "terminal" : "terminals";
-		return `${count} background ${noun} running · /ps to view · /stop to close`;
+	private contextRow(width: number): string {
+		const path = sanitizeStatusText(formatCwdForFooter(this.data.cwd));
+		const session = this.data.sessionName ? `• ${sanitizeStatusText(this.data.sessionName)}` : "";
+		const branch = this.data.gitBranch ? `(${sanitizeStatusText(this.data.gitBranch)})` : "";
+		const separator = path && session ? "  " : "";
+		const fullLeft = `${path}${separator}${session}`;
+
+		if (branch && visibleWidth(fullLeft) + 2 + visibleWidth(branch) <= width) {
+			return alignedColumns(fullLeft, branch, width);
+		}
+		if (visibleWidth(fullLeft) <= width) {
+			return fullLeft;
+		}
+		if (!session) {
+			return compactPathToWidth(path, width);
+		}
+
+		const pathBudget = width - visibleWidth(session) - visibleWidth(separator);
+		if (pathBudget >= 4) {
+			return `${compactPathToWidth(path, pathBudget)}${separator}${session}`;
+		}
+		return truncateToWidth(session, width, "...");
 	}
 
-	private costText(): string | undefined {
-		if (!this.data.costUsd && !this.data.usingSubscription) {
-			return undefined;
+	private actionStatusRow(width: number): string {
+		const actions = this.actionSegments();
+		const statuses = this.statusSegments();
+		const dropOrder = ["edit", "task", "reasoning", "model", "context", "follow-up"];
+
+		for (const id of dropOrder) {
+			if (this.segmentsFit(actions, statuses, width)) break;
+			this.removeOptionalSegment(actions, id);
+			this.removeOptionalSegment(statuses, id);
 		}
-		return `$${(this.data.costUsd ?? 0).toFixed(3)}${this.data.usingSubscription ? " (sub)" : ""}`;
+
+		const left = actions.map((segment) => segment.text).join(theme.fg("muted", " · "));
+		const right = statuses.map((segment) => segment.text).join(theme.fg("muted", " │ "));
+		return alignedColumns(left, right, width);
 	}
 
-	private contextText(): string | undefined {
-		if (this.data.contextPercent === undefined || this.data.contextWindow === undefined) {
-			return undefined;
+	private actionSegments(): FooterSegment[] {
+		return [
+			{ id: "enter", text: rawKeyHint("enter", this.interaction.turnRunning ? "steer" : "send"), optional: false },
+			{ id: "follow-up", text: rawKeyHint("tab", "follow-up"), optional: true },
+			...(this.interaction.turnRunning
+				? [{ id: "interrupt", text: rawKeyHint("ctrl+c", "interrupt"), optional: false }]
+				: []),
+			...(this.interaction.hasQueuedInput
+				? [{ id: "edit", text: rawKeyHint("alt+up", "edit follow-up"), optional: true }]
+				: []),
+		];
+	}
+
+	private statusSegments(): FooterSegment[] {
+		const segments: FooterSegment[] = [];
+		const trust = this.data.trust?.trim().toLowerCase();
+		if (trust === "unknown") {
+			segments.push({ id: "trust", text: theme.fg("warning", "trust?"), optional: false });
+		} else if (trust && trust !== "trusted") {
+			segments.push({ id: "trust", text: theme.fg("warning", `trust ${sanitizeStatusText(this.data.trust ?? trust)}`), optional: false });
 		}
-		const auto = this.data.autoCompact ? " (auto)" : "";
-		const text = `${this.data.contextPercent.toFixed(1)}%/${formatTokens(this.data.contextWindow)}${auto}`;
-		if (this.data.contextPercent > 90) {
-			return theme.fg("error", text);
+		if (this.data.collaborationMode === "plan") {
+			segments.push({ id: "mode", text: theme.fg("accent", "plan"), optional: false });
 		}
-		if (this.data.contextPercent > 70) {
-			return theme.fg("warning", text);
+		if ((this.data.backgroundShellCount ?? 0) > 0) {
+			const count = this.data.backgroundShellCount ?? 0;
+			segments.push({
+				id: "background",
+				text: `${count} background ${count === 1 ? "terminal" : "terminals"} running`,
+				optional: false,
+			});
 		}
-		return text;
+		if (this.data.taskProgress && this.data.taskProgress.total > 0) {
+			segments.push({
+				id: "task",
+				text: `Tasks ${this.data.taskProgress.completed}/${this.data.taskProgress.total}`,
+				optional: true,
+			});
+		}
+		const liveState = sanitizeStatusText(this.data.liveState ?? "");
+		if (liveState && liveState.toLowerCase() !== "idle") {
+			segments.push({ id: "live", text: liveState, optional: false });
+		}
+		if (this.data.contextPercent !== undefined) {
+			const percent = Number.isInteger(this.data.contextPercent)
+				? this.data.contextPercent.toFixed(0)
+				: this.data.contextPercent.toFixed(1);
+			const text = `${percent}% ctx`;
+			const color = this.data.contextPercent > 90 ? "error" : this.data.contextPercent > 70 ? "warning" : "dim";
+			segments.push({ id: "context", text: theme.fg(color, text), optional: true });
+		}
+		if (this.data.model) {
+			segments.push({ id: "model", text: sanitizeStatusText(this.data.model), optional: true });
+		}
+		if (this.data.reasoningLevel) {
+			segments.push({ id: "reasoning", text: `• ${sanitizeStatusText(this.data.reasoningLevel)}`, optional: true });
+		}
+		return segments;
+	}
+
+	private segmentsFit(actions: FooterSegment[], statuses: FooterSegment[], width: number): boolean {
+		const left = actions.map((segment) => segment.text).join(" · ");
+		const right = statuses.map((segment) => segment.text).join(" │ ");
+		return visibleWidth(left) + (left && right ? 2 : 0) + visibleWidth(right) <= width;
+	}
+
+	private removeOptionalSegment(segments: FooterSegment[], id: string): void {
+		const index = segments.findIndex((segment) => segment.id === id && segment.optional);
+		if (index >= 0) segments.splice(index, 1);
 	}
 }

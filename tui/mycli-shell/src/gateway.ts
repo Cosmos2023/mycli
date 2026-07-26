@@ -11,8 +11,9 @@ import {
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
 	runtimeStateWithLocalFollowUp,
+	runtimeInputDisposition,
 	runtimeStateRejectPendingSteer,
-	restorePendingSteersAfterInterrupt,
+	resolveLocalInterruptInputs,
 	popLastLocalFollowUp,
 	nextLocalUserInput,
 	removeLocalUserInput,
@@ -36,6 +37,7 @@ import type { ProjectTrustDecision } from "./components/trust-selector.ts";
 import { openTtyStreams, StreamTerminal, type TtyStreams } from "./adapters/tty-terminal.ts";
 import { GatewayEventDeduper } from "./adapters/gateway-events.ts";
 import { clientActionFromResult, slashCommandsFromResult } from "./adapters/slash-commands.ts";
+import { commandResultFromGateway } from "./adapters/command-results.ts";
 import type { MycliShellCommandSpec } from "./model.ts";
 
 type QueueKind = "steer" | "followUp";
@@ -67,6 +69,8 @@ let backendTurnBusy = false;
 let clientTurnSequence = 0;
 let localDispatchEligible = false;
 let localDispatchScheduled = false;
+let interruptRequested = false;
+let resubmitPendingSteersAfterInterrupt = false;
 
 function currentShellState(): MycliShellState {
 	return projectRuntimeState(runtimeState, sessions);
@@ -99,26 +103,54 @@ function handleGatewayEvent(event: GatewayEvent): void {
 	if (!eventDeduper.shouldConsume(event)) {
 		return;
 	}
+	if (
+		event.method === "turn.interrupted" &&
+		event.params.requested === true &&
+		!interruptRequested
+	) {
+		return;
+	}
 	let nextState = reduceRuntimeEvent(runtimeState, event.method, event.params);
 	const interrupted =
-		event.method === "turn.interrupted" ||
+		(event.method === "turn.interrupted" && event.params.requested !== true) ||
 		(event.method === "turn.completed" && event.params.turn_state === "interrupted");
-	if (interrupted) {
-		nextState = restorePendingSteersAfterInterrupt(nextState);
+	const shouldResolveInterrupt =
+		interrupted &&
+		(interruptRequested || runtimeState.turnRunning || runtimeState.activeTurnId !== null);
+	if (shouldResolveInterrupt) {
+		const resolution = resolveLocalInterruptInputs(
+			nextState,
+			resubmitPendingSteersAfterInterrupt,
+		);
+		nextState = resolution.state;
+		localDispatchEligible = resolution.dispatchNext;
+		runtime?.completeInterruptedTurn(
+			resolution.restoreToComposer.map((input) => ({
+				text: input.message,
+				...(input.attachments.length ? { localImages: input.attachments } : {}),
+			})),
+			{
+				restoreSubmittedInput:
+					event.method === "turn.completed" && event.params.input_rolled_back === true,
+			},
+		);
+		interruptRequested = false;
+		resubmitPendingSteersAfterInterrupt = false;
 	}
 	setRuntimeState(nextState);
 	if (event.method === "turn.started") {
 		backendTurnBusy = true;
 	}
 	if (
-		event.method === "turn.completed" ||
-		event.method === "turn.failed" ||
-		event.method === "turn.interrupted"
+		(event.method === "turn.completed" && !interrupted) ||
+		event.method === "turn.failed"
 	) {
 		localDispatchEligible = true;
 	}
 	if (event.method === "status.changed" && event.params.turn_running === false) {
 		backendTurnBusy = false;
+		scheduleNextLocalInput();
+	} else if (shouldResolveInterrupt && !backendTurnBusy) {
 		scheduleNextLocalInput();
 	}
 }
@@ -218,7 +250,29 @@ async function submitTurn(
 	if (!text) {
 		return;
 	}
-	if (runtimeState.turnRunning || runtimeState.activeTurnId) {
+	const pendingClarification = runtimeState.pendingClarification;
+	if (pendingClarification) {
+		const requestId = typeof pendingClarification.request_id === "string"
+			? pendingClarification.request_id
+			: typeof pendingClarification.requestId === "string"
+				? pendingClarification.requestId
+				: "";
+		if (requestId) {
+			await respondClarification(requestId, text);
+			return;
+		}
+	}
+	const disposition = runtimeInputDisposition(runtimeState, backendTurnBusy);
+	if (disposition === "follow_up") {
+		setRuntimeState(
+			runtimeStateWithLocalFollowUp(
+				runtimeState,
+				runtimeLocalInput(clientUserMessageId, text, attachments),
+			),
+		);
+		return;
+	}
+	if (disposition === "steer") {
 		await queueSteeringTurn({
 			kind: "steer",
 			message: text,
@@ -254,15 +308,14 @@ async function submitTurn(
 		setRuntimeState(removeLocalUserInput(runtimeState, clientUserMessageId));
 		if (error instanceof GatewayRequestError && error.code === "turn_in_progress") {
 			backendTurnBusy = true;
-			if (runtimeState.activeTurnId) {
-				await queueSteeringTurn({
-					kind: "steer",
-					message: text,
-					attachments,
-					clientUserMessageId,
-				});
-				return;
-			}
+			localDispatchEligible = true;
+			setRuntimeState(
+				runtimeStateWithLocalFollowUp(
+					runtimeState,
+					runtimeLocalInput(clientUserMessageId, text, attachments),
+				),
+			);
+			return;
 		}
 		setRuntimeState(
 			reduceRuntimeEvent(runtimeState, "gateway.error", {
@@ -423,18 +476,46 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 		: null;
 }
 
-async function interruptTurn(): Promise<void> {
-	await send("turn.interrupt", {});
+async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<void> {
+	if (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId) {
+		interruptRequested = true;
+		resubmitPendingSteersAfterInterrupt = runtimeState.localPendingSteers.length > 0;
+		setRuntimeState(
+			reduceRuntimeEvent(runtimeState, "turn.interrupted", {
+				requested: true,
+				message: "Interrupt requested",
+				...(runtimeState.activeTurnId ? { turn_id: runtimeState.activeTurnId } : {}),
+			}),
+		);
+	}
+	try {
+		await send("turn.interrupt", {
+			rollback_user_input: options.rollbackUserInput,
+		});
+	} catch (error) {
+		interruptRequested = false;
+		resubmitPendingSteersAfterInterrupt = false;
+		throw error;
+	}
 }
 
 async function respondApproval(decisionId: string, choice: string): Promise<void> {
 	await send("approval.respond", { decision_id: decisionId, choice });
 }
 
+async function respondClarification(requestId: string, response: string): Promise<void> {
+	await send("clarify.respond", { request_id: requestId, response });
+}
+
 async function saveApiKey(providerId: string, apiKey: string): Promise<{ message?: string }> {
 	const result = await send("auth.api_key.save", { provider_id: providerId, api_key: apiKey });
+	const modelResult = await send("model.list", {}, { recordErrors: false });
 	runtimeState = {
 		...runtimeState,
+		status: {
+			...runtimeState.status,
+			models: Array.isArray(modelResult.models) ? modelResult.models : [],
+		},
 		authProviders: runtimeState.authProviders.map((provider) =>
 			provider.id === providerId ? { ...provider, configured: true } : provider,
 		),
@@ -449,6 +530,13 @@ async function runCommand(command: string): Promise<void> {
 	const clientAction = clientActionFromResult(result);
 	if (clientAction && runtime) {
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
+		return;
+	}
+	if (result.presentation === "overlay" && runtime) {
+		const overlay = commandResultFromGateway(result, `overlay:${command}`);
+		if (overlay) {
+			runtime.showCommandResultOverlay(overlay);
+		}
 		return;
 	}
 	const nextState = await runtimeStateAfterCommandResult(
@@ -550,6 +638,7 @@ async function main(): Promise<void> {
 			},
 			columns: () => ttyStreams?.output.columns || Number(process.env.COLUMNS) || 100,
 			onSubmit: submitTurn,
+			onClarificationRespond: respondClarification,
 			onFollowUp: submitFollowUp,
 			onCommandSubmit: runCommand,
 			onExit: () => shutdown(0),
@@ -559,9 +648,12 @@ async function main(): Promise<void> {
 		return;
 	}
 	ttyStreams = openTtyStreams();
+	const alternateScreen = ["1", "true", "always"].includes(
+		(process.env.MYCLI_TUI_ALTERNATE_SCREEN ?? "").trim().toLowerCase(),
+	);
 	runtime = new MycliShellRuntime({
 		initialState: currentShellState(),
-		terminal: new StreamTerminal(ttyStreams),
+		terminal: new StreamTerminal(ttyStreams, { alternateScreen }),
 		requireTrust: runtimeState.trust.state === "unknown" && !runtimeState.trustGateDismissed,
 		projectTrusted: runtimeState.trust.state === "trusted",
 		trustSavedDecision: trustDecisionFromState(runtimeState.trust.state),
@@ -572,10 +664,20 @@ async function main(): Promise<void> {
 		onCommandSubmit: runCommand,
 		onExit: () => shutdown(0),
 		onApprovalRespond: respondApproval,
+		onClarificationRespond: respondClarification,
 		onApiKeyLogin: saveApiKey,
 		onModelSelect: async (model) => {
-			const thinking = model.thinkingLevel ? ` --thinking-effort ${model.thinkingLevel}` : "";
-			await runCommand(`/model ${model.id}${thinking}`);
+			if (!model.protocol || !model.baseUrl) {
+				throw new Error("Model catalog entry is missing provider protocol or endpoint metadata.");
+			}
+			await send("model.select", {
+				provider: model.provider,
+				protocol: model.protocol,
+				model: model.model,
+				base_url: model.baseUrl,
+				reasoning_effort: model.thinkingLevel ?? null,
+			});
+			return model;
 		},
 		onSessionSelect: selectSession,
 		onSessionTreeLoad: loadSessionTree,

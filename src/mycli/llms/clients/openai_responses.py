@@ -36,12 +36,18 @@ class OpenAIResponsesClient:
         capability_profile: ResponsesCapabilityProfile | None = None,
         log_service: WorkspaceLogService | None = None,
         log_context_provider: Callable[[], ModelLogContext] | None = None,
+        request_max_retries: int = 4,
     ) -> None:
         ensure_certifi_ca_bundle()
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._sdk_client = _build_openai_sdk_client(api_key=api_key, base_url=base_url)
+        self._request_max_retries = max(0, min(100, request_max_retries))
+        self._sdk_client = _build_openai_sdk_client(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=self._request_max_retries,
+        )
         self._thinking_enabled = True
         self._reasoning_effort: str | None = None
         self._tool_choice: str | None = None
@@ -428,6 +434,7 @@ class OpenAIResponsesClient:
                 reason="stream transport already disabled",
                 prompt_cache_key=prompt_cache_key,
                 tool_choice=tool_choice,
+                interrupt_token=interrupt_token,
             )
             return
 
@@ -438,6 +445,8 @@ class OpenAIResponsesClient:
         allow_continuation_retry = True
 
         while True:
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
             continuation_state = self._continuation_state if allow_continuation_retry else None
             build_result = self._request_builder.build(
                 model=self._model,
@@ -477,14 +486,20 @@ class OpenAIResponsesClient:
                 },
             )
 
+            unregister_interrupt_callbacks: list[Callable[[], None]] = []
             try:
                 terminated = False
                 if interrupt_token is not None:
-                    interrupt_token.add_callback(self._reset_sdk_client)
+                    unregister_interrupt_callbacks.append(
+                        interrupt_token.add_callback(self._reset_sdk_client)
+                    )
                 stream_response = cast(Any, self._sdk_client.responses.create)(**payload_body)
                 if interrupt_token is not None:
-                    interrupt_token.add_callback(
-                        lambda: self._close_stream_and_reset_client(stream_response)
+                    unregister_interrupt_callbacks[-1]()
+                    unregister_interrupt_callbacks.append(
+                        interrupt_token.add_callback(
+                            lambda: self._close_stream_and_reset_client(stream_response)
+                        )
                     )
                     if interrupt_token.interrupted:
                         _close_stream(stream_response)
@@ -549,6 +564,12 @@ class OpenAIResponsesClient:
                 error = self._errors.build_transport_error(exc=exc, request_path=request_path)
             except ModelResponseError as exc:
                 error = exc
+            finally:
+                for unregister in reversed(unregister_interrupt_callbacks):
+                    unregister()
+
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
 
             if error.is_retryable and attempt < max_retries:
                 attempt += 1
@@ -572,7 +593,7 @@ class OpenAIResponsesClient:
             if error.is_retryable and self._capability_profile.supports_stream_fallback_to_create:
                 if interrupt_token is not None and interrupt_token.interrupted:
                     self.record_response_failure(str(error))
-                    raise error
+                    interrupt_token.raise_if_interrupted()
                 self._stream_transport_disabled = True
                 self._logger.log_service_event(
                     level=LogLevel.WARNING,
@@ -595,8 +616,13 @@ class OpenAIResponsesClient:
                     reason=error.failure_kind or "transport failure",
                     prompt_cache_key=prompt_cache_key,
                     tool_choice=tool_choice,
+                    interrupt_token=interrupt_token,
                 )
                 return
+
+            if error.is_retryable and max_retries == 0:
+                self.record_response_failure(str(error))
+                raise error
 
             if error.is_retryable:
                 exhausted_error = self._errors.build_retry_exhausted_error(
@@ -615,6 +641,7 @@ class OpenAIResponsesClient:
         self._sdk_client = _build_openai_sdk_client(
             api_key=self._api_key,
             base_url=self._base_url,
+            max_retries=self._request_max_retries,
         )
 
     def _close_stream_and_reset_client(self, stream: object | None = None) -> None:
@@ -631,7 +658,10 @@ class OpenAIResponsesClient:
         reason: str,
         prompt_cache_key: str | None = None,
         tool_choice: str | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> Iterator[dict[str, object]]:
+        if interrupt_token is not None:
+            interrupt_token.raise_if_interrupted()
         self._logger.log_service_event(
             level=LogLevel.WARNING,
             event="model_stream_fallback_running",
@@ -641,13 +671,23 @@ class OpenAIResponsesClient:
             "model_stream_fallback_running",
             {"reason": reason},
         )
-        payload = self.create_response(
-            input_items=input_items,
-            tools=tools,
-            instructions=instructions,
-            prompt_cache_key=prompt_cache_key,
-            tool_choice=tool_choice,
+        unregister_interrupt = (
+            interrupt_token.add_callback(self._reset_sdk_client)
+            if interrupt_token is not None
+            else lambda: None
         )
+        try:
+            payload = self.create_response(
+                input_items=input_items,
+                tools=tools,
+                instructions=instructions,
+                prompt_cache_key=prompt_cache_key,
+                tool_choice=tool_choice,
+            )
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
+        finally:
+            unregister_interrupt()
         yield from self._stream_helper.payload_to_synthetic_stream(payload)
 
     def _log_stream_completion(self, event: dict[str, object]) -> str | None:

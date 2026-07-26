@@ -68,6 +68,7 @@ class UserMessageLifecycle:
                 role="user",
                 content=item.text,
                 blocks=self._user_blocks(item),
+                metadata={**metadata, "turn_id": turn_id},
             )
         )
         try:

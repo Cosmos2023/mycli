@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState
+from mycli.domain.runtime import PlanState, RuntimeInterruptToken
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionDescriptor,
@@ -63,10 +63,13 @@ class SkillToolContributionProvider:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ToolContributionRegistration, ...]:
         del user_message, conversation, plan_state
         registrations: list[ToolContributionRegistration] = []
         for metadata in self.registry.list_metadata():
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
             legacy_route_name = f"skill.{metadata.name}"
             route_name = provider_safe_tool_name("skill", metadata.name)
             spec = ToolSpec(

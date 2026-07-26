@@ -501,9 +501,12 @@ export class Editor implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
+		// Keep the terminal's final column unused. A full-width printable row enters
+		// pending-wrap mode and can become two physical rows when the terminal shrinks.
+		const renderWidth = Math.max(1, width - 1);
+		const maxPadding = Math.max(0, Math.floor((renderWidth - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
-		const contentWidth = Math.max(1, width - paddingX * 2);
+		const contentWidth = Math.max(1, renderWidth - paddingX * 2);
 
 		// Layout width: with padding the cursor can overflow into it,
 		// without padding we reserve 1 column for the cursor.
@@ -546,14 +549,14 @@ export class Editor implements Component, Focusable {
 		// Render top border (with scroll indicator if scrolled down)
 		if (this.scrollOffset > 0) {
 			const indicator = `─── ↑ ${this.scrollOffset} more `;
-			const remaining = width - visibleWidth(indicator);
+			const remaining = renderWidth - visibleWidth(indicator);
 			if (remaining >= 0) {
 				result.push(this.borderColor(indicator + "─".repeat(remaining)));
 			} else {
-				result.push(this.borderColor(truncateToWidth(indicator, width)));
+				result.push(this.borderColor(truncateToWidth(indicator, renderWidth)));
 			}
 		} else {
-			result.push(horizontal.repeat(width));
+			result.push(horizontal.repeat(renderWidth));
 		}
 
 		// Render each visible layout line
@@ -608,10 +611,10 @@ export class Editor implements Component, Focusable {
 		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
 		if (linesBelow > 0) {
 			const indicator = `─── ↓ ${linesBelow} more `;
-			const remaining = width - visibleWidth(indicator);
+			const remaining = renderWidth - visibleWidth(indicator);
 			result.push(this.borderColor(indicator + "─".repeat(Math.max(0, remaining))));
 		} else {
-			result.push(horizontal.repeat(width));
+			result.push(horizontal.repeat(renderWidth));
 		}
 
 		// Add autocomplete list if active

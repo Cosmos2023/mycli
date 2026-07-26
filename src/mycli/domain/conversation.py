@@ -8,7 +8,7 @@ from mycli.domain.tooling.calls import ToolCall
 if TYPE_CHECKING:
     from mycli.domain.runtime.blocks import RuntimeBlock
 
-Role = Literal["system", "user", "assistant", "tool"]
+Role = Literal["system", "developer", "user", "assistant", "tool"]
 
 
 @dataclass(slots=True, frozen=True)

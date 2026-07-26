@@ -15,6 +15,7 @@ WINDOWS_CREATE_NEW_PROCESS_GROUP = getattr(
     0x00000200,
 )
 WINDOWS_CTRL_BREAK_EVENT = getattr(signal, "CTRL_BREAK_EVENT", 1)
+CANCELLATION_TERMINATION_GRACE_SECONDS = 0.05
 
 
 class ManagedProcess(Protocol):
@@ -83,7 +84,11 @@ def _terminate_unix(
 ) -> ProcessTerminationOutcome:
     stages: tuple[tuple[int, str, float], ...] = (
         (signal.SIGINT, "sent_sigint", 0.5),
-        (signal.SIGTERM, "sent_sigterm", 2.0),
+        (
+            signal.SIGTERM,
+            "sent_sigterm",
+            CANCELLATION_TERMINATION_GRACE_SECONDS,
+        ),
         (signal.SIGKILL, "sent_sigkill", 0.5),
     )
     if not prefer_interrupt:
@@ -133,7 +138,10 @@ def _terminate_windows(
         terminate_error: str | None = str(exc)
     else:
         terminate_error = None
-        if wait_for_exit(process, 2.0) or process.poll() is not None:
+        if (
+            wait_for_exit(process, CANCELLATION_TERMINATION_GRACE_SECONDS)
+            or process.poll() is not None
+        ):
             return ProcessTerminationOutcome("terminated", terminal=True)
 
     try:

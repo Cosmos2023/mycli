@@ -18,7 +18,11 @@ from mycli.tools.base import (
     tool_effects_for_tool,
     tool_has_mutation_contract,
 )
-from mycli.tools.invocation_context import ToolInvocationContext, tool_invocation_scope
+from mycli.tools.invocation_context import (
+    ToolInvocationContext,
+    current_tool_interrupt_token,
+    tool_invocation_scope,
+)
 from mycli.tools.registry import ToolRegistry
 
 
@@ -87,12 +91,19 @@ class ToolRouter:
                     ToolContributionLifecycleState.FAILED,
                 )
                 raise
+            interrupt_token = current_tool_interrupt_token()
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
             self._record_contribution_transition(
                 contributed_tool.descriptor.tool_id,
                 ToolContributionLifecycleState.COMPLETED,
             )
             return result
-        return self._tool_registry.execute(call)
+        result = self._tool_registry.execute(call)
+        interrupt_token = current_tool_interrupt_token()
+        if interrupt_token is not None:
+            interrupt_token.raise_if_interrupted()
+        return result
 
     def mutation_targets(
         self,

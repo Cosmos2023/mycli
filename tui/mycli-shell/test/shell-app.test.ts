@@ -55,21 +55,28 @@ function sampleState(): MycliShellState {
 		},
 		currentModel: {
 			provider: "deepseek",
-			id: "deepseek-v4-flash",
+			model: "deepseek-v4-flash",
 			name: "DeepSeek V4 Flash",
 			scoped: true,
 		},
 		models: [
 			{
 				provider: "deepseek",
-				id: "deepseek-v4-flash",
+				protocol: "chat_completions",
+				model: "deepseek-v4-flash",
 				name: "DeepSeek V4 Flash",
-				scoped: true,
+				baseUrl: "https://api.deepseek.com",
+				supportedReasoningEfforts: [],
+				current: true,
 			},
 			{
 				provider: "openai",
-				id: "gpt-5.4",
+				protocol: "responses",
+				model: "gpt-5.4",
 				name: "GPT 5.4",
+				baseUrl: "https://api.openai.com/v1",
+				supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+				defaultReasoningEffort: "medium",
 			},
 		],
 		settings: {
@@ -242,6 +249,7 @@ class TestTerminal implements Terminal {
 	rows = 40;
 	kittyProtocolActive = false;
 	nativeScrollback = false;
+	alternateScreen = false;
 	output = "";
 	input?: (data: string) => void;
 	resize?: () => void;
@@ -631,10 +639,10 @@ test("mycli shell renders complete Plan updates in transcript order", () => {
 
 	const output = stripAnsi(renderMycliShell(state, 72).join("\n"));
 	const planIndex = output.indexOf("• Updated Plan");
-	const composerIndex = output.indexOf("Message mycli");
+	const footerIndex = output.indexOf("enter send");
 
 	assert.ok(planIndex >= 0, output);
-	assert.ok(composerIndex > planIndex, output);
+	assert.ok(footerIndex > planIndex, output);
 	assert.match(output, /✔ Inspect runtime/);
 	assert.match(output, /□ Render Plan history/);
 	assert.match(output, /□ Verify resume/);
@@ -934,9 +942,83 @@ test("mycli shell expands collapsed context tool groups into individual tools", 
 
 test("mycli shell rendered lines stay width safe", () => {
 	const width = 72;
-	for (const line of renderMycliShell(sampleState(), width)) {
+	const lines = renderMycliShell(sampleState(), width);
+	for (const line of lines) {
 		assert.ok(visibleWidth(line) <= width, `line too wide: ${stripAnsi(line)}`);
 	}
+	assert.doesNotMatch(stripAnsi(lines.join("\n")), /Message mycli/);
+});
+
+test("footer renders two quiet idle rows", () => {
+	const lines = new FooterComponent({
+		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
+		gitBranch: "feature/tui",
+		sessionName: "现在都有哪些 skill 呢",
+		provider: "deepseek/chat_completions",
+		model: "deepseek-v4-flash",
+		reasoningLevel: "medium",
+		contextPercent: 11.3,
+		contextWindow: 100000,
+		trust: "trusted",
+		collaborationMode: "default",
+		liveState: "Idle",
+		totalInputTokens: 64291,
+		cacheReadTokens: 53120,
+	}, { turnRunning: false, hasQueuedInput: false }).render(120);
+	const output = stripAnsi(lines.join("\n"));
+
+	assert.equal(lines.length, 2);
+	assert.match(output, /enter send/);
+	assert.match(output, /tab follow-up/);
+	assert.match(output, /11\.3% ctx/);
+	assert.match(output, /deepseek-v4-flash/);
+	assert.doesNotMatch(output, /deepseek\/chat_completions|trust trusted|mode default|Idle|64k|R53k/);
+});
+
+test("footer exposes only actions and exceptional state that currently apply", () => {
+	const output = stripAnsi(new FooterComponent({
+		cwd: "/repo",
+		model: "gpt-5.4",
+		trust: "unknown",
+		collaborationMode: "plan",
+		liveState: "Running",
+		backgroundShellCount: 2,
+	}, { turnRunning: true, hasQueuedInput: true }).render(160).join("\n"));
+
+	assert.match(output, /enter steer/);
+	assert.match(output, /tab follow-up/);
+	assert.match(output, /ctrl\+c interrupt/);
+	assert.match(output, /option\+up edit follow-up/);
+	assert.match(output, /trust\?/);
+	assert.match(output, /plan/);
+	assert.match(output, /Running/);
+	assert.match(output, /2 background terminals/);
+});
+
+test("footer drops git branch before session title on narrow terminals", () => {
+	const data = {
+		cwd: "/Users/cosmos/Desktop/mycli/.worktrees/mycli-termcn-tui-polish",
+		gitBranch: "feature/a-very-long-branch",
+		sessionName: "修复 TUI 底栏",
+		model: "deepseek-v4-flash",
+		contextPercent: 11,
+	};
+	const narrow = new FooterComponent(data, { turnRunning: false, hasQueuedInput: false }).render(48);
+	const wide = stripAnsi(new FooterComponent(data, { turnRunning: false, hasQueuedInput: false }).render(140).join("\n"));
+	const narrowOutput = stripAnsi(narrow.join("\n"));
+
+	assert.match(narrowOutput, /修复 TUI 底栏/);
+	assert.doesNotMatch(narrowOutput, /feature\/a-very-long-branch/);
+	assert.match(wide, /feature\/a-very-long-branch/);
+	assert.equal(narrow.length, 2);
+	for (const line of narrow) assert.ok(visibleWidth(line) <= 48, `line too wide: ${stripAnsi(line)}`);
+
+	const cjkLines = new FooterComponent({
+		cwd: "/很长的目录/另一个很长的目录/project",
+		sessionName: "这是一个很长的中文会话标题",
+	}, { turnRunning: false, hasQueuedInput: false }).render(24);
+	assert.equal(cjkLines.length, 2);
+	for (const line of cjkLines) assert.ok(visibleWidth(line) <= 24, `line too wide: ${stripAnsi(line)}`);
 });
 
 test("footer keeps compact shape width safe", () => {
@@ -967,10 +1049,10 @@ test("footer keeps compact shape width safe", () => {
 
 	const lines = footer.render(64);
 	assert.ok(lines.length >= 3);
-	assert.match(stripAnsi(lines.join("\n")), /~\/Desktop\/mycli/);
-	assert.match(stripAnsi(lines.join("\n")), /91\.2%\/128k/);
+	assert.match(stripAnsi(lines.join("\n")), /~\/\.\.\.\/mycli-termcn-tui-polish/);
+	assert.match(stripAnsi(lines.join("\n")), /91\.2% ctx/);
 	assert.match(stripAnsi(lines.join("\n")), /status with control chars/);
-	assert.doesNotMatch(stripAnsi(lines.join("\n")), /steer 1|follow-up 1/);
+	assert.doesNotMatch(stripAnsi(lines.join("\n")), /steer 1|follow-up 1|deepseek|CH88\.8|\$0\.123/);
 	for (const line of lines) {
 		assert.ok(visibleWidth(line) <= 64, `line too wide: ${stripAnsi(line)}`);
 	}
@@ -1101,7 +1183,7 @@ test("footer renders collaboration mode when space allows", () => {
 
 	const output = stripAnsi(footer.render(48).join("\n"));
 
-	assert.match(output, /mode plan/);
+	assert.match(output, /plan/);
 });
 
 test("background terminal footer uses singular plural and hides zero", () => {
@@ -1109,8 +1191,8 @@ test("background terminal footer uses singular plural and hides zero", () => {
 	const two = stripAnsi(new FooterComponent({ cwd: "/repo", backgroundShellCount: 2 }).render(120).join("\n"));
 	const zero = stripAnsi(new FooterComponent({ cwd: "/repo", backgroundShellCount: 0 }).render(120).join("\n"));
 
-	assert.match(one, /1 background terminal running · \/ps to view · \/stop to close/);
-	assert.match(two, /2 background terminals running · \/ps to view · \/stop to close/);
+	assert.match(one, /1 background terminal/);
+	assert.match(two, /2 background terminals/);
 	assert.doesNotMatch(zero, /background terminal/);
 });
 
@@ -1190,7 +1272,7 @@ test("ps history bounds long commands and caps the process list at sixteen", () 
 	}
 });
 
-test("mycli shell renders command diagnostics as structured panels", () => {
+test("mycli shell renders legacy command diagnostics as compact cards", () => {
 	const output = renderMycliShell({
 		...sampleState(),
 		messages: [],
@@ -1242,10 +1324,12 @@ test("mycli shell renders command diagnostics as structured panels", () => {
 	}, 100);
 	const plain = stripAnsi(output.join("\n"));
 
-	assert.match(plain, /Usage \/usage/);
-	assert.match(plain, /Estimated cost: 0\.123/);
+	assert.match(plain, /\/usage\n\n╭─+/);
+	assert.match(plain, /│  Usage/);
+	assert.match(plain, /Estimated cost\s+0\.123/);
 	assert.match(plain, /Cumulative tokens/);
-	assert.match(plain, /Context \/context/);
+	assert.match(plain, /\/context\n\n╭─+/);
+	assert.match(plain, /│  Context/);
 	assert.match(plain, /Context composition/);
 	assert.doesNotMatch(plain, /\[usage\] cumulative_usage/);
 });
@@ -1412,7 +1496,7 @@ test("tool rendering shows mutation diffs instead of success summaries", () => {
 
 	const output = stripAnsi(rendered.render(100).join("\n"));
 	assert.match(output, /⎿ Updated src\/app\.py/);
-	assert.match(output, /@@ -1 \+1 @@/);
+	assert.doesNotMatch(output, /@@ -1 \+1 @@/);
 	assert.match(output, /-old/);
 	assert.match(output, /\+new/);
 });
@@ -1642,8 +1726,33 @@ test("mycli shell runtime assembles mounted containers", () => {
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /mycli/);
 	assert.match(output, /Read word\.txt/);
-	assert.match(output, /Message mycli/);
+	assert.match(output, /enter send/);
+	assert.doesNotMatch(output, /Message mycli/);
+	assert.doesNotMatch(output, /mycli-shell\/~/);
 	assert.match(output, /deepseek-v4-flash/);
+});
+
+test("mycli shell runtime updates footer actions with turn and queue state", () => {
+	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal: new TestTerminal() });
+	let output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
+	assert.match(output, /enter send/);
+	assert.doesNotMatch(output, /ctrl\+c interrupt|edit follow-up/);
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Running" },
+	});
+	output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
+	assert.match(output, /enter steer/);
+	assert.match(output, /ctrl\+c interrupt/);
+	assert.doesNotMatch(output, /edit follow-up/);
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, hasPendingInput: true },
+	});
+	output = stripAnsi(runtime.footerContainer.render(180).join("\n"));
+	assert.match(output, /option\+up edit follow-up/);
 });
 
 test("mycli shell runtime updates transcript tool components in place", () => {
@@ -1925,9 +2034,9 @@ test("stream deltas do not synchronously rerender the full transcript", async ()
 	runtime.start();
 	await setTimeout(25);
 
-	const renderTranscript = runtime.transcriptContainer.render.bind(runtime.transcriptContainer);
+	const renderTranscript = runtime.transcriptViewport.render.bind(runtime.transcriptViewport);
 	let transcriptRenders = 0;
-	runtime.transcriptContainer.render = (width) => {
+	runtime.transcriptViewport.render = (width) => {
 		transcriptRenders += 1;
 		return renderTranscript(width);
 	};
@@ -1969,6 +2078,55 @@ test("mycli shell runtime renders thinking elapsed and completion duration with 
 	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
 	assert.match(output, /✻ Completed for 3 s/);
 	assert.doesNotMatch(stripAnsi(runtime.statusContainer.render(100).join("\n")), /Completed/);
+});
+
+test("thinking elapsed continues while the active turn waits on a tool", () => {
+	const terminal = new TestTerminal();
+	let now = 10_000;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: { ...sampleState().footer, liveState: "Idle", turnRunning: false },
+		},
+		terminal,
+		now: () => now,
+	});
+
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Running",
+			liveStateKind: "running",
+			turnRunning: true,
+		},
+	});
+	now = 12_400;
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Waiting for background terminal",
+			liveStateKind: "waiting_background_terminal",
+			turnRunning: true,
+		},
+	});
+
+	let output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /\(Thinking\.\.\. 2 s\)/);
+
+	now = 15_100;
+	runtime.setState({
+		...runtime.getState(),
+		footer: {
+			...runtime.getState().footer,
+			liveState: "Completed",
+			liveStateKind: "completed",
+			turnRunning: false,
+		},
+	});
+	output = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(output, /✻ Completed for 5 s/);
 });
 
 test("mycli shell runtime keeps clear-on-shrink disabled like coding-agent default", async () => {
@@ -2026,7 +2184,7 @@ test("mycli shell runtime gates startup with editor selector", async () => {
 	assert.equal(terminal.started, true);
 	let output = stripAnsi(terminal.output);
 	assert.match(output, /Project trust/);
-	assert.doesNotMatch(output, /Message mycli/);
+	assert.doesNotMatch(output, /enter send/);
 	assert.equal(runtime.ui.children[0], runtime.editorContainer);
 	assert.equal(runtime.ui.children.length, 1);
 
@@ -2047,13 +2205,13 @@ test("mycli shell runtime enters main UI only after trust selection", async () =
 
 	runtime.start();
 	await setTimeout(25);
-	assert.doesNotMatch(stripAnsi(terminal.output), /Message mycli/);
+	assert.doesNotMatch(stripAnsi(terminal.output), /enter send/);
 	assert.equal(runtime.ui.children.length, 1);
 
 	terminal.input?.("\r");
 	await setTimeout(25);
 	const output = stripAnsi(terminal.output);
-	assert.match(output, /Message mycli/);
+	assert.match(output, /enter send/);
 	assert.match(output, /deepseek-v4-flash/);
 	assert.equal(runtime.getState().footer.trust, "trusted");
 	assert.equal(runtime.ui.children[0], runtime.transcriptViewport);
@@ -2100,6 +2258,7 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 				],
 				risk: "medium",
 				riskReason: "External command execution",
+				diffPreview: "@@ -1 +1 @@\n-old\n+new",
 			},
 			footer: { ...sampleState().footer, liveState: "Waiting approval" },
 		},
@@ -2115,6 +2274,9 @@ test("mycli shell approval selector replaces editor and submits selected choice"
 	assert.match(output, /Permission required · Bash · @explore/);
 	assert.match(output, /demo:sub:turn_1:abcd1234/);
 	assert.match(output, /⎿ file \/tmp\/image\.jpg 2>&1/);
+	assert.doesNotMatch(output, /@@ -1 \+1 @@/);
+	assert.match(output, /-old/);
+	assert.match(output, /\+new/);
 	assert.match(output, /→ 1\. Allow once/);
 	assert.match(output, /1 allow\s+2 reject\s+↑↓ navigate\s+enter confirm\s+esc reject/);
 	assert.doesNotMatch(output, /Approval required:/);
@@ -2273,6 +2435,110 @@ test("mycli shell approval selector maps escape to reject and stays mounted unti
 
 	runtime.setState({ ...approvalState, pendingApproval: undefined, pendingNotice: undefined, footer: { ...approvalState.footer, liveState: "Idle" } });
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+});
+
+test("mycli shell clarification selector submits a selected option", async () => {
+	const terminal = new TestTerminal();
+	const responses: Array<[string, string]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingClarification: {
+				requestId: "question-1",
+				header: "Scope",
+				question: "Which implementation should we use?",
+				options: [
+					{ label: "Runtime", description: "Runtime only" },
+					{ label: "TUI", description: "Terminal UI" },
+					{ label: "Other", description: "Custom answer" },
+				],
+				multiSelect: false,
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting clarification" },
+		},
+		terminal,
+		onClarificationRespond: (requestId, response) => {
+			responses.push([requestId, response]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Scope/);
+	assert.match(output, /Which implementation should we use\?/);
+	assert.match(output, /→ 1\. Runtime\s+Runtime only/);
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+
+	terminal.input?.("2");
+	await setTimeout(25);
+
+	assert.deepEqual(responses, [["question-1", "TUI"]]);
+});
+
+test("mycli shell clarification selector accepts a custom answer", async () => {
+	const terminal = new TestTerminal();
+	const responses: Array<[string, string]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingClarification: {
+				requestId: "question-other",
+				question: "Which implementation should we use?",
+				options: [
+					{ label: "Runtime" },
+					{ label: "TUI" },
+					{ label: "Other", description: "Custom answer" },
+				],
+				multiSelect: false,
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting clarification" },
+		},
+		terminal,
+		onClarificationRespond: (requestId, response) => {
+			responses.push([requestId, response]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("3");
+	terminal.input?.("Use both layers");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.deepEqual(responses, [["question-other", "Use both layers"]]);
+});
+
+test("mycli shell clarification selector supports multi-select", async () => {
+	const terminal = new TestTerminal();
+	const responses: Array<[string, string]> = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			pendingClarification: {
+				requestId: "question-multi",
+				question: "Which layers should change?",
+				options: [{ label: "Runtime" }, { label: "TUI" }, { label: "Other" }],
+				multiSelect: true,
+			},
+			footer: { ...sampleState().footer, liveState: "Waiting clarification" },
+		},
+		terminal,
+		onClarificationRespond: (requestId, response) => {
+			responses.push([requestId, response]);
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.(" ");
+	terminal.input?.("\x1b[B");
+	terminal.input?.(" ");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.deepEqual(responses, [["question-multi", "Runtime, TUI"]]);
 });
 
 test("mycli shell keeps slash editable and opens commands from question key", async () => {
@@ -2582,7 +2848,7 @@ test("mycli shell model selector opens from slash command and selects model", as
 		initialState: sampleState(),
 		terminal,
 		onModelSelect: (model) => {
-			selected = `${model.provider}/${model.id}/${model.thinkingLevel ?? ""}`;
+			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}`;
 		},
 	});
 
@@ -2592,8 +2858,8 @@ test("mycli shell model selector opens from slash command and selects model", as
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
 
-	terminal.input?.("\t");
 	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
 	terminal.input?.("\r");
 	await setTimeout(25);
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
@@ -2601,6 +2867,43 @@ test("mycli shell model selector opens from slash command and selects model", as
 	assert.equal(runtime.getState().footer.provider, "openai");
 	assert.equal(runtime.getState().footer.reasoningLevel, "medium");
 	assert.equal(selected, "openai/gpt-5.4/medium");
+});
+
+test("mycli shell shows command inventory as a dismissible editor overlay", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.showCommandResultOverlay({
+		id: "overlay:tools",
+		display: {
+			version: 1,
+			kind: "list",
+			command: "/tools",
+			title: "Tools",
+			severity: "info",
+			fields: [],
+			rows: [{ key: "Read", label: "Read", values: ["builtin", "file"] }],
+			sections: [],
+			suggestions: [],
+			omittedRows: 0,
+			omittedChars: 0,
+		},
+		fallbackLines: [],
+		folded: false,
+	});
+	await setTimeout(25);
+
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Tools[\s\S]*Read[\s\S]*builtin/);
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 });
 
 test("mycli shell login flow replaces editor with auth selectors", async () => {
@@ -2615,7 +2918,7 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 			return { message: `Saved API key for ${providerId}` };
 		},
 		onModelSelect: (model) => {
-			selected = `${model.provider}/${model.id}/${model.thinkingLevel ?? ""}`;
+			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}`;
 		},
 	});
 
@@ -2652,15 +2955,15 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 	assert.deepEqual(saved, [["deepseek", "sk-deepseek"]]);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
-	assert.match(output, /deepseek-v4-flash \[deepseek\]/);
-	assert.doesNotMatch(output, /gpt-5.4 \[openai\]/);
+	assert.match(output, /deepseek-v4-flash\s+deepseek/);
+	assert.doesNotMatch(output, /gpt-5.4\s+openai/);
 	assert.match(output, /Saved API key for deepseek/);
 
 	terminal.input?.("\r");
 	await setTimeout(25);
 
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
-	assert.equal(selected, "deepseek/deepseek-v4-flash/medium");
+	assert.equal(selected, "deepseek/deepseek-v4-flash/");
 });
 
 test("mycli shell model selector can change thinking effort with model selection", async () => {
@@ -2670,25 +2973,71 @@ test("mycli shell model selector can change thinking effort with model selection
 		initialState: sampleState(),
 		terminal,
 		onModelSelect: (model) => {
-			selected = `${model.provider}/${model.id}/${model.thinkingLevel ?? ""}`;
+			selected = `${model.provider}/${model.model}/${model.thinkingLevel ?? ""}`;
 		},
 	});
 
 	runtime.start();
 	await setTimeout(25);
 	await runtime.handleClientAction("open_model_selector", "");
-	const initialOutput = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(initialOutput, /Thinking/);
-	assert.match(initialOutput, /medium/);
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\r");
+	let output = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(output, /Select reasoning effort/);
+	assert.match(output, /medium/);
 
-	terminal.input?.("\x1b[C");
-	terminal.input?.("\x1b[C");
+	terminal.input?.("\x1b[B");
+	terminal.input?.("\x1b[B");
 	terminal.input?.("\r");
 	await setTimeout(25);
 
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.equal(runtime.getState().footer.reasoningLevel, "xhigh");
-	assert.equal(selected, "deepseek/deepseek-v4-flash/xhigh");
+	assert.equal(selected, "openai/gpt-5.4/xhigh");
+});
+
+test("mycli shell keeps model selector open until backend selection succeeds", async () => {
+	const terminal = new TestTerminal();
+	let resolveSelection: (() => void) | undefined;
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onModelSelect: () => new Promise<void>((resolve) => {
+			resolveSelection = resolve;
+		}),
+	});
+	runtime.start();
+	await setTimeout(25);
+	await runtime.handleClientAction("open_model_selector", "");
+
+	terminal.input?.("\r");
+	await setTimeout(10);
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+
+	resolveSelection?.();
+	await setTimeout(25);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+});
+
+test("mycli shell keeps model selector open and shows backend selection errors", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onModelSelect: async () => {
+			throw new Error("Provider rejected this model.");
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+	await runtime.handleClientAction("open_model_selector", "");
+
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Provider rejected this model/);
+	assert.equal(runtime.getState().footer.model, "deepseek-v4-flash");
 });
 
 test("mycli shell model selector opens from app model keybinding", async () => {
@@ -3059,6 +3408,26 @@ test("mycli shell runtime submits messages and local slash commands", async () =
 	assert.equal(runtime.getState().transcript?.length, 0);
 });
 
+test("mycli shell runtime contains asynchronous submit failures at the editor boundary", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: async () => {
+			throw new Error("submit failed");
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("hello");
+	terminal.input?.("\r");
+	await setTimeout(25);
+
+	assert.equal(runtime.isStarted(), true);
+	runtime.ui.stop();
+});
+
 test("mycli shell runtime submits local image attachments from @image paths", async () => {
 	const terminal = new TestTerminal();
 	const submitted: Array<{ text: string; images: string[] }> = [];
@@ -3422,13 +3791,15 @@ test("mycli shell runtime restores queued image attachments with alt up", async 
 
 test("mycli shell runtime interrupts running turns with ctrl c and restores submitted input", async () => {
 	let interrupted = 0;
+	let rollbackUserInput = false;
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
 		initialState: sampleState(),
 		terminal,
 		onSubmit: () => undefined,
-		onInterrupt: () => {
+		onInterrupt: (options) => {
 			interrupted += 1;
+			rollbackUserInput = options.rollbackUserInput;
 		},
 	});
 
@@ -3443,8 +3814,11 @@ test("mycli shell runtime interrupts running turns with ctrl c and restores subm
 	await setTimeout(25);
 
 	assert.equal(interrupted, 1);
+	assert.equal(rollbackUserInput, true);
+	assert.equal(runtime.editor.getText(), "");
+	runtime.completeInterruptedTurn([]);
 	assert.equal(runtime.editor.getText(), "draft before send");
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupted/);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Interrupt requested/);
 });
 
 test("mycli shell runtime removes restored interrupted submit from prompt history", async () => {
@@ -3459,6 +3833,14 @@ test("mycli shell runtime removes restored interrupted submit from prompt histor
 	runtime.start();
 	await setTimeout(25);
 	await runtime.editor.onSubmit?.("older prompt");
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Running" },
+	});
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Completed" },
+	});
 	await runtime.editor.onSubmit?.("interrupted prompt");
 	runtime.setState({
 		...runtime.getState(),
@@ -3467,12 +3849,132 @@ test("mycli shell runtime removes restored interrupted submit from prompt histor
 	terminal.input?.("\x03");
 	await setTimeout(25);
 
+	assert.equal(runtime.editor.getText(), "");
+	runtime.completeInterruptedTurn([]);
 	assert.equal(runtime.editor.getText(), "interrupted prompt");
 	runtime.editor.setText("");
 	runtime.editor.handleInput("\x1b[A");
 	await setTimeout(25);
 
 	assert.equal(runtime.editor.getText(), "older prompt");
+});
+
+test("mycli shell does not restore an interrupted prompt after visible agent activity", async () => {
+	let rollbackUserInput = true;
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		onSubmit: () => undefined,
+		onInterrupt: (options) => {
+			rollbackUserInput = options.rollbackUserInput;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await runtime.editor.onSubmit?.("do some work");
+	runtime.setState({
+		...runtime.getState(),
+		messages: [
+			...runtime.getState().messages,
+			{ id: "visible-agent-output", role: "assistant", text: "Starting now." },
+		],
+		transcript: [
+			...(runtime.getState().transcript ?? []),
+			{
+				id: "visible-agent-output",
+				kind: "message",
+				message: { id: "visible-agent-output", role: "assistant", text: "Starting now." },
+			},
+		],
+		footer: { ...runtime.getState().footer, liveState: "Running" },
+	});
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	runtime.completeInterruptedTurn([]);
+
+	assert.equal(runtime.editor.getText(), "");
+	assert.equal(rollbackUserInput, false);
+});
+
+test("mycli shell does not restore submitted input when backend denies rollback", async () => {
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+		onSubmit: () => undefined,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	await runtime.editor.onSubmit?.("keep this turn persisted");
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, liveState: "Running" },
+	});
+
+	runtime.completeInterruptedTurn([], { restoreSubmittedInput: false });
+
+	assert.equal(runtime.editor.getText(), "");
+});
+
+test("mycli shell restores interrupted queued inputs in order with attachments", () => {
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal: new TestTerminal(),
+	});
+
+	runtime.completeInterruptedTurn([
+		{ text: "first queued" },
+		{
+			text: "[image #1] second queued",
+			localImages: [{ path: "/tmp/queued.png", placeholder: "[image #1]" }],
+		},
+	]);
+
+	assert.equal(runtime.editor.getText(), "first queued\n\n[image #1] second queued");
+});
+
+test("mycli shell renders reconnect details and keeps the turn interruptible", async () => {
+	let interrupted = 0;
+	const terminal = new TestTerminal();
+	terminal.columns = 44;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [{ id: "retry-user", role: "user", text: "retry this request" }],
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+			footer: {
+				...sampleState().footer,
+				liveState: "Reconnecting... 1/5",
+				liveStateKind: "reconnecting",
+				liveStateDetail: "Idle timeout waiting for model stream",
+			},
+		},
+		terminal,
+		onInterrupt: () => {
+			interrupted += 1;
+		},
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	const lines = runtime.ui.render(terminal.columns);
+	const output = stripAnsi(lines.join("\n"));
+	assert.match(output, /Reconnecting\.\.\. 1\/5/);
+	assert.match(output, /Idle timeout waiting for model stream/);
+	const retryLines = lines.filter((line) => /Reconnecting|Idle timeout|model stream/.test(stripAnsi(line)));
+	for (const line of retryLines) {
+		assert.ok(visibleWidth(line) <= terminal.columns, `line exceeded terminal width: ${stripAnsi(line)}`);
+	}
+
+	terminal.input?.("\x1b");
+	await setTimeout(25);
+	assert.equal(interrupted, 1);
+	runtime.ui.stop();
 });
 
 test("mycli shell runtime interrupts running turns with escape", async () => {
@@ -3501,7 +4003,7 @@ test("mycli shell runtime interrupts running turns with escape", async () => {
 
 	assert.equal(interrupted, 1);
 	const output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /Interrupted/);
+	assert.match(output, /Interrupt requested/);
 	assert.match(output, /↳ keep steering/);
 	assert.match(output, /↳ keep follow-up/);
 });
@@ -3759,6 +4261,136 @@ test("mycli shell writes full initial history when terminal has native scrollbac
 	assert.match(output, /history message 17/);
 });
 
+test("mycli shell replays only the recent transcript tail when history exceeds the row cap", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 30 }, (_, index) => ({
+				id: `bounded-history-${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				text: `bounded history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+		transcriptReplayMaxRows: 12,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.doesNotMatch(output, /bounded history message 0(?:\D|$)/);
+	assert.doesNotMatch(output, /bounded history message 10(?:\D|$)/);
+	assert.match(output, /bounded history message 29/);
+});
+
+test("mycli shell treats a zero transcript replay row cap as disabled", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 30 }, (_, index) => ({
+				id: `unbounded-history-${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				text: `unbounded history message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+		transcriptReplayMaxRows: 0,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /unbounded history message 0(?:\D|$)/);
+	assert.match(output, /unbounded history message 29/);
+});
+
+test("native scrollback owns transcript navigation instead of the internal viewport", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 12;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 20 }, (_, index) => ({
+				id: `native-scroll-${index}`,
+				role: index % 2 === 0 ? "user" : "assistant",
+				text: `native scroll message ${index}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x1b[5~");
+	await setTimeout(25);
+
+	assert.equal(runtime.getTranscriptScrollOffset(), 0);
+});
+
+test("bounded transcript replay commits rows displaced by a newly appended block", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 10;
+	const messages = Array.from({ length: 24 }, (_, index) => ({
+		id: `rolling-history-${index}`,
+		role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+		text: `rolling history message ${index}`,
+	}));
+	const initial = {
+		...sampleState(),
+		messages,
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: initial,
+		terminal,
+		transcriptReplayMaxRows: 16,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+	runtime.setState({
+		...initial,
+		messages: [
+			...messages,
+			{
+				id: "rolling-history-new",
+				role: "assistant",
+				text: Array.from({ length: 12 }, (_, index) => `new rolling line ${index}`).join("\n"),
+			},
+		],
+	});
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /rolling history message 23/);
+	assert.match(output, /new rolling line 11/);
+});
+
 test("mycli shell keeps the session header before a long markdown table", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
@@ -3970,7 +4602,7 @@ test("native history watermark resets after terminal width changes", async () =>
 	await setTimeout(25);
 	terminal.columns = 60;
 	terminal.resize?.();
-	await setTimeout(25);
+	await setTimeout(120);
 	terminal.output = "";
 	runtime.setState({ ...runtime.getState() });
 	await setTimeout(25);
@@ -4017,6 +4649,80 @@ test("mycli shell appends new history into native scrollback without mouse captu
 	assert.equal(terminal.fullClearCount(), 0);
 });
 
+test("native scrollback commits a tall slash command block in one state update", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 12;
+	const assistant = {
+		id: "assistant-history",
+		role: "assistant" as const,
+		text: Array.from({ length: 12 }, (_, index) => `history line ${index + 1}`).join("\n"),
+	};
+	const initial: MycliShellState = {
+		...sampleState(),
+		messages: [assistant],
+		tools: [],
+		bash: [],
+		transcript: [{ id: assistant.id, kind: "message", message: assistant }],
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+
+	runtime.setState({
+		...initial,
+		transcript: [
+			...initial.transcript!,
+			{
+				id: "command-usage",
+				kind: "command_result",
+				commandResult: {
+					id: "command-usage",
+					display: {
+						version: 1,
+						kind: "diagnostic",
+						command: "/usage",
+						title: "Usage",
+						severity: "info",
+						fields: [
+							{ label: "Session", value: "session-demo" },
+							{ label: "Turns", value: "5" },
+						],
+						rows: [],
+						sections: [
+							{
+								title: "Cumulative usage",
+								fields: [
+									{ label: "Input tokens", value: "64291" },
+									{ label: "Output tokens", value: "1523" },
+									{ label: "Cache read tokens", value: "53120" },
+								],
+								rows: [],
+							},
+						],
+						suggestions: [],
+						omittedRows: 0,
+						omittedChars: 0,
+					},
+					fallbackLines: [],
+					folded: false,
+				},
+			},
+		],
+	});
+	await setTimeout(25);
+
+	const output = stripAnsi(terminal.output);
+	assert.match(output, /\/usage/);
+	assert.match(output, /╭─+/);
+	assert.match(output, /Session\s+session-demo/);
+	assert.match(output, /Cache read tokens\s+53120/);
+	assert.match(output, /╰─+/);
+	assertNativeScrollbackSafeOutput(terminal.output);
+});
+
 test("mycli shell does not clear screen when submitting into long native scrollback history", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
@@ -4060,7 +4766,7 @@ test("mycli shell does not clear screen when submitting into long native scrollb
 	assert.equal(terminal.fullClearCount(), 0);
 });
 
-test("mycli shell does not clear native scrollback terminal across full redraws", async () => {
+test("mycli shell rebuilds native scrollback from transcript source after resize", async () => {
 	const terminal = new TestTerminal();
 	terminal.nativeScrollback = true;
 	terminal.rows = 8;
@@ -4086,17 +4792,191 @@ test("mycli shell does not clear native scrollback terminal across full redraws"
 	terminal.output = "";
 	terminal.columns = 100;
 	terminal.resize?.();
+	await setTimeout(120);
+
+	assert.match(terminal.output, /\x1b\[r\x1b\[0m\x1b\[H\x1b\[2J\x1b\[3J\x1b\[H/);
+	const output = stripAnsi(terminal.output);
+	assert.equal(output.match(/history message 0(?:\D|$)/g)?.length, 1);
+	assert.equal(output.match(/history message 11(?:\D|$)/g)?.length, 1);
+});
+
+test("mycli shell coalesces rapid native resize events into one source rebuild", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	terminal.columns = 80;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [
+				{ id: "resize-user", role: "user", text: "a long resize-sensitive message that must be rewrapped from source" },
+				{ id: "resize-assistant", role: "assistant", text: "the matching answer also belongs to source-backed history" },
+			],
+			tools: [],
+			bash: [],
+			transcript: undefined,
+			pendingNotice: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+
+	terminal.columns = 72;
+	terminal.resize?.();
+	terminal.columns = 58;
+	terminal.resize?.();
+	terminal.columns = 44;
+	terminal.resize?.();
+	await setTimeout(120);
+
+	assert.equal(terminal.output.match(/\x1b\[3J/g)?.length, 1);
+	for (const line of runtime.editor.render(terminal.columns)) {
+		assert.ok(visibleWidth(line) < terminal.columns, `editor line reached wrap column: ${stripAnsi(line)}`);
+	}
+});
+
+test("native resize holds streaming frames until the source rebuild", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 8;
+	terminal.columns = 80;
+	const initial = {
+		...sampleState(),
+		messages: [{ id: "resize-stream", role: "assistant" as const, text: "stream prefix" }],
+		tools: [],
+		bash: [],
+		transcript: undefined,
+		pendingNotice: undefined,
+	};
+	const runtime = new MycliShellRuntime({ initialState: initial, terminal });
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+
+	terminal.columns = 44;
+	terminal.resize?.();
+	runtime.setState({
+		...initial,
+		messages: [{ id: "resize-stream", role: "assistant", text: "stream prefix and tail" }],
+	});
+	await setTimeout(25);
+	assert.equal(terminal.output, "");
+
+	await setTimeout(100);
+	assert.equal(terminal.output.match(/\x1b\[3J/g)?.length, 1);
+	assert.equal(stripAnsi(terminal.output).match(/stream prefix and tail/g)?.length, 1);
+});
+
+test("alternate-screen resize clears only its buffer and keeps rows below wrap width", async () => {
+	const terminal = new TestTerminal();
+	terminal.alternateScreen = true;
+	terminal.rows = 8;
+	terminal.columns = 80;
+	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal });
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.output = "";
+	terminal.columns = 44;
+	terminal.resize?.();
 	await setTimeout(25);
 
-	assertNativeScrollbackSafeOutput(terminal.output);
-	const synchronizedOutput = terminal.output.indexOf("\x1b[?2026h");
-	const firstLiveLine = terminal.output.indexOf("history message 11", synchronizedOutput);
-	assert.ok(synchronizedOutput >= 0);
-	assert.ok(firstLiveLine > synchronizedOutput);
-	const liveLinePrefix = terminal.output.slice(synchronizedOutput, firstLiveLine);
-	const clearLine = liveLinePrefix.lastIndexOf("\r\x1b[2K");
-	assert.ok(clearLine >= 0);
-	assert.doesNotMatch(liveLinePrefix.slice(clearLine), /\r\n/);
+	assert.match(terminal.output, /\x1b\[2J\x1b\[H/);
+	assert.doesNotMatch(terminal.output, /\x1b\[3J/);
+	for (const line of runtime.editor.render(terminal.columns)) {
+		assert.ok(visibleWidth(line) < terminal.columns, `editor line reached wrap column: ${stripAnsi(line)}`);
+	}
+});
+
+test("alternate-screen resize emits exactly one bounded terminal frame", async () => {
+	const terminal = new TestTerminal();
+	terminal.alternateScreen = true;
+	terminal.rows = 12;
+	terminal.columns = 80;
+	const runtime = new MycliShellRuntime({ initialState: sampleState(), terminal });
+	const assertBoundedFrame = () => {
+		const start = terminal.output.indexOf("\x1b[?2026h");
+		const end = terminal.output.indexOf("\x1b[?2026l", start);
+		assert.ok(start >= 0 && end > start, "missing synchronized frame");
+		const frame = terminal.output.slice(start, end);
+		const rows = frame.split("\r\n");
+		assert.equal(rows.length, terminal.rows, `frame row count: ${rows.length}`);
+		for (const row of rows) {
+			assert.ok(visibleWidth(row) < terminal.columns, `frame row reached wrap column ${terminal.columns}`);
+		}
+	};
+
+	runtime.start();
+	await setTimeout(25);
+
+	terminal.output = "";
+	terminal.columns = 36;
+	terminal.rows = 5;
+	terminal.resize?.();
+	await setTimeout(25);
+	assertBoundedFrame();
+
+	terminal.output = "";
+	terminal.columns = 100;
+	terminal.rows = 14;
+	terminal.resize?.();
+	await setTimeout(25);
+	assertBoundedFrame();
+});
+
+test("alternate-screen resize preserves transcript scroll position", async () => {
+	const terminal = new TestTerminal();
+	terminal.alternateScreen = true;
+	terminal.rows = 12;
+	terminal.columns = 100;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: Array.from({ length: 30 }, (_, index) => ({
+				id: `resize-scroll-${index}`,
+				role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+				text: `message ${index} ${"width-sensitive content ".repeat(4)}`,
+			})),
+			tools: [],
+			bash: [],
+			transcript: undefined,
+		},
+		terminal,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	terminal.input?.("\x1b[5~");
+	await setTimeout(25);
+	const beforeResize = runtime.getTranscriptScrollOffset();
+	assert.ok(beforeResize > 0);
+
+	terminal.columns = 44;
+	terminal.resize?.();
+	await setTimeout(25);
+
+	assert.equal(runtime.getTranscriptScrollOffset(), beforeResize, "resize changed transcript scroll position");
+});
+
+test("native TUI keeps relative resize positioning before content fills the viewport", async () => {
+	const terminal = new TestTerminal();
+	terminal.nativeScrollback = true;
+	terminal.rows = 12;
+	terminal.columns = 80;
+	const ui = new TUI(terminal);
+	ui.addChild(new Text("short setup surface", 0, 0));
+
+	ui.start();
+	await setTimeout(25);
+	terminal.output = "";
+	terminal.columns = 60;
+	terminal.resize?.();
+	await setTimeout(25);
+
+	assert.doesNotMatch(terminal.output, /\x1b\[H/);
 });
 
 test("mycli shell runtime scrolls only transcript and keeps chrome visible", async () => {
@@ -4128,7 +5008,7 @@ test("mycli shell runtime scrolls only transcript and keeps chrome visible", asy
 	assert.match(output, /message 1[0-9]/);
 	const screen = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(screen, /mycli/);
-	assert.match(screen, /Message mycli/);
+	assert.match(screen, /enter send/);
 	assert.match(screen, /deepseek-v4-flash/);
 });
 
@@ -4230,14 +5110,19 @@ test("promoted compiled code and tests do not keep legacy copied naming", () => 
 	assert.equal(result.stdout, "");
 });
 
-test("gateway keeps follow-up editing local and interrupt does not clear queues", () => {
+test("gateway resolves interrupted inputs only after the backend terminal event", () => {
 	const source = readFileSync(new URL("../src/gateway.ts", import.meta.url), "utf8");
 	const interruptBody = source.match(/async function interruptTurn\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? "";
 
 	assert.match(source, /popLastLocalFollowUp\(runtimeState\)/);
+	assert.match(source, /resolveLocalInterruptInputs\(/);
+	assert.match(source, /completeInterruptedTurn\(/);
 	assert.doesNotMatch(source, /send\("turn\.queue\.pop"/);
 	assert.doesNotMatch(source, /send\("turn\.queue\.clear"/);
-	assert.doesNotMatch(interruptBody, /dequeueQueuedInput|popLastQueuedFollowUp|clearQueuedTurns/);
+	assert.doesNotMatch(
+		interruptBody,
+		/resolveLocalInterruptInputs|completeInterruptedTurn|dequeueQueuedInput|popLastQueuedFollowUp|clearQueuedTurns/,
+	);
 });
 
 test("scripted gateway client follows backend user lifecycle and local follow-up queues", () => {

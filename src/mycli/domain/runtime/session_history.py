@@ -18,6 +18,7 @@ class HistoryItemType(StrEnum):
     TOOL_RESULT = "tool_result"
     APPROVAL_REQUEST = "approval_request"
     APPROVAL_RESOLUTION = "approval_resolution"
+    CLARIFICATION_RESPONSE = "clarification_response"
     WARNING = "warning"
     CAPABILITY = "capability"
     TOOL_EXPOSURE = "tool_exposure"
@@ -27,6 +28,7 @@ class HistoryItemType(StrEnum):
     FILE_CHANGE = "file_change"
     PLAN_UPDATE = "plan_update"
     COMMAND_RESULT = "command_result"
+    TURN_ROLLBACK = "turn_rollback"
 
 
 @dataclass(slots=True, frozen=True)

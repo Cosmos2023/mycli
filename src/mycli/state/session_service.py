@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -57,15 +59,27 @@ from mycli.state.session_serialization import (
 logger = logging.getLogger(__name__)
 
 
+def _stable_json_hash(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class SessionService:
     _KEY_ALLOWLIST = "command_allowances"
     _KEY_CONTEXT_BASELINE = "context_baseline"
+    _KEY_COMPACT_CHECKPOINT = "compact_checkpoint"
     _KEY_CONTRIBUTED_TOOL_STATE = "contributed_tool_state"
     _KEY_INSTRUCTION_SNAPSHOT = "instruction_snapshot"
     _KEY_INVOKED_SKILLS = "invoked_skills"
     _KEY_INPUT_QUEUE = "input_queue"
     _KEY_PENDING_DECISION = "pending_decision"
     _KEY_PLAN_STATE = "plan_state"
+    _KEY_PROVIDER_TIMELINE = "provider_timeline"
     _KEY_RESPONSES_CONTINUATION = "responses_continuation_state"
     _KEY_RUNTIME_ENVIRONMENT_CONTEXT = "runtime_environment_context"
     _KEY_SUSPENDED_TURN = "suspended_turn"
@@ -148,9 +162,42 @@ class SessionService:
         )
 
     def load_history_items(self, session_id: str) -> tuple[HistoryItem, ...]:
-        return tuple(
+        raw_items = tuple(
             HistoryItem.from_dict(item)
             for item in self._store.load_history_items(session_id)
+        )
+        return _project_history_rollbacks(raw_items)
+
+    def rollback_history_turn(self, session_id: str, *, turn_id: str) -> None:
+        raw_items = tuple(
+            HistoryItem.from_dict(item)
+            for item in self._store.load_history_items(session_id)
+        )
+        if any(
+            item.type is HistoryItemType.TURN_ROLLBACK
+            and item.metadata.get("rolled_back_turn_id") == turn_id
+            for item in raw_items
+        ):
+            return
+        self.append_history_items(
+            session_id,
+            (
+                HistoryItem(
+                    id=f"{turn_id}:rollback",
+                    thread_id=session_id,
+                    turn_id=turn_id,
+                    type=HistoryItemType.TURN_ROLLBACK,
+                    metadata={"rolled_back_turn_id": turn_id},
+                ),
+            ),
+        )
+        if self.load_compact_checkpoint(session_id) is not None:
+            self._store.delete_state(session_id, self._KEY_COMPACT_CHECKPOINT)
+            self.sync_conversation_view_from_history(session_id)
+        self._snapshot_service.append_event(
+            session_id=session_id,
+            event_type="history.rolled_back",
+            payload={"turn_id": turn_id, "num_turns": 1},
         )
 
     def load_snapshot_tui_items(
@@ -160,9 +207,111 @@ class SessionService:
         return self._snapshot_service.load_tui_items(session_id)
 
     def sync_conversation_view_from_history(self, session_id: str) -> None:
+        history_items = self.load_replay_history_items(session_id)
+        checkpoint = self.load_compact_checkpoint(session_id)
         conversation = Conversation(session_id=session_id)
-        conversation.messages.extend(self._conversation_messages_from_history(session_id))
+        if checkpoint is not None:
+            raw_messages = checkpoint.get("replacement_messages")
+            history_item_count = checkpoint.get("history_item_count")
+            if isinstance(raw_messages, list) and isinstance(history_item_count, int):
+                conversation.messages.extend(
+                    deserialize_message(message)
+                    for message in raw_messages
+                    if isinstance(message, dict)
+                )
+                tail_items = history_items[max(0, history_item_count) :]
+                conversation.messages.extend(
+                    ContextManager().messages_from_history(
+                        tail_items,
+                        include_context_baseline_updates=False,
+                    )
+                )
+            else:
+                conversation.messages.extend(
+                    ContextManager().messages_from_history(
+                        history_items,
+                        include_context_baseline_updates=False,
+                    )
+                )
+        else:
+            conversation.messages.extend(
+                ContextManager().messages_from_history(
+                    history_items,
+                    include_context_baseline_updates=False,
+                )
+            )
         self.save_conversation(conversation)
+
+    def install_compact_replacement(
+        self,
+        session_id: str,
+        *,
+        replacement: Conversation,
+        turn_id: str,
+        reason: str,
+        phase: str,
+        input_history_hash: str,
+    ) -> dict[str, object]:
+        if replacement.session_id != session_id:
+            raise ValueError("compact replacement session does not match target session")
+        replacement_messages = [
+            serialize_message(message) for message in replacement.messages
+        ]
+        previous = self.load_compact_checkpoint(session_id)
+        previous_window = 0 if previous is None else previous.get("window_number", 0)
+        window_number = previous_window + 1 if isinstance(previous_window, int) else 1
+        replacement_hash = _stable_json_hash(replacement_messages)
+        window_id = _stable_json_hash(
+            {
+                "session_id": session_id,
+                "window_number": window_number,
+                "input_history_hash": input_history_hash,
+                "replacement_history_hash": replacement_hash,
+            }
+        )[:24]
+        checkpoint: dict[str, object] = {
+            "version": 1,
+            "turn_id": turn_id,
+            "reason": reason,
+            "phase": phase,
+            "window_number": window_number,
+            "window_id": window_id,
+            "history_item_count": len(self.load_replay_history_items(session_id)),
+            "input_history_hash": input_history_hash,
+            "replacement_history_hash": replacement_hash,
+            "replacement_messages": replacement_messages,
+        }
+        self.save_conversation(replacement)
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_COMPACT_CHECKPOINT,
+            payload=checkpoint,
+        )
+        self.save_responses_continuation_state(
+            session_id,
+            ResponsesContinuationState(
+                response_id=None,
+                request_signature="",
+                eligible=False,
+                failure_reason="compacted_history",
+            ),
+        )
+        self._snapshot_service.append_event(
+            session_id=session_id,
+            event_type="conversation.compacted",
+            payload={
+                "turn_id": turn_id,
+                "reason": reason,
+                "phase": phase,
+                "window_number": window_number,
+                "window_id": window_id,
+            },
+        )
+        return checkpoint
+
+    def load_compact_checkpoint(self, session_id: str) -> dict[str, object] | None:
+        return self._load_state_object(session_id, self._KEY_COMPACT_CHECKPOINT)
 
     def compact_history(
         self,
@@ -545,6 +694,27 @@ class SessionService:
             state_key=self._KEY_RESPONSES_CONTINUATION,
             payload=state.to_dict(),
         )
+
+    def save_provider_timeline_state(
+        self,
+        session_id: str,
+        payload: dict[str, object],
+    ) -> None:
+        self._save_state(
+            session_id=session_id,
+            thread_id=session_id,
+            state_key=self._KEY_PROVIDER_TIMELINE,
+            payload=payload,
+        )
+
+    def load_provider_timeline_state(
+        self,
+        session_id: str,
+    ) -> dict[str, object] | None:
+        return self._load_state_object(session_id, self._KEY_PROVIDER_TIMELINE)
+
+    def clear_provider_timeline_state(self, session_id: str) -> None:
+        self._store.delete_state(session_id, self._KEY_PROVIDER_TIMELINE)
 
     def load_responses_continuation_state(
         self,
@@ -1054,6 +1224,27 @@ class SessionService:
         if not isinstance(payload, list):
             raise ValueError(f"{state_key} must serialize to a list.")
         return payload
+
+
+def _project_history_rollbacks(
+    items: tuple[HistoryItem, ...],
+) -> tuple[HistoryItem, ...]:
+    rolled_back_turn_ids = {
+        rolled_back_turn_id
+        for item in items
+        if item.type is HistoryItemType.TURN_ROLLBACK
+        and isinstance(
+            rolled_back_turn_id := item.metadata.get("rolled_back_turn_id"),
+            str,
+        )
+        and rolled_back_turn_id
+    }
+    return tuple(
+        item
+        for item in items
+        if item.type is not HistoryItemType.TURN_ROLLBACK
+        and item.turn_id not in rolled_back_turn_ids
+    )
 
 
 def _optional_string_tuple(value: object) -> tuple[str, ...] | None:

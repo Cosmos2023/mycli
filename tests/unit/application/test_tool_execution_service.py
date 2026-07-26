@@ -100,6 +100,24 @@ class FakeBashTool:
         )
 
 
+class FakeWriteStdinTool:
+    spec = ToolSpec(
+        name="WriteStdin",
+        description="Capture WriteStdin runtime arguments",
+        parameters=(ToolParameter("session_id", "string"),),
+    )
+
+    def __init__(self) -> None:
+        self.seen_arguments: list[dict[str, object]] = []
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(process=True)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.seen_arguments.append(dict(arguments))
+        return ToolResult(success=True, summary="captured")
+
+
 class FakeEditTool:
     spec = ToolSpec(
         name="edit_file",
@@ -359,6 +377,27 @@ class FakeInterruptingSafeTool:
         self.started.set()
         self._token.request("test_interrupt")
         raise KeyboardInterrupt
+
+
+class FakeBlockingNetworkTool:
+    spec = ToolSpec(
+        name="WebFetch",
+        description="Blocking network tool",
+        parameters=(),
+    )
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="none", network=True)
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        return ToolResult(success=True, summary="network complete")
 
 
 def _tool_exposure() -> ToolExposure:
@@ -1705,6 +1744,53 @@ def test_tool_execution_service_injects_shell_interrupt_token_without_tracing_it
     assert all("_runtime_interrupt_token" not in str(event.payload) for event in lifecycle)
 
 
+def test_tool_execution_service_injects_write_stdin_interrupt_token_without_tracing_it(
+    tmp_path: Path,
+) -> None:
+    token = RuntimeInterruptToken(source="test")
+    tool = FakeWriteStdinTool()
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+
+    service.execute_tool_call(
+        conversation=Conversation(session_id="demo"),
+        call=ToolCall(
+            name="WriteStdin",
+            arguments={"session_id": "shell-1"},
+            reason="poll",
+            call_id="call_write_stdin_interrupt",
+        ),
+        tool_router=router,
+        tool_exposure=ToolExposure(
+            entries=(
+                ToolExposureEntry(
+                    route_key=ToolRouteKey.local("WriteStdin"),
+                    source=ToolRouteSource.REGISTRY,
+                    spec=tool.spec,
+                ),
+            )
+        ),
+        plan_state=PlanState(),
+        turn_id="turn_1",
+        activity_events=[],
+        turn_items=[],
+        interrupt_token=token,
+    )
+
+    assert tool.seen_arguments[0]["_runtime_interrupt_token"] is token
+    trace = next(
+        event
+        for event in TraceService(home_dir=tmp_path / "home").load("demo")
+        if event.kind == "tool_execution"
+    )
+    assert "_runtime_interrupt_token" not in trace.payload["argument_keys"]
+    assert "_runtime_interrupt_token" not in str(trace.payload)
+
+
 def test_tool_execution_service_runtime_policy_allows_contributed_tool(
     tmp_path: Path,
 ) -> None:
@@ -2732,6 +2818,25 @@ def test_tool_execution_service_notifies_tool_lifecycle_success(tmp_path: Path) 
     assert [item.type for item in turn_items].count(TurnItemType.TOOL_RESULT) == 1
 
 
+def test_write_stdin_empty_poll_lifecycle_identifies_background_wait(
+    tmp_path: Path,
+) -> None:
+    service, _fake_tool = _service(tmp_path, hook_manager=HookManager())
+
+    event = service._tool_lifecycle_start_event(  # type: ignore[attr-defined]
+        call=ToolCall(
+            name="WriteStdin",
+            arguments={"session_id": "shell-1", "chars": ""},
+            reason="wait",
+            call_id="poll-1",
+        ),
+        context="WriteStdin",
+    )
+
+    assert event.metadata["session_id"] == "shell-1"
+    assert event.metadata["empty_poll"] is True
+
+
 def test_tool_execution_service_reuses_display_for_lifecycle_and_turn_items(
     tmp_path: Path,
 ) -> None:
@@ -3168,6 +3273,62 @@ def test_tool_execution_service_records_interrupted_tool_before_reraising(
     assert lifecycle[-1]["status"] == "interrupted"
     assert lifecycle[-1]["error_kind"] == "tool_interrupted"
     assert all("arguments" not in payload for payload in lifecycle)
+
+
+def test_tool_execution_service_interrupts_blocking_network_tool_without_waiting_for_timeout(
+    tmp_path: Path,
+) -> None:
+    token = RuntimeInterruptToken(source="test")
+    tool = FakeBlockingNetworkTool()
+    service, _fake_tool = _service(
+        tmp_path,
+        hook_manager=HookManager(),
+        registry=ToolRegistry.from_tools([tool]),
+    )
+    router = service._test_router  # type: ignore[attr-defined]
+    errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            service.execute_tool_call(
+                conversation=Conversation(session_id="demo"),
+                call=ToolCall(
+                    name="WebFetch",
+                    arguments={},
+                    reason="fetch",
+                    call_id="call_web_interrupt",
+                ),
+                tool_router=router,
+                tool_exposure=ToolExposure(
+                    entries=(
+                        ToolExposureEntry(
+                            route_key=ToolRouteKey.local("WebFetch"),
+                            source=ToolRouteSource.REGISTRY,
+                            spec=tool.spec,
+                        ),
+                    )
+                ),
+                plan_state=PlanState(),
+                turn_id="turn_1",
+                activity_events=[],
+                turn_items=[],
+                interrupt_token=token,
+            )
+        except BaseException as exc:  # noqa: BLE001 - assert exact type below.
+            errors.append(exc)
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    assert tool.started.wait(timeout=1.0)
+    token.request("test_interrupt")
+    worker.join(timeout=0.5)
+    interrupted_promptly = not worker.is_alive()
+    tool.release.set()
+    worker.join(timeout=2.0)
+
+    assert interrupted_promptly
+    assert len(errors) == 1
+    assert isinstance(errors[0], KeyboardInterrupt)
 
 
 def test_tool_execution_service_notifies_tool_lifecycle_failure(tmp_path: Path) -> None:

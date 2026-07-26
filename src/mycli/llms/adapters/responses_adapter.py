@@ -290,8 +290,9 @@ class ResponsesModelAdapter:
                 continue
 
             if isinstance(typed_event, ResponsesOutputItemDoneEvent):
+                done_payload = self._stream_events.output_item_done_payload(typed_event)
                 tool_call_event = self._stream_events.build_tool_call_event_from_output_item_done(
-                    event=self._stream_events.output_item_done_payload(typed_event),
+                    event=done_payload,
                     function_call_states=function_call_states,
                 )
                 if tool_call_event is not None:
@@ -299,6 +300,14 @@ class ResponsesModelAdapter:
                     if isinstance(block, RuntimeBlock):
                         accumulated_blocks.append(block)
                     yield tool_call_event
+                completed_item_result = self._output_parser.to_model_turn_result(
+                    {"output": [typed_event.raw_item]}
+                )
+                if completed_item_result.items:
+                    yield {
+                        "type": "item_completed",
+                        "item": completed_item_result.items[0],
+                    }
                 continue
             if isinstance(typed_event, ResponsesCompletedEvent):
                 completed_response_id = typed_event.response_id

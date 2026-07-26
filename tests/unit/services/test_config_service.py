@@ -7,7 +7,7 @@ import pytest
 from mycli.config.auth_store import AuthStore
 from mycli.domain.runtime import CollaborationMode, ProviderCachePolicyCapability, ViewMode
 from mycli.domain.providers import ProtocolId, ProviderId
-from mycli.config.settings import resolve_config
+from mycli.config.settings import default_user_config_path, resolve_config
 from mycli.infrastructure.providers import resolve_provider_cache_policy_capability
 
 
@@ -872,11 +872,41 @@ def test_config_service_ignores_legacy_model_output_limit_settings(tmp_path: Pat
 
     assert config.fallback_model == "fallback-model"
     assert config.transport_retry_limit == 4
+    assert config.stream_max_retries == 4
     assert not hasattr(config, "max_output_tokens")
     assert not hasattr(config, "output_limit_escalation_max_tokens")
     assert not hasattr(config, "output_recovery_retry_limit")
     assert config.heartbeat_enabled is False
     assert config.heartbeat_interval_seconds == 12.5
+
+
+def test_config_service_reads_codex_style_retry_budgets(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    config_path = workspace / ".mycli" / "config.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "\n".join(
+            [
+                "request_max_retries = 3",
+                "stream_max_retries = 7",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = resolve_config(
+        cli_args={"session": "demo"},
+        env={"MYCLI_REQUEST_MAX_RETRIES": "6"},
+        cwd=workspace,
+        home=home_dir,
+    )
+
+    assert config.request_max_retries == 6
+    assert config.stream_max_retries == 7
+    assert config.transport_retry_limit is None
 
 
 def test_config_service_reads_cli_view_settings(tmp_path: Path) -> None:
@@ -1031,6 +1061,34 @@ def test_resolve_config_reads_api_key_from_auth_store_for_provider(tmp_path: Pat
 
     assert config.provider is ProviderId.DEEPSEEK
     assert config.api_key == "sk-auth-store"
+
+
+def test_resolve_config_reads_api_key_from_selected_model_auth_ref(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = default_user_config_path(home_dir)
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        '\n'.join(
+            [
+                '[model]',
+                'provider = "openai"',
+                'name = "gpt-custom"',
+                'protocol = "responses"',
+                'api_base_url = "https://gateway.example.test/v1"',
+                'auth_ref = "openai-proxy"',
+            ]
+        ) + '\n',
+        encoding="utf-8",
+    )
+    AuthStore.from_home(home_dir).set_api_key("openai", "sk-provider")
+    AuthStore.from_home(home_dir).set_api_key("openai-proxy", "sk-proxy")
+
+    config = resolve_config(cli_args={}, env={}, cwd=workspace, home=home_dir)
+
+    assert config.auth_ref == "openai-proxy"
+    assert config.api_key == "sk-proxy"
 
 
 def test_resolve_config_prefers_auth_store_over_legacy_config_api_key(tmp_path: Path) -> None:

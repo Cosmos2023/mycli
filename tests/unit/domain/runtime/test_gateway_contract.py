@@ -12,6 +12,14 @@ from mycli.domain.runtime.gateway_contract import (
 
 def test_gateway_contract_exposes_command_manifest_method() -> None:
     assert "command.list" in SUPPORTED_GATEWAY_RPC_METHODS
+    assert "model.list" in SUPPORTED_GATEWAY_RPC_METHODS
+    assert "model.select" in SUPPORTED_GATEWAY_RPC_METHODS
+
+
+def test_stream_retrying_schema_exposes_error_details() -> None:
+    schema = gateway_event_payload_schemas()["stream.retrying"]
+
+    assert schema["properties"]["additional_details"] == {"type": "string"}
 
 
 def test_gateway_error_schema_exposes_stable_error_code_taxonomy() -> None:
@@ -213,6 +221,7 @@ def test_turn_completed_schema_exposes_terminal_payload_shape() -> None:
         "activity_events",
         "assistant_message",
         "client_turn_id",
+        "input_rolled_back",
         "pending_decision",
         "plan_steps",
         "progress_updates",

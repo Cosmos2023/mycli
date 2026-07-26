@@ -2,23 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import cast
 
 from mycli.application.runtime import AgentRuntime
 from mycli.application.runtime.tools import ToolContributionProvider
 from mycli.application.turn_service import TurnService
 from mycli.config.settings import resolve_config
 from mycli.domain.runtime import SandboxMode
-from mycli.domain.providers import ProtocolId
-from mycli.infrastructure.providers import chat_adapter_for_provider
-from mycli.llms.adapters.anthropic_messages_adapter import AnthropicMessagesModelAdapter
-from mycli.llms.adapters.base import ModelAdapter
-from mycli.llms.adapters.native_tool_adapter import NativeToolModelAdapter
-from mycli.llms.adapters.responses_adapter import ResponsesModelAdapter
-from mycli.llms.clients.anthropic_messages import AnthropicMessagesClient
-from mycli.llms.clients.openai_chat import OpenAIChatClient
-from mycli.llms.clients.openai_responses import OpenAIResponsesClient
-from mycli.schemas.responses_protocol import ResponsesCapabilityProfile
+from mycli.llms.model_adapter_factory import build_model_adapter
 from mycli.services.storage_layout import MycliStorageLayout
 from mycli.services.filesystem import FileSystemRuntime
 from mycli.memory.memdir import ensure_memory_dir, memory_dir_for
@@ -61,7 +51,15 @@ def build_turn_service(
     workspace_root = cwd or Path.cwd()
     home_dir = home or Path.home()
     env_vars = env or dict(os.environ)
-    config = resolve_config(cli_args=cli_args, env=env_vars, cwd=workspace_root, home=home_dir)
+    try:
+        config = resolve_config(
+            cli_args=cli_args,
+            env=env_vars,
+            cwd=workspace_root,
+            home=home_dir,
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Invalid mycli configuration: {exc}") from exc
     if not config.api_key:
         raise RuntimeError("MYCLI_API_KEY is required")
     workspace_log_service = WorkspaceLogService(
@@ -70,52 +68,7 @@ def build_turn_service(
         session_id=config.session_id,
     )
 
-    model_adapter: ModelAdapter
-    provider_adapter = chat_adapter_for_provider(config.provider)
-    if config.protocol is ProtocolId.ANTHROPIC_MESSAGES:
-        anthropic_client = AnthropicMessagesClient(
-            api_key=config.api_key,
-            base_url=config.api_base_url,
-            model=config.model,
-            log_service=workspace_log_service,
-        )
-        model_adapter = cast(
-            ModelAdapter,
-            AnthropicMessagesModelAdapter(client=anthropic_client),
-        )
-    elif config.protocol is ProtocolId.CHAT_COMPLETIONS:
-        chat_client = OpenAIChatClient(
-            api_key=config.api_key,
-            base_url=config.api_base_url,
-            model=config.model,
-            log_service=workspace_log_service,
-            provider_adapter=provider_adapter,
-        )
-        model_adapter = cast(
-            ModelAdapter,
-            NativeToolModelAdapter(
-                client=chat_client,
-                provider_adapter=provider_adapter,
-            ),
-        )
-    else:
-        responses_client = OpenAIResponsesClient(
-            api_key=config.api_key,
-            base_url=config.api_base_url,
-            model=config.model,
-            capability_profile=ResponsesCapabilityProfile.for_provider(
-                provider=config.provider,
-                base_url=config.api_base_url,
-            ),
-            log_service=workspace_log_service,
-        )
-        model_adapter = cast(
-            ModelAdapter,
-            ResponsesModelAdapter(
-                client=responses_client,
-                log_service=workspace_log_service,
-            ),
-        )
+    model_adapter = build_model_adapter(config, log_service=workspace_log_service)
     memory_dir = memory_dir_for(home_dir, workspace_root)
     ensure_memory_dir(memory_dir)
     task_output_dir = MycliStorageLayout.from_home_dir(home_dir).task_output_dir(
@@ -169,6 +122,7 @@ def build_turn_service(
     contributed_tool_providers: tuple[ToolContributionProvider, ...] = (
         *_build_mcp_tool_providers(
             workspace_root,
+            home_dir=home_dir,
             env=env_vars,
         ),
     )
@@ -185,6 +139,10 @@ def build_turn_service(
         runtime=runtime,
         config=config,
         home_dir=home_dir,
+        model_adapter_factory=lambda next_config: build_model_adapter(
+            next_config,
+            log_service=workspace_log_service,
+        ),
     )
 
 
@@ -195,11 +153,16 @@ def _build_runtime_logs_root(*, home_dir: Path) -> Path:
 def _build_mcp_tool_providers(
     workspace_root: Path,
     *,
+    home_dir: Path,
     env: dict[str, str] | None = None,
 ) -> tuple[McpToolContributionProvider, ...]:
     configs = {
         name: config
-        for name, config in load_mcp_server_configs(workspace_root, environ=env).items()
+        for name, config in load_mcp_server_configs(
+            workspace_root,
+            home_dir=home_dir,
+            environ=env,
+        ).items()
         if config.enabled
     }
     if not configs:

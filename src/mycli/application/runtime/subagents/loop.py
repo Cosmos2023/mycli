@@ -5,7 +5,13 @@ from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Protocol
 
-from mycli.domain.runtime import ModelTurnResult, RuntimeBlock, RuntimeItem, RuntimeRole
+from mycli.domain.runtime import (
+    ModelTurnResult,
+    RuntimeBlock,
+    RuntimeInterruptToken,
+    RuntimeItem,
+    RuntimeRole,
+)
 from mycli.domain.subagents import (
     SubAgentContextSnapshot,
     SubAgentInvocation,
@@ -38,6 +44,7 @@ class ChildTurnRequester(Protocol):
         messages: list[dict[str, object]],
         tool_names: tuple[str, ...],
         child_session_id: str,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> ChildTurn:
         ...
 
@@ -49,6 +56,7 @@ class ChildToolExecutor(Protocol):
         call: ToolCall,
         child_session_id: str,
         tool_names: tuple[str, ...],
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> ToolResult:
         ...
 
@@ -88,6 +96,7 @@ class RuntimeModelTurnRequester(Protocol):
         runtime_items: list[RuntimeItem],
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         ...
 
@@ -111,24 +120,39 @@ class RuntimeChildTurnRequester:
         messages: list[dict[str, object]],
         tool_names: tuple[str, ...],
         child_session_id: str,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> ChildTurn:
         exposure = self.tool_exposure_builder(tool_names)
         runtime_items = self._runtime_items(messages)
         legacy_messages = self._legacy_messages(messages)
         tools = self.tool_renderer(exposure)
-        if self.model_request_lock is None:
-            turn_result, _streamed = self.requester.request_model_turn(
-                runtime_items=runtime_items,
-                legacy_messages=legacy_messages,
-                tools=tools,
-            )
-        else:
-            with self.model_request_lock:
-                turn_result, _streamed = self.requester.request_model_turn(
+        def request() -> tuple[ModelTurnResult, tuple[str, ...]]:
+            if interrupt_token is None:
+                return self.requester.request_model_turn(
                     runtime_items=runtime_items,
                     legacy_messages=legacy_messages,
                     tools=tools,
                 )
+            return self.requester.request_model_turn(
+                runtime_items=runtime_items,
+                legacy_messages=legacy_messages,
+                tools=tools,
+                interrupt_token=interrupt_token,
+            )
+
+        if self.model_request_lock is None:
+            turn_result, _streamed = request()
+        elif interrupt_token is not None:
+            while not self.model_request_lock.acquire(timeout=0.02):
+                interrupt_token.raise_if_interrupted()
+            try:
+                interrupt_token.raise_if_interrupted()
+                turn_result, _streamed = request()
+            finally:
+                self.model_request_lock.release()
+        else:
+            with self.model_request_lock:
+                turn_result, _streamed = request()
         turn_result = self._mark_internal_usage(turn_result, child_session_id=child_session_id)
         return self._project_turn(turn_result)
 
@@ -248,6 +272,7 @@ class RuntimeChildToolExecutor:
         call: ToolCall,
         child_session_id: str,
         tool_names: tuple[str, ...],
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> ToolResult:
         exposure = ToolExposure(
             entries=tuple(
@@ -260,12 +285,14 @@ class RuntimeChildToolExecutor:
                 if name in self.tool_specs
             )
         )
+        invocation_context = ToolInvocationContext(
+            owner_session_id=child_session_id,
+            interrupt_token=interrupt_token,
+        )
         return self.tool_router.execute(
             call,
             exposure=exposure,
-            invocation_context=ToolInvocationContext(
-                owner_session_id=child_session_id,
-            ),
+            invocation_context=invocation_context,
         )
 
 
@@ -286,6 +313,7 @@ class SubAgentChildLoop:
         transcript: ChildTranscriptRecorder | None = None,
         initial_messages: list[dict[str, object]] | None = None,
         pending_message_provider: Callable[[], tuple[str, ...]] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> SubAgentResult:
         if initial_messages is None:
             context_text = self._render_context_snapshot(context_snapshot)
@@ -309,12 +337,21 @@ class SubAgentChildLoop:
         no_progress_turns = 0
 
         for _turn_index in range(profile.budget.max_turns):
+            self._raise_if_interrupted(interrupt_token)
             self._append_pending_messages(messages, pending_message_provider, transcript)
-            turn = self._requester.request_child_turn(
-                messages=messages,
-                tool_names=tool_names,
-                child_session_id=child_session_id,
-            )
+            if interrupt_token is None:
+                turn = self._requester.request_child_turn(
+                    messages=messages,
+                    tool_names=tool_names,
+                    child_session_id=child_session_id,
+                )
+            else:
+                turn = self._requester.request_child_turn(
+                    messages=messages,
+                    tool_names=tool_names,
+                    child_session_id=child_session_id,
+                    interrupt_token=interrupt_token,
+                )
             text = (turn.text or "").strip()
             calls = tuple(turn.tool_calls)
             if text and not calls:
@@ -367,6 +404,7 @@ class SubAgentChildLoop:
                 transcript.record_assistant_text(text)
             tool_messages: list[dict[str, object]] = []
             for call in calls:
+                self._raise_if_interrupted(interrupt_token)
                 if (
                     profile.budget.max_tool_calls is not None
                     and tool_calls >= profile.budget.max_tool_calls
@@ -391,11 +429,19 @@ class SubAgentChildLoop:
                         tool_name=call.name,
                         arguments=call.arguments,
                     )
-                result = self._executor.execute_child_tool(
-                    call=call,
-                    child_session_id=child_session_id,
-                    tool_names=tool_names,
-                )
+                if interrupt_token is None:
+                    result = self._executor.execute_child_tool(
+                        call=call,
+                        child_session_id=child_session_id,
+                        tool_names=tool_names,
+                    )
+                else:
+                    result = self._executor.execute_child_tool(
+                        call=call,
+                        child_session_id=child_session_id,
+                        tool_names=tool_names,
+                        interrupt_token=interrupt_token,
+                    )
                 tool_calls += 1
                 formatted_result = self._model_output_projector.project(
                     call.name,
@@ -463,6 +509,13 @@ class SubAgentChildLoop:
             tool_calls=tool_calls,
             context_diagnostics=self._context_diagnostics(context_snapshot),
         )
+
+    def _raise_if_interrupted(
+        self,
+        interrupt_token: RuntimeInterruptToken | None,
+    ) -> None:
+        if interrupt_token is not None:
+            interrupt_token.raise_if_interrupted()
 
     def _append_pending_messages(
         self,

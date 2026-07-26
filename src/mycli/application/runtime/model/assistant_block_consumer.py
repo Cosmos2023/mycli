@@ -88,6 +88,7 @@ class AssistantBlockConsumer:
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        conversation_items_precommitted: bool = False,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[
         PlanState,
@@ -124,7 +125,7 @@ class AssistantBlockConsumer:
                     provider_id=pending_text_block.provider_id,
                     metadata=dict(pending_text_block.metadata),
                 )
-                if record_conversation:
+                if record_conversation and not conversation_items_precommitted:
                     self._record_assistant_text_block(
                         conversation,
                         block=combined_block,
@@ -146,6 +147,9 @@ class AssistantBlockConsumer:
             def record_tool_call_group_once() -> None:
                 nonlocal tool_call_group_recorded
                 if tool_call_group_recorded or not tool_call_blocks:
+                    return
+                if conversation_items_precommitted:
+                    tool_call_group_recorded = True
                     return
                 self._record_assistant_tool_calls(
                     conversation,

@@ -19,6 +19,8 @@ import {
 	sessionTreeFromResult,
 	settingsFromResult,
 	runtimeStateWithSettings,
+	runtimeInputDisposition,
+	resolveLocalInterruptInputs,
 	resourcesFromResult,
 	type RuntimeShellState,
 } from "../src/adapters/runtime-state.ts";
@@ -352,7 +354,7 @@ test("runtime adapter projects runtime-backed visual settings", () => {
 	});
 });
 
-test("runtime adapter collapses resumed tools without overriding explicit fold state", () => {
+test("runtime adapter collapses every resumed tool even when persisted as expanded", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithSettings(state, { toolDetailsDefault: "expanded" });
 	state = runtimeStateFromTranscript(state, {
@@ -383,7 +385,7 @@ test("runtime adapter collapses resumed tools without overriding explicit fold s
 
 	assert.equal(shell.tools[0]?.expanded, false);
 	assert.equal(shell.bash[0]?.expanded, false);
-	assert.equal(shell.tools[1]?.expanded, true);
+	assert.equal(shell.tools[1]?.expanded, false);
 });
 
 test("runtime adapter keeps expanded defaults for non-resumed tool items", () => {
@@ -793,6 +795,37 @@ test("runtime adapter removes the transient clarification question after a respo
 	const shell = projectRuntimeState(state);
 	assert.equal(state.pendingClarification, null);
 	assert.equal(shell.messages.some((message) => message.text === "Which implementation should we use?"), false);
+	assert.equal(shell.messages.some((message) => message.role === "user" && message.text === "Use the first implementation."), true);
+});
+
+test("runtime adapter projects structured pending clarification", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "clarify.request", {
+		request_id: "request-1",
+		tool_name: "AskUserQuestion",
+		header: "Scope",
+		question: "Which implementation should we use?",
+		options: [
+			{ label: "Runtime", description: "Runtime only" },
+			{ label: "TUI", description: "Terminal UI" },
+			{ label: "Other", description: "Custom answer" },
+		],
+		multi_select: false,
+	});
+
+	const shell = projectRuntimeState(state);
+
+	assert.deepEqual(shell.pendingClarification, {
+		requestId: "request-1",
+		header: "Scope",
+		question: "Which implementation should we use?",
+		options: [
+			{ label: "Runtime", description: "Runtime only" },
+			{ label: "TUI", description: "Terminal UI" },
+			{ label: "Other", description: "Custom answer" },
+		],
+		multiSelect: false,
+	});
 });
 
 test("runtime adapter clears stale clarification questions when the resumed turn starts", () => {
@@ -1393,6 +1426,47 @@ test("runtime adapter keeps ordinary running status out of pending transcript ar
 	assert.equal(shell.footer.liveState, "Thinking");
 });
 
+test("runtime adapter rolls back partial assistant output while reconnecting", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "c1" });
+	state = reduceRuntimeEvent(state, "message.delta", { client_turn_id: "c1", text: "discard me" });
+	state = reduceRuntimeEvent(state, "reasoning.delta", { client_turn_id: "c1", text: "partial thought" });
+	state = reduceRuntimeEvent(state, "message.reset", { client_turn_id: "c1" });
+	state = reduceRuntimeEvent(state, "status.update", {
+		client_turn_id: "c1",
+		state: "running",
+		kind: "thinking",
+		text: "Thinking",
+	});
+	state = reduceRuntimeEvent(state, "stream.retrying", {
+		client_turn_id: "c1",
+		text: "Reconnecting... 1/5",
+		additional_details: "Idle timeout waiting for SSE",
+		attempt: 1,
+		max_retries: 5,
+	});
+
+	let shell = projectRuntimeState(state);
+	assert.equal(state.transcript.some((item) => item.text === "discard me"), false);
+	assert.equal(state.transcript.some((item) => item.text === "partial thought"), false);
+	assert.equal(state.liveReasoning, null);
+	assert.equal(shell.footer.liveState, "Reconnecting... 1/5");
+	assert.equal(shell.footer.liveStateKind, "reconnecting");
+	assert.equal(shell.footer.liveStateDetail, "Idle timeout waiting for SSE");
+	assert.equal(
+		shell.transcript?.some(
+			(block) => block.kind === "message" && block.message.text.includes("Idle timeout"),
+		),
+		false,
+	);
+
+	state = reduceRuntimeEvent(state, "stream.recovered", { client_turn_id: "c1" });
+	shell = projectRuntimeState(state);
+	assert.equal(state.liveStatus?.text, "Thinking");
+	assert.equal(shell.footer.liveStateKind, "thinking");
+	assert.equal(shell.footer.liveStateDetail, undefined);
+});
+
 test("runtime adapter syncs backend message queues", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "turn.queue.updated", {
@@ -1495,6 +1569,160 @@ test("runtime adapter clears the matching interrupted server turn", () => {
 	assert.equal(state.activeTurnId, null);
 	assert.equal(state.turnRunning, false);
 	assert.equal(state.liveStatus?.state, "interrupted");
+});
+
+test("runtime adapter appends one visible notice when a turn is interrupted", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		turn_id: "turn-1",
+		turn_state: "interrupted",
+		assistant_message: "Turn interrupted. The current turn was aborted; send a new message to continue.",
+	});
+	state = reduceRuntimeEvent(state, "turn.interrupted", {
+		turn_id: "turn-1",
+		message: "Interrupt requested",
+	});
+
+	const notices = projectRuntimeState(state).messages.filter(
+		(message) => message.text === "Turn interrupted. The current turn was aborted; send a new message to continue.",
+	);
+	assert.equal(notices.length, 1);
+	assert.equal(notices[0]?.role, "warning");
+	assert.equal(state.liveStatus?.state, "interrupted");
+});
+
+test("runtime adapter removes an output-free rolled back user turn", () => {
+	let state = runtimeStateWithUserMessage(initialRuntimeState(), "restore me");
+	state = reduceRuntimeEvent(state, "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "reasoning.delta", {
+		turn_id: "turn-1",
+		text: "internal thinking",
+	});
+	state = reduceRuntimeEvent(state, "turn.completed", {
+		turn_id: "turn-1",
+		turn_state: "interrupted",
+		input_rolled_back: true,
+		assistant_message: "",
+	});
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.messages.some((message) => message.text === "restore me"), false);
+	assert.equal(shell.messages.some((message) => message.role === "warning"), false);
+});
+
+test("runtime adapter keeps an interrupt request busy until the server confirms the turn stopped", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", {
+		turn_id: "turn-1",
+	});
+	state = reduceRuntimeEvent(state, "turn.interrupted", {
+		turn_id: "turn-1",
+		requested: true,
+		message: "Interrupt requested",
+	});
+
+	assert.equal(state.activeTurnId, "turn-1");
+	assert.equal(state.turnRunning, true);
+	assert.equal(state.liveStatus?.state, "interrupting");
+	assert.equal(projectRuntimeState(state).footer.liveState, "Interrupting");
+
+	state = reduceRuntimeEvent(state, "status.changed", {
+		turn_running: false,
+		turn_id: null,
+	});
+	assert.equal(state.turnRunning, false);
+	assert.equal(state.activeTurnId, null);
+});
+
+test("runtime input disposition queues follow-ups while a turn is interrupting", () => {
+	const idle = initialRuntimeState();
+	const running = reduceRuntimeEvent(idle, "turn.started", { turn_id: "turn-1" });
+	const interrupting = reduceRuntimeEvent(running, "turn.interrupted", {
+		turn_id: "turn-1",
+		requested: true,
+	});
+
+	assert.equal(runtimeInputDisposition(idle, false), "submit");
+	assert.equal(runtimeInputDisposition(running, true), "steer");
+	assert.equal(runtimeInputDisposition(interrupting, true), "follow_up");
+	assert.equal(runtimeInputDisposition(idle, true), "follow_up");
+});
+
+test("interrupt resolution resubmits pending steers but keeps ordinary follow-ups queued", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "redirect the turn",
+		attachments: [],
+	});
+	state = runtimeStateWithLocalFollowUp(state, {
+		clientUserMessageId: "follow-1",
+		message: "then summarize",
+		attachments: [],
+	});
+
+	const resolved = resolveLocalInterruptInputs(state, true);
+
+	assert.equal(resolved.dispatchNext, true);
+	assert.deepEqual(resolved.restoreToComposer, []);
+	assert.deepEqual(resolved.state.localRejectedSteers.map((input) => input.message), [
+		"redirect the turn",
+	]);
+	assert.deepEqual(resolved.state.localFollowUps.map((input) => input.message), [
+		"then summarize",
+	]);
+});
+
+test("ordinary interrupt restores every local queued input instead of auto-submitting it", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "steer-1",
+		message: "pending steer",
+		attachments: [],
+	});
+	state = runtimeStateRejectPendingSteer(state, "steer-1");
+	state = runtimeStateWithLocalFollowUp(state, {
+		clientUserMessageId: "follow-1",
+		message: "queued follow-up",
+		attachments: [{ path: "/tmp/queued.png", placeholder: "[image #1]" }],
+	});
+
+	const resolved = resolveLocalInterruptInputs(state, false);
+
+	assert.equal(resolved.dispatchNext, false);
+	assert.deepEqual(resolved.restoreToComposer.map((input) => input.message), [
+		"pending steer",
+		"queued follow-up",
+	]);
+	assert.equal(resolved.state.localPendingSteers.length, 0);
+	assert.equal(resolved.state.localRejectedSteers.length, 0);
+	assert.equal(resolved.state.localFollowUps.length, 0);
+});
+
+test("ordinary interrupt restores rejected steers before pending steers and follow-ups", () => {
+	let state = runtimeStateWithPendingSteer(initialRuntimeState(), {
+		clientUserMessageId: "rejected-1",
+		message: "rejected steer",
+		attachments: [],
+	});
+	state = runtimeStateRejectPendingSteer(state, "rejected-1");
+	state = runtimeStateWithPendingSteer(state, {
+		clientUserMessageId: "pending-1",
+		message: "pending steer",
+		attachments: [],
+	});
+	state = runtimeStateWithLocalFollowUp(state, {
+		clientUserMessageId: "follow-1",
+		message: "queued follow-up",
+		attachments: [],
+	});
+
+	const resolved = resolveLocalInterruptInputs(state, false);
+
+	assert.deepEqual(resolved.restoreToComposer.map((input) => input.message), [
+		"rejected steer",
+		"pending steer",
+		"queued follow-up",
+	]);
 });
 
 test("runtime adapter restores structured queue state from bootstrap", () => {
@@ -1862,6 +2090,55 @@ test("runtime adapter projects thinking effort into footer and current model", (
 	assert.equal(shell.models?.[0]?.thinkingLevel, "high");
 });
 
+test("runtime adapter projects backend model catalog capabilities", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "status.changed", {
+		model: "gpt-5.4",
+		provider: "openai/responses",
+		thinking_effort: "high",
+		models: [
+			{
+				provider: "openai",
+				protocol: "responses",
+				model: "gpt-5.4",
+				name: "GPT-5.4",
+				description: "Frontier coding model",
+				base_url: "https://api.openai.com/v1",
+				supported_reasoning_efforts: ["low", "medium", "high", "xhigh"],
+				default_reasoning_effort: "medium",
+				current: true,
+				default: false,
+			},
+		],
+	});
+
+	const model = projectRuntimeState(state).models?.[0];
+
+	assert.deepEqual(model, {
+		provider: "openai",
+		protocol: "responses",
+		model: "gpt-5.4",
+		name: "GPT-5.4",
+		description: "Frontier coding model",
+		baseUrl: "https://api.openai.com/v1",
+		supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+		defaultReasoningEffort: "medium",
+		current: true,
+		default: false,
+	});
+});
+
+test("runtime adapter preserves an explicitly empty backend model catalog", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "status.changed", {
+		model: "gpt-5.4",
+		provider: "openai/responses",
+		models: [],
+	});
+
+	assert.deepEqual(projectRuntimeState(state).models, []);
+});
+
 test("runtime adapter handles command results and session lists", () => {
 	let state = initialRuntimeState();
 	state = runtimeStateWithCommandResult(state, "/status", { lines: ["ok"] });
@@ -1925,6 +2202,50 @@ test("runtime adapter upserts structured command results by stable id", () => {
 		block?.kind === "command_result" ? block.commandResult.display.rows[0]?.label : "",
 		"Read",
 	);
+});
+
+test("runtime adapter keeps overlay and action results out of transcript", () => {
+	let state = runtimeStateWithCommandResult(initialRuntimeState(), "/skills", {
+		presentation: "overlay",
+		lines: ["Skills", "code-review"],
+	});
+	state = runtimeStateWithCommandResult(state, "/plan", {
+		presentation: "none",
+		lines: ["Plan mode enabled"],
+		collaboration_mode: "plan",
+	});
+
+	assert.deepEqual(state.transcript, []);
+	assert.equal(state.collaborationMode, "plan");
+});
+
+test("runtime adapter defers transcript command results until the active turn completes", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "message.delta", { text: "assistant prefix\n" });
+	state = runtimeStateWithCommandResult(state, "/tools", {
+		result_id: "command:tools-during-stream",
+		display: {
+			version: 1,
+			kind: "list",
+			command: "/tools",
+			title: "Tools",
+			severity: "info",
+			rows: [{ key: "Read", label: "Read", values: ["builtin"] }],
+		},
+		lines: ["Tools", "Read  builtin"],
+	});
+
+	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["message"]);
+
+	state = reduceRuntimeEvent(state, "message.delta", { text: "assistant tail" });
+	state = reduceRuntimeEvent(state, "message.complete", {
+		text: "assistant prefix\nassistant tail",
+		final: true,
+	});
+
+	const projected = projectRuntimeState(state).transcript ?? [];
+	assert.deepEqual(projected.map((block) => block.kind), ["message", "command_result"]);
+	assert.equal(projected[0]?.kind === "message" ? projected[0].message.text : "", "assistant prefix\nassistant tail");
 });
 
 test("runtime adapter ignores resumed command results but renders live results", () => {
@@ -2318,6 +2639,46 @@ test("WriteStdin poll merges into yielded Shell without a second card", () => {
 	assert.equal(bashBlocks[0]?.bash.tty, false);
 	assert.match(bashBlocks[0]?.bash.outputPreview ?? "", /50% complete/);
 	assert.equal(shell.tools.some((tool) => tool.name === "WriteStdin"), false);
+});
+
+test("empty WriteStdin poll uses background wait status without a polling card", () => {
+	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", { turn_id: "turn-1" });
+	state = reduceRuntimeEvent(state, "shell.started", {
+		shell_id: "shell-1",
+		sequence: 1,
+		background: true,
+		process_state: "running_background",
+		command_preview: "python train.py",
+	});
+
+	state = reduceRuntimeEvent(state, "tool.start", {
+		tool_id: "poll-tool",
+		call_id: "poll-call",
+		name: "WriteStdin",
+		session_id: "shell-1",
+		empty_poll: true,
+	});
+
+	assert.equal(state.liveStatus?.kind, "waiting_background_terminal");
+	assert.equal(state.liveStatus?.text, "Waiting for background terminal");
+	assert.equal(state.liveStatus?.message, "python train.py");
+	assert.equal(state.transcript.some((item) => item.id === "poll-tool"), false);
+	assert.equal(
+		(projectRuntimeState(state).footer as { turnRunning?: boolean }).turnRunning,
+		true,
+	);
+
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		tool_id: "poll-tool",
+		call_id: "poll-call",
+		name: "WriteStdin",
+		session_id: "shell-1",
+		empty_poll: true,
+		raw_payload: { shell_id: "shell-1", status: "running", output: "step 1\n" },
+	});
+
+	assert.equal(state.liveStatus?.kind, "running");
+	assert.equal(state.transcript.some((item) => item.id === "poll-tool"), false);
 });
 
 test("terminal shell state rejects later running events", () => {

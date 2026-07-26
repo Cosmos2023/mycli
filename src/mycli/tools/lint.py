@@ -9,7 +9,7 @@ from typing import Any
 from mycli.domain.runtime import ShellKind, ShellProfile
 from mycli.domain.tooling.calls import ToolCall
 from mycli.domain.tooling.output import ToolModelOutput
-from mycli.tools.base import ToolParameter, ToolResult, ToolSpec
+from mycli.tools.base import ToolEffectProfile, ToolParameter, ToolResult, ToolSpec
 from mycli.tools.shell_resolver import detect_shell_profile
 
 
@@ -177,6 +177,9 @@ class LintTool:
 
     def configure_shell_profile(self, shell_profile: ShellProfile) -> None:
         self._shell_profile = shell_profile
+
+    def effect_profile(self) -> ToolEffectProfile:
+        return ToolEffectProfile(filesystem="read", process=True)
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         paths = arguments.get("paths")

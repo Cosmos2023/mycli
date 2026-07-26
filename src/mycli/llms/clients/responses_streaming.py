@@ -150,12 +150,22 @@ class ResponsesStreamHelper:
                 item=item,
                 provider_item_id=provider_item_id,
             )
+            yield {
+                "type": "response.output_item.done",
+                "item_id": provider_item_id,
+                "item": item,
+            }
             return
         if item_type == "message":
             yield from self._synthetic_message_events(
                 item=item,
                 provider_item_id=provider_item_id,
             )
+            yield {
+                "type": "response.output_item.done",
+                "item_id": provider_item_id,
+                "item": item,
+            }
             return
         if item_type == "function_call":
             yield {

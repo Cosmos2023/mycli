@@ -20,6 +20,7 @@ class SlashCommandId(StrEnum):
     NEW = "new"
     STATUS = "status"
     USAGE = "usage"
+    COMPACT = "compact"
     CONTEXT = "context"
     STATS = "stats"
     SKILLS = "skills"
@@ -218,6 +219,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         SlashCommandId.PLAN,
         "/plan",
         "Switch to Plan mode",
+        presentation=SlashCommandPresentation.NONE,
         available_during_turn=False,
     ),
     _spec(
@@ -226,7 +228,9 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect or switch collaboration mode",
         argument_hint="[default|plan]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.NONE,
         available_during_turn=False,
+        visible=False,
     ),
     _spec(
         SlashCommandId.PERMISSIONS,
@@ -235,6 +239,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         argument_hint="[allow|revoke|clear]",
         aliases=("/tools permissions",),
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.SANDBOX,
@@ -242,7 +247,9 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect or switch sandbox mode",
         argument_hint="[read-only|workspace-write|danger-full-access|next]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.NONE,
         available_during_turn=False,
+        visible=False,
     ),
     _spec(
         SlashCommandId.SETTINGS,
@@ -251,6 +258,16 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("open_settings"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
+    ),
+    _spec(
+        SlashCommandId.NEW,
+        "/new",
+        "Start a fresh local transcript",
+        tui_policy=_tui_policy("start_new_session"),
+        surfaces=_TUI_SURFACE,
+        presentation=SlashCommandPresentation.NONE,
+        available_during_turn=False,
     ),
     _spec(
         SlashCommandId.RESUME,
@@ -272,15 +289,6 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         available_during_turn=False,
     ),
     _spec(
-        SlashCommandId.NEW,
-        "/new",
-        "Start a fresh local transcript",
-        tui_policy=_tui_policy("start_new_session"),
-        surfaces=_TUI_SURFACE,
-        presentation=SlashCommandPresentation.NONE,
-        available_during_turn=False,
-    ),
-    _spec(
         SlashCommandId.STATUS,
         "/status",
         "Show runtime status",
@@ -297,18 +305,28 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "/context",
         "Show context-window diagnostics",
         aliases=("/status context",),
+        visible=False,
+    ),
+    _spec(
+        SlashCommandId.COMPACT,
+        "/compact",
+        "Compact the active model context",
+        presentation=SlashCommandPresentation.TRANSCRIPT,
+        available_during_turn=False,
     ),
     _spec(
         SlashCommandId.STATS,
         "/stats",
         "Show aggregate runtime stats",
         aliases=("/status stats",),
+        visible=False,
     ),
     _spec(
         SlashCommandId.SKILLS,
         "/skills",
         "Inspect available skills",
         aliases=("/skill", "/tools skills"),
+        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.TOOLS,
@@ -316,6 +334,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect tools, hooks, extensions, and plugins",
         argument_hint="[list|sets|hooks|extensions|plugins]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.OVERLAY,
     ),
     _spec(
         SlashCommandId.RESOURCES,
@@ -324,6 +343,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("open_resources"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.MEMORY,
@@ -331,6 +351,8 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect or update session memory",
         argument_hint="[list|path|search|add|forget]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.OVERLAY,
+        visible=False,
     ),
     _spec(
         SlashCommandId.AGENTS,
@@ -338,6 +360,8 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect agent profiles",
         argument_hint="[list|inspect profile-id]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.OVERLAY,
+        visible=False,
     ),
     _spec(
         SlashCommandId.TASKS,
@@ -353,7 +377,13 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "List background terminals",
         aliases=("/tasks bashes", "/bashes", "/jobs bashes"),
     ),
-    _spec(SlashCommandId.STOP, "/stop", "Stop all background terminals"),
+    _spec(
+        SlashCommandId.STOP,
+        "/stop",
+        "Stop all background terminals",
+        presentation=SlashCommandPresentation.NONE,
+        visible=False,
+    ),
     _spec(
         SlashCommandId.CHANGES,
         "/changes",
@@ -364,6 +394,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "/undo",
         "Undo the last recoverable file change",
         aliases=("/changes undo",),
+        visible=False,
     ),
     _spec(
         SlashCommandId.TRACE,
@@ -371,6 +402,8 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         "Inspect runtime trace or logs",
         argument_hint="[export|logs]",
         argument_policy=SlashArgumentPolicy.OPTIONAL,
+        presentation=SlashCommandPresentation.OVERLAY,
+        visible=False,
     ),
     _spec(
         SlashCommandId.DETAILS,
@@ -379,6 +412,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("toggle_details"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.VIEW,
@@ -388,6 +422,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         argument_policy=SlashArgumentPolicy.OPTIONAL,
         tui_policy=_tui_policy("set_view_mode", inline_action="set_view_mode"),
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.HOTKEYS,
@@ -396,6 +431,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("open_hotkeys"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.COPY,
@@ -404,6 +440,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("copy_last_response"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.CLEAR,
@@ -413,6 +450,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
         available_during_turn=False,
+        visible=False,
     ),
     _spec(
         SlashCommandId.LOGIN,
@@ -421,6 +459,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("open_login"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.TRUST,
@@ -429,6 +468,7 @@ _SPECS: tuple[SlashCommandSpec, ...] = (
         tui_policy=_tui_policy("open_trust"),
         surfaces=_TUI_SURFACE,
         presentation=SlashCommandPresentation.NONE,
+        visible=False,
     ),
     _spec(
         SlashCommandId.HELP,

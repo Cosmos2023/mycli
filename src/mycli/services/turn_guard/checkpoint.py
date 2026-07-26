@@ -89,16 +89,6 @@ class TurnCheckpoint:
     ) -> CheckpointResult:
         max_repeated = self._max_repeated_tool_signatures(conversation)
         repeated_failure = self._repeated_failed_tool_result(conversation)
-        if repeated_failure is not None:
-            return CheckpointResult(
-                exit_reason=ExitReason.REPEATED_TOOL_FAILURE,
-                stop_reason=StopReason.LOOP_DETECTED,
-                assistant_message=(
-                    "I stopped due to repeated exploration: repeated failed tool calls with the same target. "
-                    "Check the path or adjust the approach before retrying."
-                ),
-                diagnostics=repeated_failure,
-            )
 
         plan_state_obj = plan_state or PlanState()
         replan_count = self._count_tool_calls_in_current_turn(
@@ -131,13 +121,20 @@ class TurnCheckpoint:
         reminders: list[str] = []
         continue_reason = ContinueReason.NEXT_STEP
 
+        if repeated_failure is not None:
+            continue_reason = ContinueReason.REROUTE
+            reminders.append(
+                "A tool has failed repeatedly for the same target. Use the failures as evidence, "
+                "change approach, or answer with what is known instead of retrying it."
+            )
+
         if current_window_tokens >= self._max_tokens:
             continue_reason = ContinueReason.COMPACT_CONTEXT
             reminders.append(
                 "Context window is at or over budget. Compact context before the next model request, then continue the current turn."
             )
 
-        if max_repeated >= self._reroute_threshold:
+        if max_repeated == self._reroute_threshold:
             if continue_reason is ContinueReason.NEXT_STEP:
                 continue_reason = ContinueReason.REROUTE
             reminders.append(
@@ -154,6 +151,7 @@ class TurnCheckpoint:
         return CheckpointResult(
             continue_reason=continue_reason,
             reminders=tuple(dict.fromkeys(reminders)),
+            diagnostics=repeated_failure or {},
         )
 
     def _max_repeated_tool_signatures(self, conversation: Conversation) -> int:
@@ -210,10 +208,14 @@ class TurnCheckpoint:
                     continue
                 path = metadata.get("path")
                 error_kind = metadata.get("error_kind")
+                command = _failed_tool_command(metadata)
+                target = path if isinstance(path, str) and path else command
+                if not target:
+                    continue
                 signature = _tool_call_signature(
                     tool_name,
                     {
-                        "path": path if isinstance(path, str) else "",
+                        "target": target,
                         "error_kind": error_kind if isinstance(error_kind, str) else "",
                     },
                 )
@@ -231,10 +233,13 @@ class TurnCheckpoint:
                 diagnostic["count"] = count
                 if isinstance(path, str) and path:
                     diagnostic["path"] = path
+                elif command:
+                    diagnostic["command"] = command
                 if isinstance(error_kind, str) and error_kind:
                     diagnostic["error_kind"] = error_kind
-                if count >= self._repeated_failed_tool_threshold:
-                    return diagnostic
+        for diagnostic in signatures.values():
+            if diagnostic.get("count") == self._repeated_failed_tool_threshold:
+                return diagnostic
         return None
 
 
@@ -254,6 +259,14 @@ def _tool_call_signature(name: str, arguments: dict[str, object]) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+def _failed_tool_command(metadata: dict[str, object]) -> str:
+    raw_payload = metadata.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        return ""
+    command = raw_payload.get("command")
+    return command if isinstance(command, str) else ""
 
 
 def _is_truncated_tool_result(block: RuntimeBlock) -> bool:

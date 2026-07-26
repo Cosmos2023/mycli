@@ -98,17 +98,17 @@ class ResponsesStreamEventAdapter:
         self,
         event: ResponsesOutputItemDoneEvent,
     ) -> dict[str, object]:
+        item = dict(event.raw_item)
+        item.setdefault("id", event.item_id)
+        item.setdefault("type", event.item_type)
+        item.setdefault("name", event.name)
+        item.setdefault("call_id", event.call_id)
+        item.setdefault("arguments", event.arguments)
+        item.setdefault("status", event.status)
         return {
             "type": "response.output_item.done",
             "item_id": event.item_id,
-            "item": {
-                "id": event.item_id,
-                "type": event.item_type,
-                "name": event.name,
-                "call_id": event.call_id,
-                "arguments": event.arguments,
-                "status": event.status,
-            },
+            "item": item,
         }
 
     def mcp_call_completed_payload(

@@ -29,6 +29,9 @@ class RuntimeModelState:
     def set_config(self, config: AgentConfig) -> None:
         self._config = config
 
+    def replace_model_adapter(self, model_adapter: ModelAdapter) -> None:
+        self._model_adapter = model_adapter
+
     def set_log_context(self, turn_id: str) -> None:
         setter = getattr(self._model_adapter, "set_log_context_provider", None)
         if not callable(setter):

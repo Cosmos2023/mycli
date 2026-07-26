@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, `subprocess`, Python `pty`/`fcntl`/`termios` on Unix, Windows-only `pywinpty`, pytest, Ruff, Mypy, Node.js 22.19+, TypeScript 5.9, Node test runner, GitHub Actions.
 
----
+***
 
 ## File Map
 
@@ -72,11 +72,11 @@
 ## Task 1: Define The Transport Contract
 
 **Files:**
+
 - Create: `src/mycli/tools/shell_transport/__init__.py`
 - Create: `src/mycli/tools/shell_transport/base.py`
 - Create: `tests/support/shell_transports.py`
 - Create: `tests/unit/tools/shell_transport/test_contract.py`
-
 - [ ] **Step 1: Write the failing contract tests**
 
 ```python
@@ -305,9 +305,9 @@ git commit -m "feat: define shell process transport contract"
 ## Task 2: Add Incremental Output Decoding And Sanitization
 
 **Files:**
+
 - Create: `src/mycli/tools/shell_output_decoder.py`
 - Create: `tests/unit/tools/test_shell_output_decoder.py`
-
 - [ ] **Step 1: Write failing decoder tests**
 
 ```python
@@ -397,12 +397,12 @@ git commit -m "feat: normalize streamed shell output"
 ## Task 3: Implement Binary Pipe Transport
 
 **Files:**
+
 - Create: `src/mycli/tools/shell_transport/pipe.py`
 - Create: `src/mycli/tools/shell_transport/factory.py`
 - Modify: `src/mycli/tools/shell_transport/__init__.py`
 - Create: `tests/unit/tools/shell_transport/test_pipe.py`
 - Modify: `src/mycli/tools/process_controller.py`
-
 - [ ] **Step 1: Write failing pipe transport tests**
 
 ```python
@@ -511,10 +511,10 @@ git commit -m "feat: stream shell output through binary pipes"
 ## Task 4: Move ShellSessionManager Onto Transports
 
 **Files:**
+
 - Modify: `src/mycli/tools/shell_session_manager.py`
 - Modify: `src/mycli/tools/shell_registry.py`
 - Modify: `tests/unit/tools/test_shell_session_manager.py`
-
 - [ ] **Step 1: Add failing manager transport tests**
 
 Create a deterministic fake transport in the test module with queue-backed chunks, explicit exit,
@@ -617,12 +617,12 @@ git commit -m "refactor: run shell sessions through transports"
 ## Task 5: Implement Yield-Based Session Semantics
 
 **Files:**
+
 - Modify: `src/mycli/tools/shell_session_manager.py`
 - Modify: `src/mycli/tools/shell_registry.py`
 - Modify: `src/mycli/tools/shell_backend.py`
 - Modify: `tests/unit/tools/test_shell_session_manager.py`
 - Modify: `tests/unit/tools/test_shell_command_runtime.py`
-
 - [ ] **Step 1: Write failing yield and race tests**
 
 ```python
@@ -767,13 +767,13 @@ git commit -m "feat: yield long-running shell sessions"
 ## Task 6: Add WriteStdin And Stable Model Output
 
 **Files:**
+
 - Create: `src/mycli/tools/write_stdin.py`
 - Create: `tests/unit/tools/test_write_stdin.py`
 - Modify: `src/mycli/tools/shell_session_manager.py`
 - Modify: `src/mycli/tools/shell_registry.py`
 - Modify: `src/mycli/tools/model_output.py`
 - Modify: `tests/unit/tools/test_run_shell.py`
-
 - [ ] **Step 1: Write failing interaction tests**
 
 ```python
@@ -914,6 +914,7 @@ git commit -m "feat: continue shell sessions with WriteStdin"
 ## Task 7: Switch The Model-Visible Tool Contract
 
 **Files:**
+
 - Modify: `src/mycli/tools/bash.py`
 - Modify: `src/mycli/tools/registry.py`
 - Modify: `src/mycli/tools/routing/tool_exposure_planner.py`
@@ -926,7 +927,6 @@ git commit -m "feat: continue shell sessions with WriteStdin"
 - Modify: `tests/unit/tools/test_tool_registry.py`
 - Modify: `tests/unit/services/test_safety_policy.py`
 - Modify: `tests/unit/prompts/test_prompts.py`
-
 - [ ] **Step 1: Write failing schema and exposure tests**
 
 ```python
@@ -1026,9 +1026,9 @@ git commit -m "feat: expose Codex-style Shell continuation tools"
 ## Task 8: Implement Unix PTY Transport
 
 **Files:**
+
 - Create: `src/mycli/tools/shell_transport/unix_pty.py`
 - Create: `tests/unit/tools/shell_transport/test_unix_pty.py`
-
 - [ ] **Step 1: Write POSIX-only PTY tests**
 
 ```python
@@ -1123,12 +1123,12 @@ git commit -m "feat: run interactive shells through Unix PTY"
 ## Task 9: Implement Windows ConPTY Transport
 
 **Files:**
+
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
 - Create: `src/mycli/tools/shell_transport/windows_conpty.py`
 - Create: `tests/unit/tools/shell_transport/test_windows_conpty.py`
 - Modify: `.github/workflows/cross-platform.yml`
-
 - [ ] **Step 1: Add the Windows-only dependency and lock it**
 
 Add this project dependency:
@@ -1253,6 +1253,7 @@ git commit -m "feat: support interactive Windows shells with ConPTY"
 ## Task 10: Preserve Hidden Legacy Calls
 
 **Files:**
+
 - Modify: `src/mycli/tools/bash.py`
 - Modify: `src/mycli/tools/shell_output.py`
 - Modify: `src/mycli/tools/bash_output.py`
@@ -1261,7 +1262,6 @@ git commit -m "feat: support interactive Windows shells with ConPTY"
 - Modify: `tests/unit/tools/test_bash_output.py`
 - Modify: `tests/unit/test_kill_shell.py`
 - Modify: `tests/unit/tools/test_tool_registry.py`
-
 - [ ] **Step 1: Add compatibility regression tests**
 
 ```python
@@ -1331,6 +1331,7 @@ git commit -m "fix: preserve legacy shell tool compatibility"
 ## Task 11: Carry Yield And Transport State Through Lifecycle Events And TUI
 
 **Files:**
+
 - Modify: `src/mycli/domain/runtime/shell_lifecycle.py`
 - Modify: `src/mycli/tools/shell_session_manager.py`
 - Modify: `tests/unit/tools/test_shell_session_manager.py`
@@ -1339,7 +1340,6 @@ git commit -m "fix: preserve legacy shell tool compatibility"
 - Modify: `tui/mycli-shell/src/components/bash-execution.ts`
 - Modify: `tui/mycli-shell/test/runtime-state.test.ts`
 - Modify: `tui/mycli-shell/test/shell-app.test.ts`
-
 - [ ] **Step 1: Write failing lifecycle projection tests**
 
 ```typescript
@@ -1421,11 +1421,11 @@ git commit -m "feat: render yielded shell sessions in one TUI block"
 ## Task 12: Add End-To-End Cross-Platform Coverage
 
 **Files:**
+
 - Modify: `tests/integration/test_cross_platform_shell.py`
 - Modify: `.github/workflows/cross-platform.yml`
 - Modify: `docs/superpowers/specs/README.md`
 - Modify: `docs/superpowers/plans/README.md`
-
 - [ ] **Step 1: Add integration scenarios**
 
 Parameterize active shell profiles and add these end-to-end assertions:

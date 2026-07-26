@@ -19,9 +19,11 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
+from mycli.domain.runtime import RuntimeInterruptToken
 from mycli.services.mcp.client import McpClient, McpToolDescriptor
 from mycli.services.mcp.diagnostics import classify_mcp_failure, redact_mcp_diagnostic_text
 from mycli.tools.base import ToolEffectProfile, ToolResult, ToolSpec
+from mycli.tools.invocation_context import current_tool_interrupt_token
 
 MCP_TOOL_SUMMARY_LIMIT = 4000
 MCP_TOOL_RAW_TEXT_LIMIT = 12000
@@ -35,7 +37,11 @@ class _McpSchemaTool:
 
     def execute(self, arguments: dict[str, Any]) -> ToolResult:
         try:
-            result = self.client.call_tool(self.descriptor.name, arguments)
+            result = self.client.call_tool(
+                self.descriptor.name,
+                arguments,
+                interrupt_token=current_tool_interrupt_token(),
+            )
         except Exception as exc:
             failure_category = classify_mcp_failure(exc)
             error = _truncate_text(redact_mcp_diagnostic_text(exc), MCP_TOOL_SUMMARY_LIMIT)
@@ -94,12 +100,20 @@ class McpToolAdapter:
         self._clients = dict(clients)
         self._descriptors_by_route: dict[str, McpToolDescriptor] = {}
 
-    def list_tool_stubs(self) -> tuple[ToolContributionRegistration, ...]:
+    def list_tool_stubs(
+        self,
+        *,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> tuple[ToolContributionRegistration, ...]:
         registrations: list[ToolContributionRegistration] = []
         for server_name, client in sorted(self._clients.items()):
+            if interrupt_token is not None:
+                interrupt_token.raise_if_interrupted()
             if not client.config.enabled:
                 continue
-            for descriptor in client.list_tools():
+            for descriptor in client.list_tools(interrupt_token=interrupt_token):
+                if interrupt_token is not None:
+                    interrupt_token.raise_if_interrupted()
                 self._descriptors_by_route[descriptor.route_name] = descriptor
                 registrations.append(self._registration(client=client, descriptor=descriptor, hydrate=False))
         return tuple(registrations)

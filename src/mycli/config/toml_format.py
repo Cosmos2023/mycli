@@ -12,6 +12,7 @@ CONFIG_SECTIONS: tuple[ConfigSection, ...] = (
             ("protocol", "protocol"),
             ("name", "model"),
             ("api_base_url", "api_base_url"),
+            ("auth_ref", "auth_ref"),
             ("supports_images", "supports_images"),
         ),
     ),
@@ -20,7 +21,8 @@ CONFIG_SECTIONS: tuple[ConfigSection, ...] = (
         (
             ("max_prompt_tokens", "max_prompt_tokens"),
             ("fallback_model", "fallback_model"),
-            ("transport_retry_limit", "transport_retry_limit"),
+            ("request_max_retries", "request_max_retries"),
+            ("stream_max_retries", "stream_max_retries"),
             ("cache_control_enabled", "cache_control_enabled"),
             ("prompt_cache_key_enabled", "prompt_cache_key_enabled"),
         ),

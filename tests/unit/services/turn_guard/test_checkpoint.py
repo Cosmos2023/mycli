@@ -55,9 +55,18 @@ def _tool_message(
 def _failed_tool_message(
     *,
     tool_name: str,
-    path: str,
+    path: str = "",
     error_kind: str,
+    command: str | None = None,
 ) -> Message:
+    metadata: dict[str, object] = {
+        "tool_name": tool_name,
+        "success": False,
+        "path": path,
+        "error_kind": error_kind,
+    }
+    if command is not None:
+        metadata["raw_payload"] = {"command": command}
     return Message(
         role="tool",
         content=f"Failed to run {tool_name}",
@@ -65,12 +74,7 @@ def _failed_tool_message(
             RuntimeBlock(
                 type="tool_result",
                 text=f"Failed to run {tool_name}",
-                metadata={
-                    "tool_name": tool_name,
-                    "success": False,
-                    "path": path,
-                    "error_kind": error_kind,
-                },
+                metadata=metadata,
             ),
         ),
     )
@@ -177,7 +181,7 @@ def test_tool_count_at_limit_does_not_force_answer() -> None:
 def test_repeated_successful_tool_calls_only_request_a_different_path() -> None:
     checkpoint = TurnCheckpoint()
     repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
-    conversation = _conversation(repeated, repeated, repeated, repeated)
+    conversation = _conversation(repeated, repeated, repeated)
 
     result = checkpoint.evaluate(
         step_index=3,
@@ -190,7 +194,21 @@ def test_repeated_successful_tool_calls_only_request_a_different_path() -> None:
     assert any("different" in reminder.lower() for reminder in result.reminders)
 
 
-def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:
+def test_repeated_successful_tool_call_reminder_is_emitted_only_at_threshold() -> None:
+    checkpoint = TurnCheckpoint()
+    repeated = _assistant_tool_call(name="LS", arguments={"path": "."})
+
+    result = checkpoint.evaluate(
+        step_index=4,
+        conversation=_conversation(repeated, repeated, repeated, repeated),
+    )
+
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.reminders == ()
+
+
+def test_repeated_failed_tool_results_request_reroute_without_stopping() -> None:
     checkpoint = TurnCheckpoint(repeated_failed_tool_threshold=3)
     failed_read = _failed_tool_message(
         tool_name="Read",
@@ -203,8 +221,10 @@ def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:
         conversation=_conversation(failed_read, failed_read, failed_read),
     )
 
-    assert result.exit_reason == ExitReason.REPEATED_TOOL_FAILURE
-    assert result.stop_reason == StopReason.LOOP_DETECTED
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.continue_reason == ContinueReason.REROUTE
+    assert any("failed" in reminder.lower() for reminder in result.reminders)
     assert result.diagnostics == {
         "trigger": "repeated_failed_tool_result",
         "count": 3,
@@ -212,6 +232,49 @@ def test_repeated_failed_tool_results_stop_with_diagnostics() -> None:
         "path": "missing.py",
         "error_kind": "not_found",
     }
+
+
+def test_repeated_failed_tool_result_reminder_is_emitted_only_at_threshold() -> None:
+    checkpoint = TurnCheckpoint(repeated_failed_tool_threshold=3)
+    failed_read = _failed_tool_message(
+        tool_name="Read",
+        path="missing.py",
+        error_kind="not_found",
+    )
+
+    result = checkpoint.evaluate(
+        step_index=4,
+        conversation=_conversation(failed_read, failed_read, failed_read, failed_read),
+    )
+
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.reminders == ()
+
+
+def test_distinct_failed_shell_commands_do_not_share_a_failure_signature() -> None:
+    checkpoint = TurnCheckpoint(repeated_failed_tool_threshold=3)
+    failures = tuple(
+        _failed_tool_message(
+            tool_name="Shell",
+            error_kind="nonzero_exit",
+            command=command,
+        )
+        for command in (
+            "rg -l 'mcp_servers' .",
+            "ls ~/.mycli/mcp_servers.toml",
+            "rg -l 'mcp.*serv' .",
+        )
+    )
+
+    result = checkpoint.evaluate(
+        step_index=3,
+        conversation=_conversation(*failures),
+    )
+
+    assert result.exit_reason is None
+    assert result.stop_reason is None
+    assert result.reminders == ()
 
 
 def test_loop_detector_is_current_turn_scoped() -> None:

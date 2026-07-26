@@ -4,11 +4,12 @@ from collections.abc import Callable
 import contextlib
 import os
 from pathlib import Path
+import random
 from threading import Lock
 import time
 from uuid import uuid4
 
-from mycli.domain.conversation import Conversation, Message, Role
+from mycli.domain.conversation import Conversation, Message
 from mycli.domain.tooling.contributed_tools import (
     ToolContributionLifecycleEvent,
     ToolContributionRegistration,
@@ -21,7 +22,6 @@ from mycli.domain.runtime import (
     ContextBaseline,
     DecisionAction,
     ExecutionContext,
-    FileRehydrationCandidate,
     HistoryItem,
     InstructionContract,
     ModelTurnResult,
@@ -44,7 +44,6 @@ from mycli.domain.runtime import (
     RequestShape,
     ProviderProjectionLane,
     ReasoningEffort,
-    RehydrationBudget,
     StopReason,
     TurnContext,
     TurnItem,
@@ -85,15 +84,15 @@ from mycli.services.execpolicy import (
 from mycli.services.execpolicy_writer import ExecPolicyWriter
 from mycli.services.context.context_manager import ContextManager
 from mycli.services.context.compaction import (
-    CompactionRehydrationService,
-    CompactionCostProfile,
+    CompactDecision,
+    CompactService,
+    CompactTokenStatus,
+    CompactTriggerPolicy,
+    CompactionReplacementBuilder,
     ContextBudget,
-    CompactionPipeline,
-    ContextWindowAnalyzer,
-    FullContextSnapshot,
-    LLMSummarization,
-    ToolResultBudget,
+    LocalCompactProvider,
 )
+from mycli.services.context.compaction.pipeline import effective_l4_trigger_ratio
 from mycli.services.context.token_counter import TokenCounter
 from mycli.services.file_history import FileHistoryService
 from mycli.services.hooks.allowlist import HookAllowlist
@@ -148,6 +147,7 @@ from mycli.application.runtime.model import (
 )
 from mycli.application.runtime.planning_effects import RuntimePlanningEffects
 from mycli.application.runtime.request import (
+    ProviderTimelineCoordinator,
     RequestPipeline,
     RequestShapeBuilder,
     RequestShapePayloadFormatter,
@@ -289,6 +289,7 @@ class AgentRuntime:
         ] = {}
         self._next_shell_lifecycle_listener_id = 0
         self._recovery_sleep = time.sleep
+        self._retry_jitter = random.uniform
         self._monotonic = time.monotonic
         self._approval_service = approval_service or ApprovalService(
             safety_policy=SafetyPolicy(
@@ -311,29 +312,19 @@ class AgentRuntime:
             normalize_tool_call=self._normalize_tool_call,
             stream_diagnostics_sink=self._record_model_stream_diagnostics,
         )
-        llm_summarization = LLMSummarization(
-            summarizer_client=_SummarizerClientAdapter(
-                self._model_turn_requester,
-                set_model=self._set_model,
-                restore_model=self._restore_model,
-                set_max_output_tokens=self._set_model_max_output_tokens,
-                restore_max_output_tokens=self._restore_model_max_output_tokens,
-                disable_thinking=self._disable_model_thinking,
-                restore_thinking=self._restore_model_thinking,
-            ),
+        self._compact_summarizer_client = _SummarizerClientAdapter(
+            self._model_turn_requester,
+            set_model=self._set_model,
+            restore_model=self._restore_model,
+            set_max_output_tokens=self._set_model_max_output_tokens,
+            restore_max_output_tokens=self._restore_model_max_output_tokens,
+            disable_thinking=self._disable_model_thinking,
+            restore_thinking=self._restore_model_thinking,
         )
-        self._configure_l4_summarization(llm_summarization, config)
-        self._compaction_pipeline = CompactionPipeline(
-            tool_result_budget=ToolResultBudget(),
-            context_window_analyzer=ContextWindowAnalyzer(
-                dedup_trigger_ratio=0.4,
-                eviction_trigger_ratio=0.7,
-                keep_recent_tool_results=8,
-            ),
-            llm_summarization=llm_summarization,
-            token_counter=self._token_counter,
-            hook_manager=self._hook_manager,
-        )
+        self._latest_provider_input_tokens: int | None = None
+        self._compact_model_downshift_pending = False
+        self._compact_compatibility_changed_pending = False
+        self._configure_compact_services(config)
         self._context_manager = context_manager or ContextManager()
         self._file_history_service = FileHistoryService(
             home_dir=home_dir,
@@ -457,6 +448,10 @@ class AgentRuntime:
             request_shape_payload_formatter=self._request_shape_payload_formatter,
             trace_service=self._trace_service,
             workspace_log_service=self._workspace_log_service,
+        )
+        self._provider_timeline = ProviderTimelineCoordinator(
+            session_id=config.session_id,
+            session_service=self._session_service,
         )
         self._tool_orchestrator = ToolOrchestrator(
             session_id=config.session_id,
@@ -706,27 +701,31 @@ class AgentRuntime:
         self._model_state.set_config(self._config)
         self._model_state.set_reasoning_effort(reasoning_effort)
 
-    def _configure_l4_summarization(
-        self,
-        summarization: LLMSummarization,
-        config: AgentConfig,
-    ) -> None:
-        summarization._trigger_ratio = config.compaction_l4_trigger_ratio
-        summarization._buffer_tokens = config.compaction_l4_buffer_tokens
-        summarization._model_name = config.model
-        summarization._trigger_ratios_by_model = dict(
-            config.compaction_l4_trigger_ratios_by_model
+    def _configure_compact_services(self, config: AgentConfig) -> None:
+        configured_limit = config.compaction_token_limit
+        if configured_limit is None:
+            trigger_ratio = effective_l4_trigger_ratio(
+                configured_ratio=config.compaction_l4_trigger_ratio,
+                max_tokens=config.max_prompt_tokens,
+                buffer_tokens=config.compaction_l4_buffer_tokens,
+            )
+            configured_limit = max(1, int(config.max_prompt_tokens * trigger_ratio))
+        self._compact_trigger_policy = CompactTriggerPolicy(
+            limit_tokens=max(1, configured_limit)
         )
-        summarization._cost_profile = CompactionCostProfile(
-            input_cost_per_1k=config.compaction_l4_input_cost_per_1k,
-            output_cost_per_1k=config.compaction_l4_output_cost_per_1k,
-            carry_cost_per_1k=config.compaction_l4_carry_cost_per_1k,
-            expected_summary_tokens=config.compaction_l4_expected_summary_tokens,
-            min_savings_ratio=config.compaction_l4_min_savings_ratio,
-            carry_turns=config.compaction_l4_carry_turns,
-        )
-        summarization._summarizer_model_name = (
-            config.compaction_l4_summarizer_model or config.model
+        self._compact_service = CompactService(
+            provider=LocalCompactProvider(
+                summarizer_client=self._compact_summarizer_client,
+                model_name=config.compaction_l4_summarizer_model or config.model,
+                max_output_tokens=600,
+            ),
+            replacement_builder=CompactionReplacementBuilder(
+                tail_turns=config.compaction_tail_turns,
+                tail_max_tokens=config.compaction_tail_max_tokens,
+                token_counter=self._token_counter,
+            ),
+            token_counter=self._token_counter,
+            summary_max_tokens=600,
         )
 
     def _set_model(self, model: str) -> None:
@@ -879,11 +878,13 @@ class AgentRuntime:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[object, ...]:
         return self._tool_orchestrator._runtime_contributed_tools(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
+            interrupt_token=interrupt_token,
         )
 
     def _plan_tool_exposure(
@@ -892,17 +893,20 @@ class AgentRuntime:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlannedToolExposure:
         runtime_contributed_tools = self._runtime_contributed_tools(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
+            interrupt_token=interrupt_token,
         )
         return self._tool_orchestrator.plan_tool_exposure(
             user_message=user_message,
             conversation=conversation,
             plan_state=plan_state,
             runtime_contributed_tools=runtime_contributed_tools,
+            interrupt_token=interrupt_token,
         )
 
     def _build_tool_router(self, planned_exposure: PlannedToolExposure) -> ToolRouter:
@@ -1574,11 +1578,17 @@ class AgentRuntime:
         *,
         turn_id: str,
         contract: InstructionContract,
+        conversation: Conversation,
         tools: list[ModelToolDefinition],
     ) -> RequestShape:
+        projected_contract = self._provider_timeline.project_and_persist(
+            contract=contract,
+            conversation=conversation,
+            current_user_request=contract.current_user_request,
+        )
         return self._request_pipeline.build_and_trace_request_shape(
             turn_id=turn_id,
-            contract=contract,
+            contract=projected_contract,
             tools=tools,
         )
 
@@ -1612,9 +1622,12 @@ class AgentRuntime:
         fallback_total_tokens: int,
         max_tokens: int | None = None,
     ) -> None:
+        provider_input_tokens = self._provider_input_tokens(usage)
+        if provider_input_tokens > 0:
+            self._latest_provider_input_tokens = provider_input_tokens
         budget = ContextBudget(
             max_tokens=max_tokens or self._config.max_prompt_tokens,
-            total_tokens=self._provider_input_tokens(usage) or fallback_total_tokens,
+            total_tokens=provider_input_tokens or fallback_total_tokens,
         )
         self._record_budget_metric(
             total_tokens=budget.total_tokens,
@@ -1767,6 +1780,7 @@ class AgentRuntime:
                         total_tokens=restored_tokens,
                         max_tokens=int(max_tokens),
                     )
+                    self._latest_provider_input_tokens = restored_tokens
                     return
 
     def _estimate_window_budget(self, conversation: Conversation) -> ContextBudget:
@@ -1781,36 +1795,91 @@ class AgentRuntime:
             estimated_input_tokens=self._estimated_request_shape_tokens(request_shape),
         )
 
-    def _full_context_snapshot(self, request_shape: RequestShape) -> FullContextSnapshot:
-        messages: list[Message] = []
-        for fragment in request_shape.fragments:
-            messages.append(
-                Message(
-                    role="system",
-                    content=f"{fragment.id}:\n{fragment.content}",
-                )
+    def _compact_token_status(self, *, request_shape: RequestShape) -> CompactTokenStatus:
+        return CompactTokenStatus(
+            provider_input_tokens=self._latest_provider_input_tokens,
+            estimated_request_tokens=self._estimated_request_shape_tokens(request_shape),
+        )
+
+    def _compact_active_history(
+        self,
+        conversation: Conversation,
+        *,
+        decision: CompactDecision,
+    ) -> Conversation:
+        active_suffix = self._active_inflight_suffix(conversation)
+        compacted = self._compact_service.compact(conversation, decision)
+        if compacted is conversation:
+            return conversation
+        compacted.messages.extend(active_suffix)
+        turn_id = getattr(self, "_current_turn_id", "turn_compact")
+        input_history_hash = stable_hash(
+            "\n".join(
+                f"{message.role}\0{message.content}\0{message.tool_call_id or ''}"
+                for message in conversation.messages
             )
-        for message in request_shape.provider_messages:
-            messages.append(
-                Message(
-                    role=self._snapshot_role(message.role),
-                    content=message.content,
-                )
-            )
-        for item in request_shape.provider_runtime_items:
-            content = "\n".join(
-                block.text or ""
-                for block in item.blocks
-                if isinstance(block.text, str) and block.text
-            )
-            if content:
-                messages.append(
-                    Message(
-                        role=self._snapshot_role(str(item.role)),
-                        content=content,
-                    )
-                )
-        return FullContextSnapshot(messages=tuple(messages))
+        )
+        self._last_compact_checkpoint = self._session_service.install_compact_replacement(
+            self._config.session_id,
+            replacement=compacted,
+            turn_id=turn_id,
+            reason=decision.reason.value if decision.reason is not None else "",
+            phase=decision.phase.value,
+            input_history_hash=input_history_hash,
+        )
+        self._load_model_continuation_state(turn_id=turn_id)
+        self._latest_provider_input_tokens = None
+        self._compact_model_downshift_pending = False
+        self._compact_compatibility_changed_pending = False
+        return compacted
+
+    def compact_session(self) -> dict[str, object]:
+        conversation = self._session_service.load_conversation(self._config.session_id)
+        active_tokens = self._estimated_conversation_tokens(conversation)
+        decision = self._compact_trigger_policy.manual(active_tokens=active_tokens)
+        previous_turn_id = getattr(self, "_current_turn_id", None)
+        self._set_current_turn_id(f"compact_{uuid4().hex}")
+        try:
+            compacted = self._compact_active_history(conversation, decision=decision)
+        finally:
+            if previous_turn_id is not None:
+                self._set_current_turn_id(previous_turn_id)
+        result: dict[str, object] = {
+            "status": self._compact_service.last_status,
+            "reason": decision.reason.value if decision.reason is not None else "",
+            "phase": decision.phase.value,
+            "before_tokens": active_tokens,
+            "after_tokens": self._estimated_conversation_tokens(compacted),
+        }
+        checkpoint = getattr(self, "_last_compact_checkpoint", None)
+        if compacted is not conversation and isinstance(checkpoint, dict):
+            result["window_number"] = checkpoint.get("window_number", 0)
+            result["window_id"] = checkpoint.get("window_id", "")
+        return result
+
+    @staticmethod
+    def _active_inflight_suffix(conversation: Conversation) -> tuple[Message, ...]:
+        last_user_index = next(
+            (
+                index
+                for index in range(len(conversation.messages) - 1, -1, -1)
+                if conversation.messages[index].role == "user"
+                and not conversation.messages[index].metadata.get("compaction")
+            ),
+            None,
+        )
+        if last_user_index is None:
+            return ()
+        suffix = tuple(conversation.messages[last_user_index:])
+        if any(message.metadata.get("interrupted") for message in suffix):
+            return ()
+        has_final_answer = any(
+            message.role == "assistant"
+            and bool(message.content.strip())
+            and not message.tool_calls
+            for message in suffix[1:]
+        )
+        return () if has_final_answer else suffix
 
     def _record_compaction_metric(
         self,
@@ -1828,12 +1897,6 @@ class AgentRuntime:
             after_tokens=after_tokens,
             level=level,
         )
-
-    def _record_context_window_metrics(self) -> None:
-        metrics = self._compaction_pipeline.last_context_window_metrics
-        if metrics is None:
-            return
-        self._observability_service.metrics.record_context_window(metrics.to_dict())
 
     def _record_l4_decision_metric(
         self,
@@ -1904,6 +1967,12 @@ class AgentRuntime:
             ("input_tokens", "input_tokens"),
             ("summary_tokens", "summary_tokens"),
             ("failure_count", "failure_count"),
+            ("reason", "reason"),
+            ("phase", "phase"),
+            ("trigger_tokens", "trigger_tokens"),
+            ("limit_tokens", "limit_tokens"),
+            ("removed_items", "removed_items"),
+            ("retained_turns", "retained_turns"),
         ):
             value = metrics.get(source_key)
             if isinstance(value, str | int | float) and not isinstance(value, bool):
@@ -1916,93 +1985,6 @@ class AgentRuntime:
                 payload=payload,
             ),
         )
-
-    def _persist_compaction_summaries(
-        self,
-        *,
-        turn_id: str,
-        conversation: Conversation,
-    ) -> None:
-        existing = {
-            stable_hash(summary)
-            for summary in self._memory_service.load_session_summaries(
-                self._config.session_id
-            )
-        }
-        persisted = 0
-        skipped = 0
-        for message in conversation.messages:
-            if message.role != "assistant" or not message.metadata.get("compaction"):
-                continue
-            summary = message.content.strip()
-            if not summary:
-                continue
-            digest = stable_hash(summary)
-            if digest in existing:
-                skipped += 1
-                continue
-            self._memory_service.append_session_summary(self._config.session_id, summary)
-            existing.add(digest)
-            persisted += 1
-        self._trace_service.append(
-            self._config.session_id,
-            RuntimeTraceEvent(
-                kind="context_summary_persistence",
-                turn_id=turn_id,
-                payload={
-                    "persisted_count": persisted,
-                    "duplicate_skipped_count": skipped,
-                    "session_summary_count": len(existing),
-                },
-            ),
-        )
-
-    def _build_compaction_rehydration_context(
-        self,
-        *,
-        cost_metrics: dict[str, int | float | str | list[str]] | None,
-        conversation_tail: tuple[Message, ...],
-    ) -> CompactionRehydrationContext:
-        raw_files = [] if cost_metrics is None else cost_metrics.get("recent_files")
-        service = CompactionRehydrationService(
-            workspace_root=self._config.workspace_root,
-            token_counter=self._token_counter,
-            file_budget=RehydrationBudget(
-                max_total_tokens=self._config.compaction_rehydration_file_max_total_tokens,
-                max_item_tokens=self._config.compaction_rehydration_file_max_item_tokens,
-            ),
-            skill_budget=RehydrationBudget(
-                max_total_tokens=self._config.compaction_rehydration_skill_max_total_tokens,
-                max_item_tokens=self._config.compaction_rehydration_skill_max_item_tokens,
-            ),
-            max_files=self._config.compaction_rehydration_max_files,
-            max_skills=self._config.compaction_rehydration_max_skills,
-        )
-        return service.build(
-            file_candidates=self._file_rehydration_candidates(raw_files),
-            invoked_skills=self._session_service.load_invoked_skill_snapshots(
-                self._config.session_id
-            ),
-            tail_messages=conversation_tail,
-        )
-
-    def _file_rehydration_candidates(
-        self,
-        raw_files: object,
-    ) -> tuple[FileRehydrationCandidate, ...]:
-        if not isinstance(raw_files, list):
-            return ()
-        candidates: list[FileRehydrationCandidate] = []
-        for index, raw_path in enumerate(raw_files):
-            if isinstance(raw_path, str) and raw_path.strip():
-                candidates.append(
-                    FileRehydrationCandidate(
-                        path=raw_path.strip(),
-                        tool_name="Read",
-                        sequence=index,
-                    )
-                )
-        return tuple(candidates)
 
     def _record_ptl_metric(self, *, triggered: bool) -> None:
         self._observability_service.metrics.record_ptl_event(triggered=triggered)
@@ -2088,16 +2070,6 @@ class AgentRuntime:
         return self._token_counter.count(normalized)
 
     @staticmethod
-    def _snapshot_role(role: str) -> Role:
-        if role == "user":
-            return "user"
-        if role == "assistant":
-            return "assistant"
-        if role == "tool":
-            return "tool"
-        return "system"
-
-    @staticmethod
     def _has_l4_compaction(conversation: Conversation) -> bool:
         return any(message.metadata.get("compaction") is True for message in conversation.messages)
 
@@ -2108,6 +2080,7 @@ class AgentRuntime:
         legacy_messages: list[ModelMessage],
         tools: list[ModelToolDefinition],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        completed_item_sink: Callable[[RuntimeItem], None] | None = None,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[ModelTurnResult, tuple[str, ...]]:
         return self._model_turn_requester.request_model_turn(
@@ -2115,6 +2088,7 @@ class AgentRuntime:
             legacy_messages=legacy_messages,
             tools=tools,
             stream_sink=stream_sink,
+            completed_item_sink=completed_item_sink,
             interrupt_token=interrupt_token,
         )
 
@@ -2170,6 +2144,7 @@ class AgentRuntime:
         streamed_chunks: list[str],
         turn_items: list[TurnItem],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        conversation_items_precommitted: bool = False,
         interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[
         PlanState,
@@ -2190,6 +2165,7 @@ class AgentRuntime:
             streamed_chunks=streamed_chunks,
             turn_items=turn_items,
             stream_sink=stream_sink,
+            conversation_items_precommitted=conversation_items_precommitted,
             interrupt_token=interrupt_token,
         )
 
@@ -2383,6 +2359,16 @@ class AgentRuntime:
         return self._approval_decisions.format_allowed_choices(options)
 
     def rebind_session(self, config: AgentConfig) -> None:
+        previous_config = self._config
+        same_session = previous_config.session_id == config.session_id
+        self._compact_model_downshift_pending = (
+            same_session and config.max_prompt_tokens < previous_config.max_prompt_tokens
+        )
+        self._compact_compatibility_changed_pending = same_session and (
+            config.provider != previous_config.provider
+            or config.protocol != previous_config.protocol
+        )
+        self._latest_provider_input_tokens = None
         self._runtime_notification_inbox = RuntimeNotificationInbox()
         session_queue = self._restore_session_queue(config.session_id)
         self._config = config
@@ -2428,12 +2414,13 @@ class AgentRuntime:
             self._shell_resolution.profile
         )
         self._request_pipeline.set_config(config)
+        self._provider_timeline = ProviderTimelineCoordinator(
+            session_id=session_id,
+            session_service=self._session_service,
+        )
         self._runtime_error_logger.set_config(config)
         self._response_finalizer.set_config(config)
-        self._configure_l4_summarization(
-            self._compaction_pipeline.llm_summarization,
-            config,
-        )
+        self._configure_compact_services(config)
         self._tool_execution_service.set_session_id(session_id)
         self._tool_orchestrator._session_id = session_id
         self._event_ledger._session_id = session_id
@@ -2444,6 +2431,29 @@ class AgentRuntime:
         self._observability_service.metrics.reset_context_metrics()
         self._restore_provider_input_budget_metric(session_id)
         self._configure_background_shell_tasks()
+
+    def replace_model_adapter(
+        self,
+        model_adapter: ModelAdapter,
+        config: AgentConfig,
+    ) -> None:
+        previous_adapter = self._model_adapter
+        previous_config = self._config
+        self._model_adapter = model_adapter
+        self._model_turn_requester.replace_model_adapter(model_adapter)
+        self._model_state.replace_model_adapter(model_adapter)
+        try:
+            self.rebind_session(config)
+        except Exception:
+            self._model_adapter = previous_adapter
+            self._model_turn_requester.replace_model_adapter(previous_adapter)
+            self._model_state.replace_model_adapter(previous_adapter)
+            self._config = previous_config
+            try:
+                self.rebind_session(previous_config)
+            except Exception:
+                self._config = previous_config
+            raise
 
     def handle_user_turn(
         self,
@@ -2471,19 +2481,34 @@ class AgentRuntime:
         self,
         choice: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
         self._sub_agent_service.set_stream_sink(stream_sink)
         self._refresh_approval_session_allowances()
-        return TurnExecutor(self).resolve_pending_approval(choice, stream_sink=stream_sink)
+        return TurnExecutor(self).resolve_pending_approval(
+            choice,
+            stream_sink=stream_sink,
+            interrupt_token=interrupt_token,
+        )
 
-    def resolve_pending_clarification(self, *, request_id: str, response: str) -> TurnResponse:
+    def resolve_pending_clarification(
+        self,
+        *,
+        request_id: str,
+        response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
+    ) -> TurnResponse:
         from mycli.application.runtime.turn_executor import TurnExecutor
 
+        self._sub_agent_service.set_stream_sink(stream_sink)
         return TurnExecutor(self).resolve_pending_clarification(
             request_id=request_id,
             response=response,
+            stream_sink=stream_sink,
+            interrupt_token=interrupt_token,
         )
 
     def _refresh_approval_session_allowances(self) -> None:

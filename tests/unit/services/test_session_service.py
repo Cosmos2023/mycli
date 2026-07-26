@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+from mycli.application.runtime.request.provider_timeline import ProviderTimelineState
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     BaselineFragment,
@@ -71,6 +72,106 @@ def test_session_service_persists_queue_snapshot(tmp_path: Path) -> None:
     assert service.load_queue_snapshot("demo") == QueueSnapshot(session_id="demo")
 
 
+def test_session_service_logically_rolls_back_one_history_turn(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path)
+    service.append_history_items(
+        "demo",
+        (
+            HistoryItem(
+                id="turn-1:user",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.USER_MESSAGE,
+                text="keep me",
+            ),
+            HistoryItem(
+                id="turn-1:assistant",
+                thread_id="demo",
+                turn_id="turn-1",
+                type=HistoryItemType.ASSISTANT_MESSAGE,
+                text="kept answer",
+            ),
+            HistoryItem(
+                id="turn-2:user",
+                thread_id="demo",
+                turn_id="turn-2",
+                type=HistoryItemType.USER_MESSAGE,
+                text="restore me",
+            ),
+        ),
+    )
+
+    service.rollback_history_turn("demo", turn_id="turn-2")
+
+    assert [item.text for item in service.load_history_items("demo")] == [
+        "keep me",
+        "kept answer",
+    ]
+    assert [message.content for message in service.load_conversation("demo").messages] == [
+        "keep me",
+        "kept answer",
+    ]
+    raw_items = service._store.load_history_items("demo")
+    assert raw_items[-1]["type"] == "turn_rollback"
+    assert raw_items[-1]["metadata"] == {"rolled_back_turn_id": "turn-2"}
+
+
+def test_history_rollback_discards_compact_checkpoint_and_rebuilds_active_view(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path)
+    history = (
+        HistoryItem(
+            id="turn-1:user",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.USER_MESSAGE,
+            text="keep me",
+        ),
+        HistoryItem(
+            id="turn-1:assistant",
+            thread_id="demo",
+            turn_id="turn-1",
+            type=HistoryItemType.ASSISTANT_MESSAGE,
+            text="kept answer",
+        ),
+        HistoryItem(
+            id="turn-2:user",
+            thread_id="demo",
+            turn_id="turn-2",
+            type=HistoryItemType.USER_MESSAGE,
+            text="rollback me",
+        ),
+    )
+    service.append_history_items("demo", history)
+    service.install_compact_replacement(
+        "demo",
+        replacement=Conversation(
+            session_id="demo",
+            messages=[
+                Message(
+                    role="user",
+                    content="[compact-summary]\nEarlier work.",
+                    metadata={"compaction": True},
+                ),
+                Message(role="user", content="rollback me"),
+            ],
+        ),
+        turn_id="turn-2",
+        reason="context_limit",
+        phase="pre_turn",
+        input_history_hash="input-hash",
+    )
+
+    service.rollback_history_turn("demo", turn_id="turn-2")
+
+    assert service.load_compact_checkpoint("demo") is None
+    assert [message.content for message in service.load_conversation("demo").messages] == [
+        "keep me",
+        "kept answer",
+    ]
+
+
 def test_session_service_records_queue_restore_issues(tmp_path: Path) -> None:
     service = SessionService(home_dir=tmp_path)
     service._save_state(
@@ -102,6 +203,25 @@ def test_session_service_persists_conversation(tmp_path: Path) -> None:
 
     assert loaded.session_id == "demo"
     assert loaded.messages[0].content == "hello"
+
+
+def test_session_service_persists_provider_timeline_state(tmp_path: Path) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    state = ProviderTimelineState(
+        messages=(
+            Message(role="developer", content="D0"),
+            Message(role="user", content="E0"),
+            Message(role="user", content="U1"),
+        ),
+        source_messages=(Message(role="user", content="U1"),),
+        context_entries={"environment": {"role": "user", "hash": "hash-e0"}},
+    )
+
+    service.save_provider_timeline_state("demo", state.to_dict())
+
+    payload = service.load_provider_timeline_state("demo")
+    assert payload is not None
+    assert ProviderTimelineState.from_dict(payload) == state
 
 
 def test_session_service_creates_instruction_snapshot_once(tmp_path: Path) -> None:
@@ -2140,6 +2260,92 @@ def test_session_service_compacts_history_by_replacing_a_window_with_compaction_
     assert [item.id for item in loaded] == ["hist_1", "compact_1"]
     assert loaded[1].type is HistoryItemType.COMPACTION
     assert loaded[1].metadata["replaced_item_ids"] == ["hist_2", "hist_3"]
+
+
+def test_session_service_installs_active_compact_replacement_without_rewriting_history(
+    tmp_path: Path,
+) -> None:
+    service = SessionService(home_dir=tmp_path / "home")
+    history = tuple(
+        HistoryItem(
+            id=f"hist_{index}",
+            thread_id="demo",
+            turn_id=f"turn_{(index + 1) // 2}",
+            type=(
+                HistoryItemType.USER_MESSAGE
+                if index % 2 == 1
+                else HistoryItemType.ASSISTANT_MESSAGE
+            ),
+            text=f"message {index}",
+        )
+        for index in range(1, 7)
+    ) + (
+        HistoryItem(
+            id="hist_current_user",
+            thread_id="demo",
+            turn_id="turn_current",
+            type=HistoryItemType.USER_MESSAGE,
+            text="current request",
+        ),
+    )
+    service.append_history_items("demo", history)
+    service.save_responses_continuation_state(
+        "demo",
+        ResponsesContinuationState(
+            response_id="resp_before_compact",
+            request_signature="before",
+        ),
+    )
+    replacement = Conversation(
+        session_id="demo",
+        messages=[
+            Message(
+                role="user",
+                content="[compact-summary]\nEarlier work.",
+                metadata={"compaction": True},
+            ),
+            Message(role="user", content="message 3"),
+            Message(role="assistant", content="message 4"),
+            Message(role="user", content="message 5"),
+            Message(role="assistant", content="message 6"),
+            Message(role="user", content="current request"),
+        ],
+    )
+
+    checkpoint = service.install_compact_replacement(
+        "demo",
+        replacement=replacement,
+        turn_id="turn_current",
+        reason="context_limit",
+        phase="pre_turn",
+        input_history_hash="input-hash",
+    )
+
+    assert service.load_history_items("demo") == history
+    assert service.load_conversation("demo").messages == replacement.messages
+    assert checkpoint["history_item_count"] == len(history)
+    assert checkpoint["window_number"] == 1
+    assert checkpoint["reason"] == "context_limit"
+    continuation = service.load_responses_continuation_state("demo")
+    assert continuation is not None
+    assert continuation.response_id is None
+    assert continuation.eligible is False
+    assert continuation.failure_reason == "compacted_history"
+
+    final_answer = HistoryItem(
+        id="hist_current_assistant",
+        thread_id="demo",
+        turn_id="turn_current",
+        type=HistoryItemType.ASSISTANT_MESSAGE,
+        text="current answer",
+    )
+    service.append_history_items("demo", (final_answer,))
+    service.sync_conversation_view_from_history("demo")
+
+    synced = service.load_conversation("demo")
+    assert synced.messages[:-1] == replacement.messages
+    assert synced.messages[-1].content == "current answer"
+    assert service.load_history_items("demo") == (*history, final_answer)
 
 
 def test_session_service_loads_runtime_snapshot_from_durable_state(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from mycli.domain.tooling.contributed_tools import (
 from mycli.domain.tool_exposure import ToolRouteKey
 from mycli.domain.tool_exposure import ToolRouteSource
 from mycli.tools.routing.tool_exposure_planner import (
+    DIRECT_CONTRIBUTED_TOOL_THRESHOLD,
     HIDDEN_BY_DEFAULT_BUILTIN_TOOLS,
     MODEL_VISIBLE_BUILTIN_TOOLS,
     ToolExposurePlanner,
@@ -194,3 +195,113 @@ def test_tool_exposure_planner_preserves_descriptor_backed_contribution_metadata
 
     assert contribution_entry.metadata["tool_id"] == "provider:daily_brief:thread"
     assert contribution_entry.metadata["scope"] == "thread"
+
+
+def test_tool_exposure_planner_keeps_small_contributed_sets_direct() -> None:
+    registry = ToolRegistry.from_tools([FakeTool("LS", "List files")])
+    planner = ToolExposurePlanner(tool_registry=registry, defer_threshold=3)
+
+    planned = planner.plan(
+        user_message="inspect weather tools",
+        runtime_contributed_tools=(
+            FakeTool("weather_current", "Get current weather"),
+            FakeTool("weather_forecast", "Get a weather forecast"),
+        ),
+    )
+
+    assert set(planned.exposure.model_visible_tool_names()) == {
+        "LS",
+        "weather_current",
+        "weather_forecast",
+    }
+    assert "ToolSearch" not in planned.contributed_tools
+
+
+def test_tool_exposure_planner_defers_large_contributed_sets_behind_tool_search() -> None:
+    registry = ToolRegistry.from_tools([FakeTool("LS", "List files")])
+    planner = ToolExposurePlanner(tool_registry=registry, defer_threshold=2)
+
+    planned = planner.plan(
+        user_message="inspect weather tools",
+        runtime_contributed_tools=(
+            FakeTool("weather_current", "Get current weather conditions"),
+            FakeTool("weather_forecast", "Get a seven day weather forecast"),
+        ),
+    )
+
+    assert set(planned.exposure.model_visible_tool_names()) == {"LS", "ToolSearch"}
+    assert set(planned.exposure.deferred_tool_names()) == {
+        "weather_current",
+        "weather_forecast",
+    }
+    assert set(planned.exposure.callable_tool_names()) == {
+        "LS",
+        "ToolSearch",
+        "weather_current",
+        "weather_forecast",
+    }
+
+
+def test_tool_search_returns_ranked_full_tool_definitions() -> None:
+    registry = ToolRegistry.from_tools([FakeTool("LS", "List files")])
+    planner = ToolExposurePlanner(tool_registry=registry, defer_threshold=2)
+    planned = planner.plan(
+        user_message="find a tool",
+        runtime_contributed_tools=(
+            FakeTool("calendar_create", "Create a calendar event"),
+            FakeTool("weather_forecast", "Get a seven day weather forecast"),
+        ),
+    )
+    search_tool = planned.contributed_tools["ToolSearch"].tool
+
+    result = search_tool.execute({"query": "weather forecast"})
+
+    assert result.success is True
+    tools = result.raw_payload["tools"]
+    assert isinstance(tools, list)
+    assert tools[0] == {
+        "type": "function",
+        "name": "weather_forecast",
+        "description": "Get a seven day weather forecast",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False,
+        },
+    }
+
+
+def test_tool_exposure_planner_matches_codex_default_defer_threshold() -> None:
+    registry = ToolRegistry.from_tools([FakeTool("LS", "List files")])
+    planner = ToolExposurePlanner(tool_registry=registry)
+    contributed = tuple(
+        FakeTool(f"external_{index:03d}", "External capability")
+        for index in range(DIRECT_CONTRIBUTED_TOOL_THRESHOLD)
+    )
+
+    planned = planner.plan(
+        user_message="find an external capability",
+        runtime_contributed_tools=contributed,
+    )
+
+    assert DIRECT_CONTRIBUTED_TOOL_THRESHOLD == 100
+    assert len(planned.exposure.deferred_tool_names()) == 100
+    assert set(planned.exposure.model_visible_tool_names()) == {"LS", "ToolSearch"}
+
+
+def test_tool_exposure_planner_counts_unique_effective_contributed_routes() -> None:
+    registry = ToolRegistry.from_tools([FakeTool("LS", "List files")])
+    planner = ToolExposurePlanner(tool_registry=registry, defer_threshold=2)
+
+    planned = planner.plan(
+        user_message="inspect duplicate tools",
+        runtime_contributed_tools=(
+            FakeTool("external_echo", "First registration"),
+            FakeTool("external_echo", "Duplicate registration"),
+        ),
+    )
+
+    assert set(planned.exposure.model_visible_tool_names()) == {"LS", "external_echo"}
+    assert planned.exposure.deferred_tool_names() == ()
+    assert "ToolSearch" not in planned.contributed_tools

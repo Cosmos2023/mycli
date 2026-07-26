@@ -273,8 +273,11 @@ export class TUI extends Container {
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
+	/** Optional owner hook for resize-sensitive source rebuilds. Return true to defer the normal redraw. */
+	public onResize?: () => boolean | void;
 	private renderRequested = false;
 	private renderTimer: NodeJS.Timeout | undefined;
+	private renderingPaused = false;
 	private lastRenderAt = 0;
 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
 	private cursorRow = 0; // Logical cursor row (end of rendered content)
@@ -329,6 +332,21 @@ export class TUI extends Container {
 			this.terminal.hideCursor();
 		}
 		this.requestRender();
+	}
+
+	setRenderingPaused(paused: boolean): void {
+		if (this.renderingPaused === paused) return;
+		this.renderingPaused = paused;
+		if (paused) {
+			if (this.renderTimer) {
+				clearTimeout(this.renderTimer);
+				this.renderTimer = undefined;
+			}
+			return;
+		}
+		if (this.renderRequested) {
+			process.nextTick(() => this.scheduleRender());
+		}
 	}
 
 	getClearOnShrink(): boolean {
@@ -617,7 +635,11 @@ export class TUI extends Container {
 		this.stopped = false;
 		this.terminal.start(
 			(data) => this.handleInput(data),
-			() => this.requestRender(),
+			() => {
+				if (this.onResize?.() !== true) {
+					this.requestRender();
+				}
+			},
 		);
 		this.terminal.hideCursor();
 		this.queryCellSize();
@@ -682,7 +704,7 @@ export class TUI extends Container {
 			}
 			this.renderRequested = true;
 			process.nextTick(() => {
-				if (this.stopped || !this.renderRequested) {
+				if (this.stopped || this.renderingPaused || !this.renderRequested) {
 					return;
 				}
 				this.renderRequested = false;
@@ -693,18 +715,19 @@ export class TUI extends Container {
 		}
 		if (this.renderRequested) return;
 		this.renderRequested = true;
+		if (this.renderingPaused) return;
 		process.nextTick(() => this.scheduleRender());
 	}
 
 	private scheduleRender(): void {
-		if (this.stopped || this.renderTimer || !this.renderRequested) {
+		if (this.stopped || this.renderingPaused || this.renderTimer || !this.renderRequested) {
 			return;
 		}
 		const elapsed = performance.now() - this.lastRenderAt;
 		const delay = Math.max(0, TUI.MIN_RENDER_INTERVAL_MS - elapsed);
 		this.renderTimer = setTimeout(() => {
 			this.renderTimer = undefined;
-			if (this.stopped || !this.renderRequested) {
+			if (this.stopped || this.renderingPaused || !this.renderRequested) {
 				return;
 			}
 			this.renderRequested = false;
@@ -1018,6 +1041,18 @@ export class TUI extends Container {
 		return lines;
 	}
 
+	private fitAlternateScreenFrame(lines: string[], width: number, height: number): string[] {
+		const frameHeight = Math.max(1, height);
+		const maxLineWidth = Math.max(1, width - 1);
+		const start = Math.max(0, lines.length - frameHeight);
+		const frame = lines.slice(start, start + frameHeight).map((line) => {
+			if (isImageLine(line) || visibleWidth(line) <= maxLineWidth) return line;
+			return sliceByColumn(line, 0, maxLineWidth, true);
+		});
+		while (frame.length < frameHeight) frame.push("");
+		return frame;
+	}
+
 	private collectKittyImageIds(lines: string[]): Set<number> {
 		const ids = new Set<number>();
 		for (const line of lines) {
@@ -1227,13 +1262,16 @@ export class TUI extends Container {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render the full logical buffer. Keeping this uncropped lets the host
-		// terminal own scrollback and text selection.
+		// Inline mode keeps the full logical buffer so the host terminal owns
+		// scrollback. Alternate-screen mode is clipped to a fixed terminal frame below.
 		let newLines = this.render(width);
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {
 			newLines = this.compositeOverlays(newLines, width, height);
+		}
+		if (this.terminal.alternateScreen) {
+			newLines = this.fitAlternateScreenFrame(newLines, width, height);
 		}
 
 		// Extract cursor position before applying line resets (marker must be found first)
@@ -1268,13 +1306,24 @@ export class TUI extends Container {
 			const replaceNativeViewport = clear && this.terminal.nativeScrollback;
 			if (clear && !this.terminal.nativeScrollback) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
-				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback.
+				buffer += this.terminal.alternateScreen
+					? "\x1b[2J\x1b[H"
+					: "\x1b[2J\x1b[H\x1b[3J";
 			} else if (replaceNativeViewport) {
-				const currentScreenRow = Math.max(0, hardwareCursorRow - prevViewportTop);
-				if (currentScreenRow > 0) {
-					buffer += `\x1b[${currentScreenRow}A`;
+				const ownsWholeViewport =
+					newLines.length >= height &&
+					this.previousLines.length >= Math.max(1, this.previousHeight);
+				if (ownsWholeViewport) {
+					// Terminal reflow invalidates relative cursor coordinates after a width
+					// change. A full-height surface can safely redraw from the viewport origin.
+					buffer += "\x1b[H";
+				} else {
+					const currentScreenRow = Math.max(0, hardwareCursorRow - prevViewportTop);
+					if (currentScreenRow > 0) {
+						buffer += `\x1b[${currentScreenRow}A`;
+					}
+					buffer += "\r";
 				}
-				buffer += "\r";
 			}
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";

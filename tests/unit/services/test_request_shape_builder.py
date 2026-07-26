@@ -74,6 +74,72 @@ def _contract(
     )
 
 
+def _provider_timeline_contract() -> InstructionContract:
+    return InstructionContract(
+        base_instructions="S",
+        conversation_messages=(
+            Message(role="developer", content="D0"),
+            Message(role="user", content="E0"),
+            Message(role="user", content="U1"),
+            Message(role="assistant", content="A1"),
+            Message(role="user", content="E1"),
+            Message(role="user", content="U2"),
+        ),
+    )
+
+
+def test_responses_request_shape_preserves_provider_timeline_order(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.OPENAI,
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-test",
+        ),
+        contract=_provider_timeline_contract(),
+        tools=(),
+    )
+
+    assert shape.wire_instructions == "S"
+    assert [
+        (item.role, item.blocks[0].text) for item in shape.provider_runtime_items
+    ] == [
+        ("developer", "D0"),
+        ("user", "E0"),
+        ("user", "U1"),
+        ("assistant", "A1"),
+        ("user", "E1"),
+        ("user", "U2"),
+    ]
+
+
+def test_chat_completions_request_shape_preserves_provider_timeline_order(
+    tmp_path: Path,
+) -> None:
+    shape = RequestShapeBuilder().build(
+        config=AgentConfig(
+            workspace_root=tmp_path,
+            provider=ProviderId.OPENAI,
+            protocol=ProtocolId.CHAT_COMPLETIONS,
+            model="gpt-test",
+        ),
+        contract=_provider_timeline_contract(),
+        tools=(),
+    )
+
+    assert [(message.role, message.content) for message in shape.provider_messages] == [
+        ("system", "S"),
+        ("developer", "D0"),
+        ("user", "E0"),
+        ("user", "U1"),
+        ("assistant", "A1"),
+        ("user", "E1"),
+        ("user", "U2"),
+    ]
+
+
 def test_request_shape_builder_keeps_stable_hashes_when_volatile_context_changes(
     tmp_path: Path,
 ) -> None:

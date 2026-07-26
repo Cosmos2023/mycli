@@ -249,6 +249,9 @@ export type MycliShellFooterData = {
 	trust?: string;
 	collaborationMode?: "default" | "plan";
 	liveState?: string;
+	liveStateKind?: string;
+	liveStateDetail?: string;
+	turnRunning?: boolean;
 	backgroundShellCount?: number;
 	taskProgress?: MycliShellTaskProgress;
 	extensionStatuses?: string[];
@@ -272,8 +275,15 @@ export type MycliShellPendingInput = {
 
 export type MycliShellModel = {
 	provider: string;
-	id: string;
+	protocol?: string;
+	model: string;
 	name?: string;
+	description?: string;
+	baseUrl?: string;
+	supportedReasoningEfforts?: string[];
+	defaultReasoningEffort?: string;
+	current?: boolean;
+	default?: boolean;
 	thinkingLevel?: string;
 	scoped?: boolean;
 };
@@ -375,6 +385,19 @@ export type MycliShellPendingApproval = {
 	diffPreview?: string;
 };
 
+export type MycliShellClarificationOption = {
+	label: string;
+	description?: string;
+};
+
+export type MycliShellPendingClarification = {
+	requestId: string;
+	question: string;
+	header?: string;
+	options: MycliShellClarificationOption[];
+	multiSelect: boolean;
+};
+
 export type MycliShellState = {
 	title?: string;
 	messages: MycliShellMessage[];
@@ -385,6 +408,7 @@ export type MycliShellState = {
 	pendingInput?: MycliShellPendingInput;
 	pendingNotice?: string;
 	pendingApproval?: MycliShellPendingApproval;
+	pendingClarification?: MycliShellPendingClarification;
 	models?: MycliShellModel[];
 	authProviders?: MycliShellAuthProvider[];
 	currentModel?: MycliShellModel;

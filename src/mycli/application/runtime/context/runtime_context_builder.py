@@ -102,11 +102,6 @@ class RuntimeContextBuilder:
         )
         history_items = () if runtime_snapshot is None else runtime_snapshot.history_items
         context_baseline = None if runtime_snapshot is None else runtime_snapshot.context_baseline
-        managed = self._context_manager.build(
-            conversation=tuple(conversation.messages),
-            history_items=history_items,
-            recent_message_count=self._config.recent_message_count,
-        )
         provider_replay_messages = self._context_manager.provider_replay_messages(
             conversation=tuple(conversation.messages),
             history_items=history_items,
@@ -131,7 +126,7 @@ class RuntimeContextBuilder:
             available_tool_names=available_tool_names,
             plan_state=plan_state,
             conversation_messages=provider_replay_messages,
-            conversation_summary=managed.summary,
+            conversation_summary=None,
             history_items=history_items,
             context_baseline=context_baseline,
             hook_contexts=tuple(

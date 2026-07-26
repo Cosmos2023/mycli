@@ -22,10 +22,13 @@ type TranscriptCommandResultItem = {
 	metadata?: Record<string, unknown>;
 };
 
-export function commandResultFromGateway(value: unknown): MycliShellCommandResult | null {
+export function commandResultFromGateway(
+	value: unknown,
+	fallbackId?: string,
+): MycliShellCommandResult | null {
 	const payload = objectValue(value);
 	if (!payload) return null;
-	const id = requiredString(payload.result_id);
+	const id = requiredString(payload.result_id) ?? requiredString(fallbackId);
 	const display = commandDisplayFromUnknown(payload.display);
 	if (!id || !display) return null;
 	return {

@@ -178,9 +178,14 @@ class _FakeSdkPayload:
         return dict(self._payload)
 
 
-def _status_error(*, status_code: int, body: dict[str, object]) -> BadRequestError:
+def _status_error(
+    *,
+    status_code: int,
+    body: dict[str, object],
+    headers: dict[str, str] | None = None,
+) -> BadRequestError:
     request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
-    response = httpx.Response(status_code, request=request, json=body)
+    response = httpx.Response(status_code, request=request, json=body, headers=headers)
     return BadRequestError(str(body), response=response, body=body)
 
 
@@ -1207,7 +1212,7 @@ def test_build_openai_sdk_client_uses_extended_timeout(monkeypatch) -> None:
     )
 
     assert captured["timeout"] == DEFAULT_OPENAI_SDK_TIMEOUT_SECONDS
-    assert captured["max_retries"] == 0
+    assert captured["max_retries"] == 4
     assert captured["default_headers"] == {"User-Agent": "mycli/0.1.0"}
 
 
@@ -1799,8 +1804,12 @@ def test_openai_chat_client_maps_sdk_connection_errors(monkeypatch) -> None:
         model="gpt-test",
     )
 
-    with pytest.raises(ModelResponseError, match="Failed to reach model provider"):
+    with pytest.raises(ModelResponseError, match="Failed to reach model provider") as exc_info:
         client.complete([{"role": "user", "content": "inspect the repo"}])
+
+    assert exc_info.value.stop_reason is StopReason.TRANSPORT_FAILED
+    assert exc_info.value.failure_kind == "transport_error"
+    assert exc_info.value.is_retryable is True
 
 
 def test_openai_chat_status_errors_use_shared_failure_taxonomy() -> None:
@@ -1829,3 +1838,21 @@ def test_openai_chat_status_error_sets_model_response_recovery_fields(tmp_path: 
     assert error.stop_reason is StopReason.RATE_LIMITED
     assert error.failure_kind == "rate_limited"
     assert error.is_retryable is True
+
+
+def test_openai_chat_status_error_preserves_retry_after_header(tmp_path: Path) -> None:
+    client = OpenAIChatClient(
+        api_key="test",
+        base_url="https://api.test/v1",
+        model="test-model",
+        log_service=WorkspaceLogService(workspace_root=tmp_path),
+    )
+    exc = _status_error(
+        status_code=429,
+        body={"error": {"message": "rate limit exceeded"}},
+        headers={"retry-after": "2.5"},
+    )
+
+    error = client._status_error(exc=exc, request_path=None)
+
+    assert error.retry_after_seconds == pytest.approx(2.5)

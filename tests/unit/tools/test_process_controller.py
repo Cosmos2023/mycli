@@ -117,6 +117,24 @@ def test_unix_permission_failure_escalates_to_next_signal() -> None:
     assert outcome.terminal is True
 
 
+def test_unix_termination_uses_codex_cancellation_grace_period() -> None:
+    sent: list[int] = []
+    waits: list[float] = []
+    process = FakeProcess(pid=44, polls=[None, None, None, None, None, 0])
+
+    outcome = terminate_process_tree(
+        process,
+        prefer_interrupt=False,
+        platform_name="linux",
+        killpg=lambda _pid, sig: sent.append(sig),
+        wait_for_exit=lambda _process, timeout: waits.append(timeout) or False,
+    )
+
+    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    assert waits[0] == 0.05
+    assert outcome.cleanup_result == "sent_sigkill"
+
+
 def test_termination_returns_already_exited_without_signals() -> None:
     process = FakeProcess(pid=44, polls=[0])
 

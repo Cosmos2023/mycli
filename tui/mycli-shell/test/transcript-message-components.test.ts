@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { AssistantMessageComponent } from "../src/components/assistant-message.ts";
 import {
@@ -14,6 +16,21 @@ function stripAnsi(text: string): string {
 
 function visibleContentLines(lines: string[]): string[] {
 	return lines.map(stripAnsi).filter((line) => line.trim().length > 0);
+}
+
+function renderColoredUserMessage(): string[] {
+	const fixture = fileURLToPath(new URL("./fixtures/render-user-message-theme.ts", import.meta.url));
+	const tsx = fileURLToPath(new URL("../node_modules/tsx/dist/esm/index.mjs", import.meta.url));
+	const result = spawnSync(process.execPath, ["--import", tsx, fixture], {
+		encoding: "utf8",
+		env: {
+			...process.env,
+			MYCLI_TUI_COLOR: "always",
+			COLORTERM: "truecolor",
+		},
+	});
+	assert.equal(result.status, 0, result.stderr);
+	return result.stdout.split("\n");
 }
 
 test("transcript message layout applies a role marker and hanging indent", () => {
@@ -38,6 +55,27 @@ test("user and assistant messages render Codex-style role prefixes", () => {
 
 	assert.equal(user[0]?.startsWith("› "), true);
 	assert.equal(assistant[0]?.startsWith("• "), true);
+});
+
+test("a completed assistant answer leaves two rows before the next user input", () => {
+	const lines = [
+		...new AssistantMessageComponent("上一轮回答最后一行").render(40),
+		...new UserMessageComponent("下一轮输入").render(40),
+	].map(stripAnsi);
+	const assistantLine = lines.findIndex((line) => line.includes("上一轮回答最后一行"));
+	const userLine = lines.findIndex((line) => line.includes("下一轮输入"));
+
+	assert.equal(userLine - assistantLine, 3);
+});
+
+test("user message keeps a full-width background behind its Codex-style prefix", () => {
+	const lines = renderColoredUserMessage();
+	const backgroundPattern = /\x1b\[48;2;52;53;65m/;
+
+	assert.equal(lines.length > 3, true);
+	assert.equal(backgroundPattern.test(lines[0] ?? ""), false);
+	assert.equal(lines.slice(1).every((line) => backgroundPattern.test(line)), true);
+	assert.equal(lines.every((line) => visibleWidth(line) === 18), true);
 });
 
 test("wrapped CJK transcript lines use a two-cell hanging indent", () => {

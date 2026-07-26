@@ -944,6 +944,40 @@ def test_openai_responses_client_closes_stream_when_interrupt_token_is_requested
     assert stream.closed is True
 
 
+def test_openai_responses_client_unregisters_interrupt_callbacks_after_completion(
+    monkeypatch,
+) -> None:
+    token = RuntimeInterruptToken()
+    sdk_client = _FakeOpenAISdkClient(
+        handler=lambda kwargs: [
+            {
+                "type": "response.completed",
+                "response": {"id": "resp_done", "output": []},
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: sdk_client,
+    )
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+    )
+
+    list(
+        client.stream_response_with_interrupt(
+            input_items=[{"role": "user", "content": "inspect"}],
+            tools=[],
+            interrupt_token=token,
+        )
+    )
+    token.request("later_turn_interrupt")
+
+    assert sdk_client.closed is False
+
+
 def test_openai_responses_client_closes_sdk_client_when_interrupted_before_stream_exists(
     monkeypatch,
 ) -> None:
@@ -1109,6 +1143,109 @@ def test_openai_responses_client_retries_stream_transport_failures(monkeypatch) 
 
     assert attempts == 2
     assert events[-1]["type"] == "response.completed"
+
+
+def test_openai_responses_client_does_not_retry_after_user_interrupt(monkeypatch) -> None:
+    token = RuntimeInterruptToken(source="test")
+    attempts = 0
+
+    def handler(kwargs):
+        nonlocal attempts
+        del kwargs
+        attempts += 1
+        token.request("user_interrupt")
+        return _connection_error()
+
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: _FakeOpenAISdkClient(handler=handler),
+    )
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        capability_profile=ResponsesCapabilityProfile(stream_max_retries=4),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        list(
+            client.stream_response_with_interrupt(
+                input_items=[{"role": "user", "content": "inspect"}],
+                tools=[],
+                interrupt_token=token,
+            )
+        )
+
+    assert attempts == 1
+
+
+def test_openai_responses_client_retries_retryable_http_status(monkeypatch) -> None:
+    attempts = 0
+
+    def handler(kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return _status_error(
+                status_code=503,
+                body={"error": {"message": "temporarily unavailable"}},
+            )
+        return [
+            {
+                "type": "response.completed",
+                "response": {"id": "resp_retry_503", "status": "completed"},
+            }
+        ]
+
+    monkeypatch.setattr(
+        "mycli.llms.clients.openai_responses._build_openai_sdk_client",
+        lambda **_: _FakeOpenAISdkClient(handler=handler),
+    )
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        model="gpt-test",
+        capability_profile=ResponsesCapabilityProfile(
+            stream_max_retries=1,
+            supports_stream_fallback_to_create=False,
+        ),
+    )
+
+    events = list(
+        client.stream_response(
+            input_items=[{"role": "user", "content": "inspect"}],
+            tools=[],
+        )
+    )
+
+    assert attempts == 2
+    assert events[-1]["type"] == "response.completed"
+
+
+def test_responses_failed_event_preserves_provider_retry_delay() -> None:
+    factory = ResponsesErrorFactory(
+        logger=ResponsesClientLogger(
+            base_url="https://example.invalid/v1",
+            model="gpt-test",
+            log_service=None,
+            log_context_provider=None,
+        )
+    )
+
+    error = factory.build_response_failed_error(
+        event={
+            "response": {
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": "Rate limit reached. Please try again in 1.5s.",
+                }
+            }
+        },
+        request_path=None,
+    )
+
+    assert error.is_retryable is True
+    assert error.retry_after_seconds == pytest.approx(1.5)
 
 
 def test_openai_responses_client_marks_retry_exhausted_when_stream_retry_budget_is_spent(

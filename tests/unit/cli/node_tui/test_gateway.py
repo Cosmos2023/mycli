@@ -30,6 +30,8 @@ from mycli.cli.node_tui.protocol import (
     notification,
 )
 from mycli.domain.conversation import Conversation, Message
+from mycli.domain.model_catalog import ModelCatalogEntry, ModelSelection
+from mycli.domain.providers import ProtocolId, ProviderId
 from mycli.domain.runtime import (
     CollaborationMode,
     DecisionAction,
@@ -222,6 +224,7 @@ class FakeService(TurnService):
         self.shell_listener: Callable[[ShellLifecycleEvent], None] | None = None
         self.shell_unsubscribe_count = 0
         self.active_shell_rows: tuple[dict[str, object], ...] = ()
+        self.model_selections: list[ModelSelection] = []
 
     def inspect_usage(self) -> tuple[str, ...]:
         return ("session=demo", "turns=1")
@@ -293,6 +296,48 @@ class FakeService(TurnService):
             f"thinking_effort={self._config.thinking_effort.value}",
         )
 
+    def available_models(self) -> tuple[ModelCatalogEntry, ...]:
+        return (
+            ModelCatalogEntry(
+                provider=ProviderId.DEEPSEEK,
+                protocol=ProtocolId.CHAT_COMPLETIONS,
+                model="deepseek-v4-flash",
+                display_name="deepseek-v4-flash",
+                description="Current model",
+                base_url="https://api.deepseek.com",
+                is_current=self._config.model == "deepseek-v4-flash",
+            ),
+            ModelCatalogEntry(
+                provider=ProviderId.OPENAI,
+                protocol=ProtocolId.RESPONSES,
+                model="gpt-5.4",
+                display_name="gpt-5.4",
+                description="Frontier coding model",
+                base_url="https://api.openai.com/v1",
+                supported_reasoning_efforts=(
+                    ReasoningEffort.LOW,
+                    ReasoningEffort.MEDIUM,
+                    ReasoningEffort.HIGH,
+                    ReasoningEffort.XHIGH,
+                ),
+                default_reasoning_effort=ReasoningEffort.MEDIUM,
+                is_current=self._config.model == "gpt-5.4",
+            ),
+        )
+
+    def select_model(self, selection: ModelSelection) -> ModelCatalogEntry:
+        self.model_selections.append(selection)
+        self._config.provider = selection.provider
+        self._config.protocol = selection.protocol
+        self._config.model = selection.model
+        self._config.reasoning_effort = selection.reasoning_effort or ReasoningEffort.MEDIUM
+        self._config.thinking_effort = self._config.reasoning_effort
+        return next(
+            entry
+            for entry in self.available_models()
+            if entry.identity == selection.identity
+        )
+
     def current_context_window_metrics(self) -> dict[str, object]:
         return {"input_tokens": 123, "max_tokens": 100000, "source": "provider"}
 
@@ -343,8 +388,13 @@ class FakeService(TurnService):
         del choice, stream_sink
         return TurnResponse(assistant_message="")
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
-        del request_id, response
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del request_id, response, stream_sink
         return TurnResponse(assistant_message="")
 
     def export_trace_jsonl(self, tail: int = 50) -> tuple[str, ...]:
@@ -636,6 +686,45 @@ def test_gateway_forwards_compaction_lifecycle_events(tmp_path: Path) -> None:
     assert events[3][1]["type"] == "compaction.completed"
 
 
+def test_gateway_forwards_transient_stream_retry_lifecycle(tmp_path: Path) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=FakeService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._forward_stream_event(
+        "client_1",
+        RuntimeStreamEvent(kind="stream_attempt_reset"),
+    )
+    gateway._forward_stream_event(
+        "client_1",
+        RuntimeStreamEvent(
+            kind="stream_retrying",
+            text="Reconnecting... 2/5",
+            metadata={
+                "attempt": 2,
+                "max_retries": 5,
+                "delay_seconds": 0.4,
+                "additional_details": "Idle timeout waiting for SSE",
+            },
+        ),
+    )
+
+    assert events[0] == ("message.reset", {"client_turn_id": "client_1"})
+    assert events[2] == (
+        "stream.retrying",
+        {
+            "client_turn_id": "client_1",
+            "text": "Reconnecting... 2/5",
+            "attempt": 2,
+            "max_retries": 5,
+            "delay_seconds": 0.4,
+            "additional_details": "Idle timeout waiting for SSE",
+        },
+    )
+
+
 def test_gateway_workspace_trust_status_returns_safe_fallback(tmp_path: Path) -> None:
     gateway = NodeTuiGateway(service=FakeService(tmp_path))
 
@@ -746,7 +835,7 @@ def test_gateway_command_run_delegates_existing_commands(tmp_path: Path) -> None
     assert any("/status" in line for line in help_response.result["lines"])
 
 
-def test_gateway_command_run_returns_transient_result_without_persisting(
+def test_gateway_command_run_returns_overlay_result_without_persisting(
     tmp_path: Path,
 ) -> None:
     service = FakeService(tmp_path)
@@ -757,8 +846,8 @@ def test_gateway_command_run_returns_transient_result_without_persisting(
     )
 
     assert response.result is not None
-    result_id = str(response.result["result_id"])
-    assert result_id.startswith("command:")
+    assert "result_id" not in response.result
+    assert response.result["presentation"] == "overlay"
     assert response.result["display"]["kind"] == "list"
     assert service.fake_session_service.load_history_items("demo") == ()
 
@@ -774,7 +863,7 @@ def test_unknown_command_returns_compact_error_display(tmp_path: Path) -> None:
     assert response.result is not None
     assert response.result["result_id"].startswith("command:")
     assert response.result["display"]["kind"] == "error"
-    assert response.result["display"]["suggestions"] == ["/memory"]
+    assert response.result["display"].get("suggestions", []) == []
 
 
 def test_command_result_does_not_attempt_session_persistence(
@@ -860,8 +949,25 @@ def test_gateway_command_list_returns_only_canonical_tui_commands(tmp_path: Path
     assert response.result is not None
     commands = response.result["commands"]
     names = [item["name"] for item in commands]
-    assert names[:3] == ["/model", "/plan", "/mode"]
-    assert len(names) == 33
+    assert names == [
+        "/model",
+        "/plan",
+        "/permissions",
+        "/new",
+        "/resume",
+        "/fork",
+        "/status",
+        "/usage",
+        "/compact",
+        "/skills",
+        "/tools",
+        "/tasks",
+        "/ps",
+        "/changes",
+        "/help",
+        "/quit",
+    ]
+    assert len(names) == 16
     assert "/usage" in names
     assert "/status usage" not in names
     assert "/theme" not in names
@@ -914,6 +1020,92 @@ def test_gateway_command_run_executes_inline_model_on_backend(tmp_path: Path) ->
     assert response.result is not None
     assert response.result["execution"] == "backend"
     assert response.result["mutated_model"] is True
+
+
+def test_gateway_model_list_returns_backend_catalog(tmp_path: Path) -> None:
+    gateway = NodeTuiGateway(service=FakeService(tmp_path))
+
+    response = gateway.handle_request(
+        RpcRequest(id="models", method="model.list", params={})
+    )
+
+    assert response.error is None
+    assert response.result is not None
+    assert [model["model"] for model in response.result["models"]] == [
+        "deepseek-v4-flash",
+        "gpt-5.4",
+    ]
+    assert response.result["models"][1]["supported_reasoning_efforts"] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    ]
+
+
+def test_gateway_model_select_applies_structured_selection_and_refreshes_status(
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="select",
+            method="model.select",
+            params={
+                "provider": "openai",
+                "protocol": "responses",
+                "model": "gpt-5.4",
+                "base_url": "https://api.openai.com/v1",
+                "reasoning_effort": "high",
+            },
+        )
+    )
+
+    assert response.error is None
+    assert response.result is not None
+    assert response.result["selected"]["model"] == "gpt-5.4"
+    assert response.result["status"]["model"] == "gpt-5.4"
+    assert response.result["status"]["provider"] == "openai/responses"
+    assert service.model_selections == [
+        ModelSelection(
+            provider=ProviderId.OPENAI,
+            protocol=ProtocolId.RESPONSES,
+            model="gpt-5.4",
+            base_url="https://api.openai.com/v1",
+            reasoning_effort=ReasoningEffort.HIGH,
+        )
+    ]
+    assert any(method == "status.changed" for method, _params in events)
+
+
+def test_gateway_model_select_rejects_selection_while_turn_is_running(tmp_path: Path) -> None:
+    service = FakeService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+    gateway._turn_running = True
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="select",
+            method="model.select",
+            params={
+                "provider": "openai",
+                "protocol": "responses",
+                "model": "gpt-5.4",
+                "base_url": "https://api.openai.com/v1",
+                "reasoning_effort": "medium",
+            },
+        )
+    )
+
+    assert response.error is not None
+    assert response.error["code"] == "turn_in_progress"
+    assert service.model_selections == []
 
 
 def test_gateway_command_run_returns_structured_background_shells_and_stop(
@@ -1038,7 +1230,7 @@ def test_gateway_command_run_returns_presentation_and_view_mode(tmp_path: Path) 
     assert changes.result["presentation"] == "transcript"
     assert changes.result["presentation_hint"] == "file changes"
     assert permissions.result is not None
-    assert permissions.result["presentation"] == "transcript"
+    assert permissions.result["presentation"] == "overlay"
     assert permissions.result["display"]["kind"] == "list"
     assert permissions.result["lines"] == [
         "Permissions - 4 items",
@@ -1609,7 +1801,7 @@ def test_gateway_slash_completion_filters_candidates(tmp_path: Path) -> None:
     assert response.result is not None
     values = [item["value"] for item in response.result["items"]]
     assert "/status" in values
-    assert "/stats" in values
+    assert "/stats" not in values
     assert "/status stats" not in values
 
     maintenance_response = gateway.handle_request(
@@ -2077,7 +2269,13 @@ class FakeTurnService(FakeService):
             )
         return TurnResponse(assistant_message=f"resolved {choice}")
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: StreamSink | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.clarification_responses.append((request_id, response))
         return TurnResponse(assistant_message=f"clarified {response}")
 
@@ -3553,7 +3751,13 @@ def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path)
     )
     assert service.started.wait(timeout=2.0)
     assert service.seen_token is not None
-    interrupted = gateway.handle_request(RpcRequest(id="req_2", method="turn.interrupt", params={}))
+    interrupted = gateway.handle_request(
+        RpcRequest(
+            id="req_2",
+            method="turn.interrupt",
+            params={"rollback_user_input": True},
+        )
+    )
     service.release.set()
     gateway.wait_for_current_turn(timeout=2.0)
 
@@ -3561,6 +3765,7 @@ def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path)
     assert interrupted.result == {"interrupted": True}
     assert service.seen_token.interrupted is True
     assert service.seen_token.reason == "interrupt"
+    assert service.seen_token.rollback_user_input is True
     assert {
         "client_turn_id": "client_1",
         "turn_id": turn_id,
@@ -3572,6 +3777,57 @@ def test_gateway_turn_interrupt_requests_runtime_interrupt_token(tmp_path: Path)
         "pending_decision": False,
         "usage": {},
     } in [params for method, params in events if method == "turn.completed"]
+
+
+def test_gateway_turn_interrupt_does_not_wait_for_blocking_cleanup_callback(
+    tmp_path: Path,
+) -> None:
+    class BlockingCleanupTurnService(FakeTurnService):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.started = Event()
+            self.cleanup_started = Event()
+            self.release_cleanup = Event()
+
+        def handle_user_turn(
+            self,
+            message: str,
+            stream_sink: StreamSink | None = None,
+            interrupt_token: RuntimeInterruptToken | None = None,
+        ) -> TurnResponse:
+            del message, stream_sink
+            assert interrupt_token is not None
+
+            def blocking_cleanup() -> None:
+                self.cleanup_started.set()
+                self.release_cleanup.wait(timeout=2.0)
+
+            interrupt_token.add_callback(blocking_cleanup)
+            self.started.set()
+            interrupt_token.wait(2.0)
+            interrupt_token.raise_if_interrupted()
+            raise AssertionError("turn was not interrupted")
+
+    service = BlockingCleanupTurnService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+    accepted = gateway.handle_request(
+        RpcRequest(id="req_1", method="turn.submit", params={"message": "hello"})
+    )
+    assert accepted.error is None
+    assert service.started.wait(timeout=1.0)
+
+    started_at = time.monotonic()
+    interrupted = gateway.handle_request(
+        RpcRequest(id="req_2", method="turn.interrupt", params={})
+    )
+    elapsed = time.monotonic() - started_at
+
+    assert interrupted.result == {"interrupted": True}
+    assert elapsed < 0.05
+    assert service.cleanup_started.wait(timeout=1.0)
+    gateway.wait_for_current_turn(timeout=1.0)
+    assert gateway._turn_running is False
+    service.release_cleanup.set()
 
 
 def test_gateway_turn_interrupt_keeps_fake_services_without_diagnostic_hook_compatible(
@@ -4362,6 +4618,89 @@ def test_gateway_approval_resume_forwards_stream_events(tmp_path: Path) -> None:
     )
 
 
+def test_gateway_approval_worker_contains_keyboard_interrupt(tmp_path: Path) -> None:
+    class InterruptingApprovalService(FakeTurnService):
+        def resolve_pending_decision(
+            self,
+            choice: str,
+            stream_sink: StreamSink | None = None,
+        ) -> TurnResponse:
+            del choice, stream_sink
+            raise KeyboardInterrupt()
+
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=InterruptingApprovalService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._run_decision_worker(
+        choice="1",
+        client_turn_id="approval_req_1",
+        turn_id="turn_approval_1",
+        decision_id="call_shell_1",
+    )
+
+    assert any(method == "turn.interrupted" for method, _params in events)
+    assert any(
+        method == "turn.status" and params.get("state") == "interrupted"
+        for method, params in events
+    )
+    assert not any(method == "turn.failed" for method, _params in events)
+
+
+def test_gateway_interrupt_propagates_token_to_approval_resume(tmp_path: Path) -> None:
+    class TokenAwareApprovalService(FakeTurnService):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.started = Event()
+            self.seen_token: RuntimeInterruptToken | None = None
+
+        def resolve_pending_decision(
+            self,
+            choice: str,
+            stream_sink: StreamSink | None = None,
+            interrupt_token: RuntimeInterruptToken | None = None,
+        ) -> TurnResponse:
+            del choice, stream_sink
+            self.seen_token = interrupt_token
+            self.started.set()
+            assert interrupt_token is not None
+            interrupt_token.wait(5)
+            interrupt_token.raise_if_interrupted()
+            raise AssertionError("approval resume was not interrupted")
+
+    service = TokenAwareApprovalService(tmp_path)
+    service.fake_session_service.pending_decision = PendingDecision(
+        tool_call=ToolCall(
+            name="Bash",
+            arguments={"command": "pwd"},
+            reason="inspect",
+            call_id="call_interrupt_approval",
+        ),
+        kind=DecisionKind.NEEDS_CHOICE,
+        reason="approval required",
+        preview="pwd",
+        options=(DecisionAction.APPROVE_ONCE, DecisionAction.REJECT),
+    )
+    gateway = NodeTuiGateway(service=service)
+
+    accepted = gateway.handle_request(
+        RpcRequest(
+            id="req_approval",
+            method="approval.respond",
+            params={"decision_id": "call_interrupt_approval", "choice": "approve_once"},
+        )
+    )
+    assert accepted.error is None
+    assert service.started.wait(timeout=1)
+    gateway.handle_request(RpcRequest(id="req_interrupt", method="turn.interrupt", params={}))
+    gateway.wait_for_current_turn(timeout=1)
+
+    assert service.seen_token is not None
+    assert service.seen_token.interrupted is True
+
+
 def test_gateway_approval_respond_rejects_stale_decision_id(tmp_path: Path) -> None:
     events: list[tuple[str, dict[str, object]]] = []
     service = FakeTurnService(tmp_path)
@@ -4571,6 +4910,146 @@ def test_gateway_clarify_respond_validates_request_and_emits_turn_events(tmp_pat
         for method, params in events
         if method == "runtime.event" and params["type"] == "clarify.respond"
     ).items()
+
+
+def test_gateway_clarification_resume_forwards_stream_events(tmp_path: Path) -> None:
+    class StreamingClarificationService(FakeTurnService):
+        def resolve_pending_clarification(
+            self,
+            request_id: str,
+            response: str,
+            stream_sink: StreamSink | None = None,
+        ) -> TurnResponse:
+            self.clarification_responses.append((request_id, response))
+            if stream_sink is not None:
+                stream_sink(RuntimeStreamEvent(kind="reasoning", text="continuing"))
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_start",
+                        tool_name="Read",
+                        metadata={"tool_id": "call_read_1", "call_id": "call_read_1"},
+                    )
+                )
+                stream_sink(
+                    RuntimeStreamEvent(
+                        kind="tool_complete",
+                        tool_name="Read",
+                        metadata={
+                            "tool_id": "call_read_1",
+                            "call_id": "call_read_1",
+                            "success": True,
+                        },
+                    )
+                )
+                stream_sink(RuntimeStreamEvent(kind="text_delta", text="continued answer"))
+            return TurnResponse(assistant_message="continued answer")
+
+    events: list[tuple[str, dict[str, object]]] = []
+    service = StreamingClarificationService(tmp_path)
+    gateway = NodeTuiGateway(
+        service=service,
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    response = gateway.handle_request(
+        RpcRequest(
+            id="req_1",
+            method="clarify.respond",
+            params={"request_id": "call_question_1", "response": "Runtime"},
+        )
+    )
+    gateway.wait_for_current_turn(timeout=2.0)
+
+    _assert_accepted_turn(response, "clarify_req_1")
+    assert any(
+        method == "reasoning.delta" and params.get("text") == "continuing"
+        for method, params in events
+    )
+    assert any(
+        method == "tool.start" and params.get("tool_id") == "call_read_1"
+        for method, params in events
+    )
+    assert any(
+        method == "tool.complete" and params.get("tool_id") == "call_read_1"
+        for method, params in events
+    )
+    assert any(
+        method == "message.delta" and params.get("text") == "continued answer"
+        for method, params in events
+    )
+
+
+def test_gateway_clarification_worker_contains_keyboard_interrupt(tmp_path: Path) -> None:
+    class InterruptingClarificationService(FakeTurnService):
+        def resolve_pending_clarification(
+            self,
+            request_id: str,
+            response: str,
+            stream_sink: StreamSink | None = None,
+        ) -> TurnResponse:
+            del request_id, response, stream_sink
+            raise KeyboardInterrupt()
+
+    events: list[tuple[str, dict[str, object]]] = []
+    gateway = NodeTuiGateway(
+        service=InterruptingClarificationService(tmp_path),
+        emit=lambda method, params: events.append((method, params)),
+    )
+
+    gateway._run_clarification_worker(
+        request_id="call_question_1",
+        response="Runtime",
+        client_turn_id="clarify_req_1",
+        turn_id="turn_clarify_1",
+    )
+
+    assert any(method == "turn.interrupted" for method, _params in events)
+    assert any(
+        method == "turn.status" and params.get("state") == "interrupted"
+        for method, params in events
+    )
+    assert not any(method == "turn.failed" for method, _params in events)
+
+
+def test_gateway_interrupt_propagates_token_to_clarification_resume(tmp_path: Path) -> None:
+    class TokenAwareClarificationService(FakeTurnService):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.started = Event()
+            self.seen_token: RuntimeInterruptToken | None = None
+
+        def resolve_pending_clarification(
+            self,
+            request_id: str,
+            response: str,
+            stream_sink: StreamSink | None = None,
+            interrupt_token: RuntimeInterruptToken | None = None,
+        ) -> TurnResponse:
+            del request_id, response, stream_sink
+            self.seen_token = interrupt_token
+            self.started.set()
+            assert interrupt_token is not None
+            interrupt_token.wait(5)
+            interrupt_token.raise_if_interrupted()
+            raise AssertionError("clarification resume was not interrupted")
+
+    service = TokenAwareClarificationService(tmp_path)
+    gateway = NodeTuiGateway(service=service)
+
+    accepted = gateway.handle_request(
+        RpcRequest(
+            id="req_clarify",
+            method="clarify.respond",
+            params={"request_id": "call_question_1", "response": "Runtime"},
+        )
+    )
+    assert accepted.error is None
+    assert service.started.wait(timeout=1)
+    gateway.handle_request(RpcRequest(id="req_interrupt", method="turn.interrupt", params={}))
+    gateway.wait_for_current_turn(timeout=1)
+
+    assert service.seen_token is not None
+    assert service.seen_token.interrupted is True
 
 
 def test_gateway_clarify_respond_rejects_blank_response(tmp_path: Path) -> None:

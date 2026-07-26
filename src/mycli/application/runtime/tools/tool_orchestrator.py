@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection
+from queue import Empty, Queue
+from threading import Thread
 from typing import TypeVar
 
 from mycli.application.runtime.tools.runtime_policy import RuntimePolicyGate
@@ -54,6 +56,7 @@ from mycli.services.hooks import HookManager
 from mycli.services.file_history import FileHistoryService
 from mycli.tools.base import ToolEffectProfile, ToolResult
 from mycli.tools.registry import ToolRegistry
+from mycli.tools.tool_search import TOOL_SEARCH_NAME
 
 OutcomeT = TypeVar("OutcomeT")
 
@@ -242,23 +245,29 @@ class ToolOrchestrator:
         conversation: Conversation,
         plan_state: PlanState,
         runtime_contributed_tools: tuple[object, ...] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> PlannedToolExposure:
+        _raise_if_interrupted(interrupt_token)
         runtime_tools = (
             self._runtime_contributed_tools(
                 user_message=user_message,
                 conversation=conversation,
                 plan_state=plan_state,
+                interrupt_token=interrupt_token,
             )
             if runtime_contributed_tools is None
             else runtime_contributed_tools
         )
+        _raise_if_interrupted(interrupt_token)
         planned = self._tool_exposure_planner.plan(
             user_message=user_message,
             runtime_contributed_tools=runtime_tools,
         )
+        _raise_if_interrupted(interrupt_token)
         lifecycle_events: list[ToolContributionLifecycleEvent] = []
 
         for registration in planned.contributed_tools.values():
+            _raise_if_interrupted(interrupt_token)
             result = self._contributed_tool_registry.register(registration)
             if result.lifecycle_event is not None:
                 lifecycle_events.append(result.lifecycle_event)
@@ -269,6 +278,7 @@ class ToolOrchestrator:
         )
 
         for registration in tuple(visible_tools.values()):
+            _raise_if_interrupted(interrupt_token)
             if registration.descriptor.lifecycle_state is not ToolContributionLifecycleState.DECLARED:
                 continue
             event = self._contributed_tool_registry.transition(
@@ -378,14 +388,19 @@ class ToolOrchestrator:
         user_message: str,
         conversation: Conversation,
         plan_state: PlanState,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> tuple[object, ...]:
         registrations: list[object] = []
         for provider in self._contributed_tool_providers:
-            provided = provider.provide(
+            _raise_if_interrupted(interrupt_token)
+            provided = _provide_interruptibly(
+                provider,
                 user_message=user_message,
                 conversation=conversation,
                 plan_state=plan_state,
+                interrupt_token=interrupt_token,
             )
+            _raise_if_interrupted(interrupt_token)
             registrations.extend(provided)
         return tuple(registrations)
 
@@ -403,7 +418,8 @@ class ToolOrchestrator:
         for registration in self._contributed_tool_registry.get_visible_registrations():
             route_name = registration.descriptor.route_name
             if route_name in existing_names:
-                visible_contributions[route_name] = registration
+                if route_name != TOOL_SEARCH_NAME:
+                    visible_contributions[route_name] = registration
                 continue
             visible_contributions[route_name] = registration
             contributed_entries.append(self._contributed_tool_entry(registration))
@@ -440,3 +456,51 @@ class ToolOrchestrator:
         if source is ToolContributionSource.RUNTIME:
             return ToolRouteSource.RUNTIME
         return ToolRouteSource.PROVIDER
+
+
+def _raise_if_interrupted(interrupt_token: RuntimeInterruptToken | None) -> None:
+    if interrupt_token is not None:
+        interrupt_token.raise_if_interrupted()
+
+
+def _provide_interruptibly(
+    provider: ToolContributionProvider,
+    *,
+    user_message: str,
+    conversation: Conversation,
+    plan_state: PlanState,
+    interrupt_token: RuntimeInterruptToken | None,
+) -> tuple[object, ...]:
+    if interrupt_token is None:
+        return provider.provide(
+            user_message=user_message,
+            conversation=conversation,
+            plan_state=plan_state,
+            interrupt_token=None,
+        )
+
+    outcomes: Queue[tuple[object, ...] | BaseException] = Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            outcomes.put(
+                provider.provide(
+                    user_message=user_message,
+                    conversation=conversation,
+                    plan_state=plan_state,
+                    interrupt_token=interrupt_token,
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - forwarded to the turn worker.
+            outcomes.put(exc)
+
+    Thread(target=run, name="mycli-tool-discovery", daemon=True).start()
+    while True:
+        interrupt_token.raise_if_interrupted()
+        try:
+            outcome = outcomes.get(timeout=0.02)
+        except Empty:
+            continue
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome

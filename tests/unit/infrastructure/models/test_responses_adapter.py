@@ -112,6 +112,48 @@ class FakeStreamingResponsesClient(FakeResponsesClient):
         yield from self._events
 
 
+def test_responses_adapter_preserves_chronological_provider_timeline() -> None:
+    client = FakeResponsesClient(
+        {
+            "id": "resp_timeline",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "A2"}],
+                }
+            ],
+        }
+    )
+    adapter = ResponsesModelAdapter(client=client)
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(role="system", blocks=(), metadata={"wire_instructions": "S"}),
+            RuntimeItem(role="developer", blocks=(RuntimeBlock(type="text", text="D0"),)),
+            RuntimeItem(role="user", blocks=(RuntimeBlock(type="text", text="E0"),)),
+            RuntimeItem(role="user", blocks=(RuntimeBlock(type="text", text="U1"),)),
+            RuntimeItem(role="assistant", blocks=(RuntimeBlock(type="text", text="A1"),)),
+            RuntimeItem(role="user", blocks=(RuntimeBlock(type="text", text="E1"),)),
+            RuntimeItem(role="user", blocks=(RuntimeBlock(type="text", text="U2"),)),
+        ],
+        tools=[],
+    )
+
+    assert client.captured_instructions == "S"
+    assert [
+        (item["role"], item["content"][0]["text"])
+        for item in client.captured_input_items
+    ] == [
+        ("developer", "D0"),
+        ("user", "E0"),
+        ("user", "U1"),
+        ("assistant", "A1"),
+        ("user", "E1"),
+        ("user", "U2"),
+    ]
+
+
 def test_responses_adapter_next_turn_serializes_and_maps_provider_output() -> None:
     client = FakeResponsesClient(
         {
@@ -587,6 +629,41 @@ def test_responses_adapter_serializes_tool_result_payload_metadata_to_wire_text(
     ]
 
 
+def test_responses_adapter_deduplicates_replayed_function_calls_by_call_id() -> None:
+    client = FakeResponsesClient({"id": "resp_123", "output": []})
+    adapter = ResponsesModelAdapter(client=client)
+    repeated_call = RuntimeBlock(
+        type="tool_call",
+        tool_name="Shell",
+        tool_arguments={"command": "git status"},
+        call_id="call_replayed_once",
+    )
+
+    adapter.next_turn(
+        items=[
+            RuntimeItem(role="assistant", blocks=(repeated_call,)),
+            RuntimeItem(role="assistant", blocks=(repeated_call,)),
+            RuntimeItem(
+                role="tool",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_result",
+                        text="clean",
+                        call_id="call_replayed_once",
+                    ),
+                ),
+            ),
+        ],
+        tools=[],
+    )
+
+    assert [
+        item["type"]
+        for item in client.captured_input_items
+        if item.get("call_id") == "call_replayed_once"
+    ] == ["function_call", "function_call_output"]
+
+
 def test_responses_adapter_serializes_tool_result_content_items() -> None:
     client = FakeResponsesClient({"id": "resp_123", "output": []})
     adapter = ResponsesModelAdapter(client=client)
@@ -737,6 +814,60 @@ def test_responses_adapter_stream_turn_maps_responses_stream_events() -> None:
     ]
 
 
+def test_responses_adapter_emits_completed_message_item_before_response_completion() -> None:
+    client = FakeStreamingResponsesClient(
+        [
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_1",
+                "delta": "Persist this.",
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {"type": "output_text", "text": "Persist this."},
+                    ],
+                },
+            },
+        ]
+    )
+    adapter = ResponsesModelAdapter(client=client)
+
+    events = list(
+        adapter.stream_turn(
+            items=[RuntimeItem(role="user", blocks=(RuntimeBlock(type="text", text="go"),))],
+            tools=[],
+        )
+    )
+
+    assert events == [
+        {"type": "text_delta", "text": "Persist this."},
+        {
+            "type": "item_completed",
+            "item": RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="text",
+                        text="Persist this.",
+                        provider_id="msg_1",
+                        metadata={
+                            "provider_item_type": "message.output_text",
+                            "status": "completed",
+                        },
+                    ),
+                ),
+            ),
+        },
+    ]
+
+
 def test_responses_adapter_stream_turn_recovers_function_call_state_from_output_item_added() -> None:
     client = FakeStreamingResponsesClient(
         [
@@ -851,7 +982,7 @@ def test_responses_adapter_stream_turn_falls_back_to_item_id_when_call_id_is_mis
                     "provider_event_type": "response.function_call_arguments.done",
                 },
             ),
-        }
+        },
     ]
 
 
@@ -911,7 +1042,26 @@ def test_responses_adapter_stream_turn_ignores_duplicate_function_call_completio
                     "provider_event_type": "response.function_call_arguments.done",
                 },
             ),
-        }
+        },
+        {
+            "type": "item_completed",
+            "item": RuntimeItem(
+                role="assistant",
+                blocks=(
+                    RuntimeBlock(
+                        type="tool_call",
+                        tool_name="read_file",
+                        tool_arguments={"path": "pyproject.toml"},
+                        call_id="call_read_1",
+                        provider_id="fc_1",
+                        metadata={
+                            "provider_item_type": "function_call",
+                            "status": None,
+                        },
+                    ),
+                ),
+            ),
+        },
     ]
 
 

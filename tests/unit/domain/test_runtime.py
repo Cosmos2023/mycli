@@ -51,9 +51,21 @@ def test_agent_config_exposes_recovery_defaults(tmp_path: Path) -> None:
     config = AgentConfig(workspace_root=tmp_path)
 
     assert config.fallback_model is None
-    assert config.transport_retry_limit == 2
+    assert config.request_max_retries == 4
+    assert config.stream_max_retries == 5
+    assert config.transport_retry_limit is None
     assert config.heartbeat_enabled is True
     assert config.heartbeat_interval_seconds == 30.0
+
+
+def test_agent_config_caps_stream_retry_budget(tmp_path: Path) -> None:
+    assert AgentConfig(workspace_root=tmp_path, stream_max_retries=-1).effective_stream_max_retries == 0
+    assert AgentConfig(workspace_root=tmp_path, stream_max_retries=500).effective_stream_max_retries == 100
+    assert AgentConfig(
+        workspace_root=tmp_path,
+        stream_max_retries=9,
+        transport_retry_limit=2,
+    ).effective_stream_max_retries == 2
 
 
 def test_agent_config_exposes_cli_view_defaults(tmp_path: Path) -> None:
@@ -355,6 +367,12 @@ def test_tool_exposure_keeps_callable_and_namespaced_routes_stable() -> None:
         "edit_file",
         "mcp_github_search_code",
     )
+
+
+def test_tool_exposure_kind_keeps_legacy_tool_value_readable() -> None:
+    assert ToolExposureKind("tool") is ToolExposureKind.TOOL
+    assert ToolExposureKind.DIRECT.value == "direct"
+    assert ToolExposureKind.DEFERRED.value == "deferred"
 
 
 def test_runtime_exports_request_shape_types() -> None:

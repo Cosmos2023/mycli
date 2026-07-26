@@ -76,6 +76,8 @@ export interface Terminal {
 
 	// Whether normal terminal scrollback is available for content above the viewport.
 	get nativeScrollback(): boolean;
+	// Whether rendering currently owns the terminal's alternate screen buffer.
+	readonly alternateScreen?: boolean;
 
 	// Cursor positioning (relative to current position)
 	moveBy(lines: number): void; // Move cursor up (negative) or down (positive) by N lines

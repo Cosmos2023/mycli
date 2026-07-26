@@ -84,6 +84,40 @@ test("native chat runtime submits readline input", async () => {
 	await runtime.stop({ notifyExit: false });
 });
 
+test("native chat runtime routes pending clarification input", async () => {
+	const input = new PassThrough();
+	const output = new PassThrough();
+	const submitted: string[] = [];
+	const responses: Array<[string, string]> = [];
+	const runtime = new NativeChatRuntime({
+		initialState: {
+			...stateWithMessages(0),
+			pendingClarification: {
+				requestId: "question-1",
+				question: "Which implementation?",
+				options: [{ label: "Runtime" }, { label: "TUI" }],
+				multiSelect: false,
+			},
+		},
+		streams: { input, output },
+		columns: () => 100,
+		onSubmit: (text) => {
+			submitted.push(text);
+		},
+		onClarificationRespond: (requestId, response) => {
+			responses.push([requestId, response]);
+		},
+	});
+
+	runtime.start();
+	input.write("Runtime\n");
+	await setTimeout(25);
+
+	assert.deepEqual(submitted, []);
+	assert.deepEqual(responses, [["question-1", "Runtime"]]);
+	await runtime.stop({ notifyExit: false });
+});
+
 test("native chat runtime delegates every slash command including quit", async () => {
 	const input = new PassThrough();
 	const output = new PassThrough();

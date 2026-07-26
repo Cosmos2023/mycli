@@ -2,6 +2,7 @@ import { Markdown } from "../tui-core/components/markdown.ts";
 import { Container } from "../tui-core/tui.ts";
 import { markdownTheme } from "./markdown-theme.ts";
 import { theme } from "../theme/theme.ts";
+import { applyBackgroundToLine } from "../tui-core/utils.ts";
 import {
 	renderTranscriptMessageLines,
 	transcriptMessageContentWidth,
@@ -29,13 +30,23 @@ export class UserMessageComponent extends Container {
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const content = super.render(transcriptMessageContentWidth(safeWidth));
-		const lines = content.length === 0
+		const rawLines = content.length === 0
 			? []
 			: [
 				" ".repeat(safeWidth),
 				...renderTranscriptMessageLines(content, safeWidth, theme.fg("accent", "› ")),
 				" ".repeat(safeWidth),
 			];
+		const backgroundLines = rawLines.map((line) =>
+			applyBackgroundToLine(
+				line,
+				safeWidth,
+				(value) => theme.bg("userMessageBg", value),
+			),
+		);
+		const lines = backgroundLines.length === 0
+			? []
+			: [" ".repeat(safeWidth), ...backgroundLines];
 		if (lines.length === 0) {
 			return lines;
 		}

@@ -38,11 +38,22 @@ def fake_service() -> Any:
         inspect_memory=lambda: ("project key=architecture value=layered",),
         inspect_logs=lambda: ("gateway ready",),
         inspect_bashes=lambda: ("shell-1 running",),
+        add_permission_allowance=lambda pattern: (f"allowed {pattern}",),
+        forget_memory=lambda key: (f"forgot {key}",),
+        run_plugin_command=lambda plugin_id, command, args: (
+            f"{plugin_id}:{command}:{args}",
+        ),
+        export_trace_jsonl=lambda: ('{"type":"turn"}',),
         active_background_shells=lambda: (
             {"shell_id": "shell-1", "status": "running", "background": True},
         ),
         stop_background_shells=lambda: ("Stopping all background terminals.",),
         undo_last_file_change=lambda: "restored",
+        compact_session=lambda: (
+            "status=compressed",
+            "reason=user_requested",
+            "phase=standalone",
+        ),
     )
 
 
@@ -103,6 +114,14 @@ def test_ps_returns_structured_background_shells() -> None:
     )
 
 
+def test_compact_dispatches_local_session_replacement() -> None:
+    result = dispatch_backend_slash_command(fake_service(), resolve_cli("/compact"))
+
+    assert result.display.kind.value == "notice"
+    assert result.command_kind == "compact"
+    assert "status=compressed" in "\n".join(result.lines)
+
+
 def test_stop_and_undo_are_canonical_backend_commands() -> None:
     service = fake_service()
 
@@ -148,3 +167,18 @@ def test_result_payload_omits_unused_optional_fields() -> None:
     assert payload["mutated_model"] is False
     assert payload["mutated_mode"] is False
     assert payload["exit_requested"] is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "/permissions allow git status",
+        "/tools plugins demo inspect {}",
+        "/memory forget architecture",
+        "/trace export",
+    ),
+)
+def test_overlay_command_mutations_and_exports_return_to_transcript(command: str) -> None:
+    result = dispatch_backend_slash_command(fake_service(), resolve_cli(command))
+
+    assert result.presentation is SlashCommandPresentation.TRANSCRIPT

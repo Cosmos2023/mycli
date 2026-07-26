@@ -393,13 +393,11 @@ def test_run_node_tui_gateway_with_real_node_scripted_client_typed_stream(
         for item in state["transcript"]
         if item["type"] in {"command_output", "command_result"}
     ]
-    assert len(command_items) == 2
-    assert "/usage" in command_items[0]["text"]
-    assert "/status usage" not in command_items[0]["text"]
-    assert command_items[1]["type"] == "command_result"
-    assert command_items[1]["text"] == "Usage\nSession: typed-smoke"
-    assert command_items[1]["metadata"]["command"] == "/usage"
-    assert command_items[1]["metadata"]["display"]["kind"] == "diagnostic"
+    assert len(command_items) == 1
+    assert command_items[0]["type"] == "command_result"
+    assert command_items[0]["text"] == "Usage\nSession: typed-smoke"
+    assert command_items[0]["metadata"]["command"] == "/usage"
+    assert command_items[0]["metadata"]["display"]["kind"] == "diagnostic"
     assistant_items = [
         item for item in state["transcript"] if item["type"] in {"assistant_stream", "assistant_final"}
     ]
@@ -516,7 +514,13 @@ class E2EWaitingStateService:
             )
         return TurnResponse(assistant_message="approval resolved")
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.clarification_responses.append((request_id, response))
         self._session_service.suspended_turn = None
         return TurnResponse(assistant_message="clarification resolved")
@@ -1332,7 +1336,13 @@ class E2EFailureRecoveryService:
             ),
         )
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.clarification_responses.append((request_id, response))
         self._session_service.suspended_turn = None
         return TurnResponse(assistant_message="clarification recovery final")
@@ -1744,7 +1754,13 @@ class E2EResumeTipService:
         self._session_service.pending_decision = None
         return TurnResponse(assistant_message="approval resumed on branch")
 
-    def resolve_pending_clarification(self, request_id: str, response: str) -> TurnResponse:
+    def resolve_pending_clarification(
+        self,
+        request_id: str,
+        response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+    ) -> TurnResponse:
+        del stream_sink
         self.clarification_responses.append((request_id, response))
         self._session_service.suspended_turn = None
         return TurnResponse(assistant_message="clarification resumed on branch")

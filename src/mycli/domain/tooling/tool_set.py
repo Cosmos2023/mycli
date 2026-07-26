@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mycli.domain.runtime import stable_hash
-from mycli.domain.tooling.exposure import ToolExposure, ToolRouteKey, ToolRouteSource
+from mycli.domain.tooling.exposure import (
+    ToolExposure,
+    ToolExposureKind,
+    ToolRouteKey,
+    ToolRouteSource,
+)
 from mycli.tools.base import ToolSpec
 
 
@@ -13,6 +18,7 @@ class ToolSetEntry:
     route_key: ToolRouteKey
     source: ToolRouteSource
     spec: ToolSpec
+    kind: ToolExposureKind = ToolExposureKind.DIRECT
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -37,6 +43,7 @@ class ToolSet:
                     route_key=entry.route_key,
                     source=entry.source,
                     spec=entry.spec,
+                    kind=entry.kind,
                     metadata=dict(entry.metadata),
                 )
                 for entry in exposure.all_entries()
@@ -44,7 +51,16 @@ class ToolSet:
         )
 
     def model_visible_entries(self) -> tuple[ToolSetEntry, ...]:
-        return tuple(sorted(self.entries, key=lambda entry: entry.name))
+        return tuple(
+            sorted(
+                (
+                    entry
+                    for entry in self.entries
+                    if entry.kind is not ToolExposureKind.DEFERRED
+                ),
+                key=lambda entry: entry.name,
+            )
+        )
 
     def order_hash(self) -> str:
         return stable_hash("\n".join(entry.name for entry in self.model_visible_entries()))

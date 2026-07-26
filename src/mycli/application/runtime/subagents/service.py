@@ -24,6 +24,7 @@ from mycli.domain.runtime import (
     HistoryItem,
     HistoryItemType,
     RuntimeStreamEvent,
+    RuntimeInterruptToken,
 )
 from mycli.domain.runtime.background_jobs import BackgroundJobState
 from mycli.domain.runtime.task_notifications import TaskNotification
@@ -73,6 +74,7 @@ class _BackgroundRun:
     invocation: SubAgentInvocation
     started_at: str
     future: SupportsFuture
+    interrupt_token: RuntimeInterruptToken
     tool_calls: int = 0
     cancelled: bool = False
     pending_messages: deque[str] = field(default_factory=deque)
@@ -160,6 +162,7 @@ class SubAgentService:
         initial_messages: list[dict[str, object]] | None = None,
         pending_message_provider: Callable[[], tuple[str, ...]] | None = None,
         prior_tool_calls: int = 0,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> SubAgentResult:
         profile = self._profile_lookup(invocation.agent_type)
         if profile is None:
@@ -202,6 +205,7 @@ class SubAgentService:
             transcript=self._transcript_recorder(invocation, child_session_id),
             initial_messages=initial_messages,
             pending_message_provider=pending_message_provider,
+            interrupt_token=interrupt_token,
         )
         context_diagnostics = (
             loop_result.context_diagnostics or dict(context_snapshot.diagnostics)
@@ -261,10 +265,12 @@ class SubAgentService:
 
     def cancel_background_jobs(self) -> tuple[BackgroundJobSummary, ...]:
         cancelled: list[BackgroundJobSummary] = []
+        interrupt_tokens: list[RuntimeInterruptToken] = []
         with self._run_state_lock:
             runs = tuple(self._running_background.items())
             for child_session_id, run in runs:
                 run.cancelled = True
+                interrupt_tokens.append(run.interrupt_token)
                 result = self._cancelled_background_result(
                     run.invocation,
                     child_session_id,
@@ -290,6 +296,8 @@ class SubAgentService:
                         terminal_summary="cancelled",
                     )
                 )
+        for interrupt_token in interrupt_tokens:
+            interrupt_token.request("subagent_cancelled")
         for summary in cancelled:
             child_session_id = summary.job_id.removeprefix("subagent:")
             matched_run = next(
@@ -334,6 +342,7 @@ class SubAgentService:
             if run is None:
                 return ()
             run.cancelled = True
+            interrupt_token = run.interrupt_token
             result = self._cancelled_background_result(
                 run.invocation,
                 child_session_id,
@@ -357,6 +366,7 @@ class SubAgentService:
                 completed_at=completed_at,
                 terminal_summary="cancelled",
             )
+        interrupt_token.request("subagent_cancelled")
         self._write_subagent_snapshot(
             run.invocation,
             result,
@@ -555,6 +565,7 @@ class SubAgentService:
         )
         self._record(invocation, running, started_at=started_at, completed_at=None)
         pending_messages = deque(initial_pending_messages)
+        interrupt_token = RuntimeInterruptToken(source=f"subagent:{child_session_id}")
 
         def drain_pending_messages() -> tuple[str, ...]:
             with self._run_state_lock:
@@ -575,7 +586,10 @@ class SubAgentService:
                         initial_messages=resumed_messages,
                         pending_message_provider=drain_pending_messages,
                         prior_tool_calls=prior_tool_calls,
+                        interrupt_token=interrupt_token,
                     )
+                except KeyboardInterrupt:
+                    return
                 except Exception as exc:
                     final_result = SubAgentResult(
                         status="failed",
@@ -638,6 +652,7 @@ class SubAgentService:
                 invocation=invocation,
                 started_at=started_at,
                 future=future,
+                interrupt_token=interrupt_token,
                 tool_calls=initial_tool_calls,
                 pending_messages=pending_messages,
             )

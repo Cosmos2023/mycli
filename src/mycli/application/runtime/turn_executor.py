@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -17,6 +17,7 @@ from mycli.application.runtime.recovery import (
     recovery_diagnostic_metadata,
     retry_metadata,
 )
+from mycli.application.runtime.model.model_turn_requester import ModelTurnInterrupted
 from mycli.domain.conversation import Conversation, Message
 from mycli.domain.runtime import (
     ActivityEvent,
@@ -26,10 +27,13 @@ from mycli.domain.runtime import (
     PendingClarification,
     PendingDecision,
     PlanState,
+    RequestShape,
     RuntimeBlock,
     RuntimeStreamEvent,
     RuntimeTraceEvent,
     RuntimeInterruptToken,
+    RuntimeItem,
+    ModelTurnResult,
     SessionCommandAllowance,
     ShellKind,
     StopReason,
@@ -45,7 +49,7 @@ from mycli.memory.dream_service import MemoryDreamRequest
 from mycli.memory.extraction_service import MemoryExtractionRequest
 from mycli.application.runtime.turn_error_finalizer import TurnErrorFinalizer
 from mycli.domain.logging import LogLevel
-from mycli.services.context.compaction import CacheZones, ContextBudget
+from mycli.services.context.compaction import CompactPhase, CompactReason, ContextBudget
 from mycli.services.hooks import HookAction, HookContext, HookPoint, HookResult
 from mycli.llms.clients.openai_chat import ModelResponseError
 from mycli.services.execpolicy import ExecPolicyRefreshError
@@ -113,6 +117,11 @@ class TurnExecutor:
 
         conversation = runtime._session_service.load_conversation(runtime._config.session_id)
         current_plan_state = runtime._session_service.load_plan_state(runtime._config.session_id)
+        if _repair_interrupted_tool_results(conversation):
+            runtime._save_runtime_state(
+                conversation=conversation,
+                plan_state=current_plan_state,
+            )
         initial_in_progress_item_id = current_plan_state.current_in_progress_item_id()
         resolved_turn_id = turn_id or f"turn_{uuid4().hex}"
         runtime._set_current_turn_id(resolved_turn_id)
@@ -319,8 +328,10 @@ class TurnExecutor:
         self,
         choice: str,
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
+        _raise_if_interrupted(interrupt_token)
         normalized = choice.strip()
         decision = runtime._session_service.load_pending_decision(runtime._config.session_id)
         suspended = runtime._session_service.load_suspended_turn(runtime._config.session_id)
@@ -559,11 +570,28 @@ class TurnExecutor:
         progress_updates = ["[decision] approved"]
         activity_events: list[ActivityEvent] = []
         streamed_chunks: list[str] = []
-        initial_planned_exposure = runtime._plan_tool_exposure(
-            user_message=suspended.user_message,
-            conversation=conversation,
-            plan_state=current_plan_state,
-        )
+        try:
+            initial_planned_exposure = runtime._plan_tool_exposure(
+                user_message=suspended.user_message,
+                conversation=conversation,
+                plan_state=current_plan_state,
+                interrupt_token=interrupt_token,
+            )
+        except KeyboardInterrupt:
+            return self._finalize_interrupted_turn(
+                user_message=suspended.user_message,
+                conversation=conversation,
+                current_plan_state=current_plan_state,
+                turn_id=turn_id,
+                started_at=started_at,
+                turn_items=turn_items,
+                latest_context_baseline=None,
+                activity_events=activity_events,
+                streamed_chunks=streamed_chunks,
+                progress_updates=progress_updates,
+                stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
+            )
         if initial_planned_exposure.lifecycle_events:
             runtime._append_contributed_tool_lifecycle_events(
                 turn_id=turn_id,
@@ -581,18 +609,101 @@ class TurnExecutor:
             )
             last_tool_exposure_summary = initial_planned_exposure.exposure.summary()
         initial_tool_router = runtime._build_tool_router(initial_planned_exposure)
-        current_plan_state = runtime._execute_tool_call(
-            conversation=conversation,
-            call=approved_call,
-            tool_router=initial_tool_router,
-            tool_exposure=initial_planned_exposure.exposure,
-            plan_state=current_plan_state,
-            turn_id=turn_id,
-            activity_events=activity_events,
-            turn_items=turn_items,
-            lifecycle_sink=stream_sink,
-            policy_approved=True,
-        )
+        try:
+            current_plan_state = runtime._execute_tool_call(
+                conversation=conversation,
+                call=approved_call,
+                tool_router=initial_tool_router,
+                tool_exposure=initial_planned_exposure.exposure,
+                plan_state=current_plan_state,
+                turn_id=turn_id,
+                activity_events=activity_events,
+                turn_items=turn_items,
+                record_assistant_call=False,
+                lifecycle_sink=stream_sink,
+                policy_approved=True,
+                interrupt_token=interrupt_token,
+            )
+        except KeyboardInterrupt:
+            return self._finalize_interrupted_turn(
+                user_message=suspended.user_message,
+                conversation=conversation,
+                current_plan_state=current_plan_state,
+                turn_id=turn_id,
+                started_at=started_at,
+                turn_items=turn_items,
+                latest_context_baseline=None,
+                activity_events=activity_events,
+                streamed_chunks=streamed_chunks,
+                progress_updates=progress_updates,
+                stream_sink=stream_sink,
+                interrupt_token=interrupt_token,
+            )
+
+        pending_batch_items = _unresolved_tool_call_items_for_current_turn(conversation)
+        if pending_batch_items:
+            try:
+                (
+                    current_plan_state,
+                    _turn_has_tool_call,
+                    _turn_text_chunks,
+                    early_response,
+                ) = runtime._consume_assistant_blocks(
+                    turn_result=ModelTurnResult(
+                        items=pending_batch_items,
+                        done=False,
+                    ),
+                    conversation=conversation,
+                    tool_router=initial_tool_router,
+                    tool_exposure=initial_planned_exposure.exposure,
+                    plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    user_message=suspended.user_message,
+                    progress_updates=progress_updates,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                    conversation_items_precommitted=True,
+                    interrupt_token=interrupt_token,
+                )
+            except KeyboardInterrupt:
+                return self._finalize_interrupted_turn(
+                    user_message=suspended.user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=None,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
+            if early_response is not None:
+                response, status, stop_reason = early_response
+                self._commit_leftovers_before_finalize(
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                )
+                if status is not TurnStatus.WAITING_APPROVAL:
+                    runtime._save_runtime_state(
+                        conversation=conversation,
+                        plan_state=current_plan_state,
+                    )
+                return runtime._finalize_response(
+                    response=response,
+                    turn_id=turn_id,
+                    user_message=suspended.user_message,
+                    started_at=started_at,
+                    status=status,
+                    stop_reason=stop_reason,
+                    turn_items=turn_items,
+                )
 
         return self._run_turn_loop(
             user_message=suspended.user_message,
@@ -607,6 +718,7 @@ class TurnExecutor:
             streamed_chunks=streamed_chunks,
             stream_sink=stream_sink,
             last_tool_exposure_summary=last_tool_exposure_summary,
+            interrupt_token=interrupt_token,
         )
 
     def resolve_pending_clarification(
@@ -614,8 +726,11 @@ class TurnExecutor:
         *,
         request_id: str,
         response: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
+        _raise_if_interrupted(interrupt_token)
         normalized_response = response.strip()
         if not normalized_response:
             _record_clarification_resolution(
@@ -650,7 +765,6 @@ class TurnExecutor:
             )
             return TurnResponse(assistant_message="No pending clarification matches the provided request_id.")
 
-        runtime._session_service.clear_suspended_turn(runtime._config.session_id)
         current_plan_state = suspended.plan_state
         turn_id = f"turn_{uuid4().hex}"
         runtime._set_current_turn_id(turn_id)
@@ -706,6 +820,11 @@ class TurnExecutor:
             call=pending.tool_call,
             response=normalized_response,
         )
+        runtime._save_runtime_state(
+            conversation=conversation,
+            plan_state=current_plan_state,
+        )
+        runtime._session_service.clear_suspended_turn(runtime._config.session_id)
         return self._run_turn_loop(
             user_message=suspended.user_message,
             conversation=conversation,
@@ -723,6 +842,8 @@ class TurnExecutor:
                 )
             ],
             streamed_chunks=[],
+            stream_sink=stream_sink,
+            interrupt_token=interrupt_token,
         )
 
     def _run_turn_loop(
@@ -751,9 +872,30 @@ class TurnExecutor:
         loop_state = LoopState()
         carryover_runtime_reminders: tuple[str, ...] = tuple(initial_runtime_reminders)
         fallback_model_active = False
+        next_compact_phase = (
+            CompactPhase.MID_TURN
+            if conversation.messages and conversation.messages[-1].role == "tool"
+            else CompactPhase.PRE_TURN
+        )
 
         while True:
-            _raise_if_interrupted(interrupt_token)
+            try:
+                _raise_if_interrupted(interrupt_token)
+            except KeyboardInterrupt:
+                return self._finalize_interrupted_turn(
+                    user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
             self._drain_active_turn_input(
                 conversation=conversation,
                 turn_id=turn_id,
@@ -854,11 +996,28 @@ class TurnExecutor:
             runtime._set_model_runtime_event_recorder(turn_id)
             runtime._set_model_reasoning_effort(reasoning_effort)
             runtime._set_model_tool_choice(None)
-            planned_exposure = runtime._plan_tool_exposure(
-                user_message=user_message,
-                conversation=conversation,
-                plan_state=current_plan_state,
-            )
+            try:
+                planned_exposure = runtime._plan_tool_exposure(
+                    user_message=user_message,
+                    conversation=conversation,
+                    plan_state=current_plan_state,
+                    interrupt_token=interrupt_token,
+                )
+            except KeyboardInterrupt:
+                return self._finalize_interrupted_turn(
+                    user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
             if planned_exposure.lifecycle_events:
                 runtime._append_contributed_tool_lifecycle_events(
                     turn_id=turn_id,
@@ -875,110 +1034,13 @@ class TurnExecutor:
                 )
                 last_tool_exposure_summary = planned_exposure.exposure.summary()
             tool_router = runtime._build_tool_router(planned_exposure)
-            conversation_before_compaction = conversation
-            pre_compaction_budget = runtime._estimate_window_budget(conversation)
-            runtime._trace_before_compact(
-                turn_id=turn_id,
-                conversation=conversation_before_compaction,
-                budget=pre_compaction_budget,
-                source="pre_request",
-            )
-            pre_compaction_started_at: float | None = None
-            if runtime._compaction_pipeline.llm_summarization.should_compress(
-                pre_compaction_budget
-            ):
-                pre_compaction_started_at = runtime._monotonic()
-                self._emit_compaction_event(
-                    stream_sink=stream_sink,
-                    activity_events=activity_events,
-                    event_kind="compaction_started",
-                    source="pre_request",
-                    before_tokens=pre_compaction_budget.total_tokens,
-                    after_tokens=None,
-                    max_tokens=pre_compaction_budget.max_tokens,
-                    status=None,
-                    duration_s=None,
-                )
-            try:
-                conversation_for_model = runtime._compaction_pipeline.apply(
-                    conversation,
-                    pre_compaction_budget,
-                )
-            except KeyboardInterrupt:
-                return self._finalize_interrupted_turn(
-                    user_message=user_message,
-                    conversation=conversation,
-                    current_plan_state=current_plan_state,
-                    turn_id=turn_id,
-                    started_at=started_at,
-                    turn_items=turn_items,
-                    latest_context_baseline=latest_context_baseline,
-                    activity_events=activity_events,
-                    streamed_chunks=streamed_chunks,
-                    progress_updates=progress_updates,
-                    stream_sink=stream_sink,
-                )
-            if pre_compaction_started_at is not None:
-                after_compaction_budget = runtime._estimate_window_budget(conversation_for_model)
-                self._emit_compaction_event(
-                    stream_sink=stream_sink,
-                    activity_events=activity_events,
-                    event_kind="compaction_completed",
-                    source="pre_request",
-                    before_tokens=pre_compaction_budget.total_tokens,
-                    after_tokens=after_compaction_budget.total_tokens,
-                    max_tokens=pre_compaction_budget.max_tokens,
-                    status=(
-                        "compressed"
-                        if conversation_for_model is not conversation_before_compaction
-                        else "skipped"
-                    ),
-                    duration_s=runtime._monotonic() - pre_compaction_started_at,
-                )
-            runtime._record_compaction_metric(
-                before_messages=conversation_before_compaction,
-                after_messages=conversation_for_model,
-            )
-            runtime._trace_after_compact(
-                turn_id=turn_id,
-                before_messages=conversation_before_compaction,
-                after_messages=conversation_for_model,
-                source="pre_request",
-                cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-            )
-            l4_applied_before_request = (
-                runtime._compaction_pipeline.llm_summarization.last_cost_metrics or {}
-            ).get("decision") == "summarize"
-            if conversation_for_model is not conversation:
-                conversation = conversation_for_model
-            if l4_applied_before_request:
-                runtime._persist_compaction_summaries(
-                    turn_id=turn_id,
-                    conversation=conversation_for_model,
-                )
-            runtime._record_context_window_metrics()
-            runtime._record_l4_decision_metric(
-                runtime._compaction_pipeline.llm_summarization.last_cost_metrics
-            )
-            budget = runtime._estimate_window_budget(conversation_for_model)
-            compaction_rehydration = (
-                runtime._build_compaction_rehydration_context(
-                    cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-                    conversation_tail=tuple(conversation_for_model.messages),
-                )
-                if l4_applied_before_request
-                else CompactionRehydrationContext()
-            )
-            runtime_reminders = _apply_l4_recent_file_hints(
-                runtime_reminders,
-                runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-            )
+            conversation_for_model = conversation
             context, turn_context = runtime._assemble_turn_context(
                 user_message=user_message,
                 conversation=conversation_for_model,
                 plan_state=current_plan_state,
                 runtime_reminders=runtime_reminders,
-                compaction_rehydration=compaction_rehydration,
+                compaction_rehydration=CompactionRehydrationContext(),
                 tool_exposure=planned_exposure.exposure,
             )
             contract = runtime._assemble_instruction_contract(
@@ -996,110 +1058,44 @@ class TurnExecutor:
             request_shape = runtime._build_and_trace_request_shape(
                 turn_id=turn_id,
                 contract=contract,
+                conversation=conversation_for_model,
                 tools=tools,
             )
-            request_budget = runtime._estimate_request_window_budget(request_shape)
-            request_needs_l4 = (
-                not l4_applied_before_request
-            )
-            if request_needs_l4:
-                conversation_before_request_compaction = conversation_for_model
-                runtime._trace_before_compact(
-                    turn_id=turn_id,
-                    conversation=conversation_before_request_compaction,
-                    budget=request_budget,
-                    source="request_budget",
-                )
-                request_compaction_started_at: float | None = None
-                if runtime._compaction_pipeline.llm_summarization.should_compress(
-                    request_budget
-                ):
-                    request_compaction_started_at = runtime._monotonic()
-                    self._emit_compaction_event(
-                        stream_sink=stream_sink,
-                        activity_events=activity_events,
-                        event_kind="compaction_started",
-                        source="request_budget",
-                        before_tokens=request_budget.total_tokens,
-                        after_tokens=None,
-                        max_tokens=request_budget.max_tokens,
-                        status=None,
-                        duration_s=None,
-                    )
-                try:
-                    conversation_for_model = runtime._compaction_pipeline.llm_summarization.apply(
-                        conversation_for_model,
-                        CacheZones.from_conversation(conversation_for_model),
-                        request_budget,
-                        snapshot=runtime._full_context_snapshot(request_shape),
-                    )
-                except KeyboardInterrupt:
-                    return self._finalize_interrupted_turn(
-                        user_message=user_message,
-                        conversation=conversation,
-                        current_plan_state=current_plan_state,
-                        turn_id=turn_id,
-                        started_at=started_at,
-                        turn_items=turn_items,
-                        latest_context_baseline=latest_context_baseline,
-                        activity_events=activity_events,
-                        streamed_chunks=streamed_chunks,
-                        progress_updates=progress_updates,
-                        stream_sink=stream_sink,
-                    )
-                if request_compaction_started_at is not None:
-                    after_request_compaction_budget = runtime._estimate_window_budget(
-                        conversation_for_model
-                    )
-                    self._emit_compaction_event(
-                        stream_sink=stream_sink,
-                        activity_events=activity_events,
-                        event_kind="compaction_completed",
-                        source="request_budget",
-                        before_tokens=request_budget.total_tokens,
-                        after_tokens=after_request_compaction_budget.total_tokens,
-                        max_tokens=request_budget.max_tokens,
-                        status=(
-                            "compressed"
-                            if conversation_for_model is not conversation_before_request_compaction
-                            else "skipped"
-                        ),
-                        duration_s=runtime._monotonic() - request_compaction_started_at,
-                    )
-            if request_needs_l4 and conversation_for_model is not conversation_before_request_compaction:
-                runtime._record_compaction_metric(
-                    before_messages=conversation_before_request_compaction,
-                    after_messages=conversation_for_model,
-                )
-                runtime._trace_after_compact(
-                    turn_id=turn_id,
-                    before_messages=conversation_before_request_compaction,
-                    after_messages=conversation_for_model,
-                    source="request_budget",
-                    cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-                )
-                runtime._record_l4_decision_metric(
-                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics
-                )
-                runtime._persist_compaction_summaries(
-                    turn_id=turn_id,
+            sampling_phase = next_compact_phase
+            try:
+                compacted = self._maybe_compact_at_sampling_boundary(
                     conversation=conversation_for_model,
+                    request_shape=request_shape,
+                    phase=sampling_phase,
+                    turn_id=turn_id,
+                    stream_sink=stream_sink,
+                    activity_events=activity_events,
                 )
+            except KeyboardInterrupt:
+                return self._finalize_interrupted_turn(
+                    user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
+            next_compact_phase = CompactPhase.PRE_TURN
+            if compacted is not conversation_for_model:
+                conversation_for_model = compacted
                 conversation = conversation_for_model
-                compaction_rehydration = runtime._build_compaction_rehydration_context(
-                    cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-                    conversation_tail=tuple(conversation_for_model.messages),
-                )
-                runtime_reminders = _apply_l4_recent_file_hints(
-                    runtime_reminders,
-                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-                )
                 context, turn_context = runtime._assemble_turn_context(
                     user_message=user_message,
                     conversation=conversation_for_model,
                     plan_state=current_plan_state,
                     runtime_reminders=runtime_reminders,
-                    compaction_rehydration=compaction_rehydration,
+                    compaction_rehydration=CompactionRehydrationContext(),
                     tool_exposure=planned_exposure.exposure,
                 )
                 contract = runtime._assemble_instruction_contract(
@@ -1111,13 +1107,28 @@ class TurnExecutor:
                 request_shape = runtime._build_and_trace_request_shape(
                     turn_id=turn_id,
                     contract=contract,
+                    conversation=conversation_for_model,
                     tools=tools,
                 )
-                request_budget = runtime._estimate_request_window_budget(request_shape)
-            budget = request_budget
+            budget = runtime._estimate_request_window_budget(request_shape)
             runtime_reminders = BudgetNudge().apply(budget, runtime_reminders)
             runtime_items = runtime._build_runtime_items(request_shape=request_shape)
             legacy_messages = runtime._build_messages(request_shape=request_shape)
+            conversation_checkpoint = len(conversation.messages)
+            precommitted_items: list[RuntimeItem] = []
+
+            def persist_completed_item(item: RuntimeItem) -> None:
+                self._record_completed_item_conversation(
+                    item=item,
+                    conversation=conversation,
+                    response_id=None,
+                )
+                precommitted_items.append(item)
+                runtime._save_runtime_state(
+                    conversation=conversation,
+                    plan_state=current_plan_state,
+                )
+
             try:
                 _raise_if_interrupted(interrupt_token)
                 request_started_at = runtime._monotonic()
@@ -1127,12 +1138,20 @@ class TurnExecutor:
                         legacy_messages=legacy_messages,
                         tools=tools,
                         stream_sink=stream_sink,
+                        completed_item_sink=persist_completed_item,
                         interrupt_token=interrupt_token,
                     )
                 finally:
                     if fallback_model_active:
                         runtime._restore_model()
                         fallback_model_active = False
+                if loop_state.transport_retries > 0:
+                    self._emit_transient_stream_event(
+                        stream_sink=stream_sink,
+                        event=RuntimeStreamEvent(kind="stream_recovered"),
+                        activity_events=activity_events,
+                    )
+                    loop_state = replace(loop_state, transport_retries=0)
                 self._maybe_emit_heartbeat(
                     request_started_at=request_started_at,
                     progress_updates=progress_updates,
@@ -1198,25 +1217,73 @@ class TurnExecutor:
                         ),
                     )
                 if recovery_action.should_retry:
+                    if precommitted_items:
+                        del conversation.messages[conversation_checkpoint:]
+                        runtime._save_runtime_state(
+                            conversation=conversation,
+                            plan_state=current_plan_state,
+                        )
+                        precommitted_items.clear()
                     loop_state = recovery_action.next_state
                     carryover_runtime_reminders = recovery_action.runtime_reminders
                     if recovery_action.fallback_model is not None:
                         runtime._set_model(recovery_action.fallback_model)
                         fallback_model_active = True
-                    runtime._append_turn_item(
-                        turn_id=turn_id,
-                        turn_items=turn_items,
-                        item=TurnItem(
-                            type=TurnItemType.WARNING,
-                            text=recovery_action.warning_text,
-                            metadata=recovery_action.metadata,
-                        ),
-                    )
-                    activity_events.append(
-                        ActivityEvent(kind="model_error", message=recovery_action.warning_text)
-                    )
+                    is_stream_retry = recovery_action.metadata.get("recovery_kind") == "retry"
+                    if is_stream_retry:
+                        try:
+                            self._emit_stream_retry_lifecycle(
+                                exc=exc,
+                                action=recovery_action,
+                                stream_sink=stream_sink,
+                                activity_events=activity_events,
+                            )
+                        except KeyboardInterrupt:
+                            return self._finalize_interrupted_turn(
+                                user_message=user_message,
+                                conversation=conversation,
+                                current_plan_state=current_plan_state,
+                                turn_id=turn_id,
+                                started_at=started_at,
+                                turn_items=turn_items,
+                                latest_context_baseline=latest_context_baseline,
+                                activity_events=activity_events,
+                                streamed_chunks=streamed_chunks,
+                                progress_updates=progress_updates,
+                                stream_sink=stream_sink,
+                                interrupt_token=interrupt_token,
+                            )
+                    else:
+                        runtime._append_turn_item(
+                            turn_id=turn_id,
+                            turn_items=turn_items,
+                            item=TurnItem(
+                                type=TurnItemType.WARNING,
+                                text=recovery_action.warning_text,
+                                metadata=recovery_action.metadata,
+                            ),
+                        )
+                        activity_events.append(
+                            ActivityEvent(kind="model_error", message=recovery_action.warning_text)
+                        )
                     if recovery_action.delay_seconds > 0:
-                        runtime._recovery_sleep(recovery_action.delay_seconds)
+                        if interrupt_token is None:
+                            runtime._recovery_sleep(recovery_action.delay_seconds)
+                        elif interrupt_token.wait(recovery_action.delay_seconds):
+                            return self._finalize_interrupted_turn(
+                                user_message=user_message,
+                                conversation=conversation,
+                                current_plan_state=current_plan_state,
+                                turn_id=turn_id,
+                                started_at=started_at,
+                                turn_items=turn_items,
+                                latest_context_baseline=latest_context_baseline,
+                                activity_events=activity_events,
+                                streamed_chunks=streamed_chunks,
+                                progress_updates=progress_updates,
+                                stream_sink=stream_sink,
+                                interrupt_token=interrupt_token,
+                            )
                     if recovery_action.invoke_pre_compact_hook:
                         runtime._hook_manager.execute(
                             HookPoint.PRE_COMPACT,
@@ -1245,22 +1312,33 @@ class TurnExecutor:
                                 budget=reactive_budget,
                                 source="reactive_error",
                             )
-                            reactive_compacted = (
-                                runtime._compaction_pipeline.llm_summarization.apply(
-                                    conversation,
-                                    CacheZones.from_conversation(conversation),
-                                    reactive_budget,
-                                    snapshot=runtime._full_context_snapshot(request_shape),
-                                    force=True,
-                                    source="reactive_error",
-                                )
+                            reactive_decision = runtime._compact_trigger_policy.forced(
+                                reason=CompactReason.CONTEXT_LIMIT,
+                                phase=sampling_phase,
+                                trigger_tokens=reactive_budget.total_tokens,
                             )
+                            reactive_compacted = runtime._compact_active_history(
+                                conversation,
+                                decision=reactive_decision,
+                            )
+                            reactive_cost_metrics: dict[
+                                str, int | float | str | list[str]
+                            ] = {
+                                "decision": (
+                                    "summarize"
+                                    if reactive_compacted is not conversation
+                                    else runtime._compact_service.last_status
+                                ),
+                                "source": "reactive_error",
+                                "reason": CompactReason.CONTEXT_LIMIT.value,
+                                "phase": sampling_phase.value,
+                            }
                             runtime._trace_after_compact(
                                 turn_id=turn_id,
                                 before_messages=before_reactive,
                                 after_messages=reactive_compacted,
                                 source="reactive_error",
-                                cost_metrics=runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
+                                cost_metrics=reactive_cost_metrics,
                             )
                             loop_state = LoopState(
                                 context_window_retries=loop_state.context_window_retries,
@@ -1277,22 +1355,7 @@ class TurnExecutor:
                                     after_messages=reactive_compacted,
                                 )
                                 runtime._record_l4_decision_metric(
-                                    runtime._compaction_pipeline.llm_summarization.last_cost_metrics
-                                )
-                                runtime._persist_compaction_summaries(
-                                    turn_id=turn_id,
-                                    conversation=reactive_compacted,
-                                )
-                                carryover_runtime_reminders = tuple(
-                                    dict.fromkeys(
-                                        (
-                                            *carryover_runtime_reminders,
-                                            *_apply_l4_recent_file_hints(
-                                                (),
-                                                runtime._compaction_pipeline.llm_summarization.last_cost_metrics,
-                                            ),
-                                        )
-                                    )
+                                    reactive_cost_metrics
                                 )
                     continue
                 self._commit_leftovers_before_finalize(
@@ -1301,6 +1364,19 @@ class TurnExecutor:
                     turn_items=turn_items,
                     stream_sink=stream_sink,
                 )
+                if precommitted_items:
+                    self._record_completed_items_before_interrupt(
+                        turn_result=ModelTurnResult(
+                            items=tuple(precommitted_items),
+                            done=False,
+                        ),
+                        conversation=conversation,
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        progress_updates=progress_updates,
+                        activity_events=activity_events,
+                        conversation_items_recorded=True,
+                    )
                 return self._error_finalizer.finalize_model_error(
                     user_message=user_message,
                     current_plan_state=current_plan_state,
@@ -1315,6 +1391,30 @@ class TurnExecutor:
                     stop_reason=exc.stop_reason or StopReason.MODEL_ERROR,
                     assistant_message=f"Model request failed: {exc}",
                 )
+            except ModelTurnInterrupted as exc:
+                self._record_completed_items_before_interrupt(
+                    turn_result=exc.completed_result,
+                    conversation=conversation,
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    progress_updates=progress_updates,
+                    activity_events=activity_events,
+                    conversation_items_recorded=True,
+                )
+                return self._finalize_interrupted_turn(
+                    user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
             except KeyboardInterrupt:
                 return self._finalize_interrupted_turn(
                     user_message=user_message,
@@ -1328,8 +1428,22 @@ class TurnExecutor:
                     streamed_chunks=streamed_chunks,
                     progress_updates=progress_updates,
                     stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
                 )
             except Exception as exc:  # pragma: no cover - guarded by focused tests
+                if precommitted_items:
+                    self._record_completed_items_before_interrupt(
+                        turn_result=ModelTurnResult(
+                            items=tuple(precommitted_items),
+                            done=False,
+                        ),
+                        conversation=conversation,
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        progress_updates=progress_updates,
+                        activity_events=activity_events,
+                        conversation_items_recorded=True,
+                    )
                 self._commit_leftovers_before_finalize(
                     conversation=conversation,
                     turn_id=turn_id,
@@ -1348,26 +1462,43 @@ class TurnExecutor:
                     exc=exc,
                 )
 
-            (
-                current_plan_state,
-                turn_has_tool_call,
-                turn_text_chunks,
-                early_response,
-            ) = runtime._consume_assistant_blocks(
-                turn_result=turn_result,
-                conversation=conversation,
-                tool_router=tool_router,
-                tool_exposure=model_tool_exposure,
-                plan_state=current_plan_state,
-                turn_id=turn_id,
-                user_message=user_message,
-                progress_updates=progress_updates,
-                activity_events=activity_events,
-                streamed_chunks=streamed_chunks,
-                turn_items=turn_items,
-                stream_sink=stream_sink,
-                interrupt_token=interrupt_token,
-            )
+            try:
+                (
+                    current_plan_state,
+                    turn_has_tool_call,
+                    turn_text_chunks,
+                    early_response,
+                ) = runtime._consume_assistant_blocks(
+                    turn_result=turn_result,
+                    conversation=conversation,
+                    tool_router=tool_router,
+                    tool_exposure=model_tool_exposure,
+                    plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    user_message=user_message,
+                    progress_updates=progress_updates,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    turn_items=turn_items,
+                    stream_sink=stream_sink,
+                    conversation_items_precommitted=bool(precommitted_items),
+                    interrupt_token=interrupt_token,
+                )
+            except KeyboardInterrupt:
+                return self._finalize_interrupted_turn(
+                    user_message=user_message,
+                    conversation=conversation,
+                    current_plan_state=current_plan_state,
+                    turn_id=turn_id,
+                    started_at=started_at,
+                    turn_items=turn_items,
+                    latest_context_baseline=latest_context_baseline,
+                    activity_events=activity_events,
+                    streamed_chunks=streamed_chunks,
+                    progress_updates=progress_updates,
+                    stream_sink=stream_sink,
+                    interrupt_token=interrupt_token,
+                )
             if early_response is not None:
                 response, status, stop_reason = early_response
                 self._commit_leftovers_before_finalize(
@@ -1395,6 +1526,7 @@ class TurnExecutor:
             if turn_has_tool_call:
                 no_progress_tracker.update(conversation)
                 step_index += 1
+                next_compact_phase = CompactPhase.MID_TURN
                 runtime._record_ptl_metric(
                     triggered=checkpoint_result.continue_reason
                     in {
@@ -1510,6 +1642,128 @@ class TurnExecutor:
                     context_baseline=latest_context_baseline,
                 )
             step_index += 1
+
+    def _record_completed_items_before_interrupt(
+        self,
+        *,
+        turn_result: ModelTurnResult,
+        conversation: Conversation,
+        turn_id: str,
+        turn_items: list[TurnItem],
+        progress_updates: list[str],
+        activity_events: list[ActivityEvent],
+        conversation_items_recorded: bool = False,
+    ) -> None:
+        runtime = self._runtime
+        for item in turn_result.items:
+            if item.role != "assistant":
+                continue
+            if not conversation_items_recorded:
+                self._record_completed_item_conversation(
+                    item=item,
+                    conversation=conversation,
+                    response_id=turn_result.response_id,
+                )
+            reasoning_blocks = tuple(block for block in item.blocks if block.type == "reasoning")
+            text_blocks = tuple(block for block in item.blocks if block.type == "text")
+            tool_blocks = tuple(block for block in item.blocks if block.type == "tool_call")
+
+            for block in reasoning_blocks:
+                if not block.text:
+                    continue
+                progress_updates.append(block.text)
+                activity_kind = "planning" if "plan" in block.text.lower() else "thinking"
+                activity_events.append(ActivityEvent(kind=activity_kind, message=block.text))
+                runtime._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.REASONING,
+                        text=block.text,
+                        metadata={
+                            "activity_kind": activity_kind,
+                            "provider_id": block.provider_id,
+                            **block.metadata,
+                        },
+                    ),
+                )
+
+            combined_text = "".join(block.text or "" for block in text_blocks)
+            if combined_text:
+                last_text_block = text_blocks[-1]
+                runtime._append_turn_item(
+                    turn_id=turn_id,
+                    turn_items=turn_items,
+                    item=TurnItem(
+                        type=TurnItemType.ASSISTANT_MESSAGE,
+                        text=combined_text,
+                        metadata={
+                            "provider_id": last_text_block.provider_id,
+                            **last_text_block.metadata,
+                        },
+                    ),
+                )
+
+            if tool_blocks:
+                for block in tool_blocks:
+                    call = runtime._tool_call_from_block(block)
+                    runtime._append_turn_item(
+                        turn_id=turn_id,
+                        turn_items=turn_items,
+                        item=TurnItem(
+                            type=TurnItemType.TOOL_CALL,
+                            text=f"{call.name} call completed before interruption.",
+                            tool_name=call.name,
+                            call_id=call.call_id,
+                            metadata={
+                                **block.metadata,
+                                "arguments": call.arguments,
+                                "provider_id": block.provider_id,
+                                "interrupted_before_execution": True,
+                            },
+                        ),
+                    )
+        runtime._persist_completed_turn_items(
+            turn_id=turn_id,
+            turn_items=turn_items,
+        )
+
+    def _record_completed_item_conversation(
+        self,
+        *,
+        item: RuntimeItem,
+        conversation: Conversation,
+        response_id: str | None,
+    ) -> None:
+        if item.role != "assistant":
+            return
+        runtime = self._runtime
+        text_blocks = tuple(block for block in item.blocks if block.type == "text")
+        tool_blocks = tuple(block for block in item.blocks if block.type == "tool_call")
+        if tool_blocks:
+            runtime._record_assistant_tool_calls(
+                conversation,
+                tool_calls=tuple(runtime._tool_call_from_block(block) for block in tool_blocks),
+                blocks=tuple(
+                    block for block in item.blocks if block.type in {"text", "tool_call"}
+                ),
+                response_id=response_id,
+            )
+            return
+        combined_text = "".join(block.text or "" for block in text_blocks)
+        if not combined_text:
+            return
+        last_text_block = text_blocks[-1]
+        runtime._record_assistant_text_block(
+            conversation,
+            block=RuntimeBlock(
+                type="text",
+                text=combined_text,
+                provider_id=last_text_block.provider_id,
+                metadata=dict(last_text_block.metadata),
+            ),
+            response_id=response_id,
+        )
 
     def _drain_active_turn_input(
         self,
@@ -1751,7 +2005,7 @@ class TurnExecutor:
             failure_kind=failure_kind,
             is_retryable=exc.is_retryable or stop_reason is StopReason.TRANSPORT_FAILED,
         ):
-            max_attempts = max(0, self._runtime._config.transport_retry_limit)
+            max_attempts = self._runtime._config.effective_stream_max_retries
             if loop_state.transport_retries >= max_attempts:
                 fallback_model = self._runtime._config.fallback_model
                 if fallback_model and not loop_state.fallback_model_attempted:
@@ -1780,11 +2034,13 @@ class TurnExecutor:
                     )
                 return TurnRecoveryAction(next_state=loop_state)
             attempt = loop_state.transport_retries + 1
-            delay_seconds = RetryBackoffPolicy().delay_for_attempt(attempt)
-            recovery_failure_kind = failure_kind or "transport_error"
-            warning_text = (
-                f"Temporary model transport failure. Retrying request ({attempt}/{max_attempts}) with the current turn state."
+            delay_seconds = RetryBackoffPolicy().delay_for_attempt(
+                attempt,
+                jitter_factor=self._runtime._retry_jitter(0.9, 1.1),
+                retry_after_seconds=exc.retry_after_seconds,
             )
+            recovery_failure_kind = failure_kind or "transport_error"
+            warning_text = f"Reconnecting... {attempt}/{max_attempts}"
             return TurnRecoveryAction(
                 should_retry=True,
                 warning_text=warning_text,
@@ -1814,6 +2070,55 @@ class TurnExecutor:
             )
 
         return TurnRecoveryAction(next_state=loop_state)
+
+    def _emit_stream_retry_lifecycle(
+        self,
+        *,
+        exc: ModelResponseError,
+        action: "TurnRecoveryAction",
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        activity_events: list[ActivityEvent],
+    ) -> None:
+        additional_details = " ".join(str(exc).split())[:2000]
+        if exc.partial_output:
+            self._emit_transient_stream_event(
+                stream_sink=stream_sink,
+                event=RuntimeStreamEvent(kind="stream_attempt_reset"),
+                activity_events=activity_events,
+            )
+        self._emit_transient_stream_event(
+            stream_sink=stream_sink,
+            event=RuntimeStreamEvent(
+                kind="stream_retrying",
+                text=action.warning_text,
+                metadata={
+                    **action.metadata,
+                    "max_retries": action.metadata.get("max_attempts", 0),
+                    **(
+                        {"additional_details": additional_details}
+                        if additional_details
+                        else {}
+                    ),
+                },
+            ),
+            activity_events=activity_events,
+        )
+
+    @staticmethod
+    def _emit_transient_stream_event(
+        *,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        event: RuntimeStreamEvent,
+        activity_events: list[ActivityEvent],
+    ) -> None:
+        if stream_sink is None:
+            return
+        try:
+            stream_sink(event)
+        except Exception:
+            activity_events.append(
+                ActivityEvent(kind="stream_sink_error", message="retry sink failed")
+            )
 
     def _maybe_emit_heartbeat(
         self,
@@ -1853,6 +2158,8 @@ class TurnExecutor:
         max_tokens: int,
         status: str | None,
         duration_s: float | None,
+        reason: str | None = None,
+        phase: str | None = None,
     ) -> None:
         message = _compaction_activity_message(
             event_kind=event_kind,
@@ -1875,12 +2182,119 @@ class TurnExecutor:
             metadata["status"] = status
         if duration_s is not None:
             metadata["duration_s"] = duration_s
+        if reason is not None:
+            metadata["reason"] = reason
+        if phase is not None:
+            metadata["phase"] = phase
         try:
             stream_sink(RuntimeStreamEvent(kind=event_kind, metadata=metadata))
         except Exception:
             activity_events.append(
                 ActivityEvent(kind="stream_sink_error", message="compaction sink failed")
             )
+
+    def _maybe_compact_at_sampling_boundary(
+        self,
+        *,
+        conversation: Conversation,
+        request_shape: RequestShape,
+        phase: CompactPhase,
+        turn_id: str,
+        stream_sink: Callable[[RuntimeStreamEvent], None] | None,
+        activity_events: list[ActivityEvent],
+    ) -> Conversation:
+        runtime = self._runtime
+        token_status = runtime._compact_token_status(request_shape=request_shape)
+        if phase is CompactPhase.MID_TURN:
+            decision = runtime._compact_trigger_policy.mid_turn(token_status)
+        else:
+            decision = runtime._compact_trigger_policy.pre_turn(
+                token_status,
+                model_downshift=runtime._compact_model_downshift_pending,
+                compatibility_changed=runtime._compact_compatibility_changed_pending,
+            )
+        if not decision.should_compact:
+            return conversation
+
+        source = decision.phase.value
+        started_at = runtime._monotonic()
+        before_budget = ContextBudget(
+            max_tokens=decision.limit_tokens,
+            total_tokens=decision.trigger_tokens,
+        )
+        runtime._trace_before_compact(
+            turn_id=turn_id,
+            conversation=conversation,
+            budget=before_budget,
+            source=source,
+        )
+        runtime._hook_manager.execute(
+            HookPoint.PRE_COMPACT,
+            HookContext(
+                hook_point=HookPoint.PRE_COMPACT,
+                session_id=runtime._config.session_id,
+                metadata={
+                    "reason": decision.reason.value if decision.reason is not None else "",
+                    "phase": decision.phase.value,
+                    "trigger_tokens": decision.trigger_tokens,
+                    "limit_tokens": decision.limit_tokens,
+                    "message_count": len(conversation.messages),
+                },
+            ),
+        )
+        self._emit_compaction_event(
+            stream_sink=stream_sink,
+            activity_events=activity_events,
+            event_kind="compaction_started",
+            source=source,
+            before_tokens=decision.trigger_tokens,
+            after_tokens=None,
+            max_tokens=decision.limit_tokens,
+            status=None,
+            duration_s=None,
+            reason=decision.reason.value if decision.reason is not None else None,
+            phase=decision.phase.value,
+        )
+        compacted = runtime._compact_active_history(conversation, decision=decision)
+        after_tokens = runtime._estimated_conversation_tokens(compacted)
+        status = runtime._compact_service.last_status
+        self._emit_compaction_event(
+            stream_sink=stream_sink,
+            activity_events=activity_events,
+            event_kind="compaction_completed",
+            source=source,
+            before_tokens=decision.trigger_tokens,
+            after_tokens=after_tokens,
+            max_tokens=decision.limit_tokens,
+            status=status,
+            duration_s=runtime._monotonic() - started_at,
+            reason=decision.reason.value if decision.reason is not None else None,
+            phase=decision.phase.value,
+        )
+        cost_metrics: dict[str, int | float | str | list[str]] = {
+            "decision": "summarize" if compacted is not conversation else status,
+            "source": source,
+            "reason": decision.reason.value if decision.reason is not None else "",
+            "phase": decision.phase.value,
+            "trigger_tokens": decision.trigger_tokens,
+            "limit_tokens": decision.limit_tokens,
+            "removed_items": runtime._compact_service.last_removed_items,
+            "retained_turns": runtime._compact_service.last_retained_turns,
+            "summary_tokens": runtime._compact_service.last_summary_tokens,
+        }
+        runtime._record_compaction_metric(
+            before_messages=conversation,
+            after_messages=compacted,
+        )
+        runtime._record_l4_decision_metric(cost_metrics)
+        runtime._trace_after_compact(
+            turn_id=turn_id,
+            before_messages=conversation,
+            after_messages=compacted,
+            source=source,
+            cost_metrics=cost_metrics,
+        )
+        return compacted
 
     def _finalize_interrupted_turn(
         self,
@@ -1896,21 +2310,68 @@ class TurnExecutor:
         streamed_chunks: list[str],
         progress_updates: list[str],
         stream_sink: Callable[[RuntimeStreamEvent], None] | None = None,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> TurnResponse:
         runtime = self._runtime
         interrupt_warning = (
             "Turn interrupted. The current turn was aborted; send a new message to continue."
         )
-        self._commit_leftovers_before_finalize(
-            conversation=conversation,
-            turn_id=turn_id,
-            turn_items=turn_items,
-            stream_sink=stream_sink,
+        input_rolled_back = bool(
+            interrupt_token is not None
+            and interrupt_token.rollback_user_input
+            and not _has_visible_turn_activity(turn_items)
         )
+        if input_rolled_back:
+            if runtime.active_turn_mailbox_id() == turn_id:
+                runtime.close_active_turn_mailbox(turn_id)
+        else:
+            self._commit_leftovers_before_finalize(
+                conversation=conversation,
+                turn_id=turn_id,
+                turn_items=turn_items,
+                stream_sink=stream_sink,
+            )
         runtime._persist_model_continuation_state(
             turn_id=turn_id,
             phase="interrupted",
         )
+        if input_rolled_back:
+            _rollback_conversation_turn(
+                conversation,
+                turn_id=turn_id,
+                user_message=user_message,
+            )
+            runtime._session_service.rollback_history_turn(
+                runtime._config.session_id,
+                turn_id=turn_id,
+            )
+            runtime._save_runtime_state(
+                conversation=conversation,
+                plan_state=current_plan_state,
+            )
+            _record_turn_interrupted(
+                runtime=runtime,
+                turn_id=turn_id,
+                message_count=len(conversation.messages),
+                input_rolled_back=True,
+            )
+            return runtime._finalize_response(
+                response=TurnResponse(
+                    assistant_message="",
+                    activity_events=tuple(activity_events),
+                    streamed_chunks=tuple(streamed_chunks),
+                    progress_updates=tuple(progress_updates),
+                    plan_steps=runtime._planning_service.render_steps(current_plan_state),
+                    input_rolled_back=True,
+                ),
+                turn_id=turn_id,
+                user_message=user_message,
+                started_at=started_at,
+                status=TurnStatus.INTERRUPTED,
+                stop_reason=StopReason.INTERRUPTED,
+                turn_items=turn_items,
+                context_baseline=latest_context_baseline,
+            )
         activity_events.append(
             ActivityEvent(kind="model_error", message=interrupt_warning)
         )
@@ -1949,16 +2410,18 @@ class TurnExecutor:
                 metadata={
                     "event_kind": "turn_aborted_marker",
                     "interrupted_turn_id": turn_id,
+                    "model_role": "developer",
                 },
             ),
         )
         conversation.append(
             Message(
-                role="user",
+                role="developer",
                 content=INTERRUPTED_TURN_MARKER,
                 metadata={
                     "event_kind": "turn_aborted_marker",
                     "interrupted_turn_id": turn_id,
+                    "model_role": "developer",
                 },
             ),
         )
@@ -2009,27 +2472,6 @@ class TurnRecoveryAction:
     fallback_model: str | None = None
     delay_seconds: float = 0.0
     metadata: dict[str, object] = field(default_factory=dict)
-
-
-def _apply_l4_recent_file_hints(
-    runtime_reminders: tuple[str, ...],
-    cost_metrics: dict[str, int | float | str | list[str]] | None,
-) -> tuple[str, ...]:
-    if cost_metrics is None:
-        return runtime_reminders
-    raw_files = cost_metrics.get("recent_files")
-    if not isinstance(raw_files, list):
-        return runtime_reminders
-    files = [path for path in raw_files if isinstance(path, str) and path]
-    if not files:
-        return runtime_reminders
-    reminder = (
-        "[Compaction applied. Recent files: "
-        f"{', '.join(files)}. Re-read these files if you need current content.]"
-    )
-    if reminder in runtime_reminders:
-        return runtime_reminders
-    return (*runtime_reminders, reminder)
 
 
 def _record_approval_allowance(
@@ -2274,25 +2716,77 @@ def _clarification_resolution_payload(
 INTERRUPTED_TOOL_RESULT_CONTENT = "Tool call interrupted by user before it completed."
 
 
+def _unresolved_tool_call_items_for_current_turn(
+    conversation: Conversation,
+) -> tuple[RuntimeItem, ...]:
+    current_turn_start = 0
+    for index, message in enumerate(conversation.messages):
+        if message.role == "user":
+            current_turn_start = index
+
+    current_messages = conversation.messages[current_turn_start:]
+    resolved_call_ids = {
+        message.tool_call_id
+        for message in current_messages
+        if message.role == "tool" and message.tool_call_id
+    }
+    queued_call_ids: set[str] = set()
+    items: list[RuntimeItem] = []
+    for message in current_messages:
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        blocks_by_call_id = {
+            block.call_id: block
+            for block in message.blocks
+            if block.type == "tool_call" and block.call_id
+        }
+        pending_blocks: list[RuntimeBlock] = []
+        for call in message.tool_calls:
+            call_id = call.call_id
+            if (
+                not call_id
+                or call_id in resolved_call_ids
+                or call_id in queued_call_ids
+            ):
+                continue
+            queued_call_ids.add(call_id)
+            pending_blocks.append(
+                blocks_by_call_id.get(call_id)
+                or RuntimeBlock(
+                    type="tool_call",
+                    tool_name=call.name,
+                    tool_arguments=dict(call.arguments),
+                    call_id=call_id,
+                )
+            )
+        if pending_blocks:
+            items.append(
+                RuntimeItem(
+                    role="assistant",
+                    blocks=tuple(pending_blocks),
+                    metadata=dict(message.metadata),
+                )
+            )
+    return tuple(items)
+
+
 def _repair_interrupted_tool_results(conversation: Conversation) -> tuple[Message, ...]:
     pending_tool_call_ids: list[str] = []
     for message in conversation.messages:
         if message.role == "assistant":
-            if pending_tool_call_ids:
-                break
-            pending_tool_call_ids = [
-                call.call_id
-                for call in message.tool_calls
-                if isinstance(call.call_id, str) and call.call_id
-            ]
+            for call in message.tool_calls:
+                call_id = call.call_id
+                if (
+                    isinstance(call_id, str)
+                    and call_id
+                    and call_id not in pending_tool_call_ids
+                ):
+                    pending_tool_call_ids.append(call_id)
             continue
         if message.role == "tool":
             tool_call_id = message.tool_call_id
             if isinstance(tool_call_id, str) and tool_call_id in pending_tool_call_ids:
                 pending_tool_call_ids.remove(tool_call_id)
-            continue
-        if pending_tool_call_ids:
-            break
 
     repaired: list[Message] = []
     for tool_call_id in pending_tool_call_ids:
@@ -2324,20 +2818,61 @@ def _repair_interrupted_tool_results(conversation: Conversation) -> tuple[Messag
     return tuple(repaired)
 
 
+_VISIBLE_TURN_ITEM_TYPES = {
+    TurnItemType.ASSISTANT_MESSAGE,
+    TurnItemType.TOOL_CALL,
+    TurnItemType.TOOL_RESULT,
+    TurnItemType.APPROVAL_REQUEST,
+    TurnItemType.APPROVAL_RESOLUTION,
+    TurnItemType.CLARIFICATION_REQUEST,
+    TurnItemType.CLARIFICATION_RESPONSE,
+    TurnItemType.PLAN_UPDATE,
+    TurnItemType.WARNING,
+}
+
+
+def _has_visible_turn_activity(turn_items: list[TurnItem]) -> bool:
+    return any(item.type in _VISIBLE_TURN_ITEM_TYPES for item in turn_items)
+
+
+def _rollback_conversation_turn(
+    conversation: Conversation,
+    *,
+    turn_id: str,
+    user_message: str,
+) -> None:
+    rollback_index: int | None = None
+    for index in range(len(conversation.messages) - 1, -1, -1):
+        message = conversation.messages[index]
+        if message.role != "user":
+            continue
+        if message.metadata.get("turn_id") == turn_id:
+            rollback_index = index
+            break
+        if message.content == user_message:
+            rollback_index = index
+            break
+    if rollback_index is not None:
+        del conversation.messages[rollback_index:]
+
+
 def _record_turn_interrupted(
     *,
     runtime: AgentRuntime,
     turn_id: str,
     message_count: int,
+    input_rolled_back: bool = False,
 ) -> None:
     payload = {
         "session_id": runtime._config.session_id,
         "turn_id": turn_id,
         "stop_reason": StopReason.INTERRUPTED.value,
-        "history_marker": True,
+        "history_marker": not input_rolled_back,
         "saved_state": False,
         "message_count": message_count,
     }
+    if input_rolled_back:
+        payload["input_rolled_back"] = True
     runtime._trace_service.append(
         runtime._config.session_id,
         RuntimeTraceEvent(kind="turn_interrupted", turn_id=turn_id, payload=payload),

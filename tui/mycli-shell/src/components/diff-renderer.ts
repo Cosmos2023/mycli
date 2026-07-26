@@ -5,7 +5,7 @@ import { theme } from "../theme/theme.ts";
 import { highlightDiffCode } from "./syntax-highlight.ts";
 
 
-export type DiffRowKind = "context" | "add" | "remove" | "hunk" | "marker";
+export type DiffRowKind = "context" | "add" | "remove" | "marker";
 
 export type DiffRenderOptions = {
 	width: number;
@@ -17,6 +17,14 @@ export type DiffRenderOptions = {
 type ParsedChange = parseDiff.Change;
 
 const OMISSION_PATTERN = /\.\.\.\s+(?:\d+\s+lines\s+\/\s+)?\d+\s+chars\s+omitted\s+\.\.\./;
+
+
+export function stripDiffHunkHeaders(diff: string): string {
+	return diff
+		.split(/\r?\n/)
+		.filter((line) => !line.startsWith("@@"))
+		.join("\n");
+}
 
 
 export function renderUnifiedDiff(diff: string, options: DiffRenderOptions): string[] {
@@ -44,7 +52,6 @@ export function renderUnifiedDiff(diff: string, options: DiffRenderOptions): str
 	const lines: string[] = [];
 
 	for (const chunk of chunks) {
-		lines.push(...renderMetaRow(chunk.content, "hunk", width, indent));
 		for (const change of chunk.changes) {
 			lines.push(...renderChange(change, {
 				...options,
@@ -65,7 +72,7 @@ function renderChange(
 	options: DiffRenderOptions & { numberWidth: number; showNumbers: boolean },
 ): string[] {
 	if (isMarker(change.content)) {
-		return renderMetaRow(change.content.replace(/^[ +\\-]/, ""), "marker", options.width, options.indent);
+		return renderMetaRow(change.content.replace(/^[ +\\-]/, ""), options.width, options.indent);
 	}
 	const kind: DiffRowKind = change.type === "add" ? "add" : change.type === "del" ? "remove" : "context";
 	const sign = kind === "add" ? "+" : kind === "remove" ? "-" : " ";
@@ -87,7 +94,6 @@ function renderChange(
 
 function renderMetaRow(
 	text: string,
-	kind: "hunk" | "marker",
 	width: number,
 	indent: number,
 ): string[] {
@@ -95,7 +101,7 @@ function renderMetaRow(
 	const available = Math.max(1, width - indent);
 	return wrapTextWithAnsi(text.trim(), available).map((segment) => {
 		const line = truncateToWidth(`${prefix}${segment}`, width, "");
-		return styleRow(kind, line, width);
+		return styleRow("marker", line, width);
 	});
 }
 
@@ -128,7 +134,6 @@ function styleRow(kind: DiffRowKind, line: string, width: number): string {
 			(text) => theme.bg("toolDiffRemovedBg", text),
 		);
 	}
-	if (kind === "hunk") return theme.fg("accent", line);
 	return theme.fg("toolDiffContext", line);
 }
 

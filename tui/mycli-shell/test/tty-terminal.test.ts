@@ -38,6 +38,13 @@ class FakeOutput extends EventEmitter {
 	windowColumns = 100;
 	windowRows = 40;
 	output = "";
+	_handle = {
+		getWindowSize: (size: number[]) => {
+			size[0] = this.windowColumns;
+			size[1] = this.windowRows;
+			return 0;
+		},
+	};
 
 	write(data: string): boolean {
 		this.output += data;
@@ -45,11 +52,11 @@ class FakeOutput extends EventEmitter {
 	}
 
 	getWindowSize(): [number, number] {
-		return [this.windowColumns, this.windowRows];
+		return [this.columns, this.rows];
 	}
 }
 
-test("stream terminal uses main screen without mouse capture so copy and native scroll work", () => {
+test("stream terminal uses inline native scrollback by default without mouse capture", () => {
 	const input = new FakeInput();
 	const output = new FakeOutput();
 	const terminal = new StreamTerminal({
@@ -63,8 +70,7 @@ test("stream terminal uses main screen without mouse capture so copy and native 
 	terminal.stop();
 
 	assert.match(output.output, /\x1b\[\?2004h/);
-	assert.doesNotMatch(output.output, /\x1b\[\?1049h/);
-	assert.doesNotMatch(output.output, /\x1b\[\?1049l/);
+	assert.doesNotMatch(output.output, /\x1b\[\?1049[hl]/);
 	assert.doesNotMatch(output.output, /\x1b\[2J\x1b\[H/);
 	assert.doesNotMatch(output.output, /\x1b\[3J/);
 	assert.doesNotMatch(output.output, /\x1b\[\?(1000|1002|1003|1006)h/);
@@ -74,6 +80,23 @@ test("stream terminal uses main screen without mouse capture so copy and native 
 	assert.equal(input.resumed, true);
 	assert.equal(input.paused, true);
 	assert.equal(input.isRaw, false);
+});
+
+test("stream terminal can use alternate screen explicitly", () => {
+	const input = new FakeInput();
+	const output = new FakeOutput();
+	const terminal = new StreamTerminal({
+		input: input as unknown as tty.ReadStream,
+		output: output as unknown as tty.WriteStream,
+		close: () => {},
+	} satisfies TtyStreams, { alternateScreen: true });
+
+	terminal.start(() => {}, () => {});
+	terminal.stop();
+
+	assert.match(output.output, /\x1b\[\?1049h/);
+	assert.match(output.output, /\x1b\[\?1049l/);
+	assert.equal(terminal.nativeScrollback, false);
 });
 
 test("stream terminal refreshes dev tty dimensions on SIGWINCH", () => {

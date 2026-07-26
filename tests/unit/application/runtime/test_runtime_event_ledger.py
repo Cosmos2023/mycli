@@ -208,6 +208,28 @@ def test_runtime_event_ledger_persists_plan_update_but_excludes_it_from_provider
     ]
 
 
+def test_runtime_event_ledger_persists_clarification_response_for_transcript_only() -> None:
+    turn = TurnRecord(
+        thread_id="demo",
+        turn_id="turn-1",
+        status=TurnStatus.COMPLETED,
+        started_at="2026-07-24T10:00:00Z",
+        items=(
+            TurnItem(
+                type=TurnItemType.CLARIFICATION_RESPONSE,
+                text="Runtime",
+                call_id="call-question-1",
+            ),
+        ),
+    )
+
+    durable = _ledger().history_items_from_turn(turn)
+    provider = _ledger().provider_history_items_from_turn(turn)
+
+    assert [item.type for item in durable] == [HistoryItemType.CLARIFICATION_RESPONSE]
+    assert provider == ()
+
+
 def test_runtime_event_ledger_baseline_keeps_replayable_memory_and_plan() -> None:
     baseline = _ledger().context_baseline_from_contract(
         InstructionContract(

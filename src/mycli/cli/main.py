@@ -254,6 +254,7 @@ def handle_mcp_command(
     cli_args: dict[str, object],
     *,
     cwd: Path | None = None,
+    home: Path | None = None,
     env: dict[str, str] | None = None,
     output_func: Callable[[str], Any] = print,
 ) -> int | None:
@@ -263,6 +264,7 @@ def handle_mcp_command(
     args = [str(item) for item in utility_args] if isinstance(utility_args, list) else []
     service = McpManagementService(
         workspace_root=cwd or Path.cwd(),
+        home_dir=home or Path.home(),
         env=dict(env or os.environ),
     )
     response = _dispatch_mcp_command(service, args)
@@ -630,6 +632,7 @@ def main(
     mcp_exit_code = handle_mcp_command(
         args,
         cwd=cwd,
+        home=home,
         env=env,
         output_func=output_func,
     )

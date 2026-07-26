@@ -300,6 +300,7 @@ class ResponsesOutputItemDoneEvent:
     call_id: str | None = None
     arguments: str | None = None
     status: str | None = None
+    raw_item: dict[str, object] = field(default_factory=dict, compare=False)
 
 
 @dataclass(slots=True, frozen=True)
@@ -604,6 +605,7 @@ def parse_responses_stream_event(payload: dict[str, object]) -> ResponsesStreamE
             call_id=call_id,
             arguments=arguments,
             status=status,
+            raw_item=dict(item) if isinstance(item, dict) else {},
         )
     if event_type == "response.mcp_call.completed":
         return ResponsesMcpCallCompletedEvent(

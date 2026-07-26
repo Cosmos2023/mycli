@@ -37,6 +37,11 @@ from mycli.tools.shell_transport import (
 ShellResolver = Callable[[str | None], ShellCommandConfig]
 ShellTransportFactory = Callable[[ShellTransportRequest], ShellProcessTransport]
 
+MIN_INTERACTION_YIELD_TIME_MS = 250
+MAX_INTERACTION_YIELD_TIME_MS = 30_000
+MIN_EMPTY_POLL_YIELD_TIME_MS = 5_000
+MAX_EMPTY_POLL_YIELD_TIME_MS = 300_000
+
 
 @dataclass(frozen=True, slots=True)
 class ShellStartRequest:
@@ -295,13 +300,11 @@ class ShellSessionManager:
         ).start()
         Thread(target=self._watch_timeout, args=(session.shell_id,), daemon=True).start()
 
-        if request.interrupt_token is not None and not request.background:
+        if request.interrupt_token is not None and request.background is not True:
             request.interrupt_token.add_callback(
-                lambda: self._terminate(
+                lambda: self._cancel_foreground_async(
                     request.owner_session_id,
                     session.shell_id,
-                    terminal_state="interrupted",
-                    prefer_interrupt=True,
                 )
             )
 
@@ -341,6 +344,7 @@ class ShellSessionManager:
         chars: str,
         yield_time_ms: int,
         max_output_tokens: int,
+        interrupt_token: RuntimeInterruptToken | None = None,
     ) -> ShellSessionSnapshot:
         del max_output_tokens
         session, error = self._owned_session(owner_session_id, shell_id)
@@ -388,13 +392,18 @@ class ShellSessionManager:
 
             with self._lock:
                 cursor = session.model_cursor
-            timeout_seconds = min(30_000, max(250, yield_time_ms)) / 1000
+            timeout_seconds = _interaction_yield_time_ms(
+                chars=chars,
+                requested_ms=yield_time_ms,
+            ) / 1000
+            if interrupt_token is not None:
+                interrupt_token.add_callback(
+                    lambda: self._wake_interaction(session)
+                )
             with session.state_changed:
                 session.state_changed.wait_for(
-                    lambda: (
-                        session.output.snapshot().total_chars > cursor
-                        or session.terminal_state is not None
-                    ),
+                    lambda: session.terminal_state is not None
+                    or bool(interrupt_token and interrupt_token.interrupted),
                     timeout=timeout_seconds,
                 )
             snapshot = self._snapshot(session, cursor=cursor, advance_cursor=False)
@@ -704,12 +713,15 @@ class ShellSessionManager:
         *,
         terminal_state: str,
         prefer_interrupt: bool,
+        require_foreground: bool = False,
     ) -> None:
         session, error = self._owned_session(owner_session_id, shell_id)
         if error is not None or session is None:
             return
         with self._lock:
-            if session.terminal_state is not None:
+            if session.terminal_state is not None or (
+                require_foreground and session.background
+            ):
                 return
             session.terminal_state = terminal_state
             session.last_observed_at = _now_iso()
@@ -733,6 +745,36 @@ class ShellSessionManager:
         with session.state_changed:
             session.state_changed.notify_all()
         self._deliver_notification(session, notification)
+
+    def _cancel_if_foreground(
+        self,
+        owner_session_id: str,
+        shell_id: str,
+    ) -> None:
+        self._terminate(
+            owner_session_id,
+            shell_id,
+            terminal_state="interrupted",
+            prefer_interrupt=False,
+            require_foreground=True,
+        )
+
+    def _cancel_foreground_async(
+        self,
+        owner_session_id: str,
+        shell_id: str,
+    ) -> None:
+        Thread(
+            target=self._cancel_if_foreground,
+            args=(owner_session_id, shell_id),
+            name=f"mycli-shell-interrupt-{shell_id}",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _wake_interaction(session: _ShellSession) -> None:
+        with session.state_changed:
+            session.state_changed.notify_all()
 
     def _finalize_natural(self, session: _ShellSession) -> None:
         with self._lock:
@@ -1040,6 +1082,18 @@ class ShellSessionManager:
 
 def _now_iso() -> str:
     return datetime.now(tz=UTC).isoformat()
+
+
+def _interaction_yield_time_ms(*, chars: str, requested_ms: int) -> int:
+    if chars:
+        return min(
+            MAX_INTERACTION_YIELD_TIME_MS,
+            max(MIN_INTERACTION_YIELD_TIME_MS, requested_ms),
+        )
+    return min(
+        MAX_EMPTY_POLL_YIELD_TIME_MS,
+        max(MIN_EMPTY_POLL_YIELD_TIME_MS, requested_ms),
+    )
 
 
 def _hash_command(command: str) -> str:

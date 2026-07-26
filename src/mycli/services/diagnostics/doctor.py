@@ -1821,7 +1821,11 @@ class DoctorService:
 
     def _check_mcp(self) -> Iterable[DoctorCheck]:
         try:
-            diagnostics = discover_mcp_servers(self._workspace_root, environ=self._env)
+            diagnostics = discover_mcp_servers(
+                self._workspace_root,
+                home_dir=self._home_dir,
+                environ=self._env,
+            )
         except Exception as exc:
             return (
                 DoctorCheck(

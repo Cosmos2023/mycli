@@ -497,20 +497,29 @@ class TurnContextAssembler:
 
     def _render_tool_exposure(self, context: ExecutionContext) -> str:
         if context.tool_exposure is not None:
-            summary = context.tool_exposure.summary()
-            tool_names = sorted(summary["tools"])
+            tool_names = sorted(context.tool_exposure.model_visible_tool_names())
             tools = ", ".join(dict.fromkeys(tool_names)) or "none"
-            return f"Available tools: {tools}"
+            deferred_count = len(context.tool_exposure.deferred_tool_names())
+            if deferred_count == 0:
+                return f"Available tools: {tools}"
+            noun = "tool is" if deferred_count == 1 else "tools are"
+            return (
+                f"Available tools: {tools}\n"
+                f"{deferred_count} deferred {noun} available through ToolSearch."
+            )
         tools = ", ".join(context.available_tool_names) or "none"
         return f"Available tools: {tools}"
 
     def _tool_exposure_metadata(self, context: ExecutionContext) -> dict[str, object]:
         if context.tool_exposure is None:
             return {"tool_names": list(context.available_tool_names)}
-        summary = context.tool_exposure.summary()
-        return {
-            "tool_names": sorted(summary["tools"]),
+        metadata: dict[str, object] = {
+            "tool_names": sorted(context.tool_exposure.model_visible_tool_names()),
         }
+        deferred_count = len(context.tool_exposure.deferred_tool_names())
+        if deferred_count:
+            metadata["deferred_tool_count"] = deferred_count
+        return metadata
 
     def _reference_fence(self, *, label: str, content: str, note: str) -> str:
         body = content.strip()

@@ -13,6 +13,7 @@ from mycli.utils.provider_replay import responses_replay_items
 class ResponsesInputSerializer:
     def serialize_items(self, items: list[RuntimeItem]) -> list[dict[str, object]]:
         serialized_items: list[dict[str, object]] = []
+        serialized_tool_call_ids: set[str] = set()
         for item in items:
             provider_state = item.metadata.get("provider_state")
             serialized_items.extend(responses_replay_items(provider_state))
@@ -52,7 +53,12 @@ class ResponsesInputSerializer:
                 flush_message_content()
 
                 if block.type == "tool_call":
-                    serialized_items.append(self._tool_call_item(block))
+                    tool_call_item = self._tool_call_item(block)
+                    call_id = str(tool_call_item["call_id"])
+                    if call_id in serialized_tool_call_ids:
+                        continue
+                    serialized_tool_call_ids.add(call_id)
+                    serialized_items.append(tool_call_item)
                     continue
                 if block.type == "tool_result":
                     serialized_items.append(self._tool_result_item(block))

@@ -28,6 +28,7 @@ def normalize_history_for_replay(
             item.type is HistoryItemType.USER_MESSAGE
             and item.turn_id in approval_turn_ids
             and item.metadata.get("queued") is not True
+            and item.metadata.get("model_role") != "developer"
         ):
             continue
         normalized.append(item)

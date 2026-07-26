@@ -65,8 +65,15 @@ class McpManagementResponse:
 
 
 class McpManagementService:
-    def __init__(self, *, workspace_root: Path, env: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_root: Path,
+        home_dir: Path,
+        env: Mapping[str, str],
+    ) -> None:
         self._workspace_root = workspace_root
+        self._home_dir = home_dir
         self._env = dict(env)
 
     def list_servers(self) -> McpManagementResponse:
@@ -118,7 +125,11 @@ class McpManagementService:
 
     def _discover(self) -> tuple[McpDiscoveryDiagnostics | None, tuple[str, ...]]:
         try:
-            configs = load_mcp_server_configs(self._workspace_root, environ=self._env)
+            configs = load_mcp_server_configs(
+                self._workspace_root,
+                home_dir=self._home_dir,
+                environ=self._env,
+            )
             diagnostics = discover_configured_mcp_servers(configs)
         except Exception as exc:
             return None, (redact_mcp_diagnostic_text(exc),)
