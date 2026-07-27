@@ -97,14 +97,32 @@ jobs:
         run: |
           git tag -f ci-windows-sandbox-started $env:GITHUB_SHA
           git push origin refs/tags/ci-windows-sandbox-started --force
-      - name: Build helper
+      - name: Configure helper build
         shell: pwsh
         run: |
           cmake `
             -S native/windows-sandbox-helper `
             -B native/windows-sandbox-helper/build `
             -A x64
+      - name: Publish Windows sandbox configure marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-configured $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-configured --force
+      - name: Compile helper
+        shell: pwsh
+        run: |
           cmake --build native/windows-sandbox-helper/build --config Release
+      - name: Publish Windows sandbox compile marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-compiled $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-compiled --force
+      - name: Run helper tests
+        shell: pwsh
+        run: |
           ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
       - name: Publish Windows sandbox build marker
         if: github.event_name == 'push'
