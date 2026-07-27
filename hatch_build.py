@@ -1,10 +1,27 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
-import platform
-from typing import Any
+from types import ModuleType
+from typing import Any, Callable, cast
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+
+def _load_build_utils() -> ModuleType:
+    path = Path(__file__).with_name("hatch_build_utils.py")
+    spec = importlib.util.spec_from_file_location("mycli_hatch_build_utils", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load build utilities: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+windows_wheel_platform = cast(
+    Callable[[Path], str],
+    _load_build_utils().windows_wheel_platform,
+)
 
 
 class CustomBuildHook(BuildHookInterface):
@@ -16,15 +33,6 @@ class CustomBuildHook(BuildHookInterface):
         if not helper.is_file():
             return
 
-        architecture = platform.machine().lower()
-        if architecture in {"amd64", "x86_64"}:
-            wheel_platform = "win_amd64"
-        elif architecture in {"arm64", "aarch64"}:
-            wheel_platform = "win_arm64"
-        elif architecture in {"x86", "i386", "i686"}:
-            wheel_platform = "win32"
-        else:
-            raise RuntimeError(f"Unsupported Windows helper architecture: {architecture}")
-
+        wheel_platform = windows_wheel_platform(helper)
         build_data["tag"] = f"py3-none-{wheel_platform}"
         build_data["pure_python"] = False
