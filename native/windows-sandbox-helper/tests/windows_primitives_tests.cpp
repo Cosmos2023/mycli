@@ -142,14 +142,20 @@ int RunTests(const std::filesystem::path& executable) {
 int wmain(int argc, wchar_t* argv[]) {
     try {
         if (argc == 3 && std::wstring_view{argv[1]} == L"--write-file") {
+            std::cerr << "child-write-start\n" << std::flush;
             std::ofstream output{std::filesystem::path{argv[2]}};
+            std::cerr << "child-write-opened\n" << std::flush;
             output << "ok";
+            output.close();
+            std::cerr << "child-write-done\n" << std::flush;
             return output ? 0 : 9;
         }
         if (argc == 3 && std::wstring_view{argv[1]} == L"--read-file") {
+            std::cerr << "child-read-start\n" << std::flush;
             std::ifstream input{std::filesystem::path{argv[2]}};
             std::string value;
             input >> value;
+            std::cerr << "child-read-done\n" << std::flush;
             return input ? 0 : 10;
         }
         return RunTests(std::filesystem::absolute(argv[0]));
