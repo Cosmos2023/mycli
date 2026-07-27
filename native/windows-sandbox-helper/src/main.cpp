@@ -34,10 +34,14 @@ bool SetupComplete() {
 void SetupForUser(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid) {
+    std::cerr << "setup: identity-start\n" << std::flush;
     mycli::sandbox::SetupOfflineIdentity(state_directory, owner_sid);
+    std::cerr << "setup: identity-done\n" << std::flush;
     const auto identity = mycli::sandbox::LoadOfflineIdentity(
         state_directory, owner_sid);
+    std::cerr << "setup: firewall-start\n" << std::flush;
     mycli::sandbox::SetupOfflineFirewall(identity.sid_string, state_directory);
+    std::cerr << "setup: firewall-done\n" << std::flush;
 }
 
 int Run(int argc, wchar_t* argv[]) {

@@ -8,6 +8,10 @@ on:
       - "ci-windows-sandbox-*"
   pull_request:
 
+concurrency:
+  group: cross-platform-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
@@ -228,16 +232,36 @@ jobs:
           git tag -f ci-windows-sandbox-built $env:GITHUB_SHA
           git push origin refs/tags/ci-windows-sandbox-built --force
       - name: Smoke-test helper handshake
+        timeout-minutes: 3
         shell: pwsh
         run: |
           $helper = "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe"
-          & $helper --setup
+          & $helper --setup 2>&1 | Tee-Object -FilePath windows-sandbox-setup.log
           if ($LASTEXITCODE -ne 0) { throw "sandbox setup failed" }
-          $handshake = & $helper --handshake | ConvertFrom-Json
+          $handshakeOutput = & $helper --handshake 2>&1
+          $handshakeOutput | Tee-Object -FilePath windows-sandbox-setup.log -Append
+          if ($LASTEXITCODE -ne 0) { throw "sandbox handshake failed" }
+          $handshake = $handshakeOutput | ConvertFrom-Json
           if ($handshake.name -ne "mycli-windows-sandbox") { throw "helper identity mismatch" }
           if ($handshake.protocol_version -ne 1) { throw "helper protocol mismatch" }
           if ($handshake.setup_complete -ne $true) { throw "helper setup is incomplete" }
           if ($handshake.sandbox_ready -ne $false) { throw "incomplete helper must fail closed" }
+      - name: Publish Windows sandbox setup failure
+        if: failure() && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          if (Test-Path windows-sandbox-setup.log) {
+            $message = Get-Content windows-sandbox-setup.log -Raw
+          } else {
+            $message = "Windows sandbox setup failed before producing output"
+          }
+          if ($message.Length -gt 12000) {
+            $message = $message.Substring($message.Length - 12000)
+          }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a -f ci-windows-sandbox-setup-failed $env:GITHUB_SHA -m $message
+          git push origin refs/tags/ci-windows-sandbox-setup-failed --force
       - name: Publish Windows sandbox setup marker
         if: github.event_name == 'push'
         shell: pwsh
