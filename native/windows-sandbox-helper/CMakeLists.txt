@@ -48,6 +48,7 @@ add_test(NAME protocol COMMAND mycli-windows-sandbox-protocol-tests)
 add_executable(mycli-windows-sandbox-primitives-tests
     tests/windows_primitives_tests.cpp
     src/acl.cpp
+    src/identity.cpp
     src/process.cpp
     src/sandbox.cpp
     src/sid.cpp

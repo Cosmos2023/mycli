@@ -8,17 +8,16 @@
 #include <string>
 #include <vector>
 
-#include "identity.hpp"
 #include "process.hpp"
 #include "win32.hpp"
 
 namespace mycli::sandbox {
 namespace {
 
-constexpr wchar_t kRuleName[] = L"mycli_sandbox_offline_block_outbound";
+constexpr wchar_t kRuleNamePrefix[] = L"mycli_sandbox_offline_block_outbound_";
 
-std::filesystem::path MarkerPath() {
-    return SandboxStateDirectory() / L"firewall.v1";
+std::filesystem::path MarkerPath(const std::filesystem::path& state_directory) {
+    return state_directory / L"firewall.v1";
 }
 
 std::filesystem::path PowerShellPath() {
@@ -59,13 +58,20 @@ void ValidateSidString(const std::wstring& sid) {
     }
 }
 
+std::wstring RuleName(const std::wstring& offline_sid) {
+    ValidateSidString(offline_sid);
+    return std::wstring{kRuleNamePrefix} + offline_sid;
+}
+
 }  // namespace
 
-void SetupOfflineFirewall(const std::wstring& offline_sid) {
-    ValidateSidString(offline_sid);
+void SetupOfflineFirewall(
+    const std::wstring& offline_sid,
+    const std::filesystem::path& state_directory) {
+    const auto rule_name = RuleName(offline_sid);
     const std::wstring script =
         L"$ErrorActionPreference='Stop';" 
-        L"$name='" + std::wstring{kRuleName} + L"';" 
+        L"$name='" + rule_name + L"';"
         L"$sddl='O:LSD:(A;;CC;;;" + offline_sid + L")';" 
         L"Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue | "
         L"Remove-NetFirewallRule -ErrorAction Stop;"
@@ -80,22 +86,24 @@ void SetupOfflineFirewall(const std::wstring& offline_sid) {
     const DWORD exit_code = RunHostProcessInJob(
         {powershell.wstring(), L"-NoLogo", L"-NoProfile", L"-NonInteractive",
          L"-ExecutionPolicy", L"Bypass", L"-EncodedCommand", Base64Utf16(script)},
-        SandboxStateDirectory());
+        state_directory);
     if (exit_code != 0) {
         throw std::runtime_error(
             "failed to install offline firewall rule; PowerShell exit code " +
             std::to_string(exit_code));
     }
-    std::filesystem::create_directories(SandboxStateDirectory());
-    std::ofstream marker{MarkerPath(), std::ios::binary | std::ios::trunc};
+    std::filesystem::create_directories(state_directory);
+    std::ofstream marker{MarkerPath(state_directory), std::ios::binary | std::ios::trunc};
     const std::string sid_ascii(offline_sid.begin(), offline_sid.end());
     marker << sid_ascii << '\n';
     marker.close();
     if (!marker) throw std::runtime_error("failed to persist firewall setup marker");
 }
 
-bool OfflineFirewallSetupReady(const std::wstring& offline_sid) {
-    std::ifstream marker{MarkerPath(), std::ios::binary};
+bool OfflineFirewallSetupReady(
+    const std::wstring& offline_sid,
+    const std::filesystem::path& state_directory) {
+    std::ifstream marker{MarkerPath(state_directory), std::ios::binary};
     std::string stored;
     std::getline(marker, stored);
     return marker.good() || marker.eof()

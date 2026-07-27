@@ -1,6 +1,7 @@
 #include "identity.hpp"
 
 #include <windows.h>
+#include <aclapi.h>
 #include <bcrypt.h>
 #include <dpapi.h>
 #include <lm.h>
@@ -35,8 +36,8 @@ std::filesystem::path StateDirectory() {
     return path;
 }
 
-std::filesystem::path CredentialPath() {
-    return SandboxStateDirectory() / L"offline.credential";
+std::filesystem::path CredentialPath(const std::filesystem::path& state_directory) {
+    return state_directory / L"offline.credential";
 }
 
 void RequireAdministrator() {
@@ -58,6 +59,93 @@ void RequireAdministrator() {
     if (member == FALSE) throw std::runtime_error("Windows sandbox setup requires elevation");
 }
 
+std::wstring SidStringFromToken(HANDLE token) {
+    DWORD bytes = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        throw Win32Error("GetTokenInformation(TokenUser size)");
+    }
+    std::vector<unsigned char> storage(bytes);
+    if (GetTokenInformation(
+            token, TokenUser, storage.data(), bytes, &bytes) == 0) {
+        throw Win32Error("GetTokenInformation(TokenUser)");
+    }
+    const auto* token_user = reinterpret_cast<const TOKEN_USER*>(storage.data());
+    LPWSTR raw_sid = nullptr;
+    if (ConvertSidToStringSidW(token_user->User.Sid, &raw_sid) == 0) {
+        throw Win32Error("ConvertSidToStringSidW(current user)");
+    }
+    const std::wstring sid{raw_sid};
+    LocalFree(raw_sid);
+    return sid;
+}
+
+LocalSid WellKnownSid(WELL_KNOWN_SID_TYPE type) {
+    DWORD bytes = SECURITY_MAX_SID_SIZE;
+    auto* raw_sid = static_cast<PSID>(LocalAlloc(LMEM_FIXED, bytes));
+    if (raw_sid == nullptr) throw Win32Error("LocalAlloc(well-known SID)");
+    if (CreateWellKnownSid(type, nullptr, raw_sid, &bytes) == 0) {
+        LocalFree(raw_sid);
+        throw Win32Error("CreateWellKnownSid");
+    }
+    return LocalSid{raw_sid};
+}
+
+EXPLICIT_ACCESSW FullControlEntry(PSID sid, DWORD inheritance) {
+    EXPLICIT_ACCESSW entry{};
+    entry.grfAccessPermissions = FILE_ALL_ACCESS;
+    entry.grfAccessMode = SET_ACCESS;
+    entry.grfInheritance = inheritance;
+    entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    entry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+    entry.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+    return entry;
+}
+
+void RestrictStatePath(
+    const std::filesystem::path& path,
+    const std::wstring& owner_sid,
+    DWORD inheritance) {
+    auto owner = SidFromString(owner_sid);
+    auto system = WellKnownSid(WinLocalSystemSid);
+    auto administrators = WellKnownSid(WinBuiltinAdministratorsSid);
+    std::array<EXPLICIT_ACCESSW, 3> entries{
+        FullControlEntry(owner.get(), inheritance),
+        FullControlEntry(system.get(), inheritance),
+        FullControlEntry(administrators.get(), inheritance)};
+    PACL acl = nullptr;
+    const DWORD acl_status = SetEntriesInAclW(
+        static_cast<ULONG>(entries.size()), entries.data(), nullptr, &acl);
+    if (acl_status != ERROR_SUCCESS) {
+        SetLastError(acl_status);
+        throw Win32Error("SetEntriesInAclW(state path)");
+    }
+    std::wstring path_text = path.wstring();
+    const DWORD security_status = SetNamedSecurityInfoW(
+        path_text.data(),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        acl,
+        nullptr);
+    LocalFree(acl);
+    if (security_status != ERROR_SUCCESS) {
+        SetLastError(security_status);
+        throw Win32Error("SetNamedSecurityInfoW(state path)");
+    }
+}
+
+void PrepareStateDirectory(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid) {
+    std::filesystem::create_directories(state_directory);
+    RestrictStatePath(
+        state_directory,
+        owner_sid,
+        CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE);
+}
+
 std::wstring GeneratePassword() {
     std::array<unsigned char, 24> random{};
     if (BCryptGenRandom(
@@ -77,12 +165,12 @@ std::wstring GeneratePassword() {
     return password;
 }
 
-std::pair<LocalSid, std::wstring> LookupOfflineSid() {
+std::pair<LocalSid, std::wstring> LookupOfflineSid(const std::wstring& username) {
     DWORD sid_bytes = 0;
     DWORD domain_chars = 0;
     SID_NAME_USE sid_type{};
     LookupAccountNameW(
-        nullptr, kOfflineUsername, nullptr, &sid_bytes, nullptr, &domain_chars, &sid_type);
+        nullptr, username.c_str(), nullptr, &sid_bytes, nullptr, &domain_chars, &sid_type);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
         throw Win32Error("LookupAccountNameW(size)");
     }
@@ -90,7 +178,7 @@ std::pair<LocalSid, std::wstring> LookupOfflineSid() {
     std::vector<wchar_t> domain(domain_chars);
     if (LookupAccountNameW(
             nullptr,
-            kOfflineUsername,
+            username.c_str(),
             sid_storage.data(),
             &sid_bytes,
             domain.data(),
@@ -153,7 +241,7 @@ std::vector<unsigned char> ProtectPassword(const std::wstring& password) {
             &entropy,
             nullptr,
             nullptr,
-            CRYPTPROTECT_UI_FORBIDDEN,
+            CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE,
             &output) == 0) {
         throw Win32Error("CryptProtectData");
     }
@@ -162,10 +250,12 @@ std::vector<unsigned char> ProtectPassword(const std::wstring& password) {
     return protected_data;
 }
 
-void SavePassword(const std::wstring& password) {
-    const auto directory = StateDirectory();
-    std::filesystem::create_directories(directory);
-    const auto target = CredentialPath();
+void SavePassword(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid,
+    const std::wstring& password) {
+    PrepareStateDirectory(state_directory, owner_sid);
+    const auto target = CredentialPath(state_directory);
     const std::filesystem::path temporary = target.wstring() + L".tmp";
     const auto protected_data = ProtectPassword(password);
     std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
@@ -180,10 +270,11 @@ void SavePassword(const std::wstring& password) {
     std::error_code error;
     std::filesystem::remove(target, error);
     std::filesystem::rename(temporary, target);
+    RestrictStatePath(target, owner_sid, NO_INHERITANCE);
 }
 
-std::wstring LoadPassword() {
-    std::ifstream input{CredentialPath(), std::ios::binary};
+std::wstring LoadPassword(const std::filesystem::path& state_directory) {
+    std::ifstream input{CredentialPath(state_directory), std::ios::binary};
     const std::vector<unsigned char> data{
         std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
     if (!input.eof() || data.size() <= kCredentialMagic.size() ||
@@ -218,9 +309,11 @@ std::wstring LoadPassword() {
     return password;
 }
 
-void CreateOrResetAccount(const std::wstring& password) {
+void CreateOrResetAccount(
+    const std::wstring& username,
+    const std::wstring& password) {
     USER_INFO_1 user{};
-    user.usri1_name = const_cast<LPWSTR>(kOfflineUsername);
+    user.usri1_name = const_cast<LPWSTR>(username.c_str());
     user.usri1_password = const_cast<LPWSTR>(password.c_str());
     user.usri1_priv = USER_PRIV_USER;
     user.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD | UF_PASSWD_CANT_CHANGE;
@@ -230,7 +323,7 @@ void CreateOrResetAccount(const std::wstring& password) {
         USER_INFO_1003 password_info{const_cast<LPWSTR>(password.c_str())};
         status = NetUserSetInfo(
             nullptr,
-            kOfflineUsername,
+            username.c_str(),
             1003,
             reinterpret_cast<LPBYTE>(&password_info),
             &parameter_error);
@@ -243,30 +336,100 @@ void CreateOrResetAccount(const std::wstring& password) {
 
 }  // namespace
 
-bool OfflineIdentityCredentialsExist() {
+bool OfflineIdentityCredentialsExist(
+    const std::filesystem::path& state_directory) {
     std::error_code error;
-    return std::filesystem::is_regular_file(CredentialPath(), error);
+    return std::filesystem::is_regular_file(CredentialPath(state_directory), error);
 }
 
 std::filesystem::path SandboxStateDirectory() {
     return StateDirectory();
 }
 
-void SetupOfflineIdentity() {
-    RequireAdministrator();
-    const auto password = GeneratePassword();
-    CreateOrResetAccount(password);
-    auto [sid, sid_string] = LookupOfflineSid();
-    static_cast<void>(sid_string);
-    GrantLogonRights(sid.get());
-    SavePassword(password);
+std::wstring CurrentUserSidString() {
+    HANDLE raw_token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token) == 0) {
+        throw Win32Error("OpenProcessToken(current user)");
+    }
+    const UniqueHandle token{raw_token};
+    return SidStringFromToken(token.get());
 }
 
-OfflineIdentity LoadOfflineIdentity() {
-    auto password = LoadPassword();
+std::wstring OfflineUsernameForOwner(const std::wstring& owner_sid) {
+    static_cast<void>(SidFromString(owner_sid));
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    if (BCryptOpenAlgorithmProvider(
+            &algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
+        throw std::runtime_error("BCryptOpenAlgorithmProvider failed");
+    }
+    DWORD object_bytes = 0;
+    DWORD copied = 0;
+    if (BCryptGetProperty(
+            algorithm,
+            BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&object_bytes),
+            sizeof(object_bytes),
+            &copied,
+            0) < 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("BCryptGetProperty failed");
+    }
+    std::vector<unsigned char> hash_object(object_bytes);
+    std::array<unsigned char, 32> digest{};
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    auto status = BCryptCreateHash(
+        algorithm,
+        &hash,
+        hash_object.data(),
+        static_cast<ULONG>(hash_object.size()),
+        nullptr,
+        0,
+        0);
+    if (status >= 0) {
+        status = BCryptHashData(
+            hash,
+            reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(owner_sid.data())),
+            static_cast<ULONG>(owner_sid.size() * sizeof(wchar_t)),
+            0);
+    }
+    if (status >= 0) {
+        status = BCryptFinishHash(
+            hash, digest.data(), static_cast<ULONG>(digest.size()), 0);
+    }
+    if (hash != nullptr) BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (status < 0) throw std::runtime_error("BCrypt SHA-256 failed");
+    constexpr wchar_t hex[] = L"0123456789abcdef";
+    std::wstring username = L"mcli_";
+    for (std::size_t index = 0; index < 15; ++index) {
+        const unsigned char byte = digest[index / 2];
+        username.push_back(
+            hex[index % 2 == 0 ? byte >> 4 : byte & 0x0f]);
+    }
+    return username;
+}
+
+void SetupOfflineIdentity(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid) {
+    RequireAdministrator();
+    const auto username = OfflineUsernameForOwner(owner_sid);
+    const auto password = GeneratePassword();
+    CreateOrResetAccount(username, password);
+    auto [sid, sid_string] = LookupOfflineSid(username);
+    static_cast<void>(sid_string);
+    GrantLogonRights(sid.get());
+    SavePassword(state_directory, owner_sid, password);
+}
+
+OfflineIdentity LoadOfflineIdentity(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid) {
+    const auto username = OfflineUsernameForOwner(owner_sid);
+    auto password = LoadPassword(state_directory);
     HANDLE raw_token = nullptr;
     const BOOL logged_on = LogonUserW(
-        kOfflineUsername,
+        username.c_str(),
         L".",
         password.c_str(),
         LOGON32_LOGON_BATCH,
@@ -274,7 +437,7 @@ OfflineIdentity LoadOfflineIdentity() {
         &raw_token);
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
     if (logged_on == 0) throw Win32Error("LogonUserW(offline sandbox account)");
-    auto [sid, sid_string] = LookupOfflineSid();
+    auto [sid, sid_string] = LookupOfflineSid(username);
     return OfflineIdentity{UniqueHandle{raw_token}, std::move(sid), std::move(sid_string)};
 }
 

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -17,13 +18,26 @@ constexpr wchar_t kHelperName[] = L"mycli-windows-sandbox";
 constexpr bool kEnforcementReleased = false;
 
 bool SetupComplete() {
-    if (!mycli::sandbox::OfflineIdentityCredentialsExist()) return false;
+    const auto state_directory = mycli::sandbox::SandboxStateDirectory();
+    const auto owner_sid = mycli::sandbox::CurrentUserSidString();
+    if (!mycli::sandbox::OfflineIdentityCredentialsExist(state_directory)) return false;
     try {
-        const auto identity = mycli::sandbox::LoadOfflineIdentity();
-        return mycli::sandbox::OfflineFirewallSetupReady(identity.sid_string);
+        const auto identity = mycli::sandbox::LoadOfflineIdentity(
+            state_directory, owner_sid);
+        return mycli::sandbox::OfflineFirewallSetupReady(
+            identity.sid_string, state_directory);
     } catch (const std::exception&) {
         return false;
     }
+}
+
+void SetupForUser(
+    const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid) {
+    mycli::sandbox::SetupOfflineIdentity(state_directory, owner_sid);
+    const auto identity = mycli::sandbox::LoadOfflineIdentity(
+        state_directory, owner_sid);
+    mycli::sandbox::SetupOfflineFirewall(identity.sid_string, state_directory);
 }
 
 int Run(int argc, wchar_t* argv[]) {
@@ -40,27 +54,37 @@ int Run(int argc, wchar_t* argv[]) {
         return 0;
     }
     if (argc == 2 && std::wstring_view{argv[1]} == L"--setup") {
-        mycli::sandbox::SetupOfflineIdentity();
-        const auto identity = mycli::sandbox::LoadOfflineIdentity();
-        mycli::sandbox::SetupOfflineFirewall(identity.sid_string);
+        SetupForUser(
+            mycli::sandbox::SandboxStateDirectory(),
+            mycli::sandbox::CurrentUserSidString());
+        std::wcout << L"Windows sandbox setup completed\n";
+        return 0;
+    }
+    if (argc == 4 && std::wstring_view{argv[1]} == L"--setup-for-user") {
+        SetupForUser(std::filesystem::path{argv[2]}, argv[3]);
         std::wcout << L"Windows sandbox setup completed\n";
         return 0;
     }
     if (argc == 2 && std::wstring_view{argv[1]} == L"--ensure-setup") {
         if (SetupComplete()) return 0;
-        return mycli::sandbox::RunElevatedSetup();
+        return mycli::sandbox::RunElevatedSetup(
+            mycli::sandbox::SandboxStateDirectory(),
+            mycli::sandbox::CurrentUserSidString());
     }
     if (argc == 3 && std::wstring_view{argv[1]} == L"--request-json") {
         if (!SetupComplete()) {
             throw std::runtime_error("Windows sandbox setup is incomplete; run --setup elevated");
         }
         const auto request = mycli::sandbox::ParseAndValidateRequest(argv[2]);
-        const auto identity = mycli::sandbox::LoadOfflineIdentity();
+        const auto identity = mycli::sandbox::LoadOfflineIdentity(
+            mycli::sandbox::SandboxStateDirectory(),
+            mycli::sandbox::CurrentUserSidString());
         return static_cast<int>(mycli::sandbox::RunSandboxRequest(
             request, identity.token.get(), identity.sid.get()));
     }
     throw std::runtime_error(
-        "expected --handshake, --setup, --ensure-setup, or --request-json <json>");
+        "expected --handshake, --setup, --setup-for-user, --ensure-setup, "
+        "or --request-json <json>");
 }
 
 }  // namespace

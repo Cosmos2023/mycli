@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "acl.hpp"
+#include "identity.hpp"
 #include "process.hpp"
 #include "sandbox.hpp"
 #include "sid.hpp"
@@ -25,6 +26,17 @@ int RunTests(const std::filesystem::path& executable) {
         QuoteWindowsArgument(L"C:\\Program Files\\") !=
             L"\"C:\\Program Files\\\\\"") {
         std::cerr << "Windows argument quoting failed\n";
+        return 1;
+    }
+
+    const auto owner_a = mycli::sandbox::OfflineUsernameForOwner(
+        L"S-1-5-21-1-2-3-1001");
+    const auto owner_b = mycli::sandbox::OfflineUsernameForOwner(
+        L"S-1-5-21-1-2-3-1002");
+    if (owner_a != mycli::sandbox::OfflineUsernameForOwner(
+                       L"S-1-5-21-1-2-3-1001") ||
+        owner_a == owner_b || owner_a.size() != 20 || !owner_a.starts_with(L"mcli_")) {
+        std::cerr << "offline account derivation failed\n";
         return 1;
     }
 
