@@ -146,6 +146,21 @@ int RunTests(const std::filesystem::path& executable) {
         std::cerr << "restricted child returned an unexpected exit code\n";
         return 1;
     }
+    stage("job-tree-kill");
+    const auto delayed_marker = allowed / L"delayed.txt";
+    const auto tree_exit = mycli::sandbox::RunProcessInJob(
+        write_token.get(),
+        {executable.wstring(), L"--spawn-delayed-write", delayed_marker.wstring()},
+        allowed);
+    if (tree_exit != 0) {
+        std::cerr << "job tree parent returned an unexpected exit code\n";
+        return 1;
+    }
+    Sleep(1200);
+    if (std::filesystem::exists(delayed_marker)) {
+        std::cerr << "kill-on-close job leaked a descendant process\n";
+        return 1;
+    }
     stage("allowed-write");
     const auto allowed_exit = mycli::sandbox::RunProcessInJob(
         write_token.get(),
@@ -218,6 +233,38 @@ int RunTests(const std::filesystem::path& executable) {
 
 int wmain(int argc, wchar_t* argv[]) {
     try {
+        if (argc == 3 && std::wstring_view{argv[1]} == L"--spawn-delayed-write") {
+            auto command_line = mycli::sandbox::BuildWindowsCommandLine(
+                {argv[0], L"--delayed-write", argv[2]});
+            std::vector<wchar_t> mutable_command_line(
+                command_line.begin(), command_line.end());
+            mutable_command_line.push_back(L'\0');
+            STARTUPINFOW startup{};
+            startup.cb = sizeof(startup);
+            PROCESS_INFORMATION process{};
+            if (CreateProcessW(
+                    nullptr,
+                    mutable_command_line.data(),
+                    nullptr,
+                    nullptr,
+                    FALSE,
+                    CREATE_NO_WINDOW,
+                    nullptr,
+                    nullptr,
+                    &startup,
+                    &process) == 0) {
+                return 12;
+            }
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            return 0;
+        }
+        if (argc == 3 && std::wstring_view{argv[1]} == L"--delayed-write") {
+            Sleep(750);
+            std::ofstream output{std::filesystem::path{argv[2]}};
+            output << "late";
+            return output ? 0 : 13;
+        }
         if (argc == 3 && std::wstring_view{argv[1]} == L"--write-file") {
             std::cerr << "child-write-start\n" << std::flush;
             std::ofstream output{std::filesystem::path{argv[2]}};
