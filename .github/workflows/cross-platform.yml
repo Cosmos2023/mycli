@@ -2,6 +2,8 @@ name: cross-platform
 
 on:
   push:
+    branches:
+      - "**"
     tags-ignore:
       - "ci-windows-sandbox-*"
   pull_request:
