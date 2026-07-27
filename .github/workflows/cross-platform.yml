@@ -171,10 +171,56 @@ jobs:
         run: |
           git tag -f ci-windows-sandbox-compiled $env:GITHUB_SHA
           git push origin refs/tags/ci-windows-sandbox-compiled --force
-      - name: Run helper tests
+      - name: Run protocol tests
         shell: pwsh
         run: |
-          ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
+          $output = & ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure -R '^protocol$' 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath windows-sandbox-tests.log
+          exit $exitCode
+      - name: Publish Windows sandbox test failure
+        if: failure() && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $message = Get-Content windows-sandbox-tests.log -Raw
+          if ($message.Length -gt 12000) {
+            $message = $message.Substring($message.Length - 12000)
+          }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a -f ci-windows-sandbox-tests-failed $env:GITHUB_SHA -m $message
+          git push origin refs/tags/ci-windows-sandbox-tests-failed --force
+      - name: Publish Windows sandbox protocol test marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-protocol-passed $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-protocol-passed --force
+      - name: Run primitives tests
+        shell: pwsh
+        run: |
+          $output = & ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure -R '^windows_primitives$' 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Tee-Object -FilePath windows-sandbox-tests.log
+          exit $exitCode
+      - name: Publish Windows sandbox primitives test failure
+        if: failure() && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $message = Get-Content windows-sandbox-tests.log -Raw
+          if ($message.Length -gt 12000) {
+            $message = $message.Substring($message.Length - 12000)
+          }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a -f ci-windows-sandbox-tests-failed $env:GITHUB_SHA -m $message
+          git push origin refs/tags/ci-windows-sandbox-tests-failed --force
+      - name: Publish Windows sandbox primitives test marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-primitives-passed $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-primitives-passed --force
       - name: Publish Windows sandbox build marker
         if: github.event_name == 'push'
         shell: pwsh
