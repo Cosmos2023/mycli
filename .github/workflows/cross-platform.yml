@@ -236,9 +236,18 @@ jobs:
         shell: pwsh
         run: |
           $helper = "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe"
-          & $helper --setup 2>&1 | Tee-Object -FilePath windows-sandbox-setup.log
-          if ($LASTEXITCODE -ne 0) { throw "sandbox setup failed" }
-          $handshakeOutput = & $helper --handshake 2>&1
+          $setup = Start-Process `
+            -FilePath $helper `
+            -ArgumentList "--setup" `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput windows-sandbox-setup.stdout.log `
+            -RedirectStandardError windows-sandbox-setup.stderr.log
+          Get-Content windows-sandbox-setup.stdout.log, windows-sandbox-setup.stderr.log |
+            Tee-Object -FilePath windows-sandbox-setup.log
+          if ($setup.ExitCode -ne 0) { throw "sandbox setup failed" }
+          $handshakeOutput = & $helper --handshake
           $handshakeOutput | Tee-Object -FilePath windows-sandbox-setup.log -Append
           if ($LASTEXITCODE -ne 0) { throw "sandbox handshake failed" }
           $handshake = $handshakeOutput | ConvertFrom-Json
@@ -253,7 +262,15 @@ jobs:
           if (Test-Path windows-sandbox-setup.log) {
             $message = Get-Content windows-sandbox-setup.log -Raw
           } else {
-            $message = "Windows sandbox setup failed before producing output"
+            $logs = @(
+              "windows-sandbox-setup.stdout.log",
+              "windows-sandbox-setup.stderr.log"
+            ) | Where-Object { Test-Path $_ }
+            if ($logs.Count -gt 0) {
+              $message = Get-Content $logs -Raw
+            } else {
+              $message = "Windows sandbox setup failed before producing output"
+            }
           }
           if ($message.Length -gt 12000) {
             $message = $message.Substring($message.Length - 12000)
