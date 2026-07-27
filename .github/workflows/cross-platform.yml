@@ -3,7 +3,7 @@ name: cross-platform
 on:
   push:
     tags-ignore:
-      - ci-windows-sandbox-passed
+      - "ci-windows-sandbox-*"
   pull_request:
 
 jobs:
@@ -98,6 +98,12 @@ jobs:
             -A x64
           cmake --build native/windows-sandbox-helper/build --config Release
           ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
+      - name: Publish Windows sandbox build marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-built $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-built --force
       - name: Smoke-test helper handshake
         shell: pwsh
         run: |
@@ -109,7 +115,13 @@ jobs:
           if ($handshake.protocol_version -ne 1) { throw "helper protocol mismatch" }
           if ($handshake.setup_complete -ne $true) { throw "helper setup is incomplete" }
           if ($handshake.sandbox_ready -ne $false) { throw "incomplete helper must fail closed" }
-      - name: Enforce filesystem and network boundaries
+      - name: Publish Windows sandbox setup marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-setup-passed $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-setup-passed --force
+      - name: Enforce filesystem boundaries
         shell: pwsh
         run: |
           $helper = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe").Path
@@ -151,6 +163,35 @@ jobs:
           if ((Invoke-Sandbox @($probe, "--write-file", (Join-Path $workspace ".git/config"))) -eq 0) {
             throw "sandbox wrote protected repository metadata"
           }
+      - name: Publish Windows sandbox filesystem marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-filesystem-passed $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-filesystem-passed --force
+      - name: Enforce network boundary
+        shell: pwsh
+        run: |
+          $helper = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe").Path
+          $probe = (Resolve-Path "native/windows-sandbox-helper/build/Release/mycli-windows-sandbox-probe.exe").Path
+          $workspace = Join-Path $env:RUNNER_TEMP "mycli-sandbox-workspace"
+
+          function Invoke-Sandbox([string[]] $commandArgs) {
+            $request = @{
+              protocol_version = 1
+              command = @{ argv = $commandArgs }
+              cwd = $workspace
+              workspace_roots = @($workspace)
+              writable_roots = @($workspace)
+              denied_read_roots = @()
+              denied_read_globs = @("**/.env", "**/.env.*")
+              filesystem = "workspace_write"
+              network = "disabled"
+              mode = "workspace-write"
+            } | ConvertTo-Json -Depth 5 -Compress
+            & $helper --request-json $request
+            return $LASTEXITCODE
+          }
 
           $portFile = Join-Path $env:RUNNER_TEMP "mycli-sandbox-port.txt"
           $server = Start-Process -FilePath $probe -ArgumentList @("--listen", $portFile) -PassThru
@@ -167,6 +208,12 @@ jobs:
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+      - name: Publish Windows sandbox network marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-network-passed $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-network-passed --force
       - name: Publish Windows sandbox verification marker
         if: github.event_name == 'push'
         shell: pwsh
