@@ -210,11 +210,10 @@ void GrantLogonRights(PSID sid) {
         SetLastError(LsaNtStatusToWinError(status));
         throw Win32Error("LsaOpenPolicy");
     }
-    std::array<std::wstring, 3> names{
+    std::array<std::wstring, 2> names{
         L"SeBatchLogonRight",
-        L"SeDenyInteractiveLogonRight",
         L"SeDenyRemoteInteractiveLogonRight"};
-    std::array<LSA_UNICODE_STRING, 3> rights{};
+    std::array<LSA_UNICODE_STRING, 2> rights{};
     for (std::size_t index = 0; index < names.size(); ++index) {
         rights[index].Buffer = names[index].data();
         rights[index].Length = static_cast<USHORT>(names[index].size() * sizeof(wchar_t));
@@ -222,10 +221,21 @@ void GrantLogonRights(PSID sid) {
     }
     status = LsaAddAccountRights(
         policy, sid, rights.data(), static_cast<ULONG>(rights.size()));
+    if (status != 0) {
+        LsaClose(policy);
+        SetLastError(LsaNtStatusToWinError(status));
+        throw Win32Error("LsaAddAccountRights");
+    }
+    std::wstring removed_name = L"SeDenyInteractiveLogonRight";
+    LSA_UNICODE_STRING removed_right{
+        static_cast<USHORT>(removed_name.size() * sizeof(wchar_t)),
+        static_cast<USHORT>(removed_name.size() * sizeof(wchar_t)),
+        removed_name.data()};
+    status = LsaRemoveAccountRights(policy, sid, FALSE, &removed_right, 1);
     LsaClose(policy);
     if (status != 0) {
         SetLastError(LsaNtStatusToWinError(status));
-        throw Win32Error("LsaAddAccountRights");
+        throw Win32Error("LsaRemoveAccountRights(SeDenyInteractiveLogonRight)");
     }
 }
 
