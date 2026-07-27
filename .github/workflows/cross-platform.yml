@@ -21,6 +21,18 @@ jobs:
           node-version: "22.19.0"
           cache: npm
           cache-dependency-path: tui/mycli-shell/package-lock.json
+      - name: Build packaged Windows sandbox helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            src/mycli/native/windows/mycli-windows-sandbox.exe
       - run: uv sync --locked --dev
       - run: npm ci --prefix tui/mycli-shell
       - run: uv run pytest -q
@@ -62,3 +74,24 @@ jobs:
           tests/unit/tools/shell_transport/test_windows_conpty.py
           tests/integration/test_cross_platform_shell.py
           -q
+
+  windows-sandbox-helper:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build helper
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release
+          ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
+      - name: Smoke-test helper handshake
+        shell: pwsh
+        run: |
+          $handshake = & native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe --handshake | ConvertFrom-Json
+          if ($handshake.name -ne "mycli-windows-sandbox") { throw "helper identity mismatch" }
+          if ($handshake.protocol_version -ne 1) { throw "helper protocol mismatch" }
+          if ($handshake.sandbox_ready -ne $false) { throw "incomplete helper must fail closed" }
