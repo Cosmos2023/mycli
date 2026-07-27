@@ -18,7 +18,11 @@
 namespace {
 
 int RunTests(const std::filesystem::path& executable) {
+    const auto stage = [](const char* name) {
+        std::cerr << "stage: " << name << '\n' << std::flush;
+    };
     using mycli::sandbox::QuoteWindowsArgument;
+    stage("argument-quoting");
     if (QuoteWindowsArgument(L"plain") != L"plain" ||
         QuoteWindowsArgument(L"") != L"\"\"" ||
         QuoteWindowsArgument(L"two words") != L"\"two words\"" ||
@@ -43,6 +47,7 @@ int RunTests(const std::filesystem::path& executable) {
     const std::vector<std::wstring> command{
         L"cmd.exe", L"/d", L"/s", L"/c", L"exit 7"};
 
+    stage("capability-acls");
     const auto test_root = std::filesystem::temp_directory_path() /
         (L"mycli-sandbox-" + std::to_wstring(GetCurrentProcessId()));
     const auto allowed = test_root / L"allowed";
@@ -71,24 +76,29 @@ int RunTests(const std::filesystem::path& executable) {
         std::cerr << "capability token is not restricted\n";
         return 1;
     }
+    stage("restricted-command");
     const auto exit_code = mycli::sandbox::RunProcessInJob(
         write_token.get(), command, std::filesystem::current_path());
     if (exit_code != 7) {
         std::cerr << "restricted child returned an unexpected exit code\n";
         return 1;
     }
+    stage("allowed-write");
     const auto allowed_exit = mycli::sandbox::RunProcessInJob(
         write_token.get(),
         {executable.wstring(), L"--write-file", (allowed / L"ok.txt").wstring()},
         allowed);
+    stage("outside-write");
     const auto denied_exit = mycli::sandbox::RunProcessInJob(
         write_token.get(),
         {executable.wstring(), L"--write-file", (denied / L"blocked.txt").wstring()},
         denied);
+    stage("secret-read");
     const auto secret_read_exit = mycli::sandbox::RunProcessInJob(
         write_token.get(),
         {executable.wstring(), L"--read-file", (allowed / L".env").wstring()},
         allowed);
+    stage("metadata-write");
     const auto metadata_write_exit = mycli::sandbox::RunProcessInJob(
         write_token.get(),
         {executable.wstring(), L"--write-file", (allowed / L".git" / L"config").wstring()},
@@ -102,6 +112,7 @@ int RunTests(const std::filesystem::path& executable) {
         return 1;
     }
 
+    stage("request-level-policy");
     const mycli::sandbox::SandboxRequest policy_request{
         .protocol_version = mycli::sandbox::kProtocolVersion,
         .command_argv = {
@@ -121,6 +132,7 @@ int RunTests(const std::filesystem::path& executable) {
         std::cerr << "request-level denied-read policy failed\n";
         return 1;
     }
+    stage("complete");
     std::filesystem::remove_all(test_root);
     return 0;
 }
