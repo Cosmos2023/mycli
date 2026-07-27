@@ -374,14 +374,7 @@ class AgentRuntime:
             shell_path=config.shell_path,
             shell_profile=self._shell_resolution.profile,
             monotonic_provider=self._monotonic,
-        )
-        self._plugin_runtime_state = load_enabled_plugins(
-            workspace_root=config.workspace_root,
-            home_dir=home_dir,
-            hook_manager=self._hook_manager,
-            tool_registry=self._tool_registry,
-            command_registry=self._plugin_command_registry,
-            env=dict(os.environ),
+            sandbox_provider=lambda: self._runtime_policy_gate.default_policy().sandbox,
         )
         self._checkpoint = TurnCheckpoint(
             max_tokens_per_turn=config.max_prompt_tokens,
@@ -429,6 +422,16 @@ class AgentRuntime:
             shell_profile=self._shell_resolution.profile,
             shell_environment_policy=config.shell_environment_policy,
         )
+        self._plugin_runtime_state = load_enabled_plugins(
+            workspace_root=config.workspace_root,
+            home_dir=home_dir,
+            hook_manager=self._hook_manager,
+            tool_registry=self._tool_registry,
+            command_registry=self._plugin_command_registry,
+            env=dict(os.environ),
+            sandbox=self._runtime_policy_gate.default_policy().sandbox,
+        )
+        self._configure_contributed_process_sandboxes()
         self._planning_effects = RuntimePlanningEffects(
             session_id=config.session_id,
             planning_service=self._planning_service,
@@ -645,6 +648,13 @@ class AgentRuntime:
                 )
             )
         )
+
+    def _configure_contributed_process_sandboxes(self) -> None:
+        sandbox = self._runtime_policy_gate.default_policy().sandbox
+        for provider in self._contributed_tool_providers:
+            configure = getattr(provider, "set_sandbox_profile", None)
+            if callable(configure):
+                configure(sandbox)
 
     @classmethod
     def for_tests(
@@ -2410,6 +2420,7 @@ class AgentRuntime:
             self._shell_resolution.profile,
             shell_path=config.shell_path,
         )
+        self._configure_contributed_process_sandboxes()
         self._write_diagnostics_service.configure_shell_profile(
             self._shell_resolution.profile
         )

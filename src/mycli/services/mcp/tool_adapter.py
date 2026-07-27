@@ -19,7 +19,7 @@ from mycli.domain.tooling.contributed_tools import (
     ToolContributionSource,
 )
 from mycli.domain.tooling.exposure import ToolRouteKey
-from mycli.domain.runtime import RuntimeInterruptToken
+from mycli.domain.runtime import RuntimeInterruptToken, SandboxProfile
 from mycli.services.mcp.client import McpClient, McpToolDescriptor
 from mycli.services.mcp.diagnostics import classify_mcp_failure, redact_mcp_diagnostic_text
 from mycli.tools.base import ToolEffectProfile, ToolResult, ToolSpec
@@ -99,6 +99,10 @@ class McpToolAdapter:
     def __init__(self, clients: dict[str, McpClient]) -> None:
         self._clients = dict(clients)
         self._descriptors_by_route: dict[str, McpToolDescriptor] = {}
+
+    def set_sandbox_profile(self, sandbox: SandboxProfile | None) -> None:
+        for client in self._clients.values():
+            client.set_sandbox_profile(sandbox)
 
     def list_tool_stubs(
         self,

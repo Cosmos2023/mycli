@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import sys
 
+import pytest
+
+from mycli.domain.runtime import ExecutionPolicy
 from mycli.domain.tooling.calls import ToolCall, ToolResult
 from mycli.domain.tooling.output import ToolModelOutput
 from mycli.services.diagnostics.doctor import DoctorService, DoctorStatus
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint
-from mycli.services.plugins import PluginCommandRegistry, discover_plugins, load_enabled_plugins
+from mycli.services.plugins import (
+    PluginCommandRegistry,
+    PluginLoadStatus,
+    discover_plugins,
+    load_enabled_plugins,
+)
 from mycli.services.plugins.management import PluginManagementService
 from mycli.services.plugins.tool import PluginTool
 from mycli.tools.base import ToolSpec
+from mycli.tools.process_sandbox import ProcessSandboxUnavailable
 from mycli.tools.registry import ToolRegistry
 
 
@@ -124,6 +135,167 @@ def register(ctx):
     manifest_entry = next(item for item in registry.manifest()["tools"] if item["name"] == "DemoTool")
     assert manifest_entry["source"] == "plugin"
     assert manifest_entry["id"] == "plugin:demo:DemoTool"
+
+
+def test_plugin_tool_handler_runs_outside_mycli_process(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body="""
+import os
+
+def register(ctx):
+    ctx.register_tool(
+        'PidTool',
+        {'description': 'Return plugin process id'},
+        lambda args: {'summary': str(os.getpid())},
+    )
+""".strip(),
+    )
+    registry = ToolRegistry(workspace_root=workspace)
+
+    state = load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=registry,
+        env={},
+    )
+    result = registry.execute(ToolCall(name="PidTool", arguments={}, reason="test"))
+
+    assert state.loaded[0].status is PluginLoadStatus.LOADED
+    assert int(result.summary) != os.getpid()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_plugin_import_cannot_write_outside_workspace(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    outside = tmp_path / "outside.txt"
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body=(
+            "from pathlib import Path\n"
+            f"Path({str(outside)!r}).write_text('escaped')\n"
+            "def register(ctx):\n"
+            "    pass\n"
+        ),
+    )
+
+    state = load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=ToolRegistry(workspace_root=workspace),
+        env={},
+        sandbox=ExecutionPolicy.for_workspace(workspace).sandbox,
+    )
+
+    assert state.loaded[0].status is PluginLoadStatus.ERROR
+    assert not outside.exists()
+
+
+def test_plugin_worker_preserves_typed_tool_failure(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body="""
+from mycli.domain.tooling.calls import ToolResult
+from mycli.domain.tooling.output import ToolModelOutput
+
+def register(ctx):
+    def fail(args):
+        return ToolResult(
+            success=False,
+            summary='typed failure',
+            error='blocked',
+            model_output=ToolModelOutput.from_text('typed model failure', success=False),
+        )
+    ctx.register_tool('TypedTool', {'description': 'Typed result'}, fail)
+""".strip(),
+    )
+    registry = ToolRegistry(workspace_root=workspace)
+    load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=registry,
+        env={},
+    )
+
+    result = registry.execute(ToolCall(name="TypedTool", arguments={}, reason="test"))
+
+    assert result.success is False
+    assert result.summary == "typed failure"
+    assert result.error == "blocked"
+    assert result.model_output is not None
+    assert result.model_output.text_content() == "typed model failure"
+
+
+def test_plugin_worker_receives_only_declared_environment(tmp_path: Path) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(
+        workspace,
+        "demo",
+        register_body="""
+import os
+
+def register(ctx):
+    ctx.register_tool(
+        'EnvTool',
+        {'description': 'Read environment'},
+        lambda args: {'summary': os.environ.get('UNDECLARED_SECRET', 'missing')},
+    )
+""".strip(),
+    )
+    registry = ToolRegistry(workspace_root=workspace)
+    load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=registry,
+        env={"UNDECLARED_SECRET": "must-not-leak"},
+    )
+
+    result = registry.execute(ToolCall(name="EnvTool", arguments={}, reason="test"))
+
+    assert result.summary == "missing"
+
+
+def test_plugin_load_reports_unavailable_process_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, home = _workspace_home(tmp_path)
+    _write_config(workspace, enabled=["demo"])
+    _write_plugin(workspace, "demo")
+
+    def unavailable(*_args, **_kwargs):
+        raise ProcessSandboxUnavailable("missing helper")
+
+    monkeypatch.setattr(
+        "mycli.services.plugins.host.prepare_sandboxed_argv",
+        unavailable,
+    )
+
+    state = load_enabled_plugins(
+        workspace_root=workspace,
+        home_dir=home,
+        hook_manager=HookManager(),
+        tool_registry=ToolRegistry(workspace_root=workspace),
+        env={},
+    )
+
+    assert state.loaded[0].status is PluginLoadStatus.ERROR
+    assert "ProcessSandboxUnavailable" in "\n".join(
+        issue.safe_line() for issue in state.loaded[0].issues
+    )
 
 
 def test_plugin_tool_normalizes_supported_handler_results() -> None:

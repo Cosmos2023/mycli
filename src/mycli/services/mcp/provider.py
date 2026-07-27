@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState, RuntimeInterruptToken
+from mycli.domain.runtime import PlanState, RuntimeInterruptToken, SandboxProfile
 from mycli.domain.tooling.contributed_tools import ToolContributionRegistration
 from mycli.services.mcp.tool_adapter import McpToolAdapter
 
@@ -14,6 +14,9 @@ class McpToolContributionProvider:
 
     adapter: McpToolAdapter
     _registrations: tuple[ToolContributionRegistration, ...] | None = field(default=None)
+
+    def set_sandbox_profile(self, sandbox: SandboxProfile | None) -> None:
+        self.adapter.set_sandbox_profile(sandbox)
 
     def provide(
         self,

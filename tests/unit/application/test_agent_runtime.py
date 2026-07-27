@@ -43,6 +43,8 @@ from mycli.domain.runtime import (
     PlanStatus,
     RuntimeBlock,
     RuntimeItem,
+    SandboxMode,
+    SandboxProfile,
     ShellLifecycleEvent,
     RuntimeStreamEvent,
     SessionCommandAllowance,
@@ -491,6 +493,38 @@ def test_agent_runtime_rebind_session_refreshes_environment_execpolicy_summary(
     assert "- execpolicy_sources: project" in rendered_items
     assert "prefix_rule" not in rendered_items
     assert "git push" not in rendered_items
+
+
+def test_agent_runtime_rebind_updates_contributed_process_sandbox(tmp_path: Path) -> None:
+    class SandboxAwareProvider:
+        def __init__(self) -> None:
+            self.sandboxes: list[SandboxProfile] = []
+
+        def set_sandbox_profile(self, sandbox: SandboxProfile) -> None:
+            self.sandboxes.append(sandbox)
+
+        def provide(self, **_kwargs: object) -> tuple[ToolContributionRegistration, ...]:
+            return ()
+
+    provider = SandboxAwareProvider()
+    config = AgentConfig(workspace_root=tmp_path, session_id="sandbox-provider")
+    runtime = AgentRuntime(
+        model_adapter=LegacySingleTurnCaptureAdapter(),
+        tool_registry=ToolRegistry.from_tools([LSTool(tmp_path)]),
+        config=config,
+        home_dir=tmp_path / "home",
+        contributed_tool_providers=(provider,),  # type: ignore[arg-type]
+    )
+
+    runtime.rebind_session(
+        replace(config, sandbox_mode=SandboxMode.DANGER_FULL_ACCESS)
+    )
+    runtime.close()
+
+    assert [sandbox.mode for sandbox in provider.sandboxes] == [
+        SandboxMode.WORKSPACE_WRITE,
+        SandboxMode.DANGER_FULL_ACCESS,
+    ]
 
 
 def test_agent_runtime_requires_approval_for_medium_risk_write_when_strict(
@@ -2542,7 +2576,7 @@ def test_agent_runtime_executes_session_lifecycle_configured_hooks(tmp_path: Pat
     home = tmp_path / "home"
     workspace.joinpath(".mycli").mkdir(parents=True)
     home.mkdir()
-    marker = tmp_path / "session-hooks.jsonl"
+    marker = workspace / "session-hooks.jsonl"
     script = tmp_path / "session_hook.py"
     script.write_text(
         "\n".join(
@@ -2742,7 +2776,7 @@ def test_agent_runtime_loads_enabled_plugin_hooks_and_tools(tmp_path: Path) -> N
         + "\n",
         encoding="utf-8",
     )
-    marker = tmp_path / "plugin-session-start.txt"
+    marker = workspace / "plugin-session-start.txt"
     plugin.joinpath("__init__.py").write_text(
         "\n".join(
             [

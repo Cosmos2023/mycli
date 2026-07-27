@@ -6,7 +6,7 @@ from time import monotonic
 from typing import Any
 
 from mycli.domain.conversation import Conversation
-from mycli.domain.runtime import PlanState, RuntimeInterruptToken
+from mycli.domain.runtime import ExecutionPolicy, PlanState, RuntimeInterruptToken
 from mycli.services.mcp import McpClient, McpServerConfig, McpToolAdapter, McpToolContributionProvider
 
 
@@ -17,6 +17,15 @@ class FakeTransport:
     def request(self, payload: dict[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
         del timeout_seconds
         return dict(self.responses[str(payload["method"])])
+
+
+class SandboxAwareTransport(FakeTransport):
+    def __init__(self) -> None:
+        super().__init__({})
+        self.sandboxes: list[object] = []
+
+    def set_sandbox_profile(self, sandbox: object) -> None:
+        self.sandboxes.append(sandbox)
 
 
 class BlockingToolListTransport:
@@ -104,6 +113,20 @@ def test_mcp_tool_contribution_provider_returns_hydrated_thread_tools() -> None:
 
     assert registrations[0].descriptor.route_name == "mcp_fs_search"
     assert registrations[0].descriptor.spec.parameters[0].name == "query"
+
+
+def test_mcp_provider_propagates_runtime_sandbox_changes(tmp_path) -> None:
+    transport = SandboxAwareTransport()
+    client = McpClient(
+        McpServerConfig(name="fs", transport="stdio", command="mcp"),
+        transport=transport,
+    )
+    provider = McpToolContributionProvider(McpToolAdapter({"fs": client}))
+    sandbox = ExecutionPolicy.for_workspace(tmp_path).sandbox
+
+    provider.set_sandbox_profile(sandbox)
+
+    assert transport.sandboxes == [sandbox]
 
 
 def test_mcp_tool_contribution_discovery_forwards_turn_interrupt() -> None:

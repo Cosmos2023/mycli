@@ -17,9 +17,10 @@ from time import monotonic
 from typing import Any, IO, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
-from mycli.domain.runtime import RuntimeInterruptToken
+from mycli.domain.runtime import RuntimeInterruptToken, SandboxProfile
 from mycli.domain.tooling.names import provider_safe_tool_name
 from mycli.tools.process_controller import process_spawn_options, terminate_process_tree
+from mycli.tools.process_sandbox import prepare_sandboxed_argv
 from mycli.tools.base import ToolParameter
 
 JsonObject = dict[str, Any]
@@ -323,11 +324,13 @@ class StdioJsonRpcTransport:
         args: tuple[str, ...] = (),
         env: Mapping[str, str] | None = None,
         cwd: Path | None = None,
+        sandbox: SandboxProfile | None = None,
     ) -> None:
         self._command = command
         self._args = args
         self._env = {} if env is None else dict(env)
         self._cwd = cwd
+        self._sandbox = sandbox
         self._process: subprocess.Popen[bytes] | None = None
         self._io_lock = Lock()
 
@@ -390,14 +393,24 @@ class StdioJsonRpcTransport:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=1)
 
+    def set_sandbox_profile(self, sandbox: SandboxProfile | None) -> None:
+        if sandbox == self._sandbox:
+            return
+        self.close()
+        self._sandbox = sandbox
+
     def _ensure_process(self) -> subprocess.Popen[bytes]:
         if self._process is not None and self._process.poll() is None:
             return self._process
         process_env = os.environ.copy()
         process_env.update(self._env)
         spawn_options = process_spawn_options()
+        launch = prepare_sandboxed_argv(
+            (self._command, *self._args),
+            sandbox=self._sandbox,
+        )
         self._process = subprocess.Popen(
-            [self._command, *self._args],
+            list(launch.argv),
             cwd=self._cwd,
             env=process_env,
             stdin=subprocess.PIPE,
@@ -425,9 +438,21 @@ class StdioJsonRpcTransport:
 
 
 class McpClient:
-    def __init__(self, config: McpServerConfig, *, transport: JsonRpcTransport | None = None) -> None:
+    def __init__(
+        self,
+        config: McpServerConfig,
+        *,
+        transport: JsonRpcTransport | None = None,
+        sandbox: SandboxProfile | None = None,
+        cwd: Path | None = None,
+    ) -> None:
         self.config = config
-        self._transport = transport if transport is not None else self._build_transport(config)
+        self._sandbox = sandbox
+        self._transport = (
+            transport
+            if transport is not None
+            else self._build_transport(config, sandbox=sandbox, cwd=cwd)
+        )
         self._next_id = 1
         self._initialized = False
         self._id_lock = Lock()
@@ -628,7 +653,13 @@ class McpClient:
             blob=blob,
         )
 
-    def _build_transport(self, config: McpServerConfig) -> JsonRpcTransport:
+    def _build_transport(
+        self,
+        config: McpServerConfig,
+        *,
+        sandbox: SandboxProfile | None,
+        cwd: Path | None,
+    ) -> JsonRpcTransport:
         if config.transport in {"http", "streamable_http"}:
             if config.url is None:
                 raise ValueError(f"{config.transport} MCP server requires url.")
@@ -638,7 +669,22 @@ class McpClient:
             )
         if config.command is None:
             raise ValueError("stdio MCP server requires command.")
-        return StdioJsonRpcTransport(command=config.command, args=config.args, env=config.env)
+        return StdioJsonRpcTransport(
+            command=config.command,
+            args=config.args,
+            env=config.env,
+            cwd=cwd,
+            sandbox=sandbox,
+        )
+
+    def set_sandbox_profile(self, sandbox: SandboxProfile | None) -> None:
+        if sandbox == self._sandbox:
+            return
+        set_sandbox = getattr(self._transport, "set_sandbox_profile", None)
+        if callable(set_sandbox):
+            set_sandbox(sandbox)
+        self._sandbox = sandbox
+        self._initialized = False
 
     def close(self) -> None:
         close = getattr(self._transport, "close", None)

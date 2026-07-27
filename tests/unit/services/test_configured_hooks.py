@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 import sys
 
-from mycli.domain.runtime import PowerShellEdition, ShellKind, ShellProfile
+import pytest
+
+from mycli.domain.runtime import ExecutionPolicy, PowerShellEdition, ShellKind, ShellProfile
 from mycli.services.hooks.allowlist import HookAllowlist, HookAllowlistEntry, command_digest
 from mycli.services.hooks.config import ConfiguredHookSpec, HookConfigRegistry
 from mycli.services.hooks.runner import ConfiguredHookCallback
@@ -292,6 +294,41 @@ def test_configured_hook_callback_maps_allow_deny_modify_and_trace(tmp_path: Pat
     assert [trace["action"] for trace in traces] == ["deny", "modify", "allow"]
     assert all(str(trace["execution_id"]).startswith("hookexec_") for trace in traces)
     assert all("stdout" not in trace for trace in traces)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_configured_hook_process_cannot_write_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    script = workspace / "hook.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "from pathlib import Path",
+                "try:",
+                f"    Path({str(outside)!r}).write_text('escaped')",
+                "except OSError:",
+                "    print(json.dumps({'action': 'allow'}))",
+                "else:",
+                "    print(json.dumps({'action': 'deny', 'message': 'escaped'}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    spec = _spec(workspace, command=[sys.executable, str(script)])
+    callback = ConfiguredHookCallback(
+        spec=spec,
+        workspace_root=workspace,
+        monotonic=iter((1.0, 1.1)).__next__,
+        sandbox_provider=lambda: ExecutionPolicy.for_workspace(workspace).sandbox,
+    )
+
+    result = callback(HookContext(hook_point=HookPoint.PRE_TOOL_USE, tool_name="Read"))
+
+    assert result.action is HookAction.ALLOW
+    assert not outside.exists()
 
 
 def test_configured_hook_callback_timeout_and_error_do_not_deny(tmp_path: Path) -> None:

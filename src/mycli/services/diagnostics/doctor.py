@@ -1345,7 +1345,8 @@ class DoctorService:
         )
 
     def _check_shell_backend_diagnostics(self) -> Iterable[DoctorCheck]:
-        from mycli.domain.runtime import ShellBackendProfile
+        from mycli.domain.runtime import ExecutionPolicy, ShellBackendProfile
+        from mycli.tools.process_sandbox import process_sandbox_backend_profile
 
         profile = ShellBackendProfile()
         try:
@@ -1356,6 +1357,21 @@ class DoctorService:
         else:
             available = True
             detail_shell = str(resolution.profile.executable)
+            try:
+                config = resolve_config(
+                    cli_args={"session": "doctor", "model": None},
+                    env=self._env,
+                    cwd=self._workspace_root,
+                    home=self._home_dir,
+                )
+                sandbox = ExecutionPolicy.for_workspace(
+                    self._workspace_root,
+                    sandbox_mode=config.sandbox_mode,
+                ).sandbox
+                profile = process_sandbox_backend_profile(sandbox)
+                available = available and profile.available
+            except (OSError, ValueError):
+                pass
         status = DoctorStatus.OK if available else DoctorStatus.WARNING
         message = (
             f"shell backend {profile.backend} "

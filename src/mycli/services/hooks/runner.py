@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 from typing import Any, Callable
 
+from mycli.domain.runtime import SandboxProfile
 from mycli.services.hooks.allowlist import HookAllowlistStatus
 from mycli.services.hooks.config import (
     ConfiguredHookSpec,
@@ -16,6 +17,10 @@ from mycli.services.hooks.config import (
 )
 from mycli.services.hooks.types import HookAction, HookContext, HookResult
 from mycli.services.hooks.types import HookPoint
+from mycli.tools.process_sandbox import (
+    ProcessSandboxUnavailable,
+    prepare_sandboxed_argv,
+)
 
 MAX_HOOK_OUTPUT_CHARS = 2000
 MAX_HOOK_MESSAGE_CHARS = 200
@@ -66,6 +71,7 @@ class ConfiguredHookCallback:
     monotonic: Any
     trace_sink: Any | None = None
     allowlist_status: Callable[[ConfiguredHookSpec], HookAllowlistStatus] | None = None
+    sandbox_provider: Callable[[], SandboxProfile | None] | None = None
 
     def __call__(self, ctx: HookContext) -> HookResult:
         source = ctx.metadata.get("source")
@@ -94,8 +100,10 @@ class ConfiguredHookCallback:
             _emit_trace(self.trace_sink, ctx, summary)
             return HookResult(action=HookAction.ERROR, message="configured hook not allowlisted")
         try:
+            sandbox = self.sandbox_provider() if self.sandbox_provider is not None else None
+            launch = prepare_sandboxed_argv(self.spec.command, sandbox=sandbox)
             completed = subprocess.run(
-                list(self.spec.command),
+                list(launch.argv),
                 input=json.dumps(_hook_payload(ctx), ensure_ascii=False),
                 text=True,
                 stdout=subprocess.PIPE,
@@ -119,7 +127,7 @@ class ConfiguredHookCallback:
             )
             _emit_trace(self.trace_sink, ctx, summary)
             return HookResult(action=HookAction.ERROR, message="configured hook timed out")
-        except OSError as exc:
+        except (OSError, ProcessSandboxUnavailable) as exc:
             duration_ms = _duration_ms(self.monotonic, started_at)
             summary = ConfiguredHookRunSummary(
                 execution_id=_execution_id(self.spec, ctx),

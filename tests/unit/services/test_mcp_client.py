@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import sys
 import threading
 import time
 from typing import Any
@@ -17,7 +18,7 @@ from mycli.services.mcp.client import (
     McpServerConfig,
     load_mcp_server_configs,
 )
-from mycli.domain.runtime import RuntimeInterruptToken
+from mycli.domain.runtime import ExecutionPolicy, RuntimeInterruptToken
 from mycli.services.mcp.resource_adapter import McpResourceAdapter
 from mycli.services.mcp.tool_adapter import McpToolAdapter
 from mycli.domain.tooling.output import ToolImageContent, ToolJsonContent, ToolTextContent
@@ -561,6 +562,77 @@ while True:
     result = client.request("ping")
 
     assert result == {"ok": "ping"}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_stdio_mcp_process_cannot_write_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    server = workspace / "server.py"
+    server.write_text(
+        f'''
+import json
+import sys
+from pathlib import Path
+
+headers = {{}}
+while True:
+    line = sys.stdin.buffer.readline()
+    if line in {{b"\\r\\n", b"\\n", b""}}:
+        break
+    key, value = line.decode("ascii").strip().split(":", 1)
+    headers[key.lower()] = value.strip()
+request = json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+try:
+    Path({str(outside)!r}).write_text("escaped")
+except OSError:
+    blocked = True
+else:
+    blocked = False
+payload = json.dumps({{"jsonrpc": "2.0", "id": request["id"], "result": {{"blocked": blocked}}}}).encode()
+sys.stdout.buffer.write(f"Content-Length: {{len(payload)}}\\r\\n\\r\\n".encode() + payload)
+sys.stdout.buffer.flush()
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    client = McpClient(
+        McpServerConfig(
+            name="stdio",
+            transport="stdio",
+            command=sys.executable,
+            args=(str(server),),
+        ),
+        sandbox=ExecutionPolicy.for_workspace(workspace).sandbox,
+        cwd=workspace,
+    )
+
+    result = client.request("ping", initialize=False)
+    client.close()
+
+    assert result == {"blocked": True}
+    assert not outside.exists()
+
+
+def test_mcp_sandbox_change_requires_fresh_initialize(tmp_path: Path) -> None:
+    transport = FakeTransport(
+        {
+            "initialize": {"protocolVersion": "2025-03-26"},
+            "tools/list": {"tools": []},
+        }
+    )
+    transport.set_sandbox_profile = lambda _sandbox: None  # type: ignore[attr-defined]
+    client = McpClient(
+        McpServerConfig(name="stdio", transport="stdio", command="mcp"),
+        transport=transport,
+    )
+
+    client.list_tools()
+    client.set_sandbox_profile(ExecutionPolicy.for_workspace(tmp_path).sandbox)
+    client.list_tools()
+
+    methods = [str(request["method"]) for request in transport.requests]
+    assert methods.count("initialize") == 2
 
 
 def test_stdio_mcp_interrupt_restarts_transport_without_stale_response(tmp_path: Path) -> None:

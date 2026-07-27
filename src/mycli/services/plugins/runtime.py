@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import importlib.util
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable
 
+from mycli.domain.runtime import ExecutionPolicy, SandboxProfile
+from mycli.domain.tooling.output import ToolModelOutput
 from mycli.services.hooks import HookAction, HookContext, HookManager, HookPoint, HookResult
 from mycli.services.plugins.commands import PluginCommandRegistry
 from mycli.services.plugins.config import PluginEnablement
 from mycli.services.plugins.discovery import PluginDiscovery, discover_plugins
+from mycli.services.plugins.host import (
+    PluginHostError,
+    PluginProcessHost,
+    hook_context_payload,
+)
 from mycli.services.plugins.manifest import PluginCandidate, PluginIssue, PluginLoadStatus
 from mycli.services.plugins.tool import PluginTool, tool_spec_from_schema
+from mycli.tools.base import ToolResult
 from mycli.tools.registry import ToolRegistry
 
 
@@ -114,8 +120,10 @@ def load_enabled_plugins(
     tool_registry: ToolRegistry,
     command_registry: PluginCommandRegistry | None = None,
     env: dict[str, str],
+    sandbox: SandboxProfile | None = None,
 ) -> PluginRuntimeState:
     discovery = discover_plugins(workspace_root=workspace_root, home_dir=home_dir)
+    effective_sandbox = sandbox or ExecutionPolicy.for_workspace(workspace_root).sandbox
     loaded: list[LoadedPlugin] = []
     for candidate in discovery.selected:
         loaded.append(_load_candidate(
@@ -125,6 +133,8 @@ def load_enabled_plugins(
             tool_registry=tool_registry,
             command_registry=command_registry,
             env=env,
+            workspace_root=workspace_root,
+            sandbox=effective_sandbox,
         ))
     return PluginRuntimeState(discovery=discovery, loaded=tuple(loaded))
 
@@ -137,6 +147,8 @@ def _load_candidate(
     tool_registry: ToolRegistry,
     command_registry: PluginCommandRegistry | None,
     env: dict[str, str],
+    workspace_root: Path,
+    sandbox: SandboxProfile | None,
 ) -> LoadedPlugin:
     issues = list(candidate.issues)
     if not enablement.is_enabled(candidate.plugin_id):
@@ -149,13 +161,27 @@ def _load_candidate(
         return LoadedPlugin(candidate=candidate, status=PluginLoadStatus.ERROR, issues=tuple(issues))
     if candidate.issues:
         return LoadedPlugin(candidate=candidate, status=PluginLoadStatus.ERROR, issues=tuple(issues))
-    module, issue = _load_module(candidate)
-    if issue is not None:
-        issues.append(issue)
-        return LoadedPlugin(candidate=candidate, status=PluginLoadStatus.ERROR, issues=tuple(issues))
-    register = getattr(module, "register", None)
-    if not callable(register):
-        issues.append(PluginIssue(candidate.plugin_id, candidate.source, candidate.module_path, "register(ctx) missing"))
+    host = PluginProcessHost(
+        candidate=candidate,
+        workspace_root=workspace_root,
+        env={
+            name: env[name]
+            for name in candidate.manifest.requires_env
+            if name in env
+        },
+        sandbox=sandbox,
+    )
+    try:
+        registrations = host.describe()
+    except PluginHostError as exc:
+        issues.append(
+            PluginIssue(
+                candidate.plugin_id,
+                candidate.source,
+                candidate.module_path,
+                f"load failed: {exc.error_type}",
+            )
+        )
         return LoadedPlugin(candidate=candidate, status=PluginLoadStatus.ERROR, issues=tuple(issues))
     ctx = PluginContext(
         plugin_id=candidate.plugin_id,
@@ -163,11 +189,37 @@ def _load_candidate(
         tool_registry=tool_registry,
         command_registry=command_registry,
     )
-    try:
-        register(ctx)
-    except Exception as exc:
-        issues.append(PluginIssue(candidate.plugin_id, candidate.source, candidate.module_path, f"register failed: {exc.__class__.__name__}"))
-        return LoadedPlugin(candidate=candidate, status=PluginLoadStatus.ERROR, issues=tuple(issues))
+    for registration in registrations:
+        try:
+            if registration.kind == "hook" and registration.hook_point is not None:
+                ctx.register_hook(
+                    registration.hook_point,
+                    _remote_hook_handler(host, registration.token),
+                    name=registration.name,
+                )
+            elif registration.kind == "tool":
+                ctx.register_tool(
+                    registration.name,
+                    registration.schema,
+                    _remote_tool_handler(host, registration.token),
+                    registration.metadata,
+                )
+            elif registration.kind == "command":
+                ctx.register_command(
+                    registration.name,
+                    registration.schema,
+                    _remote_command_handler(host, registration.token),
+                    registration.metadata,
+                )
+        except (TypeError, ValueError) as exc:
+            issues.append(
+                PluginIssue(
+                    candidate.plugin_id,
+                    candidate.source,
+                    candidate.module_path,
+                    f"registration failed: {exc.__class__.__name__}",
+                )
+            )
     return LoadedPlugin(
         candidate=candidate,
         status=PluginLoadStatus.LOADED,
@@ -178,17 +230,66 @@ def _load_candidate(
     )
 
 
-def _load_module(candidate: PluginCandidate) -> tuple[ModuleType | None, PluginIssue | None]:
-    module_name = f"mycli_user_plugin_{candidate.source.value}_{candidate.plugin_id.replace('-', '_')}"
-    try:
-        spec = importlib.util.spec_from_file_location(module_name, candidate.module_path)
-        if spec is None or spec.loader is None:
-            return None, PluginIssue(candidate.plugin_id, candidate.source, candidate.module_path, "module spec unavailable")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        return None, PluginIssue(candidate.plugin_id, candidate.source, candidate.module_path, f"load failed: {exc.__class__.__name__}")
-    return module, None
+def _remote_hook_handler(
+    host: PluginProcessHost,
+    token: str,
+) -> Callable[[HookContext], object]:
+    def invoke(context: HookContext) -> object:
+        try:
+            result = host.invoke(
+                token,
+                hook_context_payload(
+                    hook_point=context.hook_point.value,
+                    tool_name=context.tool_name,
+                    tool_args=context.tool_args,
+                    session_id=context.session_id,
+                    metadata=context.metadata,
+                ),
+            )
+        except PluginHostError as exc:
+            return HookResult(
+                action=HookAction.ERROR,
+                message=f"plugin hook failed: {exc.error_type}",
+            )
+        return result
+
+    return invoke
+
+
+def _remote_tool_handler(
+    host: PluginProcessHost,
+    token: str,
+) -> Callable[[dict[str, Any]], object]:
+    def invoke(arguments: dict[str, Any]) -> object:
+        try:
+            return host.invoke(token, arguments)
+        except PluginHostError as exc:
+            message = f"Plugin tool failed: {exc.error_type}"
+            return ToolResult(
+                success=False,
+                summary="plugin tool failed",
+                error=exc.error_type,
+                model_output=ToolModelOutput.from_text(message, success=False),
+            )
+
+    return invoke
+
+
+def _remote_command_handler(
+    host: PluginProcessHost,
+    token: str,
+) -> Callable[[dict[str, Any]], object]:
+    def invoke(arguments: dict[str, Any]) -> object:
+        try:
+            return host.invoke(token, arguments)
+        except PluginHostError as exc:
+            return {
+                "ok": False,
+                "summary": "plugin command failed",
+                "error": exc.error_type,
+            }
+
+    return invoke
 
 
 def _plugin_hook_callback(callback: Callable[..., Any]) -> Callable[[HookContext], HookResult]:

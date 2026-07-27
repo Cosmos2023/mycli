@@ -8,7 +8,7 @@ import sys
 import pytest
 
 import mycli.services.diagnostics.doctor as doctor_module
-from mycli.domain.runtime import ShellKind, ShellProfile
+from mycli.domain.runtime import ExecutionPolicy, ShellKind, ShellProfile
 from mycli.services.diagnostics.doctor import (
     DoctorService,
     DoctorStatus,
@@ -20,6 +20,7 @@ from mycli.tools.shell_resolver import (
     ShellResolution,
     ShellResolutionError,
 )
+from mycli.tools.process_sandbox import process_sandbox_backend_profile
 from tests.support.shell_commands import python_shell_command
 
 
@@ -102,9 +103,16 @@ def test_doctor_service_reports_shell_backend_diagnostics(tmp_path: Path) -> Non
     ).run()
 
     check = next(item for item in report.checks if item.name == "shell_backend_diagnostics")
-    assert check.status is DoctorStatus.OK
+    profile = process_sandbox_backend_profile(
+        ExecutionPolicy.for_workspace(workspace).sandbox
+    )
+    expected_status = DoctorStatus.OK if profile.available else DoctorStatus.WARNING
+    assert check.status is expected_status
     rendered = "\n".join(render_doctor_report(report))
-    assert "shell backend local available=true isolation=host_subprocess" in rendered
+    assert (
+        "shell backend local "
+        f"available={str(profile.available).lower()} isolation={profile.isolation}"
+    ) in rendered
     assert "background=true" in rendered
     assert "interrupt_cleanup=true" in rendered
     assert "secret" not in rendered.lower()
