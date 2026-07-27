@@ -342,6 +342,7 @@ jobs:
           if ((Invoke-Sandbox @($probe, "--write-file", (Join-Path $workspace ".git/config"))) -eq 0) {
             throw "sandbox wrote protected repository metadata"
           }
+          $global:LASTEXITCODE = 0
       - name: Publish Windows sandbox filesystem failure
         if: failure() && github.event_name == 'push'
         shell: pwsh
@@ -407,6 +408,7 @@ jobs:
             if ((Invoke-Sandbox @($probe, "--connect", $port)) -eq 0) {
               throw "offline sandbox connected to a loopback server"
             }
+            $global:LASTEXITCODE = 0
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
