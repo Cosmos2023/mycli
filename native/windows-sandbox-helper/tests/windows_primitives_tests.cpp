@@ -40,20 +40,8 @@ int RunTests(const std::filesystem::path& executable) {
         return 1;
     }
 
-    const auto token = mycli::sandbox::CreateRestrictedPrimaryToken();
-    if (IsTokenRestricted(token.get()) == 0) {
-        std::cerr << "CreateRestrictedPrimaryToken returned an unrestricted token\n";
-        return 1;
-    }
-
     const std::vector<std::wstring> command{
         L"cmd.exe", L"/d", L"/s", L"/c", L"exit 7"};
-    const auto exit_code = mycli::sandbox::RunProcessInJob(
-        token.get(), command, std::filesystem::current_path());
-    if (exit_code != 7) {
-        std::cerr << "restricted child returned an unexpected exit code\n";
-        return 1;
-    }
 
     const auto test_root = std::filesystem::temp_directory_path() /
         (L"mycli-sandbox-" + std::to_wstring(GetCurrentProcessId()));
@@ -79,6 +67,16 @@ int RunTests(const std::filesystem::path& executable) {
     mycli::sandbox::DenyWritePath(allowed / L".git", capability.get());
     const auto write_token = mycli::sandbox::CreateRestrictedPrimaryToken(
         {capability.get()});
+    if (IsTokenRestricted(write_token.get()) == 0) {
+        std::cerr << "capability token is not restricted\n";
+        return 1;
+    }
+    const auto exit_code = mycli::sandbox::RunProcessInJob(
+        write_token.get(), command, std::filesystem::current_path());
+    if (exit_code != 7) {
+        std::cerr << "restricted child returned an unexpected exit code\n";
+        return 1;
+    }
     const auto allowed_exit = mycli::sandbox::RunProcessInJob(
         write_token.get(),
         {executable.wstring(), L"--write-file", (allowed / L"ok.txt").wstring()},

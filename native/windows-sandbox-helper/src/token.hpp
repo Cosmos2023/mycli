@@ -5,7 +5,6 @@
 
 namespace mycli::sandbox {
 
-UniqueHandle CreateRestrictedPrimaryToken();
 UniqueHandle CreateRestrictedPrimaryToken(const std::vector<PSID>& restricting_sids);
 UniqueHandle CreateRestrictedPrimaryTokenFrom(
     HANDLE base_token,
