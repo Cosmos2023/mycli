@@ -110,10 +110,46 @@ jobs:
         run: |
           git tag -f ci-windows-sandbox-configured $env:GITHUB_SHA
           git push origin refs/tags/ci-windows-sandbox-configured --force
-      - name: Compile helper
+      - name: Compile sandbox helper
         shell: pwsh
         run: |
-          cmake --build native/windows-sandbox-helper/build --config Release
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+      - name: Publish Windows sandbox helper compile marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-helper-compiled $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-helper-compiled --force
+      - name: Compile protocol tests
+        shell: pwsh
+        run: |
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox-protocol-tests
+      - name: Publish Windows sandbox protocol compile marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-protocol-compiled $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-protocol-compiled --force
+      - name: Compile primitives tests
+        shell: pwsh
+        run: |
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox-primitives-tests
+      - name: Publish Windows sandbox primitives compile marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-primitives-compiled $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-primitives-compiled --force
+      - name: Compile sandbox probe
+        shell: pwsh
+        run: |
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox-probe
+      - name: Publish Windows sandbox probe compile marker
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git tag -f ci-windows-sandbox-probe-compiled $env:GITHUB_SHA
+          git push origin refs/tags/ci-windows-sandbox-probe-compiled --force
       - name: Publish Windows sandbox compile marker
         if: github.event_name == 'push'
         shell: pwsh
