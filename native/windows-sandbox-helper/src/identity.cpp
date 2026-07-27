@@ -277,7 +277,7 @@ std::wstring LoadPassword(const std::filesystem::path& state_directory) {
     std::ifstream input{CredentialPath(state_directory), std::ios::binary};
     const std::vector<unsigned char> data{
         std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
-    if (!input.eof() || data.size() <= kCredentialMagic.size() ||
+    if (data.size() <= kCredentialMagic.size() ||
         !std::equal(kCredentialMagic.begin(), kCredentialMagic.end(), data.begin())) {
         throw std::runtime_error("sandbox credential is missing or invalid");
     }
