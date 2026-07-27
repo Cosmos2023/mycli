@@ -99,6 +99,12 @@ int wmain(int argc, wchar_t* argv[]) {
         std::cerr << "sandbox-stderr-ok\n" << std::flush;
         return 0;
     }
+    if (argc == 2 && std::wstring_view{argv[1]} == L"--stdio-echo") {
+        std::string input;
+        if (!std::getline(std::cin, input)) return 3;
+        std::cout << "sandbox-stdin:" << input << '\n' << std::flush;
+        return 0;
+    }
     if (argc == 3 && std::wstring_view{argv[1]} == L"--write-file") {
         std::ofstream output{std::filesystem::path{argv[2]}};
         output << "ok";

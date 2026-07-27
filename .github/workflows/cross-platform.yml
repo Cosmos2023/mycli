@@ -305,7 +305,8 @@ jobs:
 
           function Invoke-Sandbox(
             [string[]] $commandArgs,
-            [string[]] $deniedReadRoots = @()
+            [string[]] $deniedReadRoots = @(),
+            [string] $stdinText = ""
           ) {
             Add-Content -Path $log -Value "invoke: $($commandArgs[1])"
             $request = @{
@@ -320,10 +321,14 @@ jobs:
               network = "disabled"
               mode = "workspace-write"
             } | ConvertTo-Json -Depth 5 -Compress
-            & $helper --request-json $request 2>&1 |
-              Tee-Object -FilePath $log -Append |
-              Out-Host
-            $exitCode = $LASTEXITCODE
+            if (-not $PSBoundParameters.ContainsKey("stdinText")) {
+              $output = & $helper --request-json $request 2>&1
+              $exitCode = $LASTEXITCODE
+            } else {
+              $output = $stdinText | & $helper --request-json $request 2>&1
+              $exitCode = $LASTEXITCODE
+            }
+            $output | Tee-Object -FilePath $log -Append | Out-Host
             Add-Content -Path $log -Value "exit: $exitCode"
             return $exitCode
           }
@@ -336,6 +341,15 @@ jobs:
           if ($stdioLog -notmatch "sandbox-stdout-ok" -or
               $stdioLog -notmatch "sandbox-stderr-ok") {
             throw "sandbox stdio was not forwarded"
+          }
+          if ((Invoke-Sandbox `
+                -commandArgs @($probe, "--stdio-echo") `
+                -stdinText "sandbox-stdin-ok") -ne 0) {
+            throw "sandbox stdin probe failed"
+          }
+          $stdioLog = Get-Content $log -Raw
+          if ($stdioLog -notmatch "sandbox-stdin:sandbox-stdin-ok") {
+            throw "sandbox stdin was not forwarded"
           }
           if ((Invoke-Sandbox @($probe, "--write-file", $inside)) -ne 0) {
             throw "sandbox could not write inside workspace"
