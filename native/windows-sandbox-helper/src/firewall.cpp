@@ -58,6 +58,16 @@ void ValidateSidString(const std::wstring& sid) {
     }
 }
 
+std::string SidAscii(const std::wstring& sid) {
+    ValidateSidString(sid);
+    std::string ascii;
+    ascii.reserve(sid.size());
+    for (const wchar_t character : sid) {
+        ascii.push_back(static_cast<char>(character));
+    }
+    return ascii;
+}
+
 std::wstring RuleName(const std::wstring& offline_sid) {
     ValidateSidString(offline_sid);
     return std::wstring{kRuleNamePrefix} + offline_sid;
@@ -94,12 +104,7 @@ void SetupOfflineFirewall(
     }
     std::filesystem::create_directories(state_directory);
     std::ofstream marker{MarkerPath(state_directory), std::ios::binary | std::ios::trunc};
-    std::string sid_ascii;
-    sid_ascii.reserve(offline_sid.size());
-    for (const wchar_t character : offline_sid) {
-        sid_ascii.push_back(static_cast<char>(character));
-    }
-    marker << sid_ascii << '\n';
+    marker << SidAscii(offline_sid) << '\n';
     marker.close();
     if (!marker) throw std::runtime_error("failed to persist firewall setup marker");
 }
@@ -111,7 +116,7 @@ bool OfflineFirewallSetupReady(
     std::string stored;
     std::getline(marker, stored);
     return marker.good() || marker.eof()
-        ? stored == std::string(offline_sid.begin(), offline_sid.end())
+        ? stored == SidAscii(offline_sid)
         : false;
 }
 
