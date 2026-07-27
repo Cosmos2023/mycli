@@ -19,26 +19,42 @@ class Winsock {
     ~Winsock() { WSACleanup(); }
 };
 
-int Listen(const std::filesystem::path& port_file) {
+int Listen(const std::filesystem::path& port_file, int family) {
     Winsock winsock;
-    const SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    const SOCKET listener = socket(family, SOCK_STREAM, IPPROTO_TCP);
     if (listener == INVALID_SOCKET) return 31;
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    if (bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR ||
+    sockaddr_storage storage{};
+    int address_bytes = 0;
+    if (family == AF_INET6) {
+        auto* address = reinterpret_cast<sockaddr_in6*>(&storage);
+        address->sin6_family = AF_INET6;
+        address->sin6_addr = in6addr_loopback;
+        address->sin6_port = 0;
+        address_bytes = sizeof(*address);
+    } else {
+        auto* address = reinterpret_cast<sockaddr_in*>(&storage);
+        address->sin_family = AF_INET;
+        address->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address->sin_port = 0;
+        address_bytes = sizeof(*address);
+    }
+    if (bind(listener, reinterpret_cast<sockaddr*>(&storage), address_bytes) == SOCKET_ERROR ||
         listen(listener, 1) == SOCKET_ERROR) {
         closesocket(listener);
         return 32;
     }
-    int address_bytes = sizeof(address);
-    if (getsockname(listener, reinterpret_cast<sockaddr*>(&address), &address_bytes) == SOCKET_ERROR) {
+    if (getsockname(
+            listener,
+            reinterpret_cast<sockaddr*>(&storage),
+            &address_bytes) == SOCKET_ERROR) {
         closesocket(listener);
         return 33;
     }
+    const auto port = family == AF_INET6
+        ? reinterpret_cast<const sockaddr_in6*>(&storage)->sin6_port
+        : reinterpret_cast<const sockaddr_in*>(&storage)->sin_port;
     std::ofstream output{port_file, std::ios::trunc};
-    output << ntohs(address.sin_port);
+    output << ntohs(port);
     output.close();
     if (!output) {
         closesocket(listener);
@@ -50,16 +66,27 @@ int Listen(const std::filesystem::path& port_file) {
     return client == INVALID_SOCKET ? 35 : 0;
 }
 
-int Connect(unsigned short port) {
+int Connect(unsigned short port, int family) {
     Winsock winsock;
-    const SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    const SOCKET client = socket(family, SOCK_STREAM, IPPROTO_TCP);
     if (client == INVALID_SOCKET) return 36;
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons(port);
+    sockaddr_storage storage{};
+    int address_bytes = 0;
+    if (family == AF_INET6) {
+        auto* address = reinterpret_cast<sockaddr_in6*>(&storage);
+        address->sin6_family = AF_INET6;
+        address->sin6_addr = in6addr_loopback;
+        address->sin6_port = htons(port);
+        address_bytes = sizeof(*address);
+    } else {
+        auto* address = reinterpret_cast<sockaddr_in*>(&storage);
+        address->sin_family = AF_INET;
+        address->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address->sin_port = htons(port);
+        address_bytes = sizeof(*address);
+    }
     const int result = connect(
-        client, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+        client, reinterpret_cast<sockaddr*>(&storage), address_bytes);
     closesocket(client);
     return result == 0 ? 0 : 37;
 }
@@ -84,10 +111,16 @@ int wmain(int argc, wchar_t* argv[]) {
         return input ? 0 : 11;
     }
     if (argc == 3 && std::wstring_view{argv[1]} == L"--listen") {
-        return Listen(argv[2]);
+        return Listen(argv[2], AF_INET);
+    }
+    if (argc == 3 && std::wstring_view{argv[1]} == L"--listen6") {
+        return Listen(argv[2], AF_INET6);
     }
     if (argc == 3 && std::wstring_view{argv[1]} == L"--connect") {
-        return Connect(static_cast<unsigned short>(std::stoul(argv[2])));
+        return Connect(static_cast<unsigned short>(std::stoul(argv[2])), AF_INET);
+    }
+    if (argc == 3 && std::wstring_view{argv[1]} == L"--connect6") {
+        return Connect(static_cast<unsigned short>(std::stoul(argv[2])), AF_INET6);
     }
     return 2;
 }

@@ -294,10 +294,19 @@ jobs:
           $log = "windows-sandbox-filesystem.log"
           $workspace = Join-Path $env:RUNNER_TEMP "mycli-sandbox-workspace"
           $outside = Join-Path $env:RUNNER_TEMP "mycli-sandbox-outside.txt"
-          New-Item -ItemType Directory -Force -Path $workspace, (Join-Path $workspace ".git") | Out-Null
+          $protectedMetadata = @(".git", ".agents", ".codex")
+          $protectedPaths = $protectedMetadata | ForEach-Object { Join-Path $workspace $_ }
+          New-Item -ItemType Directory -Force -Path (@($workspace) + $protectedPaths) | Out-Null
           Set-Content -NoNewline -Path (Join-Path $workspace ".env") -Value "secret"
+          $private = Join-Path $workspace "private"
+          New-Item -ItemType Directory -Force -Path $private | Out-Null
+          $privateSecret = Join-Path $private "secret.txt"
+          Set-Content -NoNewline -Path $privateSecret -Value "private"
 
-          function Invoke-Sandbox([string[]] $commandArgs) {
+          function Invoke-Sandbox(
+            [string[]] $commandArgs,
+            [string[]] $deniedReadRoots = @()
+          ) {
             Add-Content -Path $log -Value "invoke: $($commandArgs[1])"
             $request = @{
               protocol_version = 1
@@ -305,7 +314,7 @@ jobs:
               cwd = $workspace
               workspace_roots = @($workspace)
               writable_roots = @($workspace)
-              denied_read_roots = @()
+              denied_read_roots = $deniedReadRoots
               denied_read_globs = @("**/.env", "**/.env.*")
               filesystem = "workspace_write"
               network = "disabled"
@@ -339,8 +348,16 @@ jobs:
           if ((Invoke-Sandbox @($probe, "--read-file", (Join-Path $workspace ".env"))) -eq 0) {
             throw "sandbox read a denied secret"
           }
-          if ((Invoke-Sandbox @($probe, "--write-file", (Join-Path $workspace ".git/config"))) -eq 0) {
-            throw "sandbox wrote protected repository metadata"
+          if ((Invoke-Sandbox `
+                -commandArgs @($probe, "--read-file", $privateSecret) `
+                -deniedReadRoots @($private)) -eq 0) {
+            throw "sandbox read an explicit denied-read root"
+          }
+          foreach ($protectedPath in $protectedPaths) {
+            $protectedFile = Join-Path $protectedPath "config"
+            if ((Invoke-Sandbox @($probe, "--write-file", $protectedFile)) -eq 0) {
+              throw "sandbox wrote protected metadata: $protectedPath"
+            }
           }
           $global:LASTEXITCODE = 0
       - name: Publish Windows sandbox filesystem failure
@@ -396,21 +413,31 @@ jobs:
             return $exitCode
           }
 
-          $portFile = Join-Path $env:RUNNER_TEMP "mycli-sandbox-port.txt"
-          $server = Start-Process -FilePath $probe -ArgumentList @("--listen", $portFile) -PassThru
-          try {
-            $deadline = (Get-Date).AddSeconds(10)
-            while (-not (Test-Path $portFile)) {
-              if ((Get-Date) -gt $deadline) { throw "network test server did not start" }
-              Start-Sleep -Milliseconds 50
+          foreach ($family in @(
+            @{ Listen = "--listen"; Connect = "--connect"; Name = "IPv4" },
+            @{ Listen = "--listen6"; Connect = "--connect6"; Name = "IPv6" }
+          )) {
+            $portFile = Join-Path $env:RUNNER_TEMP "mycli-sandbox-port-$($family.Name).txt"
+            $server = Start-Process `
+              -FilePath $probe `
+              -ArgumentList @($family.Listen, $portFile) `
+              -PassThru
+            try {
+              $deadline = (Get-Date).AddSeconds(10)
+              while (-not (Test-Path $portFile)) {
+                if ((Get-Date) -gt $deadline) {
+                  throw "$($family.Name) network test server did not start"
+                }
+                Start-Sleep -Milliseconds 50
+              }
+              $port = (Get-Content $portFile -Raw).Trim()
+              if ((Invoke-Sandbox @($probe, $family.Connect, $port)) -eq 0) {
+                throw "offline sandbox connected to an $($family.Name) loopback server"
+              }
+              $global:LASTEXITCODE = 0
+            } finally {
+              Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
             }
-            $port = (Get-Content $portFile -Raw).Trim()
-            if ((Invoke-Sandbox @($probe, "--connect", $port)) -eq 0) {
-              throw "offline sandbox connected to a loopback server"
-            }
-            $global:LASTEXITCODE = 0
-          } finally {
-            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
       - name: Publish Windows sandbox network failure
         if: failure() && github.event_name == 'push'
