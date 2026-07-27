@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iostream>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +47,17 @@ int RunTests(const std::filesystem::path& executable) {
 
     const std::vector<std::wstring> command{
         L"cmd.exe", L"/d", L"/s", L"/c", L"exit 7"};
+
+    bool empty_restrictions_rejected = false;
+    try {
+        static_cast<void>(mycli::sandbox::CreateRestrictedPrimaryToken({}));
+    } catch (const std::invalid_argument&) {
+        empty_restrictions_rejected = true;
+    }
+    if (!empty_restrictions_rejected) {
+        std::cerr << "empty restricting SID list did not fail closed\n";
+        return 1;
+    }
 
     stage("capability-acls");
     const auto test_root = std::filesystem::temp_directory_path() /
