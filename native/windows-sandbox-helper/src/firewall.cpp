@@ -24,7 +24,7 @@ constexpr wchar_t kLoopbackUdpRulePrefix[] = L"mycli_sandbox_offline_block_loopb
 constexpr LONG kAnyIpProtocol = 256;
 constexpr LONG kTcpProtocol = 6;
 constexpr LONG kUdpProtocol = 17;
-constexpr wchar_t kLoopbackAddresses[] = L"127.0.0.0/8,::/127";
+constexpr wchar_t kLoopbackAddresses[] = L"127.0.0.0/255.0.0.0,::/127";
 
 struct RuleSpec {
     std::wstring name;
