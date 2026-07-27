@@ -9,6 +9,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -49,6 +50,15 @@ std::string SidAscii(const std::wstring& sid) {
     ascii.reserve(sid.size());
     for (const wchar_t character : sid) {
         ascii.push_back(static_cast<char>(character));
+    }
+    return ascii;
+}
+
+std::string Ascii(const std::wstring& value) {
+    std::string ascii;
+    ascii.reserve(value.size());
+    for (const wchar_t character : value) {
+        ascii.push_back(character <= 0x7f ? static_cast<char>(character) : '?');
     }
     return ascii;
 }
@@ -262,14 +272,25 @@ bool RuleMatches(
         rule->get_LocalUserAuthorizedList(&raw_local_user),
         "firewall get_LocalUserAuthorizedList");
     const auto local_user = TakeBstr(raw_local_user);
-    return protocol == spec.protocol &&
+    const bool matches = protocol == spec.protocol &&
         profiles == NET_FW_PROFILE2_ALL &&
         direction == NET_FW_RULE_DIR_OUT &&
         action == NET_FW_ACTION_BLOCK &&
         enabled == VARIANT_TRUE &&
         NormalizeAddressList(remote_addresses) ==
-            NormalizeAddressList(spec.remote_addresses) &&
+        NormalizeAddressList(spec.remote_addresses) &&
         local_user.find(offline_sid) != std::wstring::npos;
+    if (!matches) {
+        std::cerr << "firewall read-back mismatch name=" << Ascii(spec.name)
+                  << " protocol=" << protocol
+                  << " profiles=" << profiles
+                  << " direction=" << static_cast<int>(direction)
+                  << " action=" << static_cast<int>(action)
+                  << " enabled=" << enabled
+                  << " remote=" << Ascii(remote_addresses)
+                  << " local-user=" << Ascii(local_user) << '\n' << std::flush;
+    }
+    return matches;
 }
 
 ComPtr<INetFwRule3> FindRule(INetFwRules* rules, const std::wstring& name) {
