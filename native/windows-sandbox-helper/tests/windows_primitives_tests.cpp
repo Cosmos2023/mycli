@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <aclapi.h>
 
 #include <exception>
 #include <filesystem>
@@ -7,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "acl.hpp"
@@ -17,6 +19,51 @@
 #include "token.hpp"
 
 namespace {
+
+class SavedDacl {
+  public:
+    explicit SavedDacl(std::filesystem::path path) : path_{std::move(path)} {
+        const DWORD status = GetNamedSecurityInfoW(
+            path_.native().data(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            nullptr,
+            nullptr,
+            &dacl_,
+            nullptr,
+            &descriptor_);
+        if (status != ERROR_SUCCESS) {
+            throw std::runtime_error("failed to save test path DACL");
+        }
+    }
+
+    ~SavedDacl() {
+        Restore();
+        if (descriptor_ != nullptr) LocalFree(descriptor_);
+    }
+
+    SavedDacl(const SavedDacl&) = delete;
+    SavedDacl& operator=(const SavedDacl&) = delete;
+
+    void Restore() noexcept {
+        if (restored_) return;
+        restored_ = true;
+        static_cast<void>(SetNamedSecurityInfoW(
+            const_cast<LPWSTR>(path_.c_str()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            nullptr,
+            nullptr,
+            dacl_,
+            nullptr));
+    }
+
+  private:
+    std::filesystem::path path_;
+    PSECURITY_DESCRIPTOR descriptor_ = nullptr;
+    PACL dacl_ = nullptr;
+    bool restored_ = false;
+};
 
 int RunTests(const std::filesystem::path& executable) {
     const auto stage = [](const char* name) {
@@ -71,6 +118,7 @@ int RunTests(const std::filesystem::path& executable) {
         std::ofstream secret{allowed / L".env"};
         secret << "secret";
     }
+    SavedDacl allowed_secret_dacl{allowed / L".env"};
     const auto capability = mycli::sandbox::DeriveCapabilitySid(
         allowed, L"workspace-write");
     const auto read_only_capability = mycli::sandbox::DeriveCapabilitySid(
@@ -138,6 +186,7 @@ int RunTests(const std::filesystem::path& executable) {
         std::ofstream secret{policy_allowed / L".env"};
         secret << "secret";
     }
+    SavedDacl policy_secret_dacl{policy_allowed / L".env"};
     const mycli::sandbox::SandboxRequest policy_request{
         .protocol_version = mycli::sandbox::kProtocolVersion,
         .command_argv = {
@@ -159,6 +208,8 @@ int RunTests(const std::filesystem::path& executable) {
         return 1;
     }
     stage("complete");
+    policy_secret_dacl.Restore();
+    allowed_secret_dacl.Restore();
     std::filesystem::remove_all(test_root);
     return 0;
 }
