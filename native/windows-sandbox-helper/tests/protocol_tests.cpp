@@ -2,8 +2,6 @@
 #include <iostream>
 #include <string>
 
-#include <winrt/base.h>
-
 #include "protocol.hpp"
 
 namespace {
@@ -71,10 +69,7 @@ int RunTests() {
 
 int wmain() {
     try {
-        winrt::init_apartment();
         return RunTests();
-    } catch (const winrt::hresult_error& error) {
-        std::wcerr << error.message().c_str() << L'\n';
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
     }

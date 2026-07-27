@@ -15,5 +15,7 @@ class LocalSid {
   private:
     PSID sid_ = nullptr;
 };
-LocalSid DeriveCapabilitySid(const std::filesystem::path& root);
+LocalSid DeriveCapabilitySid(
+    const std::filesystem::path& root,
+    const std::wstring& capability_scope);
 }  // namespace mycli::sandbox

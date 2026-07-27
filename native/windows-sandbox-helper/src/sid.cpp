@@ -7,8 +7,11 @@
 #include <sstream>
 
 namespace mycli::sandbox {
-LocalSid DeriveCapabilitySid(const std::filesystem::path& root) {
-    auto normalized = std::filesystem::weakly_canonical(root).wstring();
+LocalSid DeriveCapabilitySid(
+    const std::filesystem::path& root,
+    const std::wstring& capability_scope) {
+    auto normalized = capability_scope + L"\n" +
+        std::filesystem::weakly_canonical(root).wstring();
     for (auto& ch : normalized) ch = static_cast<wchar_t>(std::towlower(ch));
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {

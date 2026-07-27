@@ -3,7 +3,13 @@
 #include <aclapi.h>
 
 namespace mycli::sandbox {
-void GrantWritableRoot(const std::filesystem::path& root, PSID capability_sid) {
+namespace {
+void UpdatePathAcl(
+    const std::filesystem::path& root,
+    PSID capability_sid,
+    DWORD permissions,
+    ACCESS_MODE mode,
+    DWORD inheritance) {
     PACL old_acl = nullptr;
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     const auto path = root.wstring();
@@ -12,10 +18,9 @@ void GrantWritableRoot(const std::filesystem::path& root, PSID capability_sid) {
         nullptr, nullptr, &old_acl, nullptr, &descriptor);
     if (status != ERROR_SUCCESS) throw std::runtime_error("GetNamedSecurityInfoW failed");
     EXPLICIT_ACCESSW access{};
-    access.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE |
-        FILE_GENERIC_EXECUTE | DELETE;
-    access.grfAccessMode = GRANT_ACCESS;
-    access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    access.grfAccessPermissions = permissions;
+    access.grfAccessMode = mode;
+    access.grfInheritance = inheritance;
     access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
     access.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
     access.Trustee.ptstrName = static_cast<LPWSTR>(capability_sid);
@@ -29,5 +34,37 @@ void GrantWritableRoot(const std::filesystem::path& root, PSID capability_sid) {
     if (updated_acl != nullptr) LocalFree(updated_acl);
     if (descriptor != nullptr) LocalFree(descriptor);
     if (status != ERROR_SUCCESS) throw std::runtime_error("setting writable ACL failed");
+}
+}  // namespace
+
+void GrantWritableRoot(const std::filesystem::path& root, PSID capability_sid) {
+    UpdatePathAcl(
+        root,
+        capability_sid,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
+        GRANT_ACCESS,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+}
+
+void DenyReadPath(const std::filesystem::path& path, PSID capability_sid) {
+    UpdatePathAcl(
+        path,
+        capability_sid,
+        FILE_GENERIC_READ,
+        DENY_ACCESS,
+        std::filesystem::is_directory(path)
+            ? SUB_CONTAINERS_AND_OBJECTS_INHERIT
+            : NO_INHERITANCE);
+}
+
+void DenyWritePath(const std::filesystem::path& path, PSID capability_sid) {
+    UpdatePathAcl(
+        path,
+        capability_sid,
+        FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD,
+        DENY_ACCESS,
+        std::filesystem::is_directory(path)
+            ? SUB_CONTAINERS_AND_OBJECTS_INHERIT
+            : NO_INHERITANCE);
 }
 }  // namespace mycli::sandbox

@@ -14,8 +14,8 @@ function(mycli_configure_windows_target target_name)
         _UNICODE
         WIN32_LEAN_AND_MEAN
     )
-    target_include_directories(${target_name} PRIVATE src)
-    target_link_libraries(${target_name} PRIVATE advapi32 bcrypt windowsapp)
+    target_include_directories(${target_name} PRIVATE src third_party)
+    target_link_libraries(${target_name} PRIVATE advapi32 bcrypt shlwapi)
 
     if(MSVC)
         target_compile_options(${target_name} PRIVATE /W4 /WX /permissive- /utf-8)
@@ -23,9 +23,12 @@ function(mycli_configure_windows_target target_name)
 endfunction()
 
 add_executable(mycli-windows-sandbox
+    src/acl.cpp
     src/main.cpp
     src/process.cpp
     src/protocol.cpp
+    src/sandbox.cpp
+    src/sid.cpp
     src/token.cpp
 )
 mycli_configure_windows_target(mycli-windows-sandbox)
@@ -42,6 +45,7 @@ add_executable(mycli-windows-sandbox-primitives-tests
     tests/windows_primitives_tests.cpp
     src/acl.cpp
     src/process.cpp
+    src/sandbox.cpp
     src/sid.cpp
     src/token.cpp
 )
