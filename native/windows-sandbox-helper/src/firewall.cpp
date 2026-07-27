@@ -5,18 +5,32 @@
 #include <netfw.h>
 #include <oleauto.h>
 
+#include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mycli::sandbox {
 namespace {
 
-constexpr wchar_t kRuleNamePrefix[] = L"mycli_sandbox_offline_block_outbound_";
-constexpr wchar_t kRuleDescription[] = L"mycli Sandbox Offline";
+constexpr wchar_t kOutboundRulePrefix[] = L"mycli_sandbox_offline_block_outbound_";
+constexpr wchar_t kLoopbackTcpRulePrefix[] = L"mycli_sandbox_offline_block_loopback_tcp_";
+constexpr wchar_t kLoopbackUdpRulePrefix[] = L"mycli_sandbox_offline_block_loopback_udp_";
 constexpr LONG kAnyIpProtocol = 256;
+constexpr LONG kTcpProtocol = 6;
+constexpr LONG kUdpProtocol = 17;
+constexpr wchar_t kLoopbackAddresses[] = L"127.0.0.0/8,::/127";
+
+struct RuleSpec {
+    std::wstring name;
+    const wchar_t* description;
+    LONG protocol;
+    const wchar_t* remote_addresses;
+};
 
 std::filesystem::path MarkerPath(const std::filesystem::path& state_directory) {
     return state_directory / L"firewall.v1";
@@ -39,9 +53,18 @@ std::string SidAscii(const std::wstring& sid) {
     return ascii;
 }
 
-std::wstring RuleName(const std::wstring& offline_sid) {
+std::vector<RuleSpec> RuleSpecs(const std::wstring& offline_sid) {
     ValidateSidString(offline_sid);
-    return std::wstring{kRuleNamePrefix} + offline_sid;
+    return {
+        {std::wstring{kOutboundRulePrefix} + offline_sid,
+         L"mycli Sandbox Offline - Block Outbound", kAnyIpProtocol, L"*"},
+        {std::wstring{kLoopbackTcpRulePrefix} + offline_sid,
+         L"mycli Sandbox Offline - Block Loopback TCP", kTcpProtocol,
+         kLoopbackAddresses},
+        {std::wstring{kLoopbackUdpRulePrefix} + offline_sid,
+         L"mycli Sandbox Offline - Block Loopback UDP", kUdpProtocol,
+         kLoopbackAddresses},
+    };
 }
 
 std::wstring LocalUserSddl(const std::wstring& offline_sid) {
@@ -174,12 +197,15 @@ ComPtr<INetFwRules> OpenFirewallRules(INetFwPolicy2* policy) {
     return rules;
 }
 
-void ConfigureRule(INetFwRule3* rule, const std::wstring& offline_sid) {
-    const BStr description{kRuleDescription};
-    const BStr remote_addresses{L"*"};
+void ConfigureRule(
+    INetFwRule3* rule,
+    const RuleSpec& spec,
+    const std::wstring& offline_sid) {
+    const BStr description{spec.description};
+    const BStr remote_addresses{spec.remote_addresses};
     const BStr local_user{LocalUserSddl(offline_sid)};
     RequireComSuccess(rule->put_Description(description.get()), "firewall put_Description");
-    RequireComSuccess(rule->put_Protocol(kAnyIpProtocol), "firewall put_Protocol");
+    RequireComSuccess(rule->put_Protocol(spec.protocol), "firewall put_Protocol");
     RequireComSuccess(
         rule->put_RemoteAddresses(remote_addresses.get()),
         "firewall put_RemoteAddresses");
@@ -192,12 +218,36 @@ void ConfigureRule(INetFwRule3* rule, const std::wstring& offline_sid) {
         "firewall put_LocalUserAuthorizedList");
 }
 
-bool RuleMatches(INetFwRule3* rule, const std::wstring& offline_sid) {
+std::wstring NormalizeAddressList(std::wstring value) {
+    value.erase(
+        std::remove_if(value.begin(), value.end(), [](wchar_t character) {
+            return std::iswspace(character) != 0;
+        }),
+        value.end());
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t character) {
+        return static_cast<wchar_t>(std::towlower(character));
+    });
+    return value;
+}
+
+std::wstring TakeBstr(BSTR value) {
+    const std::wstring result = value == nullptr
+        ? std::wstring{}
+        : std::wstring{value, SysStringLen(value)};
+    if (value != nullptr) SysFreeString(value);
+    return result;
+}
+
+bool RuleMatches(
+    INetFwRule3* rule,
+    const RuleSpec& spec,
+    const std::wstring& offline_sid) {
     LONG protocol = 0;
     LONG profiles = 0;
     NET_FW_RULE_DIRECTION direction{};
     NET_FW_ACTION action{};
     VARIANT_BOOL enabled = VARIANT_FALSE;
+    BSTR raw_remote_addresses = nullptr;
     BSTR raw_local_user = nullptr;
     RequireComSuccess(rule->get_Protocol(&protocol), "firewall get_Protocol");
     RequireComSuccess(rule->get_Profiles(&profiles), "firewall get_Profiles");
@@ -205,17 +255,20 @@ bool RuleMatches(INetFwRule3* rule, const std::wstring& offline_sid) {
     RequireComSuccess(rule->get_Action(&action), "firewall get_Action");
     RequireComSuccess(rule->get_Enabled(&enabled), "firewall get_Enabled");
     RequireComSuccess(
+        rule->get_RemoteAddresses(&raw_remote_addresses),
+        "firewall get_RemoteAddresses");
+    const auto remote_addresses = TakeBstr(raw_remote_addresses);
+    RequireComSuccess(
         rule->get_LocalUserAuthorizedList(&raw_local_user),
         "firewall get_LocalUserAuthorizedList");
-    const std::wstring local_user = raw_local_user == nullptr
-        ? std::wstring{}
-        : std::wstring{raw_local_user, SysStringLen(raw_local_user)};
-    if (raw_local_user != nullptr) SysFreeString(raw_local_user);
-    return protocol == kAnyIpProtocol &&
+    const auto local_user = TakeBstr(raw_local_user);
+    return protocol == spec.protocol &&
         profiles == NET_FW_PROFILE2_ALL &&
         direction == NET_FW_RULE_DIR_OUT &&
         action == NET_FW_ACTION_BLOCK &&
         enabled == VARIANT_TRUE &&
+        NormalizeAddressList(remote_addresses) ==
+            NormalizeAddressList(spec.remote_addresses) &&
         local_user.find(offline_sid) != std::wstring::npos;
 }
 
@@ -234,11 +287,11 @@ ComPtr<INetFwRule3> FindRule(INetFwRules* rules, const std::wstring& name) {
 
 ComPtr<INetFwRule3> EnsureRule(
     INetFwRules* rules,
-    const std::wstring& name,
+    const RuleSpec& spec,
     const std::wstring& offline_sid) {
-    auto rule = FindRule(rules, name);
+    auto rule = FindRule(rules, spec.name);
     if (rule.get() != nullptr) {
-        ConfigureRule(rule.get(), offline_sid);
+        ConfigureRule(rule.get(), spec, offline_sid);
         return rule;
     }
     RequireComSuccess(
@@ -249,9 +302,9 @@ ComPtr<INetFwRule3> EnsureRule(
             IID_INetFwRule3,
             reinterpret_cast<void**>(rule.put())),
         "CoCreateInstance(NetFwRule)");
-    const BStr rule_name{name};
+    const BStr rule_name{spec.name};
     RequireComSuccess(rule->put_Name(rule_name.get()), "firewall put_Name");
-    ConfigureRule(rule.get(), offline_sid);
+    ConfigureRule(rule.get(), spec, offline_sid);
     RequireComSuccess(
         rules->Add(static_cast<INetFwRule*>(rule.get())),
         "INetFwRules::Add");
@@ -262,8 +315,13 @@ bool LiveFirewallRuleReady(const std::wstring& offline_sid) {
     const ComApartment apartment;
     auto policy = OpenFirewallPolicy();
     auto rules = OpenFirewallRules(policy.get());
-    auto rule = FindRule(rules.get(), RuleName(offline_sid));
-    return rule.get() != nullptr && RuleMatches(rule.get(), offline_sid);
+    for (const auto& spec : RuleSpecs(offline_sid)) {
+        auto rule = FindRule(rules.get(), spec.name);
+        if (rule.get() == nullptr || !RuleMatches(rule.get(), spec, offline_sid)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -274,9 +332,11 @@ void SetupOfflineFirewall(
     const ComApartment apartment;
     auto policy = OpenFirewallPolicy();
     auto rules = OpenFirewallRules(policy.get());
-    auto rule = EnsureRule(rules.get(), RuleName(offline_sid), offline_sid);
-    if (!RuleMatches(rule.get(), offline_sid)) {
-        throw std::runtime_error("offline firewall rule read-back verification failed");
+    for (const auto& spec : RuleSpecs(offline_sid)) {
+        auto rule = EnsureRule(rules.get(), spec, offline_sid);
+        if (!RuleMatches(rule.get(), spec, offline_sid)) {
+            throw std::runtime_error("offline firewall rule read-back verification failed");
+        }
     }
     std::filesystem::create_directories(state_directory);
     std::ofstream marker{MarkerPath(state_directory), std::ios::binary | std::ios::trunc};
